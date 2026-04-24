@@ -224,6 +224,37 @@ class TestDeleteEventSource:
                 assert is_error_result(result)
                 assert "not found" in result.structured_content["error"]
 
+    @pytest.mark.asyncio
+    async def test_deletes_source_row(self, context):
+        """Should permanently delete the event source."""
+        from src.models.enums import EventSourceType
+        from src.services.mcp_server.tools.events import delete_event_source
+
+        source_id = str(uuid4())
+        mock_source = MagicMock()
+        mock_source.id = source_id
+        mock_source.name = "Test source"
+        mock_source.source_type = EventSourceType.INTERNAL
+        mock_source.webhook_source = None
+
+        mock_repo = MagicMock()
+        mock_repo.get_by_id_with_details = AsyncMock(return_value=mock_source)
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_repo,
+            ):
+                result = await delete_event_source(context, source_id)
+
+        assert not is_error_result(result)
+        mock_session.delete.assert_awaited_once_with(mock_source)
+        mock_session.flush.assert_awaited_once()
+
 
 # ==================== Subscription Tool Tests ====================
 
@@ -340,6 +371,32 @@ class TestDeleteEventSubscription:
         result = await delete_event_subscription(context, str(uuid4()), "")
         assert is_error_result(result)
         assert "required" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_deletes_subscription_row(self, context):
+        """Should permanently delete the event subscription."""
+        from src.services.mcp_server.tools.events import delete_event_subscription
+
+        source_id = str(uuid4())
+        subscription_id = str(uuid4())
+        mock_subscription = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_subscription
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_session.execute = AsyncMock(return_value=mock_result)
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await delete_event_subscription(
+                context, source_id, subscription_id
+            )
+
+        assert not is_error_result(result)
+        mock_session.execute.assert_awaited_once()
+        mock_session.delete.assert_awaited_once_with(mock_subscription)
+        mock_session.flush.assert_awaited_once()
 
 
 # ==================== Webhook Adapter Tests ====================

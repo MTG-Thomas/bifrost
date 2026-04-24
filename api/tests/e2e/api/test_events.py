@@ -82,7 +82,7 @@ def event_source(e2e_client, platform_admin):
 
     yield source
 
-    # Cleanup: soft delete the event source
+    # Cleanup: delete the event source
     e2e_client.delete(
         f"/api/events/sources/{source['id']}",
         headers=platform_admin.headers,
@@ -265,7 +265,7 @@ class TestEventSourceCRUD:
         assert source["name"] == new_name
 
     def test_delete_event_source(self, e2e_client, platform_admin):
-        """Soft delete (deactivate) event source."""
+        """Permanently delete event source."""
         # Create a source to delete
         response = e2e_client.post(
             "/api/events/sources",
@@ -285,13 +285,12 @@ class TestEventSourceCRUD:
         )
         assert response.status_code == 204, f"Delete failed: {response.text}"
 
-        # Verify it's deactivated (not hard deleted)
+        # Verify it's gone
         response = e2e_client.get(
             f"/api/events/sources/{source['id']}",
             headers=platform_admin.headers,
         )
-        assert response.status_code == 200
-        assert response.json()["is_active"] is False
+        assert response.status_code == 404
 
     def test_update_event_source_organization_id(self, e2e_client, platform_admin, org_event_source, org1):
         """Update org-scoped source: clear org (set to null), then set it back."""
@@ -463,7 +462,7 @@ class TestEventSubscriptions:
     def test_delete_subscription(
         self, e2e_client, platform_admin, event_source, test_workflow
     ):
-        """Soft delete subscription."""
+        """Permanently delete subscription."""
         # Create a subscription to delete
         response = e2e_client.post(
             f"/api/events/sources/{event_source['id']}/subscriptions",
