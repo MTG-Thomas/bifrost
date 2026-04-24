@@ -14,6 +14,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -422,6 +423,29 @@ class ManifestImportRequest(BaseModel):
     delete_removed_entities: bool = False
     files: dict[str, str] = Field(default_factory=dict, description="Map of .bifrost/ path to base64-encoded content")
     dry_run: bool = False
+    target_organization_id: UUID | None = Field(
+        default=None,
+        description=(
+            "When set, every entity in the bundle has its organization_id rewritten to this "
+            "value before upsert. Incompatible with a manifest that carries an organizations section."
+        ),
+    )
+    role_resolution: Literal["uuid", "name"] = Field(
+        default="uuid",
+        description=(
+            "How to interpret role references in the bundle. 'uuid' (default) assumes role UUIDs "
+            "match the target env. 'name' reads role_names and resolves to UUIDs in the target; "
+            "missing names fail with 422."
+        ),
+    )
+    entity_ids: set[str] | None = Field(
+        default=None,
+        description=(
+            "Optional subset of entity UUIDs to apply. When set, only entities whose id is in "
+            "this set are written; all other diff entries are skipped. Use for interactive "
+            "cherry-pick import where the user approves a subset of a dry-run diff."
+        ),
+    )
 
 
 @router.post("/manifest/import", response_model=ManifestImportResponse)
@@ -455,7 +479,25 @@ async def import_manifest(
 
     delete_entities = request.delete_removed_entities if request else False
     dry_run = request.dry_run if request else False
-    result = await import_manifest_from_repo(db, delete_removed_entities=delete_entities, dry_run=dry_run)
+    target_org = request.target_organization_id if request else None
+    role_resolution = request.role_resolution if request else "uuid"
+    entity_ids = request.entity_ids if request else None
+
+    try:
+        result = await import_manifest_from_repo(
+            db,
+            delete_removed_entities=delete_entities,
+            dry_run=dry_run,
+            target_organization_id=target_org,
+            role_resolution=role_resolution,
+            entity_ids=entity_ids,
+        )
+    except ValueError as e:
+        # Cross-env rebinding precondition failure (orgs+target clash, unknown role, etc.)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
 
     if not dry_run:
         await db.commit()

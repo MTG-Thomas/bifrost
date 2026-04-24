@@ -32,6 +32,7 @@ from src.models.contracts.applications import (
     ApplicationListResponse,
     ApplicationPublic,
     ApplicationPublishRequest,
+    ApplicationReplaceRequest,
     ApplicationRollbackRequest,
     ApplicationUpdate,
 )
@@ -43,83 +44,6 @@ from src.repositories.org_scoped import OrgScopedRepository
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/applications", tags=["Applications"])
-
-
-# =============================================================================
-# Known components available in the app builder runtime
-# =============================================================================
-
-KNOWN_APP_COMPONENTS = {
-    # React
-    "React", "Fragment",
-    # Routing
-    "Outlet", "Link", "NavLink", "Navigate", "RequireRole",
-    # Layout
-    "Card", "CardHeader", "CardFooter", "CardTitle", "CardAction", "CardDescription", "CardContent",
-    # Forms
-    "Button", "Input", "Label", "Textarea", "Checkbox", "Switch",
-    "Select", "SelectContent", "SelectGroup", "SelectItem", "SelectLabel", "SelectTrigger", "SelectValue", "SelectSeparator",
-    "RadioGroup", "RadioGroupItem", "Combobox", "MultiCombobox", "TagsInput", "Slider",
-    # Display
-    "Badge", "Avatar", "AvatarImage", "AvatarFallback", "Alert", "AlertTitle", "AlertDescription",
-    "Skeleton", "Progress",
-    # Navigation
-    "Tabs", "TabsList", "TabsTrigger", "TabsContent",
-    "Pagination", "PaginationContent", "PaginationEllipsis", "PaginationItem", "PaginationLink", "PaginationNext", "PaginationPrevious",
-    # Feedback
-    "Dialog", "DialogClose", "DialogContent", "DialogDescription", "DialogFooter", "DialogHeader", "DialogTitle", "DialogTrigger",
-    "AlertDialog", "AlertDialogTrigger", "AlertDialogContent", "AlertDialogHeader", "AlertDialogFooter", "AlertDialogTitle", "AlertDialogDescription", "AlertDialogAction", "AlertDialogCancel",
-    "Tooltip", "TooltipContent", "TooltipProvider", "TooltipTrigger",
-    "Popover", "PopoverContent", "PopoverTrigger", "PopoverAnchor",
-    "HoverCard", "HoverCardContent", "HoverCardTrigger",
-    "Sheet", "SheetClose", "SheetContent", "SheetDescription", "SheetFooter", "SheetHeader", "SheetTitle", "SheetTrigger",
-    "Command", "CommandDialog", "CommandEmpty", "CommandGroup", "CommandInput", "CommandItem", "CommandList", "CommandSeparator", "CommandShortcut",
-    "ContextMenu", "ContextMenuCheckboxItem", "ContextMenuContent", "ContextMenuGroup", "ContextMenuItem", "ContextMenuLabel", "ContextMenuPortal", "ContextMenuRadioGroup", "ContextMenuRadioItem", "ContextMenuSeparator", "ContextMenuShortcut", "ContextMenuSub", "ContextMenuSubContent", "ContextMenuSubTrigger", "ContextMenuTrigger",
-    # Data Display
-    "Table", "TableHeader", "TableBody", "TableFooter", "TableHead", "TableRow", "TableCell", "TableCaption",
-    # Calendar/Date
-    "Calendar", "DateRangePicker",
-    # Accordion/Collapsible
-    "Accordion", "AccordionContent", "AccordionItem", "AccordionTrigger",
-    "Collapsible", "CollapsibleContent", "CollapsibleTrigger",
-    # Toggle
-    "Toggle", "ToggleGroup", "ToggleGroupItem",
-    # Separator
-    "Separator",
-    # DropdownMenu
-    "DropdownMenu", "DropdownMenuCheckboxItem", "DropdownMenuContent", "DropdownMenuGroup", "DropdownMenuItem", "DropdownMenuLabel", "DropdownMenuPortal", "DropdownMenuRadioGroup", "DropdownMenuRadioItem", "DropdownMenuSeparator", "DropdownMenuShortcut", "DropdownMenuSub", "DropdownMenuSubContent", "DropdownMenuSubTrigger", "DropdownMenuTrigger",
-}
-
-# Note: Lucide icons (lucide-react) are all valid - hundreds of icons available.
-# We skip checking those to avoid false positives.
-
-# All names available via `import { ... } from "bifrost"` in app code.
-# Built from: React exports, platform scope (scope.ts), UI components,
-# utility functions (utils.ts), and date-fns.
-KNOWN_BIFROST_EXPORTS = KNOWN_APP_COMPONENTS | {
-    # Platform hooks (from scope.ts / createPlatformScope)
-    "useWorkflowQuery", "useWorkflowMutation",
-    "useUser", "useAppState",
-    "useNavigate", "useParams", "useSearchParams",
-    "useLocation", "useMatch", "useResolvedPath", "useOutletContext",
-    # Platform functions
-    "navigate",
-    # React hooks and utilities (spread via ...React in runtime)
-    "useState", "useEffect", "useCallback", "useMemo", "useRef",
-    "useContext", "useReducer", "useLayoutEffect", "useId",
-    "useTransition", "useDeferredValue", "useSyncExternalStore",
-    "useInsertionEffect", "useDebugValue", "useImperativeHandle",
-    # React component utilities
-    "Fragment", "Suspense", "lazy", "memo", "forwardRef",
-    "createContext", "createRef", "createElement", "cloneElement",
-    "isValidElement", "Children", "StrictMode",
-    # Utility functions (from ...utils spread)
-    "cn", "formatDate", "formatDateShort", "formatTime",
-    "formatRelativeTime", "formatBytes", "formatNumber",
-    "formatCost", "formatDuration",
-    # Third-party utilities available in scope
-    "clsx", "twMerge", "format",
-}
 
 
 class AppValidationIssue(BaseModel):
@@ -228,42 +152,6 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
-    async def get_by_id(self, id: UUID) -> Application | None:
-        """
-        Get application by UUID with cascade scoping and role-based access check.
-
-        Prioritizes org-specific over global to avoid MultipleResultsFound
-        when the same ID exists in both scopes.
-
-        Args:
-            id: Application UUID
-
-        Returns:
-            Application if found and accessible, None otherwise
-        """
-        # Build query filtering by ID
-        query = select(self.model).where(self.model.id == id)
-
-        # Apply cascade scoping: prioritize org-specific, then global
-        if self.org_id is not None:
-            # Try org-specific first
-            org_query = query.where(self.model.organization_id == self.org_id)
-            result = await self.session.execute(org_query)
-            entity = result.scalar_one_or_none()
-            if entity:
-                if await self._can_access_entity(entity):
-                    return entity
-                return None
-
-        # Fall back to global
-        global_query = query.where(self.model.organization_id.is_(None))
-        result = await self.session.execute(global_query)
-        entity = result.scalar_one_or_none()
-
-        if entity and await self._can_access_entity(entity):
-            return entity
-        return None
-
     async def get_by_slug_global(self, slug: str) -> Application | None:
         """Check if any application exists with this slug (globally unique)."""
         query = select(self.model).where(self.model.slug == slug)
@@ -327,7 +215,7 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         is_platform_admin: bool = False,
     ) -> Application | None:
         """Update application metadata and access control by ID."""
-        application = await self.get_by_id(app_id)
+        application = await self.get(id=app_id)
         if not application:
             return None
 
@@ -382,9 +270,94 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         logger.info(f"Updated application '{app_id}'")
         return application
 
+    async def replace_application(
+        self,
+        app_id: UUID,
+        new_repo_path: str,
+        *,
+        force: bool = False,
+    ) -> Application | None:
+        """Repoint an application's source directory.
+
+        Validates uniqueness, nesting, and that the new prefix has source files
+        in file_index. Any of those checks may be bypassed with ``force=True``.
+        No file moves — updates DB only.
+
+        Returns the updated Application, or None if the app was not found.
+        Raises ValueError on validation failure.
+        """
+        from src.models.orm.file_index import FileIndex
+
+        app = await self.get(id=app_id)
+        if app is None:
+            return None
+
+        # Normalize: strip trailing slash, reject empty string.
+        normalized = new_repo_path.rstrip("/")
+        if not normalized:
+            raise ValueError("repo_path cannot be empty")
+
+        # No-op fast path.
+        if normalized == app.repo_path:
+            return app
+
+        if not force:
+            # Uniqueness check (excluding the app itself).
+            existing_stmt = select(Application).where(
+                Application.repo_path == normalized,
+                Application.id != app_id,
+            )
+            conflict = (await self.session.execute(existing_stmt)).scalar_one_or_none()
+            if conflict is not None:
+                raise ValueError(
+                    f"repo_path '{normalized}' already claimed by app "
+                    f"{conflict.slug} ({conflict.id}). Pass force=True to override."
+                )
+
+            # Nesting check: no other app's repo_path is a prefix of new (with /),
+            # and new (with /) is not a prefix of any other app's repo_path.
+            # Simple Python-side approach: fetch all other apps' repo_paths and check.
+            # This is fine because app count is small (tens, not millions).
+            new_prefix = f"{normalized}/"
+            others_stmt = select(Application).where(Application.id != app_id)
+            others = (await self.session.execute(others_stmt)).scalars().all()
+            for other in others:
+                other_prefix = f"{other.repo_path}/"
+                # new is nested inside other: new_prefix starts with other_prefix
+                if new_prefix.startswith(other_prefix):
+                    raise ValueError(
+                        f"repo_path '{normalized}' is nested under app "
+                        f"{other.slug} ({other.repo_path}). Pass force=True to override."
+                    )
+                # other is nested inside new: other_prefix starts with new_prefix
+                if other_prefix.startswith(new_prefix):
+                    raise ValueError(
+                        f"repo_path '{normalized}' would contain app "
+                        f"{other.slug} ({other.repo_path}) nested inside it. "
+                        "Pass force=True to override."
+                    )
+
+            # Source-exists check: at least one file_index row starts with new_prefix.
+            file_stmt = select(FileIndex).where(
+                FileIndex.path.like(f"{new_prefix}%")
+            ).limit(1)
+            has_source = (await self.session.execute(file_stmt)).scalar_one_or_none()
+            if has_source is None:
+                raise ValueError(
+                    f"no files found under '{normalized}'. "
+                    "Push source first, or pass force=True to repoint ahead of a push."
+                )
+
+        app.repo_path = normalized
+        await self.session.flush()
+        await self.session.refresh(app)
+
+        logger.info(f"Repointed application {app_id} to repo_path={normalized!r}")
+        return app
+
     async def delete_application(self, app_id: UUID) -> bool:
         """Delete an application by ID (cascade deletes pages and components)."""
-        application = await self.get_by_id(app_id)
+        application = await self.get(id=app_id)
         if not application:
             return False
 
@@ -406,20 +379,34 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         Copies preview files to live in S3 via AppStorageService, then
         captures a published_snapshot for backwards compatibility.
         """
-        application = await self.get_by_id(app_id)
+        application = await self.get(id=app_id)
         if not application:
             return None
 
-        # Re-compile all files from _repo/ before publishing
+        # Bundle the app's current source into preview before promoting to
+        # live. This replaces the legacy per-file compiler: the bundler is
+        # the runtime, so `preview/` must contain a fresh bundle (manifest +
+        # hashed chunks) that matches the source being published. A failed
+        # bundle MUST fail the publish — we will not promote a stale or
+        # partial preview into live.
+        from src.services.app_bundler import build_with_migrate
         from src.services.app_storage import AppStorageService
         app_storage = AppStorageService()
-        synced, compile_errors = await app_storage.sync_preview_compiled(
-            str(app_id), application.repo_prefix
-        )
-        if compile_errors:
-            logger.warning(f"Compile warnings during publish: {compile_errors}")
 
-        # Now copy preview -> live
+        # build_with_migrate runs auto-migration first so a publish from a
+        # legacy source tree picks up the rewritten imports before bundling.
+        bundle_result, _migrated = await build_with_migrate(
+            str(app_id),
+            application.repo_prefix,
+            "preview",
+            dependencies=application.dependencies or {},
+        )
+        if not bundle_result.success:
+            first_err = (bundle_result.errors or [None])[0]
+            err_text = first_err.text if first_err else "unknown error"
+            raise ValueError(f"Bundle build failed during publish: {err_text}")
+
+        # Promote the freshly-built preview bundle to live.
         published_count = await app_storage.publish(str(app_id))
 
         if published_count == 0:
@@ -606,6 +593,7 @@ async def application_to_public(
         has_unpublished_changes=application.has_unpublished_changes,
         access_level=application.access_level,
         role_ids=role_ids,
+        repo_path=application.repo_path,
     )
 
 
@@ -993,6 +981,53 @@ async def publish_application(
 
 
 # =============================================================================
+# Replace Endpoint
+# =============================================================================
+
+
+@router.post(
+    "/{app_id}/replace",
+    response_model=ApplicationPublic,
+    summary="Repoint application source directory",
+)
+async def replace_application_endpoint(
+    app_id: UUID,
+    data: ApplicationReplaceRequest,
+    ctx: Context,
+    user: CurrentUser,
+) -> ApplicationPublic:
+    """Update ``repo_path`` after source files have been moved/renamed.
+
+    Validates that the new path is unique, non-nested with other apps, and has
+    source files under it. ``force: true`` bypasses all three checks.
+    """
+    repo = ApplicationRepository(
+        ctx.db,
+        ctx.org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+    )
+
+    try:
+        application = await repo.replace_application(
+            app_id, data.repo_path, force=data.force
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    if application is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Application '{app_id}' not found",
+        )
+
+    return await application_to_public(application, repo)
+
+
+# =============================================================================
 # Validate Endpoint
 # =============================================================================
 
@@ -1052,13 +1087,6 @@ async def validate_application(
     declared_deps = app.dependencies or {}
     referenced_deps: set[str] = set()
 
-    # Build list of component files from the file index for cross-referencing
-    component_files = {
-        p[len(prefix) + len("components/"):].replace(".tsx", "").replace(".ts", "")
-        for p in files
-        if p.startswith(f"{prefix}components/") and (p.endswith(".tsx") or p.endswith(".ts"))
-    }
-
     # Collect all compilable TSX/TS files
     compilable_files = []
     for full_path, content in files.items():
@@ -1104,29 +1132,6 @@ async def validate_application(
                         message="Layout uses {children} but should use <Outlet /> for page routing. Replace {children} with <Outlet />.",
                     ))
 
-            # Check for undefined bifrost imports
-            bifrost_imports = re.findall(
-                r'import\s+\{([^}]+)\}\s+from\s+["\']bifrost["\']',
-                content,
-            )
-            for match in bifrost_imports:
-                names = [n.strip().split(" as ")[0].strip() for n in match.split(",")]
-                for name in names:
-                    if name and name not in KNOWN_BIFROST_EXPORTS:
-                        # PascalCase names could be Lucide icons — warn, don't error
-                        if name[0].isupper():
-                            warnings.append(AppValidationIssue(
-                                severity="warning",
-                                file=rel_path,
-                                message=f"'{name}' is not a known bifrost export (could be a Lucide icon)",
-                            ))
-                        else:
-                            errors.append(AppValidationIssue(
-                                severity="error",
-                                file=rel_path,
-                                message=f"'{name}' is not available from 'bifrost'. Check spelling or see platform docs for available exports.",
-                            ))
-
             # Check for forbidden patterns
             forbidden = [
                 (r'\brequire\s*\(', "require() is not allowed"),
@@ -1151,18 +1156,6 @@ async def validate_application(
                 pkg = match.group(1)
                 if pkg != "bifrost":
                     referenced_deps.add(pkg)
-
-            # Check for unknown components (JSX tags starting with uppercase)
-            component_refs = set(re.findall(r'<([A-Z][a-zA-Z0-9]*)', content))
-            for comp_name in component_refs:
-                if comp_name not in KNOWN_APP_COMPONENTS and comp_name not in component_files:
-                    # Could be a lucide icon (hundreds of them) or user-defined component
-                    # Only warn, don't error
-                    warnings.append(AppValidationIssue(
-                        severity="warning",
-                        file=rel_path,
-                        message=f"Unknown component <{comp_name}> - verify it exists in the runtime",
-                    ))
 
             # Check workflow IDs
             # Match useWorkflowQuery("...") and useWorkflowMutation("...")

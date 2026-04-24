@@ -9,8 +9,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
 logger = logging.getLogger(__name__)
 
 
@@ -31,30 +29,21 @@ def extract_entity_metadata(
     Extract entity metadata from a file path and optional content.
 
     Uses extension-based detection (not directory-based):
-    - Form: *.form.yaml
-    - Agent: *.agent.yaml
     - App file: path starts with a known app repo_path prefix
     - Workflow: *.py (display-only metadata)
 
+    Form and agent content lives inline in ``.bifrost/forms.yaml`` /
+    ``.bifrost/agents.yaml`` and is not surfaced as a per-file entity.
+
     Args:
         path: File path relative to workspace root
-        content: Optional file content for YAML/JSON parsing
+        content: Optional file content (kept for signature compatibility)
         app_prefixes: Optional set of known app repo_path prefixes from DB
 
     Returns:
         EntityMetadata with type, display name, and parent slug
     """
     filename = Path(path).name
-
-    # Form: *.form.yaml (any directory)
-    if path.endswith(".form.yaml"):
-        display_name = _extract_yaml_name(content, filename)
-        return EntityMetadata(entity_type="form", display_name=display_name)
-
-    # Agent: *.agent.yaml (any directory)
-    if path.endswith(".agent.yaml"):
-        display_name = _extract_yaml_name(content, filename)
-        return EntityMetadata(entity_type="agent", display_name=display_name)
 
     # App file: path starts with a known app repo_path prefix
     if app_prefixes:
@@ -75,18 +64,3 @@ def extract_entity_metadata(
 
     # Unknown file type
     return EntityMetadata(entity_type=None, display_name=filename)
-
-
-def _extract_yaml_name(content: bytes | None, fallback: str) -> str:
-    """Extract 'name' field from YAML content, with fallback."""
-    if content is None:
-        return fallback
-
-    try:
-        data = yaml.safe_load(content.decode("utf-8"))
-        if isinstance(data, dict):
-            return data.get("name", fallback)
-        return fallback
-    except (yaml.YAMLError, UnicodeDecodeError):
-        logger.debug(f"Failed to parse YAML for name extraction, using fallback: {fallback}")
-        return fallback

@@ -3,12 +3,12 @@ File content search for browser-based code editor.
 Provides fast full-text search with regex support.
 Platform admin resource - no org scoping.
 
-Search queries the database directly:
-- All code files (workflows, modules): search file_index content
-- Forms/Agents: search serialized JSON representations from DB
+Search queries the database directly via the ``file_index`` table for code,
+modules, and any other text files persisted under ``_repo/``. Form and agent
+content is no longer stored as per-UUID YAML — it lives in the manifest and is
+not part of the editor search surface.
 """
 
-import json
 import re
 import time
 import logging
@@ -18,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import SearchRequest, SearchResponse, SearchResult
-from src.models.orm import Form, Agent
 from src.models.orm.file_index import FileIndex
 
 logger = logging.getLogger(__name__)
@@ -95,10 +94,8 @@ async def search_files_db(
     """
     Search files for content matching the query using database queries.
 
-    Searches:
-    - file_index for workflow Python code
-    - file_index.content for module Python code
-    - Serialized JSON for forms, apps, agents
+    Searches the file_index for workflow Python code, module Python code, and
+    any other indexed text content.
 
     Args:
         db: Database session
@@ -151,83 +148,6 @@ async def search_files_db(
             results = _search_content(
                 row.content,
                 row.path,
-                request.query,
-                request.case_sensitive,
-                request.is_regex,
-            )
-            all_results.extend(results)
-            if len(all_results) >= request.max_results:
-                break
-
-    # 2. Search forms (serialize to JSON and search)
-    # Forms use virtual paths: forms/{uuid}.form.yaml
-    if len(all_results) < request.max_results:
-        form_conditions = [Form.is_active == True]  # noqa: E712
-        form_stmt = (
-            select(Form)
-            .where(*form_conditions)
-            .limit(MAX_RESULTS_PER_TYPE)
-        )
-        form_result = await db.execute(form_stmt)
-        for form in form_result.scalars():
-            virtual_path = f"forms/{form.id}.form.yaml"
-            # Apply path filters
-            if root_path and not virtual_path.startswith(root_path):
-                continue
-            if like_pattern:
-                # Simple LIKE check for virtual paths
-                import fnmatch
-                glob_pattern = like_pattern.replace("%", "*")
-                if not fnmatch.fnmatch(virtual_path, glob_pattern):
-                    continue
-
-            files_searched += 1
-            form_json = json.dumps({
-                "name": form.name,
-                "description": form.description,
-                "workflow_id": str(form.workflow_id) if form.workflow_id else None,
-            }, indent=2)
-            results = _search_content(
-                form_json,
-                virtual_path,
-                request.query,
-                request.case_sensitive,
-                request.is_regex,
-            )
-            all_results.extend(results)
-            if len(all_results) >= request.max_results:
-                break
-
-    # 3. Search agents (serialize to JSON and search)
-    # Agents use virtual paths: agents/{uuid}.agent.yaml
-    if len(all_results) < request.max_results:
-        agent_conditions = [Agent.is_active == True]  # noqa: E712
-        agent_stmt = (
-            select(Agent)
-            .where(*agent_conditions)
-            .limit(MAX_RESULTS_PER_TYPE)
-        )
-        agent_result = await db.execute(agent_stmt)
-        for agent in agent_result.scalars():
-            virtual_path = f"agents/{agent.id}.agent.yaml"
-            # Apply path filters
-            if root_path and not virtual_path.startswith(root_path):
-                continue
-            if like_pattern:
-                import fnmatch
-                glob_pattern = like_pattern.replace("%", "*")
-                if not fnmatch.fnmatch(virtual_path, glob_pattern):
-                    continue
-
-            files_searched += 1
-            agent_json = json.dumps({
-                "name": agent.name,
-                "description": agent.description,
-                "system_prompt": agent.system_prompt,
-            }, indent=2)
-            results = _search_content(
-                agent_json,
-                virtual_path,
                 request.query,
                 request.case_sensitive,
                 request.is_regex,

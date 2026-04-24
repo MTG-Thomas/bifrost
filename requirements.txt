@@ -121,8 +121,14 @@ fastmcp>=3.2.0,<4  # FastMCP for MCP server (internal + external access)
 pgvector  # PostgreSQL vector extension for semantic search
 
 # =============================================================================
+# CLI / TUI
+# =============================================================================
+textual  # TUI framework used by bifrost CLI (file_select, progress, sync, watch)
+
+# =============================================================================
 # Development
 # =============================================================================
 debugpy  # Remote debugging (VS Code attach)
 ruff
 watchdog  # File watching for hot reload (watchmedo command)
+pathspec  # gitignore-style file matching (used by bifrost CLI watch handler tests)

@@ -1738,3 +1738,243 @@ class TestCollectChangedIds:
         incoming = self._make_manifest(organizations=[{"id": org_id, "name": "New"}])
         current = self._make_manifest()
         assert org_id in self._collect(incoming, current)
+
+
+# =============================================================================
+# Inline form/agent content (Task 9: manifest carries content under UUID)
+# =============================================================================
+
+
+class TestInlineFormContent:
+    """ManifestForm carries portable content (workflow_id, form_schema, ...) inline."""
+
+    def test_form_inline_round_trip(self):
+        """All inline content fields round-trip through serialize → parse → serialize."""
+        from bifrost.manifest import (
+            Manifest, ManifestForm, parse_manifest, serialize_manifest,
+        )
+
+        form_id = str(uuid4())
+        wf_id = str(uuid4())
+        launch_id = str(uuid4())
+        form = ManifestForm(
+            id=form_id,
+            name="Onboarding",
+            description="Onboard a new client",
+            workflow_id=wf_id,
+            launch_workflow_id=launch_id,
+            default_launch_params={"source": "marketing"},
+            allowed_query_params=["utm_source", "utm_medium"],
+            form_schema={
+                "fields": [
+                    {"name": "email", "type": "text", "required": True, "label": "Email"},
+                    {"name": "count", "type": "number", "required": False, "default_value": 5},
+                ],
+            },
+        )
+        manifest = Manifest(forms={form_id: form})
+        yaml_out = serialize_manifest(manifest)
+        parsed = parse_manifest(yaml_out)
+
+        round_tripped = parsed.forms[form_id]
+        assert round_tripped.description == "Onboard a new client"
+        assert round_tripped.workflow_id == wf_id
+        assert round_tripped.launch_workflow_id == launch_id
+        assert round_tripped.default_launch_params == {"source": "marketing"}
+        assert round_tripped.allowed_query_params == ["utm_source", "utm_medium"]
+        assert round_tripped.form_schema is not None
+        assert len(round_tripped.form_schema["fields"]) == 2
+        assert round_tripped.form_schema["fields"][0]["name"] == "email"
+
+        yaml_out2 = serialize_manifest(parsed)
+        assert yaml_out == yaml_out2
+
+    def test_form_path_optional(self):
+        """ManifestForm should accept missing path (inline-content layout)."""
+        from bifrost.manifest import ManifestForm
+
+        form_id = str(uuid4())
+        f = ManifestForm(id=form_id, name="No Path Form")
+        assert f.path is None
+
+
+class TestInlineAgentContent:
+    """ManifestAgent carries portable content (system_prompt, tools, ...) inline."""
+
+    def test_agent_inline_round_trip(self):
+        """All inline content fields round-trip through serialize → parse → serialize."""
+        from bifrost.manifest import (
+            Manifest, ManifestAgent, parse_manifest, serialize_manifest,
+        )
+
+        agent_id = str(uuid4())
+        tool_id = str(uuid4())
+        delegate_id = str(uuid4())
+        agent = ManifestAgent(
+            id=agent_id,
+            name="Triage",
+            description="Triage incoming tickets",
+            system_prompt="You are a triage agent. Classify tickets.",
+            channels=["chat", "email"],
+            tool_ids=[tool_id],
+            delegated_agent_ids=[delegate_id],
+            knowledge_sources=["faq", "runbooks"],
+            system_tools=["execute_workflow", "search_knowledge"],
+            llm_model="claude-sonnet-4",
+            llm_max_tokens=8000,
+            max_iterations=15,
+            max_token_budget=120000,
+        )
+        manifest = Manifest(agents={agent_id: agent})
+        yaml_out = serialize_manifest(manifest)
+        parsed = parse_manifest(yaml_out)
+
+        rt = parsed.agents[agent_id]
+        assert rt.description == "Triage incoming tickets"
+        assert rt.system_prompt == "You are a triage agent. Classify tickets."
+        assert rt.channels == ["chat", "email"]
+        assert rt.tool_ids == [tool_id]
+        assert rt.delegated_agent_ids == [delegate_id]
+        assert rt.knowledge_sources == ["faq", "runbooks"]
+        assert rt.system_tools == ["execute_workflow", "search_knowledge"]
+        assert rt.llm_model == "claude-sonnet-4"
+        assert rt.llm_max_tokens == 8000
+        assert rt.max_iterations == 15
+        assert rt.max_token_budget == 120000
+
+        yaml_out2 = serialize_manifest(parsed)
+        assert yaml_out == yaml_out2
+
+    def test_agent_path_optional(self):
+        """ManifestAgent should accept missing path (inline-content layout)."""
+        from bifrost.manifest import ManifestAgent
+
+        agent_id = str(uuid4())
+        a = ManifestAgent(id=agent_id, name="No Path Agent")
+        assert a.path is None
+
+
+class TestInlineContentDetection:
+    """Helpers _form_has_inline_content / _agent_has_inline_content."""
+
+    def test_form_with_inline_fields_detected(self):
+        from bifrost.manifest import ManifestForm
+        from src.services.manifest_import import _form_has_inline_content
+
+        f = ManifestForm(id=str(uuid4()), name="x", workflow_id=str(uuid4()))
+        assert _form_has_inline_content(f) is True
+
+    def test_form_with_only_path_not_detected(self):
+        from bifrost.manifest import ManifestForm
+        from src.services.manifest_import import _form_has_inline_content
+
+        f = ManifestForm(id=str(uuid4()), name="x", path="forms/x.form.yaml")
+        assert _form_has_inline_content(f) is False
+
+    def test_agent_with_system_prompt_detected(self):
+        from bifrost.manifest import ManifestAgent
+        from src.services.manifest_import import _agent_has_inline_content
+
+        a = ManifestAgent(id=str(uuid4()), name="x", system_prompt="hi")
+        assert _agent_has_inline_content(a) is True
+
+    def test_agent_with_only_path_not_detected(self):
+        from bifrost.manifest import ManifestAgent
+        from src.services.manifest_import import _agent_has_inline_content
+
+        a = ManifestAgent(id=str(uuid4()), name="x", path="agents/x.agent.yaml")
+        assert _agent_has_inline_content(a) is False
+
+
+class TestBackCompatSeparateFile:
+    """Back-compat: manifests written before the inline rollout still import,
+    falling back to companion .form.yaml / .agent.yaml files. A deprecation
+    warning is logged so users know to regenerate.
+    """
+
+    async def test_form_back_compat_reads_companion_file(self, caplog):
+        import logging
+        from bifrost.manifest import ManifestForm
+        from src.services.manifest_import import _resolve_form_content
+
+        form_id = str(uuid4())
+        mform = ManifestForm(
+            id=form_id,
+            name="Legacy Form",
+            path=f"forms/{form_id}.form.yaml",
+        )
+        legacy_yaml = f"name: Legacy Form\nworkflow_id: {uuid4()}\n".encode("utf-8")
+
+        async def read_fn(path: str) -> bytes | None:
+            assert path == f"forms/{form_id}.form.yaml"
+            return legacy_yaml
+
+        with caplog.at_level(logging.WARNING, logger="src.services.manifest_import"):
+            content = await _resolve_form_content(mform, read_fn)
+
+        assert content == legacy_yaml
+        assert any(
+            "deprecated" in r.message.lower() and "regenerate" in r.message.lower()
+            for r in caplog.records
+        ), f"Expected deprecation warning, got: {[r.message for r in caplog.records]}"
+
+    async def test_agent_back_compat_reads_companion_file(self, caplog):
+        import logging
+        from bifrost.manifest import ManifestAgent
+        from src.services.manifest_import import _resolve_agent_content
+
+        agent_id = str(uuid4())
+        magent = ManifestAgent(
+            id=agent_id,
+            name="Legacy Agent",
+            path=f"agents/{agent_id}.agent.yaml",
+        )
+        legacy_yaml = b"name: Legacy Agent\nsystem_prompt: hello\n"
+
+        async def read_fn(path: str) -> bytes | None:
+            assert path == f"agents/{agent_id}.agent.yaml"
+            return legacy_yaml
+
+        with caplog.at_level(logging.WARNING, logger="src.services.manifest_import"):
+            content = await _resolve_agent_content(magent, read_fn)
+
+        assert content == legacy_yaml
+        assert any(
+            "deprecated" in r.message.lower() and "regenerate" in r.message.lower()
+            for r in caplog.records
+        )
+
+    async def test_form_inline_skips_file_read(self):
+        """Inline content takes precedence; the file read fn must not be called."""
+        from bifrost.manifest import ManifestForm
+        from src.services.manifest_import import _resolve_form_content
+
+        form_id = str(uuid4())
+        mform = ManifestForm(
+            id=form_id,
+            name="Inline Form",
+            path=f"forms/{form_id}.form.yaml",
+            workflow_id=str(uuid4()),
+        )
+
+        called = False
+        async def read_fn(path: str) -> bytes | None:
+            nonlocal called
+            called = True
+            return None
+
+        content = await _resolve_form_content(mform, read_fn)
+        assert content is not None
+        assert called is False
+
+    async def test_returns_none_when_no_source(self):
+        """No inline content and no path → returns None (and never logs warning)."""
+        from bifrost.manifest import ManifestForm
+        from src.services.manifest_import import _resolve_form_content
+
+        mform = ManifestForm(id=str(uuid4()), name="Empty")
+
+        async def read_fn(path: str) -> bytes | None:
+            return None
+
+        assert await _resolve_form_content(mform, read_fn) is None

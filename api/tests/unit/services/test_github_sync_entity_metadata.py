@@ -7,28 +7,6 @@ from src.services.github_sync_entity_metadata import (
 class TestExtractEntityMetadata:
     """Tests for extract_entity_metadata function."""
 
-    def test_form_extracts_name(self):
-        """Form YAML extracts name as display_name."""
-        path = "forms/abc123.form.yaml"
-        content = b'name: Customer Intake\nid: abc123\n'
-
-        result = extract_entity_metadata(path, content)
-
-        assert result.entity_type == "form"
-        assert result.display_name == "Customer Intake"
-        assert result.parent_slug is None
-
-    def test_agent_extracts_name(self):
-        """Agent YAML extracts name as display_name."""
-        path = "agents/xyz789.agent.yaml"
-        content = b'name: Support Bot\nid: xyz789\n'
-
-        result = extract_entity_metadata(path, content)
-
-        assert result.entity_type == "agent"
-        assert result.display_name == "Support Bot"
-        assert result.parent_slug is None
-
     def test_app_file_extracts_parent_slug(self):
         """App code file extracts parent slug when app_prefixes provided."""
         path = "apps/dashboard/pages/index.tsx"
@@ -82,12 +60,12 @@ class TestExtractEntityMetadata:
         assert result.display_name == "file.txt"
         assert result.parent_slug is None
 
-    def test_invalid_yaml_uses_filename(self):
-        """Invalid YAML falls back to filename."""
+    def test_form_yaml_no_longer_special_cased(self):
+        """Per-UUID .form.yaml files are no longer recognized — treated as unknown."""
         path = "forms/broken.form.yaml"
         content = b': invalid: yaml: content'
 
         result = extract_entity_metadata(path, content)
 
-        assert result.entity_type == "form"
+        assert result.entity_type is None
         assert result.display_name == "broken.form.yaml"

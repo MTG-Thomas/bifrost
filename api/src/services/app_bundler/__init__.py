@@ -1,0 +1,683 @@
+"""
+App bundler service — esbuild-based.
+
+Produces a static module bundle for an app, stored in S3 under
+_apps/{app_id}/{mode}/ with a manifest.json describing the entry point.
+
+Unlike app_compiler (per-file Babel), this pipeline:
+  1. Materializes the app's _repo source tree to a tempdir
+  2. Synthesizes an `_entry.tsx` that imports _layout + all pages
+  3. Runs esbuild with bundle+splitting to produce hashed chunks
+  4. Uploads artifacts to _apps/{app_id}/{mode}/
+  5. Writes manifest.json describing the bundle
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+from bifrost.platform_names import PLATFORM_EXPORT_NAMES
+from src.core.malloc import trim_malloc
+from src.services.app_storage import AppStorageService
+from src.services.repo_storage import RepoStorage
+
+logger = logging.getLogger(__name__)
+
+BUNDLE_SCRIPT = Path(__file__).parent / "bundle.js"
+
+# Bump this whenever the bundler or auto-migrator's output semantics change.
+# Manifest.json records this; readers compare against it and trigger a
+# rebuild (which runs auto-migration first) when they see an older value.
+# This is how a deploy transparently heals every app's bundle — the first
+# viewer after deploy pays a ~200ms migrate+rebuild cost, subsequent views
+# are cached.
+SCHEMA_VERSION = 2
+
+# Externals resolved via import map in the browser rather than bundled.
+# react / react-dom / react-router-dom come from esm.sh in the host page.
+DEFAULT_EXTERNALS = [
+    "react",
+    "react-dom",
+    "react-dom/client",
+    "react-router-dom",
+    "lucide-react",
+    "sonner",
+    "date-fns",
+    "clsx",
+    "tailwind-merge",
+]
+
+Mode = Literal["preview", "live"]
+
+
+# Canonical set of names the `bifrost` package exposes to user code.
+# Single source of truth lives in `bifrost/platform_names.py` so the CLI
+# (which can't import from src.*) and the bundler share one list. The drift
+# test in `tests/unit/test_platform_names_match_runtime.py` guards against
+# the client's runtime `$` registry growing names this list doesn't cover.
+#
+# Lucide icons (~1000 of them) are NOT enumerated here; names imported from
+# "bifrost" that aren't in this set (and aren't user components) are resolved
+# by the bundler as lucide-react re-exports. See `_write_bifrost_package`.
+_PLATFORM_EXPORT_NAMES: frozenset[str] = PLATFORM_EXPORT_NAMES
+
+
+@dataclass
+class BundleMessage:
+    """One esbuild error or warning. File is app-relative (e.g. 'pages/x.tsx')."""
+    text: str
+    file: str | None = None
+    line: int | None = None
+    column: int | None = None
+    line_text: str | None = None
+
+
+@dataclass
+class BundleManifest:
+    entry: str                     # e.g. "entry-ABC123.js"
+    css: str | None                # e.g. "entry-ABC123.css" or None
+    outputs: list[str]             # all output filenames (for cleanup reference)
+    duration_ms: int
+    warnings: list[BundleMessage]
+    dependencies: dict[str, str]   # npm deps to expose via import map
+
+
+@dataclass
+class BundleResult:
+    """Outcome of a build() call — either success (with manifest) or failure.
+
+    On failure, the S3 manifest.json is NOT overwritten, so the last good
+    bundle stays live. Callers surface `errors` through the diagnostics
+    channel and pubsub so the UI can show a banner over the last-good render.
+    """
+    success: bool
+    manifest: BundleManifest | None = None
+    errors: list[BundleMessage] | None = None
+    warnings: list[BundleMessage] | None = None
+    duration_ms: int = 0
+
+
+class BundlerService:
+    def __init__(self) -> None:
+        self._app_storage = AppStorageService()
+        self._repo = RepoStorage()
+
+    async def build(
+        self,
+        app_id: str,
+        repo_prefix: str,
+        mode: Mode,
+        dependencies: dict[str, str] | None = None,
+    ) -> BundleResult:
+        """Build an app bundle.
+
+        Args:
+            app_id: Application UUID (string)
+            repo_prefix: Repo path prefix of the app source
+                (e.g. "apps/braytel-crm/"). Must end with "/".
+            mode: "preview" or "live"
+            dependencies: npm deps from Application.dependencies — treated
+                as externals; resolved in the browser via import map
+                pointing at esm.sh.
+
+        Returns:
+            BundleResult with success=True + manifest on success, or
+            success=False + errors on esbuild failure. On failure the S3
+            manifest.json is NOT overwritten — last good bundle stays live.
+        """
+        try:
+            return await self._build(app_id, repo_prefix, mode, dependencies)
+        finally:
+            # Every build materializes a source tree + holds esbuild output
+            # bytes in Python before uploading to S3. Glibc retains the
+            # freed pages per-arena; trim them back so long-lived API pods
+            # don't drift toward OOM.
+            trim_malloc()
+
+    async def _build(
+        self,
+        app_id: str,
+        repo_prefix: str,
+        mode: Mode,
+        dependencies: dict[str, str] | None,
+    ) -> BundleResult:
+        if not repo_prefix.endswith("/"):
+            repo_prefix += "/"
+        dependencies = dependencies or {}
+
+        with tempfile.TemporaryDirectory(prefix="bifrost-bundle-") as tmp:
+            tmp_path = Path(tmp)
+            src_dir = tmp_path / "src"
+            out_dir = tmp_path / "dist"
+            src_dir.mkdir()
+
+            # 1. Materialize app source from _repo to tempdir
+            sources = await self._materialize_source(src_dir, repo_prefix)
+            if not sources:
+                return BundleResult(
+                    success=False,
+                    errors=[BundleMessage(
+                        text=f"No source files for app {app_id} at {repo_prefix}",
+                    )],
+                )
+
+            # 2. Synthesize _entry.tsx that imports layout + pages
+            entry_file = "_entry.tsx"
+            self._write_entry(src_dir, entry_file, sources)
+
+            # 3. Synthesize node_modules/bifrost/index.js — resolves
+            # `import { X } from "bifrost"` to:
+            #   - platform exports (read from globalThis.__bifrost_platform)
+            #   - user-defined components from ./components/*
+            #
+            # This lets existing user code keep working. Real React apps
+            # use relative imports for user components; we preserve the
+            # Bifrost-native convention for now.
+            self._write_bifrost_package(src_dir, sources)
+
+            # 4. Run esbuild. React / React Router remain externals
+            # (resolved by the host's import map); `bifrost` is bundled
+            # internally because it re-exports user components.
+            user_deps = list(dependencies.keys())
+            build_cfg = {
+                "source_dir": str(src_dir),
+                "out_dir": str(out_dir),
+                "entry": entry_file,
+                "mode": mode,
+                "externals": DEFAULT_EXTERNALS + user_deps,
+            }
+            result = await self._run_esbuild(build_cfg)
+
+            duration_ms = int(result.get("duration_ms", 0))
+            warnings = [_msg_from_dict(w) for w in result.get("warnings", [])]
+
+            if not result.get("success"):
+                errors = [_msg_from_dict(e) for e in result.get("errors", [])]
+                if not errors:
+                    # Defensive: if Node failed before esbuild ran, there
+                    # may be no structured errors — surface something useful.
+                    errors = [BundleMessage(text="esbuild failed with no error output")]
+                logger.warning(
+                    f"Bundler: build failed app={app_id} mode={mode} "
+                    f"errors={len(errors)} first={errors[0].text!r}"
+                )
+                return BundleResult(
+                    success=False,
+                    errors=errors,
+                    warnings=warnings,
+                    duration_ms=duration_ms,
+                )
+
+            # 5. Upload artifacts to S3
+            uploaded: list[str] = []
+            for out in result["outputs"]:
+                rel = out["path"]
+                data = (out_dir / rel).read_bytes()
+                await self._app_storage.write_preview_file(app_id, rel, data) \
+                    if mode == "preview" \
+                    else await self._write_live(app_id, rel, data)
+                uploaded.append(rel)
+
+            # 6. Write manifest — only on success, so failures preserve
+            #    the last good bundle in S3.
+            manifest = {
+                "schema_version": SCHEMA_VERSION,
+                "entry": result["entry_file"],
+                "css": result["css_file"],
+                "outputs": uploaded,
+                "duration_ms": duration_ms,
+                "dependencies": dependencies,
+            }
+            manifest_bytes = json.dumps(manifest, indent=2).encode()
+            if mode == "preview":
+                await self._app_storage.write_preview_file(
+                    app_id, "manifest.json", manifest_bytes
+                )
+            else:
+                await self._write_live(app_id, "manifest.json", manifest_bytes)
+
+            logger.info(
+                f"Bundler: built app={app_id} mode={mode} "
+                f"outputs={len(uploaded)} time={duration_ms}ms"
+            )
+
+            return BundleResult(
+                success=True,
+                manifest=BundleManifest(
+                    entry=result["entry_file"],
+                    css=result["css_file"],
+                    outputs=uploaded,
+                    duration_ms=duration_ms,
+                    warnings=warnings,
+                    dependencies=dependencies,
+                ),
+                warnings=warnings,
+                duration_ms=duration_ms,
+            )
+
+    async def _materialize_source(
+        self, src_dir: Path, repo_prefix: str
+    ) -> list[str]:
+        """Copy all files under _repo/{repo_prefix} into src_dir.
+
+        Returns list of relative paths (e.g. ["_layout.tsx", "pages/index.tsx"]).
+        """
+        rel_paths: list[str] = []
+        keys = await self._repo.list(repo_prefix)
+        for key in keys:
+            rel = key[len(repo_prefix):]
+            if not rel or rel.endswith("/"):
+                continue
+            # Skip app.yaml, editor turds
+            if rel == "app.yaml" or ".tmp." in rel:
+                continue
+            data = await self._repo.read(key)
+            dest = src_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            rel_paths.append(rel)
+        return rel_paths
+
+    def _write_entry(self, src_dir: Path, entry_file: str, sources: list[str]) -> None:
+        """Synthesize an entry file that imports layout + pages + routes them.
+
+        For the PoC: just import _layout and each page statically, export a
+        mount() function. Real router wiring comes later.
+        """
+        has_layout = "_layout.tsx" in sources
+        pages = sorted(p for p in sources if p.startswith("pages/") and p.endswith((".tsx", ".ts")))
+        css_files = sorted(p for p in sources if p.endswith(".css"))
+
+        lines: list[str] = [
+            "// AUTO-GENERATED by bifrost bundler. Do not edit.",
+            "import React from 'react';",
+            "import { Routes, Route } from 'react-router-dom';",
+        ]
+        for css in css_files:
+            lines.append(f"import './{css}';")
+
+        if has_layout:
+            lines.append("import Layout from './_layout';")
+
+        # Import each page as a named module
+        page_imports: list[tuple[str, str]] = []  # (routePath, moduleVar)
+        for i, p in enumerate(pages):
+            var = f"Page{i}"
+            # Convert pages/clients/index.tsx → /clients
+            #         pages/index.tsx         → /
+            #         pages/clients/[id].tsx  → /clients/:id
+            route = p[len("pages/"):]
+            route = route.rsplit(".", 1)[0]  # strip ext
+            route = route.removesuffix("/index")
+            if route in ("index", ""):
+                route = "/"
+            else:
+                route = "/" + route
+                route = route.replace("[", ":").replace("]", "")
+            mod_path = "./" + p.rsplit(".", 1)[0]
+            lines.append(f"import {var} from '{mod_path}';")
+            page_imports.append((route, var))
+
+        # Export a React component rather than a root-mounting function.
+        # BundledAppShell renders this inline so the host's React context
+        # providers (AuthContext, QueryClientProvider, theme, etc.) are
+        # reachable from the bundled app's tree.
+        #
+        # NO <BrowserRouter> here — the host already mounts one at the app
+        # root, and React Router disallows nested routers. The host registers
+        # a `/apps/:slug/preview/*` splat route whose element is
+        # <BundledAppShell />, so our <Routes> matches relative to that splat.
+        # The `basename` prop is unused but kept in the signature for future
+        # router-aware app shells; pages navigate via useNavigate() on the
+        # host router, so app paths must include the /apps/<slug>/preview
+        # prefix (handled by the platform's navigation wrappers).
+        lines.append("")
+        lines.append("export default function BundledApp() {")
+        if has_layout:
+            lines.append("  return React.createElement(Routes, null,")
+            lines.append("    React.createElement(Route, { element: React.createElement(Layout) },")
+            for route, var in page_imports:
+                lines.append(
+                    f"      React.createElement(Route, {{ path: '{route}', element: React.createElement({var}) }}),"
+                )
+            lines.append("    ),")
+            lines.append("  );")
+        else:
+            lines.append("  return React.createElement(Routes, null,")
+            for route, var in page_imports:
+                lines.append(
+                    f"    React.createElement(Route, {{ path: '{route}', element: React.createElement({var}) }}),"
+                )
+            lines.append("  );")
+        lines.append("}")
+
+        (src_dir / entry_file).write_text("\n".join(lines), encoding="utf-8")
+
+    def _write_bifrost_package(
+        self,
+        src_dir: Path,
+        sources: list[str],
+    ) -> None:
+        """Write node_modules/bifrost/index.js so esbuild can bundle `bifrost`.
+
+        Re-exports, in order of priority:
+        1. User components from ./components/**/*.tsx (real ES re-exports,
+           esbuild bundles the actual source) — only names user code
+           imports from "bifrost"
+        2. Lucide icons that user code imports from "bifrost" (re-exported
+           from the real lucide-react package — external at runtime)
+        3. React Router primitives (always re-exported, cheap)
+        4. Platform names in _PLATFORM_EXPORT_NAMES that user code actually
+           imports from "bifrost" — proxied over globalThis.__bifrost_platform
+           (populated by BundledAppShell before mount())
+
+        The platform proxy table is filtered by `imported_names` rather than
+        emitted in full: post-Phase-3 migrated apps import a handful of
+        platform names, not the full 50+-name table.
+        """
+        pkg_dir = src_dir / "node_modules" / "bifrost"
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "package.json").write_text(json.dumps({
+            "name": "bifrost",
+            "type": "module",
+            "main": "index.js",
+        }))
+
+        # --- 1. Discover user components ---------------------------------
+        # Filename-to-export mapping. components/SearchInput.tsx → SearchInput
+        user_components: list[tuple[str, str]] = []
+        user_names: set[str] = set()
+        for p in sources:
+            if not p.startswith("components/"):
+                continue
+            if not p.endswith((".tsx", ".ts")):
+                continue
+            name = p[len("components/"):].rsplit(".", 1)[0].rsplit("/", 1)[-1]
+            if not name or not name[0].isalpha():
+                continue
+            user_components.append((p, name))
+            user_names.add(name)
+
+        # --- 2. Scan user source for names imported from "bifrost" -------
+        imported_names: set[str] = set()
+        import re as _re
+        bifrost_import_re = _re.compile(
+            r'import\s+\{([^}]+)\}\s+from\s+["\']bifrost["\']',
+        )
+        for p in sources:
+            if not p.endswith((".tsx", ".ts")):
+                continue
+            try:
+                content = (src_dir / p).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for match in bifrost_import_re.findall(content):
+                for raw in match.split(","):
+                    clean = raw.strip().split(" as ")[0].strip()
+                    if clean and clean[0].isalpha():
+                        imported_names.add(clean)
+
+        # Lucide icons = names user code imports from "bifrost" that aren't
+        # user components and aren't platform names.
+        lucide_names = {
+            n for n in imported_names
+            if n not in user_names and n not in _PLATFORM_EXPORT_NAMES
+        }
+
+        # --- 3. Generate index.js -----------------------------------------
+        lines: list[str] = [
+            "// AUTO-GENERATED by bifrost bundler. Do not edit.",
+            "// Re-exports platform scope + user components + used Lucide icons.",
+            "",
+        ]
+
+        # Deprecation notice: emit ONE console.warn at module-eval time
+        # listing everything imported from `bifrost` that should come from
+        # a direct path instead. This is purely informational — the
+        # re-exports below keep existing code working.
+        deprecated_user = sorted(
+            n for _, n in user_components if n in imported_names
+        )
+        deprecated_icons = sorted(lucide_names)
+        # React Router navigation primitives: with the bundled runtime the
+        # host sets `basename` on BrowserRouter, so raw React Router
+        # Link/NavLink/Navigate/useNavigate/navigate handle the /apps/<slug>
+        # prefix automatically. Users should import them from 'react-router-dom'.
+        #
+        # Must stay in sync with `client/src/lib/bifrost-runtime.ts`'s
+        # react-router-dom re-exports. Only runtime values (components / hooks /
+        # factory fns) — TypeScript types are not runtime names.
+        router_primitives = {
+            # Components
+            "Link", "NavLink", "Navigate", "Outlet", "Routes", "Route",
+            "BrowserRouter", "HashRouter", "MemoryRouter", "Router",
+            "RouterProvider", "ScrollRestoration", "Form", "Await",
+            # Hooks
+            "useNavigate", "navigate", "useLocation", "useParams",
+            "useSearchParams", "useOutletContext", "useOutlet", "useMatch",
+            "useResolvedPath", "useRoutes", "useHref",
+            "useLinkClickHandler", "useInRouterContext",
+            "useNavigationType", "useNavigation", "useRevalidator",
+            "useRouteError", "useRouteLoaderData", "useLoaderData",
+            "useActionData", "useAsyncError", "useAsyncValue",
+            "useSubmit", "useFetcher", "useFetchers", "useBlocker",
+            "useBeforeUnload",
+            # Factories / helpers
+            "createBrowserRouter", "createHashRouter", "createMemoryRouter",
+            "createRoutesFromChildren", "createRoutesFromElements",
+            "createSearchParams", "generatePath", "matchPath", "matchRoutes",
+            "renderMatches", "resolvePath",
+            # Unstable / advanced
+            "unstable_usePrompt",
+        }
+        deprecated_router = sorted(router_primitives & imported_names)
+
+        if deprecated_user or deprecated_icons or deprecated_router:
+            msg_parts: list[str] = []
+            if deprecated_user:
+                msg_parts.append(
+                    "User components imported from 'bifrost' (prefer relative "
+                    "imports like ./components/Foo): "
+                    + ", ".join(deprecated_user)
+                )
+            if deprecated_icons:
+                msg_parts.append(
+                    "Icons imported from 'bifrost' (prefer 'lucide-react'): "
+                    + ", ".join(deprecated_icons)
+                )
+            if deprecated_router:
+                msg_parts.append(
+                    "React Router primitives imported from 'bifrost' "
+                    "(prefer 'react-router-dom' — basename handles app paths): "
+                    + ", ".join(deprecated_router)
+                )
+            msg = (
+                "[Bifrost] Deprecated imports detected. "
+                "These will be removed in a future version.\\n  - "
+                + "\\n  - ".join(msg_parts)
+            )
+            lines.append(f"console.warn({json.dumps(msg)});")
+            lines.append("")
+
+        # User components — only re-export names that user code actually
+        # imports from "bifrost" (most apps import relatively after Phase 3
+        # migration). Detect whether each file uses default vs named export
+        # so we emit the correct re-export form.
+        for path, name in user_components:
+            if name not in imported_names:
+                continue
+            try:
+                src_text = (src_dir / path).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                src_text = ""
+            mod_path = "../../" + path.rsplit(".", 1)[0]
+            if _has_default_export(src_text):
+                lines.append(
+                    f"export {{ default as {name} }} from {json.dumps(mod_path)};"
+                )
+            else:
+                # Named-only export (e.g. `export function Foo`).
+                lines.append(
+                    f"export {{ {name} }} from {json.dumps(mod_path)};"
+                )
+
+        # Lucide icons (external — host import map points lucide-react
+        # at the app's own copy)
+        if lucide_names:
+            lines.append("")
+            joined = ", ".join(sorted(lucide_names))
+            lines.append(f'export {{ {joined} }} from "lucide-react";')
+
+        # React Router navigation primitives.
+        #
+        # Link / NavLink / Navigate / useNavigate / navigate route through the
+        # platform wrappers in `app-code-platform/navigation.tsx` — they prepend
+        # the app base path (`/apps/<slug>/preview` or `/apps/<slug>`) so bare
+        # `<Link to="/other">` inside a bundled app resolves correctly under the
+        # host's shared BrowserRouter. They live on `globalThis.__bifrost_platform`
+        # just like the rest of the platform scope, populated by BundledAppShell
+        # before the bundle imports.
+        #
+        # Everything else (Routes, Route, Outlet, useLocation, etc.) re-exports
+        # directly from "react-router-dom" (resolved via import map to the host's
+        # copy).
+        #
+        # Only emit re-exports for names user code actually imported.
+        wrapped_router_names = {"Link", "NavLink", "Navigate", "useNavigate", "navigate"}
+        router_re_exported = router_primitives & imported_names
+        raw_router_names = router_re_exported - wrapped_router_names
+        wrapped_router_re_exported = router_re_exported & wrapped_router_names
+        if raw_router_names:
+            joined_router = ", ".join(sorted(raw_router_names))
+            lines.append("")
+            lines.append(
+                f'export {{ {joined_router} }} from "react-router-dom";'
+            )
+
+        # Platform scope passthrough. Read from globalThis at module-eval
+        # time — the host page (BundledAppShell.ensureImportMap) populates
+        # __bifrost_platform BEFORE dynamically importing this bundle, so
+        # the values are live by the time this module evaluates.
+        #
+        # Grabbing real references (not proxies) means React components —
+        # which may be forwardRef / memo / lazy / plain function — are
+        # passed through unchanged. Proxies break forwardRef etc.
+        #
+        # Only emit proxies for platform names user code actually imports
+        # from "bifrost". Post-Phase-3 most apps import a small subset;
+        # emitting the full table bloats every bundle. If `imported_names`
+        # is empty (no bifrost imports at all) this loop emits nothing.
+        lines.append("")
+        lines.append(
+            "const _p = globalThis.__bifrost_platform || {};"
+        )
+        # Exclude router primitives re-exported directly from "react-router-dom"
+        # above to avoid duplicate export errors. Wrapped router primitives
+        # (Link/NavLink/Navigate/useNavigate/navigate) DO go through the
+        # platform scope — add them here so they route through globalThis.
+        platform_names = (
+            ((_PLATFORM_EXPORT_NAMES & imported_names) | wrapped_router_re_exported)
+            - user_names
+            - lucide_names
+            - raw_router_names
+        )
+        for n in sorted(platform_names):
+            lines.append(f"export const {n} = _p[{n!r}];")
+
+        (pkg_dir / "index.js").write_text("\n".join(lines))
+
+    async def _write_live(self, app_id: str, rel: str, data: bytes) -> None:
+        """Write to _apps/{app_id}/live/ (not offered by AppStorageService yet)."""
+        key = self._app_storage._key(app_id, "live", rel)
+        async with self._app_storage._get_client() as c:
+            await c.put_object(
+                Bucket=self._app_storage._bucket,
+                Key=key,
+                Body=data,
+            )
+
+    async def _run_esbuild(self, cfg: dict) -> dict:
+        """Invoke the bundle.js Node subprocess.
+
+        Returns the parsed JSON output. Shape:
+          {"success": True, "outputs": [...], "entry_file": ..., "css_file": ...,
+           "duration_ms": N, "warnings": [...]}
+          or
+          {"success": False, "errors": [...], "warnings": [...], "duration_ms": N}
+        """
+        input_data = json.dumps(cfg).encode()
+        proc = await asyncio.create_subprocess_exec(
+            "node", str(BUNDLE_SCRIPT),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate(input=input_data)
+        if proc.returncode != 0:
+            err_text = stderr.decode(errors="replace").strip() or "non-zero exit from node"
+            return {"success": False, "errors": [{"text": err_text}]}
+        try:
+            return json.loads(stdout.decode())
+        except json.JSONDecodeError as e:
+            return {"success": False, "errors": [{"text": f"invalid JSON from bundler: {e}"}]}
+
+
+async def build_with_migrate(
+    app_id: str,
+    repo_prefix: str,
+    mode: Mode,
+    dependencies: dict[str, str] | None = None,
+) -> tuple[BundleResult, bool]:
+    """Run auto-migration, then bundle.
+
+    Used by every callsite that triggers a bundle build — save path, preview
+    first-view / stale-version path, and publish. Migration is idempotent
+    (no-op on already-migrated sources) so the extra cost is a materialize +
+    regex-scan of the app's TSX/TS files, typically under 50ms.
+
+    Keeping the migrate-then-build pairing in one place means a new
+    bundler/migrator entry point can't accidentally skip migration. Returns
+    `(result, migrated)` — `migrated` is True iff at least one source file
+    was rewritten in this call, used by the preview endpoint to surface a
+    dismissible banner so the developer knows to `bifrost pull`.
+    """
+    # Local import avoids a circular: auto_migrate imports from bifrost.*,
+    # which is cheap, but sub-modules of app_bundler can import this one.
+    from src.services.app_bundler.auto_migrate import auto_migrate_repo_prefix
+
+    migrated, _results = await auto_migrate_repo_prefix(app_id, repo_prefix)
+    result = await BundlerService().build(app_id, repo_prefix, mode, dependencies)
+    return result, migrated
+
+
+def _msg_from_dict(d: dict) -> BundleMessage:
+    return BundleMessage(
+        text=d.get("text", ""),
+        file=d.get("file"),
+        line=d.get("line"),
+        column=d.get("column"),
+        line_text=d.get("line_text"),
+    )
+
+
+import re as _re  # noqa: E402  -- scoped helper for _has_default_export below
+
+_DEFAULT_EXPORT_RE = _re.compile(
+    r"^\s*export\s+default\b|^\s*export\s*\{\s*default\b",
+    _re.MULTILINE,
+)
+
+
+def _has_default_export(src: str) -> bool:
+    """Return True if the source looks like it has a default export.
+
+    Used by the bundler to pick between `export { default as Foo }` and
+    `export { Foo }` when re-exporting a user component through the
+    synthesized `bifrost` package.
+    """
+    return bool(_DEFAULT_EXPORT_RE.search(src))

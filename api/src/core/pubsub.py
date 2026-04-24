@@ -298,10 +298,33 @@ async def publish_agent_run_update(
         "org_id": str(run.org_id) if run.org_id else None,
         "started_at": run.started_at.isoformat() if isinstance(run.started_at, datetime) else run.started_at,
         "completed_at": run.completed_at.isoformat() if isinstance(run.completed_at, datetime) else run.completed_at,
+        "summary_status": getattr(run, "summary_status", None),
+        "summary_error": getattr(run, "summary_error", None),
+        "asked": getattr(run, "asked", None),
+        "did": getattr(run, "did", None),
+        "confidence": float(run.confidence) if run.confidence is not None else None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     await manager.broadcast(f"agent-run:{run.id}", message)
     await manager.broadcast("agent-runs", message)
+
+
+async def publish_summary_backfill_update(
+    job_id: str | UUID,
+    payload: dict[str, Any],
+) -> None:
+    """Broadcast a summary backfill job progress update.
+
+    Broadcasts to ``summary-backfill:{job_id}``. Platform admins only
+    (enforced in the websocket router's channel whitelist).
+    """
+    message = {
+        "type": "summary_backfill_update",
+        "job_id": str(job_id),
+        **payload,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    await manager.broadcast(f"summary-backfill:{job_id}", message)
 
 
 async def publish_agent_run_step(
@@ -471,6 +494,8 @@ async def publish_app_code_file_update(
     source: str | None = None,
     compiled: str | None = None,
     action: str = "update",  # 'create', 'update', 'delete'
+    bundle: dict | None = None,
+    error: dict | None = None,
 ) -> None:
     """
     Broadcast code file changes with full content to app:draft:{app_id} channel.
@@ -486,6 +511,12 @@ async def publish_app_code_file_update(
         source: Source code content (None for delete)
         compiled: Compiled JS content (None for delete or if not compiled)
         action: Type of change ('create', 'update', 'delete')
+        bundle: Bundle manifest info after a successful rebuild.
+            Shape: {"entry": str, "css": str | None, "duration_ms": int}.
+            Clients use this as a signal to reload the bundle entry.
+        error: Bundle build failure info.
+            Shape: {"messages": [{"text", "file", "line", "column"}]}.
+            Clients show this as a banner over the last-good bundle.
     """
 
     channel = f"app:draft:{app_id}"
@@ -496,6 +527,8 @@ async def publish_app_code_file_update(
         "path": path,
         "source": source,
         "compiled": compiled,
+        "bundle": bundle,
+        "error": error,
         "userId": user_id,
         "userName": user_name,
         "timestamp": datetime.now(timezone.utc).isoformat(),

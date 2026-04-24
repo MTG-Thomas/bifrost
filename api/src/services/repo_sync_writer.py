@@ -1,23 +1,20 @@
 """
-Repo Sync Writer — dual-write forms/agents/apps to S3 _repo/.
+Repo Sync Writer — regenerate the manifest in S3 _repo/.
 
 When platform entities are created/updated/deleted, this writer
-ensures the S3 working tree stays in sync with the DB.
+regenerates the split-file manifest under ``.bifrost/`` so the S3
+working tree stays in sync with the DB.
 
-Required when S3 is configured (errors propagate). Skips silently
-when S3 is not configured (local dev without MinIO).
+Skips silently when S3 is not configured (local dev without MinIO).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
-from src.services.file_storage.indexers.form import _serialize_form_to_yaml
-from src.services.file_storage.indexers.agent import _serialize_agent_to_yaml
 from src.services.file_index_service import FileIndexService
 from bifrost.manifest import MANIFEST_FILES, MANIFEST_LEGACY_FILE, serialize_manifest_dir
 from src.services.manifest_generator import generate_manifest
@@ -27,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class RepoSyncWriter:
-    """Writes entity YAML files to S3 _repo/ alongside DB operations.
+    """Writes the regenerated manifest to S3 _repo/.bifrost/.
 
     Skips writes silently when S3 is not configured (e.g., dev without MinIO).
     """
@@ -40,54 +37,6 @@ class RepoSyncWriter:
     @property
     def _s3_available(self) -> bool:
         return self._settings.s3_configured
-
-    async def write_form(self, form: Any) -> None:
-        """Serialize a Form ORM object to YAML and write to _repo/."""
-        if not self._s3_available:
-            return
-        yaml_bytes = _serialize_form_to_yaml(form)
-        path = f"forms/{form.id}.form.yaml"
-        await self._file_index.write(path, yaml_bytes)
-        logger.debug(f"Wrote form to _repo/{path}")
-
-    async def write_agent(self, agent: Any) -> None:
-        """Serialize an Agent ORM object to YAML and write to _repo/."""
-        if not self._s3_available:
-            return
-        yaml_bytes = _serialize_agent_to_yaml(agent)
-        path = f"agents/{agent.id}.agent.yaml"
-        await self._file_index.write(path, yaml_bytes)
-        logger.debug(f"Wrote agent to _repo/{path}")
-
-    async def delete_entity_file(self, path: str) -> None:
-        """Delete an entity file from S3 and file_index."""
-        if not self._s3_available:
-            return
-        await self._file_index.delete(path)
-        logger.debug(f"Deleted _repo/{path}")
-
-    async def delete_entity_file_by_suffix(self, suffix: str) -> None:
-        """Find and delete an entity file by suffix (e.g. '{id}.form.yaml').
-
-        Searches file_index for a path ending with the given suffix.
-        Falls back to deleting the suffix as a bare path if no match found.
-        """
-        if not self._s3_available:
-            return
-        from sqlalchemy import select
-        from src.models.orm.file_index import FileIndex
-
-        result = await self.db.execute(
-            select(FileIndex.path).where(FileIndex.path.endswith(suffix)).limit(1)
-        )
-        path = result.scalar_one_or_none()
-        if path:
-            await self._file_index.delete(path)
-            logger.debug(f"Deleted _repo/{path} (matched suffix {suffix})")
-        else:
-            # Fallback: try with the default convention path
-            await self._file_index.delete(suffix)
-            logger.debug(f"Deleted _repo/{suffix} (no suffix match, used as-is)")
 
     async def regenerate_manifest(self) -> None:
         """Generate manifest from DB and write split files to _repo/.bifrost/."""

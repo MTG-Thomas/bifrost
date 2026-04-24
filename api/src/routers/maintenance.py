@@ -29,9 +29,7 @@ from src.models.contracts.notifications import (
     NotificationStatus,
 )
 from src.models.orm import (
-    Agent,
     Application,
-    Form,
     Workflow,
 )
 from src.models.orm.file_index import FileIndex
@@ -198,11 +196,11 @@ async def cleanup_orphaned(
     db: AsyncSession = Depends(get_db),
 ) -> CleanupOrphanedResponse:
     """
-    Find and deactivate entities that reference files no longer in FileIndex.
+    Find and deactivate workflows that reference files no longer in FileIndex.
 
-    For each entity type (workflow, form, agent), queries active records and
-    checks whether their associated file path exists in file_index. Entities
-    whose files are missing are set to is_active=False.
+    Forms and agents are managed via the manifest (``.bifrost/forms.yaml`` /
+    ``.bifrost/agents.yaml``); stale entries are cleaned up by the manifest
+    import pipeline, not here.
 
     This is a synchronous DB-only operation (no S3/checkout needed).
     """
@@ -213,7 +211,7 @@ async def cleanup_orphaned(
 
         cleaned: list[OrphanedEntity] = []
 
-        # 1. Workflows — have a direct `path` column
+        # Workflows — have a direct `path` column
         wf_result = await db.execute(
             select(Workflow).where(Workflow.is_active.is_(True))
         )
@@ -226,36 +224,6 @@ async def cleanup_orphaned(
                     entity_id=str(wf.id),
                     entity_name=wf.display_name or wf.name,
                     path=wf.path,
-                ))
-
-        # 2. Forms — file may be at any path ending in {id}.form.yaml
-        form_result = await db.execute(
-            select(Form).where(Form.is_active.is_(True))
-        )
-        for form in form_result.scalars().all():
-            suffix = f"{form.id}.form.yaml"
-            if not any(p.endswith(suffix) for p in existing_paths):
-                form.is_active = False
-                cleaned.append(OrphanedEntity(
-                    entity_type="form",
-                    entity_id=str(form.id),
-                    entity_name=form.name,
-                    path=suffix,
-                ))
-
-        # 3. Agents — file may be at any path ending in {id}.agent.yaml
-        agent_result = await db.execute(
-            select(Agent).where(Agent.is_active.is_(True))
-        )
-        for agent in agent_result.scalars().all():
-            suffix = f"{agent.id}.agent.yaml"
-            if not any(p.endswith(suffix) for p in existing_paths):
-                agent.is_active = False
-                cleaned.append(OrphanedEntity(
-                    entity_type="agent",
-                    entity_id=str(agent.id),
-                    entity_name=agent.name,
-                    path=suffix,
                 ))
 
         await db.commit()
@@ -494,20 +462,32 @@ async def run_preflight(
             warnings=[],
         )
 
-    # Detect unregistered decorated functions
+    # Detect unregistered decorated functions.
+    #
+    # Memory note: on a workspace with hundreds of .py files the naive shape
+    # (read all files, ast.parse each, hold every tree until the walk
+    # finishes) retained 300+ MB per call in an e2e memory trace. AST objects
+    # run ~10-50x the source byte size and they're cyclic, so Python's
+    # generational GC doesn't reclaim them promptly. Fix: process one file
+    # at a time and `del` the tree + strings before the next iteration so
+    # peak RSS is bounded to a single file's AST, not the whole workspace.
     py_files = [f for f in all_files if f.path.endswith(".py")]
+    decorator_names = {"workflow", "tool", "data_provider"}
     for py_file in py_files:
+        # Parse → collect candidate function names → release AST. All of
+        # this is synchronous so when the block exits the AST and content
+        # are released before we hit any `await`. Previous shape held the
+        # tree across the inner `await db.execute(...)` which kept it alive
+        # for the full DB round trip per decorator.
         try:
             content_result = await service.read_file(py_file.path)
-            if isinstance(content_result, tuple):
-                content = content_result[0]
-            else:
-                content = content_result
+            content = content_result[0] if isinstance(content_result, tuple) else content_result
             content_str = content.decode("utf-8", errors="replace")
             tree = ast.parse(content_str, filename=py_file.path)
         except Exception:
             continue
 
+        candidates: list[str] = []
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -519,29 +499,36 @@ async def run_preflight(
                     dec.func, ast.Name
                 ):
                     dec_name = dec.func.id
-                if dec_name in ("workflow", "tool", "data_provider"):
-                    # Check if registered
-                    result = await db.execute(
-                        select(Workflow).where(
-                            Workflow.path == py_file.path,
-                            Workflow.function_name == node.name,
-                            Workflow.is_active.is_(True),
-                        )
+                if dec_name in decorator_names:
+                    candidates.append(node.name)
+                    break
+
+        # Explicitly drop the big objects before the DB awaits. Without
+        # this, async suspension during db.execute would keep them alive.
+        del tree, content_str, content
+
+        for fn_name in candidates:
+            result = await db.execute(
+                select(Workflow).where(
+                    Workflow.path == py_file.path,
+                    Workflow.function_name == fn_name,
+                    Workflow.is_active.is_(True),
+                )
+            )
+            if not result.scalar_one_or_none():
+                warnings.append(
+                    PreflightIssueResponse(
+                        level="warning",
+                        category="unregistered_function",
+                        detail=(
+                            f"Decorated function '{fn_name}' in"
+                            f" {py_file.path} is not registered."
+                            " Use POST /api/workflows/register to"
+                            " register it."
+                        ),
+                        path=py_file.path,
                     )
-                    if not result.scalar_one_or_none():
-                        warnings.append(
-                            PreflightIssueResponse(
-                                level="warning",
-                                category="unregistered_function",
-                                detail=(
-                                    f"Decorated function '{node.name}' in"
-                                    f" {py_file.path} is not registered."
-                                    " Use POST /api/workflows/register to"
-                                    " register it."
-                                ),
-                                path=py_file.path,
-                            )
-                        )
+                )
 
     valid = len(issues) == 0
     return PreflightResponse(valid=valid, issues=issues, warnings=warnings)

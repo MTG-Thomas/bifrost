@@ -24,22 +24,6 @@ from src.services.file_storage.entity_detector import (
 class TestDetectPlatformEntityType:
     """Tests for detect_platform_entity_type function."""
 
-    def test_form_yaml_returns_form(self):
-        result = detect_platform_entity_type("my_form.form.yaml", b"name: Test")
-        assert result == "form"
-
-    def test_nested_path_form_yaml_returns_form(self):
-        result = detect_platform_entity_type("some/dir/contact.form.yaml", b"name: Test")
-        assert result == "form"
-
-    def test_agent_yaml_returns_agent(self):
-        result = detect_platform_entity_type("my_agent.agent.yaml", b"name: Test")
-        assert result == "agent"
-
-    def test_nested_path_agent_yaml_returns_agent(self):
-        result = detect_platform_entity_type("agents/helper.agent.yaml", b"name: Test")
-        assert result == "agent"
-
     def test_python_file_delegates_to_python_detector(self):
         """Python files with @workflow decorator are detected as workflows."""
         code = b"from bifrost import workflow\n\n@workflow\ndef my_wf():\n    pass\n"
@@ -85,15 +69,15 @@ class TestDetectPlatformEntityType:
         result = detect_platform_entity_type(filename, b"content")
         assert result is None
 
-    def test_form_yaml_takes_precedence_over_yaml(self):
-        """'.form.yaml' is detected as form, not as generic yaml (text)."""
+    def test_form_yaml_no_longer_special_cased(self):
+        """'.form.yaml' is treated as plain text — no per-UUID dispatch anymore."""
         result = detect_platform_entity_type("x.form.yaml", b"name: Test")
-        assert result == "form"
+        assert result == "text"
 
-    def test_agent_yaml_takes_precedence_over_yaml(self):
-        """'.agent.yaml' is detected as agent, not as generic yaml (text)."""
+    def test_agent_yaml_no_longer_special_cased(self):
+        """'.agent.yaml' is treated as plain text — no per-UUID dispatch anymore."""
         result = detect_platform_entity_type("x.agent.yaml", b"name: Test")
-        assert result == "agent"
+        assert result == "text"
 
 
 class TestDetectAppEntityType:
