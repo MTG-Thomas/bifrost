@@ -474,7 +474,7 @@ async def delete_event_source(
     context: Any,
     source_id: str,
 ) -> ToolResult:
-    """Soft delete an event source."""
+    """Permanently delete an event source."""
     from src.models.enums import EventSourceType
     from src.repositories.events import EventSourceRepository
     from src.services.webhooks.registry import get_adapter_registry
@@ -506,8 +506,7 @@ async def delete_event_source(
                     except Exception as e:
                         logger.warning(f"Failed to unsubscribe webhook: {e}")
 
-            source.is_active = False
-            source.updated_at = datetime.now(_tz.utc)
+            await db.delete(source)
             await db.flush()
 
             display_text = f"Deleted event source: {source.name}"
@@ -717,7 +716,7 @@ async def delete_event_subscription(
     source_id: str,
     subscription_id: str,
 ) -> ToolResult:
-    """Soft delete an event subscription."""
+    """Permanently delete an event subscription."""
     from src.models.orm.events import EventSubscription
 
     logger.info(f"MCP delete_event_subscription called: sub={subscription_id}")
@@ -738,8 +737,7 @@ async def delete_event_subscription(
             if not subscription:
                 return error_result(f"Subscription not found: {subscription_id}")
 
-            subscription.is_active = False
-            subscription.updated_at = datetime.now(_tz.utc)
+            await db.delete(subscription)
             await db.flush()
 
             display_text = f"Deleted subscription {subscription_id}"
@@ -786,11 +784,11 @@ TOOLS = [
     ("create_event_source", "Create Event Source", "Create a new event source (webhook or schedule). Optionally pass workflow_id to auto-create a subscription in one call."),
     ("get_event_source", "Get Event Source", "Get details of a specific event source."),
     ("update_event_source", "Update Event Source", "Update an existing event source."),
-    ("delete_event_source", "Delete Event Source", "Soft delete an event source."),
+    ("delete_event_source", "Delete Event Source", "Permanently delete an event source."),
     ("list_event_subscriptions", "List Event Subscriptions", "List subscriptions for an event source."),
     ("create_event_subscription", "Create Event Subscription", "Create a subscription linking an event source to a workflow."),
     ("update_event_subscription", "Update Event Subscription", "Update an event subscription."),
-    ("delete_event_subscription", "Delete Event Subscription", "Soft delete an event subscription."),
+    ("delete_event_subscription", "Delete Event Subscription", "Permanently delete an event subscription."),
     ("list_webhook_adapters", "List Webhook Adapters", "List available webhook adapters."),
 ]
 
