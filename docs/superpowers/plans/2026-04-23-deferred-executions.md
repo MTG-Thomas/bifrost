@@ -163,8 +163,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Add the new enum value first (Postgres requires separate statement).
-    op.execute("ALTER TYPE execution_status ADD VALUE IF NOT EXISTS 'Scheduled'")
+    # Postgres forbids referencing a newly-added enum value in the same
+    # transaction that added it — so commit the ADD VALUE via an autocommit
+    # block before the CREATE INDEX below references it in its WHERE clause.
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE execution_status ADD VALUE IF NOT EXISTS 'Scheduled'")
 
     # Add the nullable scheduled_at column.
     op.add_column(

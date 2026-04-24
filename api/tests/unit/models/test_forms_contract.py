@@ -3,7 +3,7 @@ Contract tests for Forms API models
 Tests Pydantic validation rules for request/response models
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -18,6 +18,7 @@ from src.models.contracts.base import DataProviderInputMode
 from src.models.contracts.forms import (
     DataProviderInputConfig,
     Form,
+    FormExecuteRequest,
     FormField,
 )
 
@@ -217,3 +218,56 @@ class TestFormResponse:
         form_dict = form.model_dump(mode="json")
         assert isinstance(form_dict["created_at"], str)  # datetime -> ISO string
         assert isinstance(form_dict["updated_at"], str)  # datetime -> ISO string
+
+
+# ==========================================================================
+# FormExecuteRequest scheduling contract
+# ==========================================================================
+
+
+def _future(seconds: int = 60) -> datetime:
+    return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+
+class TestFormExecuteRequestScheduling:
+    """Mirror of the WorkflowExecutionRequest scheduling contract."""
+
+    def test_accepts_scheduled_at_alone(self):
+        req = FormExecuteRequest(scheduled_at=_future(120))
+        assert req.scheduled_at is not None
+        assert req.delay_seconds is None
+
+    def test_accepts_delay_seconds_alone(self):
+        req = FormExecuteRequest(delay_seconds=60)
+        assert req.delay_seconds == 60
+        assert req.scheduled_at is None
+
+    def test_rejects_both_scheduling_fields(self):
+        with pytest.raises(ValidationError, match="mutually exclusive"):
+            FormExecuteRequest(scheduled_at=_future(60), delay_seconds=60)
+
+    def test_rejects_naive_scheduled_at(self):
+        with pytest.raises(ValidationError, match="timezone"):
+            FormExecuteRequest(
+                scheduled_at=datetime.now() + timedelta(minutes=5),  # naive
+            )
+
+    def test_rejects_past_scheduled_at(self):
+        with pytest.raises(ValidationError, match="future"):
+            FormExecuteRequest(
+                scheduled_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            )
+
+    def test_rejects_scheduled_at_beyond_one_year(self):
+        with pytest.raises(ValidationError, match="1 year"):
+            FormExecuteRequest(
+                scheduled_at=datetime.now(timezone.utc) + timedelta(days=366),
+            )
+
+    def test_rejects_delay_seconds_zero_or_negative(self):
+        with pytest.raises(ValidationError):
+            FormExecuteRequest(delay_seconds=0)
+
+    def test_rejects_delay_seconds_beyond_one_year(self):
+        with pytest.raises(ValidationError):
+            FormExecuteRequest(delay_seconds=31_536_001)
