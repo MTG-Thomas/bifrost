@@ -1,0 +1,116 @@
+@page {
+  size: Letter;
+  margin: 0.7in 0.78in;
+}
+
+html {
+  color: #1f2937;
+  font-family: "Aptos", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 11pt;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+}
+
+h1 {
+  font-size: 25pt;
+  line-height: 1.1;
+  margin: 0 0 0.22in 0;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: 15pt;
+  margin: 0.22in 0 0.08in 0;
+  color: #0f172a;
+  border-bottom: 2px solid #dbe4ee;
+  padding-bottom: 0.04in;
+}
+
+h3 {
+  font-size: 11.5pt;
+  margin: 0.14in 0 0.05in 0;
+  color: #111827;
+}
+
+p, ul, ol, table, blockquote {
+  margin: 0 0 0.1in 0;
+}
+
+ul, ol {
+  padding-left: 0.24in;
+}
+
+li {
+  margin-bottom: 0.04in;
+}
+
+strong {
+  color: #0f172a;
+}
+
+em {
+  color: #475569;
+}
+
+code {
+  font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+  font-size: 9.5pt;
+  color: #0f172a;
+  background: #eef3f8;
+  border: 1px solid #dbe4ee;
+  border-radius: 3px;
+  padding: 0.01in 0.04in;
+}
+
+pre code {
+  display: block;
+  color: #e5edf6;
+  background: #122033;
+  border: none;
+  padding: 0.12in 0.14in;
+  overflow-wrap: anywhere;
+}
+
+a {
+  color: #0b6aa2;
+  text-decoration: none;
+}
+
+blockquote {
+  border-left: 4px solid #c8d8ea;
+  padding-left: 0.14in;
+  color: #334155;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 10pt;
+}
+
+th, td {
+  border: 1px solid #dbe4ee;
+  padding: 0.06in 0.08in;
+  vertical-align: top;
+}
+
+th {
+  background: #eef3f8;
+  text-align: left;
+  color: #0f172a;
+}
+
+tr:nth-child(even) td {
+  background: #fafcfe;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #dbe4ee;
+  margin: 0.16in 0;
+}
+

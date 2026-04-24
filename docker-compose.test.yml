@@ -340,6 +340,7 @@ services:
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
+      - ./doc_renderer_service:/app/doc_renderer_service:ro
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
       - ./api/tests:/app/tests:ro
       - ./api/alembic:/app/alembic:ro
