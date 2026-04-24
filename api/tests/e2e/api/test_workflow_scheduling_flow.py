@@ -37,7 +37,7 @@ pytestmark = pytest.mark.e2e
 
 
 @pytest.fixture(scope="module")
-def runnable_workflow(e2e_client, platform_admin) -> dict:
+def runnable_workflow(e2e_client, platform_admin):
     """Register a trivial workflow used across the flow tests."""
     workflow_content = '''"""E2E Scheduling Flow Workflow"""
 from bifrost import workflow
@@ -65,7 +65,7 @@ async def e2e_scheduling_flow_workflow(foo: str = "bar") -> dict:
 
 
 @pytest_asyncio.fixture
-async def cleanup_scheduled_rows(db_session: AsyncSession):
+async def cleanup_scheduled_rows(db_session: AsyncSession):  # type: ignore[misc]
     """Delete any Execution rows this test created after it finishes."""
     created_ids: list[UUID] = []
     yield created_ids
