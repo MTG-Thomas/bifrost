@@ -900,7 +900,6 @@ class TestMCPConfigService:
         service = MCPConfigService(mock_session)
         config = await service.save_config(
             enabled=True,
-            require_platform_admin=True,
             allowed_tool_ids=None,
             blocked_tool_ids=["search_knowledge"],
             updated_by="admin@test.com",

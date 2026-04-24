@@ -122,8 +122,18 @@ async def test_schedule_promote_run_terminal(
     from src.jobs.schedulers.deferred_execution_promoter import promote_due_executions
 
     promoted, failures = await promote_due_executions()
-    assert promoted >= 1, f"expected at least 1 promoted row, got {promoted}"
     assert failures == 0, f"expected 0 publish failures, got {failures}"
+    if promoted == 0:
+        await db_session.rollback()
+        row = (
+            await db_session.execute(
+                select(Execution).where(Execution.id == exec_id)
+            )
+        ).scalar_one()
+        assert row.status != ExecutionStatus.SCHEDULED, (
+            "expected direct promoter or background scheduler to promote row, "
+            f"but status is still {row.status}"
+        )
 
     # Poll for the worker to run it to a terminal status.
     deadline = asyncio.get_event_loop().time() + 60
