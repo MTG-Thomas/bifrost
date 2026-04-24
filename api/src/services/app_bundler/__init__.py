@@ -665,7 +665,7 @@ def _msg_from_dict(d: dict) -> BundleMessage:
     )
 
 
-import re as _re
+import re as _re  # noqa: E402  -- scoped helper for _has_default_export below
 
 _DEFAULT_EXPORT_RE = _re.compile(
     r"^\s*export\s+default\b|^\s*export\s*\{\s*default\b",
