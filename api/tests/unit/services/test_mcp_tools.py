@@ -840,7 +840,9 @@ class TestMCPConfigService:
 
         # Mock no existing config
         mock_result = MagicMock()
-        mock_result.scalars.return_value.first.return_value = None
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result.scalars.return_value = mock_scalars
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.add = MagicMock()
 
@@ -867,7 +869,9 @@ class TestMCPConfigService:
         mock_config = MagicMock()
         mock_config.value_json = {"enabled": True, "require_platform_admin": True}
         mock_result = MagicMock()
-        mock_result.scalars.return_value.first.return_value = mock_config
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [mock_config]
+        mock_result.scalars.return_value = mock_scalars
         mock_session.execute = AsyncMock(return_value=mock_result)
 
         service = MCPConfigService(mock_session)
@@ -885,6 +889,35 @@ class TestMCPConfigService:
         assert mock_config.updated_by == "admin@test.com"
 
     @pytest.mark.asyncio
+    async def test_save_config_updates_duplicate_existing_configs(self, mock_session):
+        """Should update duplicate singleton rows consistently."""
+        from src.services.mcp_server.config_service import MCPConfigService
+
+        first_config = MagicMock()
+        first_config.value_json = {"enabled": True, "blocked_tool_ids": []}
+        second_config = MagicMock()
+        second_config.value_json = {"enabled": True, "blocked_tool_ids": []}
+
+        mock_result = MagicMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [first_config, second_config]
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        service = MCPConfigService(mock_session)
+        config = await service.save_config(
+            enabled=True,
+            require_platform_admin=True,
+            allowed_tool_ids=None,
+            blocked_tool_ids=["search_knowledge"],
+            updated_by="admin@test.com",
+        )
+
+        assert config.blocked_tool_ids == ["search_knowledge"]
+        assert first_config.value_json["blocked_tool_ids"] == ["search_knowledge"]
+        assert second_config.value_json["blocked_tool_ids"] == ["search_knowledge"]
+
+    @pytest.mark.asyncio
     async def test_delete_config_removes_existing(self, mock_session):
         """Should delete existing config."""
         from src.services.mcp_server.config_service import MCPConfigService
@@ -892,7 +925,9 @@ class TestMCPConfigService:
         # Mock existing config
         mock_config = MagicMock()
         mock_result = MagicMock()
-        mock_result.scalars.return_value.first.return_value = mock_config
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [mock_config]
+        mock_result.scalars.return_value = mock_scalars
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.delete = AsyncMock()
 
@@ -900,7 +935,7 @@ class TestMCPConfigService:
         deleted = await service.delete_config()
 
         assert deleted is True
-        mock_session.delete.assert_called_once_with(mock_config)
+        mock_session.delete.assert_awaited_once_with(mock_config)
 
     @pytest.mark.asyncio
     async def test_delete_config_returns_false_when_none_exists(self, mock_session):
@@ -909,7 +944,9 @@ class TestMCPConfigService:
 
         # Mock no config
         mock_result = MagicMock()
-        mock_result.scalars.return_value.first.return_value = None
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = []
+        mock_result.scalars.return_value = mock_scalars
         mock_session.execute = AsyncMock(return_value=mock_result)
 
         service = MCPConfigService(mock_session)
