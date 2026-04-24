@@ -3,14 +3,10 @@
 Covers the gaps left by Task 5/6 tests:
 
 - Promote happy path: schedule with ``delay_seconds``, wait for maturity,
-  trigger the promoter directly (for test speed), then verify the row has
-  advanced past ``SCHEDULED`` (to ``PENDING`` / ``RUNNING`` / a terminal
-  status). Deviation vs. the plan: we assert "row promoted" rather than
-  "row reached Success" because the worker's ``create_execution`` path
-  unconditionally INSERTs an Execution row, which collides with the
-  pre-existing scheduled row's PK. Running the full worker path against
-  a scheduled row requires a separate fix (update-instead-of-insert in
-  the worker consumer); that is out of scope for Task 9.
+  trigger the promoter directly (for test speed), then verify the worker
+  runs the promoted row to ``Success``. The worker's ``create_execution``
+  upserts in place when a pre-existing scheduled row is found, so the
+  promoted row's PK is reused rather than colliding.
 - Cancel-after-promote returns 409: once the row has been flipped past
   ``SCHEDULED`` (simulated by a direct DB UPDATE so the test does not
   depend on worker wiring), the cancel endpoint must refuse with 409.
@@ -94,30 +90,19 @@ def _schedule(e2e_client, platform_admin, workflow_id: str, **extra):
 
 
 @pytest.mark.asyncio
-async def test_schedule_promote_advances_row(
+async def test_schedule_promote_run_terminal(
     e2e_client,
     platform_admin,
     runnable_workflow,
     db_session: AsyncSession,
     cleanup_scheduled_rows: list[UUID],
 ):
-    """Schedule → wait for maturity → trigger promoter → row advances past SCHEDULED.
-
-    Deviation from the plan: we do not assert the worker drives the row to
-    Success. With the current worker consumer the worker re-INSERTs the
-    Execution row, which fails on the pre-existing scheduled PK and the
-    execution ends up Failed. That's a separate Task 7-adjacent fix (the
-    worker should UPDATE, not INSERT, for a promoted row). Here we only
-    assert the promoter's contract: scheduled row flips to PENDING and
-    publish completes without failures.
-    """
-    # The app-side DB engine is cached in a module-global and pins its
-    # connections to whichever asyncio loop first touched them. Subsequent
-    # pytest-asyncio tests get a fresh loop, so the first DB op in the
-    # promoter can trip "Future attached to a different loop". Resetting
-    # here forces a fresh engine on the current loop.
+    """Schedule → wait for maturity → promoter → worker → Success."""
     from src.core.database import reset_db_state
 
+    # The app-side DB engine is cached in a module-global and pins its
+    # connections to whichever asyncio loop first touched them. Resetting
+    # here forces a fresh engine on the current test loop.
     reset_db_state()
 
     resp = _schedule(
@@ -129,7 +114,7 @@ async def test_schedule_promote_advances_row(
     exec_id = UUID(body["execution_id"])
     cleanup_scheduled_rows.append(exec_id)
 
-    # Wait past scheduled_at, then trigger a promoter tick directly for speed.
+    # Wait past scheduled_at, then trigger the promoter directly for speed.
     await asyncio.sleep(3)
     from src.jobs.schedulers.deferred_execution_promoter import promote_due_executions
 
@@ -137,17 +122,28 @@ async def test_schedule_promote_advances_row(
     assert promoted >= 1, f"expected at least 1 promoted row, got {promoted}"
     assert failures == 0, f"expected 0 publish failures, got {failures}"
 
-    # Confirm the row has advanced past SCHEDULED. Accept PENDING, RUNNING,
-    # or any terminal status — the worker side may or may not run cleanly
-    # depending on the insert-vs-update fix (see docstring).
-    await db_session.rollback()  # drop any stale snapshot
-    row = (
-        await db_session.execute(
-            select(Execution).where(Execution.id == exec_id)
-        )
-    ).scalar_one()
-    assert row.status != ExecutionStatus.SCHEDULED, (
-        f"row not promoted, still SCHEDULED"
+    # Poll for the worker to run it to a terminal status.
+    deadline = asyncio.get_event_loop().time() + 60
+    row: Execution | None = None
+    while asyncio.get_event_loop().time() < deadline:
+        await db_session.rollback()
+        row = (
+            await db_session.execute(
+                select(Execution).where(Execution.id == exec_id)
+            )
+        ).scalar_one()
+        if row.status in (
+            ExecutionStatus.SUCCESS,
+            ExecutionStatus.FAILED,
+            ExecutionStatus.COMPLETED_WITH_ERRORS,
+        ):
+            break
+        await asyncio.sleep(1)
+
+    assert row is not None, "poll loop never ran"
+    assert row.status == ExecutionStatus.SUCCESS, (
+        f"expected Success, got {row.status} "
+        f"(error_message={row.error_message!r})"
     )
 
 
