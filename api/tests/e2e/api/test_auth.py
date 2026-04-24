@@ -37,6 +37,36 @@ class TestHealthCheck:
         data = response.json()
         assert data["status"] == "healthy"
 
+    def test_live_health_check(self, e2e_client):
+        """Verify liveness probe is shallow and public."""
+        response = e2e_client.get("/health/live")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+
+    def test_ready_health_check(self, e2e_client):
+        """Verify readiness probe checks core serving dependencies."""
+        response = e2e_client.get("/health/ready")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["components"]["database"]["status"] == "healthy"
+        assert data["components"]["redis"]["status"] == "healthy"
+        assert data["components"]["rabbitmq"]["status"] == "healthy"
+        assert data["components"]["s3"]["status"] == "healthy"
+
+    def test_detailed_health_check(self, e2e_client):
+        """Verify detailed health reports core dependency components."""
+        response = e2e_client.get("/health/detailed")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert set(data["components"]) == {"database", "redis", "rabbitmq", "s3"}
+        assert data["components"]["database"]["type"] == "postgresql"
+        assert data["components"]["redis"]["type"] == "redis"
+        assert data["components"]["rabbitmq"]["type"] == "rabbitmq"
+        assert data["components"]["s3"]["type"] == "s3"
+
 
 @pytest.mark.e2e
 class TestRegistrationFlow:
