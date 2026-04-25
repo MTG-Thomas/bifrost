@@ -251,14 +251,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # =============================================================================
-  # Deploy Dev - Push-to-main only. Rolls the DigitalOcean deployment once
-  # the :dev images are published. Targets anything labeled
+  # Deploy Dev - Push-to-main only when explicitly enabled with the repository
+  # variable ENABLE_DIGITALOCEAN_DEV_DEPLOY=true. Rolls the DigitalOcean
+  # deployment once the :dev images are published. Targets anything labeled
   # `app.kubernetes.io/part-of=bifrost` in the `bifrost` namespace so new
   # services are picked up automatically. Failures page the maintainer via
   # GitHub's built-in workflow-failure email (no extra wiring).
   # =============================================================================
   deploy-dev:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.ENABLE_DIGITALOCEAN_DEV_DEPLOY == 'true'
     needs: [build-dev]
     runs-on: ubuntu-latest
     name: Deploy Dev to DigitalOcean
