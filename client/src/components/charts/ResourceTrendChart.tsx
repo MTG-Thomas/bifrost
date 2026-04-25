@@ -8,6 +8,7 @@ import {
 	ResponsiveContainer,
 	Legend,
 } from "recharts";
+import type { Formatter } from "recharts/types/component/DefaultTooltipContent";
 import {
 	Card,
 	CardContent,
@@ -23,6 +24,13 @@ interface ResourceTrendChartProps {
 	data: ResourceMetricsEntry[];
 	isLoading?: boolean;
 }
+
+const formatResourceTrendTooltip: Formatter = (value, name) => {
+	const safeValue = toFiniteNumber(value);
+	if (name === "memory_mb") return [`${safeValue} MB`, "Avg Memory"];
+	if (name === "cpu_seconds") return [`${safeValue}s`, "Avg CPU"];
+	return [safeValue, name ?? ""];
+};
 
 export function ResourceTrendChart({
 	data,
@@ -122,14 +130,7 @@ export function ResourceTrendChart({
 								border: "1px solid hsl(var(--border))",
 								borderRadius: "6px",
 							}}
-							formatter={(value, name) => {
-								const safeValue = toFiniteNumber(value);
-								if (name === "memory_mb")
-									return [`${safeValue} MB`, "Avg Memory"];
-								if (name === "cpu_seconds")
-									return [`${safeValue}s`, "Avg CPU"];
-								return [safeValue, name];
-							}}
+							formatter={formatResourceTrendTooltip}
 							labelFormatter={(label) => `Date: ${label}`}
 						/>
 						<Legend
