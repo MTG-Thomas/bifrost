@@ -122,11 +122,15 @@ export function ResourceTrendChart({
 								borderRadius: "6px",
 							}}
 							formatter={(value, name) => {
+								const numericValue = Number(value ?? 0);
+								const safeValue = Number.isFinite(numericValue)
+									? numericValue
+									: 0;
 								if (name === "memory_mb")
-									return [`${value} MB`, "Avg Memory"];
+									return [`${safeValue} MB`, "Avg Memory"];
 								if (name === "cpu_seconds")
-									return [`${value}s`, "Avg CPU"];
-								return [value, name];
+									return [`${safeValue}s`, "Avg CPU"];
+								return [safeValue, name];
 							}}
 							labelFormatter={(label) => `Date: ${label}`}
 						/>
