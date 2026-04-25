@@ -25,6 +25,7 @@ Activate on any of these:
 - User is about to open a PR (proactively check for issue linkage and worktree isolation)
 - User asks about existing issues or what to work on next
 - User wants to label an issue as `help wanted` or `good first issue`
+- User asks "what now" or "is it merged" on a PR they just opened, or asks to wait/watch CI on their own PR — see step 7 below; this skill owns the open-to-merge handoff
 
 Do **not** activate for:
 
@@ -71,20 +72,30 @@ When drafting an issue body:
 
 Once the issue exists:
 
+> **CRITICAL: Use absolute paths in every Bash call.** The Bash tool's CWD leaks between calls — once you `cd` somewhere (e.g. for `npm ci`), subsequent calls silently inherit that CWD. A relative `cp .env worktree/.env` from the wrong dir will appear to succeed (no error printed) while copying nothing. **Always** write the full path: `cp /home/jack/GitHub/bifrost/.env /home/jack/GitHub/bifrost/.worktrees/<slug>/.env`. After any copy, verify with an absolute-path `ls -la /home/jack/GitHub/bifrost/.worktrees/<slug>/.env*` — do not trust echo'd success.
+
 ```bash
 # Preflight: make sure main isn't stale
 git fetch origin main
 git log --oneline main..origin/main   # if non-empty, warn and offer to pull
 
-# Create the worktree
-git worktree add -b <issue-num>-<short-slug> .worktrees/<issue-num>-<short-slug> origin/main
+# Create the worktree (absolute path)
+git worktree add -b <issue-num>-<short-slug> \
+  /home/jack/GitHub/bifrost/.worktrees/<issue-num>-<short-slug> origin/main
 
-# Copy env files
-cp .env .worktrees/<issue-num>-<slug>/.env
-[ -f .env.local ] && cp .env.local .worktrees/<issue-num>-<slug>/.env.local
+# Copy env files — ABSOLUTE paths on both sides. Copy every env file the
+# dev/test stacks read: .env, .env.test, and optionally .env.local.
+cp /home/jack/GitHub/bifrost/.env       /home/jack/GitHub/bifrost/.worktrees/<slug>/.env
+cp /home/jack/GitHub/bifrost/.env.test  /home/jack/GitHub/bifrost/.worktrees/<slug>/.env.test
+[ -f /home/jack/GitHub/bifrost/.env.local ] && \
+  cp /home/jack/GitHub/bifrost/.env.local /home/jack/GitHub/bifrost/.worktrees/<slug>/.env.local
 
-# Node deps in the worktree (needed for vitest/tsc/lint)
-cd .worktrees/<issue-num>-<slug>/client && npm ci
+# VERIFY — absolute path. Do not trust the cp's exit code alone.
+ls -la /home/jack/GitHub/bifrost/.worktrees/<slug>/.env*
+
+# Node deps in the worktree (needed for vitest/tsc/lint).
+# This `cd` will leak into later Bash calls — keep using absolute paths after.
+cd /home/jack/GitHub/bifrost/.worktrees/<slug>/client && npm ci
 ```
 
 **Conventions:**
@@ -92,6 +103,7 @@ cd .worktrees/<issue-num>-<slug>/client && npm ci
 - Branch name and worktree dir use `<issue-num>-<short-slug>`. Slug is hyphenated, ≤40 chars.
 - `.worktrees/` is already gitignored in this repo — verify once, warn if not.
 - Base from `origin/main`, not local `main` (local can be stale; origin is the shared truth).
+- Env files in this repo: `.env`, `.env.test`, optionally `.env.local`. `.env.test` is required for `./test.sh`.
 
 ### 3. Migration-drift check
 
@@ -135,14 +147,53 @@ When opening the PR:
 2. Ensure the PR body includes `Fixes #N` (use `Closes #N` for non-bug issues; GitHub auto-closes the issue on merge either way).
 3. If multiple issues are addressed, one `Fixes #N` line per issue.
 
-### 7. Cleanup (after merge)
+### 7. Hand off to merge (auto when safe, else watch CI)
+
+The PR isn't done at "opened." Carry it through to merged. The path depends on whether `main` has branch protection with required status checks — `--auto` is only safe when GitHub will refuse to merge until checks pass.
+
+**Capability check (do this once, immediately after opening the PR):**
+
+```bash
+# Detect required-checks gating. ≥1 → protection exists; 0 / 404 → no protection.
+gh api repos/jackmusick/bifrost/branches/main/protection \
+  --jq '.required_status_checks.contexts // [] | length' 2>/dev/null
+```
+
+If the count is ≥1, `--auto` is safe. Otherwise it isn't (a `--auto` merge would fire the moment GitHub considers the PR mergeable, which without required checks is *immediately*).
+
+**Path A — protection exists (preferred):**
+
+1. Confirm with the user once ("Queue auto-merge so it ships when CI is green?").
+2. On approval: `gh pr merge <N> --auto --squash --delete-branch=false` (keep the remote branch; the worktree still references it, cleanup in step 8).
+3. **Stop here.** No CI watcher needed — GitHub merges automatically when checks pass. Tell the user they'll see the merge land in their notifications and can return for cleanup whenever.
+4. The contributor's value of this path is bigger than the admin's: contributors with no merge perms can still queue `--auto`, walk away, and the merge fires the moment approval + checks both arrive — they don't have to come back to click merge.
+5. If a review is required (`required_pull_request_reviews` is set) and the user isn't admin, surface that the merge is gated on approval and offer to request reviewers via `gh pr edit <N> --add-reviewer <login>`. Don't pick reviewers unprompted.
+
+**Path B — no protection (fallback):**
+
+1. **Watch CI.** Snapshot status with `gh pr checks <N> --repo jackmusick/bifrost` once, then arm a session-length watcher via the `loop` skill in dynamic mode (no interval, event-gated) — it knows how to set up a Monitor on `gh pr checks` plus a heartbeat fallback. Don't roll your own polling loop.
+2. **If CI fails:** stay in the existing worktree on the existing branch — fixes are additional commits to `<issue-num>-<slug>`, not a fresh worktree. The PR auto-updates on push. New worktree only if the branch is being abandoned entirely.
+3. **If CI passes:** check `gh pr view <N> --json viewerCanAdminister,reviewDecision,mergeStateStatus` to decide.
+   - `viewerCanAdminister: true` → self-merge: confirm once ("CI's green — merge?"), then `gh pr merge <N> --squash --delete-branch=false`.
+   - Otherwise → contributor needs review: surface reviewer-request as in Path A step 5.
+4. **Never `--auto` on Path B.** Without required checks, it would fire before CI completes.
+
+**Both paths:**
+
+- Don't merge unprompted. "Merge?" or "queue auto-merge?" is the user's decision — confirm, never assume.
+- If CI is already failing on the PR when you reach this step, surface the failure and don't offer merge until it's fixed.
+
+### 8. Cleanup (after merge)
 
 After the PR is merged, offer (do not run unprompted):
 
 ```bash
 git worktree remove .worktrees/<issue-num>-<slug>
 git branch -d <issue-num>-<slug>
+git push origin --delete <issue-num>-<slug>   # if --delete-branch=false was used at merge time
 ```
+
+Then `cd` back to the main checkout (`/home/jack/GitHub/bifrost`) so subsequent commands target main and not a stale worktree path.
 
 ## Behavior: Batch Triage
 

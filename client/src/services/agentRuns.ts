@@ -109,8 +109,9 @@ export function useAgentRuns(params?: {
 	/** Verdict filter: 'up', 'down', or 'unreviewed' (T9). */
 	verdict?: string;
 	/**
-	 * JSON object of key-value pairs for metadata filtering (T9).
-	 * Pass as a stringified JSON object, e.g. '{"customer":"Acme"}'.
+	 * JSON array of metadata conditions, e.g.
+	 * '[{"key":"customer","op":"eq","value":"Acme"}]'. Supported ops:
+	 * 'eq' (exact match) and 'contains' (case-insensitive substring).
 	 */
 	metadataFilter?: string;
 	limit?: number;
@@ -539,12 +540,62 @@ export function useCancelBackfillJob() {
  * Cheap preview — returns eligible count + cost estimate for the given
  * scope. Used to decide whether to render the Backfill button at all
  * (hide when eligible=0 to avoid dead-end "Nothing to backfill" modals).
+ *
+ * Three orthogonal scopes:
+ *   - default: pending + failed summaries.
+ *   - `promptVersionBelow="vN"`: also counts completed runs on an older
+ *     prompt version (or NULL).
+ *   - `includeCompleted=true`: counts ALL completed summaries regardless
+ *     of version. Overrides the version filter.
  * Admin-only.
  */
-export function useBackfillEligible(agentId?: string) {
+export function useBackfillEligible(
+	agentId?: string,
+	promptVersionBelow?: string,
+	includeCompleted?: boolean,
+) {
 	return $api.useQuery(
 		"get",
 		"/api/agent-runs/backfill-eligible",
-		{ params: { query: { agent_id: agentId } } },
+		{
+			params: {
+				query: {
+					agent_id: agentId,
+					prompt_version_below: promptVersionBelow,
+					include_completed: includeCompleted,
+				},
+			},
+		},
+	);
+}
+
+/**
+ * Distinct top-level keys present in `run_metadata` for the given agent's
+ * runs. Powers the key combobox on the captured-data filter.
+ */
+export function useMetadataKeys(agentId: string | undefined) {
+	return $api.useQuery(
+		"get",
+		"/api/agent-runs/metadata-keys",
+		{ params: { query: { agent_id: agentId ?? "" } } },
+		{ enabled: !!agentId },
+	);
+}
+
+/**
+ * Distinct values observed for `key` in `run_metadata` for the given
+ * agent's runs. Powers the value combobox when the user picks 'eq'.
+ */
+export function useMetadataValues(
+	agentId: string | undefined,
+	key: string | undefined,
+) {
+	return $api.useQuery(
+		"get",
+		"/api/agent-runs/metadata-values",
+		{
+			params: { query: { agent_id: agentId ?? "", key: key ?? "" } },
+		},
+		{ enabled: !!agentId && !!key },
 	);
 }
