@@ -21,6 +21,7 @@ from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
 from src.core.database import close_db, init_db
 from src.core.pubsub import manager as pubsub_manager
+from src.observability.otel import configure_tracing, instrument_fastapi
 from src.routers import (
     auth_router,
     mfa_router,
@@ -114,6 +115,7 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info("Starting Bifrost API...")
     settings = get_settings()
+    configure_tracing("bifrost-api", settings.environment)
 
     # Initialize database
     logger.info("Initializing database connection...")
@@ -269,6 +271,7 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+    instrument_fastapi(app)
 
     # Note: CORS middleware not needed - frontend proxies all /api requests
     # through Vite dev server (dev) or nginx (prod), making them same-origin.
@@ -283,7 +286,7 @@ def create_app() -> FastAPI:
     async def request_validation_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        """Request validation errors (bad input) → 422 with concise messages."""
+        """Request validation errors (bad input) -> 422 with concise messages."""
         messages = []
         for err in exc.errors():
             field = ".".join(str(p) for p in err["loc"] if p != "body")
@@ -300,7 +303,7 @@ def create_app() -> FastAPI:
     async def pydantic_validation_handler(
         request: Request, exc: PydanticValidationError
     ) -> JSONResponse:
-        """Pydantic model validation errors → 422."""
+        """Pydantic model validation errors -> 422."""
         errors = exc.errors()
         # Extract field names and messages for user-friendly output
         field_errors = {
@@ -319,7 +322,7 @@ def create_app() -> FastAPI:
     async def integrity_error_handler(
         request: Request, exc: IntegrityError
     ) -> JSONResponse:
-        """Database constraint violations → 409."""
+        """Database constraint violations -> 409."""
         detail = str(exc.orig) if exc.orig else str(exc)
 
         if "unique" in detail.lower() or "duplicate" in detail.lower():
@@ -342,7 +345,7 @@ def create_app() -> FastAPI:
     async def no_result_handler(
         request: Request, exc: NoResultFound
     ) -> JSONResponse:
-        """Query returned no results → 404."""
+        """Query returned no results -> 404."""
         return JSONResponse(
             status_code=404,
             content=ErrorResponse(
@@ -355,7 +358,7 @@ def create_app() -> FastAPI:
     async def value_error_handler(
         request: Request, exc: ValueError
     ) -> JSONResponse:
-        """ValueError from validation → 422."""
+        """ValueError from validation -> 422."""
         return JSONResponse(
             status_code=422,
             content=ErrorResponse(
@@ -368,7 +371,7 @@ def create_app() -> FastAPI:
     async def timeout_handler(
         request: Request, exc: asyncio.TimeoutError
     ) -> JSONResponse:
-        """Timeout errors → 504."""
+        """Timeout errors -> 504."""
         logger.warning(f"Timeout error on {request.method} {request.url.path}")
         return JSONResponse(
             status_code=504,
@@ -382,7 +385,7 @@ def create_app() -> FastAPI:
     async def operational_error_handler(
         request: Request, exc: OperationalError
     ) -> JSONResponse:
-        """Database connection issues → 503."""
+        """Database connection issues -> 503."""
         logger.error(f"Database operational error: {exc}", exc_info=True)
         return JSONResponse(
             status_code=503,
@@ -396,7 +399,7 @@ def create_app() -> FastAPI:
     async def generic_exception_handler(
         request: Request, exc: Exception
     ) -> JSONResponse:
-        """Catch-all for unhandled exceptions → 500 with safe message."""
+        """Catch-all for unhandled exceptions -> 500 with safe message."""
         logger.error(
             f"Unhandled exception on {request.method} {request.url.path}: {exc}",
             exc_info=True,
@@ -482,7 +485,7 @@ def create_app() -> FastAPI:
         except Exception:
             set_request_user(None)
 
-        # Always set audit actor context — for unauthenticated requests,
+        # Always set audit actor context - for unauthenticated requests,
         # user_id is None but IP/UA are still captured (so failed logins
         # are recorded with network metadata).
         actor_token = set_actor(
