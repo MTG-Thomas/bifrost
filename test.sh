@@ -62,11 +62,16 @@ print_project() {
 }
 
 require_stack_up() {
-    if ! stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
-        echo "ERROR: stack not running for this worktree. Run:" >&2
-        echo "  ./test.sh stack up" >&2
-        exit 1
-    fi
+    for _ in {1..10}; do
+        if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "ERROR: stack not running for this worktree. Run:" >&2
+    echo "  ./test.sh stack up" >&2
+    exit 1
 }
 
 reset_state() {

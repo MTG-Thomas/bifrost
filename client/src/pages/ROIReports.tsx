@@ -43,6 +43,7 @@ import {
 	ResponsiveContainer,
 	Legend,
 } from "recharts";
+import type { Formatter } from "recharts/types/component/DefaultTooltipContent";
 import {
 	useROISummary,
 	useROIByWorkflow,
@@ -57,6 +58,7 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
+import { toFiniteNumber } from "@/lib/chart-values";
 
 // ============================================================================
 // Demo Data Generation
@@ -282,6 +284,14 @@ function generateDemoData(params: DemoDataParams): DemoDataResult {
 
 // Sort state type
 type SortConfig = { by: string; dir: "asc" | "desc" };
+
+const formatROITrendTooltip: Formatter = (value, name) => {
+	const safeValue = toFiniteNumber(value);
+	if (name === "time_saved_hours")
+		return [`${safeValue.toFixed(2)} hrs`, "Time Saved"];
+	if (name === "value") return [`${safeValue.toFixed(2)}`, "Value"];
+	return [safeValue, name ?? ""];
+};
 
 export function ROIReports() {
 	const { isPlatformAdmin } = useAuth();
@@ -732,22 +742,7 @@ export function ROIReports() {
 										border: "1px solid hsl(var(--border))",
 										borderRadius: "6px",
 									}}
-									formatter={(
-										value: number,
-										name: string,
-									) => {
-										if (name === "time_saved_hours")
-											return [
-												`${value.toFixed(2)} hrs`,
-												"Time Saved",
-											];
-										if (name === "value")
-											return [
-												`${value.toFixed(2)}`,
-												"Value",
-											];
-										return [value, name];
-									}}
+									formatter={formatROITrendTooltip}
 									labelFormatter={(label) =>
 										format(new Date(label), "PPP")
 									}
