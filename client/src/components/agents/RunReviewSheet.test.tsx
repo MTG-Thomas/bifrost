@@ -95,10 +95,11 @@ describe("RunReviewSheet", () => {
 				onSendChat={() => {}}
 			/>,
 		);
-		// Review tab body shows the asked text
+		// Review tab body shows the asked text. Title also renders `asked`
+		// (sheet headers use it as the TL;DR), so multiple matches are fine.
 		expect(
-			screen.getByText(/how do i reset my password/i),
-		).toBeInTheDocument();
+			screen.getAllByText(/how do i reset my password/i).length,
+		).toBeGreaterThan(0);
 	});
 
 	it("switches to Tune tab on click", async () => {
@@ -159,5 +160,26 @@ describe("RunReviewSheet", () => {
 		);
 		await user.click(screen.getByRole("button", { name: /close/i }));
 		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+
+	it("exposes an 'Open full run' link in the header pointing at the run page", () => {
+		renderWithProviders(
+			<RunReviewSheet
+				open={true}
+				onOpenChange={() => {}}
+				run={baseRun}
+				verdict={null}
+				note=""
+				onVerdict={() => {}}
+				onNote={() => {}}
+				conversation={baseConversation}
+				onSendChat={() => {}}
+			/>,
+		);
+		const link = screen.getByRole("link", { name: /open full run/i });
+		expect(link).toHaveAttribute(
+			"href",
+			`/agents/${baseRun.agent_id}/runs/${baseRun.id}`,
+		);
 	});
 });

@@ -32,6 +32,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useRegenerateSummary } from "@/services/agentRuns";
 import type { components } from "@/lib/v1";
 
+import { DidNarrative } from "./DidNarrative";
+import { isEmptyJson, JsonTree } from "./JsonTree";
 import { SummaryPlaceholder } from "./SummaryPlaceholder";
 
 export type Verdict = "up" | "down" | null;
@@ -52,11 +54,19 @@ export interface RunReviewPanelProps {
 }
 
 interface ToolCallContent {
-	tool?: string;
-	args?: unknown;
+	// Shape emitted by autonomous_agent_executor.py _record_step(..., "tool_call", ...)
+	tool_name?: string;
+	arguments?: unknown;
 }
 
-/** Pull tool calls out of run.steps with light defensive parsing. */
+/** Pull tool calls out of run.steps.
+ *
+ * The executor records one `tool_call` step per invocation with
+ * `content = { tool_name, arguments }` (see
+ * api/src/services/execution/autonomous_agent_executor.py). Older code in
+ * this component read `content.tool` / `content.args` which don't exist —
+ * that's why every row rendered as `tool {}`.
+ */
 function extractToolCalls(steps: AgentRunStep[] | undefined): {
 	tool: string;
 	args: unknown;
@@ -68,12 +78,73 @@ function extractToolCalls(steps: AgentRunStep[] | undefined): {
 		.map((s) => {
 			const content = (s.content ?? {}) as ToolCallContent;
 			return {
-				tool: content.tool ?? "tool",
-				args: content.args ?? {},
+				tool: content.tool_name ?? "tool",
+				args: content.arguments ?? {},
 				duration_ms: s.duration_ms ?? null,
 			};
 		});
 }
+
+interface ToolCallRowProps {
+	tool: string;
+	args: unknown;
+	duration_ms: number | null;
+}
+
+/** Tool-call row: tool name + (when args non-empty) chevron-disclosure +
+ * duration. No inline args preview — that pushed long objects past the
+ * card's right edge. Expanded form uses the shared JsonTree viewer.
+ */
+function ToolCallRow({ tool, args, duration_ms }: ToolCallRowProps) {
+	const [open, setOpen] = useState(false);
+	const empty = isEmptyJson(args);
+	const expandable = !empty;
+
+	return (
+		<div className="overflow-hidden rounded border bg-card text-xs">
+			<button
+				type="button"
+				onClick={() => expandable && setOpen((v) => !v)}
+				disabled={!expandable}
+				aria-expanded={expandable ? open : undefined}
+				aria-label={
+					expandable
+						? open
+							? "Hide arguments"
+							: "Show arguments"
+						: undefined
+				}
+				className={cn(
+					"flex w-full items-center gap-2 px-2 py-1.5 text-left",
+					expandable && "hover:bg-accent/40",
+				)}
+			>
+				{expandable ? (
+					<ChevronRight
+						className={cn(
+							"h-3 w-3 shrink-0 text-muted-foreground transition-transform",
+							open && "rotate-90",
+						)}
+					/>
+				) : (
+					<span className="h-3 w-3 shrink-0" />
+				)}
+				<span className="min-w-0 flex-1 truncate font-mono font-medium">
+					{tool}
+				</span>
+				<span className="shrink-0 text-[11px] text-muted-foreground">
+					{duration_ms != null ? formatDuration(duration_ms) : ""}
+				</span>
+			</button>
+			{expandable && open ? (
+				<div className="max-h-[240px] overflow-y-auto border-t bg-muted/30 px-3 py-2">
+					<JsonTree value={args} />
+				</div>
+			) : null}
+		</div>
+	);
+}
+
 
 /** Render input/output that may be a string OR a JSON object. */
 function renderPayload(value: unknown): string {
@@ -96,6 +167,14 @@ export function RunReviewPanel({
 	hideVerdictBar = false,
 }: RunReviewPanelProps) {
 	const toolCalls = extractToolCalls(run.steps);
+	// "What it did" rendering decision tree:
+	//   v3+ summary with prose `did`     → render DidNarrative (chips inline
+	//                                       when [tool_name] markers present;
+	//                                       graceful plain-prose otherwise).
+	//   no `did` but has tool_call steps → fall back to the raw tool-call
+	//                                       list (v1/v2 era, pre-summary).
+	//   neither                          → hide the section entirely.
+	const hasDidProse = !!run.did && run.did.trim().length > 0;
 	const canVerdict = run.status === "completed" && !hideVerdictBar;
 	const compact = variant === "drawer";
 	const maxToolCalls = compact ? 3 : 4;
@@ -129,17 +208,19 @@ export function RunReviewPanel({
 	}
 
 	return (
-		<div data-slot="run-review-panel">
+		<div data-slot="run-review-panel" className="min-w-0">
 			<div
 				className={cn(
-					"grid",
+					"grid min-w-0",
 					compact ? "gap-3.5 px-4 py-3.5" : "gap-4 px-5 py-4",
 				)}
 			>
 				{needsRegen ? (
 					<div
 						className={cn(
-							"flex items-center justify-between gap-3 rounded-md border px-3 py-2",
+							// fade-in so the banner doesn't pop when the
+							// websocket flips summary_status to generating.
+							"flex items-center justify-between gap-3 rounded-md border px-3 py-2 animate-in fade-in duration-200",
 							summaryStatus === "failed"
 								? "border-rose-500/30 bg-rose-500/10"
 								: "bg-muted/40",
@@ -147,7 +228,7 @@ export function RunReviewPanel({
 						)}
 					>
 						<div className="flex items-center gap-2">
-							{regenSummary.isPending ? (
+							{summaryStatus === "generating" || regenSummary.isPending ? (
 								<Loader2 className="h-3.5 w-3.5 animate-spin" />
 							) : (
 								<RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
@@ -160,25 +241,31 @@ export function RunReviewPanel({
 										: "Summary pending"}
 							</span>
 						</div>
-						<button
-							type="button"
-							disabled={!isPlatformAdmin || regenSummary.isPending}
-							title={
-								isPlatformAdmin
-									? "Re-run summarization"
-									: "Only platform admins can regenerate summaries"
-							}
-							onClick={handleRegenerate}
-							className={cn(
-								"inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 text-xs font-medium transition-colors",
-								isPlatformAdmin && !regenSummary.isPending
-									? "hover:bg-accent"
-									: "cursor-not-allowed opacity-60",
-							)}
-							data-testid="regen-summary-panel-button"
-						>
-							Regenerate
-						</button>
+						{/* Hide the Regenerate button while generation is
+						    in flight — it would just no-op (idempotent
+						    short-circuit on the backend) and looks like the
+						    user is being asked to act. */}
+						{summaryStatus !== "generating" ? (
+							<button
+								type="button"
+								disabled={!isPlatformAdmin || regenSummary.isPending}
+								title={
+									isPlatformAdmin
+										? "Re-run summarization"
+										: "Only platform admins can regenerate summaries"
+								}
+								onClick={handleRegenerate}
+								className={cn(
+									"inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 text-xs font-medium transition-colors",
+									isPlatformAdmin && !regenSummary.isPending
+										? "hover:bg-accent"
+										: "cursor-not-allowed opacity-60",
+								)}
+								data-testid="regen-summary-panel-button"
+							>
+								Regenerate
+							</button>
+						) : null}
 					</div>
 				) : null}
 				<Section
@@ -199,7 +286,30 @@ export function RunReviewPanel({
 					</div>
 				</Section>
 
-				{toolCalls.length > 0 ? (
+				{hasDidProse ? (
+					<Section
+						icon={<Wrench size={13} />}
+						iconClassName="bg-blue-500/15 text-blue-600 dark:text-blue-400"
+						label="What it did"
+						compact={compact}
+					>
+						<div
+							className={cn(
+								"rounded-md border bg-muted/40 px-3 py-2",
+								compact ? "text-xs" : "text-sm",
+							)}
+						>
+							<DidNarrative
+								text={run.did}
+								steps={run.steps}
+								compact={compact}
+							/>
+						</div>
+					</Section>
+				) : toolCalls.length > 0 ? (
+					// No `did` summary at all (pre-summary or summary failed)
+					// — fall back to the raw tool-call list so the user
+					// still sees what the agent did.
 					<Section
 						icon={<Wrench size={13} />}
 						iconClassName="bg-blue-500/15 text-blue-600 dark:text-blue-400"
@@ -208,22 +318,12 @@ export function RunReviewPanel({
 					>
 						<div className="grid gap-1.5">
 							{visibleTools.map((c, i) => (
-								<div
+								<ToolCallRow
 									key={i}
-									className="flex items-center gap-2 rounded border bg-card px-2 py-1.5 text-xs"
-								>
-									<span className="font-mono font-medium">{c.tool}</span>
-									<span className="flex-1 truncate font-mono text-muted-foreground">
-										{typeof c.args === "string"
-											? c.args
-											: JSON.stringify(c.args)}
-									</span>
-									<span className="shrink-0 text-[11px] text-muted-foreground">
-										{c.duration_ms != null
-											? formatDuration(c.duration_ms)
-											: ""}
-									</span>
-								</div>
+									tool={c.tool}
+									args={c.args}
+									duration_ms={c.duration_ms}
+								/>
 							))}
 							{overflow > 0 ? (
 								<div className="text-xs text-muted-foreground">
@@ -253,9 +353,14 @@ export function RunReviewPanel({
 								compact ? "text-xs" : "text-sm",
 							)}
 						>
-							{run.did || (
-								<SummaryPlaceholder status={run.summary_status} runStatus={run.status} />
-							)}
+							{run.answered ||
+								// Fall back to `did` for v1/v2 summaries (no
+								// separate `answered` field). Shows the
+								// generic-but-better-than-nothing one-liner.
+								run.did ||
+								(
+									<SummaryPlaceholder status={run.summary_status} runStatus={run.status} />
+								)}
 						</div>
 					</Section>
 				) : (

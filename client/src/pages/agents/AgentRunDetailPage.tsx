@@ -27,7 +27,6 @@ import {
 	CheckCircle,
 	ChevronDown,
 	Clock,
-	Cpu,
 	Loader2,
 	RefreshCw,
 	Sparkles,
@@ -75,9 +74,9 @@ import {
 	RunReviewPanel,
 	type Verdict,
 } from "@/components/agents/RunReviewPanel";
+import { Timeline } from "@/components/agents/Timeline";
 
 type AgentRunDetailResponse = components["schemas"]["AgentRunDetailResponse"];
-type AgentRunStepResponse = components["schemas"]["AgentRunStepResponse"];
 
 export function AgentRunDetailPage() {
 	const { agentId, runId } = useParams<{
@@ -212,11 +211,19 @@ export function AgentRunDetailPage() {
 		);
 	}
 
-	const summaryFailed =
-		(run as unknown as { summary_status?: string }).summary_status ===
-		"failed";
-	const showRegen = isPlatformAdmin || summaryFailed;
-	const headerSummary = run.did || run.asked || "Agent run";
+	const summaryStatus =
+		(run as unknown as { summary_status?: string }).summary_status ?? null;
+	const summaryFailed = summaryStatus === "failed";
+	const summaryInFlight =
+		summaryStatus === "pending" || summaryStatus === "generating";
+	// While the summarizer is running, the RunReviewPanel already shows a
+	// status banner with a regenerate button — hide the sidebar card so we
+	// don't render two competing affordances.
+	const showRegen = (isPlatformAdmin || summaryFailed) && !summaryInFlight;
+	// Header title: `asked` is the user-facing TL;DR (capped ~100 chars by
+	// the summarizer prompt). `did` is a multi-sentence narrative under v3+
+	// and too long for a title; only fall back to it when `asked` is empty.
+	const headerSummary = run.asked || run.did || "Agent run";
 
 	return (
 		<div
@@ -283,9 +290,11 @@ export function AgentRunDetailPage() {
 
 			{/* Two-column layout */}
 			<div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-				{/* Main column */}
-				<div className="lg:col-span-2 flex flex-col gap-4">
-					<Card className="overflow-hidden">
+				{/* Main column. ``min-w-0`` is essential — without it long
+				    JSON strings inside the panel push past the column width
+				    and into the sidebar. */}
+				<div className="lg:col-span-2 flex min-w-0 flex-col gap-4">
+					<Card className="min-w-0 overflow-hidden">
 						<RunReviewPanel
 							run={run}
 							variant="page"
@@ -313,18 +322,17 @@ export function AgentRunDetailPage() {
 								/>
 								<Terminal className="h-3 w-3" />
 								<span>
-									Raw step timeline ({(run.steps ?? []).length}{" "}
-									steps)
+									Timeline ({(run.steps ?? []).length} steps)
 								</span>
 								<span className="ml-2 text-[11px]">
-									For debugging — what the executor actually did
+									Step-by-step view of what the executor did
 								</span>
 							</button>
 						</CollapsibleTrigger>
 						<CollapsibleContent>
 							<Card className="mt-2">
 								<CardContent className="p-3">
-									<RawStepTimeline steps={run.steps ?? []} />
+									<Timeline steps={run.steps ?? []} />
 								</CardContent>
 							</Card>
 						</CollapsibleContent>
@@ -353,7 +361,7 @@ export function AgentRunDetailPage() {
 				</div>
 
 				{/* Sidebar */}
-				<div className="flex flex-col gap-4">
+				<div className="flex min-w-0 flex-col gap-4">
 					<Card>
 						<CardHeader className="pb-2">
 							<CardTitle className="text-sm">
@@ -518,46 +526,6 @@ function RunStatusBadge({ status }: { status: string }) {
 		default:
 			return <Badge variant="outline">{status}</Badge>;
 	}
-}
-
-function RawStepTimeline({ steps }: { steps: AgentRunStepResponse[] }) {
-	if (!steps.length) {
-		return (
-			<p className="text-xs text-muted-foreground">
-				No steps recorded.
-			</p>
-		);
-	}
-	return (
-		<ul className="flex flex-col gap-2">
-			{steps.map((step, i) => (
-				<li
-					key={step.id ?? i}
-					className="rounded border bg-muted/30 p-2 text-xs"
-				>
-					<div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-						<Cpu className="h-3 w-3" />
-						<span>#{i + 1}</span>
-						<span>·</span>
-						<span>{step.type ?? "step"}</span>
-						{step.duration_ms != null ? (
-							<>
-								<span>·</span>
-								<span>
-									{formatDuration(step.duration_ms)}
-								</span>
-							</>
-						) : null}
-					</div>
-					{step.content ? (
-						<pre className="mt-1.5 whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
-							{JSON.stringify(step.content, null, 2)}
-						</pre>
-					) : null}
-				</li>
-			))}
-		</ul>
-	);
 }
 
 interface AIUsageEntry {

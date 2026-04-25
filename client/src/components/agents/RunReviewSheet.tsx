@@ -7,7 +7,8 @@
  * component is purely presentational.
  */
 
-import { Sparkles } from "lucide-react";
+import { ExternalLink, Sparkles } from "lucide-react";
+import { Link } from "react-router-dom";
 
 import {
 	Sheet,
@@ -66,10 +67,26 @@ export function RunReviewSheet({
 				aria-label="Run review"
 				className="flex w-full flex-col gap-0 p-0 sm:max-w-2xl"
 			>
-				<SheetHeader className="border-b px-6 py-4">
-					<SheetTitle className="truncate">
-						{run.did || run.asked || "Run review"}
-					</SheetTitle>
+				{/* pr-12 leaves room for the absolutely-positioned X close
+				    button (top-4 right-4 in ui/sheet.tsx); without this, the
+				    "Open full run" link overlaps the X. */}
+				<SheetHeader className="border-b py-4 pl-6 pr-12">
+					<div className="flex items-center justify-between gap-3">
+						<SheetTitle className="truncate">
+							{/* `asked` is the bounded TL;DR; `did` is
+							    multi-sentence prose under v3+ and too long
+							    for a title. */}
+							{run.asked || run.did || "Run review"}
+						</SheetTitle>
+						<Link
+							to={`/agents/${run.agent_id}/runs/${run.id}`}
+							className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+							aria-label="Open full run page"
+						>
+							Open full run
+							<ExternalLink className="h-3 w-3" />
+						</Link>
+					</div>
 				</SheetHeader>
 				<Tabs
 					defaultValue={defaultTab}
