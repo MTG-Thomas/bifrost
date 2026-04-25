@@ -38,16 +38,16 @@ Then use `Grep/Read` on `/tmp/bifrost-docs/llms.txt` whenever you need reference
 
 ### Principles
 
-- **Local first.** Use Glob, Read, Grep for discovery. `.bifrost/*.yaml` manifests are the source of truth.
-- **Write locally, sync to deploy.** Write files + manifest entries in the git repo. `bifrost watch` syncs file changes to the platform. New entities (workflows, forms, apps, agents) MUST be registered in `.bifrost/*.yaml` manifest files first — watch does not auto-discover new entities.
-- **Never use MCP for discovery** (`list_*`), reading code (`list_content`, `search_content`), or docs when a local workspace exists.
+- **Discovery goes through the platform.** Use `bifrost <entity> list` and `bifrost <entity> get <ref>` (or the equivalent MCP tools) to discover what exists. The platform's database is the source of truth for entity identity, not local files.
+- **`.bifrost/*.yaml` is export-only.** It is what `bifrost sync` / `bifrost export` produce as a versioning / portability artifact. Never read it for discovery and never edit it to mutate entities. Per-UUID `.form.yaml` / `.agent.yaml` files do not exist — form and agent content lives inline in `.bifrost/forms.yaml` and `.bifrost/agents.yaml` keyed by UUID, regenerated from the DB.
+- **Write code files locally; mutate entities through the CLI.** Workflow `.py` and app `.tsx` source belongs in the workspace and is synced by `bifrost watch`. Entity records (forms, agents, configs, tables, etc.) are mutated via `bifrost <entity> create | update | delete` — the server assigns the UUID on create.
 
 ### Before Building
 
-1. **Which organization?** Ask the user which organization they're building for (natural language — don't dump a list of UUIDs). Confirm the org name, then look up the UUID from `.bifrost/organizations.yaml`.
+1. **Which organization?** Ask the user which organization they're building for (natural language — don't dump a list of UUIDs). Confirm the org name, then resolve the UUID with `bifrost orgs get <name> --json` (or `bifrost orgs list --json` and pick from the list).
 2. **What triggers this?** (webhook, form, schedule, manual)
 3. **If webhook:** Get sample payload from user
-4. **What integrations?** Read `.bifrost/integrations.yaml`
+4. **What integrations?** `bifrost integrations list --json` — drill into specific ones with `bifrost integrations get <ref> --json`.
 5. **If migrating from Rewst:** Use `/rewst-migration` skill
 6. **If building something new** (new integration, workflow, app, or shared module — not modifying existing):
    > "It sounds like we're building something new. Would you like me to clone the bifrost-workspace-community repo? It has working examples from the community and might already have what you need."
@@ -70,8 +70,8 @@ Then use `Grep/Read` on `/tmp/bifrost-docs/llms.txt` whenever you need reference
 #### Organization Context for CLI Commands
 
 - **`bifrost run`**: Use `--org <UUID>` to execute in that org's context
-- **`bifrost watch`/`sync`**: Files sync based on manifest bindings, not CLI flags — the manifest's org references in `.bifrost/*.yaml` determine where things land
-- **`bifrost api`**: Authenticated API client for inspecting platform state (executions, workflows, etc.). Endpoints that need org context accept it as a parameter in the URL or body, same as the web UI
+- **`bifrost watch`/`sync`**: Files sync based on manifest bindings, not CLI flags — but mutating entity records (forms/agents/etc.) goes through `bifrost <entity> create | update`, which take org refs explicitly
+- **`bifrost api`**: Authenticated API client for inspecting platform state (executions, etc.) when no dedicated command exists
 
 ### Syncing and Deployment — NEVER Run Without Being Asked
 
@@ -85,42 +85,35 @@ pgrep -f 'bifrost watch' > /dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING
 
 If not running, tell the user: "Please run `bifrost watch` in a terminal to start syncing." Wait for confirmation before writing files. Once watch is running, the agent writes files locally and watch auto-pushes them.
 
-### Discovery: Read Local Files
+### Discovery: Query the Platform
 
-| To find... | Read this file |
+| To find... | Command |
 |---|---|
-| Workflows/tools/data_providers | `.bifrost/workflows.yaml` |
-| Forms and linked workflows | `.bifrost/forms.yaml` + `forms/*.form.yaml` |
-| Agents and tool assignments | `.bifrost/agents.yaml` + `agents/*.agent.yaml` |
-| Apps | `.bifrost/apps.yaml` + `apps/*/app.yaml` |
-| Organizations | `.bifrost/organizations.yaml` |
-| Integrations | `.bifrost/integrations.yaml` |
-| Tables | `.bifrost/tables.yaml` |
-| Events | `.bifrost/events.yaml` |
+| Workflows / tools / data providers | `bifrost workflows list --json` (`bifrost workflows get <ref> --json` for one) |
+| Forms | `bifrost forms list --json` / `bifrost forms get <ref> --json` |
+| Agents | `bifrost agents list --json` / `bifrost agents get <ref> --json` |
+| Apps | `bifrost apps list --json` / `bifrost apps get <ref> --json` |
+| Organizations | `bifrost orgs list --json` / `bifrost orgs get <ref> --json` |
+| Roles | `bifrost roles list --json` / `bifrost roles get <ref> --json` |
+| Integrations | `bifrost integrations list --json` / `bifrost integrations get <ref> --json` |
+| Tables | `bifrost tables list --json` / `bifrost tables get <ref> --json` |
+| Configs | `bifrost configs list --json` / `bifrost configs get <ref> --json` |
+| Event sources | `bifrost events list-sources --json` / `bifrost events get-source <ref> --json` |
+| Event subscriptions | `bifrost events list-subscriptions <source-ref> --json` |
 
-For YAML field formats, grep `/tmp/bifrost-docs/llms.txt` for `ManifestWorkflow`, `ManifestForm`, etc.
+For anything without a dedicated command, fall back to `bifrost api GET <path>` — the authenticated REST passthrough. **Do not read `.bifrost/*.yaml` for discovery — it is an export artifact, not the source of truth.**
 
-### UUID Generation (CRITICAL)
-
-**Generate ALL entity UUIDs BEFORE writing files.** Cross-references must be valid at write time.
-
-```python
-import uuid
-wf_id = str(uuid.uuid4())
-form_id = str(uuid.uuid4())
-agent_id = str(uuid.uuid4())
-```
-
-Then use these IDs in all files — workflow code, manifest entries, form/agent YAML cross-references.
+For YAML field formats and DTO schemas, grep `/tmp/bifrost-docs/llms.txt` for `WorkflowUpdateRequest`, `FormCreate`, etc. Every CLI verb's full flag list is also available via `bifrost <entity> <verb> --help` (generated from the DTOs so it is always in sync).
 
 ### Creation Flow
 
-1. Generate UUIDs for all new entities
-2. Write entity files (workflow `.py`, form `.form.yaml`, agent `.agent.yaml`, app `.tsx`)
-3. Add entries to `.bifrost/*.yaml` manifest files
-4. Watch mode syncs file changes to platform (entities must already be in manifests)
-5. Test workflows: `bifrost run <file> --workflow <name> --org <UUID> --params '{...}'`
-6. When happy: `git add && git commit && git push`
+1. **Pick the right surface for what you're creating:**
+   - **Code entities** (workflow `.py`, app `.tsx`): write the file in the workspace; let `bifrost watch` sync it; then for workflows run `bifrost workflows register --path workflows/foo.py --function-name foo` to index the decorated function (the server assigns the UUID and returns it).
+   - **Renaming or moving a workflow:** Do NOT re-register after a rename/move — that mints a new UUID and breaks form/agent references. Instead: write the new file, then `bifrost workflows replace <old-uuid> --path <new-path> --function-name <new-func>`. Find the orphaned UUID first with `bifrost workflows list-orphaned --json` if needed.
+   - **Content entities** (forms, agents, integrations, tables, configs, event sources, roles, orgs): use the entity's `create` command — `bifrost <entity> create --name foo ...`. The server assigns the UUID and returns it. File-loaded fields (form schemas, agent system prompts, etc.) accept `@path/to/file` syntax (e.g. `--system-prompt @prompt.md`, `--form-schema @schema.yaml`, `--config-schema @schema.yaml`).
+2. **Capture the returned UUID** from the create command's JSON output if anything else needs to reference it (forms reference workflows, agents reference tools, etc.). Cross-references can also be portable refs (`name`, `path::func`, slug) — the CLI resolves them at submit time.
+3. **Verify by re-querying:** `bifrost <entity> get <uuid>` (or by name) confirms the platform sees what you intended.
+4. **For discovery of what already exists:** `bifrost <entity> list` / `bifrost <entity> get <ref>` — never read `.bifrost/*.yaml`.
 
 ### MCP Tool Naming Convention (CRITICAL for Discoverability)
 
@@ -154,6 +147,11 @@ Example — Agent Tuning tools:
 | `bifrost api <METHOD> <path>` | Bifrost platform API client ONLY — inspect executions, validate apps, check platform state. NOT for third-party APIs. |
 | `bifrost push` | One-shot upload — **interactive TUI, user must run manually** |
 | `bifrost pull` | One-shot download — **interactive TUI, user must run manually** |
+| `bifrost <entity> list \| get \| create \| update \| delete` | Discover and mutate entity records (orgs, roles, workflows, forms, agents, apps, integrations, tables, configs, events). Server assigns the UUID on create. Flag list per verb: `bifrost <entity> <verb> --help` (generated from the DTO, always in sync). |
+| `bifrost workflows register --path workflows/foo.py --function-name foo` | Register a decorated workflow function from a `.py` file that `bifrost watch` has already synced. |
+| `bifrost workflows list-orphaned` | List workflows whose source file was deleted or function renamed without using `replace`. These are invisible to `bifrost workflows list`. |
+| `bifrost workflows replace <uuid> --path <new-path> --function-name <new-func>` | Repoint an orphaned workflow UUID to a new file location. UUID is preserved — form/agent/app references stay intact. File must exist and contain the named decorated function. |
+| `bifrost migrate-imports` | Rewrite `import from "bifrost"` statements to use `lucide-react` / `react-router-dom` / relative paths. **Always review the diff** before applying — the classifier uses regex, not AST, so a local binding that shadows a platform name can be misclassified. |
 
 ### Platform Operations
 
@@ -163,13 +161,13 @@ Example — Agent Tuning tools:
 | Run a workflow (remote) | `bifrost api POST /api/workflows/{id}/execute '{"workflow_id":"...","input_data":{...},"sync":true}'` |
 | Check execution logs | `bifrost api GET /api/executions/{id}` |
 | List executions | `bifrost api GET /api/executions` |
-| Verify platform state | `bifrost api GET /api/workflows` (only for debugging sync divergence) |
+| List workflows / discover by id | `bifrost workflows list --json` / `bifrost workflows get <ref> --json` |
 | Validate an app | `bifrost api POST /api/applications/{id}/validate` |
 | Download platform docs | `bifrost api GET /api/llms.txt > /tmp/bifrost-docs/llms.txt` |
 
 ### `bifrost api` Boundaries (CRITICAL)
 
-`bifrost api` is ONLY for the Bifrost platform API. It does NOT proxy to third-party integration APIs.
+`bifrost api` is ONLY for the Bifrost platform API. It does NOT proxy to third-party integration APIs. Prefer the dedicated `bifrost <entity> ...` verbs whenever one exists; `bifrost api` is the escape hatch for endpoints not yet wrapped by a verb.
 
 - **Valid**: `/api/executions/{id}`, `/api/workflows`, `/api/applications/{id}/validate`, `/api/llms.txt`
 - **Invalid**: `/Client/237` (HaloPSA), `/companies` (Pax8), or any non-`/api/` path
@@ -197,7 +195,7 @@ Example — Agent Tuning tools:
 
 ### Syncing
 
-**`bifrost watch` handles all syncing.** The agent NEVER runs sync commands directly.
+**`bifrost watch` handles file syncing.** Entity records (forms, agents, etc.) are NOT synced via watch — they are mutated through `bifrost <entity> create | update | delete`. The agent NEVER runs sync commands (`bifrost sync` / `push` / `pull`) directly.
 
 #### NEVER run these commands from the agent (CRITICAL)
 
@@ -205,12 +203,12 @@ Example — Agent Tuning tools:
 
 #### Sync rules
 
-1. **Before writing any files**, verify `bifrost watch` is running:
+1. **Before writing any code files**, verify `bifrost watch` is running:
    ```bash
    pgrep -f 'bifrost watch' > /dev/null 2>&1 && echo "RUNNING" || echo "NOT RUNNING"
    ```
-2. **If watch is running**: Write files locally AND add `.bifrost/*.yaml` entries for any NEW entities. Watch syncs file changes but does NOT auto-discover unregistered entities.
-3. **If watch is NOT running**: Tell the user: "Please run `bifrost watch` in a terminal first." **Do NOT write files or attempt to sync until the user confirms watch is running.**
+2. **If watch is running**: Write code files locally. Watch syncs file changes. For new entity records, run `bifrost <entity> create ...` — do NOT add `.bifrost/*.yaml` entries by hand.
+3. **If watch is NOT running**: Tell the user: "Please run `bifrost watch` in a terminal first." **Do NOT write files until the user confirms watch is running.**
 4. **If the user asks to sync manually** (push/pull/sync): Tell them to run the command themselves in their terminal since it requires interactive TUI input.
 5. **`bifrost git push`** is for git-integrated deployments. Only mention it when the user explicitly asks about git deployment — and they must run it themselves.
 
@@ -235,7 +233,7 @@ bifrost git diff <path>               # show file diff
 bifrost git discard <path>            # discard working tree changes
 ```
 
-Typical workflow: `bifrost git fetch` → `bifrost git commit -m "msg"` → `bifrost git push` → `git pull` (to get the platform's commits locally).
+Typical workflow: `bifrost git fetch` -> `bifrost git commit -m "msg"` -> `bifrost git push` -> `git pull` (to get the platform's commits locally).
 
 ## MCP-Only Mode
 
@@ -270,136 +268,44 @@ Before writing any app code, design what you're building.
 
 ### Critical App Rules
 
-1. **Imports:** `import { Button, useWorkflowQuery, useState } from "bifrost"` — everything from one import
-2. **Root layout:** `_layout.tsx` uses `<Outlet />`, NOT `{children}`
-3. **Workflow hooks:** Always use UUIDs, never names — `useWorkflowQuery("uuid-here")`
-4. **Fixed-height container:** Your app renders in a fixed-height box — manage your own scrolling
-5. **Custom CSS:** `styles.css` at app root, dark mode via `.dark` selector
-6. **Dependencies:** Declare npm packages in `app.yaml` (max 20, loaded from esm.sh)
-7. **Custom components:** Components in `components/` are auto-injected — do NOT write import statements for them. Just use `<MyComponent />` directly. Only import from `"bifrost"` or npm package names.
-8. **Default exports:** Every custom component file in `components/` MUST have a default export
-9. **Reserved names:** Never use `$`, `$deps`, `__defaultExport__`, `__exports__` as variable names (reserved by runtime)
-
-For component lists, hooks API, CSS examples, sandbox constraints — grep `/tmp/bifrost-docs/llms.txt`.
+1. **Every `<PascalCase>` tag and identifier needs an explicit import.** There is no auto-injection. See [import-patterns.md](import-patterns.md) for which name comes from which source.
+2. **Root layout:** `_layout.tsx` uses `<Outlet />` from `"bifrost"` (or `"react-router-dom"`) — NOT `{children}`.
+3. **Workflow hooks:** Always use UUIDs, never names — `useWorkflowQuery("uuid-here")`. Resolve UUIDs with `bifrost workflows list --json` or `bifrost workflows get <ref> --json`.
+4. **Fixed-height container:** Your app renders in a fixed-height box — manage your own scrolling (see [app-patterns.md](app-patterns.md) "Custom components" for layout patterns).
+5. **Custom CSS:** `styles.css` at app root, dark mode via `.dark` selector.
+6. **Dependencies:** Declare npm packages in `app.yaml` (max 20, loaded from esm.sh at runtime — no `package.json` required).
+7. **Default exports:** Every page file MUST have a default export. Components under `components/` may be default or named; the bundler detects which.
+8. **Migrating an older app:** run `bifrost migrate-imports` from the workspace root, then **review the diff** before applying. See [import-patterns.md](import-patterns.md) "Migration notes".
 
 ### App Resilience Rules (MANDATORY)
 
-These patterns are REQUIRED for every app. Skipping them leads to broken apps.
+These patterns are required for every data-fetching page. Full code examples in [app-patterns.md](app-patterns.md).
 
-#### Loading & Error States (every data-fetching page)
+- Handle `isLoading` / `isError` on every `useWorkflowQuery`.
+- Null-safe access: `data?.items?.map(...)`, never `data.items.map(...)`.
+- Every `useWorkflowMutation` must handle errors (toast + stay on page).
+- Verify `useEffect` dep arrays — no stale closures.
+- Custom components go in `components/<Name>.tsx`, imported relatively.
+- Heavy routes: split with `React.lazy(() => import("./pages/heavy"))` + `<Suspense>`.
 
-```tsx
-const { data, isLoading, isError, error } = useWorkflowQuery("uuid");
-if (isLoading) return <div className="flex items-center justify-center h-full"><Loader2 className="animate-spin" /></div>;
-if (isError) return <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error ?? "Failed to load"}</AlertDescription></Alert>;
-```
+### Platform API Reference
 
-#### Null-safe Data Access
+Every name exported by the `"bifrost"` package is listed in [platform-api.md](platform-api.md) with signature and usage example. The canonical list lives in `api/bifrost/platform_names.py` (`PLATFORM_EXPORT_NAMES`) and a drift test enforces docs match the set.
 
-Always `data?.items?.map(...)`, never `data.items.map(...)`. Workflow queries return `null` before data loads.
-
-#### Mutation Error Handling
-
-Every `useWorkflowMutation` must handle errors with user feedback:
-
-```tsx
-const { execute, isLoading } = useWorkflowMutation("uuid");
-const handleSubmit = async () => {
-  const result = await execute(params);
-  if (result.error) { toast.error(result.error); return; }
-  toast.success("Saved");
-};
-```
-
-#### Dependency Safety
-
-- **Pre-included (no install needed):** `recharts`, `date-fns`, Lucide icons, `clsx`, `tailwind-merge`, `cn`, `format` (date-fns)
-- **Testing unknown packages:** Open browser console on a running app and run:
-  ```js
-  import("https://esm.sh/PACKAGE@VERSION?deps=react@19.1.0,react-dom@19.1.0").then(m => console.log(Object.keys(m)))
-  ```
-- **Animations:** Always prefer Tailwind (`animate-in`, `transition-all`, `duration-200`) + CSS `@keyframes` in `styles.css` over JS animation libraries (complex dep trees, dual-React risk)
-- **Always declare in `app.yaml` dependencies BEFORE importing**
-- Failed ESM loads throw descriptive errors on property access — check browser console
-
-#### Custom Component Rules
-
-- Every custom component file MUST have a default export
-- Verify `components/{Name}.tsx` exists before using `<Name />`
-- Components CAN reference each other (the resolver handles this via topological sort)
-
-### useAppState — Cross-Page State
-
-Zustand-backed `[value, setValue]` tuple, like `useState` but persists across page navigations.
-
-```tsx
-const [selectedClient, setSelectedClient] = useAppState("selectedClient", null);
-```
-
-**Behavior:**
-- Can store anything: primitives, objects, arrays, nested structures
-- Scoped to the app session — cleared on browser refresh or switching apps
-- NOT persistent storage — for permanent data, use workflows to save/load from DB
-
-**Use cases:** Selected item between list/detail pages, filter/sort preferences, multi-step form data, shopping cart, sidebar collapse state.
-
-**Example — list page sets, detail page reads:**
-```tsx
-// List page
-const [, setSelectedClient] = useAppState("selectedClient", null);
-<Button onClick={() => { setSelectedClient(client); navigate("/details"); }}>View</Button>
-
-// Detail page
-const [selectedClient] = useAppState("selectedClient", null);
-if (!selectedClient) return <Navigate to="/" />;
-```
-
-### useUser — Role-Based Access
-
-```tsx
-const user = useUser();
-// user.id: string
-// user.email: string
-// user.name: string
-// user.roles: string[]
-// user.hasRole("Admin"): boolean
-// user.organizationId: string
-```
-
-**Prescribed patterns:**
-
-Page-level guard (first line of component):
-```tsx
-if (!user.hasRole("Admin")) return <Navigate to="/" />;
-```
-
-Section-level guard:
-```tsx
-{user.hasRole("Manager") && <AdminPanel />}
-```
-
-Declarative guard component:
-```tsx
-<RequireRole role="Admin" fallback={<Navigate to="/" />}>
-  <AdminPage />
-</RequireRole>
-```
-
-Layout-level guard (protect all child routes):
-```tsx
-// In _layout.tsx
-const user = useUser();
-if (!user.hasRole("Admin")) return <Navigate to="/" />;
-return <div className="flex h-full"><Sidebar /><Outlet /></div>;
-```
+Common lookups:
+- **`useWorkflowQuery` / `useWorkflowMutation`** — [platform-api.md](platform-api.md) § Hooks
+- **`useUser` / `useAppState` / `RequireRole`** — [platform-api.md](platform-api.md) § Hooks
+- **UI primitives (Button, Card, Dialog, Table, etc.)** — [platform-api.md](platform-api.md) § UI Components
+- **`toast` / `cn` / `format*`** — [platform-api.md](platform-api.md) § Utilities
+- **React Router (Link, useNavigate, etc.)** — [platform-api.md](platform-api.md) § React Router
 
 ### App Workflow (SDK-First)
 
 1. Write files in `apps/{slug}/`
-2. Add entry to `.bifrost/apps.yaml`
-3. `bifrost watch` syncs file changes (auto-validates app dirs after each push). New apps must be added to `.bifrost/apps.yaml` first.
+2. Create the app record: `bifrost apps create --name "My App" --slug my-app [--deps @package.json]` — the server assigns the UUID and returns it. Do NOT hand-edit `.bifrost/apps.yaml`.
+3. `bifrost watch` syncs file changes (triggers esbuild rebuild + validation after each push).
 4. Preview at `$BIFROST_DEV_URL/apps/{slug}/preview`
-5. Fix any validation errors shown in watch output
+5. Fix any validation errors shown in watch output. esbuild errors appear as a banner in the preview and in the diagnostics channel — the last good bundle keeps serving underneath until the error is fixed.
 
 ### App Workflow (MCP-Only)
 
@@ -410,13 +316,17 @@ return <div className="flex h-full"><Sidebar /><Outlet /></div>;
 
 ### Post-Build Validation Checklist (REQUIRED)
 
-After writing all app files, you MUST verify:
+After writing all app files, verify:
 
 1. `_layout.tsx` exists and uses `<Outlet />`
 2. `pages/index.tsx` exists
-3. Every npm import matches an entry in `app.yaml` dependencies (pre-included packages exempt)
-4. Every `useWorkflowQuery`/`useWorkflowMutation` uses a valid UUID from `.bifrost/workflows.yaml`
-5. Every `<PascalCase />` JSX tag is either: a shadcn component, a Lucide icon, or a file in `components/`
+3. Every npm import matches an entry in `app.yaml` dependencies (see [import-patterns.md](import-patterns.md) "User npm deps"; pre-included packages exempt).
+4. Every `useWorkflowQuery`/`useWorkflowMutation` uses a valid UUID returned by `bifrost workflows get <ref>` or visible in `bifrost workflows list --json` — do NOT grep `.bifrost/workflows.yaml`.
+5. Every `<PascalCase />` JSX tag and every referenced identifier has a matching import — no auto-injection. Cross-reference against [import-patterns.md](import-patterns.md):
+   - Platform names → `"bifrost"`
+   - Icons → `"lucide-react"`
+   - Router primitives → `"react-router-dom"` (preferred) or `"bifrost"` (still works)
+   - User components → relative (`./components/Name`)
 6. Run validation: `bifrost api POST /api/applications/{id}/validate` (or MCP `validate_app`)
 7. Review validation output — fix ALL errors before telling user it's ready
 8. Open preview URL and verify pages render (or instruct user to check)
@@ -434,7 +344,7 @@ After writing all app files, you MUST verify:
 
 1. Check execution logs: `bifrost api GET /api/executions/{id}`
 2. Check `bifrost watch` output for sync errors
-3. Verify platform state: `bifrost api GET /api/workflows` (only if sync divergence suspected)
+3. Verify platform state: `bifrost workflows list --json` / `bifrost <entity> get <ref> --json` (only if sync divergence suspected)
 
 ### When Errors Suggest System Bugs
 

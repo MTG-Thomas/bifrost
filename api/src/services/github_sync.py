@@ -697,16 +697,10 @@ class GitHubSyncService:
         # Filter out entities whose files don't exist in work_dir.
         # The DB may contain entities from other workspaces or deleted files;
         # the manifest should only reference files actually present in the repo.
+        # Forms/agents carry inline content under their UUID — they have no
+        # required companion file, so they are NOT filtered by file existence.
         manifest.workflows = {
             k: v for k, v in manifest.workflows.items()
-            if (work_dir / v.path).exists()
-        }
-        manifest.forms = {
-            k: v for k, v in manifest.forms.items()
-            if (work_dir / v.path).exists()
-        }
-        manifest.agents = {
-            k: v for k, v in manifest.agents.items()
             if (work_dir / v.path).exists()
         }
         manifest.apps = {
@@ -1497,56 +1491,65 @@ class GitHubSyncService:
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 pass  # ruff not available or timed out — skip lint
 
-        # 4. Ref resolution (UUID references in entity files)
-        if manifest:
-            entity_ids = get_all_entity_ids(manifest)
-            # Check forms for workflow UUID references
-            for form_name, mform in manifest.forms.items():
+        # 4. Ref resolution (UUID references in forms)
+        # Forms now carry workflow_id / launch_workflow_id inline in the manifest.
+        # Back-compat: if a form has no inline workflow_id but has a path,
+        # parse the companion file (legacy split layout).
+        def _form_workflow_refs(mform) -> tuple[str | None, str | None]:
+            """Return (workflow_id, launch_workflow_id) for a manifest form.
+
+            Prefers inline fields; falls back to companion file for back-compat.
+            """
+            if mform.workflow_id is not None or mform.launch_workflow_id is not None:
+                return mform.workflow_id, mform.launch_workflow_id
+            if mform.path:
                 form_path = repo_dir / mform.path
                 if form_path.exists():
                     try:
-                        data = yaml.safe_load(form_path.read_text())
-                        if data:
-                            wf_ref = data.get("workflow")
-                            if wf_ref and wf_ref not in entity_ids:
-                                issues.append(PreflightIssue(
-                                    path=mform.path,
-                                    message=f"Form references unknown workflow UUID: {wf_ref}",
-                                    severity="error",
-                                    category="ref",
-                                    fix_hint="Edit this form and assign a valid workflow.",
-                                ))
-                            launch_ref = data.get("launch_workflow")
-                            if launch_ref and launch_ref not in entity_ids:
-                                issues.append(PreflightIssue(
-                                    path=mform.path,
-                                    message=f"Form references unknown launch workflow UUID: {launch_ref}",
-                                    severity="error",
-                                    category="ref",
-                                    fix_hint="Edit this form and assign a valid launch workflow.",
-                                ))
+                        data = yaml.safe_load(form_path.read_text()) or {}
+                        return (
+                            data.get("workflow_id") or data.get("workflow"),
+                            data.get("launch_workflow_id") or data.get("launch_workflow"),
+                        )
                     except Exception:
                         pass
+            return None, None
+
+        if manifest:
+            entity_ids = get_all_entity_ids(manifest)
+            for form_name, mform in manifest.forms.items():
+                wf_ref, launch_ref = _form_workflow_refs(mform)
+                ref_path = mform.path or f"forms/{mform.id}"
+                if wf_ref and wf_ref not in entity_ids:
+                    issues.append(PreflightIssue(
+                        path=ref_path,
+                        message=f"Form references unknown workflow UUID: {wf_ref}",
+                        severity="error",
+                        category="ref",
+                        fix_hint="Edit this form and assign a valid workflow.",
+                    ))
+                if launch_ref and launch_ref not in entity_ids:
+                    issues.append(PreflightIssue(
+                        path=ref_path,
+                        message=f"Form references unknown launch workflow UUID: {launch_ref}",
+                        severity="error",
+                        category="ref",
+                        fix_hint="Edit this form and assign a valid launch workflow.",
+                    ))
 
             # 5. Orphan detection — workflows referenced by forms but missing from manifest
             wf_ids = {mwf.id for mwf in manifest.workflows.values()}
             for form_name, mform in manifest.forms.items():
-                form_path = repo_dir / mform.path
-                if form_path.exists():
-                    try:
-                        data = yaml.safe_load(form_path.read_text())
-                        if data:
-                            wf_ref = data.get("workflow")
-                            if wf_ref and wf_ref not in wf_ids:
-                                issues.append(PreflightIssue(
-                                    path=mform.path,
-                                    message=f"Form '{form_name}' references workflow {wf_ref} which is not in the manifest (will be orphaned)",
-                                    severity="warning",
-                                    category="orphan",
-                                    fix_hint="Register the referenced workflow, or update the form to reference an active one.",
-                                ))
-                    except Exception:
-                        pass
+                wf_ref, _ = _form_workflow_refs(mform)
+                ref_path = mform.path or f"forms/{mform.id}"
+                if wf_ref and wf_ref not in wf_ids:
+                    issues.append(PreflightIssue(
+                        path=ref_path,
+                        message=f"Form '{form_name}' references workflow {wf_ref} which is not in the manifest (will be orphaned)",
+                        severity="warning",
+                        category="orphan",
+                        fix_hint="Register the referenced workflow, or update the form to reference an active one.",
+                    ))
 
             # 6. Cross-reference validation for new entity types
             from bifrost.manifest import validate_manifest

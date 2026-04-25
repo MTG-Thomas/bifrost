@@ -2,26 +2,6 @@
 from src.services.github_sync_entity_metadata import extract_entity_metadata
 
 
-def test_extract_entity_metadata_for_form():
-    """Form files should extract name from YAML content."""
-    content = b'name: Contact Form\nfields: []\n'
-    metadata = extract_entity_metadata("forms/contact.form.yaml", content)
-
-    assert metadata.entity_type == "form"
-    assert metadata.display_name == "Contact Form"
-    assert metadata.parent_slug is None
-
-
-def test_extract_entity_metadata_for_agent():
-    """Agent files should extract name from YAML content."""
-    content = b'name: Support Agent\nmodel: gpt-4\n'
-    metadata = extract_entity_metadata("agents/support.agent.yaml", content)
-
-    assert metadata.entity_type == "agent"
-    assert metadata.display_name == "Support Agent"
-    assert metadata.parent_slug is None
-
-
 def test_extract_entity_metadata_for_app_file():
     """App files should have parent_slug and relative path as display_name."""
     metadata = extract_entity_metadata(

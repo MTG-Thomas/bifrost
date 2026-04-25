@@ -53,6 +53,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Version Info */
+        get: operations["get_version_info_api_version_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/login": {
         parameters: {
             query?: never;
@@ -1727,6 +1744,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/executions/{execution_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel a scheduled execution
+         * @description Cancel a SCHEDULED execution (row not yet promoted to the queue). Returns 409 if the row is in any other status (including already PENDING). Cancelling a RUNNING execution is a separate feature and is not handled here.
+         */
+        post: operations["cancel_scheduled_execution_api_workflows_executions__execution_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/validate": {
         parameters: {
             query?: never;
@@ -3386,22 +3423,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__post"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3638,6 +3675,10 @@ export interface paths {
          *
          *     The new token is persisted to the database so subsequent integrations.get() calls
          *     also benefit from the refreshed token.
+         *
+         *     The HTTP refresh itself is delegated to the shared primitive
+         *     :func:`src.services.oauth_provider.refresh_oauth_token_http`; this handler
+         *     only owns the provider lookup, context build, and persistence.
          */
         post: operations["sdk_integrations_refresh_token_api_cli_integrations_refresh_token_post"];
         delete?: never;
@@ -4540,6 +4581,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/stats/fleet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Fleet Stats Endpoint
+         * @description Fleet-wide agent run stats over the last ``window_days``.
+         *
+         *     Superusers see cross-org totals; org users are scoped to their org.
+         *     Route is registered before ``/{agent_id}`` so the literal ``stats``
+         *     prefix is not parsed as a UUID.
+         */
+        get: operations["get_fleet_stats_endpoint_api_agents_stats_fleet_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}": {
         parameters: {
             query?: never;
@@ -4591,6 +4656,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Stats Endpoint
+         * @description Per-agent run stats. Reuses the same access check as ``GET /{agent_id}``.
+         */
+        get: operations["get_agent_stats_endpoint_api_agents__agent_id__stats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/tools": {
         parameters: {
             query?: never;
@@ -4604,32 +4689,8 @@ export interface paths {
          */
         get: operations["get_agent_tools_api_agents__agent_id__tools_get"];
         put?: never;
-        /**
-         * Assign Tools To Agent
-         * @description Assign tools to an agent (platform admin only).
-         */
-        post: operations["assign_tools_to_agent_api_agents__agent_id__tools_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agents/{agent_id}/tools/{workflow_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
         post?: never;
-        /**
-         * Remove Tool From Agent
-         * @description Remove a tool from an agent (platform admin only).
-         */
-        delete: operations["remove_tool_from_agent_api_agents__agent_id__tools__workflow_id__delete"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4648,32 +4709,8 @@ export interface paths {
          */
         get: operations["get_agent_delegations_api_agents__agent_id__delegations_get"];
         put?: never;
-        /**
-         * Assign Delegations To Agent
-         * @description Assign delegation targets to an agent (platform admin only).
-         */
-        post: operations["assign_delegations_to_agent_api_agents__agent_id__delegations_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agents/{agent_id}/delegations/{delegate_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
         post?: never;
-        /**
-         * Remove Delegation From Agent
-         * @description Remove a delegation from an agent (platform admin only).
-         */
-        delete: operations["remove_delegation_from_agent_api_agents__agent_id__delegations__delegate_id__delete"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4691,6 +4728,52 @@ export interface paths {
          * @description List agent runs with optional filters.
          */
         get: operations["list_agent_runs_api_agent_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/backfill-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Backfill Jobs
+         * @description Admin-only: list summary backfill jobs (optionally filtered to active).
+         *
+         *     Registered before ``/{run_id}`` so the literal path isn't swallowed by
+         *     the run-detail handler.
+         */
+        get: operations["list_backfill_jobs_api_agent_runs_backfill_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/backfill-eligible": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Backfill Eligible
+         * @description Lightweight preview the UI uses to decide whether to show the Backfill
+         *     button at all. Returns 0/0.00 if nothing is eligible — caller can hide
+         *     the affordance instead of surfacing a dead-end "Nothing to backfill"
+         *     modal.
+         */
+        get: operations["get_backfill_eligible_api_agent_runs_backfill_eligible_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4759,6 +4842,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent-runs/{run_id}/verdict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Verdict
+         * @description Set a verdict on a completed run. Records an audit row.
+         */
+        post: operations["set_verdict_api_agent_runs__run_id__verdict_post"];
+        /**
+         * Clear Verdict
+         * @description Clear the verdict on a run. Records an audit row.
+         */
+        delete: operations["clear_verdict_api_agent_runs__run_id__verdict_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/flag-conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Flag Conversation
+         * @description Return the tuning conversation attached to a flagged run.
+         *
+         *     Creates an empty conversation row if none exists yet so the UI can
+         *     stream messages into a stable ``id``.
+         */
+        get: operations["get_flag_conversation_api_agent_runs__run_id__flag_conversation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/flag-conversation/message": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Flag Message
+         * @description Append a user turn and synchronously get the tuning-model reply.
+         */
+        post: operations["send_flag_message_api_agent_runs__run_id__flag_conversation_message_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/regenerate-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate Summary
+         * @description Reset summary state and re-enqueue a summarization job. Admin-only.
+         */
+        post: operations["regenerate_summary_api_agent_runs__run_id__regenerate_summary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/{run_id}/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry Run Agent Run
+         * @description Evaluate a proposed system prompt against a past run's transcript.
+         *
+         *     Single LLM call — does not re-execute tools. Returns a structured
+         *     verdict indicating whether the new prompt would produce the same
+         *     decision. Records an ``AIUsage`` row on the original run for cost
+         *     tracking (``sequence=8000``).
+         */
+        post: operations["dry_run_agent_run_api_agent_runs__run_id__dry_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent-runs/execute": {
         parameters: {
             query?: never;
@@ -4773,6 +4968,146 @@ export interface paths {
          * @description Execute an agent synchronously via the SDK.
          */
         post: operations["execute_agent_run_api_agent_runs_execute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/backfill-summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Backfill Summaries
+         * @description Enqueue summarization for pending/failed runs. Admin-only.
+         *
+         *     If ``dry_run=true``, returns the eligible count and estimated cost
+         *     without enqueuing anything. Otherwise creates a ``SummaryBackfillJob``
+         *     orchestration row and publishes one ``agent-summarization`` message
+         *     per run tagged with the job_id; progress is broadcast on the
+         *     ``summary-backfill:{job_id}`` channel.
+         */
+        post: operations["backfill_summaries_api_agent_runs_backfill_summaries_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/backfill-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Backfill Job
+         * @description Admin-only: current progress for a summary backfill job.
+         */
+        get: operations["get_backfill_job_api_agent_runs_backfill_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-runs/backfill-jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Backfill Job
+         * @description Mark a backfill job as cancelled so the UI unblocks.
+         *
+         *     This does NOT drain messages already on the ``agent-summarization``
+         *     queue — RabbitMQ will keep delivering them and the worker will keep
+         *     summarising individual runs. What it does do:
+         *
+         *     - flips ``status`` from ``running`` to ``cancelled``
+         *     - sets ``completed_at`` so the row stops appearing in "active" queries
+         *     - broadcasts final state so the progress card dismisses itself
+         *
+         *     Use this when progress has stalled (e.g. the worker was restarted
+         *     mid-job and prefetched messages went back on the queue but the counter
+         *     never advanced) — admins need a way out.
+         */
+        post: operations["cancel_backfill_job_api_agent_runs_backfill_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/tuning-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Tuning Session
+         * @description Generate a consolidated prompt proposal from this agent's flagged runs.
+         */
+        post: operations["create_tuning_session_api_agents__agent_id__tuning_session_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/tuning-session/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dry Run Tuning Session
+         * @description Per-run dry-run of a proposed prompt across this agent's flagged runs.
+         *
+         *     Capped at 10 runs by the service layer to bound cost.
+         */
+        post: operations["dry_run_tuning_session_api_agents__agent_id__tuning_session_dry_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/tuning-session/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Tuning Session
+         * @description Apply a consolidated tuning proposal: update prompt, write history, clear verdicts.
+         */
+        post: operations["apply_tuning_session_api_agents__agent_id__tuning_session_apply_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5945,7 +6280,6 @@ export interface paths {
          *
          *     This removes any custom configuration and reverts to:
          *     - enabled: True
-         *     - require_platform_admin: True
          *     - all tools allowed
          */
         delete: operations["delete_mcp_config_api_mcp_config_delete"];
@@ -6057,7 +6391,7 @@ export interface paths {
         post?: never;
         /**
          * Delete event source
-         * @description Soft delete (deactivate) an event source (Platform admin only).
+         * @description Permanently delete an event source and all its subscriptions, events, and deliveries (Platform admin only).
          */
         delete: operations["delete_source_api_events_sources__source_id__delete"];
         options?: never;
@@ -6105,7 +6439,7 @@ export interface paths {
         post?: never;
         /**
          * Delete subscription
-         * @description Soft delete an event subscription (Platform admin only).
+         * @description Permanently delete an event subscription (Platform admin only).
          */
         delete: operations["delete_subscription_api_events_sources__source_id__subscriptions__subscription_id__delete"];
         options?: never;
@@ -6703,6 +7037,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/applications/{app_id}/replace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Repoint application source directory
+         * @description Update ``repo_path`` after source files have been moved/renamed.
+         *
+         *     Validates that the new path is unique, non-nested with other apps, and has
+         *     source files under it. ``force: true`` bypasses all three checks.
+         */
+        post: operations["replace_application_endpoint_api_applications__app_id__replace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/applications/{app_id}/validate": {
         parameters: {
             query?: never;
@@ -6845,13 +7202,61 @@ export interface paths {
          * Get all compiled files for rendering
          * @description Return all files as compiled JS, ready for client-side execution.
          *
-         *     Reads entirely from S3 (_apps/{app_id}/{mode}/).  If any compilable
-         *     files still contain raw TSX/TS (pre-compilation era), the entire app
-         *     is batch-compiled and the results written back to S3.
+         *     Reads entirely from S3 (_apps/{app_id}/{mode}/). Compilation happens on
+         *     write in file_ops; this endpoint only serves what's there.
          *
          *     Unlike /files, this returns only `path` + `code` (no source).
          */
         get: operations["render_app_api_applications__app_id__render_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/bundle-manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the bundle manifest for an app (esbuild path)
+         * @description Return the manifest.json describing the bundled app.
+         *
+         *     Manifest includes entry JS, CSS (if any), and a base URL where the
+         *     hashed chunk files can be fetched. Chunks are served by
+         *     /bundle-asset/{filename}.
+         *
+         *     If no manifest exists yet, triggers a build and returns that one.
+         */
+        get: operations["get_bundle_manifest_api_applications__app_id__bundle_manifest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/bundle-asset/{filename}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve a bundled asset file (JS/CSS/sourcemap)
+         * @description Stream a bundled asset file from S3.
+         *
+         *     The browser loads these via <script type="module" src="...">, so
+         *     correct MIME types matter.
+         */
+        get: operations["get_bundle_asset_api_applications__app_id__bundle_asset__filename__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7872,6 +8277,33 @@ export interface components {
             duration_ms?: number | null;
             /** Llm Model */
             llm_model?: string | null;
+            /** Asked */
+            asked?: string | null;
+            /** Did */
+            did?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: string;
+            };
+            /** Confidence */
+            confidence?: number | null;
+            /** Confidence Reason */
+            confidence_reason?: string | null;
+            /**
+             * Summary Status
+             * @default pending
+             */
+            summary_status: string;
+            /** Summary Error */
+            summary_error?: string | null;
+            /** Verdict */
+            verdict?: string | null;
+            /** Verdict Note */
+            verdict_note?: string | null;
+            /** Verdict Set At */
+            verdict_set_at?: string | null;
+            /** Verdict Set By */
+            verdict_set_by?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -7962,6 +8394,33 @@ export interface components {
             duration_ms?: number | null;
             /** Llm Model */
             llm_model?: string | null;
+            /** Asked */
+            asked?: string | null;
+            /** Did */
+            did?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: string;
+            };
+            /** Confidence */
+            confidence?: number | null;
+            /** Confidence Reason */
+            confidence_reason?: string | null;
+            /**
+             * Summary Status
+             * @default pending
+             */
+            summary_status: string;
+            /** Summary Error */
+            summary_error?: string | null;
+            /** Verdict */
+            verdict?: string | null;
+            /** Verdict Note */
+            verdict_note?: string | null;
+            /** Verdict Set At */
+            verdict_set_at?: string | null;
+            /** Verdict Set By */
+            verdict_set_by?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -8003,6 +8462,30 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** AgentStatsResponse */
+        AgentStatsResponse: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /** Runs 7D */
+            runs_7d: number;
+            /** Success Rate */
+            success_rate: number;
+            /** Avg Duration Ms */
+            avg_duration_ms: number;
+            /** Total Cost 7D */
+            total_cost_7d: string;
+            /** Last Run At */
+            last_run_at: string | null;
+            /** Runs By Day */
+            runs_by_day: number[];
+            /** Needs Review */
+            needs_review: number;
+            /** Unreviewed */
+            unreviewed: number;
         };
         /**
          * AgentSummary
@@ -8373,6 +8856,11 @@ export interface components {
             access_level: string;
             /** Role Ids */
             role_ids?: string[];
+            /**
+             * Repo Path
+             * @description Workspace-relative path to the app's source directory. Mutated via POST /api/applications/{id}/replace.
+             */
+            repo_path: string;
         };
         /**
          * ApplicationPublishRequest
@@ -8384,6 +8872,25 @@ export interface components {
              * @description Optional publish message for version history
              */
             message?: string | null;
+        };
+        /**
+         * ApplicationReplaceRequest
+         * @description Input for repointing an application's source directory.
+         *
+         *     Mutation-only surface. See ``POST /api/applications/{id}/replace``.
+         */
+        ApplicationReplaceRequest: {
+            /**
+             * Repo Path
+             * @description Workspace-relative path to the new source directory (e.g. apps/my-app-v2).
+             */
+            repo_path: string;
+            /**
+             * Force
+             * @description Bypass the uniqueness, nesting, and source-exists checks. Use when repointing before files are pushed.
+             * @default false
+             */
+            force: boolean;
         };
         /**
          * ApplicationRollbackRequest
@@ -8430,18 +8937,38 @@ export interface components {
             role_ids?: string[] | null;
         };
         /**
+         * ApplyTuningRequest
+         * @description Body for ``POST /api/agents/{id}/tuning-session/apply``.
+         */
+        ApplyTuningRequest: {
+            /** New Prompt */
+            new_prompt: string;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * ApplyTuningResponse
+         * @description Result of applying a consolidated tuning proposal.
+         */
+        ApplyTuningResponse: {
+            /**
+             * Agent Id
+             * Format: uuid
+             */
+            agent_id: string;
+            /**
+             * History Id
+             * Format: uuid
+             */
+            history_id: string;
+            /** Affected Run Ids */
+            affected_run_ids: string[];
+        };
+        /**
          * AssignAgentsToRoleRequest
          * @description Request for assigning agents to a role.
          */
         AssignAgentsToRoleRequest: {
-            /** Agent Ids */
-            agent_ids: string[];
-        };
-        /**
-         * AssignDelegationsToAgentRequest
-         * @description Request for assigning delegation targets to an agent.
-         */
-        AssignDelegationsToAgentRequest: {
             /** Agent Ids */
             agent_ids: string[];
         };
@@ -8468,14 +8995,6 @@ export interface components {
             role_ids: string[];
         };
         /**
-         * AssignToolsToAgentRequest
-         * @description Request for assigning tools (workflows) to an agent.
-         */
-        AssignToolsToAgentRequest: {
-            /** Workflow Ids */
-            workflow_ids: string[];
-        };
-        /**
          * AssignUsersToRoleRequest
          * @description Request model for assigning users to a role
          */
@@ -8485,6 +9004,22 @@ export interface components {
              * @description List of user IDs to assign
              */
             user_ids: string[];
+        };
+        /** AssistantTurn */
+        AssistantTurn: {
+            /**
+             * Kind
+             * @default assistant
+             * @constant
+             */
+            kind: "assistant";
+            /** Content */
+            content: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
         };
         /**
          * AuditLogActor
@@ -8654,6 +9189,90 @@ export interface components {
              * @description Similarity score to the deactivated workflow (0.0-1.0)
              */
             similarity_score: number;
+        };
+        /**
+         * BackfillEligibleResponse
+         * @description Lightweight count + estimate used by the UI to decide whether to
+         *     surface the Backfill button at all. Mirrors the shape of the dry-run
+         *     POST but cacheable and cheaper (no queue touch).
+         */
+        BackfillEligibleResponse: {
+            /**
+             * Eligible
+             * @description Number of runs that would be backfilled.
+             */
+            eligible: number;
+            /**
+             * Estimated Cost Usd
+             * @description Best-effort cost estimate for this scope.
+             */
+            estimated_cost_usd: string;
+            /**
+             * Cost Basis
+             * @description Whether the estimate is derived from past runs or a flat fallback.
+             * @enum {string}
+             */
+            cost_basis: "history" | "fallback";
+        };
+        /**
+         * BackfillSummariesRequest
+         * @description Admin-triggered bulk backfill of run summaries.
+         */
+        BackfillSummariesRequest: {
+            /**
+             * Agent Id
+             * @description Scope to a single agent. None means platform-wide.
+             */
+            agent_id?: string | null;
+            /**
+             * Statuses
+             * @description Which summary_status values to re-run. Completed runs are skipped.
+             */
+            statuses?: ("pending" | "failed")[];
+            /**
+             * Limit
+             * @description Max runs to enqueue in one backfill.
+             * @default 500
+             */
+            limit: number;
+            /**
+             * Dry Run
+             * @description If true, return eligible count + cost estimate without enqueuing.
+             * @default false
+             */
+            dry_run: boolean;
+        };
+        /**
+         * BackfillSummariesResponse
+         * @description Result of a backfill request.
+         */
+        BackfillSummariesResponse: {
+            /**
+             * Job Id
+             * @description Orchestration row ID. None when dry_run=true.
+             */
+            job_id?: string | null;
+            /**
+             * Queued
+             * @description Number of runs enqueued (0 if dry_run).
+             */
+            queued: number;
+            /**
+             * Eligible
+             * @description Total matched by the filter.
+             */
+            eligible: number;
+            /**
+             * Estimated Cost Usd
+             * @description Best-effort cost prediction based on recent summarizer history.
+             */
+            estimated_cost_usd: string;
+            /**
+             * Cost Basis
+             * @description Whether the estimate is derived from past runs or a flat fallback.
+             * @enum {string}
+             */
+            cost_basis: "history" | "fallback";
         };
         /** Body_import_all_api_export_import_import_all_post */
         Body_import_all_api_export_import_import_all_post: {
@@ -9668,6 +10287,37 @@ export interface components {
             base_content?: string | null;
         };
         /**
+         * ConsolidatedDryRunRequest
+         * @description Body for ``POST /api/agents/{id}/tuning-session/dry-run``.
+         */
+        ConsolidatedDryRunRequest: {
+            /** Proposed Prompt */
+            proposed_prompt: string;
+        };
+        /**
+         * ConsolidatedDryRunResponse
+         * @description Aggregated per-run dry-run results.
+         */
+        ConsolidatedDryRunResponse: {
+            /** Results */
+            results: components["schemas"]["DryRunPerRun"][];
+        };
+        /**
+         * ConsolidatedProposalResponse
+         * @description Output of ``POST /api/agents/{id}/tuning-session``.
+         *
+         *     ``affected_run_ids`` is the list of flagged runs that informed the
+         *     proposal — this is what the dry-run/apply endpoints will operate on.
+         */
+        ConsolidatedProposalResponse: {
+            /** Summary */
+            summary: string;
+            /** Proposed Prompt */
+            proposed_prompt: string;
+            /** Affected Run Ids */
+            affected_run_ids: string[];
+        };
+        /**
          * ConversationCreate
          * @description Request model for creating a conversation.
          */
@@ -10141,11 +10791,8 @@ export interface components {
              * Format: date-time
              */
             timestamp: string;
-            /**
-             * Version
-             * @default 2.0.0
-             */
-            version: string;
+            /** Version */
+            version?: string;
             /** Environment */
             environment: string;
             /** Components */
@@ -10301,6 +10948,16 @@ export interface components {
              * @default 1800
              */
             expires_in: number;
+        };
+        /** DiffOperation */
+        DiffOperation: {
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "add" | "keep" | "remove";
+            /** Text */
+            text: string;
         };
         /**
          * DiffRequest
@@ -10496,6 +11153,73 @@ export interface components {
             data: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * DryRunPerRun
+         * @description Per-run dry-run verdict in a consolidated dry-run response.
+         */
+        DryRunPerRun: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Would Still Decide Same */
+            would_still_decide_same: boolean;
+            /** Reasoning */
+            reasoning: string;
+            /** Confidence */
+            confidence: number;
+        };
+        /**
+         * DryRunRequest
+         * @description Evaluate a proposed system prompt against a single completed run.
+         */
+        DryRunRequest: {
+            /** Proposed Prompt */
+            proposed_prompt: string;
+        };
+        /**
+         * DryRunResponse
+         * @description Result of a single-run dry-run evaluation.
+         */
+        DryRunResponse: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Would Still Decide Same */
+            would_still_decide_same: boolean;
+            /** Reasoning */
+            reasoning: string;
+            /** Alternative Action */
+            alternative_action?: string | null;
+            /** Confidence */
+            confidence: number;
+        };
+        /** DryRunTurn */
+        DryRunTurn: {
+            /**
+             * Kind
+             * @default dryrun
+             * @constant
+             */
+            kind: "dryrun";
+            /** Before */
+            before: string;
+            /** After */
+            after: string;
+            /**
+             * Predicted
+             * @enum {string}
+             */
+            predicted: "up" | "down";
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
         };
         /**
          * DynamicValuesRequest
@@ -11383,7 +12107,7 @@ export interface components {
          * @description Workflow execution status
          * @enum {string}
          */
-        ExecutionStatus: "Pending" | "Running" | "Success" | "Failed" | "Timeout" | "Stuck" | "CompletedWithErrors" | "Cancelling" | "Cancelled";
+        ExecutionStatus: "Scheduled" | "Pending" | "Running" | "Success" | "Failed" | "Timeout" | "Stuck" | "CompletedWithErrors" | "Cancelling" | "Cancelled";
         /**
          * ExecutionsListResponse
          * @description Response model for listing workflow executions with pagination
@@ -11953,6 +12677,44 @@ export interface components {
              */
             binary: boolean;
         };
+        /** FlagConversationResponse */
+        FlagConversationResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Messages */
+            messages: (components["schemas"]["UserTurn"] | components["schemas"]["AssistantTurn"] | components["schemas"]["ProposalTurn"] | components["schemas"]["DryRunTurn"])[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Last Updated At
+             * Format: date-time
+             */
+            last_updated_at: string;
+        };
+        /** FleetStatsResponse */
+        FleetStatsResponse: {
+            /** Total Runs */
+            total_runs: number;
+            /** Avg Success Rate */
+            avg_success_rate: number;
+            /** Total Cost 7D */
+            total_cost_7d: string;
+            /** Active Agents */
+            active_agents: number;
+            /** Needs Review */
+            needs_review: number;
+        };
         /**
          * FormAccessLevel
          * @description Form access control levels
@@ -11981,7 +12743,7 @@ export interface components {
             /** Form Schema */
             form_schema: {
                 [key: string]: unknown;
-            } | components["schemas"]["FormSchema-Input"];
+            } | components["schemas"]["FormSchema"];
             /** @default role_based */
             access_level: components["schemas"]["FormAccessLevel"] | null;
             /**
@@ -12009,100 +12771,22 @@ export interface components {
             startup_data?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Scheduled At
+             * @description Run at this tz-aware timestamp (ISO-8601). Must be strictly in the future and within 1 year of now. Mutually exclusive with delay_seconds.
+             */
+            scheduled_at?: string | null;
+            /**
+             * Delay Seconds
+             * @description Run this many seconds from now (≤ 1 year). Mutually exclusive with scheduled_at.
+             */
+            delay_seconds?: number | null;
         };
         /**
          * FormField
          * @description Form field definition
          */
-        "FormField-Input": {
-            /**
-             * Name
-             * @description Parameter name for workflow
-             */
-            name: string;
-            /**
-             * Label
-             * @description Display label (optional for markdown/html types)
-             */
-            label?: string | null;
-            type: components["schemas"]["FormFieldType"];
-            /**
-             * Required
-             * @default false
-             */
-            required: boolean;
-            /** Validation */
-            validation?: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * Data Provider Id
-             * @description Data provider ID for dynamic options
-             */
-            data_provider_id?: string | null;
-            /**
-             * Data Provider Inputs
-             * @description Input configurations for data provider parameters
-             */
-            data_provider_inputs?: {
-                [key: string]: components["schemas"]["DataProviderInputConfig"];
-            } | null;
-            /** Default Value */
-            default_value?: unknown | null;
-            /** Placeholder */
-            placeholder?: string | null;
-            /** Help Text */
-            help_text?: string | null;
-            /**
-             * Visibility Expression
-             * @description JavaScript expression for conditional visibility (e.g., context.field.show === true)
-             */
-            visibility_expression?: string | null;
-            /**
-             * Options
-             * @description Options for radio/select fields
-             */
-            options?: {
-                [key: string]: string;
-            }[] | null;
-            /**
-             * Allowed Types
-             * @description Allowed MIME types for file uploads
-             */
-            allowed_types?: string[] | null;
-            /**
-             * Multiple
-             * @description Allow multiple file uploads
-             */
-            multiple?: boolean | null;
-            /**
-             * Max Size Mb
-             * @description Maximum file size in MB
-             */
-            max_size_mb?: number | null;
-            /**
-             * Content
-             * @description Static content for markdown/HTML components
-             */
-            content?: string | null;
-            /**
-             * Allow As Query Param
-             * @description Whether this field's value can be populated from URL query parameters
-             */
-            allow_as_query_param?: boolean | null;
-            /**
-             * Auto Fill
-             * @description Map of sibling field names to metadata paths. When this field's data provider returns results, auto-populate sibling fields from the first result's metadata. Example: {"employee_count": "recommended_employee_count"}
-             */
-            auto_fill?: {
-                [key: string]: string;
-            } | null;
-        };
-        /**
-         * FormField
-         * @description Form field definition
-         */
-        "FormField-Output": {
+        FormField: {
             /**
              * Name
              * @description Parameter name for workflow
@@ -12191,7 +12875,7 @@ export interface components {
          * @description Form field types
          * @enum {string}
          */
-        FormFieldType: "text" | "email" | "number" | "select" | "checkbox" | "textarea" | "radio" | "date" | "datetime" | "markdown" | "html" | "file";
+        FormFieldType: "text" | "email" | "number" | "select" | "multi_select" | "checkbox" | "textarea" | "radio" | "date" | "datetime" | "markdown" | "html" | "file";
         /**
          * FormPublic
          * @description Form output for API responses.
@@ -12219,7 +12903,7 @@ export interface components {
             /** Form Schema */
             form_schema?: {
                 [key: string]: unknown;
-            } | components["schemas"]["FormSchema-Output"] | null;
+            } | components["schemas"]["FormSchema"] | null;
             access_level?: components["schemas"]["FormAccessLevel"] | null;
             /** Organization Id */
             organization_id?: string | null;
@@ -12240,23 +12924,12 @@ export interface components {
          * FormSchema
          * @description Form schema with field definitions
          */
-        "FormSchema-Input": {
+        FormSchema: {
             /**
              * Fields
              * @description Max 50 fields per form
              */
-            fields: components["schemas"]["FormField-Input"][];
-        };
-        /**
-         * FormSchema
-         * @description Form schema with field definitions
-         */
-        "FormSchema-Output": {
-            /**
-             * Fields
-             * @description Max 50 fields per form
-             */
-            fields: components["schemas"]["FormField-Output"][];
+            fields: components["schemas"]["FormField"][];
         };
         /**
          * FormStartupResponse
@@ -12293,7 +12966,7 @@ export interface components {
             /** Form Schema */
             form_schema?: {
                 [key: string]: unknown;
-            } | components["schemas"]["FormSchema-Input"] | null;
+            } | components["schemas"]["FormSchema"] | null;
             /** Is Active */
             is_active?: boolean | null;
             access_level?: components["schemas"]["FormAccessLevel"] | null;
@@ -12702,11 +13375,8 @@ export interface components {
              * Format: date-time
              */
             timestamp: string;
-            /**
-             * Version
-             * @default 2.0.0
-             */
-            version: string;
+            /** Version */
+            version?: string;
             /** Environment */
             environment: string;
         };
@@ -13644,6 +14314,16 @@ export interface components {
              * @description Default system prompt for agentless chat
              */
             default_system_prompt?: string | null;
+            /**
+             * Summarization Model
+             * @description Model override for post-run summarization. Falls back to primary model if unset.
+             */
+            summarization_model?: string | null;
+            /**
+             * Tuning Model
+             * @description Model override for tuning chat + dry-run. Falls back to primary model if unset.
+             */
+            tuning_model?: string | null;
         };
         /**
          * LLMConfigResponse
@@ -13666,6 +14346,10 @@ export interface components {
             max_tokens: number;
             /** Default System Prompt */
             default_system_prompt?: string | null;
+            /** Summarization Model */
+            summarization_model?: string | null;
+            /** Tuning Model */
+            tuning_model?: string | null;
             /**
              * Is Configured
              * @default true
@@ -13853,12 +14537,6 @@ export interface components {
              */
             enabled: boolean;
             /**
-             * Require Platform Admin
-             * @description Whether only platform admins can access MCP
-             * @default true
-             */
-            require_platform_admin: boolean;
-            /**
              * Allowed Tool Ids
              * @description List of allowed tool IDs (None = all tools allowed)
              */
@@ -13879,11 +14557,6 @@ export interface components {
              * @description Whether external MCP access is enabled
              */
             enabled: boolean;
-            /**
-             * Require Platform Admin
-             * @description Whether only platform admins can access MCP
-             */
-            require_platform_admin: boolean;
             /**
              * Allowed Tool Ids
              * @description List of allowed tool IDs (None = all tools allowed)
@@ -14065,6 +14738,23 @@ export interface components {
              * @default false
              */
             dry_run: boolean;
+            /**
+             * Target Organization Id
+             * @description When set, every entity in the bundle has its organization_id rewritten to this value before upsert. Incompatible with a manifest that carries an organizations section.
+             */
+            target_organization_id?: string | null;
+            /**
+             * Role Resolution
+             * @description How to interpret role references in the bundle. 'uuid' (default) assumes role UUIDs match the target env. 'name' reads role_names and resolves to UUIDs in the target; missing names fail with 422.
+             * @default uuid
+             * @enum {string}
+             */
+            role_resolution: "uuid" | "name";
+            /**
+             * Entity Ids
+             * @description Optional subset of entity UUIDs to apply. When set, only entities whose id is in this set are written; all other diff entries are skipped. Use for interactive cherry-pick import where the user approves a subset of a dry-run diff.
+             */
+            entity_ids?: string[] | null;
         };
         /**
          * ManifestImportResponse
@@ -15604,6 +16294,24 @@ export interface components {
              */
             name?: string | null;
         };
+        /** ProposalTurn */
+        ProposalTurn: {
+            /**
+             * Kind
+             * @default proposal
+             * @constant
+             */
+            kind: "proposal";
+            /** Summary */
+            summary: string;
+            /** Diff */
+            diff: components["schemas"]["DiffOperation"][];
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
+        };
         /**
          * QueueItem
          * @description An item in the execution queue.
@@ -16083,6 +16791,12 @@ export interface components {
              * @description Name of function to use as replacement
              */
             function_name: string;
+            /**
+             * Allow Type Change
+             * @description Allow the decorator type to change (workflow/tool/data_provider). Default false to prevent silent form-binding breakage.
+             * @default false
+             */
+            allow_type_change: boolean;
         };
         /**
          * ReplaceWorkflowResponse
@@ -17307,6 +18021,11 @@ export interface components {
              */
             context_after?: string | null;
         };
+        /** SendFlagMessageRequest */
+        SendFlagMessageRequest: {
+            /** Content */
+            content: string;
+        };
         /**
          * SetConfigRequest
          * @description Request model for setting config
@@ -17550,6 +18269,48 @@ export interface components {
              */
             last_stuck_at: string;
         };
+        /** SummaryBackfillJobListResponse */
+        SummaryBackfillJobListResponse: {
+            /** Items */
+            items: components["schemas"]["SummaryBackfillJobResponse"][];
+        };
+        /**
+         * SummaryBackfillJobResponse
+         * @description Snapshot of a SummaryBackfillJob orchestration row.
+         */
+        SummaryBackfillJobResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Agent Id */
+            agent_id?: string | null;
+            /**
+             * Requested By
+             * Format: uuid
+             */
+            requested_by: string;
+            /** Status */
+            status: string;
+            /** Total */
+            total: number;
+            /** Succeeded */
+            succeeded: number;
+            /** Failed */
+            failed: number;
+            /** Estimated Cost Usd */
+            estimated_cost_usd: string;
+            /** Actual Cost Usd */
+            actual_cost_usd: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Completed At */
+            completed_at?: string | null;
+        };
         /**
          * SyncRequest
          * @description Request to sync (pull + push + entity import).
@@ -17648,12 +18409,19 @@ export interface components {
          * @description Input for updating a table.
          */
         TableUpdate: {
+            /**
+             * Name
+             * @description Table name (lowercase, underscores and hyphens allowed)
+             */
+            name?: string | null;
             /** Description */
             description?: string | null;
             /** Schema */
             schema?: {
                 [key: string]: unknown;
             } | null;
+            /** Application Id */
+            application_id?: string | null;
         };
         /**
          * Token
@@ -17745,6 +18513,16 @@ export interface components {
              * @default true
              */
             is_active: boolean;
+            /**
+             * Organization Id
+             * @description Owning organization UUID (workflow tools only; null = global tool or system tool)
+             */
+            organization_id?: string | null;
+            /**
+             * Organization Name
+             * @description Owning organization display name (workflow tools only; null = global tool or system tool)
+             */
+            organization_name?: string | null;
         };
         /**
          * ToolsResponse
@@ -18165,6 +18943,22 @@ export interface components {
              */
             role_ids: string[];
         };
+        /** UserTurn */
+        UserTurn: {
+            /**
+             * Kind
+             * @default user
+             * @constant
+             */
+            kind: "user";
+            /** Content */
+            content: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at?: string;
+        };
         /**
          * UserUpdate
          * @description Input for updating a user.
@@ -18232,6 +19026,39 @@ export interface components {
              * @enum {string}
              */
             severity: "error" | "warning";
+        };
+        /** VerdictRequest */
+        VerdictRequest: {
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "up" | "down";
+            /** Note */
+            note?: string | null;
+        };
+        /** VerdictResponse */
+        VerdictResponse: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Verdict */
+            verdict?: string | null;
+            /** Verdict Note */
+            verdict_note?: string | null;
+            /** Verdict Set At */
+            verdict_set_at?: string | null;
+            /** Verdict Set By */
+            verdict_set_by?: string | null;
+        };
+        /** VersionResponse */
+        VersionResponse: {
+            /** Version */
+            version: string;
+            /** Min Cli Version */
+            min_cli_version: string;
         };
         /**
          * WatchSessionRequest
@@ -18370,10 +19197,10 @@ export interface components {
          */
         WorkerMetricPoint: {
             /**
-             * Timestamp
-             * @description ISO timestamp
+             * Group
+             * @description Formatted time bucket label
              */
-            timestamp: string;
+            group: string;
             /**
              * Worker Id
              * @description Container/pool identifier
@@ -18460,6 +19287,8 @@ export interface components {
             started_at?: string | null;
             /** Completed At */
             completed_at?: string | null;
+            /** Scheduled At */
+            scheduled_at?: string | null;
             /** Logs */
             logs?: {
                 [key: string]: unknown;
@@ -18549,6 +19378,16 @@ export interface components {
              * @description Execute as this user UUID (impersonation). Requires platform admin.
              */
             run_as?: string | null;
+            /**
+             * Scheduled At
+             * @description Run at this tz-aware timestamp (ISO-8601). Must be strictly in the future and within 1 year of now. Mutually exclusive with delay_seconds.
+             */
+            scheduled_at?: string | null;
+            /**
+             * Delay Seconds
+             * @description Run this many seconds from now (≤ 1 year). Mutually exclusive with scheduled_at.
+             */
+            delay_seconds?: number | null;
         };
         /**
          * WorkflowExecutionResponse
@@ -18580,6 +19419,11 @@ export interface components {
             started_at?: string | null;
             /** Completed At */
             completed_at?: string | null;
+            /**
+             * Scheduled At
+             * @description For scheduled executions, the target run time.
+             */
+            scheduled_at?: string | null;
             /** Logs */
             logs?: {
                 [key: string]: unknown;
@@ -19404,6 +20248,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DetailedHealthCheck"];
+                };
+            };
+        };
+    };
+    get_version_info_api_version_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionResponse"];
                 };
             };
         };
@@ -21677,6 +22541,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowExecutionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_scheduled_execution_api_workflows_executions__execution_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -24604,7 +25501,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24637,7 +25534,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24670,7 +25567,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -24703,7 +25600,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__post: {
+    execute_endpoint_api_endpoints__workflow_id__delete: {
         parameters: {
             query?: never;
             header: {
@@ -26550,6 +27447,37 @@ export interface operations {
             };
         };
     };
+    get_fleet_stats_endpoint_api_agents_stats_fleet_get: {
+        parameters: {
+            query?: {
+                window_days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetStatsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_agent_api_agents__agent_id__get: {
         parameters: {
             query?: never;
@@ -26680,6 +27608,39 @@ export interface operations {
             };
         };
     };
+    get_agent_stats_endpoint_api_agents__agent_id__stats_get: {
+        parameters: {
+            query?: {
+                window_days?: number;
+            };
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentStatsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_agent_tools_api_agents__agent_id__tools_get: {
         parameters: {
             query?: never;
@@ -26701,73 +27662,6 @@ export interface operations {
                         [key: string]: unknown;
                     }[];
                 };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    assign_tools_to_agent_api_agents__agent_id__tools_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AssignToolsToAgentRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    remove_tool_from_agent_api_agents__agent_id__tools__workflow_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                agent_id: string;
-                workflow_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -26811,71 +27705,6 @@ export interface operations {
             };
         };
     };
-    assign_delegations_to_agent_api_agents__agent_id__delegations_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AssignDelegationsToAgentRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentSummary"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    remove_delegation_from_agent_api_agents__agent_id__delegations__delegate_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                agent_id: string;
-                delegate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_agent_runs_api_agent_runs_get: {
         parameters: {
             query?: {
@@ -26885,6 +27714,12 @@ export interface operations {
                 org_id?: string | null;
                 start_date?: string | null;
                 end_date?: string | null;
+                /** @description Full-text search across asked/did/error/caller/metadata */
+                q?: string | null;
+                /** @description Filter by verdict: 'up', 'down', or 'unreviewed' */
+                verdict?: string | null;
+                /** @description JSON object of key-value pairs, e.g. {"customer":"Acme"} */
+                metadata_filter?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -26901,6 +27736,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentRunListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_backfill_jobs_api_agent_runs_backfill_jobs_get: {
+        parameters: {
+            query?: {
+                /** @description If true, only return running jobs. */
+                active?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryBackfillJobListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_backfill_eligible_api_agent_runs_backfill_eligible_get: {
+        parameters: {
+            query?: {
+                agent_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackfillEligibleResponse"];
                 };
             };
             /** @description Validation Error */
@@ -27009,6 +27907,206 @@ export interface operations {
             };
         };
     };
+    set_verdict_api_agent_runs__run_id__verdict_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerdictRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerdictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_verdict_api_agent_runs__run_id__verdict_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerdictResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_flag_conversation_api_agent_runs__run_id__flag_conversation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlagConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_flag_message_api_agent_runs__run_id__flag_conversation_message_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendFlagMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlagConversationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_summary_api_agent_runs__run_id__regenerate_summary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dry_run_agent_run_api_agent_runs__run_id__dry_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DryRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DryRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     execute_agent_run_api_agent_runs_execute_post: {
         parameters: {
             query?: never;
@@ -27031,6 +28129,202 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    backfill_summaries_api_agent_runs_backfill_summaries_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackfillSummariesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackfillSummariesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_backfill_job_api_agent_runs_backfill_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryBackfillJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_backfill_job_api_agent_runs_backfill_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SummaryBackfillJobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_tuning_session_api_agents__agent_id__tuning_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsolidatedProposalResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dry_run_tuning_session_api_agents__agent_id__tuning_session_dry_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConsolidatedDryRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsolidatedDryRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_tuning_session_api_agents__agent_id__tuning_session_apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplyTuningRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplyTuningResponse"];
                 };
             };
             /** @description Validation Error */
@@ -30895,6 +32189,41 @@ export interface operations {
             };
         };
     };
+    replace_application_endpoint_api_applications__app_id__replace_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationReplaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     validate_application_api_applications__app_id__validate_post: {
         parameters: {
             query?: never;
@@ -31156,6 +32485,78 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppRenderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bundle_manifest_api_applications__app_id__bundle_manifest_get: {
+        parameters: {
+            query?: {
+                mode?: components["schemas"]["FileMode"];
+            };
+            header?: never;
+            path: {
+                /** @description Application UUID */
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bundle_asset_api_applications__app_id__bundle_asset__filename__get: {
+        parameters: {
+            query?: {
+                mode?: components["schemas"]["FileMode"];
+            };
+            header?: never;
+            path: {
+                /** @description Application UUID */
+                app_id: string;
+                /** @description Bundle asset filename */
+                filename: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import yaml
@@ -29,6 +29,8 @@ from bifrost.manifest import (
 )
 
 logger = logging.getLogger(__name__)
+
+RoleResolution = Literal["uuid", "name"]
 
 
 # =============================================================================
@@ -133,6 +135,7 @@ def _diff_and_collect(
                 name = getattr(entity, "name", None) or getattr(entity, "function_name", None) or str(eid)
 
             changes.append({
+                "id": eid,
                 "action": action,
                 "entity_type": entity_type,
                 "name": name,
@@ -188,6 +191,7 @@ def _diff_list_entities(
         org = (org_lookup.get(oid, oid) or "Global") if oid else "Global"
 
         changes.append({
+            "id": eid,
             "action": action,
             "entity_type": entity_type,
             "name": getattr(entity, "name", "") or str(eid),
@@ -205,6 +209,267 @@ def _collect_changed_ids(incoming: "Manifest", current: "Manifest") -> set[str]:
     """Return the set of entity IDs that differ between two manifests."""
     _, ids = _diff_and_collect(incoming, current)
     return ids
+
+
+# =============================================================================
+# Inline-content helpers
+# =============================================================================
+#
+# Form/agent content is now inlined under each entity's UUID in the manifest
+# (see ManifestForm/ManifestAgent in api/bifrost/manifest.py). The indexers
+# (FormIndexer, AgentIndexer) still parse YAML, so we synthesize the YAML
+# bytes from the manifest entry to keep the indexer interface stable.
+#
+# Back-compat: if a manifest entry doesn't carry inline content but a
+# companion .form.yaml / .agent.yaml exists, we still read it and emit a
+# deprecation warning. This branch will be removed once all checked-in
+# manifests have been regenerated.
+
+
+_DEPRECATION_MSG_TEMPLATE = (
+    "{kind} content in separate file is deprecated; "
+    "regenerate with 'bifrost sync' to inline (path={path})"
+)
+
+
+def _form_has_inline_content(mform) -> bool:
+    """Return True if the manifest form entry carries inline content."""
+    return any(
+        getattr(mform, attr, None) is not None
+        for attr in (
+            "description",
+            "workflow_id",
+            "launch_workflow_id",
+            "default_launch_params",
+            "allowed_query_params",
+            "form_schema",
+        )
+    )
+
+
+def _agent_has_inline_content(magent) -> bool:
+    """Return True if the manifest agent entry carries inline content.
+
+    ``system_prompt`` is required in the DB so its presence is the strongest
+    signal that this entry was generated under the inline layout.
+    """
+    if getattr(magent, "system_prompt", None):
+        return True
+    return any(
+        bool(getattr(magent, attr, None))
+        for attr in (
+            "description",
+            "channels",
+            "tool_ids",
+            "delegated_agent_ids",
+            "knowledge_sources",
+            "system_tools",
+            "llm_model",
+            "llm_max_tokens",
+        )
+    )
+
+
+def _form_content_from_manifest(mform) -> bytes:
+    """Build the YAML bytes the FormIndexer expects from a manifest form entry."""
+    data: dict = {"id": mform.id, "name": mform.name or ""}
+    if mform.description is not None:
+        data["description"] = mform.description
+    if mform.workflow_id is not None:
+        data["workflow_id"] = mform.workflow_id
+    if mform.launch_workflow_id is not None:
+        data["launch_workflow_id"] = mform.launch_workflow_id
+    if mform.default_launch_params is not None:
+        data["default_launch_params"] = mform.default_launch_params
+    if mform.allowed_query_params is not None:
+        data["allowed_query_params"] = mform.allowed_query_params
+    if mform.form_schema is not None:
+        data["form_schema"] = mform.form_schema
+    return (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
+
+
+def _agent_content_from_manifest(magent) -> bytes:
+    """Build the YAML bytes the AgentIndexer expects from a manifest agent entry."""
+    data: dict = {"id": magent.id, "name": magent.name or ""}
+    if magent.description is not None:
+        data["description"] = magent.description
+    if magent.system_prompt is not None:
+        data["system_prompt"] = magent.system_prompt
+    if magent.channels:
+        data["channels"] = list(magent.channels)
+    if magent.tool_ids:
+        data["tool_ids"] = list(magent.tool_ids)
+    if magent.delegated_agent_ids:
+        data["delegated_agent_ids"] = list(magent.delegated_agent_ids)
+    if magent.knowledge_sources:
+        data["knowledge_sources"] = list(magent.knowledge_sources)
+    if magent.system_tools:
+        data["system_tools"] = list(magent.system_tools)
+    if magent.llm_model is not None:
+        data["llm_model"] = magent.llm_model
+    if magent.llm_max_tokens is not None:
+        data["llm_max_tokens"] = magent.llm_max_tokens
+    if magent.max_iterations is not None:
+        data["max_iterations"] = magent.max_iterations
+    if magent.max_token_budget is not None:
+        data["max_token_budget"] = magent.max_token_budget
+    return (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
+
+
+async def _resolve_form_content(
+    mform,
+    read_fn: "Callable[[str], Awaitable[bytes | None]]",
+) -> bytes | None:
+    """Return YAML bytes for a manifest form entry.
+
+    Prefers inline content; falls back to ``mform.path`` companion file with a
+    deprecation warning (back-compat for manifests written before the inline
+    rollout). Returns ``None`` if neither source is available.
+    """
+    if _form_has_inline_content(mform):
+        return _form_content_from_manifest(mform)
+    if mform.path:
+        content = await read_fn(mform.path)
+        if content is not None:
+            logger.warning(_DEPRECATION_MSG_TEMPLATE.format(kind="Form", path=mform.path))
+            return content
+    return None
+
+
+async def _resolve_agent_content(
+    magent,
+    read_fn: "Callable[[str], Awaitable[bytes | None]]",
+) -> bytes | None:
+    """Return YAML bytes for a manifest agent entry.
+
+    Prefers inline content; falls back to ``magent.path`` companion file with a
+    deprecation warning. Returns ``None`` if neither source is available.
+    """
+    if _agent_has_inline_content(magent):
+        return _agent_content_from_manifest(magent)
+    if magent.path:
+        content = await read_fn(magent.path)
+        if content is not None:
+            logger.warning(_DEPRECATION_MSG_TEMPLATE.format(kind="Agent", path=magent.path))
+            return content
+    return None
+
+
+# =============================================================================
+# Cross-environment rebinding helpers
+# =============================================================================
+
+
+async def _resolve_role_names(db: AsyncSession, names: list[str]) -> list[str]:
+    """Resolve role display names to UUID strings against the target DB.
+
+    Fails loud on any unknown name. Returned list preserves input order.
+    """
+    from src.models.orm.users import Role
+
+    if not names:
+        return []
+    result = await db.execute(select(Role.id, Role.name).where(Role.name.in_(list(set(names)))))
+    by_name: dict[str, str] = {row[1]: str(row[0]) for row in result.all()}
+    resolved: list[str] = []
+    for name in names:
+        role_id = by_name.get(name)
+        if role_id is None:
+            raise ValueError(f"unknown role: {name} — create it first in the target env.")
+        resolved.append(role_id)
+    return resolved
+
+
+async def _apply_role_name_resolution(db: AsyncSession, manifest: "Manifest") -> "Manifest":
+    """Return a copy of the manifest with ``role_names`` → ``roles`` resolved.
+
+    Entities affected: workflows, forms, agents, apps. If an entity carries
+    both ``role_names`` (new) and ``roles`` (legacy), ``role_names`` wins
+    when ``role_resolution='name'``.  Missing names raise ``ValueError``.
+    """
+    def _copy_with_resolved(entity, resolved: list[str]):
+        return entity.model_copy(update={"roles": resolved, "role_names": None})
+
+    # Workflows
+    new_workflows: dict[str, object] = {}
+    for key, mwf in manifest.workflows.items():
+        if mwf.role_names is not None:
+            resolved = await _resolve_role_names(db, list(mwf.role_names))
+            new_workflows[key] = _copy_with_resolved(mwf, resolved)
+        else:
+            new_workflows[key] = mwf
+
+    # Forms
+    new_forms: dict[str, object] = {}
+    for key, mform in manifest.forms.items():
+        if mform.role_names is not None:
+            resolved = await _resolve_role_names(db, list(mform.role_names))
+            new_forms[key] = _copy_with_resolved(mform, resolved)
+        else:
+            new_forms[key] = mform
+
+    # Agents
+    new_agents: dict[str, object] = {}
+    for key, magent in manifest.agents.items():
+        if magent.role_names is not None:
+            resolved = await _resolve_role_names(db, list(magent.role_names))
+            new_agents[key] = _copy_with_resolved(magent, resolved)
+        else:
+            new_agents[key] = magent
+
+    # Apps
+    new_apps: dict[str, object] = {}
+    for key, mapp in manifest.apps.items():
+        if mapp.role_names is not None:
+            resolved = await _resolve_role_names(db, list(mapp.role_names))
+            new_apps[key] = _copy_with_resolved(mapp, resolved)
+        else:
+            new_apps[key] = mapp
+
+    return manifest.model_copy(update={
+        "workflows": new_workflows,
+        "forms": new_forms,
+        "agents": new_agents,
+        "apps": new_apps,
+    })
+
+
+def _rewrite_org_ids(manifest: "Manifest", target_organization_id: UUID) -> "Manifest":
+    """Return a copy of the manifest with every entity's ``organization_id``
+    rewritten to ``target_organization_id``.
+
+    Does NOT touch ``manifest.organizations`` (the bundle-level org list); the
+    caller guards against that combination and rejects before calling here.
+    """
+    target = str(target_organization_id)
+
+    def _with_org(entity):
+        return entity.model_copy(update={"organization_id": target})
+
+    new_workflows = {k: _with_org(v) for k, v in manifest.workflows.items()}
+    new_forms = {k: _with_org(v) for k, v in manifest.forms.items()}
+    new_agents = {k: _with_org(v) for k, v in manifest.agents.items()}
+    new_apps = {k: _with_org(v) for k, v in manifest.apps.items()}
+    new_configs = {k: _with_org(v) for k, v in manifest.configs.items()}
+    new_tables = {k: _with_org(v) for k, v in manifest.tables.items()}
+    new_events = {k: _with_org(v) for k, v in manifest.events.items()}
+
+    # Integrations have per-mapping org_id; rewrite each mapping.
+    new_integrations: dict[str, object] = {}
+    for k, minteg in manifest.integrations.items():
+        new_mappings = [m.model_copy(update={"organization_id": target}) for m in minteg.mappings]
+        new_integrations[k] = minteg.model_copy(update={"mappings": new_mappings})
+
+    return manifest.model_copy(update={
+        "workflows": new_workflows,
+        "forms": new_forms,
+        "agents": new_agents,
+        "apps": new_apps,
+        "configs": new_configs,
+        "tables": new_tables,
+        "events": new_events,
+        "integrations": new_integrations,
+    })
 
 
 # =============================================================================
@@ -227,6 +492,9 @@ async def import_manifest_from_repo(
     db: AsyncSession,
     delete_removed_entities: bool = False,
     dry_run: bool = False,
+    target_organization_id: UUID | None = None,
+    role_resolution: RoleResolution = "uuid",
+    entity_ids: set[str] | None = None,
 ) -> ManifestImportResult:
     """Import manifest from S3 _repo/.bifrost/ into DB.
 
@@ -238,6 +506,19 @@ async def import_manifest_from_repo(
     5. Runs indexer side-effects for forms/agents
     6. Regenerates manifest from DB
     7. Returns ManifestImportResult
+
+    Cross-environment rebinding:
+    - ``target_organization_id``: when set, every entity in the bundle is
+      rewritten to belong to this organization before upsert. Applies to
+      forms, agents, workflows, apps, integrations, configs, tables, event
+      sources, and integration mappings. Does NOT apply to organizations
+      themselves — if the bundle carries an ``organizations`` section and
+      this override is set, the import is rejected with a ``ValueError``
+      surfaced as HTTP 422 at the router level.
+    - ``role_resolution``: ``"uuid"`` (default) assumes role UUIDs in the
+      bundle match the target environment. ``"name"`` reads ``role_names``
+      from each entity and resolves them to UUIDs in the target DB; missing
+      names raise ``ValueError`` before any DB writes.
     """
     from src.services.repo_storage import RepoStorage
     from bifrost.manifest import (
@@ -278,6 +559,22 @@ async def import_manifest_from_repo(
     if validation_errors:
         result.warnings.extend(validation_errors)
 
+    # 3a. Cross-env guard: orgs section incompatible with target_organization_id
+    if target_organization_id is not None and manifest.organizations:
+        raise ValueError(
+            "cannot carry organizations section when target_organization_id is set — "
+            "drop the orgs section or remove the target."
+        )
+
+    # 3b. Pre-resolve role names when requested. Fails loud before any DB writes.
+    if role_resolution == "name":
+        manifest = await _apply_role_name_resolution(db, manifest)
+
+    # 3c. Rewrite organization_id on every entity when override is set.
+    # Does NOT touch manifest.organizations (guarded above).
+    if target_organization_id is not None:
+        manifest = _rewrite_org_ids(manifest, target_organization_id)
+
     # 4. Compute diff against current DB state
     db_manifest = await generate_manifest(db)
     entity_changes, changed_ids = _diff_and_collect(manifest, db_manifest)
@@ -288,7 +585,14 @@ async def import_manifest_from_repo(
         result.dry_run = True
         return result
 
-    # 4b. Short-circuit: nothing changed — no write-back needed
+    # 4b. Caller-supplied subset filter (e.g. interactive import TUI). Restrict
+    # the write to the user's selection, and trim entity_changes to match so
+    # the response accurately reflects what was applied.
+    if entity_ids is not None:
+        changed_ids &= entity_ids
+        entity_changes = [c for c in entity_changes if c.get("id") in changed_ids]
+
+    # 4c. Short-circuit: nothing changed — no write-back needed
     if not changed_ids:
         result.applied = True
         result.entity_changes = entity_changes  # empty list
@@ -711,7 +1015,7 @@ class ManifestResolver:
         for _form_name, mform in manifest.forms.items():
             if changed_ids is not None and mform.id not in changed_ids:
                 continue
-            content = await _file_read(mform.path)
+            content = await _resolve_form_content(mform, _file_read)
             if content is not None:
                 await _prog(f"Importing form: {mform.name}")
                 form_ops = self._resolve_form(mform, content)
@@ -727,7 +1031,7 @@ class ManifestResolver:
         for _agent_name, magent in manifest.agents.items():
             if changed_ids is not None and magent.id not in changed_ids:
                 continue
-            content = await _file_read(magent.path)
+            content = await _resolve_agent_content(magent, _file_read)
             if content is not None:
                 await _prog(f"Importing agent: {magent.name}")
                 agent_ops = self._resolve_agent(magent, content)
@@ -767,7 +1071,7 @@ class ManifestResolver:
         for _form_name, mform in manifest.forms.items():
             if changed_ids is not None and mform.id not in changed_ids:
                 continue
-            content_bytes = await read_fn(mform.path)
+            content_bytes = await _resolve_form_content(mform, read_fn)
             if content_bytes is None:
                 continue
             original_data = yaml.safe_load(content_bytes.decode("utf-8"))
@@ -780,7 +1084,11 @@ class ManifestResolver:
             updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
             await form_indexer.index_form(f"forms/{mform.id}.form.yaml", updated_content)
 
-            if data != original_data:
+            # Only echo back to ``modified`` when the source was a companion
+            # file that needed ref-resolution rewrites (back-compat path).
+            # Inline content is regenerated from the DB on the next manifest
+            # write, so there is nothing to echo back to disk.
+            if mform.path and data != original_data and not _form_has_inline_content(mform):
                 modified[mform.path] = updated_content.decode("utf-8")
 
             # Post-indexer: update org_id and access_level
@@ -857,7 +1165,7 @@ class ManifestResolver:
         for _agent_name, magent in manifest.agents.items():
             if changed_ids is not None and magent.id not in changed_ids:
                 continue
-            content_bytes = await read_fn(magent.path)
+            content_bytes = await _resolve_agent_content(magent, read_fn)
             if content_bytes is None:
                 continue
             original_data = yaml.safe_load(content_bytes.decode("utf-8"))
@@ -871,7 +1179,9 @@ class ManifestResolver:
             updated_content = (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
             await agent_indexer.index_agent(f"agents/{magent.id}.agent.yaml", updated_content)
 
-            if data != original_data:
+            # Only echo back to ``modified`` when the source was a companion
+            # file that needed ref-resolution rewrites (back-compat path).
+            if magent.path and data != original_data and not _agent_has_inline_content(magent):
                 modified[magent.path] = updated_content.decode("utf-8")
 
             # Post-indexer: update org_id and access_level
@@ -1244,18 +1554,21 @@ class ManifestResolver:
             def _dir_exists(p: str) -> bool:
                 return True
 
-        # Collect UUIDs of entities present in the manifest AND whose files exist
+        # Collect UUIDs of entities present in the manifest AND whose files exist.
+        # Forms/agents now carry inline content under their UUID — there is no
+        # required companion file. If ``path`` is set (back-compat), still gate
+        # on file existence; otherwise the manifest entry alone is sufficient.
         present_wf_uuids = [
             UUID(mwf.id) for mwf in manifest.workflows.values()
             if _path_exists(mwf.path)
         ]
         present_form_uuids = [
             UUID(mform.id) for mform in manifest.forms.values()
-            if _path_exists(mform.path)
+            if not mform.path or _path_exists(mform.path)
         ]
         present_agent_uuids = [
             UUID(magent.id) for magent in manifest.agents.values()
-            if _path_exists(magent.path)
+            if not magent.path or _path_exists(magent.path)
         ]
         present_app_uuids = [
             UUID(mapp.id) for mapp in manifest.apps.values()

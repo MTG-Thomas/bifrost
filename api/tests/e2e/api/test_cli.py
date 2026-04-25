@@ -740,6 +740,11 @@ class TestCLIDownload:
             tar.extractall(tmp_path)
 
         # Try to import it using a subprocess
+        # NOTE: We also exercise ``bifrost.commands`` here. That subpackage
+        # is what ``bifrost <entity> <verb>`` dispatches through and it used
+        # to import from ``src.models.contracts.*`` — which is not shipped
+        # in the download tarball, producing a broken CLI on fresh installs.
+        # The import below catches any regression of that class loud-fail.
         test_script = f"""
 import sys
 sys.path.insert(0, '{tmp_path}')
@@ -752,6 +757,18 @@ assert callable(workflow)
 
 # Test that WorkflowMetadata is a class
 assert isinstance(WorkflowMetadata, type)
+
+# Exercise the CLI entity dispatch registry — this is what every
+# ``bifrost <entity> <verb>`` invocation imports, and it transitively
+# pulls in every command module (which in turn imports the DTO mirrors
+# from ``bifrost.contracts``). If the tarball ever drops a file that
+# the commands depend on, this import explodes.
+from bifrost.commands import ENTITY_GROUPS
+assert len(ENTITY_GROUPS) == 10, f"expected 10 entity groups, got {{len(ENTITY_GROUPS)}}"
+
+# And the mirrored DTO package must itself be importable.
+from bifrost import contracts as _contracts
+assert hasattr(_contracts, 'OrganizationCreate')
 
 print('SUCCESS')
 """

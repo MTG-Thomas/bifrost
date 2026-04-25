@@ -15,46 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import Workflow
 from src.models.orm import Agent, AgentTool, AgentDelegation
-from src.models.contracts.agents import AgentPublic
 
 logger = logging.getLogger(__name__)
-
-
-def _serialize_agent_to_yaml(agent: Agent) -> bytes:
-    """
-    Serialize an Agent to YAML bytes using Pydantic model_dump.
-
-    Uses AgentPublic.model_dump() with exclude=True fields auto-excluded.
-    UUIDs are used directly for all cross-references.
-
-    Args:
-        agent: Agent ORM instance with tools relationship loaded
-
-    Returns:
-        YAML serialized as UTF-8 bytes
-    """
-    agent_public = AgentPublic.model_validate(agent)
-
-    # Explicitly exclude fields that shouldn't be in exported files
-    # (these are runtime/database-specific, not portable)
-    agent_data = agent_public.model_dump(
-        mode="json",
-        exclude_none=True,
-        exclude={"organization_id", "access_level", "created_by", "created_at", "updated_at"},
-    )
-
-    # Remove empty arrays to match import format
-    for key in ["delegated_agent_ids", "role_ids", "knowledge_sources", "system_tools"]:
-        if key in agent_data and agent_data[key] == []:
-            del agent_data[key]
-
-    # Sort list fields for deterministic serialization (DB query order is non-deterministic)
-    for key in ["tool_ids", "delegated_agent_ids", "role_ids", "knowledge_sources", "system_tools", "channels"]:
-        if key in agent_data and isinstance(agent_data[key], list):
-            agent_data[key] = sorted(agent_data[key])
-
-    content = yaml.dump(agent_data, default_flow_style=False, sort_keys=True)
-    return (content.rstrip() + "\n").encode("utf-8")
 
 
 class AgentIndexer:

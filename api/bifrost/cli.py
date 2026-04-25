@@ -39,9 +39,16 @@ import httpx
 # Import credentials module directly (it's standalone)
 import bifrost.credentials as credentials
 from bifrost.client import BifrostClient
+# Canonical platform export list. Shared with api/src/services/app_bundler.
+# A drift test (tests/unit/test_platform_names_match_runtime.py) keeps this
+# in step with the client's runtime `$` registry so new platform exports
+# can't ship without the classifier and bundler knowing about them.
+from bifrost.platform_names import PLATFORM_EXPORT_NAMES as _PLATFORM_EXPORT_NAMES
 
 # Default ignore patterns applied even without a .gitignore file.
-# .bifrost/ is always force-included via negation.
+# .bifrost/ is always force-included via negation so push/pull/sync round-trip
+# the manifest. The watch handler layers an additional .bifrost/ exclusion on
+# top of these for its own observer (see _WatchChangeHandler).
 _DEFAULT_IGNORE_PATTERNS = [
     ".git/",
     "__pycache__/",
@@ -51,6 +58,16 @@ _DEFAULT_IGNORE_PATTERNS = [
     "venv/",
     ".DS_Store",
     "*.pyc",
+    # Editor atomic-write turds (e.g. foo.tsx.tmp.12345.1776000000000).
+    # Without this, watchdog sees these files and pushes them to S3; the
+    # editor then renames them to the real file and watchdog emits a 'moved'
+    # event that deliberately does NOT delete the source. Result: every save
+    # leaves a turd in S3 forever.
+    "*.tmp.*",
+    "*.swp",
+    "*.swo",
+    "*~",
+    ".#*",
 ]
 
 _FORCE_INCLUDE_PATTERNS = [
@@ -63,30 +80,6 @@ _FORCE_INCLUDE_PATTERNS = [
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _CliColors:
-    """ANSI color codes, empty strings when not a TTY."""
-    green: str
-    yellow: str
-    red: str
-    dim: str
-    bold: str
-    reset: str
-
-
-def _get_colors() -> _CliColors:
-    """Return ANSI color codes based on whether stdout is a TTY."""
-    use_color = sys.stdout.isatty()
-    return _CliColors(
-        green="\033[32m" if use_color else "",
-        yellow="\033[33m" if use_color else "",
-        red="\033[31m" if use_color else "",
-        dim="\033[2m" if use_color else "",
-        bold="\033[1m" if use_color else "",
-        reset="\033[0m" if use_color else "",
-    )
-
-
 def _normalize_line_endings(data: bytes) -> bytes:
     """Normalize CRLF to LF for text files. Binary files pass through unchanged."""
     if b"\x00" in data[:8192]:
@@ -94,49 +87,19 @@ def _normalize_line_endings(data: bytes) -> bytes:
     return data.replace(b"\r\n", b"\n")
 
 
+def _hash_for_cache(raw_bytes: bytes) -> str:
+    """md5 of post-normalization bytes — must match what the server stores.
+
+    Watch normalizes CRLF to LF before pushing, so S3 stores normalized bytes
+    and S3's ETag is md5 of those. Any hash we compare against a server ETag
+    must be computed on the same normalized bytes.
+    """
+    return hashlib.md5(_normalize_line_endings(raw_bytes)).hexdigest()
+
+
 def _is_bifrost_path(path: str) -> bool:
     """Check if a path refers to a .bifrost/ manifest directory."""
     return ".bifrost" in path.replace("\\", "/").split("/")
-
-
-def _separate_manifest_files(files: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
-    """Split a files dict into (bifrost_manifest_files, regular_files)."""
-    bifrost: dict[str, str] = {}
-    regular: dict[str, str] = {}
-    for repo_path, content in files.items():
-        if _is_bifrost_path(repo_path):
-            bifrost[repo_path] = content
-        else:
-            regular[repo_path] = content
-    return bifrost, regular
-
-
-def _format_count_summary(
-    counts: dict[str, int],
-    labels: dict[str, tuple[str, str]],
-    cc: _CliColors,
-    separator: str = ", ",
-) -> str:
-    """Format a colored count summary string.
-
-    Args:
-        counts: Dict of count_key -> count_value
-        labels: Dict of count_key -> (color_attr, label_template) where
-                label_template may use {n} for count and {s} for plural suffix
-        cc: CLI colors instance
-        separator: String to join parts with
-
-    Returns:
-        Formatted summary string, or empty string if no counts > 0.
-    """
-    parts: list[str] = []
-    for key, (color_attr, label_tpl) in labels.items():
-        n = counts.get(key, 0)
-        if n:
-            color = getattr(cc, color_attr, "")
-            s = "s" if n != 1 else ""
-            parts.append(f"{color}{label_tpl.format(n=n, s=s)}{cc.reset}")
-    return separator.join(parts)
 
 
 def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
@@ -163,6 +126,37 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
 
 # Watch session heartbeat must be < Redis TTL (WATCH_SESSION_TTL_SECONDS in files.py)
 WATCH_HEARTBEAT_SECONDS = 60
+
+
+def _check_cli_version() -> None:
+    """Warn if the installed CLI is older than the API's minimum required version."""
+    try:
+        import urllib.request
+        import json as _json
+        from bifrost import __version__
+
+        config_path = pathlib.Path.home() / ".bifrost" / "config.json"
+        if not config_path.exists():
+            return
+        config = _json.loads(config_path.read_text())
+        api_url = config.get("api_url", "").rstrip("/")
+        if not api_url:
+            return
+
+        with urllib.request.urlopen(f"{api_url}/api/version", timeout=3) as resp:
+            data = _json.loads(resp.read())
+
+        min_ver = data.get("min_cli_version", "")
+        installed = __version__.lstrip("v")
+        if min_ver and installed != "unknown" and installed < min_ver:
+            print(
+                f"\033[33mWarning: CLI version {installed} is older than the "
+                f"minimum required {min_ver}. Run:\n"
+                f"  pipx install {api_url}/api/cli/download\n\033[0m",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
 
 
 async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool:
@@ -322,6 +316,14 @@ def main(args: list[str] | None = None) -> int:
         print_help()
         return 0
 
+    # Handle --version / -V before lowercasing (they're flags, not commands)
+    if args[0] in ("--version", "-V"):
+        from bifrost import __version__
+        print(f"bifrost {__version__}")
+        return 0
+
+    _check_cli_version()
+
     try:
         command = args[0].lower()
 
@@ -350,11 +352,28 @@ def main(args: list[str] | None = None) -> int:
         if command == "pull":
             return handle_pull(args[1:])
 
+        if command == "import":
+            from bifrost.commands.import_cmd import handle_import
+            return handle_import(args[1:])
+
+        if command == "export":
+            from bifrost.commands.export import handle_export
+            return handle_export(args[1:])
+
         if command == "watch":
             return handle_watch(args[1:])
 
         if command == "api":
             return handle_api(args[1:])
+
+        if command == "migrate-imports":
+            return handle_migrate_imports(args[1:])
+
+        # Entity mutation subgroups (bifrost orgs ..., bifrost roles ..., etc.).
+        from bifrost.commands import ENTITY_GROUPS, dispatch_entity_subgroup
+
+        if command in ENTITY_GROUPS:
+            return dispatch_entity_subgroup(command, args[1:])
 
         # Unknown command
         print(f"Unknown command: {command}", file=sys.stderr)
@@ -379,11 +398,29 @@ Commands:
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
-  watch       Watch for file changes and auto-push (requires .bifrost/ workspace)
+  export      Export a workspace bundle (optionally portable/scrubbed)
+  import      Apply a bundle to the current environment
+  watch       Watch for file changes and auto-push
   api         Generic authenticated API request
+  migrate-imports  Rewrite "bifrost" imports into user/lucide/router imports
   login       Authenticate with device authorization flow
   logout      Clear stored credentials and sign out
   help        Show this help message
+
+Flags:
+  -V, --version   Print the installed CLI version
+
+Entity mutation commands (see 'bifrost <entity> --help'):
+  orgs         Manage organizations
+  roles        Manage roles
+  workflows    Manage workflow lifecycle and role assignments
+  forms        Manage forms
+  agents       Manage AI agents
+  apps         Manage applications and dependencies
+  integrations Manage integrations, config schemas, and mappings
+  configs      Manage config values
+  tables       Manage tables
+  events       Manage event sources and subscriptions
 
 Examples:
   bifrost run workflow.py -w greet
@@ -405,6 +442,8 @@ Examples:
   bifrost watch apps/my-app
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate
+  bifrost migrate-imports apps/my-app --dry-run
+  bifrost migrate-imports apps/my-app --yes
   bifrost login
   bifrost login --url https://app.gobifrost.com
   bifrost logout
@@ -1088,7 +1127,12 @@ def _warn_if_git_workspace(target_path: str) -> None:
     # Walk up to find .git/
     for parent in [p, *p.parents]:
         if (parent / ".git").exists():
-            warn = "\033[33m⚠ Warning: Git is enabled in the platform.\033[0m" if sys.stderr.isatty() else "Warning: Git is enabled in the platform."
+            msg = (
+                "Warning: target path is inside a local git checkout. "
+                "`bifrost push`/`watch` pushes files directly to the platform; "
+                "your local commits are not synced."
+            )
+            warn = f"\033[33m⚠ {msg}\033[0m" if sys.stderr.isatty() else msg
             print(warn, file=sys.stderr)
             return
 
@@ -1577,13 +1621,18 @@ class _WatchState:
         self.pending_changes: set[str] = set()
         self.pending_deletes: set[str] = set()
         self.lock = threading.Lock()
-        self.writeback_paused = False
         # Unique session ID for filtering own changes from WebSocket events
         self.session_id: str = str(uuid4())
         # Incoming changes from other sessions (populated by WebSocket listener)
         self.incoming_files: list[tuple[list[str], str]] = []      # (paths, user_name)
         self.incoming_deletes: list[tuple[list[str], str]] = []     # (paths, user_name)
-        self.incoming_entities: list[dict[str, Any]] = []           # entity_change events
+        # repo_path -> md5 of bytes currently on the server (as best as this
+        # session knows). Populated by: successful pushes, incoming pull
+        # writes, and the /api/files/list seed at startup. Consulted by the
+        # push batcher to drop no-op pushes (the primary fix for pull/write
+        # echoes re-pushing pulled content) and by the pull processor to
+        # skip no-op writes.
+        self.known_server_hashes: dict[str, str] = {}
 
     def drain(self) -> tuple[set[str], set[str]]:
         """Atomically drain pending changes and deletes."""
@@ -1600,12 +1649,6 @@ class _WatchState:
             self.pending_changes.update(changes)
             self.pending_deletes.update(deletes)
 
-    def discard_writeback_paths(self, paths: set[str]) -> None:
-        """Remove paths generated by server writeback from pending sets."""
-        with self.lock:
-            self.pending_changes -= paths
-            self.pending_deletes -= paths
-
     def queue_incoming_files(self, paths: list[str], user_name: str) -> None:
         """Queue incoming file changes from another session."""
         with self.lock:
@@ -1616,33 +1659,57 @@ class _WatchState:
         with self.lock:
             self.incoming_deletes.append((paths, user_name))
 
-    def queue_entity_change(self, event: dict[str, Any]) -> None:
-        """Queue incoming entity change from another session."""
-        with self.lock:
-            self.incoming_entities.append(event)
-
     def drain_incoming(self) -> tuple[
         list[tuple[list[str], str]],
         list[tuple[list[str], str]],
-        list[dict[str, Any]],
     ]:
         """Atomically drain all incoming queues."""
         with self.lock:
             files = self.incoming_files.copy()
             deletes = self.incoming_deletes.copy()
-            entities = self.incoming_entities.copy()
             self.incoming_files.clear()
             self.incoming_deletes.clear()
-            self.incoming_entities.clear()
-        return files, deletes, entities
+        return files, deletes
+
+    def get_known_hash(self, repo_path: str) -> str | None:
+        with self.lock:
+            return self.known_server_hashes.get(repo_path)
+
+    def set_known_hash(self, repo_path: str, hash_hex: str) -> None:
+        with self.lock:
+            self.known_server_hashes[repo_path] = hash_hex
+
+    def forget_known_hash(self, repo_path: str) -> None:
+        with self.lock:
+            self.known_server_hashes.pop(repo_path, None)
+
+    def seed_known_hashes(self, pairs: dict[str, str]) -> None:
+        with self.lock:
+            self.known_server_hashes.update(pairs)
 
 
 class _WatchChangeHandler:
-    """Watchdog event handler that tracks file changes for push."""
+    """Watchdog event handler that tracks file changes for push.
+
+    Watch is exclusion-based: it watches the workspace root and skips
+    .gitignore-derived paths plus .bifrost/. The `.bifrost/` directory is an
+    export artifact written by `bifrost export --portable` and consumed by
+    `bifrost import`; sync/watch/push/pull never read or mutate it.
+    """
 
     def __init__(self, state: _WatchState):
+        import pathspec
         self.state = state
-        self._spec = _build_file_filter(state.base_path)
+        # Watch spec layers .bifrost/ on top of the shared push/pull filter so
+        # observer events under the manifest directory are dropped before they
+        # ever reach the handler. The shared filter still force-includes
+        # .bifrost/ for full sync paths — only watch excludes it.
+        base_lines = list(_DEFAULT_IGNORE_PATTERNS)
+        gitignore_path = state.base_path / ".gitignore"
+        if gitignore_path.is_file():
+            base_lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
+        base_lines.append(".bifrost/")
+        self._spec = pathspec.PathSpec.from_lines("gitwildmatch", base_lines)
 
     def _should_skip(self, file_path: str) -> bool:
         p = pathlib.Path(file_path)
@@ -1651,7 +1718,7 @@ class _WatchChangeHandler:
 
     def dispatch(self, event: Any) -> None:
         """Called by watchdog for all events."""
-        if self.state.writeback_paused or event.is_directory:
+        if event.is_directory:
             return
 
         # For moved/renamed events, track the destination as a change.
@@ -1678,26 +1745,37 @@ class _WatchChangeHandler:
                 self.state.pending_deletes.discard(src)
 
 
+def _extract_error_detail(resp: Any) -> str:
+    """Extract human-readable error detail from an HTTP response body."""
+    try:
+        body = resp.json()
+        return body.get("detail", "") or body.get("message", "") or ""
+    except Exception:
+        try:
+            text = resp.text
+            return text[:200] if text else ""
+        except Exception:
+            return ""
+
+
 async def _process_watch_deletes(
     client: "BifrostClient",
     deletes: set[str],
     base_path: pathlib.Path,
     repo_prefix: str,
-    session_id: str | None = None,
+    state: _WatchState,
 ) -> tuple[int, list[str]]:
     """Process pending file deletions. Returns (count, relative_paths)."""
     deleted_count = 0
     deleted_rels: list[str] = []
     extra_headers: dict[str, str] = {}
-    if session_id:
-        extra_headers["X-Bifrost-Watch-Session"] = session_id
+    if state.session_id:
+        extra_headers["X-Bifrost-Watch-Session"] = state.session_id
 
     for abs_path_str in deletes:
         abs_p = pathlib.Path(abs_path_str)
         if not abs_p.exists():
             rel = abs_p.relative_to(base_path)
-            if _is_bifrost_path(str(rel)):
-                continue
             repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
             try:
                 resp = await client.post("/api/files/delete", json={
@@ -1706,11 +1784,13 @@ async def _process_watch_deletes(
                 if resp.status_code == 204:
                     deleted_count += 1
                     deleted_rels.append(str(rel))
+                    state.forget_known_hash(repo_path)
             except Exception as del_err:
                 status_code = getattr(getattr(del_err, "response", None), "status_code", None)
                 if status_code == 404:
                     deleted_count += 1
                     deleted_rels.append(str(rel))
+                    state.forget_known_hash(repo_path)
                 else:
                     ts = datetime.now().strftime('%H:%M:%S')
                     print(f"  [{ts}] Delete error for {rel}: {del_err}", flush=True)
@@ -1729,20 +1809,29 @@ async def _process_watch_batch(
 ) -> None:
     """Process a batch of file changes and deletions."""
     deleted_count, deleted_rels = await _process_watch_deletes(
-        client, deletes, base_path, repo_prefix, session_id=state.session_id,
+        client, deletes, base_path, repo_prefix, state,
     )
 
-    # Build files dict from changed paths
+    # Build files dict from changed paths. Observer events fire for our own
+    # pull writes, too — gate each file on the known-server-hash cache so we
+    # don't round-trip content the server already has.
     push_files: dict[str, str] = {}
+    push_hashes: dict[str, str] = {}
     for abs_path_str in changes:
         abs_p = pathlib.Path(abs_path_str)
         if abs_p.exists():
             try:
-                raw = _normalize_line_endings(abs_p.read_bytes())
-                content = base64.b64encode(raw).decode("ascii")
+                raw_bytes = abs_p.read_bytes()
+                raw = _normalize_line_endings(raw_bytes)
                 rel = abs_p.relative_to(base_path)
                 repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
-                push_files[repo_path] = content
+                file_hash = hashlib.md5(raw).hexdigest()
+                if state.get_known_hash(repo_path) == file_hash:
+                    # No-op push: the server already has this content (common
+                    # case: observer fired on our own pull write).
+                    continue
+                push_files[repo_path] = base64.b64encode(raw).decode("ascii")
+                push_hashes[repo_path] = file_hash
             except OSError:
                 continue
 
@@ -1764,19 +1853,6 @@ async def _process_watch_batch(
                     pass
 
     if push_files:
-        # Local manifest validation (warnings only — server validates too)
-        has_manifest = any(".bifrost/" in k for k in push_files)
-        if has_manifest:
-            val_errors = _validate_manifest_locally(base_path)
-            if val_errors:
-                if watch_app:
-                    for err in val_errors:
-                        watch_app.log_error(f"Manifest warning: {err}")
-                else:
-                    print(f"  [{ts}] Manifest warnings:", flush=True)
-                    for err in val_errors:
-                        print(f"    - {err}", flush=True)
-
         # Create per-file spinner rows in TUI
         file_rows: dict[str, Any] = {}  # repo_path -> (batch_row, spinner_task)
         if watch_app:
@@ -1785,13 +1861,12 @@ async def _process_watch_batch(
                 stask = asyncio.create_task(watch_app.spin_row(row))
                 file_rows[rp] = (row, stask)
 
-        # Separate .bifrost/ manifest files from regular files
-        bifrost_watch_files, regular_watch_files = _separate_manifest_files(push_files)
-
-        # Upload regular files via per-file writes
+        # Upload files via per-file writes. Watch only syncs code/data files —
+        # .bifrost/ is excluded by the observer, so manifest import never
+        # happens here. .bifrost/ round-trips via `bifrost sync` / `bifrost pull`.
         watch_created = 0
         watch_errors: list[str] = []
-        for rp, c in regular_watch_files.items():
+        for rp, c in push_files.items():
             try:
                 resp = await client.post("/api/files/write", json={
                     "path": rp,
@@ -1805,12 +1880,15 @@ async def _process_watch_batch(
                 })
                 if resp.status_code == 204:
                     watch_created += 1
+                    state.set_known_hash(rp, push_hashes[rp])
                     if rp in file_rows:
                         row, stask = file_rows[rp]
                         stask.cancel()
                         row.freeze("success", "\u2713", "Push", rp)
                 else:
-                    watch_errors.append(f"{rp}: HTTP {resp.status_code}")
+                    detail = _extract_error_detail(resp)
+                    err_msg = f"{rp}: HTTP {resp.status_code}" + (f" \u2014 {detail}" if detail else "")
+                    watch_errors.append(err_msg)
                     if rp in file_rows:
                         row, stask = file_rows[rp]
                         stask.cancel()
@@ -1821,33 +1899,6 @@ async def _process_watch_batch(
                     row, stask = file_rows[rp]
                     stask.cancel()
                     row.freeze("error", "\u2717", "Push", f"{rp}: {e}")
-
-        # Freeze any manifest file rows (they weren't uploaded individually)
-        for rp in bifrost_watch_files:
-            if rp in file_rows:
-                row, stask = file_rows[rp]
-                stask.cancel()
-                row.freeze("success", "\u2713", "Push", rp)
-
-        # Import manifest if .bifrost/ files changed
-        watch_warnings: list[str] = []
-        manifest_result: dict[str, Any] = {}
-        if bifrost_watch_files:
-            try:
-                import_payload: dict[str, Any] = {
-                    "files": bifrost_watch_files,
-                    "delete_removed_entities": True,
-                }
-                resp = await client.post("/api/files/manifest/import", json=import_payload, headers={
-                    "X-Bifrost-Watch-Session": state.session_id,
-                })
-                if resp.status_code == 200:
-                    manifest_result = resp.json()
-                    watch_warnings = manifest_result.get("warnings", [])
-                else:
-                    watch_warnings.append(f"Manifest import failed: HTTP {resp.status_code}")
-            except Exception as e:
-                watch_warnings.append(f"Manifest import failed: {e}")
 
         # Update sync status
         if watch_app and not watch_errors:
@@ -1861,46 +1912,20 @@ async def _process_watch_batch(
                 parts.append(f"{watch_created} written")
             if deleted_count:
                 parts.append(f"{deleted_count} deleted")
-            if bifrost_watch_files:
-                parts.append("manifest applied")
             print(f"  [{ts}] \u2713 Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
 
-        # Log errors/warnings as separate rows
+        # Log errors as separate rows (with detail sub-rows in TUI)
         if watch_errors:
             for error in watch_errors:
                 if watch_app:
-                    watch_app.log_error(error)
+                    if "\u2014" in error:
+                        summary, detail = error.split("\u2014", 1)
+                        watch_app.log_error_detail(summary.strip(), detail.strip())
+                    else:
+                        watch_app.log_error(error)
                 else:
                     _cols = shutil.get_terminal_size((80, 24)).columns
                     print(textwrap.fill(f"Error: {error}", width=_cols, initial_indent="    ", subsequent_indent="      "), flush=True)
-        if watch_warnings:
-            for warning in watch_warnings:
-                if watch_app:
-                    watch_app.log_error(warning)
-                else:
-                    _cols = shutil.get_terminal_size((80, 24)).columns
-                    print(textwrap.fill(f"Warning: {warning}", width=_cols, initial_indent="    ", subsequent_indent="      "), flush=True)
-        deleted_entities = manifest_result.get("deleted_entities", [])
-        if deleted_entities:
-            msg = f"Removed {len(deleted_entities)} entity(ies): {', '.join(deleted_entities)}"
-            if watch_app:
-                watch_app.log_info(msg)
-            else:
-                print(f"  [{ts}] Removed {len(deleted_entities)} entity(ies):", flush=True)
-                for de in deleted_entities:
-                    print(f"    - {de}", flush=True)
-
-        # Write back server files (pause watcher to avoid re-trigger)
-        result = manifest_result
-        if result.get("manifest_files") or result.get("modified_files"):
-            state.writeback_paused = True
-            writeback_paths: set[str] = set()
-            try:
-                writeback_paths = _write_back_server_files(base_path, repo_prefix, result)
-            finally:
-                await asyncio.sleep(0.2)
-                state.discard_writeback_paths(writeback_paths)
-                state.writeback_paused = False
 
         # Auto-validate app directories after push (non-blocking)
         await _auto_validate_app(client, push_files, repo_prefix, watch_app=watch_app)
@@ -2034,8 +2059,6 @@ async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
                         user_name = event.get("user_name", "unknown")
                         if paths:
                             state.queue_incoming_deletes(paths, user_name)
-                    elif evt_type == "entity_change":
-                        state.queue_entity_change(event)
         except asyncio.CancelledError:
             return
         except Exception as e:
@@ -2058,13 +2081,19 @@ async def _process_incoming(
     client: "BifrostClient",
     files: list[tuple[list[str], str]],
     deletes: list[tuple[list[str], str]],
-    entities: list[dict[str, Any]],
     base_path: pathlib.Path,
     repo_prefix: str,
+    state: _WatchState,
     watch_app: "WatchApp | None" = None,
-) -> set[str]:
-    """Process incoming changes from other sessions. Returns set of written absolute paths."""
-    written_paths: set[str] = set()
+) -> None:
+    """Process incoming file changes/deletes from other sessions.
+
+    Writes here fire the watchdog observer, which would normally cause the
+    push batcher to POST the pulled content back. The known-hash cache on
+    `state` blocks that — we record each pulled file's hash before/after
+    writing so the subsequent observer event sees a matching cache entry
+    and drops the no-op push.
+    """
     ts = datetime.now().strftime('%H:%M:%S')
 
     # Process incoming file changes
@@ -2080,6 +2109,7 @@ async def _process_incoming(
                 if resp.status_code == 200:
                     data = resp.json()
                     content = base64.b64decode(data["content"])
+                    content_hash = _hash_for_cache(content)
                     # Convert repo_path to local path
                     if repo_prefix and repo_path.startswith(repo_prefix + "/"):
                         rel = repo_path[len(repo_prefix) + 1:]
@@ -2089,15 +2119,20 @@ async def _process_incoming(
                         rel = repo_path
                     local_file = base_path / rel
                     local_file.parent.mkdir(parents=True, exist_ok=True)
-                    # Skip if content is identical
+                    # Skip if we already know the server has this content and
+                    # the local file matches (cache hit). Falls back to a byte
+                    # compare when the cache has no entry.
+                    if state.get_known_hash(repo_path) == content_hash:
+                        continue
                     if local_file.exists():
                         try:
                             if local_file.read_bytes() == content:
+                                state.set_known_hash(repo_path, content_hash)
                                 continue
                         except OSError:
                             pass
                     local_file.write_bytes(content)
-                    written_paths.add(str(local_file))
+                    state.set_known_hash(repo_path, content_hash)
                     if watch_app:
                         watch_app.log_pull(rel, user=user_name)
                     else:
@@ -2121,7 +2156,7 @@ async def _process_incoming(
             if local_file.exists():
                 try:
                     local_file.unlink()
-                    written_paths.add(str(local_file))
+                    state.forget_known_hash(repo_path)
                     if watch_app:
                         watch_app.log_delete(rel, user=user_name)
                     else:
@@ -2131,111 +2166,9 @@ async def _process_incoming(
                         watch_app.log_error(f"Error deleting {rel}: {e}")
                     else:
                         print(f"  [{ts}] \u2190 Error deleting {rel}: {e}", flush=True)
-
-    # Process incoming entity changes — update local .bifrost/*.yaml
-    if entities:
-        from bifrost.manifest import MANIFEST_FILES
-        import yaml
-
-        def _entity_log(msg: str) -> None:
-            if watch_app:
-                watch_app.log_pull(msg)
             else:
-                print(f"  [{ts}] \u2190 {msg}", flush=True)
-
-        # Map entity_type → manifest yaml filename
-        entity_to_file = MANIFEST_FILES
-
-        bifrost_dir = _find_bifrost_dir(base_path)
-        for event in entities:
-            entity_type = event.get("entity_type", "")
-            entity_id = event.get("entity_id", "")
-            action = event.get("action", "")
-            user_name = event.get("user_name", "unknown")
-            filename = entity_to_file.get(entity_type)
-            if not filename or not entity_id:
-                continue
-
-            action_past = action + 'd' if action.endswith('e') else action + 'ed'
-
-            yaml_path = bifrost_dir / filename
-            try:
-                # Read existing yaml
-                existing_data: dict[str, Any] = {}
-                if yaml_path.exists():
-                    raw = yaml_path.read_text(encoding="utf-8")
-                    existing_data = yaml.safe_load(raw) or {}
-
-                section = existing_data.get(entity_type, {})
-                data = event.get("data")
-
-                # For list-type sections (organizations, roles)
-                if entity_type in ("organizations", "roles"):
-                    if not isinstance(section, list):
-                        section = []
-                    if action == "delete":
-                        section = [e for e in section if e.get("id") != entity_id]
-                        existing_data[entity_type] = section
-                        yaml_path.parent.mkdir(parents=True, exist_ok=True)
-                        yaml_path.write_text(
-                            yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
-                            encoding="utf-8",
-                        )
-                        written_paths.add(str(yaml_path))
-                        _entity_log(f"{user_name} deleted {entity_type[:-1]} {entity_id}")
-                    elif data:
-                        replaced = False
-                        for i, entry in enumerate(section):
-                            if entry.get("id") == entity_id:
-                                section[i] = data
-                                replaced = True
-                                break
-                        if not replaced:
-                            section.append(data)
-                        existing_data[entity_type] = section
-                        yaml_path.parent.mkdir(parents=True, exist_ok=True)
-                        yaml_path.write_text(
-                            yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
-                            encoding="utf-8",
-                        )
-                        written_paths.add(str(yaml_path))
-                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id}")
-                    else:
-                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id} (no data)")
-                    continue
-
-                if isinstance(section, dict):
-                    if action == "delete":
-                        if entity_id in section:
-                            del section[entity_id]
-                            existing_data[entity_type] = section
-                            yaml_path.parent.mkdir(parents=True, exist_ok=True)
-                            yaml_path.write_text(
-                                yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
-                                encoding="utf-8",
-                            )
-                            written_paths.add(str(yaml_path))
-                            _entity_log(f"{user_name} deleted {entity_type[:-1]} {entity_id}")
-                    elif data:
-                        section[entity_id] = data
-                        existing_data[entity_type] = section
-                        yaml_path.parent.mkdir(parents=True, exist_ok=True)
-                        yaml_path.write_text(
-                            yaml.dump(existing_data, default_flow_style=False, sort_keys=False, allow_unicode=True),
-                            encoding="utf-8",
-                        )
-                        written_paths.add(str(yaml_path))
-                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id}")
-                    else:
-                        _entity_log(f"{user_name} {action_past} {entity_type[:-1]} {entity_id} (no data)")
-
-            except Exception as e:
-                if watch_app:
-                    watch_app.log_error(f"Error updating {filename}: {e}")
-                else:
-                    print(f"  [{ts}] \u2190 Error updating {filename}: {e}", flush=True)
-
-    return written_paths
+                # File wasn't local, but still drop any stale cache entry.
+                state.forget_known_hash(repo_path)
 
 
 async def _watch_loop(
@@ -2302,20 +2235,15 @@ async def _watch_loop(
                             print(f"  [{ts}] \u26a0 {consecutive_errors} consecutive errors, backing off to 5s", flush=True)
                         await asyncio.sleep(5)
 
-            # Process incoming changes from other sessions
-            inc_files, inc_deletes, inc_entities = state.drain_incoming()
-            if inc_files or inc_deletes or inc_entities:
-                state.writeback_paused = True
-                wb_paths: set[str] = set()
-                try:
-                    wb_paths = await _process_incoming(
-                        client, inc_files, inc_deletes, inc_entities, path, repo_prefix,
-                        watch_app=watch_app,
-                    )
-                finally:
-                    await asyncio.sleep(0.2)
-                    state.discard_writeback_paths(wb_paths)
-                    state.writeback_paused = False
+            # Process incoming file changes from other sessions. Writes land
+            # on disk, the observer re-emits them to the push batcher, and
+            # the known-hash cache on `state` drops the would-be echo.
+            inc_files, inc_deletes = state.drain_incoming()
+            if inc_files or inc_deletes:
+                await _process_incoming(
+                    client, inc_files, inc_deletes, path, repo_prefix,
+                    state, watch_app=watch_app,
+                )
 
             # Heartbeat
             now = asyncio.get_event_loop().time()
@@ -2372,6 +2300,27 @@ async def _watch_and_push(
         print(f"Initial sync of {path}...", flush=True)
     await _sync_files(str(path), repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client)
 
+    # Seed the known-server-hash cache from the server's file listing before
+    # the observer starts. Without this, the very first observer event for
+    # any already-synced file (editors "touch" on open) would push a no-op.
+    # Best-effort — failure just means cold start pushes until the first
+    # pull/push per path populates the cache.
+    try:
+        seed_resp = await client.post("/api/files/list", json={
+            "include_metadata": True,
+            "mode": "cloud",
+            "location": "workspace",
+        })
+        if seed_resp.status_code == 200:
+            seed_data = seed_resp.json()
+            state.seed_known_hashes({
+                item["path"]: item["etag"]
+                for item in seed_data.get("files_metadata", [])
+                if item.get("path") and item.get("etag")
+            })
+    except Exception:
+        pass
+
     # Set up file watcher
     handler = _WatchChangeHandler(state)
     observer = Observer()
@@ -2402,204 +2351,6 @@ async def _watch_and_push(
     return 0
 
 
-def _validate_manifest_locally(workspace_dir: "pathlib.Path") -> list[str]:
-    """Validate .bifrost/ manifest files locally before pushing.
-
-    Reads ALL manifest files from disk so cross-file references (e.g.
-    workflow → organization) are validated against the complete manifest,
-    not just the files that changed in this push batch.
-    """
-    from bifrost.manifest import parse_manifest_dir, validate_manifest, MANIFEST_FILES
-
-    bifrost_dir = workspace_dir / ".bifrost"
-    if not bifrost_dir.is_dir():
-        return []
-
-    yaml_files: dict[str, str] = {}
-    for filename in MANIFEST_FILES.values():
-        filepath = bifrost_dir / filename
-        if filepath.exists():
-            try:
-                yaml_files[filename] = filepath.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-
-    if not yaml_files:
-        return []
-
-    try:
-        manifest = parse_manifest_dir(yaml_files)
-    except Exception as e:
-        return [f"Failed to parse manifest: {e}"]
-
-    return validate_manifest(manifest)
-
-
-def _merge_manifest_yaml(local_content: str, server_content: str) -> str:
-    """Merge server-returned partial manifest YAML into local file by UUID key.
-
-    The server returns only changed entities.  We merge them into the local
-    file so that unrelated entities (edited locally but not yet synced) are
-    preserved.  The server's version of each UUID key wins entirely.
-    """
-    import yaml as _yaml
-
-    local_data = _yaml.safe_load(local_content) or {}
-    server_data = _yaml.safe_load(server_content) or {}
-
-    for section_key, server_section in server_data.items():
-        if not isinstance(server_section, dict):
-            # List-based sections (organizations, roles) — replace entirely
-            local_data[section_key] = server_section
-            continue
-        # Dict-based sections — merge by UUID key
-        local_section = local_data.get(section_key)
-        if not isinstance(local_section, dict):
-            local_data[section_key] = server_section
-            continue
-        local_section.update(server_section)
-
-    # Sort top-level entity dicts by key for deterministic output
-    for key, section in local_data.items():
-        if isinstance(section, dict):
-            local_data[key] = dict(sorted(section.items()))
-
-    return _yaml.dump(
-        local_data,
-        default_flow_style=False,
-        sort_keys=True,
-        allow_unicode=True,
-    ).rstrip("\n") + "\n"
-
-
-def _write_back_server_files(
-    local_root: pathlib.Path,
-    repo_prefix: str,
-    result: dict[str, Any],
-) -> set[str]:
-    """Write manifest_files and modified_files from server response back to local disk.
-
-    Manifest files are merged by UUID key so that concurrent local edits to
-    unrelated entities are preserved.  Only writes files that actually differ.
-    Returns set of absolute paths that were actually written (for watch mode event filtering).
-    """
-    written_paths: set[str] = set()
-
-    manifest_dir = _find_bifrost_dir(local_root)
-
-    # Merge server manifest entries into local .bifrost/ files
-    for filename, server_content in result.get("manifest_files", {}).items():
-        local_path = manifest_dir / filename
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if local_path.exists():
-            try:
-                local_content = local_path.read_text(encoding="utf-8")
-                merged = _merge_manifest_yaml(local_content, server_content)
-                if local_content == merged:
-                    continue
-                local_path.write_text(merged, encoding="utf-8")
-            except OSError:
-                local_path.write_text(server_content, encoding="utf-8")
-        else:
-            local_path.write_text(server_content, encoding="utf-8")
-
-        written_paths.add(str(local_path))
-
-    # Write back modified source files (e.g. forms/agents with resolved refs)
-    for repo_path, content in result.get("modified_files", {}).items():
-        if repo_prefix and repo_path.startswith(repo_prefix + "/"):
-            rel = repo_path[len(repo_prefix) + 1:]
-        elif repo_prefix and repo_path.startswith(repo_prefix):
-            rel = repo_path[len(repo_prefix):]
-        else:
-            rel = repo_path
-        local_path = local_root / rel
-        # Skip if local file already has identical content
-        if local_path.exists():
-            try:
-                if local_path.read_text(encoding="utf-8") == content:
-                    continue
-            except OSError:
-                pass
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_text(content, encoding="utf-8")
-        written_paths.add(str(local_path))
-
-    if written_paths:
-        print(f"  Wrote back {len(written_paths)} file(s) from server.")
-
-    return written_paths
-
-
-def _compute_local_md5s(
-    local_root: pathlib.Path,
-    repo_prefix: str,
-) -> dict[str, str]:
-    """Walk local directory and compute MD5 of all files.
-
-    Returns {repo_path: md5_hex} matching the format the server expects.
-    """
-    import hashlib as _hashlib
-
-    hashes: dict[str, str] = {}
-    spec = _build_file_filter(local_root)
-
-    for file_path in sorted(local_root.rglob("*")):
-        if file_path.is_dir():
-            continue
-        rel = file_path.relative_to(local_root)
-        rel_str = str(rel)
-        if spec.match_file(rel_str):
-            continue
-        try:
-            content = _normalize_line_endings(file_path.read_bytes())
-            md5 = _hashlib.md5(content).hexdigest()
-            repo_path = f"{repo_prefix}/{rel_str}" if repo_prefix else rel_str
-            hashes[repo_path] = md5
-        except OSError:
-            continue
-
-    return hashes
-
-
-def _check_git_status(local_root: pathlib.Path, files_to_check: list[str]) -> tuple[bool, set[str]]:
-    """Check git status for overwrite safety.
-
-    Returns (is_git_repo, uncommitted_files).
-    """
-    import subprocess
-
-    # Check if inside a git repo
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, cwd=str(local_root),
-        )
-        is_git = result.returncode == 0 and result.stdout.strip() == "true"
-    except FileNotFoundError:
-        return False, set()
-
-    if not is_git or not files_to_check:
-        return is_git, set()
-
-    # Check which of the specified files have uncommitted changes
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain", "--"] + files_to_check,
-            capture_output=True, text=True, cwd=str(local_root),
-        )
-        uncommitted = set()
-        for line in result.stdout.strip().splitlines():
-            if line:
-                # porcelain format: XY filename
-                path = line[3:].strip()
-                uncommitted.add(path)
-        return True, uncommitted
-    except Exception:
-        return True, set()
-
-
 def _format_file_time(file_path: pathlib.Path) -> str:
     """Format a file's modification time for display (short format)."""
     try:
@@ -2626,269 +2377,6 @@ def _strip_repo_prefix(repo_path: str, repo_prefix: str) -> str:
     if repo_prefix and repo_path.startswith(repo_prefix):
         return repo_path[len(repo_prefix):]
     return repo_path
-
-
-async def _pull_from_server(
-    client: BifrostClient,
-    local_root: pathlib.Path,
-    repo_prefix: str,
-    include_code_files: bool = False,
-    force: bool = False,
-    mirror: bool = False,
-) -> bool:
-    """Pull files from server using per-file operations. Returns True on success."""
-    # 1. Get server file listing with metadata
-    server_metadata: dict[str, dict[str, str]] = {}
-    try:
-        resp = await client.post("/api/files/list", json={
-            "include_metadata": True,
-            "mode": "cloud",
-            "location": "workspace",
-        })
-        if resp.status_code != 200:
-            print(f"Warning: file listing failed ({resp.status_code})", file=sys.stderr)
-            return True
-        data = resp.json()
-        for item in data.get("files_metadata", []):
-            server_metadata[item["path"]] = {
-                    "etag": item["etag"],
-                    "last_modified": item["last_modified"],
-                    "updated_by": item.get("updated_by", ""),
-                }
-    except Exception as e:
-        print(f"Warning: file listing failed: {e}", file=sys.stderr)
-        return True
-
-    # Filter out .git/ objects
-    server_metadata = {
-        path: meta for path, meta in server_metadata.items()
-        if not path.startswith(".git/")
-    }
-
-    # 2. Get manifest files from DB
-    manifest_files: dict[str, str] = {}
-    try:
-        resp = await client.get("/api/files/manifest")
-        if resp.status_code == 200:
-            manifest_files = resp.json()
-    except Exception:
-        pass
-
-    if include_code_files:
-        # Compute MD5 for all local files (matches S3 ETags)
-        local_hashes = _compute_local_md5s(local_root, repo_prefix)
-    else:
-        # Legacy behavior: only hash manifest files
-        local_hashes: dict[str, str] = {}
-        bifrost_dir = _find_bifrost_dir(local_root)
-        if bifrost_dir.exists() and bifrost_dir.is_dir():
-            for bf in sorted(bifrost_dir.iterdir()):
-                if bf.is_file() and bf.suffix in (".yaml", ".yml"):
-                    try:
-                        content = _normalize_line_endings(bf.read_bytes())
-                        local_hashes[f".bifrost/{bf.name}"] = hashlib.sha256(content).hexdigest()
-                    except (OSError, UnicodeDecodeError):
-                        continue
-
-    # 3. Compute diff: find files to download
-    # Filter out paths the CLI would skip during push (respects .gitignore)
-    pull_spec = _build_file_filter(local_root)
-
-    files_to_download: list[str] = []  # repo paths
-    for path_str, meta in server_metadata.items():
-        # Skip .bifrost/ files — manifests come from DB
-        if _is_bifrost_path(path_str):
-            continue
-        if _should_skip_path(path_str, pull_spec):
-            continue
-        local_hash = local_hashes.get(path_str)
-        if local_hash != meta["etag"]:
-            files_to_download.append(path_str)
-
-    # Filter manifest files to only include changed ones
-    filtered_manifest_files: dict[str, str] = {}
-    for filename, content in manifest_files.items():
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        local_hash = None
-        for key_candidate in [
-            f".bifrost/{filename}",
-            f"{repo_prefix}/.bifrost/{filename}" if repo_prefix else None,
-            f"{repo_prefix.rstrip('/')}/.bifrost/{filename}" if repo_prefix else None,
-        ]:
-            if key_candidate and key_candidate in local_hashes:
-                local_hash = local_hashes[key_candidate]
-                break
-        if local_hash != content_hash:
-            filtered_manifest_files[filename] = content
-
-    # Files to delete when --mirror is used
-    files_to_delete: list[str] = []
-    if mirror:
-        for local_path_str in local_hashes:
-            if local_path_str not in server_metadata and not _is_bifrost_path(local_path_str):
-                rel = _strip_repo_prefix(local_path_str, repo_prefix)
-                if _should_skip_path(rel, pull_spec):
-                    continue
-                files_to_delete.append(rel)
-
-    if not files_to_download and not filtered_manifest_files and not files_to_delete:
-        if include_code_files:
-            print("Already up to date.")
-        return True
-
-    # Build list of files that will be written (changed/new from server)
-    files_to_write: list[str] = [_strip_repo_prefix(p, repo_prefix) for p in files_to_download]
-
-    # Confirmation (unless --force or not user-facing pull)
-    if (files_to_write or files_to_delete) and include_code_files and not force:
-        is_git, uncommitted = _check_git_status(local_root, [
-            rel for rel in files_to_write if (local_root / rel).exists()
-        ])
-
-        # Build pull prompt text with git safety info
-        pull_prompt = "Select files to pull"
-        if uncommitted:
-            pull_prompt = f"Select files to pull — {len(uncommitted)} with uncommitted changes"
-        elif not is_git:
-            pull_prompt = "Select files to pull — no git, overwrites are permanent"
-
-        selector_items: list[dict[str, str]] = []
-        for rel in files_to_write:
-            repo_path_item = f"{repo_prefix}/{rel}" if repo_prefix else rel
-            server_info = server_metadata.get(repo_path_item)
-            local_path = local_root / rel
-            is_new = not local_path.exists()
-            status = "new" if is_new else "changed"
-            local_ts = _format_file_time(local_path) if local_path.exists() else ""
-            server_ts = ""
-            author = ""
-            if isinstance(server_info, dict):
-                server_ts = _format_server_time(server_info.get("last_modified") or "")
-                author = server_info.get("updated_by") or ""
-            warn = " \u26a0" if rel in uncommitted else ""
-            selector_items.append({
-                "rel": rel, "repo_path": repo_path_item,
-                "status": status + warn, "local_time": local_ts,
-                "server_time": server_ts, "author": author,
-                "_action": "write",
-            })
-        for rel in files_to_delete:
-            repo_path_item = f"{repo_prefix}/{rel}" if repo_prefix else rel
-            server_info = server_metadata.get(repo_path_item)
-            local_ts = _format_file_time(local_root / rel) if (local_root / rel).exists() else ""
-            selector_items.append({
-                "rel": rel, "repo_path": repo_path_item,
-                "status": "delete", "local_time": local_ts,
-                "server_time": "", "author": "",
-                "_action": "delete",
-            })
-        from bifrost.tui.file_select import interactive_file_select as _ifs_pull
-        selected = await _ifs_pull(
-            selector_items,
-            columns=[
-                ("rel", "File", 40),
-                ("status", "Status", 10),
-                ("local_time", "Local", 16),
-                ("server_time", "Platform", 16),
-                ("author", "Author", 20),
-            ],
-            prompt_text=pull_prompt,
-        )
-        if selected is None:
-            print("Pull cancelled.")
-            return True
-        selected_rels = {item["rel"] for item in selected}
-        files_to_write = [r for r in files_to_write if r in selected_rels]
-        files_to_download = [
-            rp for rp in files_to_download
-            if _strip_repo_prefix(rp, repo_prefix) in selected_rels
-        ]
-        files_to_delete = [r for r in files_to_delete if r in selected_rels]
-        if not files_to_download and not files_to_delete:
-            print("No files selected.")
-            return True
-
-    # 5. Download files and delete mirror files with progress TUI
-    download_items: list[tuple[str, tuple[str, bool]]] = [
-        (_strip_repo_prefix(rp, repo_prefix), (rp, True))
-        for rp in files_to_download
-    ]
-    pull_delete_items: list[tuple[str, tuple[str, bool]]] = [
-        (rel, (rel, False))
-        for rel in (files_to_delete if mirror else [])
-    ]
-    all_pull_items = download_items + pull_delete_items
-
-    async def _do_one_pull(work_data: tuple[str, bool], name: str) -> None:
-        path_val, is_download = work_data
-        if is_download:
-            resp = await client.post("/api/files/read", json={
-                "path": path_val,
-                "mode": "cloud", "location": "workspace", "binary": True,
-            })
-            if resp.status_code == 200:
-                file_data = resp.json()
-                content_bytes = base64.b64decode(file_data["content"])
-                local_path = local_root / name
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                local_path.write_bytes(content_bytes)
-            else:
-                raise RuntimeError(f"HTTP {resp.status_code}")
-        else:
-            target = local_root / path_val
-            if target.exists():
-                target.unlink()
-
-    async def _post_pull(file_errors: list[str]) -> str:
-        """Write manifest files and compute summary — runs inside progress TUI."""
-        pull_error_names = {e.split(":")[0] for e in file_errors}
-        n_written = sum(1 for name, _ in download_items if name not in pull_error_names)
-        n_mirror_deleted = sum(1 for name, _ in pull_delete_items if name not in pull_error_names)
-
-        # Write manifest files
-        bifrost_dir = _find_bifrost_dir(local_root)
-        m_dir = bifrost_dir if bifrost_dir.exists() else local_root / ".bifrost"
-        m_dir.mkdir(parents=True, exist_ok=True)
-        m_written = 0
-        for filename, m_content in filtered_manifest_files.items():
-            m_path = m_dir / filename
-            m_path.write_text(m_content, encoding="utf-8")
-            m_written += 1
-
-        parts = []
-        if n_written:
-            parts.append(f"{n_written} downloaded")
-        if m_written:
-            parts.append(f"{m_written} manifest")
-        if n_mirror_deleted:
-            parts.append(f"{n_mirror_deleted} deleted")
-        return ", ".join(parts) if parts else "No changes"
-
-    pull_errors: list[str] = []
-    _pull_is_tty = sys.stdin.isatty() and sys.stdout.isatty()
-    if all_pull_items and _pull_is_tty:
-        from bifrost.tui.progress import ProgressApp
-        app = ProgressApp("Pulling files", all_pull_items, _do_one_pull, post_fn=_post_pull)
-        pull_errors = await app.run_async() or []
-    elif all_pull_items:
-        for name, data in all_pull_items:
-            try:
-                await _do_one_pull(data, name)
-            except Exception as e:
-                pull_errors.append(f"{name}: {e}")
-                print(f"  Warning: {name}: {e}", file=sys.stderr)
-        summary = await _post_pull(pull_errors)
-        print(f"  \u2713 {summary}")
-    else:
-        # No file items but maybe manifest-only changes
-        await _post_pull([])
-        if not _pull_is_tty and include_code_files:
-            pull_error_names = {e.split(":")[0] for e in pull_errors}
-            code_written = sum(1 for name, _ in download_items if name not in pull_error_names)
-            if code_written:
-                print(f"  \u2713 Downloaded {code_written} file(s)")
-
-    return True
 
 
 def _should_skip_path(rel_path: str, spec: "pathspec.PathSpec") -> bool:
@@ -2928,107 +2416,6 @@ def _collect_push_files(
 
 
 
-def _render_entity_changes_table(changes: list[dict[str, str]], print_summary: bool = True) -> dict[str, int]:
-    """Render a color-coded entity changes table from server dry-run data."""
-    if not changes:
-        return {"adds": 0, "updates": 0, "deletes": 0, "keeps": 0}
-
-    cc = _get_colors()
-    GREEN, YELLOW, RED, DIM, RESET = cc.green, cc.yellow, cc.red, cc.dim, cc.reset
-
-    max_type = max((len(c.get("entity_type", "")) for c in changes), default=4)
-    max_type = max(max_type, 4)
-    max_name = max((len(c.get("name", "")) for c in changes), default=4)
-    max_name = max(max_name, 4)
-    max_org = max((len(c.get("organization", "")) for c in changes), default=6)
-    max_org = max(max_org, 12)  # "Organization" header
-    max_action = max((len(c.get("action", "")) for c in changes), default=6)
-    max_action = max(max_action, 6)
-
-    print()
-    print("  Entity changes:")
-    print()
-    print(
-        f"  {'Type'.ljust(max_type)}  {'Name'.ljust(max_name)}  {'Organization'.ljust(max_org)}  {'Action'.ljust(max_action)}"
-    )
-    print(f"  {'─' * max_type}  {'─' * max_name}  {'─' * max_org}  {'─' * max_action}")
-
-    for c in changes:
-        action = c.get("action", "")
-        entity_type = c.get("entity_type", "")
-        name = c.get("name", "")
-        org = c.get("organization", "Global")
-
-        if action == "add":
-            color = GREEN
-        elif action == "update":
-            color = YELLOW
-        elif action == "delete":
-            color = RED
-        elif action == "keep":
-            color = DIM
-        else:
-            color = ""
-
-        action_padded = action.ljust(max_action)
-        action_display = f"{color}{action_padded}{RESET}" if color else action_padded
-
-        print(f"  {entity_type.ljust(max_type)}  {name.ljust(max_name)}  {org.ljust(max_org)}  {action_display}")
-
-    # Summary
-    adds = sum(1 for c in changes if c.get("action") == "add")
-    updates = sum(1 for c in changes if c.get("action") == "update")
-    deletes = sum(1 for c in changes if c.get("action") == "delete")
-    keeps = sum(1 for c in changes if c.get("action") == "keep")
-    entity_summary = _format_count_summary(
-        {"adds": adds, "updates": updates, "deletes": deletes, "keeps": keeps},
-        {
-            "adds": ("green", "{n} add{s}"),
-            "updates": ("yellow", "{n} update{s}"),
-            "deletes": ("red", "{n} delete{s}"),
-            "keeps": ("dim", "{n} kept (data preserved)"),
-        },
-        cc,
-    )
-    if entity_summary and print_summary:
-        print()
-        print(f"  {entity_summary}")
-
-    return {"adds": adds, "updates": updates, "deletes": deletes, "keeps": keeps}
-
-
-async def _entity_diff_pre_push(
-    client: "BifrostClient",
-    bifrost_files: dict[str, str],
-) -> dict[str, Any]:
-    """Compare local manifest against server via dry-run import.
-
-    Returns:
-        dict with keys:
-            - has_deletions: bool
-            - entity_changes: list of change dicts
-    """
-    try:
-        resp = await client.post("/api/files/manifest/import", json={
-            "files": bifrost_files,
-            "delete_removed_entities": True,
-            "dry_run": True,
-        })
-        if resp.status_code != 200:
-            return {"has_deletions": False, "entity_changes": []}
-
-        entity_changes = resp.json().get("entity_changes", [])
-        has_deletions = any(c["action"] == "delete" for c in entity_changes)
-
-        return {
-            "has_deletions": has_deletions,
-            "entity_changes": entity_changes,
-        }
-
-    except Exception:
-        return {"has_deletions": False, "entity_changes": []}
-
-
 async def _sync_files(
     local_path: str,
     repo_prefix: str = "",
@@ -3039,9 +2426,11 @@ async def _sync_files(
 ) -> int:
     """Unified bidirectional sync between local directory and Bifrost platform.
 
-    Compares local files vs server state (MD5/ETag + timestamps) and entities
-    (dry-run manifest import), then presents a unified TUI for the user to
-    choose per-item actions (push/pull/delete/skip).
+    Compares local files vs server state (MD5/ETag + timestamps) and presents
+    a TUI for per-item actions (push/pull/delete/skip). Entity state is
+    managed separately via `bifrost export` / `bifrost import` and dedicated
+    mutation commands (`bifrost orgs`, `bifrost workflows`, etc.); this
+    function does not touch `.bifrost/` manifests.
     """
     path = pathlib.Path(local_path).resolve()
 
@@ -3060,17 +2449,7 @@ async def _sync_files(
 
     # ── 1. Collect local files ───────────────────────────────────────────
     files, skipped = _collect_push_files(path, repo_prefix)
-
-    # Local manifest validation (warnings only — server validates too)
-    has_manifest = any(_is_bifrost_path(k) for k in files)
-    if has_manifest:
-        validation_errors = _validate_manifest_locally(path)
-        if validation_errors:
-            print("Manifest warnings:", file=sys.stderr)
-            for err in validation_errors:
-                print(f"  - {err}", file=sys.stderr)
-
-    bifrost_files, regular_files = _separate_manifest_files(files)
+    regular_files = {k: v for k, v in files.items() if not _is_bifrost_path(k)}
 
     # ── 2. Fetch server file metadata ────────────────────────────────────
     server_metadata: dict[str, dict[str, str]] = {}
@@ -3189,74 +2568,12 @@ async def _sync_files(
             "_content": "",
         })
 
-    # ── 4. Entity diff ───────────────────────────────────────────────────
-    entity_changes: list[dict[str, Any]] = []
-    delete_removed_entities = False
-    if has_manifest:
-        entity_diff_result = await _entity_diff_pre_push(client, bifrost_files)
-        delete_removed_entities = entity_diff_result.get("has_deletions", False)
-        entity_changes = entity_diff_result.get("entity_changes", [])
-
-    # Fetch platform manifest for entity pull
-    platform_manifest: dict[str, str] = {}
-    try:
-        resp = await client.get("/api/files/manifest")
-        if resp.status_code == 200:
-            platform_manifest = resp.json()
-    except Exception:
-        pass
-
-    # Build entity sync items from dry-run changes
-    for change in entity_changes:
-        action = change.get("action", "keep")
-        if action == "keep":
-            continue
-
-        entity_type = change.get("entity_type", "")
-        name = change.get("name", "")
-        org = change.get("organization", "Global")
-        display = f"{entity_type}: {name}"
-        if org and org != "Global":
-            display += f" ({org})"
-
-        if action in ("add", "update"):
-            why = "new locally" if action == "add" else "local changed"
-            sync_items.append({
-                "name": display,
-                "why": why,
-                "modified": "",
-                "author": "",
-                "default_action": "push",
-                "valid_actions": ["push", "pull", "skip"],
-                "section": "entities",
-                "entity_action": action,
-                "entity_type": entity_type,
-                "entity_name": name,
-                "entity_org": org,
-            })
-        elif action == "delete":
-            sync_items.append({
-                "name": display,
-                "why": "platform only",
-                "modified": "",
-                "author": "",
-                "default_action": "pull",
-                "valid_actions": ["pull", "delete", "skip"],
-                "section": "entities",
-                "entity_action": action,
-                "entity_type": entity_type,
-                "entity_name": name,
-                "entity_org": org,
-            })
-
-    # ── 5. Check if there's anything to sync ─────────────────────────────
+    # ── 4. Check if there's anything to sync ─────────────────────────────
     if not sync_items:
         print("Already up to date.")
         return 0
 
-    file_count = sum(1 for i in sync_items if i.get("section") == "files")
-    entity_count = sum(1 for i in sync_items if i.get("section") == "entities")
-    unchanged = len(regular_files) - sum(1 for i in sync_items if i.get("section") == "files")
+    unchanged = len(regular_files) - len(sync_items)
 
     subtitle = f"Scanned {len(regular_files)} file(s), {unchanged} unchanged"
     if skipped:
@@ -3292,8 +2609,7 @@ async def _sync_files(
         from bifrost.tui.sync_app import interactive_sync
         sync_result = await interactive_sync(
             sync_items,
-            file_count=file_count,
-            entity_count=entity_count,
+            file_count=len(sync_items),
             subtitle=subtitle,
         )
         if sync_result is None:
@@ -3301,52 +2617,18 @@ async def _sync_files(
             return 0
         result = sync_result
 
-    # ── 7. Execute actions ───────────────────────────────────────────────
-    # Separate file vs entity items per action
-    push_files_items = [i for i in result.push if i.get("section") == "files"]
-    push_entity_items = [i for i in result.push if i.get("section") == "entities"]
-    pull_files_items = [i for i in result.pull if i.get("section") == "files"]
-    pull_entity_items = [i for i in result.pull if i.get("section") == "entities"]
-    delete_files_items = [i for i in result.delete if i.get("section") == "files"]
-    delete_entity_items = [i for i in result.delete if i.get("section") == "entities"]
-
-    has_work = (
-        push_files_items or push_entity_items
-        or pull_files_items or pull_entity_items
-        or delete_files_items or delete_entity_items
-    )
-    if not has_work:
+    # ── 6. Execute actions ───────────────────────────────────────────────
+    if not (result.push or result.pull or result.delete):
         print("Nothing selected.")
         return 0
 
-    # Check if entity deletions were selected — controls delete_removed_entities flag
-    if delete_removed_entities:
-        has_selected_entity_deletes = any(
-            i.get("entity_action") == "delete" for i in delete_entity_items
-        )
-        if not has_selected_entity_deletes:
-            delete_removed_entities = False
-
-    # Build progress items
     progress_items: list[tuple[str, dict[str, Any]]] = []
-    for item in push_files_items:
+    for item in result.push:
         progress_items.append((f"Push {item['rel']}", {"action": "push_file", "item": item}))
-    for item in pull_files_items:
+    for item in result.pull:
         progress_items.append((f"Pull {item['rel']}", {"action": "pull_file", "item": item}))
-    for item in delete_files_items:
+    for item in result.delete:
         progress_items.append((f"Delete {item['rel']}", {"action": "delete_file", "item": item}))
-    if push_entity_items or delete_entity_items:
-        progress_items.append(("Import manifest", {"action": "push_entities"}))
-    if pull_entity_items:
-        progress_items.append(("Pull manifest", {"action": "pull_entities"}))
-
-    # Shared results for post-processing
-    sync_result_data: dict[str, Any] = {
-        "warnings": [],
-        "manifest_applied": False,
-        "modified_files": {},
-        "manifest_files": {},
-    }
 
     async def _do_sync_work(work_data: dict[str, Any], name: str) -> None:
         action = work_data["action"]
@@ -3392,29 +2674,6 @@ async def _sync_files(
                 if resp.status_code not in (204, 404):
                     raise RuntimeError(f"HTTP {resp.status_code}")
 
-        elif action == "push_entities":
-            import_payload: dict[str, Any] = {"files": bifrost_files}
-            if delete_removed_entities:
-                import_payload["delete_removed_entities"] = True
-            resp = await client.post("/api/files/manifest/import", json=import_payload)
-            if resp.status_code == 200:
-                manifest_data = resp.json()
-                sync_result_data["manifest_applied"] = manifest_data.get("applied", False)
-                sync_result_data["warnings"] = manifest_data.get("warnings", [])
-                sync_result_data["modified_files"] = manifest_data.get("modified_files", {})
-                sync_result_data["manifest_files"] = manifest_data.get("manifest_files", {})
-            else:
-                sync_result_data["warnings"].append(f"Manifest import failed: HTTP {resp.status_code}")
-
-        elif action == "pull_entities":
-            # Write platform manifest YAML files to local .bifrost/
-            bifrost_dir = _find_bifrost_dir(path)
-            m_dir = bifrost_dir if bifrost_dir.exists() else path / ".bifrost"
-            m_dir.mkdir(parents=True, exist_ok=True)
-            for filename, content in platform_manifest.items():
-                m_path = m_dir / filename
-                m_path.write_text(content, encoding="utf-8")
-
     async def _post_sync(file_errors: list[str]) -> str:
         """Compute summary string — runs after all progress items complete."""
         error_names = {e.split(":")[0] for e in file_errors}
@@ -3431,14 +2690,7 @@ async def _sync_files(
             parts.append(f"{n_deleted} deleted")
         if unchanged > 0:
             parts.append(f"{unchanged} unchanged")
-        if sync_result_data["manifest_applied"]:
-            parts.append("manifest applied")
-        if pull_entity_items:
-            parts.append("manifest pulled")
-        summary = ", ".join(parts) if parts else "No changes"
-        if sync_result_data["warnings"]:
-            summary += f" ({len(sync_result_data['warnings'])} warning(s))"
-        return summary
+        return ", ".join(parts) if parts else "No changes"
 
     errors: list[str] = []
     if progress_items and _is_tty:
@@ -3455,367 +2707,16 @@ async def _sync_files(
         summary = await _post_sync(errors)
         print(f"  \u2713 {summary}")
 
-    # Report errors and warnings
-    warnings = sync_result_data["warnings"]
     _cols = shutil.get_terminal_size((80, 24)).columns
     if errors:
         print(f"\n  Errors ({len(errors)}):")
         for error in errors:
             print(textwrap.fill(f"- {error}", width=_cols, initial_indent="    ", subsequent_indent="      "))
-    if warnings:
-        print(f"\n  Warnings ({len(warnings)}):")
-        for warning in warnings:
-            print(textwrap.fill(f"- {warning}", width=_cols, initial_indent="    ", subsequent_indent="      "))
-
-    # Write back modified/manifest files from server response
-    writeback_data: dict[str, Any] = {}
-    if sync_result_data.get("modified_files"):
-        writeback_data["modified_files"] = sync_result_data["modified_files"]
-    if sync_result_data.get("manifest_files"):
-        writeback_data["manifest_files"] = sync_result_data["manifest_files"]
-    if writeback_data:
-        _write_back_server_files(path, repo_prefix, writeback_data)
 
     # Validate if requested
     if validate and repo_prefix:
         slug = repo_prefix.rstrip("/").rsplit("/", 1)[-1]
         print(f"\nValidating app '{slug}'...")
-        try:
-            val_response = await client.get(f"/api/applications/{slug}")
-            if val_response.status_code == 200:
-                app_data = val_response.json()
-                app_id = app_data.get("id")
-                if app_id:
-                    val_result = await client.post(f"/api/applications/{app_id}/validate")
-                    if val_result.status_code == 200:
-                        val_data = val_result.json()
-                        if val_data.get("errors"):
-                            print(f"  Errors ({len(val_data['errors'])}):")
-                            for err in val_data["errors"]:
-                                print(f"    - [{err.get('severity', 'error')}] {err.get('message', err)}")
-                        elif val_data.get("warnings"):
-                            print(f"  Warnings ({len(val_data['warnings'])}):")
-                            for warn in val_data["warnings"]:
-                                print(f"    - {warn.get('message', warn)}")
-                        else:
-                            print("  No issues found.")
-                    else:
-                        print(f"  Validation failed: {val_result.status_code}", file=sys.stderr)
-            else:
-                print(f"  Could not find app '{slug}' for validation", file=sys.stderr)
-        except Exception as e:
-            print(f"  Validation error: {e}", file=sys.stderr)
-
-    return 0 if not errors else 1
-
-
-async def _push_files(
-    local_path: str,
-    repo_prefix: str = "",
-    mirror: bool = False,
-    validate: bool = False,
-    force: bool = False,
-    client: "BifrostClient | None" = None,
-) -> int:
-    """Push local directory to Bifrost _repo/ using per-file operations."""
-    path = pathlib.Path(local_path).resolve()
-
-    if not path.exists():
-        print(f"Error: path does not exist: {local_path}", file=sys.stderr)
-        return 1
-
-    if not path.is_dir():
-        print(f"Error: path is not a directory: {local_path}", file=sys.stderr)
-        return 1
-
-    if client is None:
-        client = BifrostClient.get_instance(require_auth=True)
-
-    # Walk the directory and collect files
-    files, skipped = _collect_push_files(path, repo_prefix)
-
-    if not files:
-        print("No files found to push.", file=sys.stderr)
-        return 1
-
-    # Local manifest validation (warnings only — server validates too)
-    has_manifest = any(".bifrost/" in k or ".bifrost\\" in k for k in files)
-    if has_manifest:
-        validation_errors = _validate_manifest_locally(path)
-        if validation_errors:
-            print("Manifest warnings:", file=sys.stderr)
-            for err in validation_errors:
-                print(f"  - {err}", file=sys.stderr)
-
-    # Separate .bifrost/ manifest files from regular files
-    bifrost_files, regular_files = _separate_manifest_files(files)
-
-    # Entity diff: compare local manifest against server manifest
-    entity_changes: list[dict[str, Any]] = []
-    delete_removed_entities = False
-    if has_manifest:
-        entity_diff_result = await _entity_diff_pre_push(client, bifrost_files)
-        delete_removed_entities = entity_diff_result.get("has_deletions", False)
-        entity_changes = entity_diff_result.get("entity_changes", [])
-
-    scan_count = len(regular_files)
-    _is_tty = sys.stdin.isatty() and sys.stdout.isatty()
-    if not _is_tty or force:
-        if repo_prefix:
-            print(f"Scanning {scan_count} file(s) in {repo_prefix}/...")
-        else:
-            print(f"Scanning {scan_count} file(s)...")
-        if skipped:
-            print(f"  (skipped {skipped} unreadable file(s))")
-
-    # Fetch server file metadata for diff
-    server_metadata: dict[str, dict[str, str]] = {}
-    try:
-        resp = await client.post("/api/files/list", json={
-            "include_metadata": True,
-            "mode": "cloud",
-            "location": "workspace",
-        })
-        if resp.status_code == 200:
-            data = resp.json()
-            for item in data.get("files_metadata", []):
-                server_metadata[item["path"]] = {
-                    "etag": item["etag"],
-                    "last_modified": item["last_modified"],
-                    "updated_by": item.get("updated_by", ""),
-                }
-    except Exception:
-        pass
-
-    # Compute diff: compare local MD5 vs server ETag (regular files only)
-    files_to_upload: dict[str, str] = {}  # repo_path -> content
-    unchanged = 0
-    for repo_path, content in regular_files.items():
-        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
-        server_info = server_metadata.get(repo_path)
-        if server_info and server_info["etag"] == local_md5:
-            unchanged += 1
-        else:
-            files_to_upload[repo_path] = content
-
-    # Determine files to delete (--mirror)
-    files_to_delete_paths: list[str] = []
-    if mirror:
-        spec = _build_file_filter(path)
-        local_paths = set(files.keys())
-        prefix_filter = repo_prefix + "/" if repo_prefix else ""
-        for server_path in server_metadata:
-            if prefix_filter and not server_path.startswith(prefix_filter):
-                continue
-            if server_path not in local_paths:
-                rel = _strip_repo_prefix(server_path, repo_prefix)
-                if _is_bifrost_path(rel):
-                    continue
-                if _should_skip_path(rel, spec):
-                    continue
-                files_to_delete_paths.append(server_path)
-
-    # Check if anything changed at all
-    has_file_changes = bool(files_to_upload or files_to_delete_paths)
-    has_entity_changes = bool(entity_changes)
-    if not has_file_changes and not has_entity_changes:
-        print("Already up to date.")
-        return 0
-
-    # Interactive file selector (replaces table + y/N prompt)
-    if has_file_changes and not force:
-        selector_items: list[dict[str, str]] = []
-        for repo_path_item in files_to_upload:
-            rel = _strip_repo_prefix(repo_path_item, repo_prefix)
-            server_info = server_metadata.get(repo_path_item)
-            is_new = server_info is None
-            status = "new" if is_new else "changed"
-            local_ts = _format_file_time(path / rel)
-            server_ts = ""
-            author = ""
-            if isinstance(server_info, dict):
-                server_ts = _format_server_time(server_info.get("last_modified") or "")
-                author = server_info.get("updated_by") or ""
-            selector_items.append({
-                "rel": rel, "repo_path": repo_path_item,
-                "status": status, "local_time": local_ts,
-                "server_time": server_ts, "author": author,
-                "_action": "upload",
-            })
-        for server_path_item in files_to_delete_paths:
-            rel = _strip_repo_prefix(server_path_item, repo_prefix)
-            server_info = server_metadata.get(server_path_item)
-            server_ts = ""
-            author = ""
-            if isinstance(server_info, dict):
-                server_ts = _format_server_time(server_info.get("last_modified") or "")
-                author = server_info.get("updated_by") or ""
-            selector_items.append({
-                "rel": rel, "repo_path": server_path_item,
-                "status": "delete", "local_time": "",
-                "server_time": server_ts, "author": author,
-                "_action": "delete",
-            })
-        push_subtitle = f"Scanned {scan_count} file(s), {unchanged} unchanged"
-        if skipped:
-            push_subtitle += f", {skipped} skipped"
-        from bifrost.tui.file_select import interactive_file_select as _ifs_push
-        selected = await _ifs_push(
-            selector_items,
-            columns=[
-                ("rel", "File", 40),
-                ("status", "Status", 10),
-                ("local_time", "Local", 16),
-                ("server_time", "Platform", 16),
-                ("author", "Author", 20),
-            ],
-            prompt_text="Select files to push",
-            subtitle_text=push_subtitle,
-        )
-        if selected is None:
-            print("Push cancelled.")
-            return 0
-        selected_repo_paths = {item["repo_path"] for item in selected}
-        files_to_upload = {rp: c for rp, c in files_to_upload.items() if rp in selected_repo_paths}
-        files_to_delete_paths = [rp for rp in files_to_delete_paths if rp in selected_repo_paths]
-        has_file_changes = bool(files_to_upload or files_to_delete_paths)
-        if not has_file_changes and not has_entity_changes:
-            print("No files selected.")
-            return 0
-
-    # Entity changes review (entities can't be cherry-picked)
-    if has_entity_changes and not force:
-        from bifrost.tui.entity_review import interactive_entity_review
-        selected_entities = await interactive_entity_review(entity_changes, has_deletions=delete_removed_entities)
-        if selected_entities is None:
-            print("Push cancelled.")
-            return 0
-        # If user deselected all delete actions, don't delete removed entities
-        if delete_removed_entities:
-            has_selected_deletes = any(e.get("action") == "delete" for e in selected_entities)
-            if not has_selected_deletes:
-                delete_removed_entities = False
-
-    # Upload regular files and delete mirror files with progress TUI
-    upload_items: list[tuple[str, tuple[str, str, bool]]] = [
-        (_strip_repo_prefix(rp, repo_prefix), (rp, content, True))
-        for rp, content in files_to_upload.items()
-    ]
-    delete_items: list[tuple[str, tuple[str, str, bool]]] = [
-        (_strip_repo_prefix(sp, repo_prefix), (sp, "", False))
-        for sp in files_to_delete_paths
-    ]
-    all_progress_items = upload_items + delete_items
-
-    async def _do_one_push(work_data: tuple[str, str, bool], name: str) -> None:
-        rp, content, is_upload = work_data
-        if is_upload:
-            resp = await client.post("/api/files/write", json={
-                "path": rp, "content": content,
-                "mode": "cloud", "location": "workspace", "binary": True,
-            })
-            if resp.status_code != 204:
-                raise RuntimeError(f"HTTP {resp.status_code}")
-        else:
-            resp = await client.post("/api/files/delete", json={
-                "path": rp, "mode": "cloud", "location": "workspace",
-            })
-            if resp.status_code != 204:
-                raise RuntimeError(f"HTTP {resp.status_code}")
-
-    # Shared state for post-processing results (manifest import)
-    push_result: dict[str, Any] = {
-        "warnings": [],
-        "manifest_applied": False,
-        "modified_files": {},
-        "manifest_files": {},
-    }
-
-    async def _post_push(file_errors: list[str]) -> str:
-        """Run manifest import and compute summary — runs inside progress TUI."""
-        error_names = {e.split(":")[0] for e in file_errors}
-        n_created = sum(1 for name, (rp, _, is_up) in upload_items if name not in error_names and is_up and rp not in server_metadata)
-        n_updated = sum(1 for name, (rp, _, is_up) in upload_items if name not in error_names and is_up and rp in server_metadata)
-        n_deleted = sum(1 for name, _ in delete_items if name not in error_names)
-
-        # Import manifest
-        if has_manifest:
-            try:
-                import_payload: dict[str, Any] = {"files": bifrost_files}
-                if delete_removed_entities:
-                    import_payload["delete_removed_entities"] = True
-                resp = await client.post("/api/files/manifest/import", json=import_payload)
-                if resp.status_code == 200:
-                    manifest_data = resp.json()
-                    push_result["manifest_applied"] = manifest_data.get("applied", False)
-                    push_result["warnings"] = manifest_data.get("warnings", [])
-                    push_result["modified_files"] = manifest_data.get("modified_files", {})
-                    push_result["manifest_files"] = manifest_data.get("manifest_files", {})
-                else:
-                    push_result["warnings"].append(f"Manifest import failed: HTTP {resp.status_code}")
-            except Exception as e:
-                push_result["warnings"].append(f"Manifest import failed: {e}")
-
-        parts = []
-        if n_created:
-            parts.append(f"{n_created} created")
-        if n_updated:
-            parts.append(f"{n_updated} updated")
-        if n_deleted:
-            parts.append(f"{n_deleted} deleted")
-        if unchanged:
-            parts.append(f"{unchanged} unchanged")
-        if has_manifest and push_result["manifest_applied"] and has_entity_changes:
-            parts.append("manifest applied")
-        summary = ", ".join(parts) if parts else "No changes"
-        if push_result["warnings"]:
-            summary += f" ({len(push_result['warnings'])} warning(s))"
-        return summary
-
-    errors: list[str] = []
-    if all_progress_items and sys.stdin.isatty() and sys.stdout.isatty():
-        from bifrost.tui.progress import ProgressApp
-        app = ProgressApp("Pushing files", all_progress_items, _do_one_push, post_fn=_post_push)
-        errors = await app.run_async() or []
-    elif all_progress_items:
-        for name, data in all_progress_items:
-            try:
-                await _do_one_push(data, name)
-            except Exception as e:
-                errors.append(f"{name}: {e}")
-                print(f"  Error: {name}: {e}", file=sys.stderr)
-        # Non-TTY: run post-push inline and print summary
-        summary = await _post_push(errors)
-        print(f"  \u2713 {summary}")
-
-    warnings = push_result["warnings"]
-    modified_files_response = push_result["modified_files"]
-    manifest_files_response = push_result["manifest_files"]
-
-    _cols = shutil.get_terminal_size((80, 24)).columns
-    if errors:
-        print(f"\n  Errors ({len(errors)}):")
-        for error in errors:
-            print(textwrap.fill(f"- {error}", width=_cols, initial_indent="    ", subsequent_indent="      "))
-    if warnings:
-        print(f"\n  Warnings ({len(warnings)}):")
-        for warning in warnings:
-            print(textwrap.fill(f"- {warning}", width=_cols, initial_indent="    ", subsequent_indent="      "))
-
-    # Write back modified/manifest files from server response (e.g. forms/agents with resolved refs)
-    writeback_data: dict[str, Any] = {}
-    if modified_files_response:
-        writeback_data["modified_files"] = modified_files_response
-    if manifest_files_response:
-        writeback_data["manifest_files"] = manifest_files_response
-    if writeback_data:
-        _write_back_server_files(path, repo_prefix, writeback_data)
-
-    # Validate if requested
-    if validate and repo_prefix:
-        slug = repo_prefix.rstrip("/").rsplit("/", 1)[-1]
-        print(f"\nValidating app '{slug}'...")
-
         try:
             val_response = await client.get(f"/api/applications/{slug}")
             if val_response.status_code == 200:
@@ -3933,6 +2834,146 @@ async def _api_request(method: str, endpoint: str, body: Any | None, client: "Bi
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+# ---------------------------------------------------------------------------
+# migrate-imports
+# ---------------------------------------------------------------------------
+# _PLATFORM_EXPORT_NAMES is imported at the top of this file from
+# bifrost.platform_names (the canonical shared source).
+
+
+def handle_migrate_imports(args: list[str]) -> int:
+    """bifrost migrate-imports [PATH] [--dry-run] [--yes] [--skip-diff]
+
+    Diff-first workflow: the unified diff is printed before any write, including
+    when --yes is passed. The classifier uses regex (not an AST) so it cannot
+    distinguish a platform name used as an expression from a local binding that
+    shadows it -- always review the diff. Use --skip-diff with --yes to
+    suppress the diff output in scripted runs where you've already reviewed.
+    """
+    if args and args[0] in ("--help", "-h"):
+        print("""
+Usage: bifrost migrate-imports [path] [options]
+
+Rewrite "bifrost" imports into user-component / lucide-react / react-router-dom imports.
+
+Classifier precedence (first match wins):
+  1. Local components/<Name>.{tsx,ts}  -> default import from "./components/Name"
+  2. React Router primitives            -> "react-router-dom"
+  3. Lucide icons                       -> "lucide-react"
+  4. Everything else                    -> stays in "bifrost"
+
+Also infers missing user-component imports from JSX usage.
+
+ALWAYS review the diff before applying. The classifier uses regex, not a
+full scope analysis: if it added an import for a name you declared locally
+(e.g. a destructured parameter that happens to match a platform export),
+reject the change and fix by hand.
+
+Arguments:
+  path                  App dir or workspace containing apps/* (default: current directory)
+
+Options:
+  --dry-run             Print unified diff, do not write or prompt
+  --yes, -y             Apply without the confirmation prompt (diff is still printed)
+  --skip-diff           Suppress diff output. Only valid with --yes (scripted runs)
+  --help, -h            Show this help message
+""".strip())
+        return 0
+
+    from bifrost.migrate_imports import (
+        discover_apps,
+        load_lucide_icon_names,
+        migrate_app,
+        render_diff,
+    )
+
+    dry_run = False
+    yes = False
+    skip_diff = False
+    path_arg: str | None = None
+
+    for a in args:
+        if a == "--dry-run":
+            dry_run = True
+        elif a in ("--yes", "-y"):
+            yes = True
+        elif a == "--skip-diff":
+            skip_diff = True
+        elif a.startswith("-"):
+            print(f"Unknown option: {a}", file=sys.stderr)
+            return 1
+        elif path_arg is None:
+            path_arg = a
+        else:
+            print(f"Unexpected argument: {a}", file=sys.stderr)
+            return 1
+
+    if skip_diff and not yes:
+        print("Error: --skip-diff requires --yes (it only makes sense for scripted runs).", file=sys.stderr)
+        return 1
+    if skip_diff and dry_run:
+        print("Error: --skip-diff is incompatible with --dry-run (dry-run exists to show the diff).", file=sys.stderr)
+        return 1
+
+    root = pathlib.Path(path_arg).resolve() if path_arg else pathlib.Path.cwd()
+    if not root.exists():
+        print(f"Error: path does not exist: {root}", file=sys.stderr)
+        return 1
+
+    lucide_names = load_lucide_icon_names()
+    apps = discover_apps(root)
+
+    all_results = []
+    app_for_result: dict[pathlib.Path, pathlib.Path] = {}
+    for app_dir in apps:
+        for r in migrate_app(app_dir, _PLATFORM_EXPORT_NAMES, lucide_names):
+            all_results.append(r)
+            app_for_result[r.path] = app_dir
+
+    changed = [r for r in all_results if r.changed]
+    apps_touched = {app_for_result[r.path] for r in changed}
+
+    if not changed:
+        print("No changes needed.")
+        return 0
+
+    # --- Output ---
+    if dry_run:
+        for r in changed:
+            print(render_diff(r), end="")
+        print(f"\n{len(changed)} file(s) would change across {len(apps_touched)} app dir(s).")
+        return 0
+
+    # Diff first so the user always has scrollback to review, unless explicitly
+    # suppressed in a scripted `--yes --skip-diff` run.
+    if not skip_diff:
+        for r in changed:
+            print(render_diff(r), end="")
+
+    # Summary after the diff
+    for r in changed:
+        print(str(r.path))
+        for line in r.summary_lines():
+            print(line)
+    print(f"\n{len(changed)} file(s) will change across {len(apps_touched)} app dir(s).")
+
+    if not yes:
+        print("Review the diff above -- the classifier doesn't do full scope analysis.")
+        try:
+            reply = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply != "y":
+            print("Aborted.")
+            return 1
+
+    for r in changed:
+        r.path.write_text(r.updated, encoding="utf-8")
+
+    print(f"Updated {len(changed)} file(s).")
+    return 0
 
 
 def print_run_help() -> None:

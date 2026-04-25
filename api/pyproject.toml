@@ -9,10 +9,10 @@ description = "Bifrost Platform SDK"
 requires-python = ">=3.11"
 
 [project.scripts]
-bifrost = "bifrost_cli.main:main"
+bifrost = "bifrost.cli:main"
 
 [tool.setuptools]
-packages = ["bifrost", "bifrost_cli"]
+packages = ["bifrost"]
 
 [tool.pytest.ini_options]
 addopts = "-ra -q --cov=. --cov-report=term-missing"

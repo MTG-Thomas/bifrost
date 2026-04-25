@@ -366,8 +366,8 @@ class AppStorageService:
             data = await r.get(self._render_cache_key(app_id, mode))
             if data:
                 return json.loads(data)
-        except Exception:
-            logger.debug(f"Render cache miss/error for app {app_id} ({mode})")
+        except Exception as e:
+            logger.warning(f"Render cache read failed for app {app_id} ({mode}): {e}")
         return None
 
     async def set_render_cache(
@@ -386,8 +386,8 @@ class AppStorageService:
                 self._render_cache_key(app_id, mode),
                 json.dumps(files),
             )
-        except Exception:
-            logger.debug(f"Failed to set render cache for app {app_id} ({mode})")
+        except Exception as e:
+            logger.warning(f"Failed to set render cache for app {app_id} ({mode}): {e}")
 
     async def invalidate_render_cache(self, app_id: str) -> None:
         """Invalidate render cache for both draft and live modes."""
@@ -399,8 +399,8 @@ class AppStorageService:
                 self._render_cache_key(app_id, "preview"),
                 self._render_cache_key(app_id, "live"),
             )
-        except Exception:
-            logger.debug(f"Failed to invalidate render cache for app {app_id}")
+        except Exception as e:
+            logger.warning(f"Failed to invalidate render cache for app {app_id}: {e}")
 
     # -----------------------------------------------------------------
     # Helpers

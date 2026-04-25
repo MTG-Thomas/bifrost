@@ -13,10 +13,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 
 from src.core.pubsub import publish_app_draft_update, publish_app_published
 from src.services.mcp_server.tool_result import error_result, success_result
+from src.services.mcp_server.tools._http_bridge import call_rest
 from src.services.mcp_server.tools.db import get_tool_db
 
 logger = logging.getLogger(__name__)
@@ -418,6 +419,39 @@ async def publish_app(context: Any, app_id: str) -> ToolResult:
         return error_result(f"Error publishing app: {str(e)}")
 
 
+async def replace_app(
+    context: Any,
+    app_id: str,
+    repo_path: str,
+    force: bool = False,
+) -> ToolResult:
+    """Repoint an application's source directory — thin wrapper over
+    ``POST /api/applications/{app_id}/replace``.
+
+    Updates ``repo_path`` after source files have been moved/renamed. The
+    server validates that the new path is unique, non-nested with other
+    apps, and has source files under it. ``force=True`` bypasses all
+    three checks.
+    """
+    if not app_id:
+        return error_result("app_id is required")
+    if not repo_path:
+        return error_result("repo_path is required")
+
+    body: dict[str, Any] = {"repo_path": repo_path, "force": force}
+    status_code, resp = await call_rest(
+        context, "POST", f"/api/applications/{app_id}/replace", json_body=body
+    )
+    if status_code != 200:
+        return error_result(
+            f"replace_app failed: HTTP {status_code}", {"body": resp}
+        )
+    return success_result(
+        f"Repointed application {app_id} to {repo_path}",
+        resp if isinstance(resp, dict) else {"body": resp},
+    )
+
+
 async def get_app_schema(context: Any) -> ToolResult:  # noqa: ARG001
     """Get application schema documentation for code-based apps."""
     from src.models.contracts.applications import (
@@ -585,7 +619,6 @@ async def validate_app(context: Any, app_id: str) -> ToolResult:
     from src.models.orm.applications import Application
     from src.models.orm.file_index import FileIndex
     from src.models.orm.workflows import Workflow
-    from src.routers.applications import KNOWN_APP_COMPONENTS, KNOWN_BIFROST_EXPORTS
 
     logger.info(f"MCP validate_app called with id={app_id}")
 
@@ -659,20 +692,6 @@ async def validate_app(context: Any, app_id: str) -> ToolResult:
                         if "{children}" in content and "Outlet" not in content:
                             errors.append({"severity": "error", "file": rel_path, "message": "Layout uses {children} but should use <Outlet /> for page routing. Replace {children} with <Outlet />."})
 
-                    # Check for undefined bifrost imports
-                    bifrost_imports = re.findall(
-                        r'import\s+\{([^}]+)\}\s+from\s+["\']bifrost["\']',
-                        content,
-                    )
-                    for bfr_match in bifrost_imports:
-                        names = [n.strip().split(" as ")[0].strip() for n in bfr_match.split(",")]
-                        for name in names:
-                            if name and name not in KNOWN_BIFROST_EXPORTS:
-                                if name[0].isupper():
-                                    warnings.append({"severity": "warning", "file": rel_path, "message": f"'{name}' is not a known bifrost export (could be a Lucide icon)"})
-                                else:
-                                    errors.append({"severity": "error", "file": rel_path, "message": f"'{name}' is not available from 'bifrost'. Check spelling or see platform docs for available exports."})
-
                     # Extract external import references (non-bifrost)
                     for match in re.finditer(
                         r'^\s*import\s+.*?\s+from\s+["\']([^"\']+)["\']\s*;?\s*$',
@@ -683,12 +702,6 @@ async def validate_app(context: Any, app_id: str) -> ToolResult:
                         if pkg != "bifrost":
                             # Handle scoped packages: @scope/pkg → @scope/pkg
                             referenced_deps.add(pkg)
-
-                    # Check unknown components
-                    comp_refs = set(re.findall(r'<([A-Z][a-zA-Z0-9]*)', content))
-                    for comp in comp_refs:
-                        if comp not in KNOWN_APP_COMPONENTS:
-                            warnings.append({"severity": "warning", "file": rel_path, "message": f"Unknown component <{comp}>"})
 
                     # Check workflow IDs
                     wf_refs = re.findall(r'(?:useWorkflowQuery|useWorkflowMutation)\s*\(\s*["\']([^"\']+)["\']', content)
@@ -830,7 +843,7 @@ async def push_files(
             # Build prefix -> app mapping
             app_by_prefix: dict[str, Application] = {}
             for app_obj in all_apps:
-                prefix = (app_obj.repo_path or f"apps/{app_obj.slug}").rstrip("/") + "/"
+                prefix = app_obj.repo_path.rstrip("/") + "/"
                 app_by_prefix[prefix] = app_obj
 
             for repo_path, content in files.items():
@@ -846,8 +859,6 @@ async def push_files(
 
             if app_file_groups:
                 from src.services.app_compiler import AppCompilerService
-                from src.routers.applications import KNOWN_APP_COMPONENTS
-                import re
 
                 compiler = AppCompilerService()
                 app_lookup = {str(a.id): a for a in all_apps}
@@ -860,7 +871,7 @@ async def push_files(
                     results = await compiler.compile_batch(app_files)
                     app_storage = AppStorageService()
 
-                    for result, file_input in zip(results, app_files):
+                    for result in results:
                         if result.success and result.compiled:
                             await app_storage.write_preview_file(
                                 str(app.id), result.path,
@@ -868,12 +879,6 @@ async def push_files(
                             )
                         else:
                             compile_warnings.append(f"✗ {result.path}: {result.error}")
-
-                        # Check for unknown components
-                        comp_refs = set(re.findall(r'<([A-Z][a-zA-Z0-9]*)', file_input["source"]))
-                        unknown = comp_refs - KNOWN_APP_COMPONENTS
-                        for comp in unknown:
-                            compile_warnings.append(f"⚠ {file_input['path']}: Unknown component <{comp}>")
 
             parts = []
             if created:
@@ -1062,6 +1067,7 @@ TOOLS = [
     ("get_app", "Get Application", "Get application metadata and file list."),
     ("update_app", "Update Application", "Update application metadata (name, description)."),
     ("publish_app", "Publish Application", "Publish all draft files to live."),
+    ("replace_app", "Replace Application Source Path", "Repoint an application's repo_path after source files have been moved/renamed."),
     ("validate_app", "Validate Application", "Build and validate an app: compiles all files, checks for missing/unused dependencies, unknown components, and bad workflow IDs."),
     ("push_files", "Push Files", "Push multiple files to _repo/ in a single batch. Useful for creating or updating entire apps or workflow sets."),
 ("get_app_dependencies", "Get App Dependencies", "Get npm dependencies declared for an app."),
@@ -1079,6 +1085,7 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
         "get_app": get_app,
         "update_app": update_app,
         "publish_app": publish_app,
+        "replace_app": replace_app,
         "validate_app": validate_app,
         "push_files": push_files,
 "get_app_dependencies": get_app_dependencies,

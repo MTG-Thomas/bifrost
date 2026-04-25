@@ -12,22 +12,20 @@ from typing import TYPE_CHECKING, Callable
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from fastapi import HTTPException
 
 from src.config import Settings
-from src.models import Workflow, Form, Agent
+from src.models import Workflow
 from src.models.orm.file_index import FileIndex
 from src.core.module_cache import set_module, invalidate_module
 from src.services.repo_storage import REPO_PREFIX
 from .models import WriteResult
-from .indexers.form import _serialize_form_to_yaml
-from .indexers.agent import _serialize_agent_to_yaml
 from .entity_detector import detect_platform_entity_type
 
 if TYPE_CHECKING:
     from src.models.orm.applications import Application
+    from src.services.app_bundler import BundleResult
     from .diagnostics import DiagnosticsService
     from .deactivation import DeactivationProtectionService
 
@@ -93,10 +91,9 @@ class FileOperationsService:
         """
         Read file content.
 
-        Routes reads by path convention:
-        - {uuid}.form.yaml -> serialize from forms table
-        - {uuid}.agent.yaml -> serialize from agents table
-        - Everything else -> fetch from file_index, fallback to S3
+        Python modules go through the Redis cache first (workers import via the
+        cache), then fall back to S3 ``_repo/``. Everything else reads directly
+        from S3.
 
         Args:
             path: Relative path within workspace
@@ -107,49 +104,6 @@ class FileOperationsService:
         Raises:
             FileNotFoundError: If file doesn't exist
         """
-        import re
-        from uuid import UUID
-
-        # Forms: {uuid}.form.yaml (any directory)
-        form_match = re.search(r"([a-f0-9-]+)\.form\.yaml$", path, re.IGNORECASE)
-        if form_match:
-            try:
-                form_id = UUID(form_match.group(1))
-            except ValueError:
-                raise FileNotFoundError(f"Invalid form path: {path}")
-            form_stmt = (
-                select(Form)
-                .options(selectinload(Form.fields))
-                .where(Form.id == form_id)
-            )
-            form_result = await self.db.execute(form_stmt)
-            form = form_result.scalar_one_or_none()
-            if form is not None:
-                return _serialize_form_to_yaml(form), None
-            raise FileNotFoundError(f"Form not found: {form_id}")
-
-        # Agents: {uuid}.agent.yaml (any directory)
-        agent_match = re.search(r"([a-f0-9-]+)\.agent\.yaml$", path, re.IGNORECASE)
-        if agent_match:
-            try:
-                agent_id = UUID(agent_match.group(1))
-            except ValueError:
-                raise FileNotFoundError(f"Invalid agent path: {path}")
-            agent_stmt = (
-                select(Agent)
-                .options(
-                    selectinload(Agent.tools),
-                    selectinload(Agent.delegated_agents),
-                    selectinload(Agent.roles),
-                )
-                .where(Agent.id == agent_id)
-            )
-            agent_result = await self.db.execute(agent_stmt)
-            agent = agent_result.scalar_one_or_none()
-            if agent is not None:
-                return _serialize_agent_to_yaml(agent), None
-            raise FileNotFoundError(f"Agent not found: {agent_id}")
-
         # Python modules: Redis cache → S3 fallback (for fast worker imports)
         if path.endswith(".py"):
             from src.core.module_cache import get_module
@@ -323,44 +277,15 @@ class FileOperationsService:
             except Exception as e:
                 logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
 
-        # App files: fire pubsub for real-time preview
+        # App files: rebuild bundle + fire pubsub for real-time preview
         app = await self._find_app_by_path(path)
+        if not app and path.startswith("apps/"):
+            logger.info(
+                f"No Application matched path {path!r} — preview refresh skipped. "
+                f"Check Application.repo_path."
+            )
         if app:
-            try:
-                from src.core.pubsub import publish_app_code_file_update
-                # Derive relative path by stripping the app's repo_path prefix
-                app_prefix = app.repo_prefix
-                relative_path = path[len(app_prefix):] if path.startswith(app_prefix) else path
-
-                # Compile TSX/TS files server-side
-                compiled_js = None
-                if relative_path.endswith((".tsx", ".ts")):
-                    from src.services.app_compiler import AppCompilerService
-                    compiler = AppCompilerService()
-                    result = await compiler.compile_file(content_str, relative_path)
-                    if result.success:
-                        compiled_js = result.compiled
-                    else:
-                        logger.warning(f"Compilation failed for {relative_path}: {result.error}")
-
-                await publish_app_code_file_update(
-                    app_id=str(app.id),
-                    user_id=updated_by,
-                    user_name=updated_by,
-                    path=relative_path,
-                    source=content_str,
-                    compiled=compiled_js,
-                    action="update",
-                )
-                # Write compiled JS (or raw source if compile failed) to preview
-                preview_content = compiled_js.encode("utf-8") if compiled_js else final_content
-                from src.services.app_storage import AppStorageService
-                app_storage = AppStorageService()
-                await app_storage.write_preview_file(
-                    str(app.id), relative_path, preview_content
-                )
-            except Exception as e:
-                logger.warning(f"Failed to publish app file update for {path}: {e}")
+            await self._rebuild_app_bundle(app, path, content_str, updated_by)
 
         # Mark repo as having uncommitted changes (skip for CLI pushes)
         if not skip_dirty_flag:
@@ -468,10 +393,7 @@ class FileOperationsService:
         # Uses starts_with() instead of LIKE to avoid wildcard chars (_, %) in repo_path.
         stmt = (
             select(Application)
-            .where(
-                Application.repo_path.isnot(None),
-                text("starts_with(:path, repo_path || '/')").bindparams(path=path),
-            )
+            .where(text("starts_with(:path, repo_path || '/')").bindparams(path=path))
             .order_by(func.length(Application.repo_path).desc())
             .limit(1)
         )
@@ -507,6 +429,161 @@ class FileOperationsService:
         platform_entity_type = detect_platform_entity_type(path, b"")
         if platform_entity_type == "module" or path.endswith(".py"):
             await invalidate_module(path)
+
+    async def _rebuild_app_bundle(
+        self,
+        app: "Application",
+        path: str,
+        content_str: str,
+        updated_by: str,
+    ) -> None:
+        """Rebuild the whole app bundle after a file write and broadcast the result.
+
+        On success: manifest.json + hashed chunks are written to S3; clients
+        receive a `bundle` signal with the new entry name and reload.
+
+        On failure: S3 is unchanged — last good bundle stays live. Clients
+        receive an `error` signal with structured esbuild messages (file,
+        line, column, text) so the UI can render a banner over the last-good
+        render. A system diagnostic notification is also created.
+        """
+        from src.services.app_bundler import BundleMessage, BundleResult, build_with_migrate
+
+        app_prefix = app.repo_prefix
+        relative_path = path[len(app_prefix):] if path.startswith(app_prefix) else path
+        app_id = str(app.id)
+
+        try:
+            result, _migrated = await build_with_migrate(
+                app_id=app_id,
+                repo_prefix=app_prefix,
+                mode="preview",
+                dependencies=app.dependencies or {},
+            )
+        except Exception as e:
+            # Bundler should surface esbuild failures via BundleResult.errors
+            # rather than raising. If it raises anyway (subprocess blew up,
+            # S3 upload mid-build, etc.) synthesize a failure result and
+            # route through the same reporting path so the file write
+            # itself does not fail.
+            logger.exception(f"Bundler crashed for app={app_id}: {e}")
+            result = BundleResult(
+                success=False,
+                errors=[BundleMessage(text=f"Bundler crashed: {e}")],
+            )
+
+        await self._report_bundle_result(
+            result,
+            app_id=app_id,
+            app_prefix=app_prefix,
+            path=path,
+            relative_path=relative_path,
+            content_str=content_str,
+            updated_by=updated_by,
+        )
+
+    async def _report_bundle_result(
+        self,
+        result: "BundleResult",
+        *,
+        app_id: str,
+        app_prefix: str,
+        path: str,
+        relative_path: str,
+        content_str: str,
+        updated_by: str,
+    ) -> None:
+        """Surface a bundle outcome uniformly: pubsub + diagnostics + logging.
+
+        Called for every build attempt — successful or not — so there is one
+        code path that decides what gets published, what diagnostic state is
+        updated, and what gets logged. Failures here are logged and swallowed
+        so the enclosing file write still succeeds.
+        """
+        from src.core.pubsub import publish_app_code_file_update
+        from .diagnostics import FileDiagnosticInfo
+
+        bundle_payload: dict | None = None
+        error_payload: dict | None = None
+
+        if result.success and result.manifest is not None:
+            m = result.manifest
+            bundle_payload = {
+                "entry": m.entry,
+                "css": m.css,
+                "duration_ms": m.duration_ms,
+            }
+            try:
+                await self._diagnostics.clear_diagnostic_notification(path)
+            except Exception as e:
+                logger.warning(f"Failed to clear bundler diagnostic for {path}: {e}")
+            logger.info(
+                f"App bundle rebuilt: app={app_id} path={relative_path} "
+                f"entry={m.entry} duration_ms={m.duration_ms}"
+            )
+        else:
+            errors = result.errors or []
+            error_payload = {
+                "messages": [
+                    {
+                        "text": e.text,
+                        "file": e.file,
+                        "line": e.line,
+                        "column": e.column,
+                        "line_text": e.line_text,
+                    }
+                    for e in errors
+                ],
+            }
+            try:
+                diagnostics = [
+                    FileDiagnosticInfo(
+                        severity="error",
+                        message=e.text,
+                        line=e.line,
+                        column=e.column,
+                        source="bundler",
+                    )
+                    for e in errors
+                ]
+                # Prefer the first error's file path for the notification
+                # target so "view file" jumps to the right place. esbuild
+                # file paths are already app-relative.
+                target_path = path
+                if errors and errors[0].file:
+                    target_path = app_prefix + errors[0].file
+                await self._diagnostics.create_diagnostic_notification(
+                    target_path, diagnostics
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create bundler diagnostic for {path}: {e}")
+            first = errors[0] if errors else None
+            first_file = first.file if first else None
+            first_line = first.line if first else None
+            first_col = first.column if first else None
+            first_msg = first.text if first else ""
+            logger.warning(
+                f"App bundle BUILD FAILED: app={app_id} path={relative_path} "
+                f"errors={len(errors)} "
+                f"first_file={first_file!r} "
+                f"first_line={first_line} "
+                f"first_col={first_col} "
+                f"first_msg={first_msg!r}"
+            )
+
+        try:
+            await publish_app_code_file_update(
+                app_id=app_id,
+                user_id=updated_by,
+                user_name=updated_by,
+                path=relative_path,
+                source=content_str,
+                action="update",
+                bundle=bundle_payload,
+                error=error_payload,
+            )
+        except Exception as pub_err:
+            logger.warning(f"Failed to publish app file update: {pub_err}")
 
     async def move_file(self, old_path: str, new_path: str) -> None:
         """

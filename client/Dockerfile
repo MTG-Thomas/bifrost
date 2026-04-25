@@ -26,6 +26,8 @@ COPY . .
 # Build the application
 # Increase Node memory limit to prevent OOM during build
 ENV NODE_OPTIONS="--max-old-space-size=4096"
+ARG VITE_BIFROST_VERSION=unknown
+ENV VITE_BIFROST_VERSION=${VITE_BIFROST_VERSION}
 RUN npm run build
 
 # =============================================================================

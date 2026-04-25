@@ -50,6 +50,7 @@ from src.routers import (
     notifications_router,
     profile_router,
     agent_runs_router,
+    agent_tuning_router,
     agents_router,
     chat_router,
     llm_config_router,
@@ -81,6 +82,7 @@ from src.routers import (
     platform_workers_router,
     platform_queue_router,
     platform_stuck_router,
+    version_router,
 )
 
 # Configure logging
@@ -260,10 +262,12 @@ def create_app() -> FastAPI:
     Returns:
         Configured FastAPI application instance
     """
+    from shared.version import get_version
+
     app = FastAPI(
         title="Bifrost API",
         description="MSP automation platform API",
-        version="2.0.0",
+        version=get_version(),
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
@@ -508,6 +512,7 @@ def create_app() -> FastAPI:
 
     # Register routers
     app.include_router(health_router)
+    app.include_router(version_router)
     app.include_router(auth_router)
     app.include_router(mfa_router)
     app.include_router(oauth_router)
@@ -536,6 +541,7 @@ def create_app() -> FastAPI:
     app.include_router(profile_router)
     app.include_router(agents_router)
     app.include_router(agent_runs_router)
+    app.include_router(agent_tuning_router)
     app.include_router(chat_router)
     app.include_router(llm_config_router)
     app.include_router(integrations_router)

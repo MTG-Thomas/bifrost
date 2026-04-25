@@ -265,7 +265,7 @@ class TestEventSourceCRUD:
         assert source["name"] == new_name
 
     def test_delete_event_source(self, e2e_client, platform_admin):
-        """Permanently delete event source."""
+        """Hard delete event source (commit 12d4f807 switched from soft to hard delete)."""
         # Create a source to delete
         response = e2e_client.post(
             "/api/events/sources",
@@ -285,7 +285,7 @@ class TestEventSourceCRUD:
         )
         assert response.status_code == 204, f"Delete failed: {response.text}"
 
-        # Verify it's gone
+        # Verify it's gone (hard delete — row removed, not just deactivated)
         response = e2e_client.get(
             f"/api/events/sources/{source['id']}",
             headers=platform_admin.headers,

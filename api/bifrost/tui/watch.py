@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import textwrap
 from collections.abc import Coroutine
 from datetime import datetime
 from typing import Any
@@ -22,10 +23,14 @@ _COL_ACTION = 10  # "✗ Delete  " padded
 _COL_SEP = 2  # gap between columns
 _COL_USER = 12  # max username width
 
+# Detail row indent (aligns with path column)
+_DETAIL_INDENT = _COL_TIME + _COL_ACTION + _COL_SEP * 2
+
 # Color palette
 _CLR_TIME = "#6e7681"
 _CLR_PATH = "#e6edf3"
 _CLR_USER = "#484f58"
+_CLR_DETAIL = "#484f58"  # dim for sub-rows
 _CLR_ACTION = {
     "push": "#7aa2f7",
     "pull": "#9ece6a",
@@ -52,9 +57,9 @@ def _format_row(
         fixed += _COL_USER + _COL_SEP
     path_width = max(8, width - fixed - 4)  # 4 for padding
 
-    # Truncate path if needed
+    # Truncate path from the left (preserve filename)
     if len(path) > path_width:
-        path = path[: path_width - 1] + "\u2026"
+        path = "\u2026" + path[-(path_width - 1):]
 
     action_col = f"{icon} {action_word}"
     parts = (
@@ -233,6 +238,42 @@ class WatchApp(BifrostApp[None]):
 
     def log_error(self, message: str) -> None:
         self._add_row("error", "\u26a0", "Error", message)
+
+    def log_error_detail(self, summary: str, detail: str) -> None:
+        """Log an error with a colored gutter bar and detail sub-rows.
+
+        Example output:
+            14:32:01  ⚠ Error     workflows.yaml: HTTP 400
+                               │  Manifest validation failed: workflow 'onboard'
+                               │  references non-existent role 'abc-123'
+        """
+        self._add_row("error", "\u26a0", "Error", summary)
+        self._add_detail_rows(detail, _CLR_ACTION["error"])
+
+    def log_warning_detail(self, summary: str, detail: str) -> None:
+        """Log a warning with a colored gutter bar and detail sub-rows."""
+        self._add_row("warning", "\u26a0", "Warning", summary)
+        self._add_detail_rows(detail, _CLR_ACTION["warning"])
+
+    def _add_detail_rows(self, detail: str, gutter_color: str) -> None:
+        """Add detail sub-rows with a colored gutter bar connecting them to the parent."""
+        try:
+            width = self.size.width
+        except Exception:
+            width = 120
+        # Gutter bar sits just before the path column
+        gutter_indent = " " * (_DETAIL_INDENT - 3)
+        wrap_width = max(20, width - _DETAIL_INDENT - 4)
+        for line in detail.splitlines():
+            for wrapped in textwrap.wrap(line, width=wrap_width) or [line]:
+                markup = f"  {gutter_indent}[{gutter_color}]\u2502[/]  [{_CLR_DETAIL}]{wrapped}[/]"
+                row = _BatchRow(markup)
+                try:
+                    scroll = self.query_one("#activity-log", VerticalScroll)
+                    scroll.mount(row)
+                    scroll.scroll_end(animate=False)
+                except Exception:
+                    pass
 
     def log_info(self, message: str) -> None:
         self._add_row("info", "\u00b7", "Info", message)

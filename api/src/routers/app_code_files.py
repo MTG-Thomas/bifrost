@@ -17,6 +17,7 @@ Path conventions:
 - modules/: files or subfolders (free naming)
 """
 
+import asyncio
 import logging
 import re
 from enum import Enum
@@ -429,14 +430,6 @@ async def delete_app_file(
 # Render endpoint — compiled JS only, reads from S3 (_apps/)
 # =============================================================================
 
-_COMPILABLE_EXTENSIONS = (".tsx", ".ts")
-
-
-def _looks_like_jsx(content: str) -> bool:
-    """Quick heuristic: uncompiled TSX/TS contains JSX or import statements."""
-    return "import " in content or "</" in content or "=>" in content
-
-
 @render_router.get(
     "/render",
     response_model=AppRenderResponse,
@@ -450,9 +443,8 @@ async def render_app(
 ) -> AppRenderResponse:
     """Return all files as compiled JS, ready for client-side execution.
 
-    Reads entirely from S3 (_apps/{app_id}/{mode}/).  If any compilable
-    files still contain raw TSX/TS (pre-compilation era), the entire app
-    is batch-compiled and the results written back to S3.
+    Reads entirely from S3 (_apps/{app_id}/{mode}/). Compilation happens on
+    write in file_ops; this endpoint only serves what's there.
 
     Unlike /files, this returns only `path` + `code` (no source).
     """
@@ -479,76 +471,235 @@ async def render_app(
             files=files, total=len(files), dependencies=dependencies, styles=cached_css,
         )
 
-    # 2. Cache miss — read from S3
+    # 2. Cache miss — read compiled files from S3
     rel_paths = await app_storage.list_files(app_id_str, storage_mode)
     if not rel_paths:
         return AppRenderResponse(files=[], total=0, dependencies=dependencies)
 
-    file_contents: dict[str, str] = {}
-    for rel_path in rel_paths:
-        content_bytes = await app_storage.read_file(app_id_str, storage_mode, rel_path)
-        file_contents[rel_path] = content_bytes.decode("utf-8", errors="replace")
+    # Filter out non-renderable files (app.yaml, .bifrost-lock, editor turds).
+    # Only code (tsx/ts/jsx/js) and css are served to the runtime.
+    renderable = [
+        p for p in rel_paths
+        if p.endswith((".tsx", ".ts", ".jsx", ".js", ".mjs", ".css"))
+        and ".tmp." not in p
+    ]
 
-    # Separate CSS files from compilable code
+    # Read all files concurrently — serial was ~20ms * N on cold cache.
+    contents = await asyncio.gather(*[
+        app_storage.read_file(app_id_str, storage_mode, p) for p in renderable
+    ])
+
     css_files: dict[str, str] = {}
     code_files: dict[str, str] = {}
-    for rel_path, content in file_contents.items():
+    for rel_path, content_bytes in zip(renderable, contents):
+        content = content_bytes.decode("utf-8", errors="replace")
         if rel_path.endswith(".css"):
             css_files[rel_path] = content
         else:
             code_files[rel_path] = content
 
-    # Use code_files for compilation
-    file_contents = code_files
-
-    # 3. If any compilable files look uncompiled, batch-compile and write back
-    needs_compile = [
-        rel for rel, content in file_contents.items()
-        if rel.endswith(_COMPILABLE_EXTENSIONS) and _looks_like_jsx(content)
-    ]
-
-    if needs_compile:
-        from src.services.app_compiler import AppCompilerService
-
-        compiler = AppCompilerService()
-        batch_input = [
-            {"path": rel, "source": file_contents[rel]}
-            for rel in needs_compile
-        ]
-
-        results = await compiler.compile_batch(batch_input)
-        for result in results:
-            if result.success and result.compiled:
-                file_contents[result.path] = result.compiled
-                await app_storage.write_preview_file(
-                    app_id_str,
-                    result.path,
-                    result.compiled.encode("utf-8"),
-                )
-
-        logger.info(
-            f"On-demand compiled {len(needs_compile)} files for app {app_id}"
-        )
-
-    # 4. Generate Tailwind CSS from class candidates in compiled code
+    # 3. Generate Tailwind CSS from class candidates in compiled code
     from src.services.app_compiler import AppTailwindService
 
-    tailwind_css = await AppTailwindService.generate_css(list(file_contents.values()))
+    tailwind_css = await AppTailwindService.generate_css(list(code_files.values()))
     if tailwind_css:
         css_files["_tailwind.css"] = tailwind_css
 
-    # 5. Warm the Redis cache (include CSS files so cache is complete)
-    all_files_for_cache = {**file_contents, **css_files}
+    # 4. Warm the Redis cache (include CSS files so cache is complete)
+    all_files_for_cache = {**code_files, **css_files}
     await app_storage.set_render_cache(app_id_str, storage_mode, all_files_for_cache)
 
-    # 6. Build response
+    # 5. Build response
     files = [
         RenderFileResponse(path=rel_path, code=code)
-        for rel_path, code in sorted(file_contents.items())
+        for rel_path, code in sorted(code_files.items())
     ]
 
     return AppRenderResponse(
         files=files, total=len(files), dependencies=dependencies, styles=css_files,
+    )
+
+
+# =============================================================================
+# Bundle manifest + asset endpoints (esbuild-bundled path)
+# =============================================================================
+
+
+@render_router.get(
+    "/bundle-manifest",
+    summary="Get the bundle manifest for an app (esbuild path)",
+)
+async def get_bundle_manifest(
+    app_id: UUID = Path(..., description="Application UUID"),
+    mode: FileMode = FileMode.draft,
+    ctx: Context = None,
+    user: CurrentUser = None,
+) -> dict:
+    """Return the manifest.json describing the bundled app.
+
+    Manifest includes entry JS, CSS (if any), and a base URL where the
+    hashed chunk files can be fetched. Chunks are served by
+    /bundle-asset/{filename}.
+
+    If no manifest exists yet, triggers a build and returns that one.
+    """
+    app = await get_application_or_404(ctx, app_id)
+    app_storage = AppStorageService()
+    storage_mode = "preview" if mode == FileMode.draft else "live"
+    app_id_str = str(app.id)
+
+    import json as _json
+    from src.services.app_bundler import SCHEMA_VERSION, build_with_migrate
+    from src.core.cache import get_shared_redis
+
+    # A manifest is "stale" when it's missing the schema_version field or has
+    # an older value. We treat stale manifests the same as missing manifests:
+    # run auto-migration against _repo/<app>/, then rebuild. This is how a
+    # deploy that bumps SCHEMA_VERSION transparently heals every app (preview
+    # AND live) — the first viewer after deploy pays the migrate+rebuild
+    # cost, subsequent views are cached.
+    manifest_bytes: bytes | None = None
+    try:
+        manifest_bytes = await app_storage.read_file(
+            app_id_str, storage_mode, "manifest.json"
+        )
+    except FileNotFoundError:
+        manifest_bytes = None
+
+    needs_rebuild = manifest_bytes is None
+    if manifest_bytes is not None:
+        try:
+            parsed = _json.loads(manifest_bytes)
+        except (ValueError, TypeError):
+            parsed = None
+        if parsed is None:
+            needs_rebuild = True
+        else:
+            existing_version = parsed.get("schema_version")
+            if not isinstance(existing_version, int) or existing_version < SCHEMA_VERSION:
+                needs_rebuild = True
+
+    if needs_rebuild:
+        repo_prefix = app.repo_prefix
+        # Serialize migrate+rebuild across concurrent first-viewers so two
+        # requests don't double-migrate or race on writes. Hold the lock
+        # across migrate+build so the second caller sees a valid manifest on
+        # retry rather than partial state. Separate locks per-mode so a
+        # preview rebuild doesn't block a live viewer on the same app.
+        lock_key = f"bifrost:automigrate:{app_id_str}:{storage_mode}"
+        lock_ttl = 60
+        migrated = False
+        redis = await get_shared_redis()
+        acquired = bool(await redis.set(lock_key, "1", nx=True, ex=lock_ttl))
+        if not acquired:
+            # Another request is building. Wait briefly, then retry — the
+            # holder will have written a fresh manifest with the current
+            # schema_version by the time we re-read.
+            import asyncio as _asyncio
+
+            for _ in range(40):  # ~20s total
+                await _asyncio.sleep(0.5)
+                try:
+                    manifest_bytes = await app_storage.read_file(
+                        app_id_str, storage_mode, "manifest.json"
+                    )
+                    m = _json.loads(manifest_bytes)
+                    v = m.get("schema_version")
+                    if isinstance(v, int) and v >= SCHEMA_VERSION:
+                        return {
+                            "entry": m.get("entry"),
+                            "css": m.get("css"),
+                            "base_url": f"/api/applications/{app_id}/bundle-asset",
+                            "mode": storage_mode,
+                            "dependencies": m.get("dependencies") or (app.dependencies or {}),
+                            "migrated": False,
+                        }
+                except FileNotFoundError:
+                    continue
+            raise HTTPException(
+                status_code=503,
+                detail="Auto-migrate lock held by another request; manifest never appeared",
+            )
+        try:
+            result, migrated = await build_with_migrate(
+                app_id_str, repo_prefix, storage_mode,
+                dependencies=app.dependencies or {},
+            )
+            if not migrated:
+                logger.info(f"No migration needed for app={app_id_str}")
+        finally:
+            await redis.delete(lock_key)
+
+        if not result.success or result.manifest is None:
+            first_err = (result.errors or [None])[0]
+            err_text = first_err.text if first_err else "unknown error"
+            raise HTTPException(status_code=500, detail=f"Bundle build failed: {err_text}")
+        manifest = result.manifest
+        return {
+            "entry": manifest.entry,
+            "css": manifest.css,
+            "base_url": f"/api/applications/{app_id}/bundle-asset",
+            "mode": storage_mode,
+            "dependencies": manifest.dependencies,
+            # Surface the banner on the build that actually rewrote source,
+            # so the developer knows to pull.
+            "migrated": migrated,
+        }
+
+    assert manifest_bytes is not None
+    m = _json.loads(manifest_bytes)
+    return {
+        "entry": m.get("entry"),
+        "css": m.get("css"),
+        "base_url": f"/api/applications/{app_id}/bundle-asset",
+        "mode": storage_mode,
+        "dependencies": m.get("dependencies") or (app.dependencies or {}),
+        "migrated": False,
+    }
+
+
+@render_router.get(
+    "/bundle-asset/{filename:path}",
+    summary="Serve a bundled asset file (JS/CSS/sourcemap)",
+)
+async def get_bundle_asset(
+    app_id: UUID = Path(..., description="Application UUID"),
+    filename: str = Path(..., description="Bundle asset filename"),
+    mode: FileMode = FileMode.draft,
+    ctx: Context = None,
+    user: CurrentUser = None,
+):
+    """Stream a bundled asset file from S3.
+
+    The browser loads these via <script type="module" src="...">, so
+    correct MIME types matter.
+    """
+    from fastapi.responses import Response
+
+    app = await get_application_or_404(ctx, app_id)
+    app_storage = AppStorageService()
+    storage_mode = "preview" if mode == FileMode.draft else "live"
+
+    try:
+        data = await app_storage.read_file(str(app.id), storage_mode, filename)
+    except FileNotFoundError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Asset not found: {filename}")
+
+    if filename.endswith(".js"):
+        media_type = "application/javascript"
+    elif filename.endswith(".css"):
+        media_type = "text/css"
+    elif filename.endswith(".map"):
+        media_type = "application/json"
+    else:
+        media_type = "application/octet-stream"
+
+    # Hashed filenames are immutable — cache aggressively.
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
 
 
