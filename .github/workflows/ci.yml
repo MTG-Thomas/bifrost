@@ -259,7 +259,7 @@ jobs:
   # GitHub's built-in workflow-failure email (no extra wiring).
   # =============================================================================
   deploy-dev:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.ENABLE_DIGITALOCEAN_DEV_DEPLOY == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_DIGITALOCEAN_DEV_DEPLOY == 'true'
     needs: [build-dev]
     runs-on: ubuntu-latest
     name: Deploy Dev to DigitalOcean
