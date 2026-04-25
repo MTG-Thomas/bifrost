@@ -1,0 +1,19 @@
+title = "bifrost-gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known fake test/dev values only"
+paths = [
+  '''api/tests/.*''',
+  '''client/e2e/setup/.*''',
+  '''userland/.*''',
+  '''userland-powershell-review-fixes/.*''',
+  '''\.env\.test\.example''',
+]
+regexes = [
+  '''dev-secret-key-change-in-production-must-be-32-chars''',
+  '''bifrost_dev''',
+  '''bifrost123''',
+]

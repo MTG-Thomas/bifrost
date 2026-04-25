@@ -1,0 +1,40 @@
+env:
+  contexts:
+    - name: bifrost
+      urls:
+        - "http://localhost:3000"
+      includePaths:
+        - "http://localhost:3000/.*"
+      excludePaths:
+        - "http://localhost:3000/api/docs.*"
+        - "http://localhost:3000/api/redoc.*"
+        - "http://localhost:3000/openapi.json"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+
+jobs:
+  - type: replacer
+    parameters:
+      rules:
+        - description: Inject scan bearer token
+          enabled: true
+          matchType: REQ_HEADER
+          matchString: Authorization
+          replacementString: "Bearer ${SCAN_USER_TOKEN}"
+
+  - type: spider
+    parameters:
+      context: bifrost
+      maxDuration: 5
+
+  - type: activeScan
+    parameters:
+      context: bifrost
+      maxScanDurationInMins: 20
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk
+      reportFile: zap-report.json

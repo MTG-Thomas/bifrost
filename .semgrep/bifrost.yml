@@ -1,0 +1,60 @@
+rules:
+  - id: bifrost-no-adhoc-jwt-superuser
+    message: Only auth router/security helpers may create superuser JWT claims.
+    severity: ERROR
+    languages:
+      - python
+    pattern-either:
+      - pattern: 'create_access_token(data={..., "is_superuser": True, ...}, ...)'
+      - pattern: |
+          $DATA = {..., "is_superuser": True, ...}
+          ...
+          create_access_token(data=$DATA, ...)
+    paths:
+      exclude:
+        - /api/src/core/security.py
+        - /api/src/routers/auth.py
+
+  - id: bifrost-no-secret-logging
+    message: Do not log decrypted secrets, OAuth tokens, passwords, or Fernet plaintext.
+    severity: ERROR
+    languages:
+      - python
+    pattern-regex: >-
+      logger\.(debug|info|warning|error|exception|critical)\([^\\n]*(\{[^}]*(access_token|refresh_token|client_secret|secret_key|password)[^}]*\}|,\s*(access_token|refresh_token|client_secret|secret_key|password)\s*[,)])
+
+  - id: bifrost-raw-org-query-without-scope-helper
+    message: Organization-scoped queries should use resolve_org_filter/resolve_target_org or repository scoping.
+    severity: WARNING
+    languages:
+      - python
+    patterns:
+      - pattern-either:
+          - pattern: '$MODEL.organization_id == $ORG'
+          - pattern: '$MODEL.organization_id.is_(None)'
+      - pattern-not-inside: |
+          def resolve_org_filter(...):
+              ...
+      - pattern-not-inside: |
+          def resolve_target_org(...):
+              ...
+
+  - id: bifrost-subprocess-from-user-input
+    message: Subprocess execution must use fixed executable paths and validated args.
+    severity: WARNING
+    languages:
+      - python
+    pattern-either:
+      - pattern: 'subprocess.$FUNC($CMD, ...)'
+      - pattern: 'asyncio.create_subprocess_exec($CMD, ...)'
+
+  - id: bifrost-react-raw-html
+    message: Raw HTML rendering must pass through DOMPurify or SafeHTMLRenderer.
+    severity: WARNING
+    languages:
+      - typescript
+    patterns:
+      - pattern: '<$EL dangerouslySetInnerHTML={{ __html: $HTML }} />'
+      - pattern-not-inside: |
+          const $HTML = DOMPurify.sanitize(...);
+          ...

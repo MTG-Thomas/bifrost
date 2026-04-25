@@ -1,0 +1,57 @@
+name: Security Nightly
+
+on:
+  schedule:
+    - cron: "21 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  zap-and-api-fuzz:
+    name: Authenticated DAST and API Fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare test environment
+        run: cp .env.test.example .env
+
+      - name: Start Bifrost stack
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait
+
+      - name: Create scan users
+        run: bash scripts/security/create-scan-users.sh
+
+      - name: Run OWASP ZAP baseline
+        run: >
+          docker run --network host
+          -e SCAN_USER_TOKEN
+          -v $PWD/security/zap:/zap/wrk
+          ghcr.io/zaproxy/zaproxy:stable
+          zap.sh -cmd -autorun /zap/wrk/zap.yaml
+
+      - name: Install Schemathesis
+        run: python -m pip install schemathesis
+
+      - name: Run platform-admin API fuzzing
+        run: >
+          schemathesis run http://localhost:3000/openapi.json
+          --auth "$PLATFORM_ADMIN_TOKEN"
+          --checks all
+          --max-examples 50
+          --hypothesis-deadline=1000
+          --exclude-path-regex "/api/(packages|github|maintenance|export-import)"
+
+      - name: Run org-user API fuzzing
+        run: >
+          schemathesis run http://localhost:3000/openapi.json
+          --auth "$SCAN_USER_TOKEN"
+          --checks all
+          --max-examples 50
+          --hypothesis-deadline=1000
+          --exclude-path-regex "/api/(packages|github|maintenance|export-import)"

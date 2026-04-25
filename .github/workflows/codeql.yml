@@ -1,5 +1,5 @@
-# CodeQL — GitHub-native SAST
-# Findings appear under: Security tab → Code scanning
+# CodeQL - GitHub-native SAST
+# Findings appear under: Security tab -> Code scanning
 # https://docs.github.com/code-security/code-scanning/automatically-scanning-your-code-for-vulnerabilities-and-errors/configuring-code-scanning
 
 name: CodeQL
@@ -13,6 +13,7 @@ on:
     # Weekly run catches CVEs in newly-published advisories that match
     # existing code patterns (CodeQL queries are updated by GitHub).
     - cron: "0 9 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -36,7 +37,7 @@ jobs:
         uses: github/codeql-action/init@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3.35.2
         with:
           languages: ${{ matrix.language }}
-          queries: security-and-quality
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3.35.2

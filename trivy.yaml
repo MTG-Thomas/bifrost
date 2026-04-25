@@ -1,0 +1,20 @@
+severity:
+  - HIGH
+  - CRITICAL
+
+ignore-unfixed: true
+
+scan:
+  skip-dirs:
+    - client/playwright-report
+    - client/node_modules
+    - userland
+    - userland-powershell-review-fixes
+
+misconfiguration:
+  scanners:
+    - dockerfile
+    - kubernetes
+
+secret:
+  config: .gitleaks.toml
