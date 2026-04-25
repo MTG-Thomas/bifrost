@@ -72,15 +72,11 @@ export function UsageCharts({ trends, isLoading }: UsageChartsProps) {
 								formatter={(value, name) => {
 									if (name === "ai_cost")
 										return [
-											formatCurrency(
-												Array.isArray(value)
-													? value[0]
-													: value,
-											),
+											formatCurrency(value as number),
 											"AI Cost",
 										];
 									return [
-										formatNumber(Number(value ?? 0)),
+										formatNumber(value as number),
 										name,
 									];
 								}}

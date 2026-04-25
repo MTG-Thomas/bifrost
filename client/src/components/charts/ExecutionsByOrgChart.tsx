@@ -120,7 +120,7 @@ export function ExecutionsByOrgChart({
 								borderRadius: "6px",
 							}}
 							formatter={(value, _name, props) => [
-								`${Number(value ?? 0).toLocaleString()} executions`,
+								`${(value as number).toLocaleString()} executions`,
 								props.payload.fullName,
 							]}
 							labelFormatter={() => ""}
