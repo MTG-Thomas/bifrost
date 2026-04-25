@@ -413,6 +413,7 @@ services:
       TEST_BASE_URL: http://client:3000
       TEST_API_URL: http://api:8000
       CI: "true"
+      PLAYWRIGHT_WORKERS: ${PLAYWRIGHT_WORKERS:-2}
     volumes:
       - ./client/e2e:/app/e2e
       - ./client/playwright.config.ts:/app/playwright.config.ts:ro

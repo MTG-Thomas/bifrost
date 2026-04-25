@@ -1,5 +1,21 @@
 import { defineConfig, devices } from "@playwright/test";
 
+function getWorkerCount(): number {
+	const defaultWorkers = process.env.CI ? 2 : 4;
+	const configuredWorkers = process.env.PLAYWRIGHT_WORKERS;
+
+	if (!configuredWorkers) {
+		return defaultWorkers;
+	}
+
+	const parsedWorkers = Number(configuredWorkers);
+	if (!Number.isInteger(parsedWorkers) || parsedWorkers < 1) {
+		return defaultWorkers;
+	}
+
+	return parsedWorkers;
+}
+
 /**
  * Playwright E2E Test Configuration
  *
@@ -17,7 +33,7 @@ export default defineConfig({
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
 	retries: process.env.CI ? 2 : 0,
-	workers: process.env.CI ? 1 : 4,
+	workers: getWorkerCount(),
 	timeout: 30000,
 
 	reporter: [

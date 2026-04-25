@@ -41,6 +41,49 @@ NO_RESET=false
 CI_MODE=false
 PYTEST_ARGS=()
 PLAYWRIGHT_ARGS=()
+TEST_RUN_STARTED_AT=$(date +%s)
+TIMING_LABELS=()
+TIMING_DURATIONS=()
+
+timer_start() {
+    date +%s
+}
+
+record_timing() {
+    local label="$1"
+    local started_at="$2"
+    local ended_at
+    ended_at=$(date +%s)
+
+    TIMING_LABELS+=("$label")
+    TIMING_DURATIONS+=("$((ended_at - started_at))")
+}
+
+format_duration() {
+    local total_seconds="$1"
+    printf "%02d:%02d" $((total_seconds / 60)) $((total_seconds % 60))
+}
+
+print_timing_summary() {
+    local total_elapsed
+    local now
+    now=$(date +%s)
+    total_elapsed=$((now - TEST_RUN_STARTED_AT))
+
+    echo ""
+    echo "============================================================"
+    echo "Timing Summary"
+    echo "============================================================"
+    if [ ${#TIMING_LABELS[@]} -eq 0 ]; then
+        echo "  No timed phases recorded"
+    else
+        for i in "${!TIMING_LABELS[@]}"; do
+            printf "  %-34s %s\n" "${TIMING_LABELS[$i]}:" "$(format_duration "${TIMING_DURATIONS[$i]}")"
+        done
+    fi
+    printf "  %-34s %s\n" "Total elapsed:" "$(format_duration "$total_elapsed")"
+    echo "============================================================"
+}
 
 # Load .env.test if it exists (for GitHub PAT and other test secrets)
 if [ -f ".env.test" ]; then
@@ -189,6 +232,8 @@ trap cleanup EXIT
 # Local Mode - Start API stack with exposed port for local Playwright testing
 # =============================================================================
 if [ "$LOCAL_MODE" = true ]; then
+    LOCAL_STACK_TIMER=$(timer_start)
+
     echo "============================================================"
     echo "Bifrost API - Local Playwright Testing Mode"
     echo "============================================================"
@@ -219,6 +264,7 @@ if [ "$LOCAL_MODE" = true ]; then
         echo "  Waiting for API... (attempt $i/120)"
         sleep 1
     done
+    record_timing "Local API stack startup" "$LOCAL_STACK_TIMER"
 
     echo ""
     echo "============================================================"
@@ -241,6 +287,7 @@ if [ "$LOCAL_MODE" = true ]; then
         echo "Stopping API stack..."
         docker compose -f "$COMPOSE_FILE" -f "$COMPOSE_LOCAL" --profile e2e down -v 2>/dev/null || true
         echo "Cleanup complete"
+        print_timing_summary
         exit 0
     }
     trap local_cleanup EXIT INT TERM
@@ -257,6 +304,7 @@ fi
 if [ "$RESET_DB" = true ]; then
     # Disable cleanup trap for reset-db mode
     trap - EXIT
+    RESET_DB_TIMER=$(timer_start)
 
     echo "============================================================"
     echo "Bifrost API - Database Reset"
@@ -287,6 +335,7 @@ if [ "$RESET_DB" = true ]; then
     rm -f client/e2e/.auth/platform_admin.json
     rm -f client/e2e/.auth/org1_user.json
     rm -f client/e2e/.auth/org2_user.json
+    record_timing "Database reset" "$RESET_DB_TIMER"
 
     echo ""
     echo "============================================================"
@@ -297,6 +346,7 @@ if [ "$RESET_DB" = true ]; then
     echo "  cd client"
     echo "  TEST_API_URL=http://localhost:8000 TEST_BASE_URL=http://localhost:3000 npx playwright test"
     echo ""
+    print_timing_summary
     exit 0
 fi
 
@@ -306,6 +356,7 @@ fi
 if [ "$CLIENT_DEV" = true ]; then
     # Disable cleanup trap - we want to keep containers running
     trap - EXIT
+    CLIENT_DEV_STACK_TIMER=$(timer_start)
 
     echo "============================================================"
     echo "Bifrost API - Client Dev Mode (Fast Iteration)"
@@ -375,9 +426,11 @@ if [ "$CLIENT_DEV" = true ]; then
             sleep 1
         done
     fi
+    record_timing "Client dev stack startup" "$CLIENT_DEV_STACK_TIMER"
 
     # Reset database unless --no-reset was passed
     if [ "$NO_RESET" = false ]; then
+        CLIENT_DEV_RESET_TIMER=$(timer_start)
         echo ""
         echo "Stopping API and worker to release database connections..."
         docker compose -f "$COMPOSE_FILE" stop api worker 2>/dev/null || true
@@ -413,6 +466,7 @@ if [ "$CLIENT_DEV" = true ]; then
         rm -f client/e2e/.auth/platform_admin.json
         rm -f client/e2e/.auth/org1_user.json
         rm -f client/e2e/.auth/org2_user.json
+        record_timing "Client dev database reset" "$CLIENT_DEV_RESET_TIMER"
     else
         echo ""
         echo "Skipping database reset (--no-reset)"
@@ -429,6 +483,7 @@ if [ "$CLIENT_DEV" = true ]; then
     echo ""
 
     set +e
+    PLAYWRIGHT_TIMER=$(timer_start)
     if [ ${#PLAYWRIGHT_ARGS[@]} -gt 0 ]; then
         docker compose -f "$COMPOSE_FILE" --profile client run --rm playwright-runner \
             npx playwright test "${PLAYWRIGHT_ARGS[@]}"
@@ -436,6 +491,7 @@ if [ "$CLIENT_DEV" = true ]; then
         docker compose -f "$COMPOSE_FILE" --profile client run --rm playwright-runner
     fi
     PLAYWRIGHT_EXIT_CODE=$?
+    record_timing "Playwright tests" "$PLAYWRIGHT_TIMER"
     set -e
 
     echo ""
@@ -451,6 +507,7 @@ if [ "$CLIENT_DEV" = true ]; then
     echo "Run './test.sh --reset-db' to just reset the database."
     echo "Run 'docker compose -f docker-compose.test.yml down -v' to stop everything."
     echo ""
+    print_timing_summary
 
     exit $PLAYWRIGHT_EXIT_CODE
 fi
@@ -469,10 +526,13 @@ docker compose -f "$COMPOSE_FILE" --profile e2e --profile test --profile client 
 
 # Build the test runner image
 echo "Building test runner image..."
+BUILD_TIMER=$(timer_start)
 docker compose -f "$COMPOSE_FILE" build test-runner
+record_timing "Build test runner image" "$BUILD_TIMER"
 
 # Start infrastructure services
 echo "Starting PostgreSQL, PgBouncer, RabbitMQ, and Redis..."
+INFRA_TIMER=$(timer_start)
 docker compose -f "$COMPOSE_FILE" up -d postgres rabbitmq redis
 
 # Wait for PostgreSQL to be ready
@@ -538,6 +598,7 @@ for i in {1..15}; do
     echo "  Waiting for PgBouncer... (attempt $i/15)"
     sleep 1
 done
+record_timing "Start infrastructure services" "$INFRA_TIMER"
 
 # =============================================================================
 # Run backend tests (skip if --client-only)
@@ -578,12 +639,14 @@ if [ "$CLIENT_ONLY" = false ]; then
 
         trap - ERR
         set +e
+        UNIT_TIMER=$(timer_start)
         if [ -n "$LOG_DIR" ]; then
             docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE1_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
         else
             docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE1_CMD[@]}"
         fi
         TEST_EXIT_CODE=${PIPESTATUS[0]}
+        record_timing "Unit pytest" "$UNIT_TIMER"
         set -e
 
         echo ""
@@ -605,6 +668,7 @@ if [ "$CLIENT_ONLY" = false ]; then
             echo "============================================================"
             echo ""
 
+            E2E_SERVICE_TIMER=$(timer_start)
             docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
 
             echo "Waiting for API to be ready..."
@@ -620,6 +684,7 @@ if [ "$CLIENT_ONLY" = false ]; then
                 echo "  Waiting for API... (attempt $i/60)"
                 sleep 1
             done
+            record_timing "E2E service startup" "$E2E_SERVICE_TIMER"
 
             echo ""
             echo "============================================================"
@@ -638,12 +703,14 @@ if [ "$CLIENT_ONLY" = false ]; then
 
             trap - ERR
             set +e
+            E2E_TIMER=$(timer_start)
             if [ -n "$LOG_DIR" ]; then
                 docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE2_CMD[@]}" 2>&1 | tee -a "$LOG_DIR/test-runner.log"
             else
                 docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PHASE2_CMD[@]}"
             fi
             TEST_EXIT_CODE=${PIPESTATUS[0]}
+            record_timing "E2E pytest" "$E2E_TIMER"
             set -e
 
             echo ""
@@ -670,6 +737,7 @@ if [ "$CLIENT_ONLY" = false ]; then
         # =================================================================
         echo ""
         echo "Starting API and Worker (custom args may target e2e tests)..."
+        E2E_SERVICE_TIMER=$(timer_start)
         docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
 
         echo "Waiting for API to be ready..."
@@ -685,6 +753,7 @@ if [ "$CLIENT_ONLY" = false ]; then
             echo "  Waiting for API... (attempt $i/60)"
             sleep 1
         done
+        record_timing "E2E service startup" "$E2E_SERVICE_TIMER"
 
         echo ""
         echo "============================================================"
@@ -700,12 +769,14 @@ if [ "$CLIENT_ONLY" = false ]; then
 
         trap - ERR
         set +e
+        PYTEST_TIMER=$(timer_start)
         if [ -n "$LOG_DIR" ]; then
             docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PYTEST_CMD[@]}" 2>&1 | tee "$LOG_DIR/test-runner.log"
         else
             docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner "${PYTEST_CMD[@]}"
         fi
         TEST_EXIT_CODE=${PIPESTATUS[0]}
+        record_timing "Pytest" "$PYTEST_TIMER"
         set -e
 
         # Copy coverage report if generated
@@ -743,6 +814,7 @@ if [ "$CLIENT_TESTS" = true ]; then
     echo "============================================================"
 
     # Start client service
+    CLIENT_TIMER=$(timer_start)
     docker compose -f "$COMPOSE_FILE" --profile client up -d --build client
 
     # Wait for client to be healthy (using Docker health check status)
@@ -776,6 +848,7 @@ if [ "$CLIENT_TESTS" = true ]; then
         echo "  Waiting for client... (attempt $i/120, status: $HEALTH_STATUS)"
         sleep 1
     done
+    record_timing "Client service startup" "$CLIENT_TIMER"
 
     echo ""
     echo "============================================================"
@@ -786,8 +859,10 @@ if [ "$CLIENT_TESTS" = true ]; then
     # Run Playwright tests (disable ERR trap - we handle exit code manually)
     trap - ERR
     set +e
+    PLAYWRIGHT_TIMER=$(timer_start)
     docker compose -f "$COMPOSE_FILE" --profile client run --rm playwright-runner
     PLAYWRIGHT_EXIT_CODE=$?
+    record_timing "Playwright tests" "$PLAYWRIGHT_TIMER"
     set -e
 
     echo ""
@@ -853,6 +928,7 @@ if [ -n "$LOG_DIR" ]; then
     echo "  Results: $LOG_DIR/*-results.xml"
 fi
 echo "============================================================"
+print_timing_summary
 
 # In wait mode, wait for user before cleanup
 if [ "$WAIT_MODE" = true ]; then
