@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { UsageTrend } from "@/services/usage";
+import { toFiniteNumber } from "@/lib/chart-values";
 import { formatCurrency, formatNumber } from "./formatters";
 
 export interface UsageChartsProps {
@@ -70,15 +71,10 @@ export function UsageCharts({ trends, isLoading }: UsageChartsProps) {
 									borderRadius: "6px",
 								}}
 								formatter={(value, name) => {
+									const safeValue = toFiniteNumber(value);
 									if (name === "ai_cost")
-										return [
-											formatCurrency(value as number),
-											"AI Cost",
-										];
-									return [
-										formatNumber(value as number),
-										name,
-									];
+										return [formatCurrency(safeValue), "AI Cost"];
+									return [formatNumber(safeValue), name];
 								}}
 								labelFormatter={(label) =>
 									format(new Date(label), "PPP")

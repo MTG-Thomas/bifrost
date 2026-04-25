@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ResourceMetricsEntry } from "@/hooks/useAdminMetrics";
+import { toFiniteNumber } from "@/lib/chart-values";
 
 interface ResourceTrendChartProps {
 	data: ResourceMetricsEntry[];
@@ -122,11 +123,12 @@ export function ResourceTrendChart({
 								borderRadius: "6px",
 							}}
 							formatter={(value, name) => {
+								const safeValue = toFiniteNumber(value);
 								if (name === "memory_mb")
-									return [`${value as number} MB`, "Avg Memory"];
+									return [`${safeValue} MB`, "Avg Memory"];
 								if (name === "cpu_seconds")
-									return [`${value as number}s`, "Avg CPU"];
-								return [value, name];
+									return [`${safeValue}s`, "Avg CPU"];
+								return [safeValue, name];
 							}}
 							labelFormatter={(label) => `Date: ${label}`}
 						/>

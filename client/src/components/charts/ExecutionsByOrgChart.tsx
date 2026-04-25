@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { OrganizationMetricsSummary } from "@/hooks/useAdminMetrics";
+import { toFiniteNumber } from "@/lib/chart-values";
 
 interface ExecutionsByOrgChartProps {
 	data: OrganizationMetricsSummary[];
@@ -120,7 +121,7 @@ export function ExecutionsByOrgChart({
 								borderRadius: "6px",
 							}}
 							formatter={(value, _name, props) => [
-								`${(value as number).toLocaleString()} executions`,
+								`${toFiniteNumber(value).toLocaleString()} executions`,
 								props.payload.fullName,
 							]}
 							labelFormatter={() => ""}

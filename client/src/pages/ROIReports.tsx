@@ -57,6 +57,7 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
+import { toFiniteNumber } from "@/lib/chart-values";
 
 // ============================================================================
 // Demo Data Generation
@@ -733,17 +734,18 @@ export function ROIReports() {
 										borderRadius: "6px",
 									}}
 									formatter={(value, name) => {
+										const safeValue = toFiniteNumber(value);
 										if (name === "time_saved_hours")
 											return [
-												`${(value as number).toFixed(2)} hrs`,
+												`${safeValue.toFixed(2)} hrs`,
 												"Time Saved",
 											];
 										if (name === "value")
 											return [
-												`${(value as number).toFixed(2)}`,
+												`${safeValue.toFixed(2)}`,
 												"Value",
 											];
-										return [value, name];
+										return [safeValue, name];
 									}}
 									labelFormatter={(label) =>
 										format(new Date(label), "PPP")
