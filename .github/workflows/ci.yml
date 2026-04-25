@@ -129,13 +129,15 @@ jobs:
           ./test.sh e2e
 
   # =============================================================================
-  # Dev Build - Every push to main, gated by unit tests only
+  # Main Image Publish - Every push to main, gated by lint and unit tests.
+  # These GHCR images are consumed by bifrost-infra's PR-based Azure promotion
+  # flow; this workflow does not deploy them directly.
   # =============================================================================
-  build-dev:
+  publish-main-images:
     if: github.ref == 'refs/heads/main'
     needs: [test-unit, lint]
     runs-on: ubuntu-latest
-    name: Build Dev Images
+    name: Publish Main Images
     permissions:
       contents: read
       packages: write
@@ -163,7 +165,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push API dev image
+      - name: Build and push API main image
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
@@ -179,7 +181,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and push client dev image
+      - name: Build and push client main image
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./client
@@ -195,125 +197,6 @@ jobs:
             VITE_BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # =============================================================================
-  # Deploy Dry Run - Manual trigger only (workflow_dispatch from any branch).
-  # Validates the DO auth chain (token, cluster name, RBAC, label selector)
-  # WITHOUT touching any deployment. Used once before merging this PR to
-  # confirm the deploy job will succeed when it fires for real.
-  # =============================================================================
-  deploy-dry-run:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    name: Deploy Dry Run
-    steps:
-      - name: Install doctl
-        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
-        with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-
-      - name: Save kubeconfig
-        run: doctl kubernetes cluster kubeconfig save "${{ secrets.DO_CLUSTER_NAME }}"
-
-      - name: Probe cluster reach + RBAC + label selector
-        run: |
-          set -e
-          echo "::group::cluster info"
-          kubectl cluster-info
-          echo "::endgroup::"
-
-          echo "::group::RBAC — can I patch deployments in the bifrost namespace?"
-          kubectl auth can-i patch deployment -n bifrost
-          echo "::endgroup::"
-
-          echo "::group::Deployments the real job would restart"
-          kubectl -n bifrost get deployment \
-            -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
-            -o wide
-          echo "::endgroup::"
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "## Bifrost deploy dry run"
-            echo ""
-            echo "If the step above passed, the real \`deploy-dev\` job will work when this PR merges."
-            echo ""
-            echo "### Deployments that would be restarted"
-            echo ""
-            echo '```'
-            kubectl -n bifrost get deployment \
-              -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
-              -o custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas \
-              || echo "kubectl unavailable"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # =============================================================================
-  # Deploy Dev - Push-to-main only when explicitly enabled with the repository
-  # variable ENABLE_DIGITALOCEAN_DEV_DEPLOY=true. Rolls the DigitalOcean
-  # deployment once the :dev images are published. Targets anything labeled
-  # `app.kubernetes.io/part-of=bifrost` in the `bifrost` namespace so new
-  # services are picked up automatically. Failures page the maintainer via
-  # GitHub's built-in workflow-failure email (no extra wiring).
-  # =============================================================================
-  deploy-dev:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_DIGITALOCEAN_DEV_DEPLOY == 'true'
-    needs: [build-dev]
-    runs-on: ubuntu-latest
-    name: Deploy Dev to DigitalOcean
-    # Allow only one deploy at a time; if a newer commit lands mid-rollout we
-    # cancel the older deploy so the cluster always converges on HEAD of main.
-    concurrency:
-      group: deploy-dev
-      cancel-in-progress: true
-
-    steps:
-      - name: Install doctl
-        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
-        with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-
-      - name: Save kubeconfig
-        run: doctl kubernetes cluster kubeconfig save "${{ secrets.DO_CLUSTER_NAME }}"
-
-      - name: Roll deployments
-        run: |
-          kubectl -n bifrost rollout restart deployment \
-            -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker
-
-      - name: Wait for rollouts
-        run: |
-          set -e
-          # Query the same label selector we restarted, so new services are
-          # picked up without editing this workflow.
-          DEPLOYMENTS=$(kubectl -n bifrost get deployment \
-            -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
-          for d in $DEPLOYMENTS; do
-            echo "::group::rollout status $d"
-            kubectl -n bifrost rollout status "deployment/$d" --timeout=5m
-            echo "::endgroup::"
-          done
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "## Bifrost deploy"
-            echo ""
-            echo "- Commit: \`${GITHUB_SHA::7}\`"
-            echo "- Cluster: \`${{ secrets.DO_CLUSTER_NAME }}\`"
-            echo "- Namespace: \`bifrost\`"
-            echo ""
-            echo "### Deployment status"
-            echo ""
-            kubectl -n bifrost get deployment \
-              -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
-              -o custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas,UPDATED:.status.updatedReplicas \
-              || echo "kubectl unavailable"
-          } >> "$GITHUB_STEP_SUMMARY"
 
   # =============================================================================
   # Build API Image - Only on version tags, after tests pass
@@ -449,7 +332,7 @@ jobs:
   # =============================================================================
   notify-infra:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build-dev
+    needs: publish-main-images
     runs-on: ubuntu-latest
     name: Notify Infra Promotion
     permissions:
