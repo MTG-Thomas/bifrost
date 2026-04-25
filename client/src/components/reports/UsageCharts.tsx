@@ -69,17 +69,18 @@ export function UsageCharts({ trends, isLoading }: UsageChartsProps) {
 									border: "1px solid hsl(var(--border))",
 									borderRadius: "6px",
 								}}
-								formatter={(
-									value: string | number,
-									name: string,
-								) => {
+								formatter={(value, name) => {
 									if (name === "ai_cost")
 										return [
-											formatCurrency(value),
+											formatCurrency(
+												Array.isArray(value)
+													? value[0]
+													: value,
+											),
 											"AI Cost",
 										];
 									return [
-										formatNumber(value as number),
+										formatNumber(Number(value ?? 0)),
 										name,
 									];
 								}}

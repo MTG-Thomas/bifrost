@@ -121,7 +121,7 @@ export function ResourceTrendChart({
 								border: "1px solid hsl(var(--border))",
 								borderRadius: "6px",
 							}}
-							formatter={(value: number, name: string) => {
+							formatter={(value, name) => {
 								if (name === "memory_mb")
 									return [`${value} MB`, "Avg Memory"];
 								if (name === "cpu_seconds")

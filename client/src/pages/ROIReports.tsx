@@ -732,18 +732,16 @@ export function ROIReports() {
 										border: "1px solid hsl(var(--border))",
 										borderRadius: "6px",
 									}}
-									formatter={(
-										value: number,
-										name: string,
-									) => {
+									formatter={(value, name) => {
+										const numericValue = Number(value ?? 0);
 										if (name === "time_saved_hours")
 											return [
-												`${value.toFixed(2)} hrs`,
+												`${numericValue.toFixed(2)} hrs`,
 												"Time Saved",
 											];
 										if (name === "value")
 											return [
-												`${value.toFixed(2)}`,
+												`${numericValue.toFixed(2)}`,
 												"Value",
 											];
 										return [value, name];
