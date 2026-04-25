@@ -6,6 +6,15 @@ FROM node:20-slim
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        g++ \
+        libsecret-1-dev \
+        make \
+        pkg-config \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy package files and install dependencies
 COPY package*.json ./
 RUN npm ci
