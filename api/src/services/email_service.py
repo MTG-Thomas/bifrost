@@ -15,6 +15,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.log_safety import log_safe
 from src.models.orm import SystemConfig, Workflow
 
 logger = logging.getLogger(__name__)
@@ -92,8 +93,9 @@ class EmailService:
         if data.get("configured_at"):
             try:
                 configured_at = datetime.fromisoformat(data["configured_at"])
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as e:
+                # Stored configured_at is malformed — leave as None
+                logger.debug(f"could not parse configured_at {data.get('configured_at')!r}: {e}")
 
         return EmailWorkflowConfig(
             workflow_id=data["workflow_id"],
@@ -198,7 +200,7 @@ class EmailService:
             existing.value_json = config_data
             existing.updated_at = now
             existing.updated_by = updated_by
-            logger.info(f"Updated email workflow config: {workflow_id}")
+            logger.info(f"Updated email workflow config: {log_safe(workflow_id)}")
         else:
             new_config = SystemConfig(
                 id=uuid4(),
@@ -211,7 +213,7 @@ class EmailService:
                 updated_by=updated_by,
             )
             self.session.add(new_config)
-            logger.info(f"Created email workflow config: {workflow_id}")
+            logger.info(f"Created email workflow config: {log_safe(workflow_id)}")
 
         await self.session.flush()
 

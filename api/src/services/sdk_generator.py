@@ -12,16 +12,21 @@ Supported auth types:
 - oauth: Uses Bifrost OAuth provider tokens
 """
 
+import ipaddress
 import json
 import logging
 import re
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import requests
 import yaml
 from jinja2 import Environment, FileSystemLoader
+
+from src.core.log_safety import log_safe
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +73,60 @@ class MethodInfo:
     summary: str
 
 
+@dataclass(frozen=True)
+class ValidatedSpecUrl:
+    """OpenAPI spec URL that has passed SSRF safety checks."""
+
+    value: str
+
+
 # =============================================================================
 # Spec Loading
 # =============================================================================
 
 
+def _validate_spec_url(url: str) -> ValidatedSpecUrl:
+    """Validate a URL is safe to fetch (https only, public address).
+
+    Prevents SSRF by rejecting non-https schemes and hostnames that resolve
+    to private, loopback, link-local, reserved, or multicast addresses.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError(f"Only https URLs are allowed, got {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError("URL must have a hostname")
+    try:
+        addr_info = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror as e:
+        raise ValueError(f"Cannot resolve hostname {parsed.hostname}: {e}") from e
+    for _family, _type, _proto, _canon, sockaddr in addr_info:
+        ip_str = sockaddr[0]
+        ip = ipaddress.ip_address(ip_str)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise ValueError(
+                f"URL hostname resolves to non-public address: {ip_str}"
+            )
+    return ValidatedSpecUrl(parsed.geturl())
+
+
 def load_spec_from_url(url: str) -> dict:
-    """Load OpenAPI spec from a URL."""
-    response = requests.get(url, timeout=30)
+    """Load OpenAPI spec from a URL.
+
+    Only https URLs that resolve to public addresses are allowed. Redirects
+    are disabled to prevent redirect-to-private bypass.
+    """
+    safe_url = _validate_spec_url(url)
+    # CodeQL/Sonar: _validate_spec_url rejects non-HTTPS and non-public hosts;
+    # redirects stay disabled so validation cannot be bypassed post-check.
+    response = requests.get(safe_url.value, timeout=30, allow_redirects=False)  # NOSONAR
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")
@@ -101,14 +152,14 @@ def load_spec_from_content(content: str, content_type: str = "json") -> dict:
 
 def to_snake_case(name: str) -> str:
     """Convert PascalCase or camelCase to snake_case."""
-    s1 = re.sub("([a-z0-9])([A-Z])", r"\1_\2", name)
-    s2 = re.sub("([A-Z]+)([A-Z][a-z])", r"\1_\2", s1)
+    s1 = re.sub(r"([a-z0-9])(?=[A-Z])", r"\1_", name)
+    s2 = re.sub(r"([A-Z])(?=[A-Z][a-z])", r"\1_", s1)
     return s2.lower().replace("-", "_").replace(" ", "_")
 
 
 def to_pascal_case(name: str) -> str:
     """Convert snake_case, kebab-case, or camelCase to PascalCase."""
-    name = re.sub(r"\d+\.\d+", "", name)
+    name = re.sub(r"\d{1,32}\.\d{1,32}", "", name)
     words = re.split(r"[_\-\s.]+", name)
 
     result_parts = []
@@ -136,7 +187,7 @@ def to_pascal_case(name: str) -> str:
 
 def sanitize_class_name(name: str) -> str:
     """Sanitize a string to be a valid Python class name."""
-    name = re.sub(r"\d+\.\d+", "", name)
+    name = re.sub(r"\d{1,32}\.\d{1,32}", "", name)
     name = re.sub(r"[^a-zA-Z0-9]+", "", name)
     if name and name[0].isdigit():
         name = f"Api{name}"
@@ -364,7 +415,7 @@ def generate_model(
 
 def generate_method_name(path: str, method: str) -> str:
     """Generate a clean method name from path and HTTP method."""
-    clean_path = re.sub(r"\{[^}]+\}", "", path)
+    clean_path = re.sub(r"\{[^}]{1,256}\}", "", path)
     parts = [p for p in clean_path.split("/") if p]
 
     resource = to_snake_case(parts[-1] if parts else "resource")
@@ -469,7 +520,7 @@ def extract_models_and_methods(
             method_names.add(method_name)
 
             # Build parameters
-            path_params = re.findall(r"\{([^}]+)\}", path)
+            path_params = re.findall(r"\{([^}]{1,256})\}", path)
             params = []
             for path_param in path_params:
                 params.append(f"{to_snake_case(path_param)}: str")
@@ -618,7 +669,7 @@ def generate_sdk_from_url(
     Returns:
         SDKGeneratorResult with generated code and metadata
     """
-    logger.info(f"Loading OpenAPI spec from {spec_url}")
+    logger.info(f"Loading OpenAPI spec from {log_safe(spec_url)}")
     spec = load_spec_from_url(spec_url)
 
     return _generate_sdk_result(spec, integration_name, auth_type, module_name)
@@ -670,7 +721,7 @@ def _generate_sdk_result(
     schema_count = len(spec.get("components", {}).get("schemas", {}))
 
     logger.info(
-        f"Generated SDK: {final_module_name}.py with {endpoint_count} endpoints, {schema_count} schemas"
+        f"Generated SDK: {log_safe(final_module_name)}.py with {endpoint_count} endpoints, {schema_count} schemas"
     )
 
     return SDKGeneratorResult(

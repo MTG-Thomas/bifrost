@@ -64,6 +64,7 @@ from src.services.workflow_validation import _extract_relative_path
 
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
 from src.core.database import DbSession
+from src.core.log_safety import log_safe
 from src.core.pubsub import publish_execution_update, publish_history_update
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         access_level=workflow.access_level or "role_based",
         parameters=parameters,
         execution_mode=execution_mode,
-        timeout_seconds=workflow.timeout_seconds or 1800,
+        timeout_seconds=workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800,
         retry_policy=None,
         endpoint_enabled=workflow.endpoint_enabled or False,
         allowed_methods=workflow.allowed_methods or ["POST"],
@@ -186,15 +187,17 @@ async def _get_form_workflow_ids(db: DbSession, form_id: UUID) -> set[UUID]:
     if form.workflow_id:
         try:
             workflow_ids.add(UUID(form.workflow_id))
-        except ValueError:
-            pass
+        except ValueError as e:
+            # Non-UUID portable ref (e.g. "path::func") — not a real workflow ID
+            logger.debug(f"form.workflow_id not a UUID, skipping: {e}")
 
     # Launch workflow
     if form.launch_workflow_id:
         try:
             workflow_ids.add(UUID(form.launch_workflow_id))
-        except ValueError:
-            pass
+        except ValueError as e:
+            # Non-UUID portable ref — not a real workflow ID
+            logger.debug(f"form.launch_workflow_id not a UUID, skipping: {e}")
 
     # Data providers from fields
     for field in form.fields:
@@ -457,7 +460,7 @@ async def list_workflows(
             except Exception as e:
                 logger.error(f"Failed to convert workflow '{w.name}': {e}")
 
-        logger.info(f"Returning {len(workflow_list)} workflows (scope={scope or 'default'})")
+        logger.info(f"Returning {len(workflow_list)} workflows (scope={log_safe(scope) or 'default'})")
         return workflow_list
 
     except HTTPException:
@@ -1078,7 +1081,7 @@ async def validate_workflow(
             content=request.content,
         )
 
-        logger.info(f"Validation result for {request.path}: valid={result.valid}, issues={len(result.issues)}")
+        logger.info(f"Validation result for {log_safe(request.path)}: valid={result.valid}, issues={len(result.issues)}")
         return result
 
     except ValueError as e:
@@ -1249,7 +1252,7 @@ async def update_workflow(
     - access_level: 'authenticated' or 'role_based'
     - clear_roles: If true, clear all role assignments
     - display_name: User-facing display name (can be set to null to use code name)
-    - timeout_seconds: Max execution time (1-7200 seconds)
+    - timeout_seconds: Max execution time (0-86400 seconds, where 0 disables the timeout)
     - execution_mode: 'sync' or 'async'
     - time_saved: Minutes saved per execution (for ROI reporting)
     - value: Flexible value unit per execution
@@ -1324,10 +1327,10 @@ async def update_workflow(
 
         # Update timeout_seconds if provided
         if request.timeout_seconds is not None:
-            if request.timeout_seconds < 1 or request.timeout_seconds > 7200:
+            if request.timeout_seconds < 0 or request.timeout_seconds > 86400:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="timeout_seconds must be between 1 and 7200",
+                    detail="timeout_seconds must be between 0 and 86400",
                 )
             workflow.timeout_seconds = request.timeout_seconds
 
@@ -1417,7 +1420,7 @@ async def update_workflow(
         except Exception as e:
             logger.warning(f"Failed to refresh MCP workflow tools: {e}")
 
-        logger.info(f"Updated workflow '{workflow.name}' organization_id={workflow.organization_id}, access_level={workflow.access_level}")
+        logger.info(f"Updated workflow '{log_safe(workflow.name)}' organization_id={log_safe(workflow.organization_id)}, access_level={log_safe(workflow.access_level)}")
         return _convert_workflow_orm_to_schema(workflow)
 
     except HTTPException:
@@ -1586,8 +1589,8 @@ async def replace_workflow(
         )
 
         logger.info(
-            f"Replaced orphaned workflow {workflow_id} with "
-            f"{request.source_path}::{request.function_name}"
+            f"Replaced orphaned workflow {log_safe(workflow_id)} with "
+            f"{log_safe(request.source_path)}::{log_safe(request.function_name)}"
         )
 
         return ReplaceWorkflowResponse(
@@ -1659,7 +1662,7 @@ async def recreate_workflow_file(
             updated_by=user.email,
         )
 
-        logger.info(f"Recreated file for workflow {workflow_id} at {workflow.path}")
+        logger.info(f"Recreated file for workflow {log_safe(workflow_id)} at {log_safe(workflow.path)}")
 
         return RecreateFileResponse(
             success=True,
@@ -1714,7 +1717,7 @@ async def deactivate_workflow(
         if ref_count > 0:
             warning = f"{ref_count} {'form/app still references' if ref_count == 1 else 'forms/apps still reference'} this workflow"
 
-        logger.info(f"Deactivated workflow {workflow_id} (refs: {ref_count})")
+        logger.info(f"Deactivated workflow {log_safe(workflow_id)} (refs: {log_safe(ref_count)})")
 
         return DeactivateWorkflowResponse(
             success=True,
@@ -1844,7 +1847,7 @@ async def assign_roles_to_workflow(
         db.add(workflow_role)
 
     await db.flush()
-    logger.info(f"Assigned roles to workflow {workflow_id}")
+    logger.info(f"Assigned roles to workflow {log_safe(workflow_id)}")
 
 
 @router.delete(
@@ -1878,7 +1881,7 @@ async def remove_role_from_workflow(
             detail="Workflow-role assignment not found",
         )
 
-    logger.info(f"Removed role {role_id} from workflow {workflow_id}")
+    logger.info(f"Removed role {log_safe(role_id)} from workflow {log_safe(workflow_id)}")
 
 
 @router.delete(

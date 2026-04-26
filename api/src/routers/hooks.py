@@ -15,6 +15,7 @@ from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import PlainTextResponse
 
 from src.core.database import DbSession
+from src.core.log_safety import log_safe
 from src.services.events.processor import EventProcessor
 from src.services.webhooks.protocol import (
     Deliver,
@@ -100,11 +101,11 @@ async def receive_webhook(
     source_ip = _get_client_ip(request)
 
     logger.debug(
-        f"Webhook received: {method} /api/hooks/{source_id}",
+        f"Webhook received: {log_safe(method)} /api/hooks/{log_safe(source_id)}",
         extra={
-            "source_id": source_id,
-            "method": method,
-            "source_ip": source_ip,
+            "source_id": log_safe(source_id),
+            "method": log_safe(method),
+            "source_ip": log_safe(source_ip),
             "content_length": len(body),
         },
     )
@@ -126,7 +127,7 @@ async def receive_webhook(
     try:
         result = await processor.process_webhook(source_id, webhook_request)
     except Exception as e:
-        logger.error(f"Error processing webhook: {e}", exc_info=True)
+        logger.error(f"Error processing webhook: {log_safe(e)}", exc_info=True)
         # Return 500 but don't expose internal error details
         return Response(
             content="Internal server error",
@@ -147,11 +148,11 @@ async def receive_webhook(
     if isinstance(result, Rejected):
         # Request was rejected by adapter
         logger.warning(
-            f"Webhook rejected: {source_id}",
+            f"Webhook rejected: {log_safe(source_id)}",
             extra={
-                "source_id": source_id,
+                "source_id": log_safe(source_id),
                 "status_code": result.status_code,
-                "reject_reason": result.message,
+                "reject_reason": log_safe(result.message),
             },
         )
         return Response(
@@ -191,15 +192,15 @@ async def receive_webhook(
                     await db.commit()
 
                     logger.info(
-                        f"Webhook accepted: {source_id}",
+                        f"Webhook accepted: {log_safe(source_id)}",
                         extra={
-                            "source_id": source_id,
+                            "source_id": log_safe(source_id),
                             "event_id": str(event.id),
                             "deliveries_queued": queued,
                         },
                     )
         except Exception as e:
-            logger.error(f"Error queueing deliveries: {e}", exc_info=True)
+            logger.error(f"Error queueing deliveries: {log_safe(e)}", exc_info=True)
             # Event was recorded, just couldn't queue - don't fail the webhook
 
         # Return 202 Accepted

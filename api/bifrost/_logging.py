@@ -26,6 +26,7 @@ from uuid import UUID
 import redis as redis_sync
 
 from src.core.cache.keys import execution_logs_stream_key
+from src.core.log_safety import log_safe
 
 logger = logging.getLogger(__name__)
 
@@ -416,8 +417,9 @@ def close_thread_redis() -> None:
     if hasattr(_local, "redis") and _local.redis is not None:
         try:
             _local.redis.close()
-        except Exception:
-            pass
+        except Exception as e:
+            # Best-effort cleanup on thread teardown — connection may already be invalid
+            logger.debug(f"close_thread_redis ignoring close error: {e}")
         _local.redis = None
     if hasattr(_local, "sequence_counters"):
         _local.sequence_counters = {}
@@ -504,7 +506,7 @@ async def flush_logs_to_postgres(
             # Clear the stream after successful persistence
             await r.delete(stream_key)
 
-            logger.debug(f"Flushed {len(logs_to_insert)} logs to Postgres for {exec_id}")
+            logger.debug(f"Flushed {len(logs_to_insert)} logs to Postgres for {log_safe(exec_id)}")
             return len(logs_to_insert)
 
     except Exception as e:

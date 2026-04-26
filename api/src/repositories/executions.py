@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import UserPrincipal
+from src.core.log_safety import log_safe
 from src.models import (
     AIUsage,
     AIUsagePublicSimple,
@@ -274,7 +275,7 @@ class ExecutionRepository(BaseRepository[Execution]):
                 self.session.add(log_record)
 
         await self.session.flush()
-        logger.debug(f"Updated execution {execution_id} to status {status_value}")
+        logger.debug(f"Updated execution {log_safe(execution_id)} to status {log_safe(status_value)}")
 
     # =========================================================================
     # Read Operations (used by API endpoints)
@@ -313,15 +314,17 @@ class ExecutionRepository(BaseRepository[Execution]):
             try:
                 start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
                 query = query.where(Execution.started_at >= start_dt)
-            except ValueError:
-                pass
+            except ValueError as e:
+                # Malformed ISO date — drop the filter rather than 500
+                logger.debug(f"invalid start_date {start_date!r}, ignoring filter: {e}")
 
         if end_date:
             try:
                 end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
                 query = query.where(Execution.started_at <= end_dt)
-            except ValueError:
-                pass
+            except ValueError as e:
+                # Malformed ISO date — drop the filter rather than 500
+                logger.debug(f"invalid end_date {end_date!r}, ignoring filter: {e}")
 
         # Order by newest first
         query = query.order_by(desc(Execution.started_at))

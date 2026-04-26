@@ -49,6 +49,7 @@ from src.models.contracts.passkeys import (
 from src.config import get_settings
 from src.core.auth import CurrentActiveUser
 from src.core.database import DbSession
+from src.core.log_safety import log_safe
 from src.core.rate_limit import auth_limiter, mfa_limiter, get_client_ip
 from src.services.audit import emit_audit
 from src.services.audit_context import ActorContext, current_actor
@@ -897,7 +898,7 @@ async def refresh_token(
     jti_valid = await validate_and_revoke_refresh_token_jti(user_id, jti)
     if not jti_valid:
         # JTI not found - token was already used or revoked
-        logger.warning(f"Refresh token reuse attempt for user {user_id}, JTI {jti}")
+        logger.warning(f"Refresh token reuse attempt for user {log_safe(user_id)}, JTI {log_safe(jti)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token has been revoked or already used",
@@ -1134,11 +1135,11 @@ async def admin_revoke_user_sessions(
     count = await revoke_all_user_refresh_tokens(revoke_data.user_id)
 
     logger.warning(
-        f"Admin revoked all sessions for user: {target_user.email}",
+        f"Admin revoked all sessions for user: {log_safe(target_user.email)}",
         extra={
             "admin_user": current_user.email,
-            "target_user": target_user.email,
-            "target_user_id": revoke_data.user_id,
+            "target_user": log_safe(target_user.email),
+            "target_user_id": log_safe(revoke_data.user_id),
             "sessions_revoked": count,
         }
     )
@@ -1470,7 +1471,7 @@ async def exchange_device_token(
     if not device_data_json:
         logger.warning(
             "Device token request with expired/invalid device_code",
-            extra={"device_code": token_request.device_code[:8] + "..."}
+            extra={"device_code": log_safe(token_request.device_code[:8]) + "..."}
         )
         return DeviceTokenErrorResponse(error="expired_token")
 
@@ -1487,7 +1488,7 @@ async def exchange_device_token(
 
         logger.info(
             "Device authorization denied",
-            extra={"device_code": token_request.device_code[:8] + "...", "user_code": device_data["user_code"]}
+            extra={"device_code": log_safe(token_request.device_code[:8]) + "...", "user_code": log_safe(device_data["user_code"])}
         )
         return DeviceTokenErrorResponse(error="access_denied")
 
@@ -1497,7 +1498,7 @@ async def exchange_device_token(
         if not user_id:
             logger.error(
                 "Device code authorized but missing user_id",
-                extra={"device_code": token_request.device_code[:8] + "..."}
+                extra={"device_code": log_safe(token_request.device_code[:8]) + "..."}
             )
             return DeviceTokenErrorResponse(error="expired_token")
 
@@ -1520,11 +1521,11 @@ async def exchange_device_token(
         await r.delete(device_user_code_index_key(device_data["user_code"]))
 
         logger.info(
-            f"Device authorization completed for user: {user.email}",
+            f"Device authorization completed for user: {log_safe(user.email)}",
             extra={
                 "user_id": str(user.id),
-                "device_code": token_request.device_code[:8] + "...",
-                "user_code": device_data["user_code"],
+                "device_code": log_safe(token_request.device_code[:8]) + "...",
+                "user_code": log_safe(device_data["user_code"]),
             }
         )
 
@@ -1537,8 +1538,8 @@ async def exchange_device_token(
 
     # Unknown status
     logger.error(
-        f"Unknown device code status: {status}",
-        extra={"device_code": token_request.device_code[:8] + "..."}
+        f"Unknown device code status: {log_safe(status)}",
+        extra={"device_code": log_safe(token_request.device_code[:8]) + "..."}
     )
     return DeviceTokenErrorResponse(error="expired_token")
 
@@ -1604,7 +1605,7 @@ async def setup_passkey_options(
         )
 
     logger.info(
-        f"Passkey setup initiated for first-time registration: {setup_request.email}",
+        f"Passkey setup initiated for first-time registration: {log_safe(setup_request.email)}",
     )
 
     return SetupPasskeyOptionsResponse(
@@ -1732,7 +1733,7 @@ async def authorize_device(
 
     if not device_code:
         logger.warning(
-            f"Device authorization attempt with invalid user_code: {authorize_request.user_code}",
+            f"Device authorization attempt with invalid user_code: {log_safe(authorize_request.user_code)}",
             extra={"user_id": str(current_user.user_id)}
         )
         raise HTTPException(
@@ -1747,7 +1748,7 @@ async def authorize_device(
 
     if not device_data_json:
         logger.warning(
-            f"Device code missing for user_code: {authorize_request.user_code}",
+            f"Device code missing for user_code: {log_safe(authorize_request.user_code)}",
             extra={"user_id": str(current_user.user_id)}
         )
         raise HTTPException(
@@ -1780,8 +1781,8 @@ async def authorize_device(
         f"Device authorized by user: {current_user.email}",
         extra={
             "user_id": str(current_user.user_id),
-            "user_code": authorize_request.user_code,
-            "device_code": device_code_str[:8] + "...",
+            "user_code": log_safe(authorize_request.user_code),
+            "device_code": log_safe(device_code_str[:8]) + "...",
         }
     )
 

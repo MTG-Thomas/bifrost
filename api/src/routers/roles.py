@@ -15,6 +15,7 @@ from sqlalchemy import select, delete
 
 from src.core.auth import CurrentSuperuser
 from src.core.database import DbSession
+from src.core.log_safety import log_safe
 from src.services.audit import emit_audit
 from src.models import (
     Role as RoleORM,
@@ -111,7 +112,7 @@ async def create_role(
     await db.flush()
     await db.refresh(role)
 
-    logger.info(f"Created role {role.id}: {role.name}")
+    logger.info(f"Created role {role.id}: {log_safe(role.name)}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
@@ -185,7 +186,7 @@ async def update_role(
     await db.flush()
     await db.refresh(role)
 
-    logger.info(f"Updated role {role_id}")
+    logger.info(f"Updated role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
@@ -246,7 +247,7 @@ async def delete_role(
     deleted_name = role.name
     await db.delete(role)
     await db.flush()
-    logger.info(f"Deleted role {role_id}")
+    logger.info(f"Deleted role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
@@ -310,7 +311,7 @@ async def assign_users_to_role(
             )
             user_uuid = result.scalar_one_or_none()
             if not user_uuid:
-                logger.warning(f"User {user_id_str} not found, skipping")
+                logger.warning(f"User {log_safe(user_id_str)} not found, skipping")
                 continue
 
         # Check if already assigned
@@ -332,7 +333,7 @@ async def assign_users_to_role(
         db.add(user_role)
 
     await db.flush()
-    logger.info(f"Assigned users to role {role_id}")
+    logger.info(f"Assigned users to role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
@@ -384,7 +385,7 @@ async def remove_user_from_role(
             detail="User-role assignment not found",
         )
 
-    logger.info(f"Removed user {user_id} from role {role_id}")
+    logger.info(f"Removed user {log_safe(user_id)} from role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
@@ -470,7 +471,7 @@ async def assign_forms_to_role(
         db.add(form_role)
 
     await db.flush()
-    logger.info(f"Assigned forms to role {role_id}")
+    logger.info(f"Assigned forms to role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_forms:
@@ -503,7 +504,7 @@ async def remove_form_from_role(
             detail="Form-role assignment not found",
         )
 
-    logger.info(f"Removed form {form_id} from role {role_id}")
+    logger.info(f"Removed form {log_safe(form_id)} from role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
     if CACHE_INVALIDATION_AVAILABLE and invalidate_role_forms:
@@ -581,7 +582,7 @@ async def assign_agents_to_role(
         db.add(agent_role)
 
     await db.flush()
-    logger.info(f"Assigned agents to role {role_id}")
+    logger.info(f"Assigned agents to role {log_safe(role_id)}")
 
     # Invalidate cache if available (roles are global, no org_id needed)
     if AGENT_CACHE_INVALIDATION_AVAILABLE and invalidate_role_agents:
@@ -614,7 +615,7 @@ async def remove_agent_from_role(
             detail="Agent-role assignment not found",
         )
 
-    logger.info(f"Removed agent {agent_id} from role {role_id}")
+    logger.info(f"Removed agent {log_safe(agent_id)} from role {log_safe(role_id)}")
 
     # Invalidate cache if available (roles are global, no org_id needed)
     if AGENT_CACHE_INVALIDATION_AVAILABLE and invalidate_role_agents:

@@ -254,6 +254,44 @@ async def update_persist_workflow() -> str:
             headers=platform_admin.headers,
         )
 
+    def test_workflow_update_accepts_documented_timeout_bounds(self, e2e_client, platform_admin):
+        """Workflow updates accept the documented 0-86400 timeout range."""
+        content = '''"""Timeout update test"""
+from bifrost import workflow
+
+@workflow(name="timeout_bounds_workflow", description="Timeout bounds")
+async def timeout_bounds_workflow() -> str:
+    return "ok"
+'''
+        workflow = write_and_register(
+            e2e_client, platform_admin.headers,
+            "timeout_bounds_workflow.py", content,
+            "timeout_bounds_workflow",
+        )
+        workflow_id = workflow["id"]
+
+        try:
+            response = e2e_client.patch(
+                f"/api/workflows/{workflow_id}",
+                headers=platform_admin.headers,
+                json={"timeout_seconds": 86400},
+            )
+            assert response.status_code == 200, f"86400 patch failed: {response.text}"
+            assert response.json()["timeout_seconds"] == 86400
+
+            response = e2e_client.patch(
+                f"/api/workflows/{workflow_id}",
+                headers=platform_admin.headers,
+                json={"timeout_seconds": 0},
+            )
+            assert response.status_code == 200, f"0 patch failed: {response.text}"
+            assert response.json()["timeout_seconds"] == 0
+        finally:
+            e2e_client.delete(
+                "/api/files/editor?path=timeout_bounds_workflow.py",
+                headers=platform_admin.headers,
+            )
+
     def test_workflow_id_stable_across_updates(self, e2e_client, platform_admin):
         """Workflow ID remains stable across code updates."""
         workflow_content = '''"""Stable ID Test"""

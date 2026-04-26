@@ -22,6 +22,7 @@ from src.core.cache.keys import (
     TTL_OAUTH_STATE,
     TTL_REFRESH_TOKEN,
 )
+from src.core.log_safety import log_safe
 from src.config import get_settings
 from src.core.auth import CurrentActiveUser, get_current_user_from_db
 from src.core.database import DbSession
@@ -230,8 +231,8 @@ async def init_oauth(
         )
 
         logger.info(
-            f"OAuth flow initiated for provider: {provider}",
-            extra={"provider": provider, "state": state[:8] + "..."}
+            f"OAuth flow initiated for provider: {log_safe(provider)}",
+            extra={"provider": log_safe(provider), "state": log_safe(state[:8]) + "..."}
         )
 
         return OAuthInitResponse(
@@ -291,7 +292,7 @@ async def oauth_callback(
     if not state_data_raw:
         logger.warning(
             "OAuth callback with invalid or expired state",
-            extra={"state": callback_data.state[:8] + "..." if callback_data.state else "none"}
+            extra={"state": log_safe(callback_data.state[:8]) + "..." if callback_data.state else "none"}
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -310,7 +311,7 @@ async def oauth_callback(
         code_verifier = state_data["code_verifier"]
         redirect_uri = state_data["redirect_uri"]
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Invalid OAuth state data format: {e}")
+        logger.error(f"Invalid OAuth state data format: {log_safe(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid OAuth state data",
@@ -339,7 +340,7 @@ async def oauth_callback(
             )
 
     except OAuthError as e:
-        logger.error(f"OAuth callback error: {e}")
+        logger.error(f"OAuth callback error: {log_safe(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
@@ -412,11 +413,11 @@ async def oauth_callback(
     await r.setex(refresh_token_jti_key(str(user.id), jti), TTL_REFRESH_TOKEN, "1")
 
     logger.info(
-        f"OAuth login successful: {user.email}",
+        f"OAuth login successful: {log_safe(user.email)}",
         extra={
             "user_id": str(user.id),
-            "provider": callback_data.provider,
-            "oauth_user_id": user_info.provider_user_id,
+            "provider": log_safe(callback_data.provider),
+            "oauth_user_id": log_safe(user_info.provider_user_id),
         }
     )
 
@@ -506,8 +507,8 @@ async def unlink_oauth_account(
     await db.commit()
 
     logger.info(
-        f"OAuth account unlinked: {provider}",
-        extra={"user_id": str(user.id), "provider": provider}
+        f"OAuth account unlinked: {log_safe(provider)}",
+        extra={"user_id": str(user.id), "provider": log_safe(provider)}
     )
 
     return {"message": f"{provider.title()} account unlinked"}

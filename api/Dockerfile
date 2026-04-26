@@ -5,7 +5,8 @@
 # =============================================================================
 # Stage 1: Builder
 # =============================================================================
-FROM python:3.14-slim AS builder
+# python:3.14-slim
+FROM python@sha256:5b3879b6f3cb77e712644d50262d05a7c146b7312d784a18eff7ff5462e77033 AS builder
 
 WORKDIR /app
 
@@ -23,7 +24,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
-FROM python:3.14-slim
+# python:3.14-slim
+FROM python@sha256:5b3879b6f3cb77e712644d50262d05a7c146b7312d784a18eff7ff5462e77033
 
 WORKDIR /app
 
@@ -72,8 +74,8 @@ RUN mkdir -p /workspace /tmp/bifrost && \
 COPY api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Don't switch to bifrost here - entrypoint handles user switching
-# This allows the entrypoint to fix volume permissions when needed
+USER bifrost
+
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Environment variables

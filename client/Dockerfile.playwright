@@ -4,7 +4,8 @@
 # Usage (via test.sh):
 #   ./test.sh client e2e      # Run Playwright E2E tests in the client container
 
-FROM mcr.microsoft.com/playwright:v1.56.0-jammy
+# mcr.microsoft.com/playwright:v1.56.0-jammy
+FROM mcr.microsoft.com/playwright@sha256:8a0360d39d1973be506dd59002904a774f6d697d4946c94063b3fd006461c8ff
 
 WORKDIR /app
 
@@ -14,6 +15,10 @@ RUN npm ci
 
 # Install only Chromium browser (faster than installing all browsers)
 RUN npx playwright install chromium
+
+RUN mkdir -p /app/playwright-results && chown -R pwuser:pwuser /app
+
+USER pwuser
 
 # Test files, config, and fixtures come from volume mounts
 # This allows live editing without rebuilding the image
