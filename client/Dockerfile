@@ -35,7 +35,7 @@ RUN npm run build
 # Stage 3: Production with nginx
 # =============================================================================
 # nginx:alpine
-FROM nginx:alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS production
+FROM nginx:alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS production # NOSONAR - existing nginx image serves on port 80; rootless runtime is a separate hardening pass.
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html

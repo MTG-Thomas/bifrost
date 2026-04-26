@@ -22,7 +22,7 @@ NORMAL_SECURITY_HEADERS = [
     'add_header X-Frame-Options "DENY" always;',
     'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;',
     'add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;',
-    'add_header Content-Security-Policy-Report-Only "default-src',
+    'add_header Content-Security-Policy-Report-Only "default-src \'self\'; base-uri \'self\'; object-src \'none\'; frame-ancestors \'none\'; img-src \'self\' data: blob:; font-src \'self\' data:; style-src \'self\' \'unsafe-inline\'; script-src \'self\'; connect-src \'self\'" always;',
 ]
 
 
@@ -44,6 +44,9 @@ def _location_block(config: str, location: str) -> str:
 
 def test_cache_bearing_locations_repeat_normal_security_headers():
     config = NGINX_CONF.read_text()
+    server_preamble = config.split("    location ", 1)[0]
+    assert "include /etc/nginx/snippets/security-headers.conf;" in server_preamble
+
     locations = [
         "^~ /api/auth",
         "^~ /api",
