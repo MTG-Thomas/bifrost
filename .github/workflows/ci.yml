@@ -269,24 +269,38 @@ jobs:
     concurrency:
       group: deploy-dev
       cancel-in-progress: true
+    env:
+      DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
 
     steps:
+      - name: Skip deploy when DigitalOcean secrets are not configured
+        if: env.DIGITALOCEAN_ACCESS_TOKEN == ''
+        run: |
+          {
+            echo "## Bifrost deploy"
+            echo ""
+            echo "Skipped: DIGITALOCEAN_ACCESS_TOKEN is not configured for this repository."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Install doctl
+        if: env.DIGITALOCEAN_ACCESS_TOKEN != ''
         uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          token: ${{ env.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Save kubeconfig
-        env:
-          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
+        if: env.DIGITALOCEAN_ACCESS_TOKEN != ''
         run: doctl kubernetes cluster kubeconfig save "$DO_CLUSTER_NAME"
 
       - name: Roll deployments
+        if: env.DIGITALOCEAN_ACCESS_TOKEN != ''
         run: |
           kubectl -n bifrost rollout restart deployment \
             -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker
 
       - name: Wait for rollouts
+        if: env.DIGITALOCEAN_ACCESS_TOKEN != ''
         run: |
           set -e
           # Query the same label selector we restarted, so new services are
@@ -301,9 +315,7 @@ jobs:
           done
 
       - name: Summary
-        if: always()
-        env:
-          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
+        if: always() && env.DIGITALOCEAN_ACCESS_TOKEN != ''
         run: |
           {
             echo "## Bifrost deploy"
