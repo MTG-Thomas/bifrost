@@ -116,7 +116,9 @@ def load_spec_from_url(url: str) -> dict:
     are disabled to prevent redirect-to-private bypass.
     """
     _validate_spec_url(url)
-    response = requests.get(url, timeout=30, allow_redirects=False)  # NOSONAR
+    # CodeQL/Sonar: _validate_spec_url rejects non-HTTPS and non-public hosts;
+    # redirects stay disabled so validation cannot be bypassed post-check.
+    response = requests.get(url, timeout=30, allow_redirects=False)  # lgtm[py/full-ssrf] # NOSONAR
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")
