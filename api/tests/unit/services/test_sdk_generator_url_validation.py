@@ -15,17 +15,17 @@ from src.services.sdk_generator import _validate_spec_url
 
 def _fake_getaddrinfo_public(_host: str, _port: int | None) -> list[tuple]:
     """Pretend the hostname resolves to a public IP (1.1.1.1)."""
-    return [(2, 1, 6, "", ("1.1.1.1", 0))]
+    return [(2, 1, 6, "", ("1.1.1.1", 0))]  # NOSONAR - test fixture IP
 
 
 def _fake_getaddrinfo_private(_host: str, _port: int | None) -> list[tuple]:
     """Pretend the hostname resolves to an RFC1918 IP."""
-    return [(2, 1, 6, "", ("10.0.0.1", 0))]
+    return [(2, 1, 6, "", ("10.0.0.1", 0))]  # NOSONAR - test fixture IP
 
 
 def test_rejects_non_https_scheme() -> None:
     with pytest.raises(ValueError, match="Only https URLs are allowed"):
-        _validate_spec_url("http://example.com/openapi.json")
+        _validate_spec_url("http://example.com/openapi.json")  # NOSONAR - negative test case
 
 
 def test_rejects_private_address(monkeypatch: pytest.MonkeyPatch) -> None:
