@@ -55,7 +55,7 @@ def test_cache_bearing_locations_repeat_normal_security_headers():
 
     for location in locations:
         block = _location_block(config, location)
-        assert "include /etc/nginx/conf.d/security-headers.conf;" in block
+        assert "include /etc/nginx/snippets/security-headers.conf;" in block
 
 
 def test_normal_security_header_snippet_contains_required_headers():
@@ -69,9 +69,10 @@ def test_normal_security_header_snippet_contains_required_headers():
 
 
 def test_dockerfile_copies_security_header_snippet():
-    dockerfile = (Path(__file__).resolve().parents[3] / "client" / "Dockerfile").read_text()
+    dockerfile = _repo_file("client", "Dockerfile").read_text()
 
-    assert "COPY security-headers.conf /etc/nginx/conf.d/security-headers.conf" in dockerfile
+    assert "RUN mkdir -p /etc/nginx/snippets" in dockerfile
+    assert "COPY security-headers.conf /etc/nginx/snippets/security-headers.conf" in dockerfile
 
 
 def test_normal_security_headers_are_not_duplicated_in_locations():

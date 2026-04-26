@@ -41,8 +41,9 @@ FROM nginx:alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b19
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Copy nginx configuration
+RUN mkdir -p /etc/nginx/snippets
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY security-headers.conf /etc/nginx/conf.d/security-headers.conf
+COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
 
 EXPOSE 80
 
