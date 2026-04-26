@@ -64,13 +64,21 @@ print_project() {
 require_stack_up() {
     for _ in {1..10}; do
         if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
-            return 0
+            if wait_for_api_ready "$COMPOSE_FILE"; then
+                return 0
+            fi
+            echo "Stack containers are running, waiting for API readiness..." >&2
         fi
         sleep 1
     done
 
-    echo "ERROR: stack not running for this worktree. Run:" >&2
-    echo "  ./test.sh stack up" >&2
+    if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
+        echo "ERROR: stack containers running but API not serving traffic." >&2
+        echo "  Check: docker compose -f $COMPOSE_FILE logs api" >&2
+    else
+        echo "ERROR: stack not running for this worktree. Run:" >&2
+        echo "  ./test.sh stack up" >&2
+    fi
     exit 1
 }
 
@@ -98,7 +106,7 @@ reset_state() {
     docker compose -f "$COMPOSE_FILE" start pgbouncer > /dev/null
     wait_for_service "$COMPOSE_FILE" pgbouncer pg_isready -h localhost -p 5432 -U bifrost
     docker compose -f "$COMPOSE_FILE" --profile e2e start api worker scheduler > /dev/null
-    wait_for_service "$COMPOSE_FILE" api curl -sf http://localhost:8000/health
+    wait_for_api_ready "$COMPOSE_FILE"
 
     echo "State reset complete."
 }
@@ -128,8 +136,15 @@ stack_up() {
     print_project
 
     if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
-        echo "Stack already up."
-        return 0
+        # Idempotent: still confirm API is serving traffic before returning
+        # success. A previous `stack up` may have exited before the API
+        # finished booting; without this, the next test command would race.
+        if wait_for_api_ready "$COMPOSE_FILE"; then
+            echo "Stack already up."
+            return 0
+        fi
+        echo "Stack containers running but API not ready — see logs above." >&2
+        exit 1
     fi
 
     echo "Booting infrastructure..."
@@ -147,7 +162,8 @@ stack_up() {
 
     echo "Starting API + Worker + Scheduler..."
     docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
-    wait_for_service "$COMPOSE_FILE" api curl -sf http://localhost:8000/health
+    echo "Waiting for API to be serving traffic on /health/ready..."
+    wait_for_api_ready "$COMPOSE_FILE"
 
     echo "Starting client..."
     docker compose -f "$COMPOSE_FILE" --profile client up -d --build client
