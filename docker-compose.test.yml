@@ -188,10 +188,11 @@ services:
       init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 180s
     # Entrypoint handles permissions; run as root so it can fix volume ownership
     user: root
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
