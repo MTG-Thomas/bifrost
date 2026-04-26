@@ -141,7 +141,7 @@ function diffPercent(aBuf, bBuf) {
   return numDiff / (a.width * a.height);
 }
 
-async function main() {
+async function main() { // NOSONAR - one-shot docs screenshot post-processing orchestration.
   const args = parseArgs(process.argv);
   const docsRepo = resolve(args.docsRepo);
   const bifrostRepo = resolve(args.bifrostRepo);

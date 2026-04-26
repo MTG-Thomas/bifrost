@@ -177,7 +177,7 @@ if (!fs.existsSync(manifestPath)) {
   );
 
   for (const entry of allEntries) {
-    test(`capture ${entry.id}`, async ({ browser }) => {
+    test(`capture ${entry.id}`, async ({ browser }) => { // NOSONAR - docs capture flow intentionally handles varied manifest entries.
       const viewport = effectiveViewport(entry, manifest);
       const authAs = effectiveAuth(entry, manifest) as
         | "platform_admin"
