@@ -10,7 +10,7 @@ This pass addresses the low-risk passive ZAP findings at the Bifrost client edge
 - `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()`
 - `Content-Security-Policy-Report-Only` on normal app routes
 
-The normal security headers live in `client/security-headers.conf` and are included from nginx locations that already set `Cache-Control`; nginx does not inherit parent `add_header` values once a location defines its own.
+The normal security headers are repeated in nginx locations that already set `Cache-Control`; nginx does not inherit parent `add_header` values once a location defines its own.
 
 The HSTS header assumes the public edge is served over HTTPS or behind TLS termination. Browsers ignore HSTS delivered over plain HTTP, so local/self-hosted HTTP compose usage is not pinned by this header.
 

@@ -15,7 +15,6 @@ def _repo_file(*parts: str) -> Path:
 
 
 NGINX_CONF = _repo_file("client", "nginx.conf")
-SECURITY_HEADERS_CONF = _repo_file("client", "security-headers.conf")
 
 NORMAL_SECURITY_HEADERS = [
     'add_header X-Content-Type-Options "nosniff" always;',
@@ -45,7 +44,8 @@ def _location_block(config: str, location: str) -> str:
 def test_cache_bearing_locations_repeat_normal_security_headers():
     config = NGINX_CONF.read_text()
     server_preamble = config.split("    location ", 1)[0]
-    assert "include /etc/nginx/snippets/security-headers.conf;" in server_preamble
+    for header in NORMAL_SECURITY_HEADERS:
+        assert header in server_preamble, f"server scope is missing {header}"
 
     locations = [
         "^~ /api/auth",
@@ -58,40 +58,10 @@ def test_cache_bearing_locations_repeat_normal_security_headers():
 
     for location in locations:
         block = _location_block(config, location)
-        assert "include /etc/nginx/snippets/security-headers.conf;" in block
-
-
-def test_normal_security_header_snippet_contains_required_headers():
-    config = SECURITY_HEADERS_CONF.read_text()
-
-    for header in NORMAL_SECURITY_HEADERS:
-        assert header in config, f"security header snippet is missing {header}"
+        for header in NORMAL_SECURITY_HEADERS:
+            assert header in block, f"{location} is missing {header}"
 
     assert "connect-src 'self' ws: wss:" not in config
-    assert "connect-src 'self'" in config
-
-
-def test_dockerfile_copies_security_header_snippet():
-    dockerfile = _repo_file("client", "Dockerfile").read_text()
-
-    assert "RUN mkdir -p /etc/nginx/snippets" in dockerfile
-    assert "COPY security-headers.conf /etc/nginx/snippets/security-headers.conf" in dockerfile
-
-
-def test_normal_security_headers_are_not_duplicated_in_locations():
-    config = NGINX_CONF.read_text()
-
-    for location in [
-        "^~ /api/auth",
-        "^~ /api",
-        "/auth",
-        "/.well-known",
-        "/",
-        "~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$",
-    ]:
-        block = _location_block(config, location)
-        for header in NORMAL_SECURITY_HEADERS:
-            assert header not in block, f"{location} duplicates {header}"
 
 
 def test_embed_location_preserves_iframe_framing():
