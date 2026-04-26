@@ -58,7 +58,7 @@ function walkFiles(root, predicate) { // NOSONAR - manifest bootstrap intentiona
   return out;
 }
 
-function inventoryMdx(docsRepo) {
+function inventoryMdx(docsRepo) { // NOSONAR - MDX inventory is a focused one-shot bootstrap parser.
   const contentDir = resolve(docsRepo, "src/content/docs");
   const mdxFiles = walkFiles(contentDir, (p) => p.endsWith(".mdx") || p.endsWith(".md"));
   const out = [];
