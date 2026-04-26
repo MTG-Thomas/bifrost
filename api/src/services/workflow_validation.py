@@ -244,10 +244,10 @@ async def validate_workflow_file(path: str, content: str | None = None):
 
         # Step 7: Validate timeout
         if workflow_metadata.timeout_seconds is not None:
-            if workflow_metadata.timeout_seconds < 1 or workflow_metadata.timeout_seconds > 7200:
+            if workflow_metadata.timeout_seconds < 0 or workflow_metadata.timeout_seconds > 86400:
                 issues.append(ValidationIssue(
                     line=None,
-                    message=f"Invalid timeout {workflow_metadata.timeout_seconds}s. Must be between 1 and 7200 seconds.",
+                    message=f"Invalid timeout {workflow_metadata.timeout_seconds}s. Must be between 0 and 86400 seconds.",
                     severity="error"
                 ))
                 valid = False

@@ -482,13 +482,13 @@ export function WorkflowEditDialog({
 								<Input
 									id="timeout"
 									type="number"
-									min={1}
-									max={7200}
+									min={0}
+									max={86400}
 									value={timeoutSeconds}
 									onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
 								/>
 								<p className="text-xs text-muted-foreground">
-									Maximum execution time (1-7200 seconds, default 1800)
+									Maximum execution time (0-86400 seconds, default 1800). Set to 0 to disable the timeout.
 								</p>
 							</div>
 						</TabsContent>
