@@ -48,7 +48,7 @@ class _SendQueue:
     def close(self) -> None:
         try:
             self._conn.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Connection already closed or broken — close is idempotent
             logger.debug(f"_SendQueue.close ignoring: {e}")
 
@@ -81,7 +81,7 @@ class _RecvQueue:
     def close(self) -> None:
         try:
             self._conn.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Connection already closed or broken — close is idempotent
             logger.debug(f"_RecvQueue.close ignoring: {e}")
 
@@ -240,12 +240,12 @@ def _handle_fork_request(
         # Close the child-side connections — the child owns them now
         try:
             work_recv.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Already closed — ignore
             logger.debug(f"parent: work_recv.close ignored: {e}")
         try:
             result_send.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Already closed — ignore
             logger.debug(f"parent: result_send.close ignored: {e}")
 
@@ -260,7 +260,7 @@ def _handle_fork_request(
         # Close the template's control pipe — child doesn't need it
         try:
             pipe.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Already closed in parent post-fork — ignore
             logger.debug(f"child: pipe.close ignored: {e}")
 
@@ -332,7 +332,7 @@ def _run_forked_child(
                 try:
                     from src.services.execution.simple_worker import _clear_workspace_modules
                     _clear_workspace_modules()
-                except ImportError as e:
+                except (ImportError, ModuleNotFoundError) as e:
                     # simple_worker is optional in some test contexts — skip module clearing
                     logger.debug(f"_clear_workspace_modules unavailable: {e}")
 
@@ -354,7 +354,7 @@ def _run_forked_child(
             try:
                 from bifrost._logging import clear_sequence_counter
                 clear_sequence_counter(execution_id)
-            except Exception as e:
+            except (ImportError, ModuleNotFoundError, KeyError, ValueError) as e:
                 # bifrost._logging may not be importable; counter cleanup is best-effort
                 logger.debug(f"clear_sequence_counter failed for {execution_id}: {e}")
 
@@ -368,7 +368,7 @@ def _run_forked_child(
                 result["process_rss_bytes"] = process_rss
                 if isinstance(result.get("metrics"), dict):
                     result["metrics"]["process_rss_bytes"] = process_rss
-            except (ImportError, OSError, KeyError) as e:
+            except (ImportError, OSError, KeyError, ValueError, AttributeError, TypeError) as e:
                 # simple_worker import optional; _get_process_rss reads /proc which may
                 # be missing on macOS; result may be a non-dict — all best-effort metrics
                 logger.debug(f"could not record RSS for execution {execution_id}: {e}")
@@ -405,7 +405,7 @@ def _run_forked_child(
                         "duration_ms": 0,
                         "worker_id": worker_id,
                     })
-                except (OSError, BrokenPipeError) as send_err:
+                except OSError as send_err:
                     # Result pipe closed (consumer gone) — child is about to exit anyway
                     logger.debug(f"could not send error result for {execution_id}: {send_err}")
                 execution_id = None
@@ -536,7 +536,7 @@ class TemplateProcess:
         if self._pipe is not None:
             try:
                 self._pipe.send({"action": CMD_SHUTDOWN})
-            except (OSError, BrokenPipeError) as e:
+            except OSError as e:
                 # Template already exited — no need to send shutdown
                 logger.debug(f"template pipe closed before shutdown send: {e}")
 

@@ -20,22 +20,25 @@ describe("useParams", () => {
 		const { result } = renderHook(() => useParams());
 		expect(result.current.clientId).toBe("123");
 		expect(result.current.contactId).toBe("abc");
-		expect(Object.prototype.hasOwnProperty.call(result.current, "optional")).toBe(false);
+		expect(Object.hasOwn(result.current, "optional")).toBe(false);
 	});
 
 	it("rejects prototype-pollution keys from URL params", () => {
-		mockedUseRouterParams.mockReturnValue({
-			clientId: "123",
-			__proto__: "polluted",
-			constructor: "polluted",
-			prototype: "polluted",
+		const payload = Object.create(null) as Record<string, string | undefined>;
+		payload.clientId = "123";
+		Object.defineProperty(payload, "__proto__", {
+			value: "polluted",
+			enumerable: true,
 		});
+		payload["constructor"] = "polluted";
+		payload["prototype"] = "polluted";
+		mockedUseRouterParams.mockReturnValue(payload);
 		const { result } = renderHook(() => useParams());
 		expect(result.current.clientId).toBe("123");
 		// Forbidden keys are not assigned to result
-		expect(Object.prototype.hasOwnProperty.call(result.current, "__proto__")).toBe(false);
-		expect(Object.prototype.hasOwnProperty.call(result.current, "constructor")).toBe(false);
-		expect(Object.prototype.hasOwnProperty.call(result.current, "prototype")).toBe(false);
+		expect(Object.hasOwn(result.current, "__proto__")).toBe(false);
+		expect(Object.hasOwn(result.current, "constructor")).toBe(false);
+		expect(Object.hasOwn(result.current, "prototype")).toBe(false);
 		// And Object.prototype is not polluted
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		expect(({} as any).polluted).toBeUndefined();

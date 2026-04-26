@@ -3,7 +3,7 @@
 # Prevents stale code and build cache issues
 
 # node:20-slim
-FROM node:25-slim@sha256:e49fd70491eb042270f974167c874d6245287263ffc16422fcf93b3c150409d8
+FROM node@sha256:e49fd70491eb042270f974167c874d6245287263ffc16422fcf93b3c150409d8
 
 WORKDIR /app
 
@@ -12,6 +12,7 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         g++ \
+        libcap2-bin \
         libsecret-1-dev \
         make \
         pkg-config \
@@ -21,6 +22,12 @@ RUN apt-get update \
 # Copy package files and install dependencies
 COPY package*.json ./
 RUN npm ci
+
+RUN setcap 'cap_net_bind_service=+ep' "$(command -v node)" && \
+    mkdir -p /app/node_modules/.vite && \
+    chown node:node /app /app/node_modules/.vite
+
+USER node
 
 # Don't copy source code - it comes from volume mounts in docker-compose.dev.yml
 # This prevents any risk of stale built code overwriting live source

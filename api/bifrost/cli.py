@@ -1323,7 +1323,7 @@ def _check_existing_watch() -> list[tuple[int, str]]:
                 continue
             if "bifrost" in cmdline and "watch" in cmdline and "grep" not in cmdline:
                 results.append((pid, cmdline))
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+    except (subprocess.TimeoutExpired, OSError) as e:
         # ps unavailable (Windows / restricted env) or timed out — skip the check
         logger.debug(f"could not enumerate existing watch processes: {e}")
     return results
@@ -2265,22 +2265,24 @@ async def _watch_loop(
                     logger.debug(f"watch heartbeat failed: {e}")
                 last_heartbeat = now
 
-    except (KeyboardInterrupt, asyncio.CancelledError):
+    except KeyboardInterrupt:
         # Expected on Ctrl-C / cancel — graceful exit
-        pass
+        logger.debug("watch interrupted")
+    except asyncio.CancelledError:
+        # Preserve task cancellation semantics after finally cleanup runs.
+        raise
     finally:
         if ws_task and not ws_task.done():
             ws_task.cancel()
-            try:
-                await ws_task
-            except asyncio.CancelledError:
-                # Expected — we just cancelled the websocket task
-                pass
-            except Exception as e:
-                # Unexpected close error during cancel — log but continue cleanup
-                logger.debug(f"websocket task cleanup raised: {e}")
-        observer.stop()
-        observer.join()
+        try:
+            if ws_task:
+                result = await asyncio.gather(ws_task, return_exceptions=True)
+                if result and not isinstance(result[0], asyncio.CancelledError):
+                    # Unexpected close error during cancel — log but continue cleanup
+                    logger.debug(f"websocket task cleanup raised: {result[0]}")
+        finally:
+            observer.stop()
+            observer.join()
 
 
 async def _watch_and_push(

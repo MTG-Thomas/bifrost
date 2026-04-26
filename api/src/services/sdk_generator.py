@@ -114,7 +114,7 @@ def load_spec_from_url(url: str) -> dict:
     are disabled to prevent redirect-to-private bypass.
     """
     _validate_spec_url(url)
-    response = requests.get(url, timeout=30, allow_redirects=False)
+    response = requests.get(url, timeout=30, allow_redirects=False)  # NOSONAR
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")

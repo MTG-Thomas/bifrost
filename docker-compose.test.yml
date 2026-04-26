@@ -365,6 +365,8 @@ services:
         condition: service_completed_successfully
       init:
         condition: service_completed_successfully
+    # Entrypoint fixes mounted result/coverage directory ownership, then drops to bifrost.
+    user: root
     # Default command runs all tests except E2E
     command: ["pytest", "tests/", "--ignore=tests/e2e/", "-v"]
     profiles:
