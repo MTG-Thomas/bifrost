@@ -18,7 +18,7 @@ MODE_FLAG=""
 IDS=""
 THRESHOLD="0.001"
 
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
     case "$1" in
         --docs-repo) DOCS_REPO="$2"; shift 2 ;;
         --bifrost-repo) BIFROST_REPO="$2"; shift 2 ;;
@@ -33,7 +33,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$DOCS_REPO" ] || [ -z "$BIFROST_REPO" ]; then
+if [[ -z "$DOCS_REPO" || -z "$BIFROST_REPO" ]]; then
     echo "--docs-repo and --bifrost-repo are required" >&2
     exit 2
 fi
@@ -42,20 +42,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Wipe stale tmp captures from prior runs. They are owned by root (containers
 # run as root), so use sudo if available, else just remove what we can.
-if [ -d "$DOCS_REPO/.tmp-captures" ]; then
+if [[ -d "$DOCS_REPO/.tmp-captures" ]]; then
     rm -rf "$DOCS_REPO/.tmp-captures" 2>/dev/null || sudo rm -rf "$DOCS_REPO/.tmp-captures" 2>/dev/null || true
 fi
 
 echo "=== [1/3] decide-captures ==="
 DECIDE_ARGS=(--docs-repo "$DOCS_REPO" --bifrost-repo "$BIFROST_REPO")
-if [ -n "$IDS" ]; then
+if [[ -n "$IDS" ]]; then
     DECIDE_ARGS+=(--ids "$IDS")
-elif [ -n "$MODE_FLAG" ]; then
+elif [[ -n "$MODE_FLAG" ]]; then
     DECIDE_ARGS+=("$MODE_FLAG")
 fi
 CAPTURE_IDS="$(node "$SCRIPT_DIR/decide-captures.mjs" "${DECIDE_ARGS[@]}")"
 
-if [ -z "$CAPTURE_IDS" ]; then
+if [[ -z "$CAPTURE_IDS" ]]; then
     echo "No entries to capture (everything is up to date)."
     exit 0
 fi
