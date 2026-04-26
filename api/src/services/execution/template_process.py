@@ -332,7 +332,7 @@ def _run_forked_child(
                 try:
                     from src.services.execution.simple_worker import _clear_workspace_modules
                     _clear_workspace_modules()
-                except (ImportError, ModuleNotFoundError) as e:
+                except ImportError as e:
                     # simple_worker is optional in some test contexts — skip module clearing
                     logger.debug(f"_clear_workspace_modules unavailable: {e}")
 
@@ -354,7 +354,7 @@ def _run_forked_child(
             try:
                 from bifrost._logging import clear_sequence_counter
                 clear_sequence_counter(execution_id)
-            except (ImportError, ModuleNotFoundError, KeyError, ValueError) as e:
+            except (ImportError, KeyError, ValueError) as e:
                 # bifrost._logging may not be importable; counter cleanup is best-effort
                 logger.debug(f"clear_sequence_counter failed for {execution_id}: {e}")
 

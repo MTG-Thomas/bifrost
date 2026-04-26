@@ -73,12 +73,19 @@ class MethodInfo:
     summary: str
 
 
+@dataclass(frozen=True)
+class ValidatedSpecUrl:
+    """OpenAPI spec URL that has passed SSRF safety checks."""
+
+    value: str
+
+
 # =============================================================================
 # Spec Loading
 # =============================================================================
 
 
-def _validate_spec_url(url: str) -> None:
+def _validate_spec_url(url: str) -> ValidatedSpecUrl:
     """Validate a URL is safe to fetch (https only, public address).
 
     Prevents SSRF by rejecting non-https schemes and hostnames that resolve
@@ -107,6 +114,7 @@ def _validate_spec_url(url: str) -> None:
             raise ValueError(
                 f"URL hostname resolves to non-public address: {ip_str}"
             )
+    return ValidatedSpecUrl(parsed.geturl())
 
 
 def load_spec_from_url(url: str) -> dict:
@@ -115,10 +123,10 @@ def load_spec_from_url(url: str) -> dict:
     Only https URLs that resolve to public addresses are allowed. Redirects
     are disabled to prevent redirect-to-private bypass.
     """
-    _validate_spec_url(url)
+    safe_url = _validate_spec_url(url)
     # CodeQL/Sonar: _validate_spec_url rejects non-HTTPS and non-public hosts;
     # redirects stay disabled so validation cannot be bypassed post-check.
-    response = requests.get(url, timeout=30, allow_redirects=False)  # lgtm[py/full-ssrf] # NOSONAR
+    response = requests.get(safe_url.value, timeout=30, allow_redirects=False)  # NOSONAR
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")

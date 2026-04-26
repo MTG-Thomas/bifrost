@@ -2267,9 +2267,6 @@ async def _watch_loop(
     except KeyboardInterrupt:
         # Expected on Ctrl-C / cancel — graceful exit
         logger.debug("watch interrupted")
-    except asyncio.CancelledError:
-        # Preserve task cancellation semantics after finally cleanup runs.
-        raise
     finally:
         if ws_task and not ws_task.done():
             ws_task.cancel()
