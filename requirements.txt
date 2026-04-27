@@ -5,7 +5,7 @@
 # =============================================================================
 fastapi
 uvicorn[standard]
-python-multipart>=0.0.26  # Form data handling (CVE fixes through 0.0.26)
+python-multipart>=0.0.27  # Form data handling (CVE fixes through 0.0.26)
 
 # =============================================================================
 # Database (PostgreSQL)
