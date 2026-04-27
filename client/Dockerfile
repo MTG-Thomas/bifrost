@@ -35,7 +35,7 @@ RUN npm run build
 # Stage 3: Production with nginx
 # =============================================================================
 # nginx:alpine
-FROM nginx@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS production
+FROM nginx@sha256:6e23479198b998e5e25921dff8455837c7636a67111a04a635cf1bb363d199dc AS production
 
 RUN apk add --no-cache libcap && \
     setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx
