@@ -3,7 +3,7 @@
 # Prevents stale code and build cache issues
 
 # node:20-slim
-FROM node@sha256:e49fd70491eb042270f974167c874d6245287263ffc16422fcf93b3c150409d8
+FROM node@sha256:c69f4e0640e5b065f2694579793e4309f1e0e49868b0f2fea29c44d9c0dc2caf
 
 WORKDIR /app
 
