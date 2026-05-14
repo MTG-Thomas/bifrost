@@ -1068,8 +1068,10 @@ class TestAdmissionControl:
             return_value=False,
         ):
             with patch.object(pool, '_write_context_to_redis', new_callable=AsyncMock):
-                with pytest.raises(MemoryError, match="memory pressure"):
-                    await pool.route_execution("exec-123", {"timeout_seconds": 300})
+                mock_redis = AsyncMock()
+                with patch.object(pool, "_get_redis", new_callable=AsyncMock, return_value=mock_redis):
+                    with pytest.raises(MemoryError, match="memory pressure"):
+                        await pool.route_execution("exec-123", {"timeout_seconds": 300})
 
     @pytest.mark.asyncio
     async def test_route_execution_allows_when_memory_ok(self):
