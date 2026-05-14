@@ -187,8 +187,7 @@ class _PidWrapper:
             self.exitcode = os.waitstatus_to_exitcode(status)
             return True
         except ChildProcessError:
-            # Already reaped elsewhere.
-            self.exitcode = 0 if self.exitcode is None else self.exitcode
+            # Already reaped elsewhere; the real exit status is unavailable.
             return True
 
     def is_alive(self) -> bool:
@@ -1174,6 +1173,9 @@ class ProcessPoolManager:
 
                         if now - handle.clean_exit_observed_at < _CLEAN_EXIT_RESULT_GRACE:
                             continue
+                        await self._report_orphan(handle)
+                        to_remove.append(process_id)
+                        continue
 
                 # Case A: unexpected crash
                 logger.warning(

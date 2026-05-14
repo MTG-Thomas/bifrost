@@ -1443,5 +1443,9 @@ class TestCrashedProcessReport:
         await pool._check_process_health()
 
         pool.on_result.assert_awaited_once()
+        result = pool.on_result.await_args.args[0]
+        assert result["execution_id"] == "exec-stale-clean-exit"
+        assert result["success"] is False
+        assert result["error_type"] == "OrphanedExecution"
         mock_process.join.assert_called_once_with(1.0)
         assert handle.id not in pool.processes
