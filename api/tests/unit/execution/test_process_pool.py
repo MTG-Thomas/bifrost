@@ -1053,6 +1053,15 @@ class TestPidWrapper:
 
         mock_kill.assert_called_once_with(12345, 0)
 
+    def test_child_process_error_leaves_exit_status_unknown(self):
+        """Already-consumed wait status should not be treated as success."""
+        wrapper = _PidWrapper(12345)
+
+        with patch("src.services.execution.process_pool.os.waitpid", side_effect=ChildProcessError):
+            assert wrapper.is_alive() is False
+
+        assert wrapper.exitcode is None
+
 
 class TestAdmissionControl:
     """Tests for cgroup-based admission control."""
@@ -1445,6 +1454,46 @@ class TestCrashedProcessReport:
         pool.on_result.assert_awaited_once()
         result = pool.on_result.await_args.args[0]
         assert result["execution_id"] == "exec-stale-clean-exit"
+        assert result["success"] is False
+        assert result["error_type"] == "OrphanedExecution"
+        mock_process.join.assert_called_once_with(1.0)
+        assert handle.id not in pool.processes
+
+    @pytest.mark.asyncio
+    async def test_unknown_exit_without_result_after_grace_is_reported_as_orphan(self):
+        """Unavailable exit status without a delivered result is not a crash."""
+        pool = ProcessPoolManager(min_workers=0, max_workers=2)
+        pool.on_result = AsyncMock()
+
+        mock_process = MagicMock()
+        mock_process.is_alive.return_value = False
+        mock_process.exitcode = None
+        mock_process.join = MagicMock()
+
+        result_queue = MagicMock()
+        result_queue.get_nowait.side_effect = Empty
+
+        handle = ProcessHandle(
+            id="process-stale-unknown-exit",
+            process=mock_process,
+            pid=99994,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=result_queue,
+            started_at=datetime.now(timezone.utc),
+            current_execution=ExecutionInfo(
+                execution_id="exec-stale-unknown-exit",
+                started_at=datetime.now(timezone.utc),
+                timeout_seconds=300,
+            ),
+            clean_exit_observed_at=datetime.now(timezone.utc) - timedelta(seconds=3),
+        )
+        pool.processes[handle.id] = handle
+
+        await pool._check_process_health()
+
+        result = pool.on_result.await_args.args[0]
+        assert result["execution_id"] == "exec-stale-unknown-exit"
         assert result["success"] is False
         assert result["error_type"] == "OrphanedExecution"
         mock_process.join.assert_called_once_with(1.0)

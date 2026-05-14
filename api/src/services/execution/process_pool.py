@@ -1162,8 +1162,9 @@ class ProcessPoolManager:
                         await self._handle_result(handle, result)
                         continue
                 except Empty:
+                    status_is_clean_or_unavailable = handle.process.exitcode in (0, None)
                     if (
-                        handle.process.exitcode == 0
+                        status_is_clean_or_unavailable
                         and handle.current_execution
                         and not handle.result_reported
                     ):
