@@ -187,8 +187,9 @@ class _PidWrapper:
             self.exitcode = os.waitstatus_to_exitcode(status)
             return True
         except ChildProcessError:
-            # Already reaped elsewhere; the real exit status is unavailable.
-            return True
+            # Not waitable from this process, or already reaped elsewhere.
+            # Keep exit status unknown and let the liveness probe decide.
+            return False
 
     def is_alive(self) -> bool:
         if self._reap_if_exited():

@@ -1053,13 +1053,15 @@ class TestPidWrapper:
 
         mock_kill.assert_called_once_with(12345, 0)
 
-    def test_child_process_error_leaves_exit_status_unknown(self):
-        """Already-consumed wait status should not be treated as success."""
+    def test_child_process_error_falls_back_to_liveness_probe(self):
+        """Unwaitable PID status should not be treated as success or death."""
         wrapper = _PidWrapper(12345)
 
         with patch("src.services.execution.process_pool.os.waitpid", side_effect=ChildProcessError):
-            assert wrapper.is_alive() is False
+            with patch("src.services.execution.process_pool.os.kill") as mock_kill:
+                assert wrapper.is_alive() is True
 
+        mock_kill.assert_called_once_with(12345, 0)
         assert wrapper.exitcode is None
 
 
