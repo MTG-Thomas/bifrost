@@ -1,0 +1,37 @@
+name: CodSpeed
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+  # Allow CodSpeed to trigger backtest performance analysis
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC authentication with CodSpeed
+
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          ./.venv/bin/pip install --require-hashes -r requirements.lock
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@3194d9a39c4d46684cb44bf7207fc56626aad8fd # v4.15.1
+        with:
+          mode: simulation
+          run: cd api && PYTHONPATH=. ../.venv/bin/python -m pytest benchmarks/ --codspeed
