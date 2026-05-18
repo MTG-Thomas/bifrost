@@ -35,7 +35,7 @@ RUN npm run build
 # Stage 3: Production with nginx
 # =============================================================================
 # nginx:alpine
-FROM nginx@sha256:1881968aff6f7cdcc4b888c00a11f4ce241ad7ec957e0cb4a9e19e93a3ff87ea AS production
+FROM nginx@sha256:06aa3d7be10bc6307990c81bdca075793132e9163391abc370c015e344e23128 AS production
 
 RUN if command -v apk >/dev/null 2>&1; then \
         apk add --no-cache libcap; \
