@@ -89,6 +89,21 @@ interface ModelInfo {
 	display_name: string;
 }
 
+function withCurrentModelOption(
+	models: ModelInfo[],
+	currentModel: string,
+): ModelInfo[] {
+	const trimmed = currentModel.trim();
+	if (!trimmed || models.some((m) => m.id === trimmed)) {
+		return models;
+	}
+
+	return [
+		{ id: trimmed, display_name: `${trimmed} (configured)` },
+		...models,
+	];
+}
+
 // Default API endpoints for each provider
 const DEFAULT_ENDPOINTS: Record<Provider, string> = {
 	openai: "https://api.openai.com/v1",
@@ -140,7 +155,8 @@ export function LLMConfig() {
 
 	// Update form when config loads. Adjust during render with a previous-
 	// reference sentinel to avoid setState-in-effect.
-	const [prevConfigRef, setPrevConfigRef] = useState<typeof config>(undefined);
+	const [prevConfigRef, setPrevConfigRef] =
+		useState<typeof config>(undefined);
 	if (config && prevConfigRef !== config) {
 		setPrevConfigRef(config);
 		const p = config.provider as Provider;
@@ -148,7 +164,9 @@ export function LLMConfig() {
 		setModel(config.model);
 		setMaxTokens(config.max_tokens);
 		setDefaultSystemPrompt(config.default_system_prompt ?? "");
-		setEndpoint(config.endpoint || DEFAULT_ENDPOINTS[p] || DEFAULT_ENDPOINTS.openai);
+		setEndpoint(
+			config.endpoint || DEFAULT_ENDPOINTS[p] || DEFAULT_ENDPOINTS.openai,
+		);
 		setSummarizationModel(config.summarization_model ?? "");
 		setTuningModel(config.tuning_model ?? "");
 	}
@@ -173,10 +191,17 @@ export function LLMConfig() {
 				) {
 					// Cast to ModelInfo[] since API now returns objects
 					const models = result.models as unknown as ModelInfo[];
-					setAvailableModels(models);
-					const modelIds = models.map((m) => m.id);
-					setModel((current) =>
-						modelIds.includes(current) ? current : models[0].id,
+					setAvailableModels((current) =>
+						withCurrentModelOption(
+							models,
+							model ||
+								config.model ||
+								current[0]?.id ||
+								models[0].id,
+						),
+					);
+					setModel(
+						(current) => current || config.model || models[0].id,
 					);
 				}
 				setModelsLoaded(true);
@@ -213,22 +238,28 @@ export function LLMConfig() {
 			let result;
 			// If we have a new API key, test with that
 			if (apiKey) {
-				const isDefaultEndpoint = endpoint === DEFAULT_ENDPOINTS[provider];
+				const isDefaultEndpoint =
+					endpoint === DEFAULT_ENDPOINTS[provider];
 				result = await testMutation.mutateAsync({
 					body: {
 						provider,
 						api_key: apiKey,
-						endpoint: isDefaultEndpoint ? undefined : endpoint || undefined,
+						endpoint: isDefaultEndpoint
+							? undefined
+							: endpoint || undefined,
 					},
 				});
 			} else {
 				// Test current form settings with the saved API key.
-				const isDefaultEndpoint = endpoint === DEFAULT_ENDPOINTS[provider];
+				const isDefaultEndpoint =
+					endpoint === DEFAULT_ENDPOINTS[provider];
 				result = await testMutation.mutateAsync({
 					body: {
 						provider,
 						api_key: undefined,
-						endpoint: isDefaultEndpoint ? undefined : endpoint || undefined,
+						endpoint: isDefaultEndpoint
+							? undefined
+							: endpoint || undefined,
 					},
 				});
 			}
@@ -243,12 +274,13 @@ export function LLMConfig() {
 				if (result.models && result.models.length > 0) {
 					// Cast to ModelInfo[] since API now returns objects
 					const models = result.models as unknown as ModelInfo[];
-					setAvailableModels(models);
-					// If current model is not in list, select first available
-					const modelIds = models.map((m) => m.id);
-					setModel((current) =>
-						modelIds.includes(current) ? current : models[0].id,
+					setAvailableModels((current) =>
+						withCurrentModelOption(
+							models,
+							model || current[0]?.id || models[0].id,
+						),
 					);
+					setModel((current) => current || models[0].id);
 				}
 				setModelsLoaded(true);
 			} else {
@@ -287,7 +319,9 @@ export function LLMConfig() {
 					provider,
 					model,
 					api_key: apiKey || undefined,
-					endpoint: isDefaultEndpoint ? undefined : endpoint || undefined,
+					endpoint: isDefaultEndpoint
+						? undefined
+						: endpoint || undefined,
 					max_tokens: maxTokens,
 					default_system_prompt: defaultSystemPrompt || null,
 					summarization_model: summarizationModel || null,
@@ -368,10 +402,7 @@ export function LLMConfig() {
 	const isNewApiKey = apiKey.length > 0;
 	const isVerified = testResult?.success === true;
 	const hasValidConfig = config?.api_key_set && !isNewApiKey;
-	const canSave =
-		!saving &&
-		model &&
-		(isVerified || hasValidConfig);
+	const canSave = !saving && model && (isVerified || hasValidConfig);
 
 	return (
 		<div className="space-y-6">
@@ -456,7 +487,8 @@ export function LLMConfig() {
 							onChange={(e) => setEndpoint(e.target.value)}
 						/>
 						<p className="text-xs text-muted-foreground">
-							Change this to use a compatible provider (Azure OpenAI, Ollama, etc.)
+							Change this to use a compatible provider (Azure
+							OpenAI, Ollama, etc.)
 						</p>
 					</div>
 
@@ -566,7 +598,10 @@ export function LLMConfig() {
 									options={availableModels.map((m) => ({
 										value: m.id,
 										label: m.display_name,
-										description: m.id !== m.display_name ? m.id : undefined,
+										description:
+											m.id !== m.display_name
+												? m.id
+												: undefined,
 									}))}
 								/>
 							) : (
@@ -614,9 +649,8 @@ export function LLMConfig() {
 								}
 							/>
 							<p className="text-xs text-muted-foreground">
-								Maximum tokens per response. Most models
-								default to 4,096 but can generate up to
-								32K+.
+								Maximum tokens per response. Most models default
+								to 4,096 but can generate up to 32K+.
 							</p>
 						</div>
 
@@ -656,8 +690,9 @@ export function LLMConfig() {
 								}
 							/>
 							<p className="text-xs text-muted-foreground">
-								Override the model used for post-run summarization.
-								Uses the primary provider and API key.
+								Override the model used for post-run
+								summarization. Uses the primary provider and API
+								key.
 							</p>
 						</div>
 
@@ -670,13 +705,12 @@ export function LLMConfig() {
 								id="tuning-model"
 								placeholder="Leave blank to use primary model"
 								value={tuningModel}
-								onChange={(e) =>
-									setTuningModel(e.target.value)
-								}
+								onChange={(e) => setTuningModel(e.target.value)}
 							/>
 							<p className="text-xs text-muted-foreground">
-								Override the model used for agent tuning chat and
-								dry-runs. Uses the primary provider and API key.
+								Override the model used for agent tuning chat
+								and dry-runs. Uses the primary provider and API
+								key.
 							</p>
 						</div>
 					</div>
@@ -738,13 +772,19 @@ export function LLMConfig() {
 			</Card>
 
 			{/* Delete Confirmation Dialog */}
-			<AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+			<AlertDialog
+				open={showDeleteConfirm}
+				onOpenChange={setShowDeleteConfirm}
+			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Remove AI Configuration</AlertDialogTitle>
+						<AlertDialogTitle>
+							Remove AI Configuration
+						</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to remove the AI provider configuration?
-							This will disable AI chat functionality until reconfigured.
+							Are you sure you want to remove the AI provider
+							configuration? This will disable AI chat
+							functionality until reconfigured.
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
@@ -872,7 +912,8 @@ function EmbeddingConfigCard({
 	);
 
 	const needsDedicatedKey = llmProvider === "anthropic";
-	const hasSavedConfig = config?.is_configured === true && !config?.uses_llm_key;
+	const hasSavedConfig =
+		config?.is_configured === true && !config?.uses_llm_key;
 	// Inheritance is available iff the LLM provider is OpenAI-compatible
 	// (i.e. provider === "openai"). Anthropic has no embeddings endpoint.
 	const inheritAvailable = llmProvider === "openai";
@@ -886,7 +927,8 @@ function EmbeddingConfigCard({
 
 	// Sync local state from loaded config — runs whenever the config object
 	// identity changes (so refetch() after save resets the form).
-	const [prevConfigRef, setPrevConfigRef] = useState<typeof config>(undefined);
+	const [prevConfigRef, setPrevConfigRef] =
+		useState<typeof config>(undefined);
 	if (config && prevConfigRef !== config) {
 		setPrevConfigRef(config);
 		setModel(config.model ?? "");
@@ -901,7 +943,9 @@ function EmbeddingConfigCard({
 	// a saved dedicated config. Fires on mount and whenever the credential
 	// surface changes.
 	const canAutoLoadModels =
-		(inheritActive || (hasSavedConfig && !override)) && !modelsLoaded && !testing;
+		(inheritActive || (hasSavedConfig && !override)) &&
+		!modelsLoaded &&
+		!testing;
 	if (canAutoLoadModels) {
 		// Trigger via the test mutation; backend resolves to inherited or saved key.
 		void (async () => {
@@ -967,7 +1011,9 @@ function EmbeddingConfigCard({
 				setModelsLoaded(false);
 			}
 		} catch (error) {
-			toast.error("Test failed", { description: extractErrorMessage(error) });
+			toast.error("Test failed", {
+				description: extractErrorMessage(error),
+			});
 			setModelsLoaded(false);
 		} finally {
 			setTesting(false);
@@ -1046,9 +1092,12 @@ function EmbeddingConfigCard({
 	const handleReindex = async () => {
 		setReindexing(true);
 		try {
-			const response = await authFetch("/api/admin/llm/embedding-reindex", {
-				method: "POST",
-			});
+			const response = await authFetch(
+				"/api/admin/llm/embedding-reindex",
+				{
+					method: "POST",
+				},
+			);
 			if (!response.ok) {
 				const errorData = await response.json().catch(() => ({}));
 				throw new Error(errorData.detail ?? "Reindex failed");
@@ -1127,7 +1176,8 @@ function EmbeddingConfigCard({
 	// - We have credentials available (inherited via LLM, or typed/saved).
 	// The backend's POST runs the real embed test before persisting, so we
 	// don't need to gate Save on a separate Test click here.
-	const haveCredentials = inheritActive || apiKey.length > 0 || (hasSavedConfig && !override);
+	const haveCredentials =
+		inheritActive || apiKey.length > 0 || (hasSavedConfig && !override);
 	const canSave = !saving && model.length > 0 && haveCredentials;
 
 	const reindexInFlight = hasActiveReindexNotification || reindexing;
@@ -1140,8 +1190,8 @@ function EmbeddingConfigCard({
 					<CardTitle>Embedding Configuration</CardTitle>
 				</div>
 				<CardDescription>
-					Configure embeddings for the Knowledge Store (RAG). Works with
-					any OpenAI-compatible endpoint.
+					Configure embeddings for the Knowledge Store (RAG). Works
+					with any OpenAI-compatible endpoint.
 					{needsDedicatedKey && (
 						<span className="block mt-1 text-amber-600 dark:text-amber-400">
 							Anthropic doesn't provide embeddings — a dedicated
@@ -1189,9 +1239,7 @@ function EmbeddingConfigCard({
 								<Button
 									variant="ghost"
 									size="sm"
-									onClick={() =>
-										setShowDeleteConfirm(true)
-									}
+									onClick={() => setShowDeleteConfirm(true)}
 									className="text-destructive hover:text-destructive"
 								>
 									<Trash2 className="h-4 w-4 mr-1" />
@@ -1226,9 +1274,9 @@ function EmbeddingConfigCard({
 				{inheritActive && (
 					<div className="flex items-start justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2">
 						<p className="text-sm text-muted-foreground">
-							Inheriting endpoint and key from your LLM
-							provider. Pick an embedding model below — Save
-							runs a real embedding to confirm it works.
+							Inheriting endpoint and key from your LLM provider.
+							Pick an embedding model below — Save runs a real
+							embedding to confirm it works.
 						</p>
 						<Button
 							variant="outline"
@@ -1259,7 +1307,8 @@ function EmbeddingConfigCard({
 								? endpoint
 								: inheritActive
 									? (llmEndpoint ?? DEFAULT_OPENAI_ENDPOINT)
-									: (config?.endpoint ?? DEFAULT_OPENAI_ENDPOINT)
+									: (config?.endpoint ??
+										DEFAULT_OPENAI_ENDPOINT)
 						}
 						onChange={(e) => {
 							setEndpoint(e.target.value);
@@ -1270,7 +1319,8 @@ function EmbeddingConfigCard({
 					/>
 					{editingCredentials && (
 						<p className="text-xs text-muted-foreground">
-							Leave blank or set to {DEFAULT_OPENAI_ENDPOINT} for the default OpenAI endpoint.
+							Leave blank or set to {DEFAULT_OPENAI_ENDPOINT} for
+							the default OpenAI endpoint.
 						</p>
 					)}
 				</div>
@@ -1355,7 +1405,8 @@ function EmbeddingConfigCard({
 					)}
 					{modelsLoaded && availableModels.length === 0 && (
 						<p className="text-xs text-muted-foreground">
-							Endpoint didn't return a model list. Enter the model id manually.
+							Endpoint didn't return a model list. Enter the model
+							id manually.
 						</p>
 					)}
 				</div>
@@ -1425,11 +1476,15 @@ function EmbeddingConfigCard({
 							<DialogTitle>Re-embed knowledge store?</DialogTitle>
 							<DialogDescription>
 								{reindexConfirm?.row_count ?? 0} existing row
-								{reindexConfirm?.row_count === 1 ? "" : "s"}{" "}
+								{reindexConfirm?.row_count === 1
+									? ""
+									: "s"}{" "}
 								{reindexConfirm?.row_count === 1 ? "is" : "are"}{" "}
 								embedded with vectors that don't match the new
 								model's{" "}
-								<strong>{reindexConfirm?.new_dim ?? "?"}-dim</strong>{" "}
+								<strong>
+									{reindexConfirm?.new_dim ?? "?"}-dim
+								</strong>{" "}
 								output
 								{reindexConfirm?.old_model
 									? ` (previously ${reindexConfirm.old_model})`
