@@ -14,8 +14,16 @@ This is the tool-neutral guidance for AI coding agents working in this repo. `CL
 
 This machine may have several Codex threads working in the same repos. Before meaningful edits, claim your scope with:
 
+Windows/PowerShell on this workstation:
+
 ```powershell
 C:\Users\ThomasBray\.codex\bin\codex-agent-coordinator.ps1 claim --owner "<thread-or-role>" --repo "<repo-path>" --scope "<path-or-task>" --note "<short note>"
+```
+
+Portable command shape for other environments:
+
+```bash
+~/.codex/bin/codex-agent-coordinator claim --owner "<thread-or-role>" --repo "<repo-path>" --scope "<path-or-task>" --note "<short note>"
 ```
 
 Check `status` and `conflicts` when working near active agents. Release the claim after meaningful work. The coordinator is warning-only local state under `%USERPROFILE%\.codex`; never add coordination files to the repo unless asked.
