@@ -6,7 +6,7 @@
 # Stage 1: Builder
 # =============================================================================
 # python:3.14-slim
-FROM python@sha256:511f025a0718f01b977d5ad572bc431745b31887ceccc538c85b87e82ad2956f AS builder
+FROM python@sha256:89a288a9a9e9141b9f0c51744c358138da6369897792f1af3f5425e407d9529a AS builder
 
 WORKDIR /app
 
@@ -32,7 +32,7 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 # Stage 2: Runtime
 # =============================================================================
 # python:3.14-slim
-FROM python@sha256:511f025a0718f01b977d5ad572bc431745b31887ceccc538c85b87e82ad2956f
+FROM python@sha256:89a288a9a9e9141b9f0c51744c358138da6369897792f1af3f5425e407d9529a
 
 WORKDIR /app
 
