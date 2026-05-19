@@ -153,12 +153,14 @@ export function LLMConfig() {
 		"/api/admin/llm/test-saved",
 	);
 
-	// Update form when config loads. Adjust during render with a previous-
-	// reference sentinel to avoid setState-in-effect.
-	const [prevConfigRef, setPrevConfigRef] =
-		useState<typeof config>(undefined);
-	if (config && prevConfigRef !== config) {
-		setPrevConfigRef(config);
+	// Update form when config loads.
+	const prevConfigRef = useRef<typeof config>(undefined);
+	useEffect(() => {
+		if (!config || prevConfigRef.current === config) {
+			return;
+		}
+
+		prevConfigRef.current = config;
 		const p = config.provider as Provider;
 		setProvider(p);
 		setModel(config.model);
@@ -169,7 +171,7 @@ export function LLMConfig() {
 		);
 		setSummarizationModel(config.summarization_model ?? "");
 		setTuningModel(config.tuning_model ?? "");
-	}
+	}, [config]);
 
 	// Track if we've already fetched models for this config
 	const modelsFetchedRef = useRef(false);
@@ -212,7 +214,7 @@ export function LLMConfig() {
 		};
 
 		fetchModels();
-	}, [config?.api_key_set, testSavedMutation]);
+	}, [config?.api_key_set, config?.model, model, testSavedMutation]);
 
 	// Handle provider change
 	const handleProviderChange = (newProvider: Provider) => {
@@ -925,50 +927,70 @@ function EmbeddingConfigCard({
 	// they're disabled and show the resolved current value.
 	const editingCredentials = override || (!hasSavedConfig && !inheritActive);
 
-	// Sync local state from loaded config — runs whenever the config object
-	// identity changes (so refetch() after save resets the form).
-	const [prevConfigRef, setPrevConfigRef] =
-		useState<typeof config>(undefined);
-	if (config && prevConfigRef !== config) {
-		setPrevConfigRef(config);
+	// Sync local state from loaded config. Runs whenever the config object
+	// identity changes, so refetch() after save resets the form.
+	const prevConfigRef = useRef<typeof config>(undefined);
+	useEffect(() => {
+		if (!config || prevConfigRef.current === config) {
+			return;
+		}
+
+		prevConfigRef.current = config;
 		setModel(config.model ?? "");
 		setEndpoint(config.endpoint ?? "");
 		setApiKey("");
 		setAvailableModels([]);
 		setModelsLoaded(false);
-	}
+	}, [config]);
 
 	// Auto-load model list when we have credentials we can use without the
 	// user typing anything: inherit-mode (LLM provider is openai) or there's
 	// a saved dedicated config. Fires on mount and whenever the credential
 	// surface changes.
 	const canAutoLoadModels =
-		(inheritActive || (hasSavedConfig && !override)) &&
-		!modelsLoaded &&
-		!testing;
-	if (canAutoLoadModels) {
-		// Trigger via the test mutation; backend resolves to inherited or saved key.
+		(inheritActive || (hasSavedConfig && !override)) && !modelsLoaded;
+	const autoLoadInFlightRef = useRef(false);
+	const testMutationRef = useRef(testMutation);
+	useEffect(() => {
+		testMutationRef.current = testMutation;
+	}, [testMutation]);
+
+	useEffect(() => {
+		if (!canAutoLoadModels || autoLoadInFlightRef.current) {
+			return;
+		}
+
+		let cancelled = false;
+		autoLoadInFlightRef.current = true;
+
 		void (async () => {
 			try {
 				setTesting(true);
-				const result = await testMutation.mutateAsync({
+				const result = await testMutationRef.current.mutateAsync({
 					body: {
 						api_key: undefined,
 						model: "",
 						endpoint: undefined,
 					},
 				});
-				if (result.success) {
+				if (!cancelled && result.success) {
 					setAvailableModels(result.models ?? []);
 				}
 			} catch {
 				// Silent — user can still type a model id manually.
 			} finally {
-				setModelsLoaded(true);
-				setTesting(false);
+				autoLoadInFlightRef.current = false;
+				if (!cancelled) {
+					setModelsLoaded(true);
+					setTesting(false);
+				}
 			}
 		})();
-	}
+
+		return () => {
+			cancelled = true;
+		};
+	}, [canAutoLoadModels]);
 
 	// Compute the endpoint value to send: empty/default → null.
 	const endpointToSend = (() => {
