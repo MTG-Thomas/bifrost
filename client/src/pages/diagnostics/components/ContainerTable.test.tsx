@@ -15,8 +15,6 @@ function pool(worker_id: string, hostname?: string): PoolSummary {
 		last_heartbeat: new Date().toISOString(),
 		requirements_installed: null,
 		requirements_total: null,
-		memory_current_bytes: 512 * 1024 * 1024,
-		memory_max_bytes: 2 * 1024 * 1024 * 1024,
 	};
 }
 
