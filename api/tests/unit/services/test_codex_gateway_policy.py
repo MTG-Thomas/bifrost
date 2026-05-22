@@ -85,6 +85,26 @@ def test_revoked_upstream_account_is_not_usable():
         raise AssertionError("expected revoked upstream account to fail closed")
 
 
+def test_multiple_active_upstream_accounts_fail_closed():
+    user_id = _uuid("11111111-1111-4111-8111-111111111111")
+    key = _key_for(user_id)
+    engine = CodexGatewayPolicyEngine()
+
+    try:
+        engine.resolve_upstream_account(
+            key,
+            [
+                _account_for(user_id),
+                _account_for(user_id),
+            ],
+        )
+    except CodexGatewayPolicyError as exc:
+        assert exc.code == "upstream_identity_ambiguous"
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("expected ambiguous upstream account lookup to fail closed")
+
+
 def test_model_allowlist_denial_is_structured_and_auditable():
     user_id = _uuid("11111111-1111-4111-8111-111111111111")
     key = _key_for(user_id, allowed_models=["gpt-5.1-codex"])
@@ -104,6 +124,24 @@ def test_model_allowlist_denial_is_structured_and_auditable():
     assert decision.code == "model_not_allowed"
     assert decision.audit_metadata["policy_decision"] == "deny"
     assert decision.openai_error.type == "invalid_request_error"
+
+
+def test_visible_models_are_filtered_by_allowlist_and_denylist():
+    user_id = _uuid("11111111-1111-4111-8111-111111111111")
+    key = _key_for(user_id, allowed_models=["gpt-5.1-codex", "gpt-5.1"])
+    key.denied_models = ["gpt-5.1"]
+    engine = CodexGatewayPolicyEngine()
+
+    visible = engine.filter_visible_models(
+        key,
+        [
+            "gpt-5.1-codex",
+            "gpt-5.1",
+            "gpt-4.1",
+        ],
+    )
+
+    assert visible == ["gpt-5.1-codex"]
 
 
 def test_metadata_logging_excludes_prompt_and_response_by_default():
