@@ -1,10 +1,11 @@
 """OpenAI-compatible facade routes for the Bifrost Codex Gateway."""
 
-from typing import Any
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
+
+from shared.models import CodexGatewayResponsesRequest
 
 from src.core.database import DbSession
 from src.repositories.codex_gateway import CodexGatewayRepository
@@ -25,6 +26,7 @@ def get_codex_gateway_runtime(db: DbSession) -> CodexGatewayRuntime:
 @router.post("/v1/responses")
 async def create_response(
     request: Request,
+    payload: CodexGatewayResponsesRequest,
     runtime: Annotated[CodexGatewayRuntime, Depends(get_codex_gateway_runtime)],
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
     x_bifrost_codex_key: Annotated[
@@ -33,10 +35,9 @@ async def create_response(
     ] = None,
 ) -> JSONResponse:
     gateway_key = extract_gateway_key(authorization, x_bifrost_codex_key)
-    payload: dict[str, Any] = await request.json()
     result = await runtime.create_response(
         gateway_key=gateway_key or "",
-        payload=payload,
+        payload=payload.model_dump(),
         source_ip=request.client.host if request.client else None,
         client_user_agent=request.headers.get("user-agent"),
     )

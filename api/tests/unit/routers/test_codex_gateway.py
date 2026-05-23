@@ -41,3 +41,20 @@ def test_v1_responses_uses_openai_compatible_bearer_key():
         "model": "gpt-5.1-codex",
         "input": "do not log me",
     }
+
+
+def test_v1_responses_rejects_non_object_payload_before_runtime():
+    app = FastAPI()
+    app.include_router(router)
+    runtime = FakeRuntime()
+    app.dependency_overrides[get_codex_gateway_runtime] = lambda: runtime
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer bfck_route_test"},
+        json=["not", "an", "object"],
+    )
+
+    assert 400 <= response.status_code < 500
+    assert runtime.calls == []

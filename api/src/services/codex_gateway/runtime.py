@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from asyncio import sleep
+from asyncio import TimeoutError as AsyncioTimeoutError
+from asyncio import sleep, wait_for
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Protocol, cast
@@ -28,6 +29,7 @@ from src.services.codex_gateway.policy import CodexGatewayPolicyEngine
 
 CODEX_GATEWAY_KEY_HEADER = "X-Bifrost-Codex-Key"
 CODEX_GATEWAY_RESPONSES_ENDPOINT = "/v1/responses"
+CODEX_GATEWAY_UPSTREAM_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -46,7 +48,7 @@ class CodexGatewayUpstreamClient(Protocol):
         self, *, access_token: str, payload: dict[str, Any]
     ) -> CodexGatewayUpstreamResponse:
         """Dispatch a Responses API request with a user-scoped upstream token."""
-        ...
+        raise NotImplementedError
 
 
 class UnconfiguredCodexGatewayUpstreamClient:
@@ -245,11 +247,48 @@ class CodexGatewayRuntime:
             )
             return response
 
+        try:
+            access_token = decrypt_secret(account_record.encrypted_access_token)
+        except Exception:
+            response = self._error(
+                status_code=403,
+                code="upstream_token_unavailable",
+                message="The connected ChatGPT/Codex account token is invalid or unavailable.",
+            )
+            await self._log_denial(
+                request_id=request_id,
+                endpoint=CODEX_GATEWAY_RESPONSES_ENDPOINT,
+                model=model,
+                status_code=response.status_code,
+                code="upstream_token_unavailable",
+                key=key_record,
+                account=account_record,
+                source_ip=source_ip,
+                client_user_agent=client_user_agent,
+            )
+            return response
+
         start = perf_counter()
-        upstream_response = await self.upstream_client.create_response(
-            access_token=decrypt_secret(account_record.encrypted_access_token),
-            payload=payload,
-        )
+        try:
+            upstream_response = await wait_for(
+                self.upstream_client.create_response(
+                    access_token=access_token,
+                    payload=payload,
+                ),
+                timeout=CODEX_GATEWAY_UPSTREAM_TIMEOUT_SECONDS,
+            )
+        except AsyncioTimeoutError:
+            upstream_response = self._upstream_error(
+                status_code=504,
+                code="upstream_timeout",
+                message="The upstream ChatGPT/Codex request timed out.",
+            )
+        except Exception:
+            upstream_response = self._upstream_error(
+                status_code=502,
+                code="upstream_unavailable",
+                message="The upstream ChatGPT/Codex transport failed.",
+            )
         latency_ms = int((perf_counter() - start) * 1000)
 
         await self.repository.create_request_log(
@@ -274,6 +313,26 @@ class CodexGatewayRuntime:
         return CodexGatewayResponse(
             status_code=upstream_response.status_code,
             body=upstream_response.body,
+        )
+
+    def _upstream_error(
+        self,
+        *,
+        status_code: int,
+        code: str,
+        message: str,
+    ) -> CodexGatewayUpstreamResponse:
+        return CodexGatewayUpstreamResponse(
+            status_code=status_code,
+            provider_error_code=code,
+            body={
+                "error": {
+                    "message": message,
+                    "type": "server_error",
+                    "param": None,
+                    "code": code,
+                }
+            },
         )
 
     def _error(
@@ -371,7 +430,7 @@ def extract_gateway_key(
     x_bifrost_codex_key: str | None,
 ) -> str | None:
     """Extract downstream key from OpenAI-compatible Bearer auth or fallback header."""
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization.removeprefix("Bearer ").strip()
+    if authorization and authorization[:7].lower() == "bearer ":
+        token = authorization[7:].strip()
         return token or None
     return x_bifrost_codex_key

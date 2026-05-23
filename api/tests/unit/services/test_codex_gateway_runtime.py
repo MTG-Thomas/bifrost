@@ -28,6 +28,18 @@ class FakeUpstreamClient:
         )
 
 
+class FailingUpstreamClient:
+    async def create_response(self, *, access_token, payload):
+        await sleep(0)
+        raise RuntimeError("upstream failed")
+
+
+class SlowUpstreamClient:
+    async def create_response(self, *, access_token, payload):
+        await sleep(1)
+        return CodexGatewayUpstreamResponse(status_code=200, body={})
+
+
 def _key_record(*, allowed_models=None, denied_models=None):
     return SimpleNamespace(
         id=uuid4(),
@@ -206,7 +218,112 @@ async def test_denied_model_returns_structured_error_and_does_not_call_upstream(
     assert repository.create_request_log.call_args.kwargs["policy_decision"] == "deny"
 
 
+@pytest.mark.asyncio
+async def test_denied_model_list_blocks_request_and_logs_denial():
+    key = _key_record(denied_models=["gpt-4o"])
+    account = _account_record(key.user_id)
+    repository = _repository(key_record=key, account_record=account)
+    upstream = FakeUpstreamClient()
+    runtime = CodexGatewayRuntime(repository=repository, upstream_client=upstream)
+
+    response = await runtime.create_response(
+        gateway_key="bfck_test",
+        payload={"model": "gpt-4o"},
+    )
+
+    assert response.status_code == 403
+    assert response.body["error"]["code"] == "model_denied"
+    assert upstream.requests == []
+    repository.create_request_log.assert_called_once()
+    assert repository.create_request_log.call_args.kwargs["policy_decision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_decrypt_failure_returns_gateway_error_and_logs_denial(monkeypatch):
+    key = _key_record(allowed_models=["gpt-5.1-codex"])
+    account = _account_record(key.user_id)
+    repository = _repository(key_record=key, account_record=account)
+    monkeypatch.setattr(
+        "src.services.codex_gateway.runtime.decrypt_secret",
+        lambda encrypted: (_ for _ in ()).throw(ValueError("bad token")),
+    )
+    runtime = CodexGatewayRuntime(
+        repository=repository, upstream_client=FakeUpstreamClient()
+    )
+
+    response = await runtime.create_response(
+        gateway_key="bfck_test",
+        payload={"model": "gpt-5.1-codex"},
+    )
+
+    assert response.status_code == 403
+    assert response.body["error"]["code"] == "upstream_token_unavailable"
+    repository.create_request_log.assert_called_once()
+    log_kwargs = repository.create_request_log.call_args.kwargs
+    assert log_kwargs["oauth_account_id"] == account.id
+    assert log_kwargs["policy_decision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_upstream_failure_returns_gateway_error_and_logs_metadata(monkeypatch):
+    key = _key_record(allowed_models=["gpt-5.1-codex"])
+    account = _account_record(key.user_id)
+    repository = _repository(key_record=key, account_record=account)
+    monkeypatch.setattr(
+        "src.services.codex_gateway.runtime.decrypt_secret",
+        lambda encrypted: f"plain::{encrypted}",
+    )
+    runtime = CodexGatewayRuntime(
+        repository=repository, upstream_client=FailingUpstreamClient()
+    )
+
+    response = await runtime.create_response(
+        gateway_key="bfck_test",
+        payload={"model": "gpt-5.1-codex"},
+    )
+
+    assert response.status_code == 502
+    assert response.body["error"]["code"] == "upstream_unavailable"
+    repository.create_request_log.assert_called_once()
+    log_kwargs = repository.create_request_log.call_args.kwargs
+    assert log_kwargs["provider_error_code"] == "upstream_unavailable"
+    assert log_kwargs["policy_decision"] == "allow"
+    assert isinstance(log_kwargs["latency_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_upstream_timeout_returns_gateway_error_and_logs_metadata(monkeypatch):
+    key = _key_record(allowed_models=["gpt-5.1-codex"])
+    account = _account_record(key.user_id)
+    repository = _repository(key_record=key, account_record=account)
+    monkeypatch.setattr(
+        "src.services.codex_gateway.runtime.CODEX_GATEWAY_UPSTREAM_TIMEOUT_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        "src.services.codex_gateway.runtime.decrypt_secret",
+        lambda encrypted: f"plain::{encrypted}",
+    )
+    runtime = CodexGatewayRuntime(
+        repository=repository, upstream_client=SlowUpstreamClient()
+    )
+
+    response = await runtime.create_response(
+        gateway_key="bfck_test",
+        payload={"model": "gpt-5.1-codex"},
+    )
+
+    assert response.status_code == 504
+    assert response.body["error"]["code"] == "upstream_timeout"
+    repository.create_request_log.assert_called_once()
+    log_kwargs = repository.create_request_log.call_args.kwargs
+    assert log_kwargs["provider_error_code"] == "upstream_timeout"
+    assert log_kwargs["policy_decision"] == "allow"
+    assert isinstance(log_kwargs["latency_ms"], int)
+
+
 def test_extract_gateway_key_prefers_openai_compatible_bearer_auth():
     assert extract_gateway_key("Bearer bfck_test", None) == "bfck_test"
+    assert extract_gateway_key("bearer bfck_lower", None) == "bfck_lower"
     assert extract_gateway_key(None, "bfck_fallback") == "bfck_fallback"
     assert extract_gateway_key("Basic abc", None) is None
