@@ -107,7 +107,7 @@ async def test_allowed_response_uses_same_user_upstream_token_and_logs_metadata(
             "payload": {"model": "gpt-5.1-codex", "input": "do not log me"},
         }
     ]
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     log_kwargs = repository.create_request_log.call_args.kwargs
     assert log_kwargs["user_id"] == key.user_id
     assert log_kwargs["gateway_key_id"] == key.id
@@ -133,7 +133,7 @@ async def test_unknown_gateway_key_returns_openai_error_and_logs_denial():
 
     assert response.status_code == 401
     assert response.body["error"]["code"] == "invalid_gateway_key"
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     assert repository.create_request_log.call_args.kwargs["policy_decision"] == "deny"
 
 
@@ -168,7 +168,7 @@ async def test_missing_upstream_account_fails_closed_and_logs_denial():
 
     assert response.status_code == 403
     assert response.body["error"]["code"] == "upstream_identity_not_connected"
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     log_kwargs = repository.create_request_log.call_args.kwargs
     assert log_kwargs["user_id"] == key.user_id
     assert log_kwargs["oauth_account_id"] is None
@@ -191,7 +191,7 @@ async def test_ambiguous_upstream_account_fails_closed_and_logs_denial():
 
     assert response.status_code == 403
     assert response.body["error"]["code"] == "upstream_identity_ambiguous"
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     log_kwargs = repository.create_request_log.call_args.kwargs
     assert log_kwargs["user_id"] == key.user_id
     assert log_kwargs["oauth_account_id"] is None
@@ -214,7 +214,7 @@ async def test_denied_model_returns_structured_error_and_does_not_call_upstream(
     assert response.status_code == 403
     assert response.body["error"]["code"] == "model_not_allowed"
     assert upstream.requests == []
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     assert repository.create_request_log.call_args.kwargs["policy_decision"] == "deny"
 
 
@@ -234,7 +234,7 @@ async def test_denied_model_list_blocks_request_and_logs_denial():
     assert response.status_code == 403
     assert response.body["error"]["code"] == "model_denied"
     assert upstream.requests == []
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     assert repository.create_request_log.call_args.kwargs["policy_decision"] == "deny"
 
 
@@ -258,7 +258,7 @@ async def test_decrypt_failure_returns_gateway_error_and_logs_denial(monkeypatch
 
     assert response.status_code == 403
     assert response.body["error"]["code"] == "upstream_token_unavailable"
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     log_kwargs = repository.create_request_log.call_args.kwargs
     assert log_kwargs["oauth_account_id"] == account.id
     assert log_kwargs["policy_decision"] == "deny"
@@ -284,7 +284,7 @@ async def test_upstream_failure_returns_gateway_error_and_logs_metadata(monkeypa
 
     assert response.status_code == 502
     assert response.body["error"]["code"] == "upstream_unavailable"
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     log_kwargs = repository.create_request_log.call_args.kwargs
     assert log_kwargs["provider_error_code"] == "upstream_unavailable"
     assert log_kwargs["policy_decision"] == "allow"
@@ -315,7 +315,7 @@ async def test_upstream_timeout_returns_gateway_error_and_logs_metadata(monkeypa
 
     assert response.status_code == 504
     assert response.body["error"]["code"] == "upstream_timeout"
-    repository.create_request_log.assert_called_once()
+    repository.create_request_log.assert_awaited_once()
     log_kwargs = repository.create_request_log.call_args.kwargs
     assert log_kwargs["provider_error_code"] == "upstream_timeout"
     assert log_kwargs["policy_decision"] == "allow"
