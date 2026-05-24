@@ -189,7 +189,6 @@ async def revoke_gateway_key(
 
 @router.get(
     "/api/codex-gateway/oauth/status",
-    response_model=CodexGatewayOAuthStatusResponse,
     operation_id="get_codex_gateway_oauth_status",
 )
 async def get_oauth_status(
@@ -210,7 +209,6 @@ async def get_oauth_status(
 
 @router.post(
     "/api/codex-gateway/oauth/connect",
-    response_model=CodexGatewayOAuthConnectResponse,
     operation_id="start_codex_gateway_oauth_connect",
 )
 async def start_oauth_connect(
@@ -221,7 +219,6 @@ async def start_oauth_connect(
 
 @router.post(
     "/api/codex-gateway/oauth/import-auth-cache",
-    response_model=CodexGatewayOAuthImportResponse,
     operation_id="import_codex_gateway_oauth_auth_cache",
 )
 async def import_oauth_auth_cache(
@@ -270,7 +267,6 @@ async def import_oauth_auth_cache(
 
 @router.delete(
     "/api/codex-gateway/oauth",
-    response_model=CodexGatewayOAuthDisconnectResponse,
     operation_id="disconnect_codex_gateway_oauth",
 )
 async def disconnect_oauth_account(

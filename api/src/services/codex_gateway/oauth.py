@@ -78,7 +78,7 @@ def parse_codex_auth_cache(auth_cache: dict[str, Any]) -> ParsedCodexAuthCache:
     )
 
     if subject is None:
-        subject = _unknown_subject(access_token or refresh_token or "")
+        subject = _unknown_subject(access_token or refresh_token)
 
     return ParsedCodexAuthCache(
         access_token=access_token,
@@ -139,6 +139,6 @@ def _parse_scopes(value: Any) -> list[str]:
     return []
 
 
-def _unknown_subject(token: str) -> str:
-    digest = hashlib.sha256(token.encode()).hexdigest()[:16]
+def _unknown_subject(token: str | None) -> str:
+    digest = hashlib.sha256((token or "missing-token").encode()).hexdigest()[:16]
     return f"unknown:{digest}"

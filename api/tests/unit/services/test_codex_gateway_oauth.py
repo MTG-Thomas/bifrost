@@ -1,5 +1,7 @@
 """Tests for Codex Gateway OAuth onboarding helpers."""
 
+from typing import Any
+
 import pytest
 
 from src.services.codex_gateway.oauth import (
@@ -97,8 +99,10 @@ def test_parse_codex_auth_cache_rejects_payload_without_access_or_refresh_token(
 
 
 def test_parse_codex_auth_cache_error_text_does_not_include_token_values():
+    auth_cache: Any = "access-token-secret"
+
     with pytest.raises(CodexAuthCacheError) as excinfo:
-        parse_codex_auth_cache("access-token-secret")
+        parse_codex_auth_cache(auth_cache)
 
     assert "access-token-secret" not in str(excinfo.value)
     assert str(excinfo.value) == "Codex auth cache must be a JSON object."
