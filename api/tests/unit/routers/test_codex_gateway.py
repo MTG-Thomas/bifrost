@@ -440,9 +440,11 @@ def test_import_codex_auth_cache_stores_tokens_without_returning_them(monkeypatc
     assert "access-token-secret" not in response.text
     assert "refresh-token-secret" not in response.text
     assert "refresh_token" not in response.text
-    assert repository.oauth_upserts[0]["user_id"] == user_id
-    assert repository.oauth_upserts[0]["access_token"] == "access-token-secret"
-    assert repository.oauth_upserts[0]["refresh_token"] == "refresh-token-secret"
+    assert len(repository.oauth_upserts) == 1
+    [oauth_upsert] = repository.oauth_upserts
+    assert oauth_upsert["user_id"] == user_id
+    assert oauth_upsert["access_token"] == "access-token-secret"
+    assert oauth_upsert["refresh_token"] == "refresh-token-secret"
     audit.assert_awaited_once()
 
 
