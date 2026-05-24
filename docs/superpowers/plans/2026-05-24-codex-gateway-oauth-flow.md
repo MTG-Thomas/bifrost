@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: OAuth Status And Import Contracts
+## Task 1: OAuth Status And Import Contracts
 
 **Files:**
 - Modify: `api/shared/models.py`
@@ -24,7 +24,7 @@
 - [ ] Re-export DTOs from `src.models.contracts.codex_gateway` and contracts `__init__`.
 - [ ] Run the router tests and DTO flags.
 
-### Task 2: Repository Lifecycle Methods
+## Task 2: Repository Lifecycle Methods
 
 **Files:**
 - Modify: `api/src/repositories/codex_gateway.py`
@@ -35,7 +35,7 @@
 - [ ] Add `upsert_upstream_account_for_user` and `revoke_upstream_account_for_user` using existing encryption helpers and metadata timestamps.
 - [ ] Run repository tests.
 
-### Task 3: Auth Cache Parser Service
+## Task 3: Auth Cache Parser Service
 
 **Files:**
 - Create: `api/src/services/codex_gateway/oauth.py`
@@ -46,7 +46,7 @@
 - [ ] Implement a minimal parser that accepts dict payloads, extracts access/refresh/id token fields from known top-level and nested shapes, derives best-effort subject/email/workspace metadata, and raises a safe validation error for unusable payloads.
 - [ ] Run service tests.
 
-### Task 4: Routes And Audit
+## Task 4: Routes And Audit
 
 **Files:**
 - Modify: `api/src/routers/codex_gateway.py`
@@ -57,7 +57,7 @@
 - [ ] Emit audit events for import/connect and disconnect.
 - [ ] Run router tests.
 
-### Task 5: Verification
+## Task 5: Verification
 
 **Files:**
 - Test-only unless failures require small implementation fixes.

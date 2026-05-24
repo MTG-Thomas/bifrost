@@ -40,6 +40,7 @@ class FakeRepository:
         self.revoked = []
         self.oauth_upserts = []
         self.oauth_revoked_for = []
+        self.oauth_status_lookups = []
         self.key_id = uuid4()
         self.oauth_account_id = uuid4()
         self.plaintext_key = VALID_GATEWAY_KEY
@@ -119,6 +120,13 @@ class FakeRepository:
 
     async def get_active_upstream_account_for_user(self, user_id, provider="chatgpt_codex"):
         await sleep(0)
+        self.oauth_status_lookups.append({"user_id": user_id, "provider": provider})
+        if self.upstream_account is None:
+            return None
+        if self.upstream_account.user_id != user_id:
+            return None
+        if self.upstream_account.provider != provider:
+            return None
         return self.upstream_account
 
     async def upsert_upstream_account_for_user(self, **kwargs):
@@ -381,6 +389,9 @@ def test_codex_gateway_oauth_status_reports_disconnected_without_tokens():
         "account": None,
         "supported_connect_methods": ["device_code", "auth_cache_import"],
     }
+    assert repository.oauth_status_lookups == [
+        {"user_id": user_id, "provider": "chatgpt_codex"}
+    ]
 
 
 def test_start_codex_oauth_connect_prefers_device_code_with_import_fallback():

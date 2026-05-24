@@ -258,7 +258,6 @@ async def import_oauth_auth_cache(
         resource_id=account.id,
         details={
             "provider": getattr(account, "provider", "chatgpt_codex"),
-            "upstream_email": account.upstream_email,
             "upstream_workspace_id": account.upstream_workspace_id,
             "has_refresh_token": parsed.refresh_token is not None,
         },
@@ -293,7 +292,6 @@ async def disconnect_oauth_account(
             resource_id=account.id,
             details={
                 "provider": getattr(account, "provider", "chatgpt_codex"),
-                "upstream_email": account.upstream_email,
                 "upstream_workspace_id": account.upstream_workspace_id,
             },
         )

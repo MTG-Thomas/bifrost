@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from src.core.security import decrypt_secret
 from src.repositories.codex_gateway import (
     CodexGatewayKeyMaterial,
     CodexGatewayRepository,
@@ -198,6 +199,8 @@ async def test_upsert_upstream_account_updates_existing_account_with_encrypted_t
         encrypted_access_token="old-access",
         encrypted_refresh_token="old-refresh",
     )
+    old_encrypted_access_token = existing.encrypted_access_token
+    old_encrypted_refresh_token = existing.encrypted_refresh_token
     mock_session.execute.return_value = _Result(one=existing)
 
     account = await repository.upsert_upstream_account_for_user(
@@ -214,8 +217,12 @@ async def test_upsert_upstream_account_updates_existing_account_with_encrypted_t
     assert existing.upstream_subject == "chatgpt-user-123"
     assert existing.upstream_email == "dev@example.test"
     assert existing.upstream_workspace_id == "workspace-midtown"
+    assert existing.encrypted_access_token != old_encrypted_access_token
+    assert existing.encrypted_refresh_token != old_encrypted_refresh_token
     assert existing.encrypted_access_token != "new-access-token"
     assert existing.encrypted_refresh_token != "new-refresh-token"
+    assert decrypt_secret(existing.encrypted_access_token) == "new-access-token"
+    assert decrypt_secret(existing.encrypted_refresh_token) == "new-refresh-token"
     assert existing.scopes == ["openid", "profile"]
     mock_session.add.assert_not_called()
     mock_session.flush.assert_called_once()

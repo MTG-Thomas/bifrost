@@ -51,6 +51,44 @@ def test_parse_codex_auth_cache_accepts_flat_codex_auth_json_shape():
     assert parsed.upstream_email == "dev@example.test"
 
 
+def test_parse_codex_auth_cache_searches_later_token_sources():
+    parsed = parse_codex_auth_cache(
+        {
+            "tokens": {"note": "not the token source"},
+            "openai": {
+                "access_token": "access-token-secret",
+                "refresh_token": "refresh-token-secret",
+                "expires_at_epoch": 1770000000,
+            },
+            "account": {"note": "not the account source"},
+            "profile": {
+                "sub": "chatgpt-user-123",
+                "email": "dev@example.test",
+            },
+        }
+    )
+
+    assert parsed.access_token == "access-token-secret"
+    assert parsed.refresh_token == "refresh-token-secret"
+    assert parsed.upstream_subject == "chatgpt-user-123"
+    assert parsed.upstream_email == "dev@example.test"
+    assert parsed.access_token_expires_at is not None
+
+
+def test_parse_codex_auth_cache_ignores_invalid_epoch_expiry():
+    parsed = parse_codex_auth_cache(
+        {
+            "tokens": {
+                "access_token": "access-token-secret",
+                "expires_at_epoch": 10**100,
+            },
+            "account": {"sub": "chatgpt-user-123"},
+        }
+    )
+
+    assert parsed.access_token_expires_at is None
+
+
 def test_parse_codex_auth_cache_rejects_payload_without_access_or_refresh_token():
     with pytest.raises(CodexAuthCacheError) as excinfo:
         parse_codex_auth_cache({"account": {"email": "dev@example.test"}})

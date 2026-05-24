@@ -28,48 +28,53 @@ def parse_codex_auth_cache(auth_cache: dict[str, Any]) -> ParsedCodexAuthCache:
     if not isinstance(auth_cache, dict):
         raise CodexAuthCacheError("Codex auth cache must be a JSON object.")
 
-    token_source = _first_mapping(
+    token_sources = _candidate_mappings(
         auth_cache.get("tokens"),
         auth_cache.get("openai"),
         auth_cache.get("chatgpt"),
         auth_cache,
     )
-    account_source = _first_mapping(
+    account_sources = _candidate_mappings(
         auth_cache.get("account"),
         auth_cache.get("user"),
         auth_cache.get("profile"),
         auth_cache,
     )
 
-    access_token = _first_string(
-        token_source.get("access_token"),
-        token_source.get("OPENAI_ACCESS_TOKEN"),
-        token_source.get("codex_access_token"),
+    access_token = _find_string(
+        token_sources,
+        "access_token",
+        "OPENAI_ACCESS_TOKEN",
+        "codex_access_token",
     )
-    refresh_token = _first_string(
-        token_source.get("refresh_token"),
-        token_source.get("OPENAI_REFRESH_TOKEN"),
-        token_source.get("codex_refresh_token"),
+    refresh_token = _find_string(
+        token_sources,
+        "refresh_token",
+        "OPENAI_REFRESH_TOKEN",
+        "codex_refresh_token",
     )
     if not access_token and not refresh_token:
         raise CodexAuthCacheError(
             "Codex auth cache does not contain usable token material."
         )
 
-    subject = _first_string(
-        account_source.get("sub"),
-        account_source.get("subject"),
-        account_source.get("user_id"),
-        account_source.get("account_id"),
+    subject = _find_string(
+        account_sources,
+        "sub",
+        "subject",
+        "user_id",
+        "account_id",
     )
-    email = _first_string(
-        account_source.get("email"),
-        account_source.get("upstream_email"),
+    email = _find_string(
+        account_sources,
+        "email",
+        "upstream_email",
     )
-    workspace_id = _first_string(
-        account_source.get("workspace_id"),
-        account_source.get("workspace"),
-        account_source.get("organization_id"),
+    workspace_id = _find_string(
+        account_sources,
+        "workspace_id",
+        "workspace",
+        "organization_id",
     )
 
     if subject is None:
@@ -81,16 +86,17 @@ def parse_codex_auth_cache(auth_cache: dict[str, Any]) -> ParsedCodexAuthCache:
         upstream_subject=subject,
         upstream_email=email,
         upstream_workspace_id=workspace_id,
-        access_token_expires_at=_parse_expiry(token_source),
-        scopes=_parse_scopes(token_source.get("scope") or token_source.get("scopes")),
+        access_token_expires_at=_parse_expiry(token_sources),
+        scopes=_parse_scopes(_find_value(token_sources, "scope", "scopes")),
     )
 
 
-def _first_mapping(*values: Any) -> dict[str, Any]:
-    for value in values:
-        if isinstance(value, dict):
-            return value
-    return {}
+def _candidate_mappings(*values: Any) -> list[dict[str, Any]]:
+    return [value for value in values if isinstance(value, dict)]
+
+
+def _find_string(sources: list[dict[str, Any]], *keys: str) -> str | None:
+    return _first_string(_find_value(sources, *keys))
 
 
 def _first_string(*values: Any) -> str | None:
@@ -100,20 +106,28 @@ def _first_string(*values: Any) -> str | None:
     return None
 
 
-def _parse_expiry(token_source: dict[str, Any]) -> datetime | None:
-    raw = (
-        token_source.get("expires_at")
-        or token_source.get("expiry")
-        or token_source.get("expiration")
-    )
+def _find_value(sources: list[dict[str, Any]], *keys: str) -> Any:
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if value is not None:
+                return value
+    return None
+
+
+def _parse_expiry(token_sources: list[dict[str, Any]]) -> datetime | None:
+    raw = _find_value(token_sources, "expires_at", "expiry", "expiration")
     if isinstance(raw, str) and raw:
         try:
             return datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
             return None
-    exp = token_source.get("expires_at_epoch") or token_source.get("expires_at_unix")
+    exp = _find_value(token_sources, "expires_at_epoch", "expires_at_unix")
     if isinstance(exp, (int, float)):
-        return datetime.fromtimestamp(exp, tz=timezone.utc)
+        try:
+            return datetime.fromtimestamp(exp, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     return None
 
 
