@@ -39,7 +39,9 @@ issuing gateway keys.
    bifrost api POST /api/codex-gateway/oauth/connect '{}'
    ```
 
-   The response should prefer:
+   The response is a `CodexGatewayOAuthConnectResponse`. Use its
+   `client_command` value as the recommended user command. The expected
+   `preferred_method` is `device_code`, and the expected `client_command` is:
 
    ```text
    codex login --device-auth
@@ -107,4 +109,3 @@ The response should show `connected: false`.
 | Status stays disconnected after import | Confirm the request was made as the same Bifrost user being onboarded. |
 | Another user cannot see the connection | Expected. Upstream Codex accounts are user-scoped. |
 | A token appears in output | Stop onboarding and treat it as a security bug. |
-
