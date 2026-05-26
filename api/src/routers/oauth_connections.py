@@ -844,7 +844,10 @@ async def oauth_callback(
 ) -> OAuthCallbackResponse:
     """Handle OAuth callback and exchange authorization code for tokens."""
     from src.core.security import decrypt_secret
-    from src.services.oauth_provider import OAuthProviderClient
+    from src.services.oauth_provider import (
+        OAuthProviderClient,
+        compute_token_exchange_scopes,
+    )
 
     repo = OAuthConnectionRepository(ctx.db)
     # Use org_id from request body for org-specific token storage (None for global)
@@ -911,12 +914,7 @@ async def oauth_callback(
         defaults=defaults,
     )
 
-    # Exchange authorization code for tokens. NinjaOne returns the refresh_token
-    # only when scope is requested on the authorize URL and not replayed here.
-    token_exchange_scopes = " ".join(provider.scopes) if provider.scopes else None
-    if provider.provider_name == "NinjaOne":
-        token_exchange_scopes = None
-
+    # Exchange authorization code for tokens.
     oauth_client = OAuthProviderClient()
     success, result = await oauth_client.exchange_code_for_token(
         token_url=resolved_token_url,
@@ -924,7 +922,7 @@ async def oauth_callback(
         client_id=provider.client_id,
         client_secret=client_secret,
         redirect_uri=redirect_uri,
-        scopes=token_exchange_scopes,
+        scopes=compute_token_exchange_scopes(provider),
         audience=provider.audience,
     )
 
