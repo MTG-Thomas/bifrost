@@ -911,7 +911,12 @@ async def oauth_callback(
         defaults=defaults,
     )
 
-    # Exchange authorization code for tokens
+    # Exchange authorization code for tokens. NinjaOne returns the refresh_token
+    # only when scope is requested on the authorize URL and not replayed here.
+    token_exchange_scopes = " ".join(provider.scopes) if provider.scopes else None
+    if provider.provider_name == "NinjaOne":
+        token_exchange_scopes = None
+
     oauth_client = OAuthProviderClient()
     success, result = await oauth_client.exchange_code_for_token(
         token_url=resolved_token_url,
@@ -919,7 +924,7 @@ async def oauth_callback(
         client_id=provider.client_id,
         client_secret=client_secret,
         redirect_uri=redirect_uri,
-        scopes=" ".join(provider.scopes) if provider.scopes else None,
+        scopes=token_exchange_scopes,
         audience=provider.audience,
     )
 
