@@ -12,7 +12,6 @@ from src.jobs.rabbitmq import (
     MalformedMessage,
     RetryableConsumerError,
 )
-from src.models.enums import ExecutionStatus
 from src.services.execution.process_pool import ProcessPoolAdmissionRejected
 
 
