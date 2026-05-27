@@ -8,9 +8,11 @@ at a time.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from src.config import Settings
@@ -143,9 +145,9 @@ class AzureBlobStorageClient:
         contents: list[dict] = []
         common_prefixes: set[str] = set()
         if hasattr(page, "__aiter__"):
-            blobs = [blob async for blob in page]
+            blobs = [blob async for blob in cast(AsyncIterator[Any], page)]
         else:
-            blobs = list(page)
+            blobs = list(cast(Iterable[Any], page))
 
         for blob in blobs:
             name = blob.name
