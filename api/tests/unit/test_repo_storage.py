@@ -3,8 +3,6 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.config import Settings
-from src.services.file_storage.azure_blob_client import AzureBlobStorageClient
-from src.services.file_storage.s3_client import S3StorageClient
 from src.services.repo_storage import RepoStorage
 
 
@@ -108,7 +106,8 @@ def _settings(**overrides):
 def test_repo_storage_uses_s3_backend_by_default():
     repo = RepoStorage(settings=_settings())
 
-    assert isinstance(repo._storage, S3StorageClient)
+    assert repo._storage.__class__.__module__ == "src.services.file_storage.s3_client"
+    assert repo._storage.__class__.__name__ == "S3StorageClient"
     assert repo._bucket == ""
 
 
@@ -122,7 +121,11 @@ def test_repo_storage_uses_azure_blob_backend_when_configured():
         )
     )
 
-    assert isinstance(repo._storage, AzureBlobStorageClient)
+    assert (
+        repo._storage.__class__.__module__
+        == "src.services.file_storage.azure_blob_client"
+    )
+    assert repo._storage.__class__.__name__ == "AzureBlobStorageClient"
     assert repo._bucket == "bifrost-objects"
 
 
