@@ -124,19 +124,30 @@ class AzureBlobStorageClient:
         Prefix: str = "",
         Delimiter: str | None = None,
         ContinuationToken: str | None = None,
+        MaxKeys: int | None = None,
     ) -> dict:
-        """S3-shaped list operation for RepoStorage.
-
-        Azure Blob listings are returned as a single page here because the
-        current repo-storage callers only need the S3 response shape, not S3's
-        exact pagination contract.
-        """
-        del Bucket, ContinuationToken
+        """S3-shaped list operation for RepoStorage."""
+        del Bucket
         await self._ensure_client()
+
+        pager = self._container_client.list_blobs(name_starts_with=Prefix).by_page(
+            continuation_token=ContinuationToken,
+            results_per_page=MaxKeys,
+        )
+        try:
+            page = await anext(pager)
+        except StopAsyncIteration:
+            page = []
+        next_token = getattr(pager, "continuation_token", None)
 
         contents: list[dict] = []
         common_prefixes: set[str] = set()
-        async for blob in self._container_client.list_blobs(name_starts_with=Prefix):
+        if hasattr(page, "__aiter__"):
+            blobs = [blob async for blob in page]
+        else:
+            blobs = list(page)
+
+        for blob in blobs:
             name = blob.name
             if Delimiter:
                 remainder = name[len(Prefix) :]
@@ -155,12 +166,14 @@ class AzureBlobStorageClient:
 
         response = {
             "Contents": contents,
-            "IsTruncated": False,
+            "IsTruncated": bool(next_token),
         }
         if Delimiter:
             response["CommonPrefixes"] = [
                 {"Prefix": prefix} for prefix in sorted(common_prefixes)
             ]
+        if next_token:
+            response["NextContinuationToken"] = next_token
         return response
 
     async def put_object(
