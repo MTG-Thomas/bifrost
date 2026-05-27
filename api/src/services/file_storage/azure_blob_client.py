@@ -111,6 +111,58 @@ class AzureBlobStorageClient:
             raise NotImplementedError(f"Unsupported paginator: {operation_name}")
         return _ListObjectsV2Paginator(self)
 
+    async def head_bucket(self, *, Bucket: str):
+        """S3-compatible container availability check used by health probes."""
+        del Bucket
+        await self._ensure_client()
+        return await self._container_client.get_container_properties()
+
+    async def list_objects_v2(
+        self,
+        *,
+        Bucket: str,
+        Prefix: str = "",
+        Delimiter: str | None = None,
+        ContinuationToken: str | None = None,
+    ) -> dict:
+        """S3-shaped list operation for RepoStorage.
+
+        Azure Blob listings are returned as a single page here because the
+        current repo-storage callers only need the S3 response shape, not S3's
+        exact pagination contract.
+        """
+        del Bucket, ContinuationToken
+        await self._ensure_client()
+
+        contents: list[dict] = []
+        common_prefixes: set[str] = set()
+        async for blob in self._container_client.list_blobs(name_starts_with=Prefix):
+            name = blob.name
+            if Delimiter:
+                remainder = name[len(Prefix) :]
+                if Delimiter in remainder:
+                    folder = Prefix + remainder.split(Delimiter, 1)[0] + Delimiter
+                    common_prefixes.add(folder)
+                    continue
+            contents.append(
+                {
+                    "Key": name,
+                    "Size": getattr(blob, "size", None),
+                    "ETag": str(getattr(blob, "etag", "") or "").strip('"'),
+                    "LastModified": getattr(blob, "last_modified", None),
+                }
+            )
+
+        response = {
+            "Contents": contents,
+            "IsTruncated": False,
+        }
+        if Delimiter:
+            response["CommonPrefixes"] = [
+                {"Prefix": prefix} for prefix in sorted(common_prefixes)
+            ]
+        return response
+
     async def put_object(
         self,
         *,
