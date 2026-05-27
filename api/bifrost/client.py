@@ -128,7 +128,7 @@ _thread_local = threading.local()
 # Walk upward from cwd, not from this file. With pipx-installed CLIs, __file__
 # lives in the pipx venv and the default upward walk never reaches the user's
 # workspace, so a .env in the project root is silently ignored.
-load_allowed_dotenv()
+load_allowed_dotenv(override=False)
 
 
 async def refresh_tokens() -> bool:

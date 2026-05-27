@@ -99,6 +99,24 @@ class TestDotenvAllowlist:
         assert "HTTPS_PROXY" not in os.environ
         assert "SSL_CERT_FILE" not in os.environ
 
+    def test_load_allowed_dotenv_does_not_override_existing_api_url_by_default(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("BIFROST_API_URL=https://from-dotenv.example\n", encoding="utf-8")
+        monkeypatch.setenv("BIFROST_API_URL", "https://from-env.example")
+
+        creds_mod.load_allowed_dotenv(env_file)
+
+        assert os.environ["BIFROST_API_URL"] == "https://from-env.example"
+
+    def test_load_allowed_dotenv_can_override_when_explicitly_enabled(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("BIFROST_API_URL=https://from-dotenv.example\n", encoding="utf-8")
+        monkeypatch.setenv("BIFROST_API_URL", "https://from-env.example")
+
+        creds_mod.load_allowed_dotenv(env_file, override=True)
+
+        assert os.environ["BIFROST_API_URL"] == "https://from-dotenv.example"
+
 
 # ---------- JsonBackend (multi-record) ----------
 

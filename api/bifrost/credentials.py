@@ -67,7 +67,7 @@ def get_credentials_path() -> Path:
 
 
 def load_allowed_dotenv(
-    dotenv_path: str | os.PathLike[str] | None = None, *, override: bool = True
+    dotenv_path: str | os.PathLike[str] | None = None, *, override: bool = False
 ) -> None:
     """Load the CWD ``.env`` allowlist used by the CLI.
 
