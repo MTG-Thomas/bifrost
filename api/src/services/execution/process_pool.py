@@ -756,6 +756,8 @@ class ProcessPoolManager:
         # _slot_condition, so this wakes immediately once a slot frees.
         if len(self.processes) >= self.max_workers:
             if not await self._wait_for_slot():
+                r = await self._get_redis()
+                await r.delete(f"bifrost:exec:{execution_id}:context")
                 self._record_admission_rejection(
                     reason="slot_timeout",
                     wait_seconds=time.monotonic() - admission_started,

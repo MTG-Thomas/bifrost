@@ -62,6 +62,20 @@ def test_workflow_prefetch_count_keeps_lower_global_concurrency() -> None:
     assert workflow_prefetch_count(settings) == 3
 
 
+def test_workflow_prefetch_count_has_minimum_of_one() -> None:
+    """Workflow consumer prefetch must never be configured below one."""
+    settings = type(
+        "Settings",
+        (),
+        {
+            "max_concurrency": 0,
+            "max_workers": 0,
+        },
+    )()
+
+    assert workflow_prefetch_count(settings) == 1
+
+
 @pytest.mark.asyncio
 async def test_process_message_rejects_missing_execution_id() -> None:
     consumer = make_consumer()

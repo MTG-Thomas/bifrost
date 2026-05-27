@@ -3,6 +3,8 @@
 from unittest.mock import patch
 from datetime import datetime, timezone
 
+import pytest
+
 
 class TestHeartbeatCgroupData:
     """Tests for cgroup memory data in heartbeat payload."""
@@ -107,8 +109,8 @@ class TestHeartbeatCgroupData:
             "slot_timeout": 1,
             "memory_pressure": 1,
         }
-        assert heartbeat["admission"]["wait_seconds_total"] == 3.25
-        assert heartbeat["admission"]["wait_seconds_max"] == 1.5
+        assert heartbeat["admission"]["wait_seconds_total"] == pytest.approx(3.25)
+        assert heartbeat["admission"]["wait_seconds_max"] == pytest.approx(1.5)
 
     def test_fork_memory_mb_uses_private_dirty(self):
         """Per-fork memory_mb should reflect private-dirty (USS), not COW-inflated RSS."""
