@@ -59,7 +59,6 @@ def _get_s3_client() -> Any:
     global _s3_client, _s3_available
 
     if _object_storage_provider() != "s3":
-        _s3_available = False
         return None
 
     if _s3_available is False:

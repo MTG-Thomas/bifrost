@@ -11,7 +11,6 @@ def test_s3_client_disabled_when_provider_is_azure_blob(monkeypatch):
     module_cache_sync._s3_client = None
 
     assert module_cache_sync._get_s3_client() is None
-    assert module_cache_sync._s3_available is False
 
 
 def test_object_storage_provider_prefers_blob_when_blob_configured(monkeypatch):
