@@ -41,8 +41,7 @@ def test_file_storage_uses_azure_blob_backend_when_configured():
     }
 
 
-@pytest.mark.asyncio
-async def test_azure_blob_client_exposes_s3_shaped_list_objects_v2():
+def _client_with_blob_names(names, *, next_token=None):
     client = AzureBlobStorageClient(
         _settings(
             object_storage_provider="azure_blob",
@@ -51,6 +50,31 @@ async def test_azure_blob_client_exposes_s3_shaped_list_objects_v2():
             azure_blob_auth="default_credential",
         )
     )
+
+    class FakePager:
+        continuation_token = next_token
+
+        def __init__(self, blobs):
+            self._blobs = blobs
+            self._sent = False
+
+        async def __anext__(self):
+            if self._sent:
+                raise StopAsyncIteration
+            self._sent = True
+            return self._blobs
+
+        def __aiter__(self):
+            return self
+
+    class FakePaged:
+        def __init__(self, blobs):
+            self._blobs = blobs
+
+        def by_page(self, **kwargs):
+            page_size = kwargs["results_per_page"]
+            blobs = self._blobs[:page_size] if page_size else self._blobs
+            return FakePager(blobs)
 
     class FakeContainer:
         def list_blobs(self, name_starts_with=""):
@@ -61,35 +85,24 @@ async def test_azure_blob_client_exposes_s3_shaped_list_objects_v2():
                     etag='"etag"',
                     last_modified=None,
                 )
-                for name in [
-                    "_repo/workflows/a.py",
-                    "_repo/apps/app.tsx",
-                    "_repo/apps/components/button.tsx",
-                ]
+                for name in names
                 if name.startswith(name_starts_with)
             ]
-
-            class FakePager:
-                continuation_token = None
-
-                async def __anext__(self):
-                    if not hasattr(self, "_sent"):
-                        self._sent = True
-                        return blobs
-                    raise StopAsyncIteration
-
-                def __aiter__(self):
-                    return self
-
-            class FakePaged:
-                def by_page(self, **kwargs):
-                    assert kwargs["continuation_token"] is None
-                    assert kwargs["results_per_page"] is None
-                    return FakePager()
-
-            return FakePaged()
+            return FakePaged(blobs)
 
     client._container_client = FakeContainer()
+    return client
+
+
+@pytest.mark.asyncio
+async def test_azure_blob_client_exposes_s3_shaped_list_objects_v2():
+    client = _client_with_blob_names(
+        [
+            "_repo/workflows/a.py",
+            "_repo/apps/app.tsx",
+            "_repo/apps/components/button.tsx",
+        ]
+    )
 
     response = await client.list_objects_v2(
         Bucket="ignored",
@@ -121,52 +134,10 @@ async def test_azure_blob_client_exposes_s3_shaped_list_objects_v2():
 
 @pytest.mark.asyncio
 async def test_azure_blob_client_exposes_s3_shaped_list_objects_v2_pagination():
-    client = AzureBlobStorageClient(
-        _settings(
-            object_storage_provider="azure_blob",
-            azure_blob_account_url="https://example.blob.core.windows.net",
-            azure_blob_container="bifrost-objects",
-            azure_blob_auth="default_credential",
-        )
+    client = _client_with_blob_names(
+        ["_repo/workflows/a.py", "_repo/workflows/b.py"],
+        next_token="next-page",
     )
-
-    class FakeContainer:
-        def list_blobs(self, name_starts_with=""):
-            blobs = [
-                SimpleNamespace(
-                    name=name,
-                    size=10,
-                    etag='"etag"',
-                    last_modified=None,
-                )
-                for name in [
-                    "_repo/workflows/a.py",
-                    "_repo/workflows/b.py",
-                ]
-                if name.startswith(name_starts_with)
-            ]
-
-            class FakePager:
-                continuation_token = "next-page"
-
-                async def __anext__(self):
-                    if not hasattr(self, "_sent"):
-                        self._sent = True
-                        return blobs[:1]
-                    raise StopAsyncIteration
-
-                def __aiter__(self):
-                    return self
-
-            class FakePaged:
-                def by_page(self, **kwargs):
-                    assert kwargs["continuation_token"] == "first-page"
-                    assert kwargs["results_per_page"] == 1
-                    return FakePager()
-
-            return FakePaged()
-
-    client._container_client = FakeContainer()
 
     response = await client.list_objects_v2(
         Bucket="ignored",
