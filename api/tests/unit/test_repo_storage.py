@@ -104,11 +104,12 @@ def _settings(**overrides):
 
 
 def test_repo_storage_uses_s3_backend_by_default():
-    repo = RepoStorage(settings=_settings())
+    settings = _settings()
+    repo = RepoStorage(settings=settings)
 
     assert repo._storage.__class__.__module__ == "src.services.file_storage.s3_client"
     assert repo._storage.__class__.__name__ == "S3StorageClient"
-    assert repo._bucket == ""
+    assert repo._bucket == (settings.s3_bucket or "")
 
 
 def test_repo_storage_uses_azure_blob_backend_when_configured():
