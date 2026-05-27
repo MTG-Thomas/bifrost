@@ -1584,7 +1584,8 @@ class ProcessPoolManager:
         busy_count = len([p for p in self.processes.values() if p.state == ProcessState.BUSY])
 
         memory_current, memory_max = get_cgroup_memory()
-        available_slots = max(0, self.max_workers - len(self.processes))
+        max_workers = getattr(self, "max_workers", len(self.processes))
+        available_slots = max(0, max_workers - len(self.processes))
 
         return {
             "type": "worker_heartbeat",
@@ -1595,7 +1596,7 @@ class ProcessPoolManager:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "processes": processes,
             "pool_size": len(self.processes),
-            "max_workers": self.max_workers,
+            "max_workers": max_workers,
             "available_slots": available_slots,
             "idle_count": idle_count,
             "busy_count": busy_count,
