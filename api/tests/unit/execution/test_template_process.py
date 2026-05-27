@@ -16,6 +16,7 @@ import pytest
 from src.services.execution.template_process import (
     TemplateProcess,
     _load_execution_infrastructure,
+    _reap_exited_children,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,18 @@ class TestTemplateProcessLifecycle:
         """Shutting down before starting should not raise."""
         template = TemplateProcess()
         template.shutdown()  # Should not raise
+
+
+class TestTemplateProcessReaping:
+    """Tests for zombie child reaping behavior in template process."""
+
+    def test_reap_exited_children_drains_until_no_more_exits(self):
+        """Should call waitpid repeatedly until no exited children remain."""
+        with patch("src.services.execution.template_process.os.waitpid") as waitpid:
+            waitpid.side_effect = [(101, 0), (102, 0), (0, 0)]
+            _reap_exited_children()
+
+        assert waitpid.call_count == 3
 
 
 class TestTemplateProcessFork:
