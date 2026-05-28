@@ -47,6 +47,11 @@ from src.models import (
 from src.models.orm import Config as ConfigModel
 from src.models.orm import IntegrationConfigSchema
 from src.models.orm import OAuthToken
+from src.services.integration_config_schema import (
+    integration_to_response,
+    parse_config_schema_items,
+    validate_config_schema_type,
+)
 from src.services.oauth_provider import get_url_resolution_defaults, resolve_url_template
 from src.services.oauth_state import encode_state, remember_nonce
 
@@ -171,6 +176,7 @@ class IntegrationsRepository:
         # Add config schema items to the normalized table
         if request.config_schema:
             for idx, item in enumerate(request.config_schema):
+                validate_config_schema_type(item.type)
                 schema_item = IntegrationConfigSchema(
                     key=item.key,
                     type=item.type,
@@ -224,6 +230,7 @@ class IntegrationsRepository:
 
             # Update existing or add new schema items
             for idx, item_data in enumerate(request.config_schema):
+                validate_config_schema_type(item_data.type)
                 if item_data.key in existing_by_key:
                     # Update existing
                     existing = existing_by_key[item_data.key]
@@ -683,7 +690,7 @@ async def create_integration(
     integration = await repo.create_integration(request)
     logger.info(f"Created integration: {log_safe(integration.name)}")
 
-    return IntegrationResponse.model_validate(integration)
+    return integration_to_response(integration)
 
 
 @router.get(
@@ -700,7 +707,7 @@ async def list_integrations(
     repo = IntegrationsRepository(ctx.db)
     integrations = await repo.list_integrations()
 
-    items = [IntegrationResponse.model_validate(i) for i in integrations]
+    items = [integration_to_response(i) for i in integrations]
     return IntegrationListResponse(items=items, total=len(items))
 
 
@@ -728,9 +735,14 @@ async def get_integration(
     # Build OAuth config summary if OAuth provider exists
     oauth_config = None
     if integration.oauth_provider:
+        from src.services.oauth_provider import (
+            get_integration_level_token,
+            resolve_integration_oauth_status,
+        )
+
         provider = integration.oauth_provider
-        # Get token data if available (for expires_at and has_refresh_token)
-        token = provider.tokens[0] if provider.tokens else None
+        token = await get_integration_level_token(ctx.db, provider.id)
+        status_val, status_message = resolve_integration_oauth_status(provider, token)
         oauth_config = OAuthConfigSummary(
             provider_name=provider.provider_name,
             oauth_flow_type=provider.oauth_flow_type,
@@ -738,10 +750,10 @@ async def get_integration(
             authorization_url=provider.authorization_url,
             token_url=provider.token_url or "",
             scopes=provider.scopes or [],
-            status=provider.status or "not_connected",
-            status_message=provider.status_message,
+            status=status_val,
+            status_message=status_message,
             expires_at=token.expires_at if token else None,
-            last_refresh_at=provider.last_token_refresh,
+            last_refresh_at=token.last_refresh_at if token else provider.last_token_refresh,
             has_refresh_token=token.encrypted_refresh_token is not None if token else False,
             entity_id_source=provider.entity_id_source,
         )
@@ -757,12 +769,14 @@ async def get_integration(
         )
 
     # Convert ORM config_schema items to Pydantic models
-    config_schema_items = None
+    config_schema_items, schema_warnings = parse_config_schema_items(
+        integration.config_schema,
+        integration_name=integration.name,
+    )
     if integration.config_schema:
-        config_schema_items = [
-            ConfigSchemaItem.model_validate(item)
-            for item in integration.config_schema
-        ]
+        config_schema_out = config_schema_items
+    else:
+        config_schema_out = None
 
     # Get integration-level default config values
     config_defaults = await repo.get_integration_defaults(integration.id)
@@ -771,13 +785,14 @@ async def get_integration(
         id=integration.id,
         name=integration.name,
         list_entities_data_provider_id=integration.list_entities_data_provider_id,
-        config_schema=config_schema_items,
+        config_schema=config_schema_out,
         config_defaults=config_defaults if config_defaults else None,
         entity_id=integration.entity_id,
         entity_id_name=integration.entity_id_name,
         default_entity_id=integration.default_entity_id,
         has_oauth_config=integration.has_oauth_config,
         is_deleted=integration.is_deleted,
+        validation_warning="; ".join(schema_warnings) if schema_warnings else None,
         created_at=integration.created_at,
         updated_at=integration.updated_at,
         mappings=mapping_responses,
@@ -806,7 +821,7 @@ async def get_integration_by_name(
             detail="Integration not found",
         )
 
-    return IntegrationResponse.model_validate(integration)
+    return integration_to_response(integration)
 
 
 @router.put(
@@ -832,7 +847,7 @@ async def update_integration(
         )
 
     logger.info(f"Updated integration: {log_safe(integration.name)}")
-    return IntegrationResponse.model_validate(integration)
+    return integration_to_response(integration)
 
 
 @router.delete(
