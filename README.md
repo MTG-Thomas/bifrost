@@ -239,17 +239,17 @@ Bifrost release artifacts are signed with [Sigstore](https://www.sigstore.dev/) 
 **Verify a Docker image:**
 
 ```bash
-cosign verify ghcr.io/jackmusick/bifrost-api:TAG \
-  --certificate-identity-regexp "https://github.com/jackmusick/bifrost/.*" \
+cosign verify ghcr.io/mtg-thomas/bifrost-api:TAG \
+  --certificate-identity-regexp "https://github.com/MTG-Thomas/bifrost/.*" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-(Same form for `ghcr.io/jackmusick/bifrost-client`.)
+(Same form for `ghcr.io/mtg-thomas/bifrost-client`.)
 
 **Inspect SLSA build provenance:**
 
 ```bash
-gh attestation verify ghcr.io/jackmusick/bifrost-api:TAG --owner jackmusick
+gh attestation verify ghcr.io/mtg-thomas/bifrost-api:TAG --owner MTG-Thomas
 ```
 
 **Verify a source tarball** (attached to GitHub Releases):
@@ -257,7 +257,7 @@ gh attestation verify ghcr.io/jackmusick/bifrost-api:TAG --owner jackmusick
 ```bash
 cosign verify-blob \
   --bundle bifrost-VERSION-source.tar.gz.sigstore \
-  --certificate-identity-regexp "https://github.com/jackmusick/bifrost/.*" \
+  --certificate-identity-regexp "https://github.com/MTG-Thomas/bifrost/.*" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   bifrost-VERSION-source.tar.gz
 ```
