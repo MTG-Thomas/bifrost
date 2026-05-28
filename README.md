@@ -3,9 +3,12 @@
 **Open-source automation platform for Integration Services** - Built to democratize best-in-class tooling before venture capital gets the chance to own something we're all incredibly passionate about.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![CodeQL](https://github.com/jackmusick/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/jackmusick/bifrost/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/jackmusick/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/jackmusick/bifrost)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12665/badge)](https://www.bestpractices.dev/projects/12665)
+[![CI](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/MTG-Thomas/bifrost/graph/badge.svg)](https://codecov.io/gh/MTG-Thomas/bifrost)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/quality_gate?project=MTG-Thomas_bifrost)](https://sonarcloud.io/summary/new_code?id=MTG-Thomas_bifrost)
+[![CodeQL](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/MTG-Thomas/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/MTG-Thomas/bifrost)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13022/badge)](https://www.bestpractices.dev/en/projects/13022)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://www.docker.com/)
