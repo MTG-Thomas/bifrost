@@ -19,18 +19,16 @@ Two ways to report privately:
 
 ### 1. GitHub private vulnerability reporting (preferred)
 
-Go to https://github.com/jackmusick/bifrost/security/advisories/new
+Go to https://github.com/MTG-Thomas/bifrost/security/advisories/new
 and submit a draft advisory. This keeps the report confidential and lets
 us discuss + patch + coordinate disclosure inside GitHub's tooling.
 
-### 2. Email
+### 2. Limited-disclosure issue
 
-If you can't use GitHub's flow, email **jackmmusick@gmail.com** with:
-
-- A description of the issue and its impact
-- Reproduction steps
-- The affected commit / branch
-- Your contact info for follow-up
+If you cannot use GitHub's advisory flow, open a **public** issue on
+`MTG-Thomas/bifrost` with a short summary only (no exploit details) and ask
+for a private channel. Do not paste payloads, credentials, or full PoCs in
+public threads.
 
 ### Response SLA
 
@@ -53,7 +51,7 @@ The repo runs:
   (see `.github/workflows/codeql.yml`)
 - **Secret scanning + push protection** at the repo level
 - **OpenSSF Scorecard** weekly, results published to
-  https://api.securityscorecards.dev/projects/github.com/jackmusick/bifrost
+  https://api.securityscorecards.dev/projects/github.com/MTG-Thomas/bifrost
 - **Snyk** dependency, IaC, and container scanning as a non-blocking rollout
   lane (see `.github/workflows/snyk.yml` and `docs/security/snyk.md`)
 
