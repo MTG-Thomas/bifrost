@@ -20,6 +20,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field
 
+from bifrost.contracts.integrations import ConfigItemType
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -182,7 +184,7 @@ class ManifestApp(BaseModel):
 class ManifestIntegrationConfigSchema(BaseModel):
     """Config schema item within an integration."""
     key: str = Field(description="Config key name")
-    type: str = Field(description="string | int | bool | json | secret")
+    type: ConfigItemType = Field(description="string | int | bool | json | secret")
     required: bool = Field(default=False, description="Whether this config must be set")
     description: str | None = Field(default=None, description="Human-readable description")
     options: list[str] | None = Field(default=None, description="Allowed values (for string type)")

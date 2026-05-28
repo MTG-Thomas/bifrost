@@ -25,6 +25,7 @@ from src.models.orm.config import Config
 from src.models.orm.integrations import Integration, IntegrationConfigSchema, IntegrationMapping
 from src.repositories.base import BaseRepository
 from src.repositories.org_scoped import OrgScopedRepository
+from src.services.integration_config_schema import validate_config_schema_type
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
         # Add config schema items if provided
         if data.config_schema:
             for idx, item in enumerate(data.config_schema):
+                validate_config_schema_type(item.type)
                 schema_item = IntegrationConfigSchema(
                     key=item.key,
                     type=item.type,
@@ -240,6 +242,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
 
             # Update existing or add new schema items
             for idx, item_data in enumerate(data.config_schema):
+                validate_config_schema_type(item_data.type)
                 if item_data.key in existing_by_key:
                     # Update existing
                     existing = existing_by_key[item_data.key]

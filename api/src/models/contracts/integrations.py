@@ -303,6 +303,13 @@ class IntegrationResponse(BaseModel):
         default=False,
         description="Soft delete flag",
     )
+    validation_warning: str | None = Field(
+        default=None,
+        description=(
+            "Present when stored config_schema contains invalid items "
+            "that were omitted from the response"
+        ),
+    )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 
@@ -452,6 +459,13 @@ class IntegrationDetailResponse(BaseModel):
     is_deleted: bool = Field(
         default=False,
         description="Soft delete flag",
+    )
+    validation_warning: str | None = Field(
+        default=None,
+        description=(
+            "Present when stored config_schema contains invalid items "
+            "that were omitted from the response"
+        ),
     )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
