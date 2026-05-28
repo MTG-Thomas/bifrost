@@ -113,7 +113,7 @@ class TestIntegrationToResponse:
         assert [item.key for item in response.config_schema or []] == ["valid"]
         assert response.validation_warning is not None
         assert response.validation_warning.startswith("config_schema.broken:")
-        assert "dropdown" in response.validation_warning
+        assert "Input should" in response.validation_warning
 
     def test_list_resilience_mixed_integrations(self):
         good = integration_to_response(

@@ -217,6 +217,7 @@ def serialize_integration(
         config_schema,
         integration_name=integ.name,
     )
+    valid_by_key = {item.key: item for item in valid_schema_items}
     return ManifestIntegration(
         id=str(integ.id),
         name=integ.name,
@@ -229,14 +230,15 @@ def serialize_integration(
         ),
         config_schema=[
             ManifestIntegrationConfigSchema(
-                key=item.key,
-                type=item.type,
-                required=item.required,
-                description=item.description,
-                options=item.options,
-                position=item.position,
+                key=cs.key,
+                type=valid_by_key[cs.key].type,
+                required=valid_by_key[cs.key].required,
+                description=valid_by_key[cs.key].description,
+                options=valid_by_key[cs.key].options,
+                position=cs.position,
             )
-            for item in valid_schema_items
+            for cs in (config_schema or [])
+            if cs.key in valid_by_key
         ],
         oauth_provider=(
             ManifestOAuthProvider(
