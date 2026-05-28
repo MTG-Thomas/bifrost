@@ -736,6 +736,10 @@ async def get_integration(
         provider = integration.oauth_provider
         token = await get_integration_level_token(ctx.db, provider.id)
         status_val, status_message = resolve_integration_oauth_status(provider, token)
+        if token and token.last_refresh_at:
+            last_refresh_at = token.last_refresh_at
+        else:
+            last_refresh_at = provider.last_token_refresh
         oauth_config = OAuthConfigSummary(
             provider_name=provider.provider_name,
             oauth_flow_type=provider.oauth_flow_type,
@@ -746,7 +750,7 @@ async def get_integration(
             status=status_val,
             status_message=status_message,
             expires_at=token.expires_at if token else None,
-            last_refresh_at=token.last_refresh_at if token else provider.last_token_refresh,
+            last_refresh_at=last_refresh_at,
             has_refresh_token=token.encrypted_refresh_token is not None if token else False,
             entity_id_source=provider.entity_id_source,
         )
