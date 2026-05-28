@@ -37,9 +37,9 @@ async def record_backfill_outcome(
         async with session_factory() as db:
             job = (
                 await db.execute(
-                    select(SummaryBackfillJob).where(
-                        SummaryBackfillJob.id == job_id
-                    )
+                    select(SummaryBackfillJob)
+                    .where(SummaryBackfillJob.id == job_id)
+                    .with_for_update()
                 )
             ).scalar_one_or_none()
             if job is None:

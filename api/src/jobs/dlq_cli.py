@@ -33,18 +33,33 @@ async def _connect():
     return await aio_pika.connect_robust(get_settings().rabbitmq_url)
 
 
+async def _fetch_poison_messages(poison, limit: int) -> list[Any]:
+    messages: list[Any] = []
+    for _ in range(limit):
+        message = await poison.get(fail=False, no_ack=False)
+        if message is None:
+            break
+        messages.append(message)
+    return messages
+
+
+async def _requeue_messages(messages: list[Any]) -> None:
+    for message in messages:
+        await message.nack(requeue=True)
+
+
+async def _ensure_main_queue(channel, queue_name: str) -> None:
+    await channel.declare_queue(queue_name, passive=True)
+
+
 async def inspect(queue: str, limit: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
     connection = await _connect()
     async with connection:
         channel = await connection.channel()
         poison = await channel.declare_queue(f"{queue}-poison", durable=True)
-        for _ in range(limit):
-            message = await poison.get(fail=False, no_ack=False)
-            if message is None:
-                break
-            rows.append(_describe(queue, message))
-            await message.nack(requeue=True)
+        messages = await _fetch_poison_messages(poison, limit)
+        rows = [_describe(queue, message) for message in messages]
+        await _requeue_messages(messages)
         await channel.close()
     return rows
 
@@ -55,15 +70,12 @@ async def replay(queue: str, limit: int, dry_run: bool) -> list[dict[str, Any]]:
     async with connection:
         channel = await connection.channel()
         poison = await channel.declare_queue(f"{queue}-poison", durable=True)
-        await channel.declare_queue(queue, durable=True)
-        for _ in range(limit):
-            message = await poison.get(fail=False, no_ack=False)
-            if message is None:
-                break
+        await _ensure_main_queue(channel, queue)
+        messages = await _fetch_poison_messages(poison, limit)
+        for message in messages:
             row = _describe(queue, message)
             rows.append(row)
             if dry_run:
-                await message.nack(requeue=True)
                 continue
             body = decode_message(message.body)
             publish_body = body if isinstance(body, dict) else {"_malformed_body": body}
@@ -88,6 +100,8 @@ async def replay(queue: str, limit: int, dry_run: bool) -> list[dict[str, Any]]:
             )
             await message.ack()
             logger.info("Replayed poison message", extra={"queue": queue, **row})
+        if dry_run:
+            await _requeue_messages(messages)
         await channel.close()
     return rows
 
@@ -98,20 +112,19 @@ async def discard(queue: str, limit: int, reason: str, dry_run: bool) -> list[di
     async with connection:
         channel = await connection.channel()
         poison = await channel.declare_queue(f"{queue}-poison", durable=True)
-        for _ in range(limit):
-            message = await poison.get(fail=False, no_ack=False)
-            if message is None:
-                break
+        messages = await _fetch_poison_messages(poison, limit)
+        for message in messages:
             row = _describe(queue, message)
             rows.append(row)
             if dry_run:
-                await message.nack(requeue=True)
-            else:
-                await message.ack()
-                logger.warning(
-                    "Discarded poison message",
-                    extra={"queue": queue, "discard_reason": reason, **row},
-                )
+                continue
+            await message.ack()
+            logger.warning(
+                "Discarded poison message",
+                extra={"queue": queue, "discard_reason": reason, **row},
+            )
+        if dry_run:
+            await _requeue_messages(messages)
         await channel.close()
     return rows
 

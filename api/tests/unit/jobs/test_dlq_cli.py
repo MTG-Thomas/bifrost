@@ -1,6 +1,8 @@
 """Tests for the DLQ operational CLI helpers."""
 
-from src.jobs.dlq_cli import decode_message, _describe
+import pytest
+
+from src.jobs.dlq_cli import decode_message, _describe, _fetch_poison_messages, _requeue_messages
 
 
 class FakePoisonMessage:
@@ -31,3 +33,43 @@ def test_describe_includes_operational_metadata():
     assert row["retry_count"] == 3
     assert row["replay_count"] == 1
     assert row["body"] == {"execution_id": "abc"}
+
+
+class FakePoisonQueue:
+    def __init__(self, messages):
+        self._messages = list(messages)
+
+    async def get(self, *, fail: bool, no_ack: bool):
+        del fail, no_ack
+        if not self._messages:
+            return None
+        return self._messages.pop(0)
+
+
+class FakeMessage:
+    def __init__(self, message_id: str):
+        self.message_id = message_id
+        self.nacked = False
+
+    async def nack(self, *, requeue: bool):
+        assert requeue is True
+        self.nacked = True
+
+
+@pytest.mark.asyncio
+async def test_fetch_poison_messages_stops_at_limit_and_empty_queue():
+    queue = FakePoisonQueue([FakeMessage("one"), FakeMessage("two")])
+
+    messages = await _fetch_poison_messages(queue, limit=3)
+
+    assert [message.message_id for message in messages] == ["one", "two"]
+    assert await _fetch_poison_messages(queue, limit=1) == []
+
+
+@pytest.mark.asyncio
+async def test_requeue_messages_nacks_each_message_once():
+    messages = [FakeMessage("one"), FakeMessage("two")]
+
+    await _requeue_messages(messages)
+
+    assert all(message.nacked for message in messages)
