@@ -162,9 +162,17 @@ def main() -> None:
         ),
     }
 
+    release_pending_statuses = {
+        "version_tags_status",
+        "version_unique_status",
+        "version_semver_status",
+        "release_notes_status",
+        "release_notes_vulns_status",
+    }
+
     for key, value in overrides.items():
         status_key = key.replace("_justification", "_status")
-        output[status_key] = "Met"
+        output[status_key] = "Unmet" if status_key in release_pending_statuses else "Met"
         output[key] = value
 
     OUTPUT.write_text(json.dumps(output, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

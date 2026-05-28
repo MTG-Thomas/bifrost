@@ -15,20 +15,15 @@ historical commit, please rebase onto current `main` before reporting.
 
 **Do not open a public issue for security reports.**
 
-Two ways to report privately:
-
-### 1. GitHub private vulnerability reporting (preferred)
+Report privately through GitHub's private vulnerability reporting flow:
 
 Go to https://github.com/MTG-Thomas/bifrost/security/advisories/new
 and submit a draft advisory. This keeps the report confidential and lets
-us discuss + patch + coordinate disclosure inside GitHub's tooling.
+us discuss, patch, and coordinate disclosure inside GitHub's tooling.
 
-### 2. Limited-disclosure issue
-
-If you cannot use GitHub's advisory flow, open a **public** issue on
-`MTG-Thomas/bifrost` with a short summary only (no exploit details) and ask
-for a private channel. Do not paste payloads, credentials, or full PoCs in
-public threads.
+If you cannot use that flow, contact a repository maintainer through a
+private channel and do not paste exploit details, credentials, or full PoCs
+in public GitHub issues, discussions, or pull requests.
 
 ### Response SLA
 

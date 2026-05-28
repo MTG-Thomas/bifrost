@@ -16,6 +16,8 @@ COOKIE_NAME = "_BadgeApp_session"
 BASE_URL = "https://www.bestpractices.dev"
 PROJECT_ID = 13022
 LEVEL = "passing"
+HTTP_TIMEOUT_SECONDS = 20
+REDIRECT_CODES = {301, 302, 303, 307, 308}
 ROOT = Path(__file__).resolve().parents[1]
 DATA_FILE = ROOT / ".bestpractices.json"
 
@@ -30,21 +32,10 @@ AUTH_TOKEN_PATTERN = re.compile(
     r'name="authenticity_token"[^>]*value="([^"]+)"|'
     r'value="([^"]+)"[^>]*name="authenticity_token"'
 )
-CSRF_TOKEN_PATTERN = re.compile(
-    r'name="csrf-token"[^>]*content="([^"]+)"|'
-    r'content="([^"]+)"[^>]*name="csrf-token"'
-)
 LOCK_VERSION_PATTERN = re.compile(
     r'name="project\[lock_version\]"[^>]*value="(\d+)"|'
     r'value="(\d+)"[^>]*name="project\[lock_version\]"'
 )
-
-
-class NoRedirectHandler(urllib.request.HTTPErrorProcessor):
-    def http_response(self, request, response):
-        return response
-
-    https_response = http_response
 
 
 def make_opener(session_cookie: str):
@@ -72,7 +63,8 @@ def make_opener(session_cookie: str):
     )
     return urllib.request.build_opener(
         urllib.request.HTTPCookieProcessor(jar),
-        NoRedirectHandler,
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPSHandler(),
     )
 
 
@@ -83,11 +75,33 @@ def first_match(pattern: re.Pattern[str], text: str) -> str | None:
     return match.group(1) or match.group(2)
 
 
+def redirect_is_auth_failure(location: str | None) -> bool:
+    if not location:
+        return True
+    lower = location.lower()
+    return any(
+        token in lower
+        for token in ("login", "sign_in", "signin", "/users/", "session/new")
+    )
+
+
+def ensure_not_auth_redirect(response, action: str) -> None:
+    code = response.getcode()
+    if code not in REDIRECT_CODES:
+        return
+    location = response.getheader("Location")
+    if redirect_is_auth_failure(location):
+        raise RuntimeError(
+            f"BadgeApp redirected {action} to sign-in; session cookie may be expired."
+        )
+
+
 def fetch_edit_page(opener, project_id: int, level: str):
     url = f"{BASE_URL}/en/projects/{project_id}/{level}/edit"
-    response = opener.open(url)
-    if response.getcode() in {301, 302, 303}:
-        raise RuntimeError("BadgeApp redirected edit page; session cookie may be expired.")
+    response = opener.open(url, timeout=HTTP_TIMEOUT_SECONDS)
+    ensure_not_auth_redirect(response, "edit page load")
+    if response.getcode() in REDIRECT_CODES:
+        raise RuntimeError("Unexpected redirect while loading BadgeApp edit page.")
     html = response.read().decode("utf-8", errors="replace")
     auth_token = first_match(AUTH_TOKEN_PATTERN, html)
     lock_version = first_match(LOCK_VERSION_PATTERN, html)
@@ -96,7 +110,14 @@ def fetch_edit_page(opener, project_id: int, level: str):
     return auth_token, lock_version
 
 
-def submit(opener, project_id: int, level: str, data: dict[str, str], auth_token: str, lock_version: str | None):
+def submit(
+    opener,
+    project_id: int,
+    level: str,
+    data: dict[str, str],
+    auth_token: str,
+    lock_version: str | None,
+):
     url = f"{BASE_URL}/en/projects/{project_id}/{level}"
     form_data = {"_method": "patch", "authenticity_token": auth_token}
     if lock_version:
@@ -111,11 +132,18 @@ def submit(opener, project_id: int, level: str, data: dict[str, str], auth_token
         method="POST",
     )
     request.add_header("Content-Type", "application/x-www-form-urlencoded")
-    response = opener.open(request)
+    response = opener.open(request, timeout=HTTP_TIMEOUT_SECONDS)
     code = response.getcode()
     body = response.read().decode("utf-8", errors="replace")
-    if code in {301, 302, 303}:
+
+    if code in REDIRECT_CODES:
+        if redirect_is_auth_failure(response.getheader("Location")):
+            return False, "redirected to sign-in; session cookie may be expired"
         return True, f"redirect {code}"
+
+    if code >= 400:
+        return False, f"HTTP {code}"
+
     if "error" in body.lower() and "form contains" in body.lower():
         return False, "validation errors in form response"
     return True, f"status {code}"
@@ -144,7 +172,10 @@ def main() -> int:
     ok, detail = submit(opener, PROJECT_ID, LEVEL, data, auth_token, lock_version)
     print(f"Submit project {PROJECT_ID} ({LEVEL}): {'OK' if ok else 'FAILED'} ({detail})")
     if ok:
-        verify = urllib.request.urlopen(f"{BASE_URL}/projects/{PROJECT_ID}.json")
+        verify = urllib.request.urlopen(
+            f"{BASE_URL}/projects/{PROJECT_ID}.json",
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
         payload = json.loads(verify.read().decode("utf-8"))
         print(
             "Current badge progress:",
