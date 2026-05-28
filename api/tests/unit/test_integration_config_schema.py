@@ -83,7 +83,7 @@ class TestParseConfigSchemaItems:
         assert len(items) == 1
         assert items[0].key == "good"
         assert warnings[0].startswith("config_schema.bad:")
-        assert "dropdown" in warnings[0]
+        assert "Input should" in warnings[0]
         assert any("Skipping invalid config schema item" in r.message for r in caplog.records)
 
 
