@@ -136,10 +136,12 @@ class TestTemplateProcessFork:
         template = TemplateProcess()
         template.start()
         children = []
+        queue_handles = []
         try:
             for _ in range(3):
                 child_pid, wq, rq = template.fork()
                 children.append(child_pid)
+                queue_handles.append((wq, rq))
 
             # All should be unique PIDs
             assert len(set(children)) == 3
@@ -148,6 +150,9 @@ class TestTemplateProcessFork:
             for pid in children:
                 os.kill(pid, 0)  # Should not raise
         finally:
+            for wq, rq in queue_handles:
+                wq.close()
+                rq.close()
             for pid in children:
                 try:
                     os.kill(pid, signal.SIGTERM)
@@ -267,16 +272,18 @@ class TestForkPerformance:
         template = TemplateProcess()
         template.start()
         children = []
+        queue_handles = []
         try:
             template_rss_kb = _get_rss_kb(template.pid)
             template_rss_mb = template_rss_kb / 1024 if template_rss_kb > 0 else -1
 
             start = time.monotonic()
             for i in range(10):
-                child_pid, _, _ = template.fork(
+                child_pid, wq, rq = template.fork(
                     worker_id=f"mem-{i}", persistent=True,
                 )
                 children.append(child_pid)
+                queue_handles.append((wq, rq))
             fork_all_ms = (time.monotonic() - start) * 1000
 
             time.sleep(0.1)
@@ -290,6 +297,9 @@ class TestForkPerformance:
 
             assert alive >= 8, f"Only {alive}/10 children alive"
         finally:
+            for wq, rq in queue_handles:
+                wq.close()
+                rq.close()
             for pid in children:
                 try:
                     os.kill(pid, signal.SIGTERM)
