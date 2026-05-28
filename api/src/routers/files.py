@@ -168,6 +168,10 @@ class FileListMetadataItem(BaseModel):
     etag: str
     last_modified: str  # ISO 8601
     updated_by: str | None = None
+    content_hash: str | None = Field(
+        default=None,
+        description="Normalized MD5 content hash for CLI sync comparisons",
+    )
 
 
 class FileListResponse(BaseModel):
@@ -378,15 +382,23 @@ async def list_files_simple(
                 if not path.startswith(".git/")
             }
 
-            # Look up updated_by from file_index
+            # Look up updated_by and indexed content for sync hash metadata
             from src.models.orm.file_index import FileIndex
 
             fi_result = await db.execute(
-                select(FileIndex.path, FileIndex.updated_by).where(
+                select(FileIndex.path, FileIndex.updated_by, FileIndex.content).where(
                     FileIndex.path.in_(list(s3_metadata.keys()))
                 )
             )
-            author_lookup = {row.path: row.updated_by for row in fi_result.all()}
+            index_lookup = {
+                row.path: {
+                    "updated_by": row.updated_by,
+                    "content": row.content,
+                }
+                for row in fi_result.all()
+            }
+
+            from shared.sync_content_hash import compute_sync_content_hash
 
             return FileListResponse(
                 files=sorted(s3_metadata.keys()),
@@ -395,7 +407,12 @@ async def list_files_simple(
                         path=path,
                         etag=meta.etag,
                         last_modified=meta.last_modified.isoformat(),
-                        updated_by=author_lookup.get(path),
+                        updated_by=index_lookup.get(path, {}).get("updated_by"),
+                        content_hash=(
+                            compute_sync_content_hash(index_lookup[path]["content"].encode("utf-8"))
+                            if index_lookup.get(path, {}).get("content")
+                            else None
+                        ),
                     )
                     for path, meta in sorted(s3_metadata.items())
                 ],
