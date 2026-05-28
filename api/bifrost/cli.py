@@ -84,19 +84,30 @@ _FORCE_INCLUDE_PATTERNS = [
 
 def _normalize_line_endings(data: bytes) -> bytes:
     """Normalize CRLF to LF for text files. Binary files pass through unchanged."""
-    if b"\x00" in data[:8192]:
-        return data
-    return data.replace(b"\r\n", b"\n")
+    from shared.sync_content_hash import normalize_line_endings
+
+    return normalize_line_endings(data)
 
 
 def _hash_for_cache(raw_bytes: bytes) -> str:
     """md5 of post-normalization bytes — must match what the server stores.
 
-    Watch normalizes CRLF to LF before pushing, so S3 stores normalized bytes
-    and S3's ETag is md5 of those. Any hash we compare against a server ETag
-    must be computed on the same normalized bytes.
+    Watch normalizes CRLF to LF before pushing, so object storage stores
+    normalized bytes for CLI-driven sync. Any hash we compare against server
+    content must be computed on the same normalized bytes.
     """
-    return hashlib.md5(_normalize_line_endings(raw_bytes)).hexdigest()
+    from shared.sync_content_hash import compute_sync_content_hash
+
+    return compute_sync_content_hash(raw_bytes)
+
+
+def _server_sync_hash(server_info: dict[str, str]) -> str | None:
+    """Prefer API content_hash; fall back to legacy storage etag metadata."""
+    content_hash = server_info.get("content_hash")
+    if content_hash:
+        return content_hash
+    etag = server_info.get("etag")
+    return etag or None
 
 
 def _is_bifrost_path(path: str) -> bool:
@@ -2729,9 +2740,9 @@ async def _watch_and_push(
         if seed_resp.status_code == 200:
             seed_data = seed_resp.json()
             state.seed_known_hashes({
-                item["path"]: item["etag"]
+                item["path"]: item.get("content_hash") or item["etag"]
                 for item in seed_data.get("files_metadata", [])
-                if item.get("path") and item.get("etag")
+                if item.get("path") and (item.get("content_hash") or item.get("etag"))
             })
     except Exception as e:
         # Hash cache seeding is an optimization — cold start just falls back to byte-compare
@@ -2905,6 +2916,7 @@ async def _sync_files(
             for item in data.get("files_metadata", []):
                 server_metadata[item["path"]] = {
                     "etag": item["etag"],
+                    "content_hash": item.get("content_hash", ""),
                     "last_modified": item["last_modified"],
                     "updated_by": item.get("updated_by", ""),
                 }
@@ -2927,7 +2939,7 @@ async def _sync_files(
 
     for repo_path, content in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
+        local_hash = _hash_for_cache(base64.b64decode(content))
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:
@@ -2944,7 +2956,7 @@ async def _sync_files(
                 "rel": rel,
                 "_content": content,
             })
-        elif server_info["etag"] != local_md5:
+        elif _server_sync_hash(server_info) != local_hash:
             matched_server_paths.add(repo_path)
             # Content differs — check timestamps
             local_file = path / rel
