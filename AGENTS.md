@@ -4,8 +4,8 @@ Tool-neutral guidance for AI coding agents in `MTG-Thomas/bifrost`. This fork tr
 
 **New teammates and workspace-only work:** start with MTG onboarding, not this file alone.
 
-- [Develop at MTG (Windows)](https://github.com/MTG-Thomas/bifrost-ops/blob/main/docs/develop-at-mtg-windows.md) — Persona A (default) and Persona B overview
-- `MTG-Thomas/bifrost-workspace` + `AGENTS.md` — automation authoring against shared dev
+- [Develop at MTG (Windows)](https://github.com/MTG-Thomas/bifrost-ops/blob/main/docs/develop-at-mtg-windows.md) — Persona A (default) and Persona B overview (`MTG-Thomas/bifrost-ops`)
+- [Bifrost workspace agent guide](https://github.com/MTG-Thomas/bifrost-workspace/blob/main/AGENTS.md) — automation authoring against `https://dev.bifrost.midtowntg.com` (`MTG-Thomas/bifrost-workspace`)
 
 ## Personas
 
@@ -90,7 +90,7 @@ Do not expose secret values in chat, logs, test fixtures, screenshots, or commit
 
 - `CLAUDE.md` — upstream-style platform commands, manifest rules, verification checklist
 - `CONTRIBUTING.md` — human-facing PR expectations
-- `MTG-Thomas/bifrost-ops/docs/develop-at-mtg-windows.md` — team onboarding (Windows-first)
-- `MTG-Thomas/bifrost-ops/docs/proxmox-shared-dev-roadmap.md` — shared lab + Entra direction
+- [Develop at MTG (Windows)](https://github.com/MTG-Thomas/bifrost-ops/blob/main/docs/develop-at-mtg-windows.md) — team onboarding (Windows-first)
+- [Proxmox shared dev roadmap](https://github.com/MTG-Thomas/bifrost-ops/blob/main/docs/proxmox-shared-dev-roadmap.md) — shared lab + Entra direction
 - `.claude/skills/` — upstream maintainer workflows (release, issues); **ignore for MTG day-to-day**
 - `api/tests/README.md` — test structure and fixture notes
