@@ -72,15 +72,7 @@ class BulkStateUpdateRequest(BaseModel):
 
 
 async def _get_or_create_table(db: DbSession, *, org_id: UUID, name: str) -> Table:
-    result = await db.execute(
-        select(Table).where(
-            and_(
-                Table.organization_id == org_id,
-                Table.name == name,
-            )
-        )
-    )
-    table = result.scalar_one_or_none()
+    table = await _get_table(db, org_id=org_id, name=name)
     if table:
         return table
 
@@ -95,6 +87,18 @@ async def _get_or_create_table(db: DbSession, *, org_id: UUID, name: str) -> Tab
     await db.flush()
     await db.refresh(table)
     return table
+
+
+async def _get_table(db: DbSession, *, org_id: UUID, name: str) -> Table | None:
+    result = await db.execute(
+        select(Table).where(
+            and_(
+                Table.organization_id == org_id,
+                Table.name == name,
+            )
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 def _occurrence_key(org_id: UUID, finding: FindingInput) -> str:
@@ -238,6 +242,7 @@ async def ingest_scan_results(
                 updated_by=user.email,
             )
             db.add(doc)
+            existing_by_occurrence[occurrence_key] = doc
 
         current_open_keys.add(f"{finding.template_id}:{finding.host}")
 
@@ -264,12 +269,20 @@ async def ingest_scan_results(
                 doc.updated_by = user.email
                 resolved += 1
 
+    run_data = run_doc.data or {}
+    if request.scan_completed_at:
+        scan_completed_at = request.scan_completed_at.astimezone(timezone.utc).isoformat()
+    elif request.incomplete:
+        scan_completed_at = run_data.get("scan_completed_at")
+    else:
+        scan_completed_at = datetime.now(timezone.utc).isoformat()
+
     run_doc.data = {
-        **(run_doc.data or {}),
+        **run_data,
         "status": "completed" if not request.incomplete else "incomplete",
         "scan_host_device_id": request.scan_host_device_id,
-        "scan_started_at": request.scan_started_at.astimezone(timezone.utc).isoformat() if request.scan_started_at else (run_doc.data or {}).get("scan_started_at"),
-        "scan_completed_at": request.scan_completed_at.astimezone(timezone.utc).isoformat() if request.scan_completed_at else datetime.now(timezone.utc).isoformat(),
+        "scan_started_at": request.scan_started_at.astimezone(timezone.utc).isoformat() if request.scan_started_at else run_data.get("scan_started_at"),
+        "scan_completed_at": scan_completed_at,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "finding_counts": counts,
         "incomplete": request.incomplete,
@@ -300,7 +313,10 @@ async def get_scan_history(
     db: DbSession,
     limit: int = Query(default=50, ge=1, le=500),
 ) -> dict[str, Any]:
-    runs_table = await _get_or_create_table(db, org_id=org_id, name=RUNS_TABLE)
+    runs_table = await _get_table(db, org_id=org_id, name=RUNS_TABLE)
+    if not runs_table:
+        return {"items": [], "total": 0}
+
     result = await db.execute(select(Document).where(Document.table_id == runs_table.id))
     docs = list(result.scalars().all())
 
@@ -324,7 +340,10 @@ async def get_findings(
     if severity and severity.lower() not in SEVERITIES:
         raise HTTPException(status_code=400, detail=f"Invalid severity: {severity}")
 
-    findings_table = await _get_or_create_table(db, org_id=org_id, name=FINDINGS_TABLE)
+    findings_table = await _get_table(db, org_id=org_id, name=FINDINGS_TABLE)
+    if not findings_table:
+        return {"items": [], "total": 0}
+
     result = await db.execute(select(Document).where(Document.table_id == findings_table.id))
     docs = list(result.scalars().all())
 
