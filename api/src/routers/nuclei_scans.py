@@ -242,48 +242,49 @@ async def ingest_scan_results(
         current_open_keys.add(f"{finding.template_id}:{finding.host}")
 
     resolved = 0
-    for doc in existing_docs:
-        data = doc.data or {}
-        if data.get("state") not in {"open", "acknowledged"}:
-            continue
+    if not request.incomplete:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for doc in existing_docs:
+            data = doc.data or {}
+            if data.get("state") not in {"open", "acknowledged"}:
+                continue
 
-        host = str(data.get("host") or "")
-        template_id = str(data.get("template_id") or "")
-        if not host or not template_id:
-            continue
+            host = str(data.get("host") or "")
+            template_id = str(data.get("template_id") or "")
+            if not host or not template_id:
+                continue
 
-        if host in scanned_hosts and f"{template_id}:{host}" not in current_open_keys:
-            data["state"] = "resolved"
-            data["resolved_at"] = datetime.now(timezone.utc).isoformat()
-            data["updated_at"] = datetime.now(timezone.utc).isoformat()
-            doc.data = data
-            doc.updated_by = user.email
-            resolved += 1
+            if host in scanned_hosts and f"{template_id}:{host}" not in current_open_keys:
+                doc.data = {
+                    **data,
+                    "state": "resolved",
+                    "resolved_at": now_iso,
+                    "updated_at": now_iso,
+                }
+                doc.updated_by = user.email
+                resolved += 1
 
-    run_data = run_doc.data or {}
-    run_data.update(
-        {
-            "status": "completed" if not request.incomplete else "incomplete",
-            "scan_host_device_id": request.scan_host_device_id,
-            "scan_started_at": request.scan_started_at.astimezone(timezone.utc).isoformat() if request.scan_started_at else run_data.get("scan_started_at"),
-            "scan_completed_at": request.scan_completed_at.astimezone(timezone.utc).isoformat() if request.scan_completed_at else datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "finding_counts": counts,
-            "incomplete": request.incomplete,
-            "net_new": net_new,
-            "resolved": resolved,
-            "realert_suppressed": realert_suppressed,
-            "total_findings": len(request.findings),
-        }
-    )
-    run_doc.data = run_data
+    run_doc.data = {
+        **(run_doc.data or {}),
+        "status": "completed" if not request.incomplete else "incomplete",
+        "scan_host_device_id": request.scan_host_device_id,
+        "scan_started_at": request.scan_started_at.astimezone(timezone.utc).isoformat() if request.scan_started_at else (run_doc.data or {}).get("scan_started_at"),
+        "scan_completed_at": request.scan_completed_at.astimezone(timezone.utc).isoformat() if request.scan_completed_at else datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "finding_counts": counts,
+        "incomplete": request.incomplete,
+        "net_new": net_new,
+        "resolved": resolved,
+        "realert_suppressed": realert_suppressed,
+        "total_findings": len(request.findings),
+    }
     run_doc.updated_by = user.email
 
     await db.flush()
 
     return {
         "run_id": run_id,
-        "status": run_data["status"],
+        "status": run_doc.data["status"],
         "counts": counts,
         "net_new": net_new,
         "resolved": resolved,
@@ -366,12 +367,13 @@ async def bulk_update_finding_state(
 
     now = datetime.now(timezone.utc).isoformat()
     for doc in docs:
-        data = doc.data or {}
-        data["state"] = request.state
-        data["updated_at"] = now
+        updates: dict[str, Any] = {
+            "state": request.state,
+            "updated_at": now,
+        }
         if request.state == "resolved":
-            data["resolved_at"] = now
-        doc.data = data
+            updates["resolved_at"] = now
+        doc.data = {**(doc.data or {}), **updates}
         doc.updated_by = user.email
 
     await db.flush()

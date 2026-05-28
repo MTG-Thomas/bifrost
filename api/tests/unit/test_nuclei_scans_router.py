@@ -60,6 +60,12 @@ def test_ingest_request_defaults_to_complete_empty_findings() -> None:
     assert request.incomplete is False
 
 
+def test_ingest_request_accepts_incomplete_flag() -> None:
+    request = ScanIngestRequest(scan_host_device_id="scanner-1", incomplete=True)
+
+    assert request.incomplete is True
+
+
 def test_bulk_state_update_only_allows_lifecycle_states() -> None:
     assert BulkStateUpdateRequest(finding_ids=["finding-1"], state="resolved").state == "resolved"
 
