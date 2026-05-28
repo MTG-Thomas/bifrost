@@ -105,7 +105,7 @@ def _occurrence_key(org_id: UUID, finding: FindingInput) -> str:
 
 
 def _stable_id(raw: str) -> str:
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @router.post(
