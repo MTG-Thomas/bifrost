@@ -19,4 +19,4 @@ def normalize_line_endings(data: bytes) -> bytes:
 
 def compute_sync_content_hash(raw_bytes: bytes) -> str:
     """Return md5 hex digest of normalized bytes — matches bifrost CLI sync."""
-    return hashlib.md5(normalize_line_endings(raw_bytes)).hexdigest()
+    return hashlib.md5(normalize_line_endings(raw_bytes)).hexdigest()  # NOSONAR - content fingerprint, not crypto

@@ -382,7 +382,9 @@ async def list_files_simple(
                 if not path.startswith(".git/")
             }
 
-            # Look up updated_by and indexed content for sync hash metadata
+            # Look up updated_by and indexed text for sync-hash metadata.
+            # FileIndex.content_hash is SHA-256 (github_sync); CLI sync uses
+            # normalized MD5 via compute_sync_content_hash — compute on the fly.
             from src.models.orm.file_index import FileIndex
 
             fi_result = await db.execute(

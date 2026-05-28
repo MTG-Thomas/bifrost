@@ -2939,7 +2939,7 @@ async def _sync_files(
 
     for repo_path, content in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_hash = hashlib.md5(base64.b64decode(content)).hexdigest()
+        local_hash = _hash_for_cache(base64.b64decode(content))
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:
