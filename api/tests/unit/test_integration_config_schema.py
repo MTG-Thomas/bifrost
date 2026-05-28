@@ -82,7 +82,8 @@ class TestParseConfigSchemaItems:
 
         assert len(items) == 1
         assert items[0].key == "good"
-        assert warnings == ["config_schema.bad.type: invalid value 'dropdown'"]
+        assert warnings[0].startswith("config_schema.bad:")
+        assert "dropdown" in warnings[0]
         assert any("Skipping invalid config schema item" in r.message for r in caplog.records)
 
 
@@ -110,9 +111,9 @@ class TestIntegrationToResponse:
         response = integration_to_response(integration)
 
         assert [item.key for item in response.config_schema or []] == ["valid"]
-        assert response.validation_warning == (
-            "config_schema.broken.type: invalid value 'dropdown'"
-        )
+        assert response.validation_warning is not None
+        assert response.validation_warning.startswith("config_schema.broken:")
+        assert "dropdown" in response.validation_warning
 
     def test_list_resilience_mixed_integrations(self):
         good = integration_to_response(

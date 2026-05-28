@@ -33,6 +33,7 @@ from src.models.orm.tables import Table
 from src.models.orm.users import Role
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
+from src.services.integration_config_schema import parse_config_schema_items
 from bifrost.manifest import (
     Manifest,
     ManifestAgent,
@@ -212,6 +213,10 @@ def serialize_integration(
     mappings: list[IntegrationMapping] | None = None,
 ) -> ManifestIntegration:
     """Serialize an Integration ORM object to ManifestIntegration."""
+    valid_schema_items, _ = parse_config_schema_items(
+        config_schema,
+        integration_name=integ.name,
+    )
     return ManifestIntegration(
         id=str(integ.id),
         name=integ.name,
@@ -224,14 +229,14 @@ def serialize_integration(
         ),
         config_schema=[
             ManifestIntegrationConfigSchema(
-                key=cs.key,
-                type=cs.type,
-                required=cs.required,
-                description=cs.description,
-                options=cs.options,
-                position=cs.position,
+                key=item.key,
+                type=item.type,
+                required=item.required,
+                description=item.description,
+                options=item.options,
+                position=item.position,
             )
-            for cs in (config_schema or [])
+            for item in valid_schema_items
         ],
         oauth_provider=(
             ManifestOAuthProvider(

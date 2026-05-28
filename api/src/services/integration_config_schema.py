@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 from pydantic import ValidationError
 
@@ -14,9 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-VALID_CONFIG_SCHEMA_TYPES: frozenset[str] = frozenset(
-    {"string", "int", "bool", "json", "secret"}
-)
+VALID_CONFIG_SCHEMA_TYPES: frozenset[str] = frozenset(get_args(ConfigItemType))
 
 
 def validate_config_schema_type(type_value: str) -> ConfigItemType:
@@ -45,8 +43,9 @@ def parse_config_schema_items(
     for item in orm_items:
         try:
             valid_items.append(ConfigSchemaItem.model_validate(item))
-        except ValidationError:
-            msg = f"config_schema.{item.key}.type: invalid value {item.type!r}"
+        except ValidationError as exc:
+            detail = exc.errors()[0]["msg"] if exc.errors() else "validation failed"
+            msg = f"config_schema.{item.key}: {detail}"
             warnings.append(msg)
             if log_warnings:
                 log_ctx = (
