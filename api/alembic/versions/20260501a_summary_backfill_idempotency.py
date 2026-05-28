@@ -1,7 +1,7 @@
 """Add processed run tracking to summary backfill jobs.
 
 Revision ID: 20260501a_bf_idempotency
-Revises: 20260420_hmac_scheme
+Revises: 20260524_oauth_user_cascade
 Create Date: 2026-05-01
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260501a_bf_idempotency"
-down_revision: str | None = "20260420_hmac_scheme"
+down_revision: str | None = "20260524_oauth_user_cascade"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
