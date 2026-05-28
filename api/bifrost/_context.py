@@ -131,6 +131,9 @@ def resolve_scope(scope: str | None) -> str | None:
     If explicit scope differs from default scope, requires provider org context.
     """
     if scope == "global":
+        ctx = _execution_context.get()
+        if ctx is None:
+            return "global"  # CLI mode — preserve explicit global scope token
         scope = None
     default = get_default_scope()
     if scope is None:

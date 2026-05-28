@@ -168,6 +168,12 @@ class TestResolveScope:
         finally:
             clear_execution_context()
 
+    def test_global_string_preserved_in_cli_mode(self):
+        from bifrost._context import resolve_scope, clear_execution_context
+
+        clear_execution_context()
+        assert resolve_scope("global") == "global"
+
 
 class TestOrganizationIsProvider:
     """Test that is_provider field exists and defaults correctly."""
