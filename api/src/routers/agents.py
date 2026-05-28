@@ -57,6 +57,7 @@ async def _validate_agent_references(
     delegated_agent_ids: list[str] | None,
     agent_id: UUID | None = None,  # For self-delegation check
     target_org_id: UUID | None = None,
+    allow_cross_org_references: bool = False,
 ) -> None:
     """
     Validate that all referenced tools and agents exist and are valid.
@@ -89,7 +90,11 @@ async def _validate_agent_references(
                     errors.append(
                         f"tool_id '{tool_id}' references a {workflow.type}, not a tool"
                     )
-                elif workflow.organization_id is not None and workflow.organization_id != target_org_id:
+                elif (
+                    workflow.organization_id is not None
+                    and workflow.organization_id != target_org_id
+                    and not allow_cross_org_references
+                ):
                     errors.append(f"tool_id '{tool_id}' belongs to a different organization")
             except ValueError:
                 errors.append(f"tool_id '{tool_id}' is not a valid UUID")
@@ -113,7 +118,11 @@ async def _validate_agent_references(
                     errors.append(f"delegated_agent_id '{delegate_id}' does not reference an existing agent")
                 elif not delegate.is_active:
                     errors.append(f"delegated_agent_id '{delegate_id}' references an inactive agent")
-                elif delegate.organization_id is not None and delegate.organization_id != target_org_id:
+                elif (
+                    delegate.organization_id is not None
+                    and delegate.organization_id != target_org_id
+                    and not allow_cross_org_references
+                ):
                     errors.append(f"delegated_agent_id '{delegate_id}' belongs to a different organization")
             except ValueError:
                 errors.append(f"delegated_agent_id '{delegate_id}' is not a valid UUID")
@@ -346,6 +355,7 @@ async def create_agent(
         delegated_agent_ids=agent_data.delegated_agent_ids,
         agent_id=None,
         target_org_id=agent_data.organization_id,
+        allow_cross_org_references=is_admin,
     )
 
     agent_id = uuid4()
@@ -656,6 +666,7 @@ async def update_agent(
         delegated_agent_ids=agent_data.delegated_agent_ids,
         agent_id=agent_id,  # For self-delegation check
         target_org_id=agent_data.organization_id if "organization_id" in agent_data.model_fields_set else agent.organization_id,
+        allow_cross_org_references=is_admin,
     )
 
     # Update fields
