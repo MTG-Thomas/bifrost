@@ -1680,7 +1680,11 @@ async def get_integration_sdk_data(
         )
 
     # Get merged configuration
-    config = await repo.get_config_for_mapping(integration.id, org_id)
+    config = await repo.get_config_for_mapping(
+        integration.id,
+        org_id,
+        include_default_secrets=True,
+    )
 
     # Get OAuth provider info if present
     oauth_client_id = None
