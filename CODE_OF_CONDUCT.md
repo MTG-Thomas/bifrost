@@ -66,7 +66,8 @@ participants identify themselves as contributing to Bifrost.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement:
 
-- **Preferred:** contact a [repository maintainer](https://github.com/MTG-Thomas/bifrost) through GitHub (issue comment with request for private follow-up, or organization contact as listed on [MTG-Thomas](https://github.com/MTG-Thomas)).
+- **Maintainers:** Doug Eckhart and Eric Atlas (`@MTG-Thomas` org members), and other repository maintainers listed in [GOVERNANCE.md](GOVERNANCE.md).
+- **Preferred:** contact a maintainer through GitHub (issue comment with request for private follow-up, or organization contact as listed on [MTG-Thomas](https://github.com/MTG-Thomas)).
 - **Safety-sensitive reports:** use [GitHub private vulnerability reporting](https://github.com/MTG-Thomas/bifrost/security/advisories/new) when the concern overlaps with security or you need a non-public channel.
 
 All complaints will be reviewed and investigated promptly and fairly.

@@ -177,12 +177,12 @@ def main() -> None:
             f"{BASE}/blob/main/GOVERNANCE.md and {BASE}/blob/main/.github/CODEOWNERS."
         ),
         "access_continuity_justification": (
-            f"Access continuity and succession expectations are documented in "
-            f"{BASE}/blob/main/GOVERNANCE.md (org owners, CODEOWNERS, branch protection)."
+            f"Backup maintainers Doug Eckhart and Eric Atlas (@MTG-Thomas org members) "
+            f"and succession steps are documented in {BASE}/blob/main/GOVERNANCE.md."
         ),
         "bus_factor_justification": (
-            f"Multiple maintainers via @MTG-Thomas CODEOWNERS and org-owner backup "
-            f"path are documented in {BASE}/blob/main/GOVERNANCE.md."
+            f"Multiple @MTG-Thomas maintainers with named backups (Doug Eckhart, Eric Atlas) "
+            f"and org-owner paths are documented in {BASE}/blob/main/GOVERNANCE.md."
         ),
         "contributors_unassociated_justification": (
             f"External contributors are explicitly welcome via PR/issue flow; see "

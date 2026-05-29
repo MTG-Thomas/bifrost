@@ -31,6 +31,7 @@ governance here applies to the MTG fork only.
 |------|-----|------------------|
 | **Organization owners** | GitHub owners of the `MTG-Thomas` org | Org settings, billing, security defaults (2FA, secret scanning), backup org admins |
 | **Repository maintainers** | Members of `@MTG-Thomas` with merge access to this repo | Triage issues/PRs, enforce branch protection, cut semver releases, CoC enforcement |
+| **Backup maintainers** | Doug Eckhart and Eric Atlas (`@MTG-Thomas` org members) | Assume stewardship if the primary maintainer is unavailable; same responsibilities as repository maintainers |
 | **Code owners** | See [.github/CODEOWNERS](.github/CODEOWNERS) | Required review on changes under owned paths (currently default `@MTG-Thomas`) |
 | **Contributors** | Anyone who opens issues or PRs | Propose changes; follow [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 | **Automation** | GitHub Actions, Dependabot, Scorecard, CodeQL | CI gates on `main`; no direct merge without passing checks where configured |
@@ -74,23 +75,21 @@ Certificate of Origin 1.1). Maintainers may reject commits that lack valid
 **Goal:** no single person is the only holder of merge access, org admin access,
 or release credentials.
 
-Current mechanisms (draft — verify against live GitHub settings):
+Current mechanisms:
 
 - **Multiple org owners** on `MTG-Thomas` (GitHub organization settings).
+- **Named backup maintainers** — Doug Eckhart and Eric Atlas (both `@MTG-Thomas` org members with merge access).
 - **Team-based ownership** via `@MTG-Thomas` in [CODEOWNERS](.github/CODEOWNERS).
 - **Branch protection on `main`** — required reviews and CI before merge.
 - **Documented operator paths** in [bifrost-ops](https://github.com/MTG-Thomas/bifrost-ops) (Windows onboarding, shared dev VM, release runbooks).
 
 If a maintainer leaves or is unavailable:
 
-1. Remaining org owners assign issue/PR stewardship to another maintainer.
-2. Release tags and BadgeApp project ownership are transferred through org admin
-   settings (document owner in internal ops notes; not stored in this repo).
-3. Emergency merges follow the same PR + review rule except where GitHub org
-   policy allows break-glass admin merge with post-incident review.
+1. **Doug Eckhart** or **Eric Atlas** assumes day-to-day stewardship (issues, PRs, releases) as backup maintainers.
+2. Remaining org owners reassign BadgeApp project ownership and any org-only credentials through GitHub org admin settings (document owner in internal ops notes; not stored in this repo).
+3. Emergency merges follow the same PR + review rule except where GitHub org policy allows break-glass admin merge with post-incident review.
 
-**Open item for MTG review:** name explicit backup maintainers and the internal
-contact for org-owner succession (edit this section after operator sign-off).
+**Informal upstream advisor:** [Jack Musick](https://github.com/jackmusick) (original Bifrost creator) is not an MTG fork maintainer but may assist with architectural or release questions in a pinch.
 
 ## Security and conduct escalation
 
@@ -112,3 +111,4 @@ contact for org-owner succession (edit this section after operator sign-off).
 | Date | Change |
 |------|--------|
 | 2026-05-29 | Initial draft for OpenSSF Silver #290 |
+| 2026-05-29 | Named backup maintainers (Doug Eckhart, Eric Atlas); Jack Musick as informal upstream advisor |

@@ -197,9 +197,9 @@
   "roles_responsibilities_status": "Met",
   "roles_responsibilities_justification": "Maintainer, contributor, and code-owner roles are defined in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md and https://github.com/MTG-Thomas/bifrost/blob/main/.github/CODEOWNERS.",
   "access_continuity_status": "Met",
-  "access_continuity_justification": "Access continuity and succession expectations are documented in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md (org owners, CODEOWNERS, branch protection).",
+  "access_continuity_justification": "Backup maintainers Doug Eckhart and Eric Atlas (@MTG-Thomas org members) and succession steps are documented in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md.",
   "bus_factor_status": "Met",
-  "bus_factor_justification": "Multiple maintainers via @MTG-Thomas CODEOWNERS and org-owner backup path are documented in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md.",
+  "bus_factor_justification": "Multiple @MTG-Thomas maintainers with named backups (Doug Eckhart, Eric Atlas) and org-owner paths are documented in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md.",
   "contributors_unassociated_status": "Met",
   "contributors_unassociated_justification": "External contributors are explicitly welcome via PR/issue flow; see https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md and https://github.com/MTG-Thomas/bifrost/blob/main/CONTRIBUTING.md."
 }
