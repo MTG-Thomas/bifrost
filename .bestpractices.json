@@ -40,7 +40,7 @@
   "version_tags_status": "Met",
   "version_tags_justification": "First MTG semver tag v1.0.0 published at https://github.com/MTG-Thomas/bifrost/releases/tag/v1.0.0. CI builds signed release artifacts on every v* tag (https://github.com/MTG-Thomas/bifrost/blob/main/.github/workflows/ci.yml).",
   "release_notes_status": "Met",
-  "release_notes_justification": "v1.0.0 release notes include themed change summary at https://github.com/MTG-Thomas/bifrost/releases/tag/v1.0.0 (see bifrost-release skill).",
+  "release_notes_justification": "v1.0.0 release notes include a themed change summary and upstream baseline at https://github.com/MTG-Thomas/bifrost/releases/tag/v1.0.0.",
   "release_notes_vulns_status": "Met",
   "release_notes_vulns_justification": "v1.0.0 release notes include a Fixed CVEs section at https://github.com/MTG-Thomas/bifrost/releases/tag/v1.0.0.",
   "report_tracker_status": "Met",

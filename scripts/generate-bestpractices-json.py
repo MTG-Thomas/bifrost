@@ -141,8 +141,8 @@ def main() -> None:
             f"first tag v1.0.0 at {BASE}/tags."
         ),
         "release_notes_justification": (
-            f"v1.0.0 release notes include themed change summary at "
-            f"{BASE}/releases/tag/v1.0.0 (see bifrost-release skill)."
+            f"v1.0.0 release notes include a themed change summary and upstream "
+            f"baseline at {BASE}/releases/tag/v1.0.0."
         ),
         "release_notes_vulns_justification": (
             f"v1.0.0 release notes include a Fixed CVEs section at "
