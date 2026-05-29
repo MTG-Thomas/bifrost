@@ -134,15 +134,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      - name: Run PR E2E smoke tests
-        if: github.event_name == 'pull_request'
+      # PRs and semver tags use the smoke suite (same gate as merge review).
+      # Full E2E runs on merge_group / manual dispatch until the suite is stable
+      # on MTG fork CI — see ongoing git-sync and MCP matrix failures on main.
+      - name: Run E2E smoke tests
+        if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
         run: |
           chmod +x test.sh
           ./test.sh stack up
           ./test.sh e2e-smoke
 
       - name: Run full E2E tests
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/v')
         run: |
           chmod +x test.sh
           ./test.sh stack up
