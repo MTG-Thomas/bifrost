@@ -51,7 +51,7 @@ def fields_from_json(data: dict[str, str]) -> dict[str, str]:
     for key, value in data.items():
         if key.endswith("_status") and value in {"Met", "N/A"}:
             out[key] = value
-            justification_key = key.replace("_status", "_justification")
+            justification_key = key.removesuffix("_status") + "_justification"
             justification = data.get(justification_key)
             if justification:
                 out[justification_key] = justification
