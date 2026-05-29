@@ -173,16 +173,18 @@ def main() -> None:
             f"{BASE}/blob/main/CODE_OF_CONDUCT.md with enforcement contacts."
         ),
         "roles_responsibilities_justification": (
-            f"Maintainer, contributor, and code-owner roles are defined in "
-            f"{BASE}/blob/main/GOVERNANCE.md and {BASE}/blob/main/.github/CODEOWNERS."
+            f"Primary maintainer Thomas Bray and backup maintainers Doug Eckhart and "
+            f"Eric Atlas are named in {BASE}/blob/main/GOVERNANCE.md with "
+            f"{BASE}/blob/main/.github/CODEOWNERS."
         ),
         "access_continuity_justification": (
-            f"Backup maintainers Doug Eckhart and Eric Atlas (@MTG-Thomas org members) "
-            f"and succession steps are documented in {BASE}/blob/main/GOVERNANCE.md."
+            f"Primary maintainer Thomas Bray (@MTG-Thomas) and backup maintainers "
+            f"Doug Eckhart (@MTGDeckhart) and Eric Atlas (@eric-midtowntg-com) "
+            f"are documented in {BASE}/blob/main/GOVERNANCE.md."
         ),
         "bus_factor_justification": (
-            f"Multiple @MTG-Thomas maintainers with named backups (Doug Eckhart, Eric Atlas) "
-            f"and org-owner paths are documented in {BASE}/blob/main/GOVERNANCE.md."
+            f"Named primary and backup maintainers (Thomas Bray, Doug Eckhart, Eric Atlas) "
+            f"plus org-owner paths are documented in {BASE}/blob/main/GOVERNANCE.md."
         ),
         "contributors_unassociated_justification": (
             f"External contributors are explicitly welcome via PR/issue flow; see "

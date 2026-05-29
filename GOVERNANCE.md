@@ -30,8 +30,8 @@ governance here applies to the MTG fork only.
 | Role | Who | Responsibilities |
 |------|-----|------------------|
 | **Organization owners** | GitHub owners of the `MTG-Thomas` org | Org settings, billing, security defaults (2FA, secret scanning), backup org admins |
-| **Repository maintainers** | Members of `@MTG-Thomas` with merge access to this repo | Triage issues/PRs, enforce branch protection, cut semver releases, CoC enforcement |
-| **Backup maintainers** | Doug Eckhart and Eric Atlas (`@MTG-Thomas` org members) | Assume stewardship if the primary maintainer is unavailable; same responsibilities as repository maintainers |
+| **Primary maintainer** | [Thomas Bray](https://github.com/MTG-Thomas) | Day-to-day triage, releases, OpenSSF badge stewardship, CoC enforcement |
+| **Backup maintainers** | [Doug Eckhart](https://github.com/MTGDeckhart), [Eric Atlas](https://github.com/eric-midtowntg-com) | Assume stewardship if the primary maintainer is unavailable; same responsibilities as the primary maintainer |
 | **Code owners** | See [.github/CODEOWNERS](.github/CODEOWNERS) | Required review on changes under owned paths (currently default `@MTG-Thomas`) |
 | **Contributors** | Anyone who opens issues or PRs | Propose changes; follow [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 | **Automation** | GitHub Actions, Dependabot, Scorecard, CodeQL | CI gates on `main`; no direct merge without passing checks where configured |
@@ -77,15 +77,16 @@ or release credentials.
 
 Current mechanisms:
 
+- **Primary maintainer:** [Thomas Bray](https://github.com/MTG-Thomas).
+- **Named backup maintainers:** [Doug Eckhart](https://github.com/MTGDeckhart) and [Eric Atlas](https://github.com/eric-midtowntg-com) (Midtown org members with merge access).
 - **Multiple org owners** on `MTG-Thomas` (GitHub organization settings).
-- **Named backup maintainers** — Doug Eckhart and Eric Atlas (both `@MTG-Thomas` org members with merge access).
 - **Team-based ownership** via `@MTG-Thomas` in [CODEOWNERS](.github/CODEOWNERS).
 - **Branch protection on `main`** — required reviews and CI before merge.
 - **Documented operator paths** in [bifrost-ops](https://github.com/MTG-Thomas/bifrost-ops) (Windows onboarding, shared dev VM, release runbooks).
 
-If a maintainer leaves or is unavailable:
+If the primary maintainer leaves or is unavailable:
 
-1. **Doug Eckhart** or **Eric Atlas** assumes day-to-day stewardship (issues, PRs, releases) as backup maintainers.
+1. [Doug Eckhart](https://github.com/MTGDeckhart) or [Eric Atlas](https://github.com/eric-midtowntg-com) assumes day-to-day stewardship (issues, PRs, releases).
 2. Remaining org owners reassign BadgeApp project ownership and any org-only credentials through GitHub org admin settings (document owner in internal ops notes; not stored in this repo).
 3. Emergency merges follow the same PR + review rule except where GitHub org policy allows break-glass admin merge with post-incident review.
 
@@ -112,3 +113,4 @@ If a maintainer leaves or is unavailable:
 |------|--------|
 | 2026-05-29 | Initial draft for OpenSSF Silver #290 |
 | 2026-05-29 | Named backup maintainers (Doug Eckhart, Eric Atlas); Jack Musick as informal upstream advisor |
+| 2026-05-29 | Thomas Bray as primary maintainer; GitHub profile links for all maintainers |
