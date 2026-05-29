@@ -72,6 +72,51 @@ python .\scripts\submit-openssf-badge.py
 
 Cookie lifetime is ~48 hours. `BADGE_LEVEL` defaults to `passing`.
 
+### Path C — automation proposal URLs (review in browser)
+
+BadgeApp can pre-fill the edit form from **query parameters** on the project
+edit URL. You stay in the loop: proposals are highlighted; you review and
+click **Save** to persist. No cookie script required.
+
+Official spec: [automation-proposals.md](https://github.com/coreinfrastructure/best-practices-badge/blob/main/docs/automation-proposals.md)
+
+**Baseline (OSPS) example** — section chooser, then pick baseline-1:
+
+```text
+https://www.bestpractices.dev/en/projects/13022/choose/edit?
+  osps_ac_01_01_status=Met&
+  osps_ac_01_01_justification=GitHub+org+enforces+2FA
+```
+
+**Direct section** (skip chooser):
+
+```text
+https://www.bestpractices.dev/en/projects/13022/baseline-1/edit?osps_ac_01_01_status=Met&...
+https://www.bestpractices.dev/en/projects/13022/silver/edit?governance_status=Met&...
+```
+
+Field names: criterion lowercased, `-` → `_`, plus `_status` / `_justification`.
+Status values: `?`, `Unmet`, `N/A`, `Met`.
+
+Proposals only fill **blank/unknown** fields unless you add `overrides=` globs
+(for example `overrides=osps_ac_*,governance_*`).
+
+Generate URLs from repo JSON:
+
+```powershell
+python .\scripts\generate-badge-proposal-url.py --section silver --from-json --prefix governance_ --prefix dco_ --prefix code_of_conduct_
+python .\scripts\generate-badge-proposal-url.py --section baseline-1 --field osps_ac_01_01_status=Met --field "osps_ac_01_01_justification=GitHub org enforces 2FA"
+```
+
+### Path D — read-only JSON API (verify scores, not submit)
+
+```powershell
+(Invoke-WebRequest "https://www.bestpractices.dev/projects/13022.json" -UseBasicParsing).Content
+```
+
+Public project JSON shows tier percentages; authenticated REST PUT exists but
+BadgeApp discourages blind writes — prefer Path A/C so humans review in the UI.
+
 ## Related issues
 
 - [#289](https://github.com/MTG-Thomas/bifrost/issues/289) — Passing badge (closed)
