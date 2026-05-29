@@ -89,7 +89,10 @@ Do not expose secret values in chat, logs, test fixtures, screenshots, or commit
 ## Useful References
 
 - `CLAUDE.md` — upstream-style platform commands, manifest rules, verification checklist
-- `CONTRIBUTING.md` — human-facing PR expectations
+- `CONTRIBUTING.md` — human-facing PR expectations, DCO, and governance links
+- [GOVERNANCE.md](./GOVERNANCE.md) — maintainer roles, culture, continuity
+- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — community standards
+- [docs/security/openssf-best-practices-badge.md](docs/security/openssf-best-practices-badge.md) — BadgeApp tiers and submit flow
 - [Develop at MTG (Windows)](https://github.com/MTG-Thomas/bifrost-ops/blob/main/docs/develop-at-mtg-windows.md) — team onboarding (Windows-first)
 - [Proxmox shared dev roadmap](https://github.com/MTG-Thomas/bifrost-ops/blob/main/docs/proxmox-shared-dev-roadmap.md) — shared lab + Entra direction
 - `.claude/skills/` — upstream maintainer workflows (release, issues); **ignore for MTG day-to-day**

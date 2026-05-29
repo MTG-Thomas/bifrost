@@ -160,6 +160,36 @@ def main() -> None:
             f"CodeQL runs on every push to main, every PR, and weekly cron "
             f"({BASE}/blob/main/.github/workflows/codeql.yml)."
         ),
+        "dco_justification": (
+            f"Developer Certificate of Origin 1.1 and Signed-off-by requirements "
+            f"are documented in {BASE}/blob/main/CONTRIBUTING.md."
+        ),
+        "governance_justification": (
+            f"MTG fork governance (roles, decisions, continuity) is documented in "
+            f"{BASE}/blob/main/GOVERNANCE.md."
+        ),
+        "code_of_conduct_justification": (
+            f"Contributor Covenant 2.1 is published at "
+            f"{BASE}/blob/main/CODE_OF_CONDUCT.md with enforcement contacts."
+        ),
+        "roles_responsibilities_justification": (
+            f"Primary maintainer Thomas Bray and backup maintainers Doug Eckhart and "
+            f"Eric Atlas are named in {BASE}/blob/main/GOVERNANCE.md with "
+            f"{BASE}/blob/main/.github/CODEOWNERS."
+        ),
+        "access_continuity_justification": (
+            f"Primary maintainer Thomas Bray (@MTG-Thomas) and backup maintainers "
+            f"Doug Eckhart (@MTGDeckhart) and Eric Atlas (@eric-midtowntg-com) "
+            f"are documented in {BASE}/blob/main/GOVERNANCE.md."
+        ),
+        "bus_factor_justification": (
+            f"Named primary and backup maintainers (Thomas Bray, Doug Eckhart, Eric Atlas) "
+            f"plus org-owner paths are documented in {BASE}/blob/main/GOVERNANCE.md."
+        ),
+        "contributors_unassociated_justification": (
+            f"External contributors are explicitly welcome via PR/issue flow; see "
+            f"{BASE}/blob/main/GOVERNANCE.md and {BASE}/blob/main/CONTRIBUTING.md."
+        ),
     }
 
     release_pending_statuses: set[str] = set()

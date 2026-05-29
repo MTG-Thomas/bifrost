@@ -15,7 +15,9 @@ from pathlib import Path
 COOKIE_NAME = "_BadgeApp_session"
 BASE_URL = "https://www.bestpractices.dev"
 PROJECT_ID = 13022
-LEVEL = "passing"
+LEVEL = os.environ.get("BADGE_LEVEL", "passing").strip().lower() or "passing"
+VALID_LEVELS = frozenset({"passing", "baseline-1", "silver"})
+VALID_LEVELS_HELP = ", ".join(sorted(VALID_LEVELS))
 HTTP_TIMEOUT_SECONDS = 20
 REDIRECT_CODES = {301, 302, 303, 307, 308}
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +152,13 @@ def submit(
 
 
 def main() -> int:
+    if LEVEL not in VALID_LEVELS:
+        print(
+            f"BADGE_LEVEL must be one of: {VALID_LEVELS_HELP}",
+            file=sys.stderr,
+        )
+        return 1
+
     cookie = os.environ.get("BADGE_COOKIE", "").strip()
     if not cookie:
         print(
@@ -157,6 +166,7 @@ def main() -> int:
             "Chrome: DevTools → Application → Cookies → www.bestpractices.dev\n"
             "Alternative: merge .bestpractices.json to main, open\n"
             f"{BASE_URL}/en/projects/{PROJECT_ID}/{LEVEL}/edit\n"
+            f"(BADGE_LEVEL: {VALID_LEVELS_HELP})\n"
             "and click Save (and continue) 🤖",
             file=sys.stderr,
         )
