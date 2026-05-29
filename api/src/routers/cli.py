@@ -701,7 +701,11 @@ async def sdk_integrations_get(
 
         if mapping:
             # Org-specific mapping found
-            config = await repo.get_config_for_mapping(mapping.integration_id, org_uuid)
+            config = await repo.get_config_for_mapping(
+                mapping.integration_id,
+                org_uuid,
+                include_default_secrets=True,
+            )
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
 
@@ -1001,7 +1005,11 @@ async def sdk_integrations_get_mapping(
             return None
 
         # Get merged config for the mapping
-        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+        config = await repo.get_config_for_mapping(
+            integration.id,
+            mapping.organization_id,
+            include_default_secrets=True,
+        )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
 

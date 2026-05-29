@@ -240,6 +240,46 @@ class TestIntegrationsRepository:
         assert result["base_url"] == "https://example.test"
         assert result["org_api_key"] == "org-secret"
 
+    async def test_get_config_for_mapping_includes_default_secrets_when_requested(
+        self, repository, mock_session
+    ):
+        """SDK execution reads may inherit shared integration-level secrets."""
+        from src.models.enums import ConfigType
+
+        integration_id = uuid4()
+        org_id = uuid4()
+
+        default_secret = MagicMock()
+        default_secret.key = "secret"
+        default_secret.value = {"value": "encrypted-global-secret"}
+        default_secret.config_type = ConfigType.SECRET
+        default_secret.organization_id = None
+
+        default_plain = MagicMock()
+        default_plain.key = "base_url"
+        default_plain.value = {"value": "https://example.test"}
+        default_plain.config_type = ConfigType.STRING
+        default_plain.organization_id = None
+
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = [default_secret, default_plain]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = mock_scalars
+        mock_session.execute.return_value = mock_result
+
+        with patch(
+            "src.repositories.integrations.decrypt_secret",
+            return_value="shared-secret",
+        ):
+            result = await repository.get_config_for_mapping(
+                integration_id,
+                org_id,
+                include_default_secrets=True,
+            )
+
+        assert result["base_url"] == "https://example.test"
+        assert result["secret"] == "shared-secret"
+
     async def test_get_provider_org_token_filters_by_organization(
         self, repository, mock_session
     ):
