@@ -128,25 +128,25 @@ def main() -> None:
             "and fixed in follow-up PRs."
         ),
         "version_tags_justification": (
-            f"CI publishes semver release bundles on v* git tags "
-            f"({BASE}/blob/main/.github/workflows/ci.yml). Cut the first fork tag "
-            f"with the bifrost-release skill, then this criterion is verifiable at {BASE}/tags."
+            f"First MTG semver tag v1.0.0 published at {BASE}/releases/tag/v1.0.0. "
+            f"CI builds signed release artifacts on every v* tag "
+            f"({BASE}/blob/main/.github/workflows/ci.yml)."
         ),
         "version_unique_justification": (
             "Release workflow requires unique semver tags (v1.2.3). "
-            f"See {BASE}/blob/main/.claude/skills/bifrost-release/SKILL.md."
+            f"v1.0.0 is the first MTG fork tag at {BASE}/tags."
         ),
         "version_semver_justification": (
-            f"Tags follow semver enforced in CI (refs/tags/v* gate). See {BASE}/tags"
+            f"MTG-owned semver line documented in {BASE}/blob/main/docs/VERSIONING.md; "
+            f"first tag v1.0.0 at {BASE}/tags."
         ),
         "release_notes_justification": (
-            f"Release notes template requires human-readable change summaries "
-            f"({BASE}/blob/main/.claude/skills/bifrost-release/SKILL.md). "
-            f"Publish the first GitHub Release at {BASE}/releases when tagging."
+            f"v1.0.0 release notes include a themed change summary and upstream "
+            f"baseline at {BASE}/releases/tag/v1.0.0."
         ),
         "release_notes_vulns_justification": (
-            "bifrost-release skill requires each release body to list fixed CVEs "
-            f"or state none. See {BASE}/blob/main/.claude/skills/bifrost-release/SKILL.md."
+            f"v1.0.0 release notes include a Fixed CVEs section at "
+            f"{BASE}/releases/tag/v1.0.0."
         ),
         "no_leaked_credentials_justification": (
             "GitHub secret-scanning + push protection are enabled on "
@@ -162,13 +162,7 @@ def main() -> None:
         ),
     }
 
-    release_pending_statuses = {
-        "version_tags_status",
-        "version_unique_status",
-        "version_semver_status",
-        "release_notes_status",
-        "release_notes_vulns_status",
-    }
+    release_pending_statuses: set[str] = set()
 
     for key, value in overrides.items():
         status_key = key.replace("_justification", "_status")
