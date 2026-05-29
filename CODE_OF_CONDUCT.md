@@ -12,6 +12,19 @@ identity and orientation.
 We pledge to act and interact in ways that contribute to an open, welcoming,
 diverse, inclusive, and healthy community.
 
+## Project culture
+
+In addition to the standards below, MTG Bifrost contributors and maintainers aim
+for a **positive, progress-oriented** environment. We are building software at a
+moment when teams can increasingly **control their own destiny** — owning the
+fork, the roadmap, and the operator outcomes — and we treat that as energizing,
+not merely operational.
+
+We **presume best intent** when someone's motivation is unclear, and we seek
+clarification before assuming bad faith. Maintainers commit to these norms
+explicitly and to **holding one another accountable**; see
+[GOVERNANCE.md](GOVERNANCE.md#culture-and-maintainer-standards).
+
 ## Our Standards
 
 Examples of behavior that contributes to a positive environment for our

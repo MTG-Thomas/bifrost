@@ -25,6 +25,33 @@ fork (API, client, workers, CI, and core docs). It is distinct from:
 Upstream lineage is documented in release notes and [VERSIONING.md](docs/VERSIONING.md);
 governance here applies to the MTG fork only.
 
+## Culture and maintainer standards
+
+We aim to run this project with **optimism about what we are building together**.
+Open source and modern tooling mean teams can **control their software destiny** —
+shape the platform, ship fixes, and improve operator life without waiting on a vendor
+roadmap. That is worth being excited about.
+
+By default we:
+
+- **Lead with positivity and progress** — celebrate forward motion, credit good work,
+  and frame feedback as a path to something better.
+- **Presume best intent** — when motivation is unclear, assume people are trying to
+  help until there is explicit evidence to the contrary. Ask clarifying questions
+  before escalating.
+- **Keep disagreement substantive** — challenge ideas and implementation on merit;
+  do not question character without cause.
+
+**Maintainers** model these norms in issues, pull requests, releases, and public
+communication. They also have a **duty to hold one another accountable** to them:
+if a maintainer's tone or behavior falls short of this section or
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), other maintainers address it directly
+(with private feedback first when appropriate), then through the CoC escalation
+paths if needed. The bar for maintainers is higher, not lower.
+
+Contributors are encouraged to adopt the same spirit. Conduct enforcement for
+everyone remains as described in the Code of Conduct.
+
 ## Roles and responsibilities
 
 | Role | Who | Responsibilities |
@@ -114,3 +141,4 @@ If the primary maintainer leaves or is unavailable:
 | 2026-05-29 | Initial draft for OpenSSF Silver #290 |
 | 2026-05-29 | Named backup maintainers (Doug Eckhart, Eric Atlas); Jack Musick as informal upstream advisor |
 | 2026-05-29 | Thomas Bray as primary maintainer; GitHub profile links for all maintainers |
+| 2026-05-29 | Culture section: positivity, progress, best intent, maintainer mutual accountability |
