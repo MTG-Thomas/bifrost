@@ -5,7 +5,11 @@ Thanks for contributing. This doc is the friendly front door — it covers the *
 Community and project governance:
 
 - [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
-- [GOVERNANCE.md](./GOVERNANCE.md)
+- [GOVERNANCE.md](./GOVERNANCE.md) — roles, culture, backup maintainers, access continuity
+
+We aim for a positive, progress-oriented culture and presume best intent unless
+evidence says otherwise; maintainers hold one another accountable to that bar
+(see GOVERNANCE.md § Culture and maintainer standards).
 
 ## Developer Certificate of Origin (DCO)
 
