@@ -556,13 +556,17 @@ class IntegrationsRepository:
                 return raw
         return raw
 
-    async def get_integration_defaults(self, integration_id: UUID) -> dict[str, Any]:
+    async def get_integration_defaults(
+        self, integration_id: UUID, *, include_secrets: bool = True
+    ) -> dict[str, Any]:
         """
         Get integration-level default config values.
 
         These are stored in the configs table with integration_id set
         but organization_id is NULL.
         """
+        from src.models.enums import ConfigType as ConfigTypeEnum
+
         config_query = select(ConfigModel).where(
             and_(
                 ConfigModel.integration_id == integration_id,
@@ -574,6 +578,8 @@ class IntegrationsRepository:
 
         config: dict[str, Any] = {}
         for entry in config_entries:
+            if entry.config_type == ConfigTypeEnum.SECRET and not include_secrets:
+                continue
             config[entry.key] = await self._extract_config_value(entry)
 
         return config
@@ -629,7 +635,11 @@ class IntegrationsRepository:
         return configs_by_org
 
     async def get_config_for_mapping(
-        self, integration_id: UUID, org_id: UUID
+        self,
+        integration_id: UUID,
+        org_id: UUID,
+        *,
+        include_default_secrets: bool = False,
     ) -> dict[str, Any]:
         """
         Get merged configuration for an integration mapping.
@@ -643,7 +653,9 @@ class IntegrationsRepository:
         Used by SDK endpoint where we need the fully resolved config.
         """
         # Start with integration-level defaults
-        config = await self.get_integration_defaults(integration_id)
+        config = await self.get_integration_defaults(
+            integration_id, include_secrets=include_default_secrets
+        )
 
         # Merge org overrides
         org_overrides = await self.get_org_config_overrides(integration_id, org_id)
