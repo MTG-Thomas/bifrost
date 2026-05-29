@@ -16,7 +16,7 @@ evidence says otherwise; maintainers hold one another accountable to that bar
 By contributing to `MTG-Thomas/bifrost`, you certify that your contribution
 complies with the [Developer Certificate of Origin, version 1.1](https://developercertificate.org/):
 
-```
+```text
 Developer Certificate of Origin
 Version 1.1
 
@@ -51,7 +51,7 @@ By making a contribution to this project, I certify that:
 
 **Sign-off:** append a `Signed-off-by` line to each commit message:
 
-```
+```text
 Signed-off-by: Your Name <your.email@example.com>
 ```
 
