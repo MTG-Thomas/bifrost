@@ -268,7 +268,14 @@ Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
 
 ## Contributing
 
-This is intended to be a community-driven project built to ensure the Integration Services industry has the tools it needs without vendor lock-in or extractive pricing. However for the time being, while I work out the kinks, contributions and issues will be closed. Stay tuned!
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for workflow,
+testing expectations, and the Developer Certificate of Origin (DCO). See
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [GOVERNANCE.md](GOVERNANCE.md) for
+community and maintainer policy.
+
+- [Open issues](https://github.com/MTG-Thomas/bifrost/issues)
+- [`help wanted`](https://github.com/MTG-Thomas/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+- [`good first issue`](https://github.com/MTG-Thomas/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 ## License
 

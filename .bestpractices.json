@@ -187,5 +187,19 @@
   "OSPS-VM-02.01_status": "Met",
   "OSPS-VM-02.01_justification": "SECURITY.md documents two reporting channels: GitHub's private vulnerability advisory flow (preferred). Linked from repo root.",
   "OSPS-BR-01.03_status": "Met",
-  "OSPS-BR-01.03_justification": "pull_request triggers run with read-only GITHUB_TOKEN by default; deploy/release workflows fire only on push to main or tag events (verified in .github/workflows/ci.yml). External-contributor PRs cannot access secrets."
+  "OSPS-BR-01.03_justification": "pull_request triggers run with read-only GITHUB_TOKEN by default; deploy/release workflows fire only on push to main or tag events (verified in .github/workflows/ci.yml). External-contributor PRs cannot access secrets.",
+  "dco_status": "Met",
+  "dco_justification": "Developer Certificate of Origin 1.1 and Signed-off-by requirements are documented in https://github.com/MTG-Thomas/bifrost/blob/main/CONTRIBUTING.md.",
+  "governance_status": "Met",
+  "governance_justification": "MTG fork governance (roles, decisions, continuity) is documented in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md.",
+  "code_of_conduct_status": "Met",
+  "code_of_conduct_justification": "Contributor Covenant 2.1 is published at https://github.com/MTG-Thomas/bifrost/blob/main/CODE_OF_CONDUCT.md with enforcement contacts.",
+  "roles_responsibilities_status": "Met",
+  "roles_responsibilities_justification": "Maintainer, contributor, and code-owner roles are defined in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md and https://github.com/MTG-Thomas/bifrost/blob/main/.github/CODEOWNERS.",
+  "access_continuity_status": "Met",
+  "access_continuity_justification": "Access continuity and succession expectations are documented in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md (org owners, CODEOWNERS, branch protection).",
+  "bus_factor_status": "Met",
+  "bus_factor_justification": "Multiple maintainers via @MTG-Thomas CODEOWNERS and org-owner backup path are documented in https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md.",
+  "contributors_unassociated_status": "Met",
+  "contributors_unassociated_justification": "External contributors are explicitly welcome via PR/issue flow; see https://github.com/MTG-Thomas/bifrost/blob/main/GOVERNANCE.md and https://github.com/MTG-Thomas/bifrost/blob/main/CONTRIBUTING.md."
 }
