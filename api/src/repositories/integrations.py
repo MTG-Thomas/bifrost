@@ -621,7 +621,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
         integration_id: UUID,
         org_id: UUID,
         *,
-        include_default_secrets: bool = True,
+        include_default_secrets: bool = False,
     ) -> dict:
         """
         Get merged configuration for an integration mapping.
@@ -691,6 +691,40 @@ class IntegrationsRepository(BaseRepository[Integration]):
 
         return config
 
+    async def get_provider_org_token(
+        self, provider_id: UUID, organization_id: UUID | None
+    ) -> Any:
+        """Return the latest org-level OAuth token for a provider.
+
+        When an organization is provided, this intentionally does not fall back
+        to a global token; callers that need cascade semantics must use
+        OAuthTokenRepository.get_org_level_for_provider instead.
+        """
+        from src.models.orm.oauth import OAuthToken
+
+        if organization_id is not None:
+            result = await self.session.execute(
+                select(OAuthToken)
+                .where(
+                    OAuthToken.provider_id == provider_id,
+                    OAuthToken.organization_id == organization_id,
+                    OAuthToken.user_id.is_(None),
+                )
+                .order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
+            )
+            return result.scalars().first()
+
+        result = await self.session.execute(
+            select(OAuthToken)
+            .where(
+                OAuthToken.provider_id == provider_id,
+                OAuthToken.organization_id.is_(None),
+                OAuthToken.user_id.is_(None),
+            )
+            .order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
+        )
+        return result.scalars().first()
+
     async def get_integration_defaults(self, integration_id: UUID) -> dict[str, Any]:
         """
         Get integration-level config defaults (org_id=NULL).
@@ -732,11 +766,3 @@ class IntegrationsRepository(BaseRepository[Integration]):
             config[entry.key] = val
 
         return config
-
-# Deleted (2026-05): get_provider_org_token had no organization_id filter
-# and could return any org's user_id=NULL token. The cross-tenant token
-# leak is fixed by routing all OAuth token reads through
-# OAuthTokenRepository.get_org_level_for_provider in
-# api/src/repositories/oauth.py, which applies the standard cascade
-# (org-specific preferred, falls back to global) and never silently
-# returns another org's token.

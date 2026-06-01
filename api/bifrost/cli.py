@@ -164,13 +164,9 @@ def _check_cli_version() -> None:
         if installed in ("unknown", "0.0.0+source"):
             return  # dev/source install — nothing to compare against
 
-        # Re-load dotenv so a CWD-local .env's BIFROST_API_URL is honored even
-        # if bifrost.client's import-time load happened against a different cwd.
-        try:
-            from dotenv import find_dotenv, load_dotenv
-            load_dotenv(find_dotenv(usecwd=True), override=False)
-        except ImportError:
-            pass  # python-dotenv is optional; without it, only os.environ is consulted
+        # Re-load only the safe CWD-local .env allowlist so BIFROST_API_URL is
+        # honored even if bifrost.client imported against a different cwd.
+        credentials.load_allowed_dotenv()
 
         # Use credentials._resolve_url (not get_credentials) because the version
         # check only needs the URL — get_credentials returns None unless full
@@ -184,7 +180,7 @@ def _check_cli_version() -> None:
         # bifrost.gocovi.com being the live case) 403 the default
         # `Python-urllib/X.Y` User-Agent. httpx's default UA gets through
         # and matches what every other SDK request already sends.
-        resp = httpx.get(f"{api_url}/api/version", timeout=3)
+        resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()
 
@@ -718,11 +714,9 @@ Browser (default): Device-code flow; tokens stored in OS keychain (with JSON
                    current directory so subsequent CLI commands target this
                    instance.
 Password: When --email and --password are passed, performs an ephemeral
-          password-grant login and writes BIFROST_API_URL +
-          BIFROST_ACCESS_TOKEN + BIFROST_REFRESH_TOKEN to .env in the
-          current directory. Subsequent CLI commands from this directory
-          pick the tokens up automatically. For isolated dev stacks only
-          — refuses if MFA is enabled on the instance.
+          password-grant login and stores tokens in the credential backend.
+          Only BIFROST_API_URL is written to .env. For isolated dev stacks
+          only — refuses if MFA is enabled on the instance.
 
 Options:
   --url, -u URL         API URL (default: BIFROST_API_URL or http://localhost:8000)
@@ -766,26 +760,26 @@ Examples:
         assert password is not None
         rc, data = asyncio.run(password_login_flow(api_url, email, password))
         if rc == 0 and data is not None:
-            # Persist URL + tokens to CWD's .env so subsequent `bifrost`
-            # commands from this directory just work — no shell-eval needed.
-            # Isolation is by directory: each sandbox dir has its own .env.
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=data.get("expires_in", 1800)
+            )
+            credentials.save_credentials(
+                api_url=api_url,
+                access_token=data["access_token"],
+                refresh_token=data["refresh_token"],
+                expires_at=expires_at.isoformat(),
+            )
+            # Persist only the target URL to CWD's .env. Tokens belong in the
+            # credential backend, never in a project directory.
             try:
                 _write_env_url(api_url)
-                _upsert_env_vars(
-                    {
-                        "BIFROST_ACCESS_TOKEN": data["access_token"],
-                        "BIFROST_REFRESH_TOKEN": data["refresh_token"],
-                    }
-                )
             except OSError as e:
                 print(
                     f"Warning: could not update .env in current directory: {e}",
                     file=sys.stderr,
                 )
-                # Fall back to printing so the caller can eval them.
+                # Fall back to printing the non-secret URL only.
                 print(f"BIFROST_API_URL={api_url}")
-                print(f"BIFROST_ACCESS_TOKEN={data['access_token']}")
-                print(f"BIFROST_REFRESH_TOKEN={data['refresh_token']}")
         return rc
 
     # Browser device-code flow (persistent → keychain or JSON fallback).
@@ -3138,6 +3132,11 @@ Examples:
         print(f"Unsupported method: {method}", file=sys.stderr)
         return 1
 
+    endpoint_error = _validate_api_endpoint(endpoint)
+    if endpoint_error:
+        print(endpoint_error, file=sys.stderr)
+        return 1
+
     # Authenticate BEFORE entering asyncio.run() so token refresh works
     try:
         client = BifrostClient.get_instance(require_auth=True)
@@ -3146,6 +3145,23 @@ Examples:
         return 1
 
     return asyncio.run(_api_request(method, endpoint, body, client=client))
+
+
+def _validate_api_endpoint(endpoint: str) -> str | None:
+    """Validate the CLI API endpoint before attaching auth credentials.
+
+    ``httpx`` accepts absolute and scheme-relative URLs even when a client has
+    a ``base_url``. The CLI's authenticated ``api`` command is intentionally
+    scoped to the configured Bifrost API origin, so only absolute paths are
+    accepted here.
+    """
+    if endpoint.startswith("//"):
+        return "Error: endpoint must not be a scheme-relative URL."
+    if "://" in endpoint:
+        return "Error: endpoint must not include a URL scheme or host."
+    if not endpoint.startswith("/"):
+        return "Error: endpoint must be an absolute API path starting with '/'."
+    return None
 
 
 async def _api_request(method: str, endpoint: str, body: Any | None, client: "BifrostClient | None" = None) -> int:
