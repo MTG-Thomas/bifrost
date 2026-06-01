@@ -137,6 +137,7 @@ ALLOW_LIST_INLINE_ORG: set[tuple[str, str, str]] = {
     ('routers/workflows.py', 'forms_query = forms_query.where(Form.organization_id == org_filter)', 'workflows inline cascade; phase 6 migrates'),
     ('routers/workflows.py', 'agents_query = agents_query.where(Agent.organization_id == org_filter)', 'workflows inline cascade; phase 6 migrates'),
     ('routers/workflows.py', 'apps_base_query = apps_base_query.where(Application.organization_id == org_filter)', 'workflows inline cascade; phase 6 migrates'),
+    ('routers/nuclei_scans.py', 'Table.organization_id == org_id,', 'nuclei scan table lookup is scoped by explicit org-owned table name'),
 }
 
 

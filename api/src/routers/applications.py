@@ -39,6 +39,7 @@ from src.models.contracts.applications import (
     ApplicationUpdate,
 )
 from src.models.orm.applications import Application
+from src.models.orm.file_index import FileIndex
 from src.core.exceptions import AccessDeniedError
 from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 
@@ -161,6 +162,18 @@ async def get_application_or_404(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Application '{slug}' not found",
+        )
+
+
+async def ensure_no_stale_app_source(db, slug: str) -> None:
+    """Reject app creation when unclaimed source already exists for the slug."""
+    prefix = f"apps/{slug}/"
+    result = await db.execute(
+        select(FileIndex.path).where(FileIndex.path.like(f"{prefix}%")).limit(1)
+    )
+    if result.first() is not None:
+        raise ValueError(
+            f"Source files already exist under '{prefix}'. Move or delete them before creating this app."
         )
 
 

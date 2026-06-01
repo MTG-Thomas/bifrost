@@ -16,6 +16,7 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
 from src.config import get_settings
+from src.core.sentry import configure_sentry
 from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
@@ -620,6 +621,7 @@ def create_app() -> FastAPI:
 
 
 # Create app instance
+configure_sentry(get_settings())
 app = create_app()
 
 

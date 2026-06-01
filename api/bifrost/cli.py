@@ -26,6 +26,7 @@ import time
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -78,6 +79,16 @@ _DEFAULT_IGNORE_PATTERNS = [
     "*~",
     ".#*",
 ]
+
+
+def _safe_workspace_relative_path(value: str) -> str:
+    normalized = value.replace("\\", "/")
+    rel = PurePosixPath(normalized)
+    if rel.is_absolute() or pathlib.Path(normalized).drive:
+        raise ValueError(f"unsafe server path: {value}")
+    if not rel.parts or any(part in ("", ".", "..") for part in rel.parts):
+        raise ValueError(f"unsafe server path: {value}")
+    return rel.as_posix()
 
 
 # ---------------------------------------------------------------------------
@@ -2428,6 +2439,7 @@ async def _process_incoming(
                         rel = repo_path[len(repo_prefix):]
                     else:
                         rel = repo_path
+                    rel = _safe_workspace_relative_path(rel)
                     local_file = base_path / rel
                     local_file.parent.mkdir(parents=True, exist_ok=True)
                     # Skip if we already know the server has this content and
@@ -2981,6 +2993,7 @@ async def _sync_files(
 
         elif action == "pull_file":
             item = work_data["item"]
+            rel = _safe_workspace_relative_path(item["rel"])
             resp = await client.post("/api/files/read", json={
                 "path": item["repo_path"],
                 "mode": "cloud", "location": "workspace", "binary": True,
@@ -2988,7 +3001,7 @@ async def _sync_files(
             if resp.status_code == 200:
                 file_data = resp.json()
                 content_bytes = base64.b64decode(file_data["content"])
-                local_file = path / item["rel"]
+                local_file = path / rel
                 local_file.parent.mkdir(parents=True, exist_ok=True)
                 local_file.write_bytes(content_bytes)
             else:

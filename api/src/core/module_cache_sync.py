@@ -40,7 +40,12 @@ _blob_available: bool | None = None
 
 
 def _object_storage_provider() -> str:
-    return os.environ.get("BIFROST_OBJECT_STORAGE_PROVIDER", "s3").lower()
+    explicit_provider = os.environ.get("BIFROST_OBJECT_STORAGE_PROVIDER")
+    if explicit_provider:
+        return explicit_provider.lower()
+    if os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL") and os.environ.get("BIFROST_AZURE_BLOB_CONTAINER"):
+        return "azure_blob"
+    return "s3"
 
 
 @lru_cache(maxsize=1)
@@ -61,6 +66,10 @@ def _get_s3_client() -> Any:
     Get or create a sync S3 client using botocore (always available via aiobotocore).
     """
     global _s3_client, _s3_available
+
+    if _object_storage_provider() != "s3":
+        _s3_available = False
+        return None
 
     if _s3_available is False:
         return None

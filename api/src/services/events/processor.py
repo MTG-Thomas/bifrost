@@ -679,13 +679,28 @@ class EventProcessor:
             received_at=event.received_at.isoformat() if event.received_at else "",
         )
 
-        # Use the centralized system execution helper
-        # Use workflow's org_id so org-scoped workflows only access their org's data
+        # Use the centralized system execution helper. Org-scoped workflows keep
+        # their own scope; global workflows triggered by org-scoped sources
+        # inherit the source org; fully global events run in provider scope.
+        def _org_id(value: Any) -> UUID | str | None:
+            return value if isinstance(value, (UUID, str)) else None
+
+        workflow_org_id = _org_id(getattr(workflow, "organization_id", None))
+        event_source = getattr(event, "event_source", None)
+        event_org_id = _org_id(getattr(event, "organization_id", None))
+        event_source_org_id = event_org_id or _org_id(
+            getattr(event_source, "organization_id", None)
+        )
+        execution_org_id = (
+            workflow_org_id
+            or event_source_org_id
+            or "00000000-0000-0000-0000-000000000002"
+        )
         execution_id = await enqueue_system_workflow_execution(
             workflow_id=str(workflow.id),
             parameters=parameters,
             source="Event System",
-            org_id=str(workflow.organization_id) if workflow.organization_id else None,
+            org_id=str(execution_org_id),
             event=event_context,
         )
 

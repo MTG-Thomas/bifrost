@@ -166,6 +166,11 @@ class Settings(BaseSettings):
         description="Object storage backend provider: s3 or azure_blob",
     )
 
+    sentry_dsn: str | None = Field(default=None, description="Sentry DSN for optional error reporting")
+    sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sentry_profiles_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sentry_send_default_pii: bool = Field(default=False)
+
     s3_bucket: str | None = Field(
         default=None,
         description="S3 bucket name for workspace storage (required when S3 is configured)",
