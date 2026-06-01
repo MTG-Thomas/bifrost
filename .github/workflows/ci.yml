@@ -147,7 +147,8 @@ jobs:
         run: |
           chmod +x test.sh
           ./test.sh stack up
-          ./test.sh unit
+          ./test.sh unit --cov=. --cov-report=xml:/coverage/coverage.xml
+          ./test.sh coverage coverage.xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
@@ -640,6 +641,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          IMAGE_TAG="${VERSION#v}"
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           # Check if this is a pre-release (contains hyphen like v1.0.0-beta)
           if [[ "$VERSION" == *-* ]]; then
             echo "prerelease=true" >> $GITHUB_OUTPUT
@@ -717,12 +720,12 @@ jobs:
 
             **API:**
             ```bash
-            docker pull jackmusick/bifrost-api:${{ steps.get_version.outputs.version }}
+            docker pull ${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${{ steps.get_version.outputs.image_tag }}
             ```
 
             **Client:**
             ```bash
-            docker pull jackmusick/bifrost-client:${{ steps.get_version.outputs.version }}
+            docker pull ${{ env.REGISTRY }}/${{ env.CLIENT_IMAGE }}:${{ steps.get_version.outputs.image_tag }}
             ```
 
             ### Type Stubs for IDEs
