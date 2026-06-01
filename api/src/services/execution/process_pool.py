@@ -143,6 +143,10 @@ class ProcessState(Enum):
     KILLED = "killed"
 
 
+class ProcessPoolAdmissionRejected(RuntimeError):
+    """Raised when local process-pool capacity cannot admit an execution."""
+
+
 @dataclass
 class ExecutionInfo:
     """
@@ -335,6 +339,14 @@ class ProcessPoolManager:
         # Process tracking
         self.processes: dict[str, ProcessHandle] = {}
         self._process_counter = 0
+        self._admission_attempts = 0
+        self._admission_successes = 0
+        self._admission_rejections: dict[str, int] = {
+            "slot_timeout": 0,
+            "memory_pressure": 0,
+        }
+        self._admission_wait_seconds_total = 0.0
+        self._admission_wait_seconds_max = 0.0
 
         # State
         self._shutdown = False
@@ -679,6 +691,9 @@ class ProcessPoolManager:
             execution_id: Unique identifier for the execution
             context: Execution context data (written to Redis)
         """
+        self._admission_attempts += 1
+        admission_started = time.monotonic()
+
         # Wait for any in-progress drain+restart to complete before routing.
         # Without this, executions arriving during a package-install restart
         # would hit a dead template and fail with ConnectionResetError.
@@ -694,6 +709,13 @@ class ProcessPoolManager:
             # Clean up the context we just wrote
             r = await self._get_redis()
             await r.delete(f"bifrost:exec:{execution_id}:context")
+            wait_seconds = time.monotonic() - admission_started
+            self._admission_rejections["memory_pressure"] += 1
+            self._admission_wait_seconds_total += wait_seconds
+            self._admission_wait_seconds_max = max(
+                self._admission_wait_seconds_max,
+                wait_seconds,
+            )
             raise MemoryError(
                 f"Cannot route execution {execution_id[:8]}: memory pressure "
                 f"exceeds {settings.memory_pressure_threshold:.0%} threshold"
@@ -703,7 +725,14 @@ class ProcessPoolManager:
         # _slot_condition, so this wakes immediately once a slot frees.
         if len(self.processes) >= self.max_workers:
             if not await self._wait_for_slot():
-                raise RuntimeError("No worker slot available after timeout")
+                wait_seconds = time.monotonic() - admission_started
+                self._admission_rejections["slot_timeout"] += 1
+                self._admission_wait_seconds_total += wait_seconds
+                self._admission_wait_seconds_max = max(
+                    self._admission_wait_seconds_max,
+                    wait_seconds,
+                )
+                raise ProcessPoolAdmissionRejected("No worker slot available after timeout")
 
         # Fork the worker. _fork_process returns a handle already in BUSY.
         handle = self._fork_process()
@@ -720,6 +749,13 @@ class ProcessPoolManager:
 
         # Send execution_id to the child
         handle.work_queue.put_nowait(execution_id)
+        wait_seconds = time.monotonic() - admission_started
+        self._admission_successes += 1
+        self._admission_wait_seconds_total += wait_seconds
+        self._admission_wait_seconds_max = max(
+            self._admission_wait_seconds_max,
+            wait_seconds,
+        )
 
         logger.info(
             f"Routed {execution_id[:8]}... to {handle.id} "
@@ -1560,6 +1596,13 @@ class ProcessPoolManager:
                 }
                 for p in self.processes.values()
             ],
+            "admission": {
+                "attempts": self._admission_attempts,
+                "successes": self._admission_successes,
+                "rejections": dict(self._admission_rejections),
+                "wait_seconds_total": self._admission_wait_seconds_total,
+                "wait_seconds_max": self._admission_wait_seconds_max,
+            },
         }
 
 

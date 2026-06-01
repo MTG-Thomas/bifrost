@@ -28,12 +28,18 @@ from typing import Any
 
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
-from src.jobs.rabbitmq import BaseConsumer
+from src.jobs.rabbitmq import BaseConsumer, RetryableConsumerError
+from src.services.execution.process_pool import ProcessPoolAdmissionRejected
 
 logger = logging.getLogger(__name__)
 
 # Queue name
 QUEUE_NAME = "workflow-executions"
+
+
+def workflow_prefetch_count(settings: Any) -> int:
+    """Cap workflow prefetch at local process admission capacity."""
+    return max(1, min(settings.max_concurrency, settings.max_workers))
 
 
 class WorkflowExecutionConsumer(BaseConsumer):
@@ -59,7 +65,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         settings = get_settings()
         super().__init__(
             queue_name=QUEUE_NAME,
-            prefetch_count=settings.max_concurrency,
+            prefetch_count=workflow_prefetch_count(settings),
         )
         self._redis_client = get_redis_client()
 
@@ -713,7 +719,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             await self._redis_client.delete_pending_execution(execution_id)
             raise
 
-        except MemoryError as e:
+        except (MemoryError, ProcessPoolAdmissionRejected) as e:
             # Admission rejected due to memory pressure — requeue for retry
             logger.warning(
                 f"Admission rejected for {execution_id[:8]}: {e}. "
@@ -723,7 +729,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             # Clean up pending state so it can be re-routed.
             await self._redis_client.delete_pending_execution(execution_id)
             # Re-raise so the consumer framework NACKs with requeue=True
-            raise
+            raise RetryableConsumerError(f"process pool admission rejected: {e}") from e
 
         except Exception as e:
             # Unexpected error during setup (before routing to pool)
