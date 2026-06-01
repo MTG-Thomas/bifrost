@@ -1879,7 +1879,15 @@ class ManifestResolver:
                     resolved_list.append(item)
             data[field_name] = resolved_list
 
-    async def _resolve_deletions(self, work_dir: Path | None = None, manifest: "Manifest | None" = None, repo: "RepoStorage | None" = None, dry_run: bool = False) -> list:
+    async def _resolve_deletions(
+        self,
+        work_dir: Path | None = None,
+        manifest: "Manifest | None" = None,
+        repo: "RepoStorage | None" = None,
+        dry_run: bool = False,
+        removed_entity_ids: dict[str, set[str]] | None = None,
+        removed_paths: set[str] | None = None,
+    ) -> list:
         """Compute delete/deactivate ops for entities removed from the manifest.
 
         Optimized: pushes filtering to SQL with NOT IN clauses, returning only
@@ -1917,6 +1925,8 @@ class ManifestResolver:
         from src.models.orm.tables import Table
         from src.models.orm.users import Role
         from src.models.orm.workflows import Workflow
+
+        _ = removed_paths
 
         if manifest is None:
             if work_dir:
@@ -1992,15 +2002,30 @@ class ManifestResolver:
         entity_changes: list[EntityChange] = []
         now = datetime.now(timezone.utc)
 
+        def _explicit_ids(entity_type: str) -> list[UUID] | None:
+            if not removed_entity_ids:
+                return None
+            return [UUID(entity_id) for entity_id in removed_entity_ids.get(entity_type, set())]
+
         # Helper: query stale IDs (+ names when available) and bulk-delete
-        async def _bulk_delete(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
+        async def _bulk_delete(
+            model: type,
+            base_filter: list,
+            present: list[UUID],
+            entity_type: str,
+            explicit_ids: list[UUID] | None = None,
+        ) -> int:
             """Find IDs not in present list and delete them. Returns count."""
+            if explicit_ids == []:
+                return 0
             has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
             if has_name:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
-            if present:
+            if explicit_ids is not None:
+                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
+            elif present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -2024,13 +2049,23 @@ class ManifestResolver:
             return len(stale_ids)
 
         # Helper: query stale IDs and soft-delete (deactivate)
-        async def _bulk_deactivate(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
+        async def _bulk_deactivate(
+            model: type,
+            base_filter: list,
+            present: list[UUID],
+            entity_type: str,
+            explicit_ids: list[UUID] | None = None,
+        ) -> int:
+            if explicit_ids == []:
+                return 0
             has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
             if has_name:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
-            if present:
+            if explicit_ids is not None:
+                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
+            elif present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -2061,6 +2096,7 @@ class ManifestResolver:
             [Workflow.is_active == True, Workflow.path.isnot(None)],  # noqa: E712
             present_wf_uuids,
             "workflows",
+            _explicit_ids("workflows"),
         )
 
         # Delete integrations not in manifest
@@ -2069,6 +2105,7 @@ class ManifestResolver:
             [Integration.is_deleted == False],  # noqa: E712
             present_integ_uuids,
             "integrations",
+            _explicit_ids("integrations"),
         )
 
         # Delete configs not in manifest (skip integration-schema-linked configs —
@@ -2076,10 +2113,18 @@ class ManifestResolver:
         cfg_q = select(
             Config.id, Config.organization_id, Config.key
         ).where(Config.config_schema_id.is_(None))
-        if present_config_uuids:
-            cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
-        cfg_result = await self.db.execute(cfg_q)
-        stale_cfg_rows = cfg_result.all()
+        explicit_config_ids = _explicit_ids("configs")
+        if explicit_config_ids == []:
+            stale_cfg_rows = []
+        elif explicit_config_ids is not None:
+            cfg_q = cfg_q.where(Config.id.in_(explicit_config_ids))
+            cfg_result = await self.db.execute(cfg_q)
+            stale_cfg_rows = cfg_result.all()
+        else:
+            if present_config_uuids:
+                cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
+            cfg_result = await self.db.execute(cfg_q)
+            stale_cfg_rows = cfg_result.all()
         stale_cfg_ids = [row[0] for row in stale_cfg_rows]
         if stale_cfg_ids:
             for sid, s_org_id, s_key in stale_cfg_rows:
@@ -2100,28 +2145,38 @@ class ManifestResolver:
                 )
 
         # Tables not in manifest (data preserved — report as "keep")
-        table_q = select(Table.id, Table.name)
-        if present_table_uuids:
-            table_q = table_q.where(Table.id.notin_(present_table_uuids))
-        table_result = await self.db.execute(table_q)
-        for row in table_result.all():
-            logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
-            entity_changes.append(EntityChange(
-                action="keep",
-                entity_type="tables",
-                name=row[1] or str(row[0]),
-            ))
+        explicit_table_ids = _explicit_ids("tables")
+        if explicit_table_ids != []:
+            table_q = select(Table.id, Table.name)
+            if explicit_table_ids is not None:
+                table_q = table_q.where(Table.id.in_(explicit_table_ids))
+            elif present_table_uuids:
+                table_q = table_q.where(Table.id.notin_(present_table_uuids))
+            table_result = await self.db.execute(table_q)
+            for row in table_result.all():
+                logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
+                entity_changes.append(EntityChange(
+                    action="keep",
+                    entity_type="tables",
+                    name=row[1] or str(row[0]),
+                ))
 
         # Delete custom claims not in manifest.
         from src.models.orm.custom_claims import CustomClaim
 
-        await _bulk_delete(CustomClaim, [], present_claim_uuids, "claims")
+        await _bulk_delete(CustomClaim, [], present_claim_uuids, "claims", _explicit_ids("claims"))
 
         # Delete event subscriptions not in manifest
-        await _bulk_delete(EventSubscription, [], present_sub_uuids, "event_subscriptions")
+        await _bulk_delete(
+            EventSubscription,
+            [],
+            present_sub_uuids,
+            "event_subscriptions",
+            _explicit_ids("event_subscriptions"),
+        )
 
         # Delete event sources not in manifest
-        await _bulk_delete(EventSource, [], present_event_uuids, "events")
+        await _bulk_delete(EventSource, [], present_event_uuids, "events", _explicit_ids("events"))
 
         # Delete forms not in manifest
         await _bulk_delete(
@@ -2129,13 +2184,20 @@ class ManifestResolver:
             [Form.is_active == True],  # noqa: E712
             present_form_uuids,
             "forms",
+            _explicit_ids("forms"),
         )
 
         # Delete agents not in manifest
-        await _bulk_delete(Agent, [], present_agent_uuids, "agents")
+        await _bulk_delete(Agent, [], present_agent_uuids, "agents", _explicit_ids("agents"))
 
         # Delete apps not in manifest
-        await _bulk_delete(Application, [], present_app_uuids, "applications")
+        await _bulk_delete(
+            Application,
+            [],
+            present_app_uuids,
+            "applications",
+            _explicit_ids("applications"),
+        )
 
         # External MCP cleanup. Delete leaves first, then connections, then
         # servers — although CASCADE FKs on the schema make later deletes
@@ -2145,7 +2207,7 @@ class ManifestResolver:
         # connection is in-manifest but whose tool_name is not present in
         # the manifest's tool list for that connection. Tools for orphaned
         # connections are reaped by the connection delete below via CASCADE.
-        if present_mcp_connection_uuids:
+        if removed_entity_ids is None and present_mcp_connection_uuids:
             present_tool_keys: set[tuple[UUID, str]] = set()
             for mserver in manifest.mcp_servers.values():
                 for cid, mconn in mserver.connections.items():
@@ -2182,6 +2244,7 @@ class ManifestResolver:
             [],
             present_mcp_connection_uuids,
             "mcp_connections",
+            _explicit_ids("mcp_connections"),
         )
         # Delete servers not in manifest (cascades to connections, tools, creds)
         await _bulk_delete(
@@ -2189,6 +2252,7 @@ class ManifestResolver:
             [],
             present_mcp_server_uuids,
             "mcp_servers",
+            _explicit_ids("mcp_servers"),
         )
         # ``user_mcp_credentials`` rows are user-owned, not manifest-owned —
         # they're created via the per-user OAuth connect flow. CASCADE on
@@ -2198,17 +2262,20 @@ class ManifestResolver:
         _ = UserMCPCredential
 
         # Soft-delete organizations not in manifest (only when manifest has orgs)
-        if present_org_uuids:
+        explicit_org_ids = _explicit_ids("organizations")
+        if explicit_org_ids is not None or present_org_uuids:
             await _bulk_deactivate(
                 Organization,
                 [Organization.is_active == True],  # noqa: E712
                 present_org_uuids,
                 "organizations",
+                explicit_org_ids,
             )
 
         # Delete roles not in manifest (only when manifest has roles)
-        if present_role_uuids:
-            await _bulk_delete(Role, [], present_role_uuids, "roles")
+        explicit_role_ids = _explicit_ids("roles")
+        if explicit_role_ids is not None or present_role_uuids:
+            await _bulk_delete(Role, [], present_role_uuids, "roles", explicit_role_ids)
 
         return entity_changes
 
