@@ -23,9 +23,11 @@ export function configureSentry(sentryModule: SentryModule = Sentry): boolean {
 	}
 
 	const release = import.meta.env.VITE_SENTRY_RELEASE?.trim();
+	const environment =
+		import.meta.env.VITE_SENTRY_ENVIRONMENT?.trim() || import.meta.env.MODE;
 	const options: SentryOptions = {
 		dsn,
-		environment: import.meta.env.VITE_SENTRY_ENVIRONMENT || import.meta.env.MODE,
+		environment,
 		sendDefaultPii: false,
 		tracesSampleRate: parseSampleRate(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE),
 	};

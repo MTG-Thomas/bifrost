@@ -54,6 +54,18 @@ describe("configureSentry", () => {
 		);
 	});
 
+	it("falls back to MODE when VITE_SENTRY_ENVIRONMENT is blank", () => {
+		vi.stubEnv("VITE_SENTRY_DSN", "https://example@sentry.invalid/1");
+		vi.stubEnv("VITE_SENTRY_ENVIRONMENT", " ");
+		vi.stubEnv("MODE", "development");
+		const sentry = { init: vi.fn() };
+
+		expect(configureSentry(sentry)).toBe(true);
+		expect(sentry.init).toHaveBeenCalledWith(
+			expect.objectContaining({ environment: "development" }),
+		);
+	});
+
 	it("returns false when the SDK fails to initialize", () => {
 		vi.stubEnv("VITE_SENTRY_DSN", "https://example@sentry.invalid/1");
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
