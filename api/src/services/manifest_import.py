@@ -226,6 +226,245 @@ def _collect_removed_entity_ids(changes: list[dict[str, str]]) -> dict[str, set[
     return removed
 
 
+def _safe_app_repo_path(mapp) -> str:
+    """Return a normalized app source path or raise on unsafe manifest input."""
+    from pathlib import PurePosixPath
+
+    raw_path = (mapp.path or "").strip().replace("\\", "/").rstrip("/")
+    if not raw_path:
+        slug = mapp.slug
+        if not slug:
+            raise ValueError(f"App {mapp.id} has no slug or path")
+        raw_path = f"apps/{slug}"
+
+    path = PurePosixPath(raw_path)
+    parts = path.parts
+    if (
+        path.is_absolute()
+        or len(parts) != 2
+        or parts[0] != "apps"
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        raise ValueError(
+            f"App {mapp.id} path must be exactly apps/<slug>, got {mapp.path!r}"
+        )
+
+    slug = mapp.slug or parts[1]
+    if parts[1] != slug:
+        raise ValueError(
+            f"App {mapp.id} path {raw_path!r} does not match slug {slug!r}"
+        )
+
+    return f"apps/{slug}"
+
+
+def _manifest_org_scope(manifest: "Manifest") -> set[str]:
+    """Collect org IDs explicitly declared or referenced by a manifest."""
+    org_ids = {org.id for org in manifest.organizations}
+
+    def _add_entity_orgs(values) -> None:
+        for entity in values:
+            org_id = getattr(entity, "organization_id", None)
+            if org_id:
+                org_ids.add(org_id)
+
+    _add_entity_orgs(manifest.workflows.values())
+    _add_entity_orgs(manifest.forms.values())
+    _add_entity_orgs(manifest.agents.values())
+    _add_entity_orgs(manifest.apps.values())
+    _add_entity_orgs(manifest.configs.values())
+    _add_entity_orgs(manifest.tables.values())
+    _add_entity_orgs(manifest.events.values())
+    _add_entity_orgs(manifest.mcp_servers.values())
+
+    for integration in manifest.integrations.values():
+        for mapping in integration.mappings:
+            if mapping.organization_id:
+                org_ids.add(mapping.organization_id)
+
+    for server in manifest.mcp_servers.values():
+        for connection in server.connections.values():
+            if connection.organization_id:
+                org_ids.add(connection.organization_id)
+
+    return org_ids
+
+
+def _entity_in_org_scope(entity: object, scoped_org_ids: set[str]) -> bool:
+    org_id = getattr(entity, "organization_id", None)
+    return bool(org_id and org_id in scoped_org_ids)
+
+
+def _filter_non_file_entities_to_scope(
+    manifest: "Manifest",
+    scope_manifest: "Manifest",
+) -> None:
+    """Restrict DB manifest sections that are not directly backed by files.
+
+    File-backed entities are scoped by repo path in ``_filter_manifest_to_scope``.
+    Integrations, configs, tables, events, roles, orgs, and MCP templates need
+    an explicit org/entity scope; otherwise a partial manifest can turn mere
+    absence into a global delete diff.
+    """
+    scoped_org_ids = _manifest_org_scope(scope_manifest)
+    scoped_role_ids = {role.id for role in scope_manifest.roles}
+    scoped_integration_ids = {
+        integration.id for integration in scope_manifest.integrations.values()
+    }
+    scoped_config_ids = {config.id for config in scope_manifest.configs.values()}
+    scoped_table_ids = {table.id for table in scope_manifest.tables.values()}
+    scoped_event_ids = {event.id for event in scope_manifest.events.values()}
+    scoped_mcp_server_ids = {
+        server.id for server in scope_manifest.mcp_servers.values()
+    }
+
+    manifest.organizations = [
+        org
+        for org in manifest.organizations
+        if scope_manifest.organizations and org.id in scoped_org_ids
+    ]
+    manifest.roles = [
+        role
+        for role in manifest.roles
+        if scope_manifest.roles and role.id in scoped_role_ids
+    ]
+
+    manifest.integrations = {
+        key: integration
+        for key, integration in manifest.integrations.items()
+        if scope_manifest.integrations
+        if (
+            integration.id in scoped_integration_ids
+            or any(
+                mapping.organization_id in scoped_org_ids
+                for mapping in integration.mappings
+                if mapping.organization_id
+            )
+        )
+    }
+    scoped_integration_ids |= {
+        integration.id for integration in manifest.integrations.values()
+    }
+
+    manifest.configs = {
+        key: config
+        for key, config in manifest.configs.items()
+        if scope_manifest.configs
+        if (
+            config.id in scoped_config_ids
+            or _entity_in_org_scope(config, scoped_org_ids)
+            or (
+                config.integration_id is not None
+                and config.integration_id in scoped_integration_ids
+            )
+        )
+    }
+    manifest.tables = {
+        key: table
+        for key, table in manifest.tables.items()
+        if scope_manifest.tables
+        if table.id in scoped_table_ids or _entity_in_org_scope(table, scoped_org_ids)
+    }
+    manifest.events = {
+        key: event
+        for key, event in manifest.events.items()
+        if scope_manifest.events
+        if event.id in scoped_event_ids or _entity_in_org_scope(event, scoped_org_ids)
+    }
+
+    manifest.mcp_servers = {
+        key: server
+        for key, server in manifest.mcp_servers.items()
+        if scope_manifest.mcp_servers
+        if (
+            server.id in scoped_mcp_server_ids
+            or _entity_in_org_scope(server, scoped_org_ids)
+            or any(
+                connection.organization_id in scoped_org_ids
+                for connection in server.connections.values()
+            )
+        )
+    }
+
+
+def _filter_manifest_to_scope(
+    manifest: "Manifest",
+    path_exists: Callable[[str], bool],
+    dir_exists: Callable[[str], bool],
+    scope_manifest: "Manifest | None" = None,
+) -> None:
+    """Restrict a DB manifest to the source paths owned by the current repo."""
+    manifest.workflows = {
+        k: v
+        for k, v in manifest.workflows.items()
+        if path_exists(v.path)
+    }
+    present_workflow_ids = {v.id for v in manifest.workflows.values()}
+    present_workflow_paths = {v.path for v in manifest.workflows.values()}
+
+    def _form_in_scope(mform) -> bool:
+        workflow_refs = {
+            getattr(mform, "workflow_id", None),
+            getattr(mform, "launch_workflow_id", None),
+        }
+        if workflow_refs & present_workflow_ids:
+            return True
+        path_refs = {
+            getattr(mform, "workflow_path", None),
+            getattr(mform, "launch_workflow_path", None),
+        }
+        return bool(path_refs & present_workflow_paths)
+
+    manifest.forms = {
+        k: v
+        for k, v in manifest.forms.items()
+        if _form_in_scope(v)
+    }
+
+    scoped_agents = {
+        k: v
+        for k, v in manifest.agents.items()
+        if set(getattr(v, "tool_ids", []) or []) & present_workflow_ids
+    }
+    while True:
+        present_agent_ids = {v.id for v in scoped_agents.values()}
+        next_agents = {
+            k: v
+            for k, v in manifest.agents.items()
+            if (
+                k in scoped_agents
+                or set(getattr(v, "delegated_agent_ids", []) or []) & present_agent_ids
+            )
+        }
+        if next_agents.keys() == scoped_agents.keys():
+            break
+        scoped_agents = next_agents
+    manifest.agents = scoped_agents
+
+    safe_apps = {}
+    for k, app in manifest.apps.items():
+        try:
+            app_path = _safe_app_repo_path(app)
+        except ValueError as exc:
+            logger.warning("Skipping unsafe app manifest path: %s", exc)
+            continue
+        if dir_exists(app_path):
+            safe_apps[k] = app.model_copy(update={"path": app_path})
+    manifest.apps = safe_apps
+
+    if scope_manifest is not None:
+        _filter_non_file_entities_to_scope(manifest, scope_manifest)
+
+
+def _manifest_access_level(access_level: str | None, roles: list[str] | None) -> str | None:
+    """Use role_based when a manifest declares roles but omits access_level."""
+    if access_level is not None:
+        return access_level
+    if roles:
+        return "role_based"
+    return None
+
+
 # =============================================================================
 # Inline-content helpers
 # =============================================================================
