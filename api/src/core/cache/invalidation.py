@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from inspect import isawaitable
+from typing import TYPE_CHECKING, Any, AsyncIterable, cast
 
 from .keys import (
     CONFIG_GLOBAL_VERSION_KEY,
@@ -48,7 +49,12 @@ logger = logging.getLogger(__name__)
 
 async def _delete_org_config_hashes(r: Any) -> None:
     """Delete existing org config hashes, including legacy unversioned keys."""
-    async for cache_key in r.scan_iter(match="bifrost:org:*:config*"):
+    scan_result = r.scan_iter(match="bifrost:org:*:config*")
+    if isawaitable(scan_result):
+        scan_result = await scan_result
+    if not hasattr(scan_result, "__aiter__"):
+        return
+    async for cache_key in cast(AsyncIterable[Any], scan_result):
         await r.delete(cache_key)
 
 

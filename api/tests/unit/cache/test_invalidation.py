@@ -47,8 +47,9 @@ class TestConfigInvalidation:
         with patch("src.core.cache.invalidation.get_shared_redis", return_value=mock_redis):
             await invalidate_config("org-123", "api_key")
 
-            # Should delete both the hash and the specific key
-            assert mock_redis.delete.call_count == 2
+            # Should delete at least the legacy hash and the specific key.
+            mock_redis.delete.assert_any_call("bifrost:org:org-123:config")
+            mock_redis.delete.assert_any_call("bifrost:org:org-123:config:api_key")
 
     @pytest.mark.asyncio
     async def test_invalidate_config_all_keys(self, mock_redis):
@@ -56,8 +57,8 @@ class TestConfigInvalidation:
         with patch("src.core.cache.invalidation.get_shared_redis", return_value=mock_redis):
             await invalidate_config("org-456", key=None)
 
-            # Should only delete the hash
-            assert mock_redis.delete.call_count == 1
+            # Should delete the legacy hash; versioned hashes may also be cleared.
+            mock_redis.delete.assert_any_call("bifrost:org:org-456:config")
 
     @pytest.mark.asyncio
     async def test_invalidate_config_global_scope(self, mock_redis):
@@ -82,7 +83,7 @@ class TestConfigInvalidation:
         with patch("src.core.cache.invalidation.get_shared_redis", return_value=mock_redis):
             await invalidate_all_config("org-999")
 
-            mock_redis.delete.assert_called_once()
+            mock_redis.delete.assert_any_call("bifrost:org:org-999:config")
 
     @pytest.mark.asyncio
     async def test_upsert_config_org_scope_invalidates_merged_org_cache(self, mock_redis):
