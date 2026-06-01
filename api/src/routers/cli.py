@@ -748,12 +748,13 @@ async def _build_oauth_data(
         decrypt_secret: Function to decrypt encrypted values
         oauth_scope: Override scope for token request (triggers fresh token fetch)
     """
-    # Decrypt client secret (needed for both stored tokens and auto-refresh)
-    client_secret = None
+    # Decrypt only for the server-side token refresh call. Never include the
+    # provider client secret in the SDK response.
+    refresh_client_secret = None
     if provider.encrypted_client_secret:
         try:
             raw = provider.encrypted_client_secret
-            client_secret = await asyncio.to_thread(
+            refresh_client_secret = await asyncio.to_thread(
                 decrypt_secret, raw.decode() if isinstance(raw, bytes) else raw
             )
         except Exception:
@@ -777,7 +778,7 @@ async def _build_oauth_data(
         scope_info = f"oauth_scope={log_safe(oauth_scope)}" if oauth_scope else f"entity_id={entity_id}"
         logger.info(f"Auto-refreshing token ({scope_info})")
 
-        if client_secret and resolved_token_url:
+        if refresh_client_secret and resolved_token_url:
             from src.services.oauth_provider import OAuthProviderClient
 
             oauth_client = OAuthProviderClient()
@@ -789,7 +790,7 @@ async def _build_oauth_data(
             success, result = await oauth_client.get_client_credentials_token(
                 token_url=resolved_token_url,
                 client_id=provider.client_id,
-                client_secret=client_secret,
+                client_secret=refresh_client_secret,
                 scopes=scopes,
                 audience=provider.audience,
             )
@@ -835,7 +836,7 @@ async def _build_oauth_data(
     return SDKIntegrationsOAuthData(
         connection_name=provider.provider_name,
         client_id=provider.client_id,
-        client_secret=client_secret,
+        client_secret=None,
         authorization_url=provider.authorization_url,
         token_url=resolved_token_url,
         scopes=provider.scopes or [],
