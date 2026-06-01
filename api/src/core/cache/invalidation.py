@@ -46,6 +46,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _delete_org_config_hashes(r: Any) -> None:
+    """Delete existing org config hashes, including legacy unversioned keys."""
+    async for cache_key in r.scan_iter(match="bifrost:org:*:config*"):
+        await r.delete(cache_key)
+
+
 # =============================================================================
 # Config Cache (Dual-Write)
 # =============================================================================
@@ -87,6 +93,7 @@ async def upsert_config(
             # re-fetches from DB and re-merges. NEVER hset a single field
             # into a merged hash — that's the partial-hash bug.
             versioned_hash = await config_hash_key_versioned(r, org_id)
+            await r.delete(config_hash_key(org_id))
             await r.delete(versioned_hash)
             await r.delete(config_key(org_id, key))
             logger.debug(
@@ -106,6 +113,7 @@ async def upsert_config(
             await r.expire(global_hash, TTL_CONFIG)
 
         await r.incr(CONFIG_GLOBAL_VERSION_KEY)
+        await _delete_org_config_hashes(r)
         logger.debug(
             f"Global config upsert bumped version; key={log_safe(key)}"
         )
@@ -130,6 +138,7 @@ async def invalidate_config(org_id: str | None, key: str | None = None) -> None:
 
         if org_id is not None and org_id != "GLOBAL":
             versioned_hash = await config_hash_key_versioned(r, org_id)
+            await r.delete(config_hash_key(org_id))
             await r.delete(versioned_hash)
             if key:
                 await r.delete(config_key(org_id, key))
@@ -140,6 +149,7 @@ async def invalidate_config(org_id: str | None, key: str | None = None) -> None:
             if key:
                 await r.delete(config_key(None, key))
             await r.incr(CONFIG_GLOBAL_VERSION_KEY)
+            await _delete_org_config_hashes(r)
 
         logger.debug(f"Invalidated config cache: org={log_safe(org_id)}, key={log_safe(key)}")
     except Exception as e:
