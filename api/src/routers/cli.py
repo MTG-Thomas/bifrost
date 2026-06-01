@@ -381,10 +381,15 @@ async def _resolve_sdk_org_id(
     is_provider_org = False
     needs_bypass_check = requested is not UNSET and requested != caller_org_id
     if needs_bypass_check and not is_platform_admin and caller_org_id is not None:
+        from inspect import isawaitable
+
         org_row = await db.execute(
             select(Organization.is_provider).where(Organization.id == caller_org_id)
         )
-        is_provider_org = org_row.scalar_one_or_none() is True
+        provider_value = org_row.scalar_one_or_none()
+        if isawaitable(provider_value):
+            provider_value = await provider_value
+        is_provider_org = provider_value is True
 
     try:
         resolved = resolve_effective_scope(
