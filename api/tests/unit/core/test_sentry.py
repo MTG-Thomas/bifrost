@@ -13,8 +13,11 @@ from src.core import sentry as sentry_core
 class FakeSentrySdk:
     def __init__(self):
         self.calls = []
+        self.error = None
 
     def init(self, **kwargs):
+        if self.error:
+            raise self.error
         self.calls.append(kwargs)
 
 
@@ -84,6 +87,40 @@ def test_app_startup_configures_sentry_from_env(monkeypatch):
     assert settings.sentry_traces_sample_rate == pytest.approx(0.25)
     assert settings.sentry_profiles_sample_rate == pytest.approx(0.10)
     assert settings.sentry_send_default_pii is False
+
+
+def test_configure_sentry_without_settings_uses_env(monkeypatch):
+    fake_sdk = FakeSentrySdk()
+
+    monkeypatch.setenv("BIFROST_SENTRY_DSN", "https://example@sentry.invalid/1")
+    monkeypatch.setenv("BIFROST_SENTRY_TRACES_SAMPLE_RATE", "0.25")
+    monkeypatch.setenv("BIFROST_SENTRY_PROFILES_SAMPLE_RATE", "0.10")
+
+    get_settings.cache_clear()
+
+    try:
+        assert sentry_core.configure_sentry(sentry_sdk_module=fake_sdk) is True
+    finally:
+        get_settings.cache_clear()
+
+    init_kwargs = fake_sdk.calls[0]
+    assert init_kwargs["dsn"] == "https://example@sentry.invalid/1"
+    assert init_kwargs["traces_sample_rate"] == pytest.approx(0.25)
+    assert init_kwargs["profile_session_sample_rate"] == pytest.approx(0.10)
+    assert init_kwargs["send_default_pii"] is False
+
+
+def test_configure_sentry_returns_false_when_init_fails(caplog):
+    fake_sdk = FakeSentrySdk()
+    fake_sdk.error = ValueError("bad DSN")
+
+    configured = sentry_core.configure_sentry(
+        settings(sentry_dsn="not-a-valid-dsn"),
+        sentry_sdk_module=fake_sdk,
+    )
+
+    assert configured is False
+    assert "Sentry initialization failed" in caplog.text
 
 
 def test_before_send_scrubs_sensitive_request_data():

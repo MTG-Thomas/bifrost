@@ -19,6 +19,7 @@ import os
 import signal
 
 from src.config import get_settings
+from src.core.sentry import configure_sentry
 from src.core.database import init_db, close_db
 from src.jobs.rabbitmq import rabbitmq
 from src.jobs.consumers.workflow_execution import WorkflowExecutionConsumer
@@ -63,6 +64,7 @@ class Worker:
 
     def __init__(self):
         self.settings = get_settings()
+        configure_sentry()
         self.running = False
         self._shutdown_event = asyncio.Event()
         self._consumers: list = []

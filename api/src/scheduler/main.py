@@ -24,6 +24,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from src.config import get_settings
+from src.core.sentry import configure_sentry
 from src.core.database import init_db, close_db, get_db_context
 from src.core.pubsub import publish_git_op_completed
 from src.core.redis_reconnect import ResilientPubSubListener
@@ -63,6 +64,7 @@ class Scheduler:
 
     def __init__(self):
         self.settings = get_settings()
+        configure_sentry()
         self.running = False
         self._shutdown_event = asyncio.Event()
         self._scheduler: AsyncIOScheduler | None = None

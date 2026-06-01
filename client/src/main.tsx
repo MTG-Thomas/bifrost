@@ -10,6 +10,7 @@ import { OrgScopeQueryInvalidator } from "./components/OrgScopeQueryInvalidator"
 import { configureMonaco } from "./lib/monaco-setup";
 import { initReactShim } from "./lib/esm-react-shim";
 import { handleVitePreloadError } from "@/lib/preload-error-handler";
+import { configureSentry } from "@/lib/sentry";
 
 // After a deploy, hashed JS chunks vanish and dynamic imports for old chunk
 // names start 404'ing. Vite emits `vite:preloadError` for those — reload once
@@ -22,6 +23,8 @@ initReactShim();
 
 // Configure Monaco editor before React renders (sets up CDN paths for workers)
 configureMonaco();
+
+configureSentry();
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
