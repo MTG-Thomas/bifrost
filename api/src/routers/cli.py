@@ -896,7 +896,11 @@ async def sdk_integrations_list_mappings(
         items = []
         for mapping in mappings:
             # Get merged config (integration defaults + org overrides)
-            config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+            config = await repo.get_config_for_mapping(
+                integration.id,
+                mapping.organization_id,
+                include_default_secrets=False,
+            )
             items.append({
                 "id": str(mapping.id),
                 "integration_id": str(mapping.integration_id),
@@ -959,10 +963,13 @@ async def sdk_integrations_get_mapping(
         # otherwise restrict to the caller's resolved org so non-bypass
         # callers can't probe other orgs' entity_ids.
         if not mapping and request.entity_id:
-            candidates = await repo.list_mappings(
-                integration.id,
-                organization_id=UUID(resolved_org_id) if resolved_org_id else None,
-            )
+            if resolved_org_id is None and request.scope in (None, ""):
+                candidates = []
+            else:
+                candidates = await repo.list_mappings(
+                    integration.id,
+                    organization_id=UUID(resolved_org_id) if resolved_org_id else None,
+                )
             for m in candidates:
                 if m.entity_id == request.entity_id:
                     mapping = m
@@ -972,7 +979,11 @@ async def sdk_integrations_get_mapping(
             return None
 
         # Get merged config for the mapping
-        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+        config = await repo.get_config_for_mapping(
+            integration.id,
+            mapping.organization_id,
+            include_default_secrets=False,
+        )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
 

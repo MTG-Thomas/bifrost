@@ -617,7 +617,11 @@ class IntegrationsRepository(BaseRepository[Integration]):
         return config
 
     async def get_config_for_mapping(
-        self, integration_id: UUID, org_id: UUID
+        self,
+        integration_id: UUID,
+        org_id: UUID,
+        *,
+        include_default_secrets: bool = True,
     ) -> dict:
         """
         Get merged configuration for an integration mapping.
@@ -628,6 +632,9 @@ class IntegrationsRepository(BaseRepository[Integration]):
         Args:
             integration_id: Integration UUID
             org_id: Organization UUID
+            include_default_secrets: Whether integration-level secret defaults
+                may be included. Direct mapping enumeration disables this so
+                global secrets do not leak through org mapping reads.
 
         Returns:
             dict: Merged configuration (integration defaults + org overrides)
@@ -659,6 +666,14 @@ class IntegrationsRepository(BaseRepository[Integration]):
             else:
                 val = value
 
+            is_default = entry.organization_id is None
+            if (
+                is_default
+                and entry.config_type == ConfigType.SECRET
+                and not include_default_secrets
+            ):
+                continue
+
             if entry.config_type == ConfigType.SECRET and isinstance(val, str):
                 try:
                     val = decrypt_secret(val)
@@ -666,7 +681,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
                     logger.warning(f"Failed to decrypt config '{entry.key}'")
                     val = None
 
-            if entry.organization_id is None:
+            if is_default:
                 defaults[entry.key] = val
             else:
                 overrides[entry.key] = val
