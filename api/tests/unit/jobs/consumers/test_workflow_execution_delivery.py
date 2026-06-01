@@ -170,7 +170,7 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
     consumer._pool.route_execution.assert_awaited_once()
     publish_execution_update.assert_awaited_once()
     assert publish_execution_update.await_args is not None
-    assert publish_execution_update.await_args.args[:2] == (execution_id, "Pending")
+    assert publish_execution_update.await_args.args[:2] == (execution_id, "Running")
 
 
 @pytest.mark.asyncio
