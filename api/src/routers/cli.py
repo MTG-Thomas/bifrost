@@ -48,7 +48,7 @@ import logging
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -409,7 +409,7 @@ async def _resolve_sdk_org_id(
         )
         provider_value = org_row.scalar_one_or_none()
         if isawaitable(provider_value):
-            provider_value = await provider_value
+            provider_value = await cast(Awaitable[Any], provider_value)
         is_provider_org = provider_value is True
 
     try:
