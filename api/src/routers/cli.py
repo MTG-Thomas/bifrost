@@ -77,6 +77,10 @@ from src.services.oauth_scope_resolution import (
     get_oauth_provider_for_scope,
     get_oauth_token_for_scope,
 )
+from shared.cli_integration_mappings import (
+    get_cli_integration_mapping,
+    list_cli_integration_mappings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -937,15 +941,13 @@ async def sdk_integrations_list_mappings(
             logger.warning(f"SDK integrations.list_mappings: integration '{log_safe(request.name)}' not found")
             return None
 
-        resolved_org_id = await _get_cli_org_id(current_user, request.scope, db)
-        if resolved_org_id is None and request.scope == "global":
-            mappings = await repo.list_mappings(integration.id)
-        elif resolved_org_id is None:
-            mappings = []
-        else:
-            mappings = await repo.list_mappings(
-                integration.id, organization_id=UUID(resolved_org_id)
-            )
+        mappings = await list_cli_integration_mappings(
+            repo,
+            current_user,
+            request.scope,
+            integration.id,
+            db,
+        )
 
         logger.info(f"SDK listed {len(mappings)} mappings for integration '{log_safe(request.name)}' for user {current_user.email}")
 
@@ -995,30 +997,14 @@ async def sdk_integrations_get_mapping(
             logger.warning(f"SDK integrations.get_mapping: integration '{log_safe(request.name)}' not found")
             return None
 
-        resolved_org_id = await _get_cli_org_id(current_user, request.scope, db)
-        mapping = None
-
-        # Look up by resolved org scope if available.
-        if resolved_org_id:
-            org_uuid = UUID(resolved_org_id)
-            mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
-
-        # If no mapping found and entity_id provided, search by entity_id.
-        # Only explicit global scope may search across orgs; unscoped superusers
-        # get no results, matching list_mappings behavior.
-        if not mapping and request.entity_id:
-            if resolved_org_id is None and request.scope == "global":
-                all_mappings = await repo.list_mappings(integration.id)
-            elif resolved_org_id is None:
-                all_mappings = []
-            else:
-                all_mappings = await repo.list_mappings(
-                    integration.id, organization_id=UUID(resolved_org_id)
-                )
-            for m in all_mappings:
-                if m.entity_id == request.entity_id:
-                    mapping = m
-                    break
+        mapping = await get_cli_integration_mapping(
+            repo,
+            current_user,
+            request.scope,
+            integration.id,
+            db,
+            request.entity_id,
+        )
 
         if not mapping:
             return None

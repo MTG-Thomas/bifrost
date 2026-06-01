@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 from uuid import uuid4
 from src.models.orm import OAuthProvider
+from tests.fixtures.auth import auth_headers, create_test_jwt
 
 
 @pytest.mark.e2e
@@ -1335,6 +1336,12 @@ class TestIntegrationConfigSecrets:
         )
         assert response.status_code == 201, response.text
         mapping = response.json()
+        platform_admin_without_org = auth_headers(
+            create_test_jwt(
+                email="mapping-platform-admin@test.com",
+                is_superuser=True,
+            )
+        )
 
         try:
             response = e2e_client.post(
@@ -1350,6 +1357,47 @@ class TestIntegrationConfigSecrets:
                 json={"name": integration["name"], "scope": str(org2["id"])},
             )
             assert response.status_code == 403, response.text
+
+            response = e2e_client.post(
+                "/api/cli/integrations/get_mapping",
+                headers=platform_admin_without_org,
+                json={
+                    "name": integration["name"],
+                    "scope": str(org2["id"]),
+                    "entity_id": "org2-tenant-secret",
+                },
+            )
+            assert response.status_code == 403, response.text
+
+            response = e2e_client.post(
+                "/api/cli/integrations/list_mappings",
+                headers=platform_admin_without_org,
+                json={"name": integration["name"], "scope": str(org2["id"])},
+            )
+            assert response.status_code == 403, response.text
+
+            response = e2e_client.post(
+                "/api/cli/integrations/get_mapping",
+                headers=platform_admin_without_org,
+                json={
+                    "name": integration["name"],
+                    "scope": "global",
+                    "entity_id": "org2-tenant-secret",
+                },
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["id"] == mapping["id"]
+
+            response = e2e_client.post(
+                "/api/cli/integrations/list_mappings",
+                headers=platform_admin_without_org,
+                json={"name": integration["name"], "scope": "global"},
+            )
+            assert response.status_code == 200, response.text
+            assert any(
+                item["id"] == mapping["id"] and item["entity_name"] == "Org2 Tenant"
+                for item in response.json()["items"]
+            )
         finally:
             e2e_client.delete(
                 f"/api/integrations/{integration['id']}/mappings/{mapping['id']}",
