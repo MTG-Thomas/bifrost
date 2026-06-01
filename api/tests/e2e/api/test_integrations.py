@@ -1213,6 +1213,7 @@ class TestIntegrationConfigSecrets:
     ):
         """Direct mapping reads must not disclose integration-level default secrets."""
         integration = integration_with_secret_schema
+        default_secret = f"global-default-{uuid4().hex}"
 
         response = e2e_client.put(
             f"/api/integrations/{integration['id']}/config",
@@ -1220,7 +1221,7 @@ class TestIntegrationConfigSecrets:
             json={
                 "config": {
                     "base_url": "https://api.default.com",
-                    "api_key": "global-default-secret",
+                    "api_key": default_secret,
                 }
             },
         )
@@ -1274,6 +1275,8 @@ class TestIntegrationConfigSecrets:
     ):
         """Direct mapping reads may return secrets explicitly scoped to that mapping's org."""
         integration = integration_with_secret_schema
+        default_secret = f"global-default-{uuid4().hex}"
+        org_secret = f"org-scoped-{uuid4().hex}"
 
         response = e2e_client.put(
             f"/api/integrations/{integration['id']}/config",
@@ -1281,7 +1284,7 @@ class TestIntegrationConfigSecrets:
             json={
                 "config": {
                     "base_url": "https://api.default.com",
-                    "api_key": "global-default-secret",
+                    "api_key": default_secret,
                 }
             },
         )
@@ -1294,7 +1297,7 @@ class TestIntegrationConfigSecrets:
                 "organization_id": str(org1["id"]),
                 "entity_id": "get-mapping-org-secret",
                 "config": {
-                    "api_key": "org-scoped-secret",
+                    "api_key": org_secret,
                 },
             },
         )
@@ -1312,7 +1315,7 @@ class TestIntegrationConfigSecrets:
 
             assert data["id"] == mapping["id"]
             assert data["config"]["base_url"] == "https://api.default.com"
-            assert data["config"]["api_key"] == "org-scoped-secret"
+            assert data["config"]["api_key"] == org_secret
         finally:
             e2e_client.delete(
                 f"/api/integrations/{integration['id']}/mappings/{mapping['id']}",
