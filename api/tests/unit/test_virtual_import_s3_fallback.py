@@ -75,6 +75,29 @@ def test_s3_miss_returns_none():
         assert result is None
 
 
+def test_azure_blob_provider_uses_blob_module_fallback_not_s3():
+    """Azure Blob deployments should not use S3 for sync module fallback."""
+    from src.core.module_cache_sync import get_module_sync
+
+    with (
+        patch.dict("os.environ", {"BIFROST_OBJECT_STORAGE_PROVIDER": "azure_blob"}),
+        patch("src.core.module_cache_sync._get_sync_redis") as mock_redis_factory,
+        patch("src.core.module_cache_sync._get_blob_module") as mock_blob,
+        patch("src.core.module_cache_sync._get_s3_module") as mock_s3,
+    ):
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = None
+        mock_redis_factory.return_value = mock_redis
+        mock_blob.return_value = b"def helper(): return 42"
+
+        result = get_module_sync("shared/utils.py")
+
+        mock_blob.assert_called_once_with("shared/utils.py")
+        mock_s3.assert_not_called()
+        assert result is not None
+        assert result["content"] == "def helper(): return 42"
+
+
 class TestModuleIndexS3Fallback:
     """Tests for get_module_index_sync S3 fallback when Redis index is empty."""
 
@@ -142,6 +165,37 @@ class TestModuleIndexS3Fallback:
             assert result == set()
             # Should not try to sadd empty set
             mock_redis.sadd.assert_not_called()
+
+    def test_empty_redis_index_falls_back_to_blob_when_configured(self):
+        """When Azure Blob is configured, cold indexes should list Blob, not S3."""
+        from src.core.module_cache import MODULE_INDEX_KEY
+        from src.core.module_cache_sync import get_module_index_sync
+
+        blob_paths = {
+            "features/spotify_journal/services/spotify_api.py",
+            "features/spotify_journal/__init__.py",
+        }
+
+        with (
+            patch.dict("os.environ", {"BIFROST_OBJECT_STORAGE_PROVIDER": "azure_blob"}),
+            patch("src.core.module_cache_sync._get_sync_redis") as mock_redis_factory,
+            patch(
+                "src.core.module_cache_sync._list_blob_modules",
+                return_value=blob_paths,
+            ) as mock_blob_list,
+            patch("src.core.module_cache_sync._list_s3_modules") as mock_s3_list,
+        ):
+            mock_redis = MagicMock()
+            mock_redis.smembers.return_value = set()
+            mock_redis_factory.return_value = mock_redis
+
+            result = get_module_index_sync()
+
+            mock_blob_list.assert_called_once()
+            mock_s3_list.assert_not_called()
+            assert result == blob_paths
+            mock_redis.sadd.assert_called_once()
+            assert mock_redis.sadd.call_args[0][0] == MODULE_INDEX_KEY
 
     def test_namespace_package_resolves_via_s3_index_fallback(self):
         """Integration: namespace package lookup succeeds when Redis index is cold but S3 has modules."""

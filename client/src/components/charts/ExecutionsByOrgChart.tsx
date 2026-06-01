@@ -17,10 +17,14 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { OrganizationMetricsSummary } from "@/hooks/useAdminMetrics";
+import { toFiniteNumber } from "@/lib/chart-values";
+import { MetricsCardError } from "./MetricsCardError";
 
 interface ExecutionsByOrgChartProps {
 	data: OrganizationMetricsSummary[];
 	isLoading?: boolean;
+	isError?: boolean;
+	error?: unknown;
 }
 
 // Color palette for bars
@@ -40,6 +44,8 @@ const COLORS = [
 export function ExecutionsByOrgChart({
 	data,
 	isLoading,
+	isError,
+	error,
 }: ExecutionsByOrgChartProps) {
 	if (isLoading) {
 		return (
@@ -52,6 +58,25 @@ export function ExecutionsByOrgChart({
 				</CardHeader>
 				<CardContent>
 					<Skeleton className="h-[300px] w-full" />
+				</CardContent>
+			</Card>
+		);
+	}
+
+	if (isError) {
+		return (
+			<Card>
+				<CardHeader>
+					<CardTitle>Executions by Organization</CardTitle>
+					<CardDescription>
+						Top organizations by execution count
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					<MetricsCardError
+						label="organization metrics"
+						error={error}
+					/>
 				</CardContent>
 			</Card>
 		);
@@ -120,7 +145,7 @@ export function ExecutionsByOrgChart({
 								borderRadius: "6px",
 							}}
 							formatter={(value, _name, props) => [
-								`${Number(value ?? 0).toLocaleString()} executions`,
+								`${toFiniteNumber(value).toLocaleString()} executions`,
 								props.payload.fullName,
 							]}
 							labelFormatter={() => ""}

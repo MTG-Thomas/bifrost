@@ -136,6 +136,11 @@ def resolve_scope(scope: str | None) -> str | None:
     CLI mode (no ExecutionContext) returns the requested scope unchanged
     — the API will apply its own resolver against the user's JWT.
     """
+    if scope == "global":
+        ctx = _execution_context.get()
+        if ctx is None:
+            return "global"  # CLI mode — preserve explicit global scope token
+        scope = None
     default = get_default_scope()
     if scope is None:
         return default

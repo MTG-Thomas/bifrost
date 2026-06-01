@@ -28,12 +28,12 @@ USER_FACING_PATTERNS=(
     '^docs/runbooks/'                     # operational docs visible to users
 )
 
-if [ ! -d "$BIFROST_REPO/.git" ]; then
+if ! git -C "$BIFROST_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "error: bifrost repo not found at $BIFROST_REPO" >&2
     exit 2
 fi
 
-if [ ! -d "$DOCS_REPO/.git" ]; then
+if ! git -C "$DOCS_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "warn: docs repo not found at $DOCS_REPO" >&2
     echo "      clone it: git clone git@github.com:jackmusick/bifrost-integrations-docs.git $DOCS_REPO" >&2
     exit 2
@@ -41,12 +41,14 @@ fi
 
 BIFROST_LAST=$(git -C "$BIFROST_REPO" log -1 --format=%cI origin/main)
 DOCS_LAST=$(git -C "$DOCS_REPO" log -1 --format=%cI origin/main)
+BIFROST_LAST_EPOCH=$(git -C "$BIFROST_REPO" log -1 --format=%ct origin/main)
+DOCS_LAST_EPOCH=$(git -C "$DOCS_REPO" log -1 --format=%ct origin/main)
 
 echo "bifrost last main commit:  $BIFROST_LAST"
 echo "docs    last main commit:  $DOCS_LAST"
 
 # If docs are at-or-ahead of bifrost, no drift to surface.
-if [[ "$DOCS_LAST" > "$BIFROST_LAST" || "$DOCS_LAST" == "$BIFROST_LAST" ]]; then
+if [[ "$DOCS_LAST_EPOCH" -ge "$BIFROST_LAST_EPOCH" ]]; then
     echo
     echo "✓ docs are current (at or ahead of bifrost main)"
     exit 0
@@ -66,7 +68,7 @@ CHANGED_FILES=$(
 COMMIT_COUNT=$(git -C "$BIFROST_REPO" log --since="$DOCS_LAST" --oneline origin/main | wc -l | tr -d ' ')
 
 echo
-if [ -z "$CHANGED_FILES" ]; then
+if [[ -z "$CHANGED_FILES" ]]; then
     echo "✓ no user-facing surface-area changes since docs were last updated"
     echo "  ($COMMIT_COUNT commits since DOCS_LAST, none touching tracked dirs)"
     exit 0
@@ -78,7 +80,7 @@ echo "⚠ user-facing surface area changed since docs were last updated:"
 echo "  $COMMIT_COUNT commits since DOCS_LAST, $FILE_COUNT user-facing files touched"
 echo
 echo "$CHANGED_FILES" | head -25
-if [ "$FILE_COUNT" -gt 25 ]; then
+if [[ "$FILE_COUNT" -gt 25 ]]; then
     echo "  ... and $((FILE_COUNT - 25)) more"
 fi
 

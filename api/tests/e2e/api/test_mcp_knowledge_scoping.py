@@ -29,6 +29,10 @@ import uuid
 
 import pytest
 
+from src.services.mcp_server.tools.knowledge import (
+    SEARCH_KNOWLEDGE_NAMESPACE_DENIED_CODE,
+)
+
 logger = logging.getLogger(__name__)
 
 EMBEDDINGS_AVAILABLE = bool(os.environ.get("EMBEDDINGS_AI_TEST_KEY"))
@@ -97,6 +101,25 @@ def _mcp_call_tool(
     )
 
 
+def _structured_tool_result(payload: dict) -> dict:
+    result = payload.get("result") or {}
+    structured = (
+        result.get("structuredContent") or result.get("structured_content") or {}
+    )
+    return structured if isinstance(structured, dict) else {}
+
+
+def _result_namespaces(payload: dict) -> set[str]:
+    results = _structured_tool_result(payload).get("results", [])
+    if not isinstance(results, list):
+        return set()
+    return {
+        item["namespace"]
+        for item in results
+        if isinstance(item, dict) and isinstance(item.get("namespace"), str)
+    }
+
+
 @pytest.fixture(scope="module")
 def _embedding_config(e2e_client, platform_admin):
     """Configure OpenAI embeddings (required for search_knowledge)."""
@@ -153,7 +176,7 @@ def _knowledge_scoping_setup(e2e_client, platform_admin, _embedding_config):
                     "namespace": ns,
                     "key": key,
                     "metadata": {},
-                    "scope": None,  # global scope
+                    "scope": None,
                 },
             )
             assert resp.status_code == 200, (
@@ -197,15 +220,6 @@ def _knowledge_scoping_setup(e2e_client, platform_admin, _embedding_config):
             "agent_beta_id": agent_beta_id,
         }
     finally:
-        for agent_id in (agent_alpha_id, agent_beta_id):
-            if agent_id:
-                try:
-                    e2e_client.delete(
-                        f"/api/agents/{agent_id}",
-                        headers=platform_admin.headers,
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to clean up agent {agent_id}: {e}")
         for ns, key in [(ns_alpha, "alpha-doc"), (ns_beta, "beta-doc")]:
             try:
                 e2e_client.post(
@@ -215,6 +229,15 @@ def _knowledge_scoping_setup(e2e_client, platform_admin, _embedding_config):
                 )
             except Exception as e:
                 logger.warning(f"Failed to clean up namespace {ns}: {e}")
+        for agent_id in (agent_alpha_id, agent_beta_id):
+            if agent_id:
+                try:
+                    e2e_client.delete(
+                        f"/api/agents/{agent_id}",
+                        headers=platform_admin.headers,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to clean up agent {agent_id}: {e}")
 
 
 @pytest.mark.e2e
@@ -262,8 +285,8 @@ class TestMCPKnowledgeScoping:
             e2e_client, "/mcp", platform_admin.headers, "search_knowledge",
             {"query": _knowledge_scoping_setup["marker_alpha"]},
         )
-        text_blob = str(result.get("result", ""))
-        assert _knowledge_scoping_setup["ns_alpha"] in text_blob, (
+        namespaces = _result_namespaces(result)
+        assert _knowledge_scoping_setup["ns_alpha"] in namespaces, (
             f"Expected ns_alpha in unscoped search; got {result}"
         )
 
@@ -271,8 +294,8 @@ class TestMCPKnowledgeScoping:
             e2e_client, "/mcp", platform_admin.headers, "search_knowledge",
             {"query": _knowledge_scoping_setup["marker_beta"]},
         )
-        text_blob = str(result.get("result", ""))
-        assert _knowledge_scoping_setup["ns_beta"] in text_blob, (
+        namespaces = _result_namespaces(result)
+        assert _knowledge_scoping_setup["ns_beta"] in namespaces, (
             f"Expected ns_beta in unscoped search; got {result}"
         )
 
@@ -289,8 +312,8 @@ class TestMCPKnowledgeScoping:
             e2e_client, url, platform_admin.headers, "search_knowledge",
             {"query": _knowledge_scoping_setup["marker_alpha"]},
         )
-        text_blob = str(result.get("result", ""))
-        assert _knowledge_scoping_setup["ns_alpha"] in text_blob, (
+        namespaces = _result_namespaces(result)
+        assert _knowledge_scoping_setup["ns_alpha"] in namespaces, (
             f"Expected ns_alpha hit on agent-scoped query; got {result}"
         )
 
@@ -298,8 +321,8 @@ class TestMCPKnowledgeScoping:
             e2e_client, url, platform_admin.headers, "search_knowledge",
             {"query": _knowledge_scoping_setup["marker_beta"]},
         )
-        text_blob = str(result.get("result", ""))
-        assert _knowledge_scoping_setup["ns_beta"] not in text_blob, (
+        namespaces = _result_namespaces(result)
+        assert _knowledge_scoping_setup["ns_beta"] not in namespaces, (
             f"agent-scoped session leaked ns_beta into a query "
             f"that should only see ns_alpha. Result: {result}"
         )
@@ -321,8 +344,8 @@ class TestMCPKnowledgeScoping:
                 "namespace": _knowledge_scoping_setup["ns_beta"],
             },
         )
-        text_blob = str(result.get("result", ""))
-        assert "Access denied" in text_blob or "not accessible" in text_blob, (
+        structured = _structured_tool_result(result)
+        assert structured.get("code") == SEARCH_KNOWLEDGE_NAMESPACE_DENIED_CODE, (
             f"Cross-namespace request on agent-scoped mount was not "
             f"rejected. Got: {result}"
         )
@@ -340,7 +363,7 @@ class TestMCPKnowledgeScoping:
                 "namespace": "this_namespace_does_not_exist",
             },
         )
-        text_blob = str(result.get("result", ""))
-        assert "Access denied" in text_blob or "not accessible" in text_blob, (
+        structured = _structured_tool_result(result)
+        assert structured.get("code") == SEARCH_KNOWLEDGE_NAMESPACE_DENIED_CODE, (
             f"Unknown namespace was not rejected on /mcp: {result}"
         )

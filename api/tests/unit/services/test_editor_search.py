@@ -1,6 +1,9 @@
 """Tests for the _search_content pure function in src.services.editor.search."""
 
-from src.services.editor.search import _search_content
+import pytest
+
+from src.services.editor import search as editor_search
+from src.services.editor.search import _search_content, _validate_regex_pattern
 
 
 class TestSimpleSearch:
@@ -63,6 +66,87 @@ class TestRegexSearch:
         content = "hello world"
         results = _search_content(content, "test.py", "[invalid", case_sensitive=False, is_regex=True)
         assert results == []
+
+    def test_regex_search_uses_timeout_capable_engine(self, monkeypatch):
+        """Explicit regex mode must bound user-provided pattern execution."""
+        observed = {}
+
+        class FakeRegex:
+            def finditer(self, line, *, timeout):
+                observed["line"] = line
+                observed["timeout"] = timeout
+                return iter(())
+
+        def fake_compile(pattern, flags):
+            observed["pattern"] = pattern
+            observed["flags"] = flags
+            return FakeRegex()
+
+        monkeypatch.setattr(editor_search.bounded_regex, "compile", fake_compile)
+
+        results = _search_content(
+            "hello world",
+            "test.py",
+            r"hello|world",
+            case_sensitive=False,
+            is_regex=True,
+        )
+
+        assert results == []
+        assert observed["pattern"] == r"hello|world"
+        assert observed["line"] == "hello world"
+        assert observed["timeout"] == editor_search.REGEX_SEARCH_TIMEOUT_SECONDS
+
+    def test_regex_timeout_returns_empty(self, monkeypatch):
+        class FakeRegex:
+            def finditer(self, line, *, timeout):
+                raise TimeoutError("timed out")
+
+        monkeypatch.setattr(
+            editor_search.bounded_regex,
+            "compile",
+            lambda pattern, flags: FakeRegex(),
+        )
+
+        results = _search_content(
+            "hello world",
+            "test.py",
+            r"hello|world",
+            case_sensitive=False,
+            is_regex=True,
+        )
+
+        assert results == []
+
+    def test_nested_quantifier_regex_rejected_before_search(self):
+        content = "a" * 1000
+        risky_pattern = "".join(["(", "a", "+", ")", "+", "$"])
+        with pytest.raises(ValueError, match="nested quantifiers"):
+            _validate_regex_pattern(risky_pattern)
+        with pytest.raises(ValueError, match="nested quantifiers"):
+            _search_content(content, "test.py", risky_pattern, case_sensitive=False, is_regex=True)
+
+    def test_ambiguous_quantified_alternation_rejected_before_search(self):
+        risky_pattern = "".join(["(", "a", "|", "a", ")", "+"])
+        with pytest.raises(ValueError, match="nested quantifiers"):
+            _validate_regex_pattern(risky_pattern)
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            r"(?:async\s+)?def",
+            r"(\d+)?",
+            r"(http|https)?",
+            r"(?:foo|bar)+",
+            r"(?:[a-z]+\d+)?",
+        ],
+    )
+    def test_benign_grouped_regex_patterns_are_accepted(self, pattern):
+        _validate_regex_pattern(pattern)
+
+    def test_regex_pattern_length_limit(self):
+        with pytest.raises(ValueError, match="exceeds"):
+            _validate_regex_pattern("a" * 513)
 
     def test_special_regex_chars_escaped_in_literal_search(self):
         """When is_regex=False, special characters like . and + should be escaped."""

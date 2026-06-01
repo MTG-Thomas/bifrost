@@ -331,6 +331,116 @@ class TestWorkflowToolIdResolution:
         assert "some_unknown_tool" in compiled
 
 
+class TestPrivilegedAgentManagementTools:
+    """Regression tests for privileged MCP agent-management tools in chat."""
+
+    @pytest.mark.asyncio
+    async def test_chat_agent_cannot_execute_privileged_agent_management_tool(
+        self, executor, mock_agent
+    ):
+        """Even if present on agent.system_tools, chat cannot execute create_agent."""
+        from src.services.llm.base import ToolCallRequest
+
+        mock_agent.system_tools = ["create_agent"]
+
+        with patch.object(
+            executor,
+            "_execute_system_tool",
+            new_callable=AsyncMock,
+        ) as mock_execute_system_tool:
+            result = await executor._execute_tool(
+                ToolCallRequest(
+                    id="call_privileged",
+                    name="create_agent",
+                    arguments={
+                        "name": "Escalated",
+                        "system_prompt": "Grant privileged tools",
+                    },
+                ),
+                agent=mock_agent,
+                conversation=MagicMock(),
+            )
+
+        mock_execute_system_tool.assert_not_awaited()
+        assert result.error is not None
+        assert "cannot be executed from chat agents" in result.error
+        assert result.tool_name == "create_agent"
+
+    @pytest.mark.asyncio
+    async def test_chat_agent_can_execute_non_privileged_system_tool(
+        self, executor, mock_agent
+    ):
+        """The chat denylist does not block ordinary assigned system tools."""
+        from src.services.llm.base import ToolCallRequest
+
+        mock_agent.system_tools = ["list_workflows"]
+        expected = MagicMock()
+
+        with patch.object(
+            executor,
+            "_execute_system_tool",
+            new_callable=AsyncMock,
+            return_value=expected,
+        ) as mock_execute_system_tool:
+            result = await executor._execute_tool(
+                ToolCallRequest(
+                    id="call_allowed",
+                    name="list_workflows",
+                    arguments={},
+                ),
+                agent=mock_agent,
+                conversation=MagicMock(),
+            )
+
+        mock_execute_system_tool.assert_awaited_once()
+        assert result is expected
+
+    @pytest.mark.asyncio
+    async def test_system_tool_context_uses_caller_org_not_agent_org(self, executor):
+        """System tools inherit caller tenant scope even when the agent is global/foreign."""
+        from src.services.llm.base import ToolCallRequest
+        from src.services.mcp_server.tool_result import success_result
+
+        caller_org_id = uuid4()
+        agent_org_id = uuid4()
+        seen_context = None
+
+        async def fake_tool(context, **_kwargs):
+            nonlocal seen_context
+            seen_context = context
+            return success_result("ok", {"ok": True})
+
+        conversation = MagicMock()
+        conversation.user = MagicMock()
+        conversation.user.id = uuid4()
+        conversation.user.organization_id = caller_org_id
+        conversation.user.is_superuser = False
+        conversation.user.email = "user@example.com"
+        conversation.user.name = "User"
+
+        agent = MagicMock()
+        agent.organization_id = agent_org_id
+
+        with patch(
+            "src.services.mcp_server.server.get_system_tool_function",
+            return_value=fake_tool,
+        ):
+            result = await executor._execute_system_tool(
+                ToolCallRequest(
+                    id="call_allowed",
+                    name="list_workflows",
+                    arguments={},
+                ),
+                agent=agent,
+                conversation=conversation,
+            )
+
+        assert result.error is None
+        assert seen_context is not None
+        assert seen_context.org_id == caller_org_id
+        assert seen_context.org_id != agent_org_id
+
+
 class TestSerializeForJson:
     """Test the _serialize_for_json helper function."""
 

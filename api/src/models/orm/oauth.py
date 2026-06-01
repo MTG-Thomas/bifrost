@@ -3,9 +3,10 @@ OAuthProvider and OAuthToken ORM models.
 
 Represents OAuth provider configurations and user OAuth tokens for integrations.
 """
+# ruff: noqa: F821
+# pyright: reportUndefinedVariable=false
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text, text
@@ -14,8 +15,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
 
-if TYPE_CHECKING:
-    from src.models.orm.integrations import Integration
 
 
 # Execution-resolution entity — access via OAuthProviderRepository
@@ -100,7 +99,7 @@ class OAuthToken(Base):
         ForeignKey("organizations.id"), default=None
     )
     provider_id: Mapped[UUID] = mapped_column(ForeignKey("oauth_providers.id"))
-    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), default=None)
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), default=None)
     encrypted_access_token: Mapped[bytes] = mapped_column(LargeBinary)
     encrypted_refresh_token: Mapped[bytes | None] = mapped_column(
         LargeBinary, default=None

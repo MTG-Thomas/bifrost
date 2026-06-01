@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Protocol
 
 KEYRING_SERVICE = "bifrost"
+_DOTENV_ALLOWED_KEYS: frozenset[str] = frozenset({"BIFROST_API_URL"})
 
 
 # --------------------------------------------------------------------------- #
@@ -63,6 +64,34 @@ def get_config_dir() -> Path:
 
 def get_credentials_path() -> Path:
     return get_config_dir() / "credentials.json"
+
+
+def load_allowed_dotenv(
+    dotenv_path: str | os.PathLike[str] | None = None, *, override: bool = True
+) -> None:
+    """Load the explicit ``.env`` allowlist used by the CLI.
+
+    The CLI supports opt-in project-local ``BIFROST_API_URL`` discovery, but it
+    must not import credentials, proxy settings, CA bundle paths, or other
+    security-sensitive process environment from an attacker-controlled CWD.
+    """
+    try:
+        from dotenv import dotenv_values, find_dotenv
+    except ImportError:
+        return
+
+    if dotenv_path is None and os.environ.get("BIFROST_LOAD_CWD_ENV") != "1":
+        return
+
+    path = str(dotenv_path) if dotenv_path is not None else find_dotenv(usecwd=True)
+    if not path:
+        return
+
+    for key, value in dotenv_values(path).items():
+        if key not in _DOTENV_ALLOWED_KEYS or value is None:
+            continue
+        if override or key not in os.environ:
+            os.environ[key] = value
 
 
 # --------------------------------------------------------------------------- #

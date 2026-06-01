@@ -711,4 +711,3 @@ async def e2e_multi_select_workflow(tags: list[str]):
         assert result["received"] == ["onboarding"]
         assert result["type"] == "list"
         assert result["length"] == 1
-

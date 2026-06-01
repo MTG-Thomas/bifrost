@@ -3,9 +3,12 @@
 **Open-source automation platform for Integration Services** - Built to democratize best-in-class tooling before venture capital gets the chance to own something we're all incredibly passionate about.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![CodeQL](https://github.com/jackmusick/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/jackmusick/bifrost/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/jackmusick/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/jackmusick/bifrost)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12665/badge)](https://www.bestpractices.dev/projects/12665)
+[![CI](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/MTG-Thomas/bifrost/graph/badge.svg)](https://codecov.io/gh/MTG-Thomas/bifrost)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/quality_gate?project=MTG-Thomas_bifrost)](https://sonarcloud.io/summary/new_code?id=MTG-Thomas_bifrost)
+[![CodeQL](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/MTG-Thomas/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/MTG-Thomas/bifrost)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13022/badge)](https://www.bestpractices.dev/en/projects/13022)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://www.docker.com/)
@@ -254,17 +257,17 @@ Bifrost release artifacts are signed with [Sigstore](https://www.sigstore.dev/) 
 **Verify a Docker image:**
 
 ```bash
-cosign verify ghcr.io/jackmusick/bifrost-api:TAG \
-  --certificate-identity-regexp "https://github.com/jackmusick/bifrost/.*" \
+cosign verify ghcr.io/mtg-thomas/bifrost-api:TAG \
+  --certificate-identity-regexp "https://github.com/MTG-Thomas/bifrost/.*" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-(Same form for `ghcr.io/jackmusick/bifrost-client`.)
+(Same form for `ghcr.io/mtg-thomas/bifrost-client`.)
 
 **Inspect SLSA build provenance:**
 
 ```bash
-gh attestation verify ghcr.io/jackmusick/bifrost-api:TAG --owner jackmusick
+gh attestation verify ghcr.io/mtg-thomas/bifrost-api:TAG --owner MTG-Thomas
 ```
 
 **Verify a source tarball** (attached to GitHub Releases):
@@ -272,7 +275,7 @@ gh attestation verify ghcr.io/jackmusick/bifrost-api:TAG --owner jackmusick
 ```bash
 cosign verify-blob \
   --bundle bifrost-VERSION-source.tar.gz.sigstore \
-  --certificate-identity-regexp "https://github.com/jackmusick/bifrost/.*" \
+  --certificate-identity-regexp "https://github.com/MTG-Thomas/bifrost/.*" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   bifrost-VERSION-source.tar.gz
 ```
@@ -283,7 +286,14 @@ Install cosign: https://docs.sigstore.dev/cosign/system_config/installation/
 
 ## Contributing
 
-This is intended to be a community-driven project built to ensure the Integration Services industry has the tools it needs without vendor lock-in or extractive pricing. However for the time being, while I work out the kinks, contributions and issues will be closed. Stay tuned!
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for workflow,
+testing expectations, and the Developer Certificate of Origin (DCO). See
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [GOVERNANCE.md](GOVERNANCE.md) for
+community and maintainer policy.
+
+- [Open issues](https://github.com/MTG-Thomas/bifrost/issues)
+- [`help wanted`](https://github.com/MTG-Thomas/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+- [`good first issue`](https://github.com/MTG-Thomas/bifrost/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 
 ## License
 

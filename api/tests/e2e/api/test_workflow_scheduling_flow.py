@@ -135,8 +135,19 @@ async def test_schedule_promote_run_terminal(
     # the promoted-count assertion and verify the post-condition: the row
     # left SCHEDULED (regardless of which tick promoted it) and any
     # publishes our call attempted didn't fail.
-    _, failures = await promote_due_executions()
+    promoted, failures = await promote_due_executions()
     assert failures == 0, f"expected 0 publish failures, got {failures}"
+    if promoted == 0:
+        await db_session.rollback()
+        row = (
+            await db_session.execute(
+                select(Execution).where(Execution.id == exec_id)
+            )
+        ).scalar_one()
+        assert row.status != ExecutionStatus.SCHEDULED, (
+            "expected direct promoter or background scheduler to promote row, "
+            f"but status is still {row.status}"
+        )
 
     # Poll for the worker to run it to a terminal status.
     deadline = asyncio.get_event_loop().time() + 60

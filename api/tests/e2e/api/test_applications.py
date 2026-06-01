@@ -549,6 +549,48 @@ class TestApplicationCrossOrgAdmin:
 
 
 @pytest.mark.e2e
+class TestApplicationReplaceAuthorization:
+    """Authorization coverage for the source-root repoint endpoint."""
+
+    def test_org_user_cannot_replace_accessible_app_repo_path(
+        self, e2e_client, platform_admin, org1_user, org1
+    ):
+        """Readable authenticated apps cannot be repointed by non-admin users."""
+        suffix = uuid.uuid4().hex[:8]
+        app = _create_app(
+            e2e_client,
+            platform_admin.headers,
+            f"replace-deny-{suffix}",
+            name="Replace Deny",
+            organization_id=org1["id"],
+        )
+
+        try:
+            get_response = e2e_client.get(
+                f"/api/applications/{app['slug']}",
+                headers=org1_user.headers,
+            )
+            assert get_response.status_code == 200, (
+                f"Fixture app should be readable by org user: {get_response.text}"
+            )
+
+            response = e2e_client.post(
+                f"/api/applications/{app['id']}/replace",
+                headers=org1_user.headers,
+                json={
+                    "repo_path": f"apps/replaced-by-user-{suffix}",
+                    "force": True,
+                },
+            )
+
+            assert response.status_code == 403, (
+                f"Non-admin should not repoint app source roots: {response.text}"
+            )
+        finally:
+            _delete_app(e2e_client, platform_admin.headers, app["id"])
+
+
+@pytest.mark.e2e
 class TestApplicationDBStorage:
     """Test that applications are stored in database, not S3."""
 
@@ -656,15 +698,14 @@ class TestCodeEngineApps:
         # Cleanup
         _delete_app(e2e_client, platform_admin.headers, app["id"])
 
-    def test_app_create_preserves_existing_local_files(self, e2e_client, platform_admin):
-        """Creating an app whose source dir already has files must NOT clobber them with the default scaffold.
+    def test_app_create_rejects_unclaimed_existing_local_files(self, e2e_client, platform_admin):
+        """Creating an app whose source dir already has files must not adopt them.
 
         Repro: author writes apps/<slug>/_layout.tsx locally, pushes to S3,
-        then runs `bifrost apps create --slug <slug>`. The user-authored
-        layout must survive — losing it to the default Welcome scaffold is
-        the bug this guards against.
+        then runs `bifrost apps create --slug <slug>`. Creating the app must
+        reject the unclaimed source prefix instead of silently adopting it.
         """
-        slug = "preserve-local-source"
+        slug = f"reject-local-source-{uuid.uuid4().hex[:8]}"
 
         # Pre-stage a user-authored file at apps/<slug>/_layout.tsx,
         # mimicking a `bifrost watch` push that ran before `apps create`.
@@ -690,27 +731,10 @@ class TestCodeEngineApps:
             response = e2e_client.post(
                 "/api/applications",
                 headers=platform_admin.headers,
-                json={"name": "Preserve Local Source", "slug": slug},
+                json={"name": "Reject Local Source", "slug": slug},
             )
-            assert response.status_code == 201, f"Create app failed: {response.text}"
-            app = response.json()
-
-            files_response = e2e_client.get(
-                f"/api/applications/{app['id']}/files",
-                headers=platform_admin.headers,
-            )
-            assert files_response.status_code == 200
-            files_by_path = {f["path"]: f for f in files_response.json()["files"]}
-
-            assert "_layout.tsx" in files_by_path, "Pre-staged _layout.tsx missing after create"
-            assert 'data-test="user-authored"' in files_by_path["_layout.tsx"]["source"], (
-                "Default scaffold clobbered the pre-staged user-authored _layout.tsx"
-            )
-            assert "pages/index.tsx" not in files_by_path, (
-                "Scaffold should be skipped entirely when prefix is non-empty"
-            )
-
-            _delete_app(e2e_client, platform_admin.headers, app["id"])
+            assert response.status_code == 409
+            assert "Source files already exist" in response.text
         finally:
             e2e_client.post(
                 "/api/files/delete",
@@ -721,3 +745,18 @@ class TestCodeEngineApps:
                     "mode": "cloud",
                 },
             )
+
+    def test_delete_recreate_same_slug_rejects_stale_source(self, e2e_client, platform_admin):
+        """Deleting an app record must not let the next app adopt its old files."""
+        slug = f"stale-source-{uuid.uuid4().hex[:8]}"
+        app = _create_app(e2e_client, platform_admin.headers, slug, name="Stale Source")
+        _delete_app(e2e_client, platform_admin.headers, app["id"])
+
+        response = e2e_client.post(
+            "/api/applications",
+            headers=platform_admin.headers,
+            json={"name": "Stale Source Recreated", "slug": slug},
+        )
+
+        assert response.status_code == 409
+        assert "Source files already exist" in response.text

@@ -17,6 +17,10 @@ Workflow for running and writing tests in Bifrost. Covers: stack lifecycle, whic
 
 4. **No silencing.** If a test is noisy, fix the source or delete the test. Don't filter output, don't swallow the failure.
 
+5. **Use the dedicated pve-t340 test VMs for VM-backed validation.** If a task calls for remote VM testing, hardware-backed validation, long-running suites away from the workstation, or says "test it on the VM", the target is the dedicated Bifrost test VM pool on the Dell T340 Proxmox host `pve-t340.netbird.cloud`. Do not use the legacy laptop Proxmox host named `pve` or its VM unless the user explicitly names that legacy target.
+
+6. **Keeper is the source for pve-t340 access.** SSH key material and Proxmox credentials for `pve-t340` live in Keeper. Retrieve them at runtime, keep them out of the repo and logs, and treat Keeper or `pve-t340.netbird.cloud` being unavailable as a blocker. Never silently substitute another VM.
+
 ## Test Authoring Rules (Definition of Done for New Work)
 
 ### React components → sibling `*.test.tsx`
@@ -74,6 +78,8 @@ Run the broader suite to catch regressions outside your targeted area:
 - UI change → `./test.sh client unit && ./test.sh client e2e`
 
 Verify the authoring rules above are satisfied for any new code.
+
+If VM-backed validation was requested or is warranted by the change, run it on the dedicated Bifrost test VMs hosted by `pve-t340.netbird.cloud`. In the final report, name the host, VM name/id if known, repo path, and exact commands run. If you cannot reach Keeper or `pve-t340`, say so and stop; do not fall back to the laptop `pve` host.
 
 ### 4. UX review (conditional, conversation-driven)
 

@@ -40,7 +40,9 @@ async def refresh_expiring_tokens() -> dict[str, Any]:
         Summary of refresh results
     """
     threshold = OAUTH_REFRESH_INTERVAL_MINUTES + REFRESH_BUFFER_MINUTES
-    return await run_refresh_job(trigger_type="automatic", refresh_threshold_minutes=threshold)
+    return await run_refresh_job(
+        trigger_type="automatic", refresh_threshold_minutes=threshold
+    )
 
 
 async def run_refresh_job(
@@ -125,7 +127,8 @@ async def run_refresh_job(
             if refresh_threshold_minutes is not None:
                 refresh_threshold = now + timedelta(minutes=refresh_threshold_minutes)
                 tokens_to_refresh = [
-                    t for t in all_tokens
+                    t
+                    for t in all_tokens
                     if t.expires_at and t.expires_at <= refresh_threshold
                 ]
             else:
@@ -141,10 +144,12 @@ async def run_refresh_job(
             for token in tokens_to_refresh:
                 provider = token.provider
                 if not provider:
-                    results["errors"].append({
-                        "token_id": str(token.id),
-                        "error": "Provider not found",
-                    })
+                    results["errors"].append(
+                        {
+                            "token_id": str(token.id),
+                            "error": "Provider not found",
+                        }
+                    )
                     results["refresh_failed"] += 1
                     continue
 
@@ -167,19 +172,25 @@ async def run_refresh_job(
                     results["refreshed_successfully"] += 1
                 else:
                     results["refresh_failed"] += 1
-                    results["errors"].append({
-                        "token_id": str(td["token_id"]),
-                        "provider": td["provider_name"],
-                        "error": outcome.get("error", "Refresh failed"),
-                    })
+                    results["errors"].append(
+                        {
+                            "token_id": str(td["token_id"]),
+                            "provider": td["provider_name"],
+                            "error": outcome.get("error", "Refresh failed"),
+                        }
+                    )
 
             except Exception as e:
                 results["refresh_failed"] += 1
-                results["errors"].append({
-                    "token_id": str(td["token_id"]),
-                    "error": str(e),
-                })
-                logger.error(f"Error refreshing token {td['token_id']}: {e}", exc_info=True)
+                results["errors"].append(
+                    {
+                        "token_id": str(td["token_id"]),
+                        "error": e.__class__.__name__,
+                    }
+                )
+                logger.error(
+                    "Error refreshing OAuth connection: %s", e.__class__.__name__
+                )
 
         # Phase 3: Persist refresh results (short-lived session)
         if refresh_outcomes:
@@ -211,7 +222,9 @@ async def run_refresh_job(
                         token.encrypted_access_token = outcome["encrypted_access_token"]
                         token.expires_at = outcome["expires_at"]
                         if outcome.get("encrypted_refresh_token"):
-                            token.encrypted_refresh_token = outcome["encrypted_refresh_token"]
+                            token.encrypted_refresh_token = outcome[
+                                "encrypted_refresh_token"
+                            ]
                         if outcome.get("scopes"):
                             token.scopes = outcome["scopes"]
                         token.status = "completed"
@@ -245,7 +258,9 @@ async def run_refresh_job(
                                 )
                     else:
                         token.status = "failed"
-                        token.status_message = (outcome.get("error", "Refresh failed"))[:200]
+                        token.status_message = (outcome.get("error", "Refresh failed"))[
+                            :200
+                        ]
                         token.last_refresh_at = datetime.now(timezone.utc)
                         try:
                             from src.services.events.builtins import emit_integration_refresh_failed
@@ -285,7 +300,9 @@ async def run_refresh_job(
                             provider.last_token_refresh = datetime.now(timezone.utc)
                         else:
                             provider.status = "failed"
-                            provider.status_message = (outcome.get("error", "Refresh failed"))[:200]
+                            provider.status_message = (
+                                outcome.get("error", "Refresh failed")
+                            )[:200]
 
                 await db.commit()
 
@@ -297,21 +314,14 @@ async def run_refresh_job(
         results["end_time"] = end_time.isoformat()
 
         # Log completion with visual marker
-        success = results["refreshed_successfully"]
         failed = results["refresh_failed"]
         if failed > 0:
-            logger.warning(
-                f"⚠ OAuth token refresh completed with errors: "
-                f"{success} refreshed, {failed} failed ({duration_seconds:.1f}s)"
-            )
+            logger.warning("OAuth credential refresh completed with errors")
         else:
-            logger.info(
-                f"✓ OAuth token refresh completed: "
-                f"{success} refreshed, {failed} failed ({duration_seconds:.1f}s)"
-            )
+            logger.info("OAuth credential refresh completed")
 
     except Exception as e:
-        logger.error(f"✗ OAuth token refresh failed: {e}", exc_info=True)
-        results["errors"].append({"error": str(e)})
+        logger.error("OAuth refresh job failed: %s", e.__class__.__name__)
+        results["errors"].append({"error": e.__class__.__name__})
 
     return results

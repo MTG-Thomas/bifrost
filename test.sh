@@ -10,6 +10,7 @@
 # Backend tests (stack must be up):
 #   ./test.sh                           Unit tests only (fast default).
 #   ./test.sh unit                      Same as above.
+#   ./test.sh e2e-smoke                 PR-gating backend e2e smoke tests.
 #   ./test.sh e2e                       Backend e2e tests.
 #   ./test.sh all                       Unit + e2e (mirrors CI).
 #   ./test.sh tests/path/... [args]     Pass through to pytest.
@@ -62,20 +63,24 @@ print_project() {
 }
 
 require_stack_up() {
-    if ! stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
-        echo "ERROR: stack not running for this worktree. Run:" >&2
-        echo "  ./test.sh stack up" >&2
-        exit 1
-    fi
-    # Containers may report "running" before the API is actually serving
-    # traffic (uvicorn boot, alembic, app startup hooks). Block here until
-    # /health/ready returns 200 so callers don't race the API. Idempotent
-    # and fast (<1s) when the API is already ready.
-    if ! wait_for_api_ready "$COMPOSE_FILE"; then
+    for _ in {1..10}; do
+        if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
+            if wait_for_api_ready "$COMPOSE_FILE"; then
+                return 0
+            fi
+            echo "Stack containers are running, waiting for API readiness..." >&2
+        fi
+        sleep 1
+    done
+
+    if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then
         echo "ERROR: stack containers running but API not serving traffic." >&2
         echo "  Check: docker compose -f $COMPOSE_FILE logs api" >&2
-        exit 1
+    else
+        echo "ERROR: stack not running for this worktree. Run:" >&2
+        echo "  ./test.sh stack up" >&2
     fi
+    exit 1
 }
 
 reset_state() {
@@ -229,11 +234,25 @@ run_pytest() {
     require_stack_up
     reset_state
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        pytest "$@" --junitxml="/tmp/bifrost/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
+        pytest "$@" --durations=25 --junitxml="$LOG_DIR/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
     return "${PIPESTATUS[0]}"
 }
 
 cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -v "$@"; }
+cmd_coverage() {
+    local target="${1:-coverage.xml}"
+    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
+        sh -lc 'cat /coverage/coverage.xml' > "$target"
+}
+cmd_e2e_smoke() {
+    run_pytest \
+        tests/e2e/api/test_auth.py::TestHealthCheck \
+        tests/e2e/api/test_auth.py::TestRegistrationFlow::test_platform_admin_can_access_protected_endpoints \
+        tests/e2e/api/test_workflows.py::TestWorkflowListing \
+        tests/e2e/api/test_workflows.py::TestWorkflowValidation::test_validate_valid_workflow \
+        tests/e2e/platform/test_cli_ephemeral_login.py::test_ephemeral_env_vars_authenticate_bifrost_api_subprocess \
+        -v "$@"
+}
 cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
 cmd_all()  { run_pytest tests/ -v "$@"; }
 
@@ -278,17 +297,21 @@ client_e2e() {
             playwright-runner npx playwright test "${passthrough[@]}"
     else
         docker compose -f "$COMPOSE_FILE" --profile client run --rm "${env_args[@]}" \
-            playwright-runner
+            playwright-runner npx playwright test --reporter=list,html \
+                --project=platform-admin \
+                --project=org-user \
+                --project=unauthenticated \
+                --project=chromium
     fi
 }
 
 client_docs() {
     require_stack_up
-    if [ -z "${DOCS_REPO_PATH:-}" ]; then
+    if [[ -z "${DOCS_REPO_PATH:-}" ]]; then
         echo "DOCS_REPO_PATH must be set to the absolute path of the bifrost-integrations-docs checkout." >&2
         exit 2
     fi
-    if [ ! -f "$DOCS_REPO_PATH/screenshots.yaml" ]; then
+    if [[ ! -f "$DOCS_REPO_PATH/screenshots.yaml" ]]; then
         echo "No screenshots.yaml at $DOCS_REPO_PATH — run scripts/docs/bootstrap-manifest.mjs first." >&2
         exit 2
     fi
@@ -309,6 +332,7 @@ client_docs() {
         -e "DOCS_CAPTURE_IDS=$capture_ids" \
         playwright-runner \
         npx playwright test --project=docs "${passthrough[@]}"
+    return 0
 }
 
 cmd_ci() {
@@ -334,6 +358,8 @@ fi
 case "$1" in
     stack) shift; cmd_stack "$@" ;;
     unit) shift; cmd_unit "$@" ;;
+    coverage) shift; cmd_coverage "$@" ;;
+    e2e-smoke) shift; cmd_e2e_smoke "$@" ;;
     e2e) shift; cmd_e2e "$@" ;;
     all) shift; cmd_all "$@" ;;
     client) shift; cmd_client "$@" ;;

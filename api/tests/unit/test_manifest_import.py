@@ -9,8 +9,15 @@ import pytest
 from pydantic import ValidationError
 
 from bifrost.manifest import (
+    Manifest,
+    ManifestApp,
+    ManifestConfig,
+    ManifestEventSource,
+    ManifestIntegration,
+    ManifestIntegrationMapping,
     ManifestPolicy,
     ManifestTable,
+    ManifestWorkflow,
 )
 from src.models.contracts.policies import TablePolicies
 
@@ -167,3 +174,273 @@ class TestManifestImportPolicyValidationContract:
         assert mtable.policies is not None
         # No exception parsing the manifest. The gate must run at write time.
         assert mtable.policies[0].when == {"has_role": "support"}
+
+
+class TestManifestDestructiveScope:
+    """Pin fail-closed import boundaries for destructive git-sync behavior."""
+
+    def test_removed_entity_ids_include_only_explicit_delete_diffs(self):
+        from src.services.manifest_import import _collect_removed_entity_ids
+
+        removed = _collect_removed_entity_ids([
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "action": "delete",
+                "entity_type": "workflows",
+                "name": "deleted",
+            },
+            {
+                "id": "22222222-2222-2222-2222-222222222222",
+                "action": "update",
+                "entity_type": "forms",
+                "name": "updated",
+            },
+        ])
+
+        assert removed == {
+            "workflows": {"11111111-1111-1111-1111-111111111111"},
+        }
+
+    def test_scope_filter_prevents_unrelated_absent_workflow_delete_diff(self):
+        from bifrost.manifest import Manifest, ManifestWorkflow
+        from src.services.manifest_import import (
+            _collect_removed_entity_ids,
+            _diff_and_collect,
+            _filter_manifest_to_scope,
+        )
+
+        local_id = "11111111-1111-1111-1111-111111111111"
+        unrelated_id = "22222222-2222-2222-2222-222222222222"
+        incoming = Manifest(workflows={
+            local_id: ManifestWorkflow(
+                id=local_id,
+                path="workflows/local.py",
+                function_name="local",
+            ),
+        })
+        current = Manifest(workflows={
+            local_id: ManifestWorkflow(
+                id=local_id,
+                path="workflows/local.py",
+                function_name="local",
+            ),
+            unrelated_id: ManifestWorkflow(
+                id=unrelated_id,
+                path="workflows/other-workspace.py",
+                function_name="other",
+            ),
+        })
+
+        _filter_manifest_to_scope(
+            current,
+            path_exists=lambda path: path == "workflows/local.py",
+            dir_exists=lambda path: False,
+        )
+        changes, _changed_ids = _diff_and_collect(incoming, current)
+
+        assert _collect_removed_entity_ids(changes) == {}
+
+    def test_scope_filter_does_not_delete_non_file_sections_when_manifest_omits_them(self):
+        from src.services.manifest_import import (
+            _collect_removed_entity_ids,
+            _diff_and_collect,
+            _filter_manifest_to_scope,
+        )
+
+        org_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        workflow_id = "11111111-1111-1111-1111-111111111111"
+        integration_id = "22222222-2222-2222-2222-222222222222"
+        config_id = "33333333-3333-3333-3333-333333333333"
+        table_id = "44444444-4444-4444-4444-444444444444"
+        event_id = "55555555-5555-5555-5555-555555555555"
+        incoming = Manifest(workflows={
+            workflow_id: ManifestWorkflow(
+                id=workflow_id,
+                path="workflows/local.py",
+                function_name="local",
+                organization_id=org_id,
+            ),
+        })
+        current = Manifest(
+            workflows={
+                workflow_id: ManifestWorkflow(
+                    id=workflow_id,
+                    path="workflows/local.py",
+                    function_name="local",
+                    organization_id=org_id,
+                ),
+            },
+            integrations={
+                integration_id: ManifestIntegration(
+                    id=integration_id,
+                    mappings=[
+                        ManifestIntegrationMapping(
+                            organization_id=org_id,
+                            entity_id="tenant-1",
+                        ),
+                    ],
+                ),
+            },
+            configs={
+                config_id: ManifestConfig(
+                    id=config_id,
+                    key="api_url",
+                    organization_id=org_id,
+                ),
+            },
+            tables={
+                table_id: ManifestTable(
+                    id=table_id,
+                    name="tickets",
+                    organization_id=org_id,
+                ),
+            },
+            events={
+                event_id: ManifestEventSource(
+                    id=event_id,
+                    name="tickets",
+                    source_type="webhook",
+                    organization_id=org_id,
+                ),
+            },
+        )
+
+        _filter_manifest_to_scope(
+            current,
+            path_exists=lambda path: path == "workflows/local.py",
+            dir_exists=lambda path: False,
+            scope_manifest=incoming,
+        )
+        changes, _changed_ids = _diff_and_collect(incoming, current)
+
+        assert _collect_removed_entity_ids(changes) == {}
+
+    def test_scope_filter_limits_non_file_deletes_to_declared_org_scope(self):
+        from src.services.manifest_import import (
+            _collect_removed_entity_ids,
+            _diff_and_collect,
+            _filter_manifest_to_scope,
+        )
+
+        org_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        org_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        kept_config = "11111111-1111-1111-1111-111111111111"
+        removed_config = "22222222-2222-2222-2222-222222222222"
+        unrelated_config = "33333333-3333-3333-3333-333333333333"
+        incoming = Manifest(configs={
+            kept_config: ManifestConfig(
+                id=kept_config,
+                key="api_url",
+                organization_id=org_a,
+            ),
+        })
+        current = Manifest(configs={
+            kept_config: ManifestConfig(
+                id=kept_config,
+                key="api_url",
+                organization_id=org_a,
+            ),
+            removed_config: ManifestConfig(
+                id=removed_config,
+                key="old_api_url",
+                organization_id=org_a,
+            ),
+            unrelated_config: ManifestConfig(
+                id=unrelated_config,
+                key="other_org_api_url",
+                organization_id=org_b,
+            ),
+        })
+
+        _filter_manifest_to_scope(
+            current,
+            path_exists=lambda path: False,
+            dir_exists=lambda path: False,
+            scope_manifest=incoming,
+        )
+        changes, _changed_ids = _diff_and_collect(incoming, current)
+
+        assert _collect_removed_entity_ids(changes) == {
+            "configs": {removed_config},
+        }
+
+    def test_oauth_token_id_is_ignored_for_manifest_diff(self):
+        from src.services.manifest_import import _diff_and_collect
+
+        integration_id = "11111111-1111-1111-1111-111111111111"
+        incoming = Manifest(integrations={
+            integration_id: ManifestIntegration(
+                id=integration_id,
+                mappings=[
+                    ManifestIntegrationMapping(
+                        organization_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        entity_id="tenant-1",
+                        oauth_token_id="22222222-2222-2222-2222-222222222222",
+                    ),
+                ],
+            ),
+        })
+        current = Manifest(integrations={
+            integration_id: ManifestIntegration(
+                id=integration_id,
+                mappings=[
+                    ManifestIntegrationMapping(
+                        organization_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        entity_id="tenant-1",
+                        oauth_token_id="33333333-3333-3333-3333-333333333333",
+                    ),
+                ],
+            ),
+        })
+
+        changes, changed_ids = _diff_and_collect(incoming, current)
+
+        assert changes == []
+        assert changed_ids == set()
+
+    def test_roles_default_to_role_based_when_access_level_is_omitted(self):
+        from src.services.manifest_import import _manifest_access_level
+
+        assert _manifest_access_level(None, ["role-id"]) == "role_based"
+        assert _manifest_access_level(None, []) is None
+        assert _manifest_access_level("authenticated", ["role-id"]) == "authenticated"
+
+
+class TestManifestAppPathSafety:
+    """Manifest app paths must stay inside one app source directory."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "README.md",
+            ".bifrost/apps.yaml",
+            "../apps/customer",
+            "apps/customer/../other",
+            "/apps/customer",
+            "apps/customer/src",
+        ],
+    )
+    def test_rejects_non_app_or_escaped_app_paths(self, path):
+        from src.services.manifest_import import _safe_app_repo_path
+
+        mapp = ManifestApp(
+            id="11111111-1111-1111-1111-111111111111",
+            name="Customer",
+            slug="customer",
+            path=path,
+        )
+
+        with pytest.raises(ValueError):
+            _safe_app_repo_path(mapp)
+
+    def test_accepts_slug_matched_apps_directory(self):
+        from src.services.manifest_import import _safe_app_repo_path
+
+        mapp = ManifestApp(
+            id="11111111-1111-1111-1111-111111111111",
+            name="Customer",
+            slug="customer",
+            path="apps/customer",
+        )
+
+        assert _safe_app_repo_path(mapp) == "apps/customer"

@@ -13,6 +13,11 @@ When a release is cut (e.g. `v0.8.1`), the next merge to main produces
 `0.8.2-dev.1`. The next dev cycle's floor is automatically whatever
 release tag was last cut — no script changes required.
 
+Both annotated and lightweight `vMAJOR.MINOR.PATCH` tags are valid. Dev versions
+use **MTG-Thomas/bifrost tags only** — see [VERSIONING.md](../VERSIONING.md).
+Before the first stable MTG release (`v1.0.0`), the script bootstraps to
+`1.0.0-dev.<commit-count>`.
+
 ## Where it's computed
 
 - `scripts/compute-dev-version.sh` — pure shell, takes no args, prints
@@ -31,7 +36,7 @@ release tag was last cut — no script changes required.
 | `:sha-1a2b3c4` | No (immutable) | Direct commit traceability |
 
 Release builds (on `v*` tag push) push semver tags (`:0.8.1`, `:0.8`,
-`:0`) and `:latest` (only for non-prerelease tags). See `ci.yml:436-449`.
+`:0`) and `:latest` (only for release tags). See `ci.yml:436-449`.
 
 ## Where the version is consumed
 
@@ -60,10 +65,11 @@ After this change ships, in-flight users will see exactly one of:
 
 ## Debugging a wrong tag
 
-**Symptom: build fails with `compute-dev-version: no v* tag found in history`**
+**Symptom: dev version shows `1.0.0-dev.N` but you expected a higher base**
 
-The job's checkout step doesn't have `fetch-depth: 0`. Check the
-`actions/checkout` invocation in the dev-build job (currently line 191).
+No stable `vMAJOR.MINOR.PATCH` tag exists on `MTG-Thomas/bifrost` yet. Cut the
+first release (for example `v1.0.0`) or verify `fetch-depth: 0` on checkout so
+tag history is visible.
 
 **Symptom: build fails with `compute-dev-version: latest tag 'X' is not vMAJOR.MINOR.PATCH`**
 
@@ -78,5 +84,5 @@ locally on the same SHA the CI built.
 **Symptom: Flux picks an old image after re-enable**
 
 Verify the `ImagePolicy` semver range is `>=0.0.0-0` (the trailing `-0`
-is required to include prereleases like `-dev.N`). Without it, Flux
+is required to include pre-releases like `-dev.N`). Without it, Flux
 silently excludes all dev builds.

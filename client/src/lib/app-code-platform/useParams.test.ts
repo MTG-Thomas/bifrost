@@ -20,7 +20,7 @@ describe("useParams", () => {
 		const { result } = renderHook(() => useParams());
 		expect(result.current.clientId).toBe("123");
 		expect(result.current.contactId).toBe("abc");
-		expect(Object.prototype.hasOwnProperty.call(result.current, "optional")).toBe(false);
+		expect(Object.hasOwn(result.current, "optional")).toBe(false);
 	});
 
 	it("rejects prototype-pollution keys from URL params", () => {
@@ -48,9 +48,9 @@ describe("useParams", () => {
 		const { result } = renderHook(() => useParams());
 		expect(result.current.clientId).toBe("123");
 		// Forbidden keys are not assigned to result
-		expect(Object.prototype.hasOwnProperty.call(result.current, protoKey)).toBe(false);
-		expect(Object.prototype.hasOwnProperty.call(result.current, "constructor")).toBe(false);
-		expect(Object.prototype.hasOwnProperty.call(result.current, "prototype")).toBe(false);
+		expect(Object.hasOwn(result.current, protoKey)).toBe(false);
+		expect(Object.hasOwn(result.current, "constructor")).toBe(false);
+		expect(Object.hasOwn(result.current, "prototype")).toBe(false);
 		// And Object.prototype is not polluted
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		expect(({} as any).polluted).toBeUndefined();
@@ -60,5 +60,18 @@ describe("useParams", () => {
 		mockedUseRouterParams.mockReturnValue({ clientId: "123" });
 		const { result } = renderHook(() => useParams());
 		expect(Object.getPrototypeOf(result.current)).toBeNull();
+	});
+
+	it("drops unsafe dynamic parameter names", () => {
+		mockedUseRouterParams.mockReturnValue({
+			clientId: "123",
+			"bad-key": "x",
+			"1startsWithNumber": "x",
+		});
+
+		const { result } = renderHook(() => useParams());
+		expect(result.current.clientId).toBe("123");
+		expect(Object.hasOwn(result.current, "bad-key")).toBe(false);
+		expect(Object.hasOwn(result.current, "1startsWithNumber")).toBe(false);
 	});
 });

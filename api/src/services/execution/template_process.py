@@ -48,7 +48,7 @@ class _SendQueue:
     def close(self) -> None:
         try:
             self._conn.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Connection already closed or broken — close is idempotent
             logger.debug(f"_SendQueue.close ignoring: {e}")
 
@@ -81,7 +81,7 @@ class _RecvQueue:
     def close(self) -> None:
         try:
             self._conn.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Connection already closed or broken — close is idempotent
             logger.debug(f"_RecvQueue.close ignoring: {e}")
 
@@ -90,9 +90,49 @@ CMD_FORK = "fork"
 CMD_SHUTDOWN = "shutdown"
 
 
+def _reap_exited_children() -> None:
+    """Reap exited forked children to avoid zombie accumulation."""
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            # No child processes exist.
+            break
+        except OSError as e:
+            logger.debug(f"template waitpid ignored: {e}")
+            break
+
+        if pid == 0:
+            # At least one child exists, but none has exited yet.
+            break
+
+        logger.debug(f"Reaped exited child process {pid}")
+
+
+def _load_execution_infrastructure(install_requirements_on_startup: bool) -> None:
+    """Load execution helpers and optionally install workspace requirements."""
+    from src.services.execution.virtual_import import install_virtual_import_hook
+    from src.services.execution.simple_worker import install_requirements
+
+    if install_requirements_on_startup:
+        install_requirements()
+    else:
+        logger.info("Skipping requirements install in template process")
+
+    # Ensure user site-packages is in sys.path
+    import site
+    user_site = site.getusersitepackages()
+    if site.ENABLE_USER_SITE and os.path.exists(user_site) and user_site not in sys.path:
+        sys.path.insert(0, user_site)
+        logger.info(f"Added user site-packages to sys.path: {user_site}")
+
+    install_virtual_import_hook()
+
+
 def _template_main(
     pipe: Connection,
     preload_modules: list[str] | None = None,
+    install_requirements_on_startup: bool = True,
 ) -> None:
     """
     Entry point for the template process.
@@ -145,21 +185,7 @@ def _template_main(
 
         # Execution infrastructure
         try:
-            from src.services.execution.virtual_import import install_virtual_import_hook
-            from src.services.execution.simple_worker import install_requirements
-
-            # Install user packages (pip install from requirements.txt)
-            install_requirements()
-
-            # Ensure user site-packages is in sys.path
-            import site
-            user_site = site.getusersitepackages()
-            if site.ENABLE_USER_SITE and os.path.exists(user_site) and user_site not in sys.path:
-                sys.path.insert(0, user_site)
-                logger.info(f"Added user site-packages to sys.path: {user_site}")
-
-            # Install virtual import hook for workspace modules
-            install_virtual_import_hook()
+            _load_execution_infrastructure(install_requirements_on_startup)
         except ImportError as e:
             logger.warning(f"Execution infrastructure not available: {e} — continuing without it")
 
@@ -183,6 +209,7 @@ def _template_main(
     # ----- Fork loop -----
     # Single-threaded, no event loop. Just wait for commands and fork.
     while True:
+        _reap_exited_children()
         try:
             if not pipe.poll(timeout=1.0):
                 continue
@@ -204,6 +231,7 @@ def _template_main(
             result_send: Connection = cmd["result_send"]
             _handle_fork_request(pipe, worker_id, persistent, work_recv, result_send)
 
+    _reap_exited_children()
     logger.info("Template process exiting")
 
 
@@ -240,12 +268,12 @@ def _handle_fork_request(
         # Close the child-side connections — the child owns them now
         try:
             work_recv.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Already closed — ignore
             logger.debug(f"parent: work_recv.close ignored: {e}")
         try:
             result_send.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Already closed — ignore
             logger.debug(f"parent: result_send.close ignored: {e}")
 
@@ -260,7 +288,7 @@ def _handle_fork_request(
         # Close the template's control pipe — child doesn't need it
         try:
             pipe.close()
-        except (OSError, BrokenPipeError) as e:
+        except OSError as e:
             # Already closed in parent post-fork — ignore
             logger.debug(f"child: pipe.close ignored: {e}")
 
@@ -354,7 +382,7 @@ def _run_forked_child(
             try:
                 from bifrost._logging import clear_sequence_counter
                 clear_sequence_counter(execution_id)
-            except Exception as e:
+            except (ImportError, KeyError, ValueError) as e:
                 # bifrost._logging may not be importable; counter cleanup is best-effort
                 logger.debug(f"clear_sequence_counter failed for {execution_id}: {e}")
 
@@ -368,7 +396,7 @@ def _run_forked_child(
                 result["process_rss_bytes"] = process_rss
                 if isinstance(result.get("metrics"), dict):
                     result["metrics"]["process_rss_bytes"] = process_rss
-            except (ImportError, OSError, KeyError) as e:
+            except (ImportError, OSError, KeyError, ValueError, AttributeError, TypeError) as e:
                 # simple_worker import optional; _get_process_rss reads /proc which may
                 # be missing on macOS; result may be a non-dict — all best-effort metrics
                 logger.debug(f"could not record RSS for execution {execution_id}: {e}")
@@ -405,7 +433,7 @@ def _run_forked_child(
                         "duration_ms": 0,
                         "worker_id": worker_id,
                     })
-                except (OSError, BrokenPipeError) as send_err:
+                except OSError as send_err:
                     # Result pipe closed (consumer gone) — child is about to exit anyway
                     logger.debug(f"could not send error result for {execution_id}: {send_err}")
                 execution_id = None
@@ -425,10 +453,11 @@ class TemplateProcess:
     holds all heavy dependencies in memory and forks children on request.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, install_requirements_on_startup: bool = True) -> None:
         self._process: Any = None  # multiprocessing.Process or SpawnProcess
         self._pipe: Connection | None = None
         self.pid: int | None = None
+        self.install_requirements_on_startup = install_requirements_on_startup
 
     def start(self) -> None:
         """
@@ -445,7 +474,7 @@ class TemplateProcess:
 
         self._process = ctx.Process(
             target=_template_main,
-            args=(child_conn,),
+            args=(child_conn, None, self.install_requirements_on_startup),
             name="template-process",
         )
         self._process.start()
@@ -536,7 +565,7 @@ class TemplateProcess:
         if self._pipe is not None:
             try:
                 self._pipe.send({"action": CMD_SHUTDOWN})
-            except (OSError, BrokenPipeError) as e:
+            except OSError as e:
                 # Template already exited — no need to send shutdown
                 logger.debug(f"template pipe closed before shutdown send: {e}")
 

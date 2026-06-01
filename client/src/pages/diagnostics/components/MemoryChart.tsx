@@ -13,6 +13,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toFiniteNumber } from "@/lib/chart-values";
 import {
     useWorkerMetrics,
     type WorkerMetricPoint,
@@ -277,8 +278,8 @@ export function MemoryChart({ livePoints, livePools }: MemoryChartProps) {
                                     fontSize: "12px",
                                 }}
                                 formatter={(value, name) => [
-                                    formatBytes(Number(value ?? 0)),
-                                    name as string,
+                                    formatBytes(toFiniteNumber(value)),
+                                    name,
                                 ]}
                                 labelFormatter={(label) => label}
                             />

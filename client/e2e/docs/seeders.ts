@@ -40,11 +40,10 @@ const empty_org: Seeder = async () => {};
 /**
  * One published workflow + one execution so list/dashboard pages have content.
  */
-const org_with_one_workflow: Seeder = async (page) => {
+const org_with_one_workflow: Seeder = async (_page) => {
   // Workflows are file-based on disk in the test stack; the auth fixture's
   // setup creates the platform admin but no sample workflow. Skip — the
   // empty Workflows page is still a valid screenshot subject.
-  void page;
 };
 
 /**

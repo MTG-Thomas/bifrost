@@ -314,6 +314,25 @@ from src.models.contracts.common import (
     UploadedFileMetadata,
 )
 
+# Codex Gateway
+from src.models.contracts.codex_gateway import (
+    CodexGatewayKeyCreateRequest,
+    CodexGatewayKeyCreateResponse,
+    CodexGatewayKeyContext,
+    CodexGatewayKeyListResponse,
+    CodexGatewayKeyRecord,
+    CodexGatewayOAuthAccountRecord,
+    CodexGatewayOAuthConnectResponse,
+    CodexGatewayOAuthDisconnectResponse,
+    CodexGatewayOAuthImportRequest,
+    CodexGatewayOAuthImportResponse,
+    CodexGatewayOAuthStatusResponse,
+    CodexGatewayPolicyDecision,
+    CodexGatewayRequestContext,
+    CodexGatewayUpstreamAccount,
+    OpenAICompatibleError,
+)
+
 # Scheduling & Async Execution
 from src.models.contracts.scheduling import (
     AsyncExecution,
@@ -754,6 +773,21 @@ __all__ = [
     "FileUploadRequest",
     "FileUploadResponse",
     "UploadedFileMetadata",
+    "CodexGatewayKeyContext",
+    "CodexGatewayKeyCreateRequest",
+    "CodexGatewayKeyCreateResponse",
+    "CodexGatewayKeyListResponse",
+    "CodexGatewayKeyRecord",
+    "CodexGatewayOAuthAccountRecord",
+    "CodexGatewayOAuthConnectResponse",
+    "CodexGatewayOAuthDisconnectResponse",
+    "CodexGatewayOAuthImportRequest",
+    "CodexGatewayOAuthImportResponse",
+    "CodexGatewayOAuthStatusResponse",
+    "CodexGatewayPolicyDecision",
+    "CodexGatewayRequestContext",
+    "CodexGatewayUpstreamAccount",
+    "OpenAICompatibleError",
     "WorkflowKey",
     "WorkflowKeyCreateRequest",
     "WorkflowKeyResponse",

@@ -286,6 +286,7 @@ async def update_mcp_config(
         blocked_tool_ids=request.blocked_tool_ids,
         updated_by=current_user.email,
     )
+    await db.commit()
 
     # Invalidate cache so auth middleware picks up changes
     invalidate_mcp_config_cache()
@@ -321,6 +322,7 @@ async def delete_mcp_config(
 
     service = MCPConfigService(db)
     deleted = await service.delete_config()
+    await db.commit()
 
     # Invalidate cache
     invalidate_mcp_config_cache()

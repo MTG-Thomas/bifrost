@@ -655,5 +655,3 @@ def get_data_provider(name: str) -> tuple[Callable, DataProviderMetadata] | None
     """
     # Use load_data_provider which properly handles module imports
     return load_data_provider(name)
-
-

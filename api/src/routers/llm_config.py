@@ -182,7 +182,7 @@ async def delete_llm_config(
 async def test_llm_connection(
     request: LLMTestRequest,
     db: DbSession,
-    user: CurrentActiveUser,
+    _user: CurrentActiveUser,
 ) -> LLMTestResponse:
     """
     Test LLM connection with provided credentials.
@@ -194,20 +194,11 @@ async def test_llm_connection(
     """
     service = LLMConfigService(db)
 
-    # Temporarily save the config to test
-    # We'll roll back the transaction so it's not persisted
-    await service.save_config(
+    result = await service.test_credentials(
         provider=request.provider,
-        model=request.model,
         api_key=request.api_key,
         endpoint=request.endpoint,
-        updated_by=user.email,
     )
-
-    result = await service.test_connection()
-
-    # Rollback to not persist the test config
-    await db.rollback()
 
     # Cache model mapping for AI usage tracking (even if test-only)
     if result.success and result.models:
@@ -851,17 +842,15 @@ async def _list_embedding_models(api_key: str, endpoint: str | None) -> list[str
     # data-flow analysis sees a cleansed URL flowing into http.get,
     # closing py/partial-ssrf.
     try:
-        safe_base = validate_embedding_endpoint(base).rstrip("/")
+        safe_base = validate_embedding_endpoint(base).rstrip("/") + "/"
     except ValueError as e:
         logger.info(f"Refusing to list models from {log_safe(base)}: {e}")
         return None
 
-    url = f"{safe_base}/models"
-
     try:
-        async with httpx.AsyncClient(timeout=10.0) as http:
+        async with httpx.AsyncClient(base_url=safe_base, timeout=10.0) as http:
             response = await http.get(
-                url,
+                "models",
                 params={"output_modalities": "embeddings"},
                 headers={"Authorization": f"Bearer {api_key}"},
             )
@@ -934,5 +923,3 @@ async def _cache_model_mapping_from_result(
         await cache_model_mapping(redis_client, provider, mapping)
     except Exception as e:
         logger.warning(f"Failed to cache model mapping for {log_safe(provider)}: {log_safe(e)}")
-
-

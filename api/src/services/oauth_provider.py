@@ -13,6 +13,7 @@ from uuid import UUID
 import aiohttp
 from sqlalchemy import select
 
+from src.core.log_safety import log_safe
 from src.core.security import decrypt_secret, encrypt_secret
 
 if TYPE_CHECKING:
@@ -22,11 +23,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+PROVIDER_NINJAONE = "NinjaOne"
+
+
+def compute_token_exchange_scopes(provider: "OAuthProvider") -> str | None:
+    """Return scopes to send during authorization-code token exchange."""
+    provider_name = provider.provider_name or ""
+    if provider_name.casefold() == PROVIDER_NINJAONE.casefold():
+        return None
+
+    return " ".join(provider.scopes) if provider.scopes else None
+
 
 def resolve_url_template(
-    url: str,
-    entity_id: str | None = None,
-    defaults: dict[str, str] | None = None
+    url: str, entity_id: str | None = None, defaults: dict[str, str] | None = None
 ) -> str:
     """
     Replace {placeholders} in URL with values.
@@ -59,7 +69,7 @@ def resolve_url_template(
 
     # Check if URL contains any placeholders
     if "{" not in url:
-        logger.debug(f"URL has no placeholders: {url}")
+        logger.debug("OAuth URL has no placeholders")
         return url
 
     result = url
@@ -74,18 +84,12 @@ def resolve_url_template(
 
         if placeholder == "entity_id" and entity_id:
             replacement = entity_id
-            logger.debug(
-                f"Resolving {{entity_id}} in URL with provided entity_id: {entity_id}"
-            )
+            logger.debug("Resolving {entity_id} in OAuth URL with provided entity ID")
         elif placeholder in defaults:
             replacement = defaults[placeholder]
-            logger.debug(
-                f"Resolving {{{placeholder}}} in URL with default value: {replacement}"
-            )
+            logger.debug("Resolving OAuth URL placeholder with configured default")
         else:
-            logger.warning(
-                f"URL placeholder {{{placeholder}}} has no value or default, leaving unresolved"
-            )
+            logger.warning("OAuth URL placeholder has no value or default")
             continue
 
         # Replace the placeholder
@@ -151,7 +155,9 @@ class OAuthProviderClient:
         """
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.max_retries = max_retries
-        logger.debug(f"OAuthProviderClient initialized (timeout={timeout}s, max_retries={max_retries})")
+        logger.debug(
+            f"OAuthProviderClient initialized (timeout={timeout}s, max_retries={max_retries})"
+        )
 
     async def exchange_code_for_token(
         self,
@@ -182,15 +188,15 @@ class OAuthProviderClient:
             "grant_type": "authorization_code",
             "code": code,
             "client_id": client_id,
-            "redirect_uri": redirect_uri
+            "redirect_uri": redirect_uri,
         }
 
         # Only include client_secret if provided (PKCE flow omits this)
         if client_secret:
             payload["client_secret"] = client_secret
-            logger.info(f"Exchanging authorization code for token at {token_url} (with client_secret)")
+            logger.info("Exchanging authorization code (confidential client)")
         else:
-            logger.info(f"Exchanging authorization code for token at {token_url} (PKCE flow - no client_secret)")
+            logger.info("Exchanging authorization code (PKCE flow)")
 
         if audience:
             payload["audience"] = audience
@@ -224,15 +230,15 @@ class OAuthProviderClient:
         payload = {
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            "client_id": client_id
+            "client_id": client_id,
         }
 
         # Only include client_secret if provided (PKCE flow omits this)
         if client_secret:
             payload["client_secret"] = client_secret
-            logger.info(f"Refreshing access token at {token_url} (with client_secret)")
+            logger.info("Refreshing OAuth access token (confidential client)")
         else:
-            logger.info(f"Refreshing access token at {token_url} (PKCE flow - no client_secret)")
+            logger.info("Refreshing OAuth access token (PKCE flow)")
 
         if audience:
             payload["audience"] = audience
@@ -265,7 +271,7 @@ class OAuthProviderClient:
         payload = {
             "grant_type": "client_credentials",
             "client_id": client_id,
-            "client_secret": client_secret
+            "client_secret": client_secret,
         }
 
         if scopes:
@@ -275,14 +281,12 @@ class OAuthProviderClient:
         if audience:
             payload["audience"] = audience
 
-        logger.info(f"Requesting client credentials token at {token_url}")
+        logger.info("Requesting client credentials token")
 
         return await self._make_token_request(token_url, payload)
 
     async def _make_token_request(
-        self,
-        token_url: str,
-        payload: dict
+        self, token_url: str, payload: dict
     ) -> tuple[bool, dict]:
         """
         Make token request with retry logic
@@ -300,18 +304,24 @@ class OAuthProviderClient:
             try:
                 # Create connector with proper cleanup settings
                 connector = aiohttp.TCPConnector(force_close=True)
-                async with aiohttp.ClientSession(timeout=self.timeout, connector=connector) as session:
+                async with aiohttp.ClientSession(
+                    timeout=self.timeout, connector=connector
+                ) as session:
                     async with session.post(
                         token_url,
                         data=payload,
-                        headers={"Content-Type": "application/x-www-form-urlencoded"}
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
                     ) as response:
                         response_data = await response.json()
 
                         # Success (2xx status codes)
                         if 200 <= response.status < 300:
-                            logger.info(f"Token request successful (status={response.status})")
-                            logger.debug(f"Raw OAuth response keys: {list(response_data.keys())}")
+                            logger.info(
+                                f"Token request successful (status={response.status})"
+                            )
+                            logger.debug(
+                                f"Raw OAuth response keys: {list(response_data.keys())}"
+                            )
 
                             # Parse token response
                             result = self._parse_token_response(response_data)
@@ -319,57 +329,88 @@ class OAuthProviderClient:
 
                         # Client errors (4xx) - don't retry
                         elif 400 <= response.status < 500:
-                            error_msg = response_data.get("error_description") or response_data.get("error") or f"HTTP {response.status}"
-                            logger.error(f"Token request failed with client error: {error_msg}")
-                            return (False, {
-                                "error": response_data.get("error", "client_error"),
-                                "error_description": error_msg,
-                                "status_code": response.status
-                            })
+                            error_msg = (
+                                response_data.get("error_description")
+                                or response_data.get("error")
+                                or f"HTTP {response.status}"
+                            )
+                            logger.error(
+                                "OAuth token request failed with client error status=%s code=%s",
+                                response.status,
+                                log_safe(response_data.get("error", "client_error")),
+                            )
+                            return (
+                                False,
+                                {
+                                    "error": response_data.get("error", "client_error"),
+                                    "error_description": error_msg,
+                                    "status_code": response.status,
+                                },
+                            )
 
                         # Server errors (5xx) - retry
                         else:
                             error_msg = f"Server error: HTTP {response.status}"
-                            logger.warning(f"Token request failed: {error_msg} (attempt {attempt + 1}/{self.max_retries})")
+                            logger.warning(
+                                "OAuth token request failed with server error status=%s attempt=%s/%s",
+                                response.status,
+                                attempt + 1,
+                                self.max_retries,
+                            )
                             last_error = error_msg
 
                             if attempt < self.max_retries - 1:
                                 # Exponential backoff: 1s, 2s, 4s
-                                wait_time = 2 ** attempt
+                                wait_time = 2**attempt
                                 await asyncio.sleep(wait_time)
                                 continue
 
             except aiohttp.ClientError as e:
-                logger.warning(f"Network error during token request: {str(e)} (attempt {attempt + 1}/{self.max_retries})")
+                logger.warning(
+                    "Network error during OAuth token request: %s attempt=%s/%s",
+                    e.__class__.__name__,
+                    attempt + 1,
+                    self.max_retries,
+                )
                 last_error = str(e)
 
                 if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     await asyncio.sleep(wait_time)
                     continue
 
             except TimeoutError:
-                logger.warning(f"Token request timed out (attempt {attempt + 1}/{self.max_retries})")
+                logger.warning(
+                    "OAuth token request timed out attempt=%s/%s",
+                    attempt + 1,
+                    self.max_retries,
+                )
                 last_error = "Request timed out"
 
                 if attempt < self.max_retries - 1:
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     await asyncio.sleep(wait_time)
                     continue
 
             except Exception as e:
-                logger.error(f"Unexpected error during token request: {str(e)}", exc_info=True)
-                return (False, {
-                    "error": "unexpected_error",
-                    "error_description": str(e)
-                })
+                logger.error(
+                    "Unexpected error during OAuth token request: %s",
+                    e.__class__.__name__,
+                )
+                return (
+                    False,
+                    {"error": "unexpected_error", "error_description": str(e)},
+                )
 
         # All retries exhausted
-        logger.error(f"Token request failed after {self.max_retries} attempts: {last_error}")
-        return (False, {
-            "error": "max_retries_exceeded",
-            "error_description": f"Failed after {self.max_retries} attempts: {last_error}"
-        })
+        logger.error("OAuth token request failed after %s attempts", self.max_retries)
+        return (
+            False,
+            {
+                "error": "max_retries_exceeded",
+                "error_description": f"Failed after {self.max_retries} attempts: {last_error}",
+            },
+        )
 
     def _parse_token_response(self, response_data: dict) -> dict:
         """
@@ -392,19 +433,25 @@ class OAuthProviderClient:
         # Calculate expires_at from expires_in (seconds)
         expires_in = response_data.get("expires_in")
         if expires_in:
-            result["expires_at"] = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            result["expires_at"] = datetime.now(timezone.utc) + timedelta(
+                seconds=int(expires_in)
+            )
         else:
             # Default to 1 hour if not specified
             logger.warning("OAuth response missing expires_in, defaulting to 1 hour")
             result["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
 
         # Log refresh token presence at INFO level for debugging
-        if result['refresh_token'] is not None:
+        if result["refresh_token"] is not None:
             logger.info("✓ Token response includes refresh_token")
         else:
-            logger.info("✗ Token response does NOT include refresh_token (will use fallback if available)")
+            logger.info(
+                "✗ Token response does NOT include refresh_token (will use fallback if available)"
+            )
 
-        logger.debug(f"Parsed token response: expires_at={result['expires_at']}, has_refresh={result['refresh_token'] is not None}")
+        logger.debug(
+            f"Parsed token response: expires_at={result['expires_at']}, has_refresh={result['refresh_token'] is not None}"
+        )
 
         return result
 
@@ -614,9 +661,7 @@ async def refresh_oauth_token_http(td: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             if not td["encrypted_refresh_token"]:
-                outcome["error"] = (
-                    f"No refresh token for token {td.get('token_id')}"
-                )
+                outcome["error"] = f"No refresh token for token {td.get('token_id')}"
                 return outcome
 
             raw_refresh = td["encrypted_refresh_token"]
@@ -675,9 +720,108 @@ async def refresh_oauth_token_http(td: dict[str, Any]) -> dict[str, Any]:
         return outcome
 
     except Exception as e:
-        logger.error(f"Error refreshing OAuth token: {e}", exc_info=True)
-        outcome["error"] = f"Token refresh failed: {str(e)[:200]}"
+        logger.error("Error refreshing OAuth token: %s", e.__class__.__name__)
+        outcome["error"] = f"Token refresh failed: {e.__class__.__name__}"
         return outcome
+
+
+def resolve_integration_oauth_status(
+    provider: "OAuthProvider",
+    token: "OAuthToken | None",
+) -> tuple[str, str | None]:
+    """Reconcile integration-level OAuth status for admin UI display.
+
+    ``OAuthProvider.status`` records the last integration-level refresh
+    outcome and can remain ``failed`` after a later token recovery. When a
+    healthy integration-level token row exists, prefer its status (matching
+    ``_mapping_to_response`` which reads ``OAuthToken.status`` for per-row
+    connections).
+    """
+    in_progress = provider.status in ("waiting_callback", "testing")
+    if in_progress and not token:
+        return provider.status, provider.status_message
+
+    if token and token.encrypted_access_token:
+        token_status = token.status or "not_connected"
+        if token_status == "completed":
+            return "completed", None
+        if token_status == "failed":
+            return "failed", token.status_message
+        # Populated token without explicit status (legacy rows)
+        return "completed", None
+
+    return provider.status or "not_connected", provider.status_message
+
+
+async def persist_integration_oauth_recovery(
+    db: "AsyncSession",
+    *,
+    provider: "OAuthProvider",
+    org_uuid: UUID | None,
+    stored_token: "OAuthToken | None",
+    encrypted_access_token: bytes,
+    expires_at: datetime | None,
+    encrypted_refresh_token: bytes | None = None,
+    scopes: list[str] | None = None,
+) -> "OAuthToken":
+    """Persist a recovered integration OAuth token and clear stale provider failure."""
+    from src.services.oauth_scope_resolution import get_oauth_token_for_scope
+
+    now = datetime.now(timezone.utc)
+    token_obj = stored_token
+    if token_obj is None:
+        token_obj = await get_oauth_token_for_scope(db, provider.id, org_uuid)
+
+    if token_obj:
+        token_obj.encrypted_access_token = encrypted_access_token
+        if encrypted_refresh_token is not None:
+            token_obj.encrypted_refresh_token = encrypted_refresh_token
+        if expires_at is not None:
+            token_obj.expires_at = expires_at
+        if scopes is not None:
+            token_obj.scopes = scopes
+    else:
+        from src.models.orm.oauth import OAuthToken
+
+        token_obj = OAuthToken(
+            organization_id=org_uuid,
+            provider_id=provider.id,
+            encrypted_access_token=encrypted_access_token,
+            encrypted_refresh_token=encrypted_refresh_token,
+            expires_at=expires_at,
+            scopes=scopes or provider.scopes or [],
+        )
+        db.add(token_obj)
+
+    token_obj.status = "completed"
+    token_obj.status_message = None
+    token_obj.last_refresh_at = now
+
+    provider.status = "completed"
+    provider.status_message = None
+    provider.last_token_refresh = now
+
+    await db.flush()
+    return token_obj
+
+
+async def get_integration_level_token(
+    db: "AsyncSession",
+    provider_id: UUID,
+) -> "OAuthToken | None":
+    """Return the most recent integration-level (org_id IS NULL) OAuth token."""
+    from src.models.orm.oauth import OAuthToken
+
+    result = await db.execute(
+        select(OAuthToken)
+        .where(
+            OAuthToken.provider_id == provider_id,
+            OAuthToken.organization_id.is_(None),
+            OAuthToken.user_id.is_(None),
+        )
+        .order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
+    )
+    return result.scalars().first()
 
 
 async def get_token_for_org(

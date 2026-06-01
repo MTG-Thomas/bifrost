@@ -12,8 +12,10 @@ not part of the editor search surface.
 import re
 import time
 import logging
-from typing import List
+import importlib
+from typing import Any, List
 
+import regex as bounded_regex
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +26,120 @@ logger = logging.getLogger(__name__)
 
 # Maximum results per entity type to prevent overwhelming queries
 MAX_RESULTS_PER_TYPE = 500
+MAX_REGEX_PATTERN_LENGTH = 512
+REGEX_SEARCH_TIMEOUT_SECONDS = 0.05
+_REGEX_PARSER = importlib.import_module("re._parser")
+_REPEAT_OPS = {"MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"}
+
+
+def _op_name(op: object) -> str:
+    """Return a stable name for a regex parser opcode."""
+    return str(getattr(op, "name", op))
+
+
+def _repeat_child(arg: Any) -> list[Any]:
+    return list(arg[2])
+
+
+def _repeat_is_optional(arg: Any) -> bool:
+    return arg[0] == 0 and arg[1] == 1
+
+
+def _subpattern_child(arg: Any) -> list[Any]:
+    return list(arg[-1])
+
+
+def _branch_children(arg: Any) -> list[list[Any]]:
+    return [list(branch) for branch in arg[1]]
+
+
+def _unwrap_subpatterns(tokens: list[Any]) -> list[Any]:
+    while len(tokens) == 1 and _op_name(tokens[0][0]) == "SUBPATTERN":
+        tokens = _subpattern_child(tokens[0][1])
+    return tokens
+
+
+def _regex_tokens_are_single_repeat(tokens: list[Any]) -> bool:
+    tokens = _unwrap_subpatterns(tokens)
+    return len(tokens) == 1 and _op_name(tokens[0][0]) in _REPEAT_OPS
+
+
+def _token_prefix_signature(tokens: list[Any]) -> object:
+    tokens = _unwrap_subpatterns(tokens)
+    if not tokens:
+        return ("EMPTY",)
+    op, arg = tokens[0]
+    op_name = _op_name(op)
+    if op_name == "LITERAL":
+        return ("LITERAL", arg)
+    if op_name == "IN":
+        return ("IN", tuple(arg))
+    if op_name in _REPEAT_OPS:
+        return ("REPEAT", _token_prefix_signature(_repeat_child(arg)))
+    return (op_name,)
+
+
+def _branch_has_overlapping_alternatives(branches: list[list[Any]]) -> bool:
+    seen: set[object] = set()
+    for branch in branches:
+        signature = _token_prefix_signature(branch)
+        if signature in seen:
+            return True
+        seen.add(signature)
+    return False
+
+
+def _regex_tokens_have_overlapping_branch(tokens: list[Any]) -> bool:
+    for op, arg in tokens:
+        op_name = _op_name(op)
+        if op_name == "BRANCH" and _branch_has_overlapping_alternatives(
+            _branch_children(arg)
+        ):
+            return True
+        if op_name == "SUBPATTERN" and _regex_tokens_have_overlapping_branch(
+            _subpattern_child(arg)
+        ):
+            return True
+        if op_name in _REPEAT_OPS and _regex_tokens_have_overlapping_branch(
+            _repeat_child(arg)
+        ):
+            return True
+    return False
+
+
+def _regex_tokens_have_risky_repeat(tokens: list[Any]) -> bool:
+    for op, arg in tokens:
+        op_name = _op_name(op)
+        if op_name in _REPEAT_OPS:
+            child = _repeat_child(arg)
+            if (
+                (_regex_tokens_are_single_repeat(child) and not _repeat_is_optional(arg))
+                or _regex_tokens_have_overlapping_branch(child)
+            ):
+                return True
+            if _regex_tokens_have_risky_repeat(child):
+                return True
+        elif op_name == "SUBPATTERN" and _regex_tokens_have_risky_repeat(
+            _subpattern_child(arg)
+        ):
+            return True
+        elif op_name == "BRANCH" and any(
+            _regex_tokens_have_risky_repeat(branch)
+            for branch in _branch_children(arg)
+        ):
+            return True
+    return False
+
+
+def _validate_regex_pattern(pattern: str) -> None:
+    """Reject regex patterns that are too large or likely to cause backtracking."""
+    if len(pattern) > MAX_REGEX_PATTERN_LENGTH:
+        raise ValueError(
+            f"Regex pattern exceeds {MAX_REGEX_PATTERN_LENGTH} characters"
+        )
+    tokens = list(_REGEX_PARSER.parse(pattern))
+    if _regex_tokens_have_risky_repeat(tokens):
+        raise ValueError("Regex pattern uses nested quantifiers")
 
 
 def _search_content(
@@ -52,13 +168,19 @@ def _search_content(
         # Build regex pattern
         if is_regex:
             pattern = query
+            _validate_regex_pattern(pattern)
         else:
             # Escape special regex characters for literal search
             pattern = re.escape(query)
 
-        # Compile regex with appropriate flags
+        # Compile regex with appropriate flags. Literal search stays on the
+        # stdlib engine with re.escape(); explicit regex mode uses a
+        # timeout-capable engine to bound user-provided pattern execution.
         flags = 0 if case_sensitive else re.IGNORECASE
-        regex = re.compile(pattern, flags)
+        if is_regex:
+            regex = bounded_regex.compile(pattern, flags)
+        else:
+            regex = re.compile(pattern, flags)
 
         # Split into lines
         lines = content.split('\n')
@@ -66,7 +188,15 @@ def _search_content(
         # Search each line
         for line_num, line in enumerate(lines, start=1):
             # Find all matches in this line
-            for match in regex.finditer(line):
+            if is_regex:
+                matches = regex.finditer(
+                    line,
+                    timeout=REGEX_SEARCH_TIMEOUT_SECONDS,
+                )
+            else:
+                matches = regex.finditer(line)
+
+            for match in matches:
                 # Get context lines (previous and next)
                 context_before = lines[line_num - 2] if line_num > 1 else None
                 context_after = lines[line_num] if line_num < len(lines) else None
@@ -80,7 +210,9 @@ def _search_content(
                     context_after=context_after
                 ))
 
-    except (re.error, Exception) as e:
+    except TimeoutError as e:
+        logger.warning(f"Regex search timed out in {path}: {e}")
+    except (bounded_regex.error, re.error) as e:
         logger.warning(f"Error searching {path}: {e}")
 
     return results
@@ -113,10 +245,13 @@ async def search_files_db(
     # Validate regex if enabled
     if request.is_regex:
         try:
+            _validate_regex_pattern(request.query)
             flags = 0 if request.case_sensitive else re.IGNORECASE
-            re.compile(request.query, flags)
-        except re.error as e:
-            raise ValueError(f"Invalid regex pattern: {str(e)}")
+            bounded_regex.compile(request.query, flags)
+        except ValueError as e:
+            raise ValueError(f"Invalid regex pattern: {str(e)}") from e
+        except (bounded_regex.error, re.error) as e:
+            raise ValueError(f"Invalid regex pattern: {str(e)}") from e
 
     all_results: List[SearchResult] = []
     files_searched = 0

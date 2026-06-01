@@ -323,6 +323,13 @@ services:
       - ./api/alembic.ini:/app/alembic.ini:ro
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./.github:/app/.github:ro
+      - ./.claude:/app/.claude:ro
+      - ./.env.debug:/app/.env.debug:ro
+      - ./debug.sh:/app/debug.sh:ro
+      - ./docker-compose.debug.yml:/app/docker-compose.debug.yml:ro
+      - ./docker-compose.debug.port.yml:/app/docker-compose.debug.port.yml:ro
       - ./client/src:/client/src:ro  # Read-only — the drift test in
                                       # tests/unit/test_platform_names_match_runtime.py
                                       # parses app-code-runtime.ts to detect new platform exports.
@@ -347,6 +354,8 @@ services:
         condition: service_started
       init:
         condition: service_completed_successfully
+    # Entrypoint fixes mounted result/coverage directory ownership, then drops to bifrost.
+    user: root
     # Default command runs all tests except E2E
     command: ["pytest", "tests/", "--ignore=tests/e2e/", "-v"]
     profiles:
@@ -398,6 +407,7 @@ services:
       TEST_BASE_URL: http://client:80
       TEST_API_URL: http://api:8000
       CI: "true"
+      PLAYWRIGHT_WORKERS: ${PLAYWRIGHT_WORKERS:-2}
     volumes:
       - ./client/e2e:/app/e2e
       - ./client/playwright.config.ts:/app/playwright.config.ts:ro

@@ -8,6 +8,7 @@ import {
 	ResponsiveContainer,
 	Legend,
 } from "recharts";
+import type { Formatter } from "recharts/types/component/DefaultTooltipContent";
 import {
 	Card,
 	CardContent,
@@ -17,15 +18,28 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ResourceMetricsEntry } from "@/hooks/useAdminMetrics";
+import { toFiniteNumber } from "@/lib/chart-values";
+import { MetricsCardError } from "./MetricsCardError";
 
 interface ResourceTrendChartProps {
 	data: ResourceMetricsEntry[];
 	isLoading?: boolean;
+	isError?: boolean;
+	error?: unknown;
 }
+
+const formatResourceTrendTooltip: Formatter = (value, name) => {
+	const safeValue = toFiniteNumber(value);
+	if (name === "memory_mb") return [`${safeValue} MB`, "Avg Memory"];
+	if (name === "cpu_seconds") return [`${safeValue}s`, "Avg CPU"];
+	return [safeValue, name ?? ""];
+};
 
 export function ResourceTrendChart({
 	data,
 	isLoading,
+	isError,
+	error,
 }: ResourceTrendChartProps) {
 	if (isLoading) {
 		return (
@@ -38,6 +52,25 @@ export function ResourceTrendChart({
 				</CardHeader>
 				<CardContent>
 					<Skeleton className="h-[300px] w-full" />
+				</CardContent>
+			</Card>
+		);
+	}
+
+	if (isError) {
+		return (
+			<Card>
+				<CardHeader>
+					<CardTitle>Resource Utilization</CardTitle>
+					<CardDescription>
+						Memory and CPU trends over time
+					</CardDescription>
+				</CardHeader>
+				<CardContent>
+					<MetricsCardError
+						label="resource metrics"
+						error={error}
+					/>
 				</CardContent>
 			</Card>
 		);
@@ -121,13 +154,7 @@ export function ResourceTrendChart({
 								border: "1px solid hsl(var(--border))",
 								borderRadius: "6px",
 							}}
-							formatter={(value, name) => {
-								if (name === "memory_mb")
-									return [`${value} MB`, "Avg Memory"];
-								if (name === "cpu_seconds")
-									return [`${value}s`, "Avg CPU"];
-								return [value as string | number, name as string];
-							}}
+							formatter={formatResourceTrendTooltip}
 							labelFormatter={(label) => `Date: ${label}`}
 						/>
 						<Legend

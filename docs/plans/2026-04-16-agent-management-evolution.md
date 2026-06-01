@@ -350,7 +350,7 @@ From the Review tab, when filtered to "Wrong" runs:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation:** 
+**Implementation:**
 - New endpoint: `POST /api/agents/{agent_id}/dry-run`
 - Body: `{ "system_prompt": "...", "run_ids": [...] }`
 - Replays each run's input through the agent executor with the new prompt
@@ -594,7 +594,7 @@ Not in initial scope, but the data model supports it:
    - System default `background_model` (new field in `system_configs.llm.provider_config`)
    - Falls back to the main `model` from LLM config
    - Extraction-only fallback if the model call fails
-   
+
    Both new config fields default to null (= use main model). Small teams can leave them alone; teams with high volume can point them at a cheaper model like Haiku.
 
 2. **Dry run uses post-hoc evaluation, not replay.** Given the original input, the original output, and the new system prompt, ask the configured evaluation model: "Would the agent have produced this same output under the new prompt? If not, what would differ and why?" One LLM call per run. No tool execution, no tool replay. Much cheaper, much safer, good enough for a preview. Full replay can be added later as an optional "deep dry run" if needed. Uses the same `background_model` setting as summarization (we don't split this further unless needed).
@@ -610,5 +610,5 @@ Not in initial scope, but the data model supports it:
 7. **Tuning is accessible from every run detail, not just the Review tab.** Two entry points:
    - **Inline verdict:** 👍/👎 buttons on any run detail page. Same shortcuts (G/B). Thumbs-down reveals a note field. No navigation.
    - **"Suggest Fix" button:** Runs the full Phase 3 flow scoped to just this one run — suggest a prompt change, show the diff, optionally dry-run against related runs, apply or dismiss. Opens in a drawer/sheet on the same page, reusing the `PromptDiff` and `DryRunResults` components.
-   
+
    The Review tab flipbook is the "batch through the backlog" workflow; the run detail is the "I found one bad one, fix it now" workflow. Same underlying service, two entry points.

@@ -25,7 +25,8 @@ from urllib.parse import urlparse
 
 import requests
 import yaml
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import FileSystemLoader
+from jinja2.sandbox import SandboxedEnvironment
 
 from src.core.log_safety import log_safe
 
@@ -74,6 +75,13 @@ class MethodInfo:
     summary: str
 
 
+@dataclass(frozen=True)
+class ValidatedSpecUrl:
+    """OpenAPI spec URL that has passed SSRF safety checks."""
+
+    value: str
+
+
 # =============================================================================
 # Spec Loading
 # =============================================================================
@@ -95,7 +103,7 @@ def _allowed_hosts() -> set[str] | None:
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
 
 
-def _validate_spec_url(url: str) -> None:
+def _validate_spec_url(url: str) -> ValidatedSpecUrl:
     """Validate a URL is safe to fetch (https only, public address).
 
     Prevents SSRF by rejecting non-https schemes and hostnames that resolve
@@ -133,6 +141,7 @@ def _validate_spec_url(url: str) -> None:
             raise ValueError(
                 f"URL hostname resolves to non-public address: {ip_str}"
             )
+    return ValidatedSpecUrl(parsed.geturl())
 
 
 def load_spec_from_url(url: str) -> dict:
@@ -141,8 +150,10 @@ def load_spec_from_url(url: str) -> dict:
     Only https URLs that resolve to public addresses are allowed. Redirects
     are disabled to prevent redirect-to-private bypass.
     """
-    _validate_spec_url(url)
-    response = requests.get(url, timeout=30, allow_redirects=False)
+    safe_url = _validate_spec_url(url)
+    # CodeQL/Sonar: _validate_spec_url rejects non-HTTPS and non-public hosts;
+    # redirects stay disabled so validation cannot be bypassed post-check.
+    response = requests.get(safe_url.value, timeout=30, allow_redirects=False)  # NOSONAR
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "")
@@ -624,12 +635,10 @@ def generate_sdk(
     # Extract models and methods from spec
     models, methods = extract_models_and_methods(spec, class_name)
 
-    # Load and render Jinja template.
-    # autoescape=False is intentional: we are generating Python SDK source code,
-    # not HTML — autoescape would mangle quotes/brackets and break the output.
-    env = Environment(
+    # Load and render a Python source template. The sandbox keeps template
+    # execution constrained while preserving source-code rendering semantics.
+    env = SandboxedEnvironment(
         loader=FileSystemLoader(TEMPLATE_DIR),
-        autoescape=False,
         trim_blocks=True,
         lstrip_blocks=True,
     )

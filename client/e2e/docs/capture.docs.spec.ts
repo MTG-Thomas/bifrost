@@ -110,9 +110,14 @@ async function runActions(
       } else if ("scroll_into_view" in action) {
         await page.locator(action.scroll_into_view).scrollIntoViewIfNeeded();
       } else if ("goto_spa" in action) {
+        // Always follow goto_spa with wait_for or wait_ms in the manifest. The
+        // capture runner's settle phase has already finished by the time actions
+        // run, and React Router commits asynchronously after this synchronous
+        // history update; without an explicit wait, screenshots can capture the
+        // previous route before the new route's components commit.
         await page.evaluate((path) => {
-          window.history.pushState({}, "", path);
-          window.dispatchEvent(new PopStateEvent("popstate"));
+          globalThis.history.pushState({}, "", path);
+          globalThis.dispatchEvent(new PopStateEvent("popstate"));
         }, action.goto_spa);
       } else {
         throw new Error(`unknown action shape: ${JSON.stringify(action)}`);
@@ -182,7 +187,7 @@ if (!fs.existsSync(manifestPath)) {
   );
 
   for (const entry of allEntries) {
-    test(`capture ${entry.id}`, async ({ browser }) => {
+    test(`capture ${entry.id}`, async ({ browser }) => { // NOSONAR - docs capture flow intentionally handles varied manifest entries.
       const viewport = effectiveViewport(entry, manifest);
       const authAs = effectiveAuth(entry, manifest) as
         | "platform_admin"
@@ -245,7 +250,7 @@ if (!fs.existsSync(manifestPath)) {
 
         // Navigation. Default: hard page.goto to entry.route. If the entry
         // declares nav_via, instead hard-load the `from` page (SPA shell)
-        // and click the named link to navigate via in-app routing — this
+        // and click the named link or button to navigate via in-app routing — this
         // sidesteps Vite proxy rules that prefix-match SPA paths in dev.
         // Deeper destinations are reached afterward via the goto_spa action.
         if (entry.nav_via) {
@@ -255,10 +260,18 @@ if (!fs.existsSync(manifestPath)) {
             timeout: 20000,
           });
           await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => undefined);
-          await page
-            .getByRole("link", { name: entry.nav_via.click, exact: true })
-            .first()
-            .click({ timeout: 10000 });
+          const link = page.getByRole("link", {
+            name: entry.nav_via.click,
+            exact: true,
+          });
+          if (await link.count()) {
+            await link.first().click({ timeout: 10000 });
+          } else {
+            await page
+              .getByRole("button", { name: entry.nav_via.click, exact: true })
+              .first()
+              .click({ timeout: 10000 });
+          }
         } else {
           const url = `${BASE_URL}${entry.route.startsWith("/") ? entry.route : "/" + entry.route}`;
           await page.goto(url, {

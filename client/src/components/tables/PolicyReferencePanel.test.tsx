@@ -179,9 +179,12 @@ describe("PolicyReferencePanel — worked examples", () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		try {
 			fireEvent.click(firstCopy);
-			expect(
-				screen.getAllByRole("button", { name: /copied!/i }).length,
-			).toBeGreaterThanOrEqual(1);
+			await waitFor(() =>
+				expect(
+					screen.getAllByRole("button", { name: /copied!/i })
+						.length,
+				).toBeGreaterThanOrEqual(1),
+			);
 			act(() => {
 				vi.advanceTimersByTime(2000);
 			});

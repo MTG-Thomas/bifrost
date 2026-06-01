@@ -5,6 +5,12 @@ description: Build and release Bifrost. Use when pushing commits to main, cuttin
 
 # Bifrost Release
 
+## MTG fork versioning
+
+On `MTG-Thomas/bifrost`, semver is **MTG-owned** starting at `v1.0.0`. Do not
+continue upstream `0.9.x` numbering. See `docs/VERSIONING.md`. Dev builds use
+MTG tags only — CI does not fetch upstream release tags.
+
 ## Step 1: Ask which workflow
 
 > "Are you doing a **dev push** (push commits → CI builds `:dev`) or a **full release** (version tag → GitHub Release + `:latest`)?"
@@ -85,8 +91,8 @@ git push origin main
 
 > "Pushed. CI will now:
 > 1. Run **unit tests** (fast ~2 min) — if they pass:
-> 2. Build and push `ghcr.io/jackmusick/bifrost-api:dev` and `ghcr.io/jackmusick/bifrost-client:dev`
-> 3. Also tag `ghcr.io/jackmusick/bifrost-api:<git-describe>` for traceability
+> 2. Build and push `ghcr.io/mtg-thomas/bifrost-api:dev` and `ghcr.io/mtg-thomas/bifrost-client:dev`
+> 3. Also tag `ghcr.io/mtg-thomas/bifrost-api:<git-describe>` for traceability
 >
 > E2E tests run in parallel but don't block the build.
 >
@@ -95,7 +101,7 @@ git push origin main
 > kubectl rollout restart deployment/bifrost-api deployment/bifrost-worker deployment/bifrost-scheduler deployment/bifrost-client -n bifrost
 > ```
 >
-> Watch CI: https://github.com/jackmusick/bifrost/actions"
+> Watch CI: https://github.com/MTG-Thomas/bifrost/actions"
 
 ---
 
@@ -316,11 +322,11 @@ gh release edit <tag> --notes-file /tmp/release-notes-<tag>.md
 > "Tag `<tag>` pushed. CI will now:
 > 1. Run **unit tests + E2E tests** (both required for a release, ~12 min total)
 > 2. Build and push images:
->    - `ghcr.io/jackmusick/bifrost-api:<version>` (e.g., `2.1.0`)
->    - `ghcr.io/jackmusick/bifrost-api:2.1` and `ghcr.io/jackmusick/bifrost-api:2`
->    - `ghcr.io/jackmusick/bifrost-api:latest`
+>    - `ghcr.io/mtg-thomas/bifrost-api:<version>` (e.g., `2.1.0`)
+>    - `ghcr.io/mtg-thomas/bifrost-api:2.1` and `ghcr.io/mtg-thomas/bifrost-api:2`
+>    - `ghcr.io/mtg-thomas/bifrost-api:latest`
 >    - Same for `bifrost-client`
-> 3. Create a GitHub Release at https://github.com/jackmusick/bifrost/releases
+> 3. Create a GitHub Release at https://github.com/MTG-Thomas/bifrost/releases
 >
 > After CI completes, K8s pods on `:latest` or `:<version>` will need a rollout:
 > ```bash
@@ -329,7 +335,7 @@ gh release edit <tag> --notes-file /tmp/release-notes-<tag>.md
 >
 > CLI users on `:latest` will automatically get the new version next `pipx install`.
 >
-> Watch CI: https://github.com/jackmusick/bifrost/actions"
+> Watch CI: https://github.com/MTG-Thomas/bifrost/actions"
 
 ### 6. Offer to draft a blog post (gobifrost `/blog` skill)
 
@@ -362,8 +368,8 @@ Follow the skill's workflow exactly — it handles preflight, voice-matching aga
 ## K8s Quick Reference
 
 **Current image tags in use** (all in namespace `bifrost`):
-- `api`, `init container`, `worker`, `scheduler` → `ghcr.io/jackmusick/bifrost-api:dev`
-- `client` → `ghcr.io/jackmusick/bifrost-client:dev`
+- `api`, `init container`, `worker`, `scheduler` → `ghcr.io/mtg-thomas/bifrost-api:dev`
+- `client` → `ghcr.io/mtg-thomas/bifrost-client:dev`
 
 **Force rollout after a push:**
 ```bash

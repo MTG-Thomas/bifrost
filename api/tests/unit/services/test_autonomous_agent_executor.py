@@ -9,6 +9,7 @@ from src.services.execution.agent_helpers import find_delegated_agent
 from src.services.execution.autonomous_agent_executor import (
     AutonomousAgentExecutor,
     MAX_DELEGATION_DEPTH,
+    ToolError,
 )
 from src.services.llm.base import LLMResponse, ToolCallRequest
 
@@ -56,6 +57,35 @@ def mock_agent():
 
 
 class TestAutonomousAgentExecutor:
+    @pytest.mark.asyncio
+    async def test_workflow_tool_uses_agent_identity_not_system_user(
+        self, mock_session, mock_agent
+    ):
+        """Autonomous workflow tools should not silently inherit system identity."""
+        workflow_id = uuid4()
+        executor = AutonomousAgentExecutor(mock_session)
+        executor._tool_workflow_id_map["do_work"] = workflow_id
+
+        response = MagicMock()
+        response.status.value = "Success"
+        response.result = {"ok": True}
+
+        with patch(
+            "src.services.execution.service.execute_tool",
+            new_callable=AsyncMock,
+            return_value=response,
+        ) as mock_execute:
+            result = await executor._execute_tool(
+                ToolCallRequest(id="tc1", name="do_work", arguments={}),
+                mock_agent,
+            )
+
+        assert result == '{"ok": true}'
+        kwargs = mock_execute.await_args.kwargs
+        assert kwargs["user_id"] == str(mock_agent.id)
+        assert kwargs["user_email"] != "system@internal.gobifrost.com"
+        assert kwargs["is_platform_admin"] is False
+
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
@@ -728,6 +758,20 @@ class TestAutonomousAgentExecutor:
         # Verify a tool_error step was buffered (Redis-first pattern)
         error_steps = [s for s in executor._pending_steps if s["type"] == "tool_error"]
         assert len(error_steps) >= 1
+
+    @pytest.mark.asyncio
+    async def test_privileged_agent_management_tool_is_blocked(self, mock_session, mock_agent):
+        """Autonomous agents cannot execute privileged agent-management system tools."""
+        mock_agent.system_tools = ["create_agent"]
+
+        executor = AutonomousAgentExecutor(mock_session)
+        tool_call = ToolCallRequest(id="tc1", name="create_agent", arguments={})
+
+        with patch.object(executor, "_execute_system_tool", new_callable=AsyncMock) as mock_system_tool:
+            with pytest.raises(ToolError, match="cannot be executed from autonomous agents"):
+                await executor._execute_tool(tool_call, mock_agent)
+
+        mock_system_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")

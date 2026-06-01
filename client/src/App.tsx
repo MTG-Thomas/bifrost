@@ -113,6 +113,11 @@ const DiagnosticsPage = lazyWithReload(() =>
 		default: m.DiagnosticsPage,
 	})),
 );
+const InfrastructureStatus = lazyWithReload(() =>
+	import("@/pages/InfrastructureStatus").then((m) => ({
+		default: m.InfrastructureStatus,
+	})),
+);
 const AuditLogPage = lazyWithReload(() =>
 	import("@/pages/audit/AuditLogPage").then((m) => ({
 		default: m.AuditLogPage,
@@ -624,6 +629,16 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute requirePlatformAdmin>
 									<DiagnosticsPage />
+								</ProtectedRoute>
+							}
+						/>
+
+						{/* Infrastructure Status - PlatformAdmin only */}
+						<Route
+							path="infrastructure"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<InfrastructureStatus />
 								</ProtectedRoute>
 							}
 						/>

@@ -31,6 +31,7 @@ from src.models.contracts.agent_tuning import (
     ConsolidatedProposalResponse,
     DryRunPerRun,
 )
+from src.models.enums import AgentAccessLevel
 from src.models.orm.agents import Agent
 from src.services.execution.tuning_service import (
     apply_consolidated_tuning,
@@ -43,17 +44,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["Agent Tuning"])
 
 
+def _is_tuning_admin(user: CurrentActiveUser) -> bool:
+    return user.is_superuser or any(
+        role in ["Platform Admin", "Platform Owner"] for role in user.roles
+    )
+
+
 async def _load_agent_with_access(
     agent_id: UUID, db: DbSession, user: CurrentActiveUser
 ) -> Agent:
-    """Fetch an agent and enforce org scoping for non-superusers.
+    """Fetch an agent and enforce tune authorization.
 
-    Org users can only tune agents in their own org (or global agents,
-    where ``organization_id is None``). Platform admins can tune any.
+    Tuning is a mutating prompt-management surface. Platform admins can tune
+    any agent; regular users can tune only their own private agents. Shared
+    org/global agents may be visible to regular users, but they are not
+    user-owned mutable resources.
     """
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"] for role in user.roles
-    )
+    is_admin = _is_tuning_admin(user)
 
     agent = (
         await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -64,15 +71,14 @@ async def _load_agent_with_access(
             detail=f"Agent {agent_id} not found",
         )
 
-    if not is_admin:
-        if (
-            agent.organization_id is not None
-            and agent.organization_id != user.organization_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent {agent_id} not found",
-            )
+    if not is_admin and (
+        agent.access_level != AgentAccessLevel.PRIVATE
+        or agent.owner_user_id != user.user_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only tune your own private agents",
+        )
 
     return agent
 
@@ -88,9 +94,15 @@ async def create_tuning_session(
 ) -> ConsolidatedProposalResponse:
     """Generate a consolidated prompt proposal from this agent's flagged runs."""
     await _load_agent_with_access(agent_id, db, user)
+    is_admin = _is_tuning_admin(user)
 
     try:
-        proposal = await propose_consolidated_tuning(agent_id, db)
+        proposal = await propose_consolidated_tuning(
+            agent_id,
+            db,
+            org_id=user.organization_id,
+            restrict_to_org=not is_admin,
+        )
     except LookupError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
@@ -118,6 +130,7 @@ async def dry_run_tuning_session(
     Capped at 10 runs by the service layer to bound cost.
     """
     await _load_agent_with_access(agent_id, db, user)
+    is_admin = _is_tuning_admin(user)
 
     session_factory = get_session_factory()
     raw = await dry_run_consolidated(
@@ -125,6 +138,8 @@ async def dry_run_tuning_session(
         proposed_prompt=request.proposed_prompt,
         db=db,
         session_factory=session_factory,
+        org_id=user.organization_id,
+        restrict_to_org=not is_admin,
     )
     return ConsolidatedDryRunResponse(
         results=[
@@ -151,6 +166,7 @@ async def apply_tuning_session(
 ) -> ApplyTuningResponse:
     """Apply a consolidated tuning proposal: update prompt, write history, clear verdicts."""
     await _load_agent_with_access(agent_id, db, user)
+    is_admin = _is_tuning_admin(user)
 
     try:
         applied = await apply_consolidated_tuning(
@@ -159,6 +175,8 @@ async def apply_tuning_session(
             reason=request.reason,
             user_id=user.user_id,
             db=db,
+            org_id=user.organization_id,
+            restrict_to_org=not is_admin,
         )
     except LookupError as exc:
         raise HTTPException(

@@ -24,9 +24,9 @@ from sqlalchemy.orm import selectinload
 
 from src.models.orm.agents import Agent
 from src.models.orm.agent_runs import AgentRun, AgentRunStep
-from src.core.constants import SYSTEM_USER_ID, SYSTEM_USER_EMAIL
 from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.pubsub import publish_agent_run_step
+from src.core.system_agents import is_privileged_agent_management_tool
 from src.services.execution.agent_helpers import (
     build_agent_system_prompt,
     find_delegated_agent,
@@ -82,6 +82,7 @@ class AutonomousAgentExecutor:
         # event-trigger), in which case dispatch resolves to the
         # service token only.
         self._caller_user_id: UUID | None = None
+        self._caller_context: dict[str, Any] | None = None
         # Buffers for Redis-first pattern (flushed to DB after run completes)
         self._pending_steps: list[dict[str, Any]] = []
         self._pending_ai_usage: list[dict[str, Any]] = []
@@ -129,6 +130,7 @@ class AutonomousAgentExecutor:
                 )
                 caller_user_id = None
         self._caller_user_id = caller_user_id
+        self._caller_context = _caller.copy() if _caller else None
 
         # Short-circuit if agent is paused. Runs already past this point continue
         # normally — this check only gates new runs at entry.
@@ -427,6 +429,10 @@ class AutonomousAgentExecutor:
 
         # System tools
         if tool_call.name in (agent.system_tools or []):
+            if is_privileged_agent_management_tool(tool_call.name):
+                raise ToolError(
+                    f"System tool '{tool_call.name}' cannot be executed from autonomous agents"
+                )
             return await self._execute_system_tool(tool_call, agent)
 
         # External MCP tools — namespaced ``mcp__<connection_id>__<tool>``.
@@ -456,11 +462,11 @@ class AutonomousAgentExecutor:
             workflow_id=str(workflow_id),
             workflow_name=tool_call.name,
             parameters=tool_call.arguments or {},
-            user_id=SYSTEM_USER_ID,
-            user_email=SYSTEM_USER_EMAIL,
-            user_name=agent.name,
+            user_id=str(self._caller_user_id) if self._caller_user_id else str(agent.id),
+            user_email=str(self._caller_context.get("email", "")) if self._caller_context else (getattr(agent, "created_by", None) or f"agent:{agent.id}"),
+            user_name=str(self._caller_context.get("name", "")) if self._caller_context else agent.name,
             org_id=str(agent.organization_id) if agent.organization_id else None,
-            is_platform_admin=False,
+            is_platform_admin=bool(self._caller_context.get("is_platform_admin", False)) if self._caller_context else False,
             is_agent=True,
         )
 
@@ -658,6 +664,7 @@ class AutonomousAgentExecutor:
                     agent=target_agent,
                     input_data={"task": task, "_delegated_from": agent.name},
                     run_id=sub_run_id,
+                    _caller=self._caller_context,
                 ),
                 timeout=DELEGATION_TIMEOUT_SECONDS,
             )
@@ -714,11 +721,11 @@ class AutonomousAgentExecutor:
             # Brief DB session scoped to the tool call
             async with self._session_factory() as db:
                 context = MCPContext(
-                    user_id=SYSTEM_USER_ID,
+                    user_id=str(self._caller_user_id) if self._caller_user_id else str(agent.id),
                     org_id=str(agent.organization_id) if agent.organization_id else None,
-                    is_platform_admin=False,
-                    user_email=SYSTEM_USER_EMAIL,
-                    user_name=agent.name,
+                    is_platform_admin=bool(self._caller_context.get("is_platform_admin", False)) if self._caller_context else False,
+                    user_email=str(self._caller_context.get("email", "")) if self._caller_context else (getattr(agent, "created_by", None) or f"agent:{agent.id}"),
+                    user_name=str(self._caller_context.get("name", "")) if self._caller_context else agent.name,
                     session=db,
                 )
 

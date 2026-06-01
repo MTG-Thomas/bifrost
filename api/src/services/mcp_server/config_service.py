@@ -66,7 +66,7 @@ class MCPConfigService:
                 SystemConfig.category == MCP_CONFIG_CATEGORY,
                 SystemConfig.key == MCP_CONFIG_KEY,
                 SystemConfig.organization_id.is_(None),  # Platform-wide config
-            )
+            ).order_by(SystemConfig.updated_at.desc(), SystemConfig.created_at.desc())
         )
         config = result.scalars().first()
 
@@ -115,17 +115,20 @@ class MCPConfigService:
                 SystemConfig.category == MCP_CONFIG_CATEGORY,
                 SystemConfig.key == MCP_CONFIG_KEY,
                 SystemConfig.organization_id.is_(None),
-            )
+            ).order_by(SystemConfig.updated_at.desc(), SystemConfig.created_at.desc())
         )
-        existing = result.scalars().first()
+        existing_configs = list(result.scalars().all())
+        existing = existing_configs[0] if existing_configs else None
 
         now = datetime.now(timezone.utc)
 
         if existing:
-            # Update existing
-            existing.value_json = config_data
-            existing.updated_by = updated_by
-            existing.updated_at = now
+            # Update all matching rows. The table has historical duplicate rows
+            # in some test databases, while this key is intended to be singleton.
+            for config in existing_configs:
+                config.value_json = config_data
+                config.updated_by = updated_by
+                config.updated_at = now
             logger.info(f"MCP config updated by {updated_by}")
         else:
             # Create new
