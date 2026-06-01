@@ -1089,7 +1089,9 @@ class WebSocketService {
 
 		// Dispatch to single conversation callback (no duplicates possible)
 		const callback = this.chatStreamCallbacks.get(conversationId);
-		callback?.(chunk);
+		if (typeof callback === "function") {
+			callback(chunk);
+		}
 	}
 
 	private dispatchAppDraftUpdate(update: AppDraftUpdate) {
