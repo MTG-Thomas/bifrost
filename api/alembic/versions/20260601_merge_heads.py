@@ -1,6 +1,6 @@
 """Merge summary idempotency and developer context heads.
 
-Revision ID: 20260601_merge_summary_developer_heads
+Revision ID: 20260601_merge_heads
 Revises: 20260501a_bf_idempotency, 20260526_drop_developer_contexts
 Create Date: 2026-06-01
 """
@@ -8,7 +8,7 @@ Create Date: 2026-06-01
 from collections.abc import Sequence
 
 
-revision: str = "20260601_merge_summary_developer_heads"
+revision: str = "20260601_merge_heads"
 down_revision: tuple[str, str] = (
     "20260501a_bf_idempotency",
     "20260526_drop_developer_contexts",
