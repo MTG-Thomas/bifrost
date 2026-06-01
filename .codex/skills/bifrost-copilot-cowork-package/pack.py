@@ -26,7 +26,7 @@ import zlib
 from pathlib import Path
 
 
-COWORK_NAMESPACE = uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
+COWORK_NAMESPACE = uuid.UUID("f870ca35-8857-476c-9b34-48977d40b6bc")
 
 JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini", ".AppleDouble", ".Spotlight-V100", ".Trashes"}
 
