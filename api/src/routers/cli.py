@@ -366,7 +366,13 @@ async def _resolve_sdk_org_id(
                 detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
             ) from None
 
-    caller_org_id: UUID | None = current_user.organization_id
+    caller_org_id: UUID | None
+    if current_user.organization_id is None:
+        caller_org_id = None
+    elif isinstance(current_user.organization_id, UUID):
+        caller_org_id = current_user.organization_id
+    else:
+        caller_org_id = UUID(str(current_user.organization_id))
     is_platform_admin = current_user.is_superuser
 
     # Provider-org membership is only needed if the caller is requesting
@@ -378,7 +384,7 @@ async def _resolve_sdk_org_id(
         org_row = await db.execute(
             select(Organization.is_provider).where(Organization.id == caller_org_id)
         )
-        is_provider_org = bool(org_row.scalar_one_or_none())
+        is_provider_org = org_row.scalar_one_or_none() is True
 
     try:
         resolved = resolve_effective_scope(
