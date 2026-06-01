@@ -1,9 +1,7 @@
-# Docs-only PRs skip real CI (ci.yml paths-ignore). These noop jobs report
-# the same status-check names as ci.yml so branch protection still passes.
-#
-# The `paths:` list MUST stay byte-identical to ci.yml's `paths-ignore:`.
+# Docs-only PR notice. These jobs intentionally do not share required CI
+# status-check names; real CI runs for every pull request.
 
-name: CI
+name: Docs-only CI Notice
 
 on:
   pull_request:
@@ -42,18 +40,18 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    name: Lint & Type Check
+    name: Docs-only Lint Notice
     steps:
       - run: echo "Docs-only change — real lint runs from ci.yml when code changes."
 
   test-unit:
     runs-on: ubuntu-latest
-    name: Unit Tests
+    name: Docs-only Unit Notice
     steps:
       - run: echo "Docs-only change — real unit tests run from ci.yml when code changes."
 
   test-e2e:
     runs-on: ubuntu-latest
-    name: E2E Tests
+    name: Docs-only E2E Notice
     steps:
       - run: echo "Docs-only change — real E2E tests run from ci.yml when code changes."

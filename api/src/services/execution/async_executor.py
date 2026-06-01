@@ -100,6 +100,7 @@ async def enqueue_workflow_execution(
     sync: bool = False,
     api_key_id: str | None = None,
     file_path: str | None = None,
+    org_id_override: str | None = None,
 ) -> str:
     """
     Enqueue a workflow for async execution.
@@ -136,7 +137,7 @@ async def enqueue_workflow_execution(
         execution_id=execution_id,
         workflow_id=workflow_id,
         parameters=parameters,
-        org_id=context.org_id,
+        org_id=org_id_override or context.org_id,
         user_id=context.user_id,
         user_name=context.name,
         user_email=context.email,
@@ -279,4 +280,5 @@ async def enqueue_system_workflow_execution(
         workflow_id=workflow_id,
         parameters=parameters,
         execution_id=execution_id,  # Pass explicitly to avoid double generation
+        org_id_override=org_id or "00000000-0000-0000-0000-000000000002",
     )

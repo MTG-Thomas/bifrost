@@ -68,6 +68,15 @@ def _diff_and_collect(
             return "Global"
         return org_lookup.get(oid, oid) or "Global"
 
+    def _diff_dump(entity: object) -> dict:
+        data = entity.model_dump(mode="json", by_alias=True)
+        if "mappings" in data and isinstance(data["mappings"], list):
+            data["mappings"] = [
+                {k: v for k, v in mapping.items() if k != "oauth_token_id"}
+                for mapping in data["mappings"]
+            ]
+        return data
+
     changes: list[dict[str, str]] = []
     changed_ids: set[str] = set()
     changed_integration_ids: set[str] = set()
@@ -117,7 +126,7 @@ def _diff_and_collect(
             else:
                 assert inc is not None and cur is not None
                 # Compare serialized form
-                if inc.model_dump(mode="json", by_alias=True) == cur.model_dump(mode="json", by_alias=True):
+                if _diff_dump(inc) == _diff_dump(cur):
                     continue  # No change
                 action = "update"
                 entity = inc

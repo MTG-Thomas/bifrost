@@ -321,6 +321,14 @@ async def update_application(
     user: CurrentUser,
 ) -> ApplicationPublic:
     """Update application metadata and access control by ID."""
+    sensitive_fields = {"slug", "scope", "access_level", "role_ids"}
+    requested_sensitive_fields = sensitive_fields & data.model_fields_set
+    if requested_sensitive_fields and not user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform admins can update application control-plane fields",
+        )
+
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,

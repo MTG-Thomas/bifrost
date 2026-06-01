@@ -6,47 +6,6 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
-    # Skip CI for documentation/config-only changes. The companion workflow
-    # ci-noop.yml fires on these same paths and reports the same status-check
-    # names (Lint & Type Check, Unit Tests, E2E Tests) so branch protection
-    # still sees the required checks reported as green.
-    #
-    # IMPORTANT: do NOT add .github/workflows/** to this list — workflow
-    # changes must always run CI so we catch CI-breaking edits before merge.
-    # Also do NOT add **/*.yml, **/*.yaml, **/*.json, or **/*.toml — these
-    # cover real config (docker-compose, package-lock, tsconfig, pyproject)
-    # that does affect runtime/tests and must run CI.
-    #
-    # The companion ci-noop.yml `paths:` list MUST stay byte-identical to
-    # this `paths-ignore:` list — branch protection relies on the inverse
-    # mapping to always report the required check names.
-    paths-ignore:
-      - "**/*.md"
-      - "**/*.txt"
-      - "**/*.png"
-      - "**/*.jpg"
-      - "**/*.jpeg"
-      - "**/*.gif"
-      - "**/*.svg"
-      - "**/*.webp"
-      - "**/*.ico"
-      - ".agents/**"
-      - ".claude/**"
-      - ".claude-plugin/**"
-      - ".codex/**"
-      - ".codex-plugin/**"
-      - "docs/**"
-      - "LICENSE"
-      - ".github/CODEOWNERS"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/dependabot.yml"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - ".prettierrc*"
-      - ".prettierignore"
-      - ".vscode/**"
-      - ".idea/**"
   # GitHub merge queue runs CI on a synthetic ref containing
   # main + queued PRs stacked in queue order. Required status
   # checks must fire on this event or the queue blocks forever

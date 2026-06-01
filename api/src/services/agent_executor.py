@@ -1242,6 +1242,16 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
         # Check if this is a system tool call
         if agent and tool_call.name in (agent.system_tools or []):
+            from src.core.system_agents import is_privileged_agent_management_tool
+
+            if is_privileged_agent_management_tool(tool_call.name):
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error=f"System tool '{tool_call.name}' cannot be executed from chat agents",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
             return await self._execute_system_tool(tool_call, agent, conversation)
 
         # External MCP tools — namespaced ``mcp__<connection_id>__<tool>``.
@@ -1699,12 +1709,15 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             # Get user from conversation (same pattern as workflow tool execution)
             user = conversation.user if conversation else None
 
-            # Create context from agent/conversation/user
+            caller_org_id = getattr(user, "organization_id", None) if user else None
+            agent_org_id = getattr(agent, "organization_id", None)
+
+            # Create context from caller/conversation/user
             # session=None: system tools create their own short-lived sessions
             # via get_tool_db() fallback, avoiding long-lived connection holds
             context = MCPContext(
                 user_id=str(user.id) if user else "",
-                org_id=str(agent.organization_id) if agent.organization_id else None,
+                org_id=str(caller_org_id or agent_org_id) if (caller_org_id or agent_org_id) else None,
                 is_platform_admin=user.is_superuser if user else False,
                 user_email=user.email if user else "",
                 user_name=user.name if user else "",
