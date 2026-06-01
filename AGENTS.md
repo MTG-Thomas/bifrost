@@ -68,6 +68,11 @@ Release claims after meaningful work. Skip entirely if the operator does not use
 ## Testing And Verification (Persona B)
 
 - Primary bar: `./test.sh` on the **shared Linux dev environment** or **GitHub Actions** on `MTG-Thomas/bifrost`.
+- Dedicated VM target: when a task needs a remote test VM, hardware-backed validation, long-running suites off the workstation, or says "test it on the VM", use the dedicated Bifrost test VMs hosted on the Dell T340 Proxmox host `pve-t340.netbird.cloud`.
+- Do **not** fall back to the legacy laptop Proxmox host named `pve` or its VM unless the user explicitly asks for that legacy target.
+- SSH key material and Proxmox access details for `pve-t340` live in Keeper. Retrieve them at the time of use; never copy secrets into this repo, docs, shell history snippets, or coordination notes.
+- If Keeper or `pve-t340.netbird.cloud` is unavailable, report that blocker instead of silently testing somewhere else.
+- When reporting VM-backed test results, include the actual target (`pve-t340.netbird.cloud`, VM name/id if known, and repo/worktree path) so accidental legacy-VM testing is visible.
 - Do not treat a Windows laptop without the stack as the platform verification environment.
 
 Match verification to the change (see `CLAUDE.md` for detail):
