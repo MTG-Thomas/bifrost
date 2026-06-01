@@ -28,7 +28,13 @@ from typing import Any
 
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
-from src.jobs.rabbitmq import BaseConsumer, RetryableConsumerError
+from src.jobs.rabbitmq import (
+    BaseConsumer,
+    DomainFailureHandled,
+    DuplicateMessage,
+    MalformedMessage,
+    RetryableConsumerError,
+)
 from src.services.execution.process_pool import ProcessPoolAdmissionRejected
 
 logger = logging.getLogger(__name__)
@@ -446,6 +452,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
         file_path: str | None = None  # Will be set from workflow metadata lookup
         start_time = datetime.now(timezone.utc)
 
+        if not execution_id:
+            raise MalformedMessage("workflow execution message missing execution_id")
+
         # Remove from queue tracking (execution is now being processed)
         await remove_from_queue(execution_id)
 
@@ -453,16 +462,20 @@ class WorkflowExecutionConsumer(BaseConsumer):
         pending = await self._redis_client.get_pending_execution(execution_id)
 
         if pending is None:
-            logger.error(f"No pending execution found in Redis: {execution_id}")
-            if is_sync:
-                await self._redis_client.push_result(
-                    execution_id=execution_id,
-                    status="Failed",
-                    error="Pending execution not found in Redis",
-                    error_type="PendingNotFound",
-                    duration_ms=0,
+            existing_status = await self._get_existing_execution_status(execution_id)
+            if existing_status is not None:
+                logger.info(
+                    f"No pending execution found in Redis for {execution_id}, "
+                    f"but durable execution already exists with status {existing_status}"
                 )
-            return
+                raise DuplicateMessage(
+                    f"workflow execution {execution_id} already exists with status {existing_status}"
+                )
+
+            logger.error(f"No pending execution found in Redis: {execution_id}")
+            raise RetryableConsumerError(
+                f"pending execution not found in Redis: {execution_id}"
+            )
 
         # Extract context from Redis pending record
         parameters = pending["parameters"]
@@ -726,8 +739,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "Will requeue for retry."
             )
             # Don't mark as failed — the execution hasn't started yet.
-            # Clean up pending state so it can be re-routed.
-            await self._redis_client.delete_pending_execution(execution_id)
+            # Keep pending state intact so the requeued message can be routed later.
             # Re-raise so the consumer framework NACKs with requeue=True
             raise RetryableConsumerError(f"process pool admission rejected: {e}") from e
 
@@ -788,4 +800,31 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 },
                 exc_info=True,
             )
-            raise
+            raise DomainFailureHandled("workflow setup failure recorded") from e
+
+    async def _get_existing_execution_status(self, execution_id: str) -> str | None:
+        """Return existing durable execution status for duplicate classification."""
+        from uuid import UUID
+
+        from sqlalchemy import select
+
+        from src.core.database import get_session_factory
+        from src.models.orm.executions import Execution
+
+        try:
+            execution_uuid = UUID(execution_id)
+        except ValueError as e:
+            raise MalformedMessage(f"invalid execution_id UUID: {execution_id}") from e
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            result = await session.execute(
+                select(Execution.status).where(Execution.id == execution_uuid)
+            )
+            status = result.scalar_one_or_none()
+
+        if status is None:
+            return None
+        if hasattr(status, "value"):
+            return status.value
+        return str(status)
