@@ -159,6 +159,27 @@ def should_auto_refresh_token(
     return False
 
 
+def _resolve_requested_oauth_scopes(provider: Any, oauth_scope: str | None) -> str:
+    """Return configured OAuth scopes selected for a token request."""
+    configured_scopes = [
+        str(scope) for scope in (provider.scopes or []) if str(scope).strip()
+    ]
+    if not oauth_scope:
+        return " ".join(configured_scopes)
+
+    requested_scopes = [scope for scope in oauth_scope.split() if scope]
+    if not requested_scopes:
+        return " ".join(configured_scopes)
+
+    unauthorized = sorted(set(requested_scopes) - set(configured_scopes))
+    if unauthorized:
+        raise ValueError(
+            "oauth_scope contains scopes that are not configured for this provider"
+        )
+
+    return " ".join(requested_scopes)
+
+
 # =============================================================================
 # Pydantic Models (Developer Context)
 # =============================================================================
@@ -691,6 +712,8 @@ async def sdk_integrations_get(
                 response_data["oauth"] = await _build_oauth_data(
                     integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
                     oauth_scope=request.oauth_scope,
+                    db=db,
+                    org_uuid=org_uuid,
                 )
 
             logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (org mapping) for user {current_user.email}")
@@ -728,6 +751,8 @@ async def sdk_integrations_get(
             response_data["oauth"] = await _build_oauth_data(
                 integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
                 oauth_scope=request.oauth_scope,
+                db=db,
+                org_uuid=org_uuid,
             )
 
         logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (defaults) for user {current_user.email}")
@@ -748,6 +773,8 @@ async def _build_oauth_data(
     resolve_url_template: Any,
     decrypt_secret: Any,
     oauth_scope: str | None = None,
+    db: Any | None = None,
+    org_uuid: UUID | None = None,
 ) -> SDKIntegrationsOAuthData:
     """Build OAuth data dict from provider and token for CLI response.
 
@@ -758,14 +785,15 @@ async def _build_oauth_data(
         resolve_url_template: Function to resolve {entity_id} in URLs
         decrypt_secret: Function to decrypt encrypted values
         oauth_scope: Override scope for token request (triggers fresh token fetch)
+        db: Optional DB session for persisting successful auto-refresh recovery
+        org_uuid: Organization scope for token persistence during auto-refresh
     """
-    # Decrypt only for the server-side token refresh call. Never include the
-    # provider client secret in the SDK response.
-    refresh_client_secret = None
+    # Decrypt client secret for runtime SDK data and server-side token refresh.
+    client_secret = None
     if provider.encrypted_client_secret:
         try:
             raw = provider.encrypted_client_secret
-            refresh_client_secret = await asyncio.to_thread(
+            client_secret = await asyncio.to_thread(
                 decrypt_secret, raw.decode() if isinstance(raw, bytes) else raw
             )
         except Exception:
@@ -788,19 +816,16 @@ async def _build_oauth_data(
     if should_auto_refresh_token(provider, entity_id, oauth_scope):
         logger.info("Auto-refreshing SDK integration OAuth token")
 
-        if refresh_client_secret and resolved_token_url:
+        if client_secret and resolved_token_url:
             from src.services.oauth_provider import OAuthProviderClient
 
             oauth_client = OAuthProviderClient()
-            # Use oauth_scope override if provided, otherwise use provider's default
-            scopes = oauth_scope if oauth_scope else (
-                " ".join(provider.scopes) if provider.scopes else ""
-            )
+            scopes = _resolve_requested_oauth_scopes(provider, oauth_scope)
 
             success, result = await oauth_client.get_client_credentials_token(
                 token_url=resolved_token_url,
                 client_id=provider.client_id,
-                client_secret=refresh_client_secret,
+                client_secret=client_secret,
                 scopes=scopes,
                 audience=provider.audience,
             )
@@ -814,6 +839,25 @@ async def _build_oauth_data(
                         if hasattr(expires_at_dt, "isoformat")
                         else str(expires_at_dt)
                     )
+                if db is not None and access_token:
+                    from src.core.security import encrypt_secret
+                    from src.services.oauth_provider import persist_integration_oauth_recovery
+
+                    scope_list = scopes.split() if scopes else (provider.scopes or [])
+                    await persist_integration_oauth_recovery(
+                        db,
+                        provider=provider,
+                        org_uuid=org_uuid,
+                        stored_token=token,
+                        encrypted_access_token=encrypt_secret(access_token).encode(),
+                        expires_at=(
+                            expires_at_dt
+                            if expires_at_dt and hasattr(expires_at_dt, "isoformat")
+                            else None
+                        ),
+                        scopes=scope_list,
+                    )
+                    await db.commit()
                 logger.info("Auto-refresh token successful")
             else:
                 error_msg = result.get("error_description", result.get("error", "Unknown error"))
@@ -846,7 +890,7 @@ async def _build_oauth_data(
     return SDKIntegrationsOAuthData(
         connection_name=provider.provider_name,
         client_id=provider.client_id,
-        client_secret=None,
+        client_secret=client_secret,
         authorization_url=provider.authorization_url,
         token_url=resolved_token_url,
         scopes=provider.scopes or [],
@@ -1300,7 +1344,7 @@ async def sdk_integrations_refresh_token(
         )
 
         return SDKIntegrationsRefreshTokenResponse(
-            access_token=access_token,
+            refreshed=True,
             expires_at=expires_at,
         )
 

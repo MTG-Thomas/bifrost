@@ -249,8 +249,8 @@ class TestOAuthRefreshClientCredentials:
         )
 
         with (
-            patch("src.routers.oauth_connections.OAuthConnectionRepository.get_connection", new=AsyncMock(return_value=provider)),
-            patch("src.routers.oauth_connections.OAuthConnectionRepository.store_token", new=AsyncMock()),
+            patch("src.repositories.oauth.OAuthProviderRepository.get_by_connection_name", new=AsyncMock(return_value=provider)),
+            patch("src.repositories.oauth.OAuthProviderRepository.store_token", new=AsyncMock()),
             patch("src.routers.oauth_connections.get_url_resolution_defaults", new=AsyncMock(return_value={})),
             patch("src.routers.oauth_connections.resolve_url_template", return_value=provider.token_url),
             patch("src.services.oauth_provider.OAuthProviderClient.exchange_code_for_token", new=AsyncMock(return_value=(

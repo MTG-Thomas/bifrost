@@ -344,10 +344,10 @@ class SDKIntegrationsRefreshTokenRequest(BaseModel):
 
 class SDKIntegrationsRefreshTokenResponse(BaseModel):
     """Response from refreshing an OAuth token."""
-    access_token: str = Field(..., description="New access token (decrypted)")
+    refreshed: bool = Field(default=True, description="True when the token refresh succeeded")
     expires_at: str | None = Field(None, description="Token expiration (ISO format)")
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
 # ==================== SDK AI MODELS ====================
