@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+logger = logging.getLogger(__name__)
 
 SENSITIVE_KEYS = {
     "access_token",
@@ -98,13 +101,17 @@ def configure_sentry(settings: Any | None = None, sentry_sdk_module: Any | None 
         except ImportError:
             return False
 
-    sentry_sdk_module.init(
-        dsn=dsn,
-        environment=getattr(settings, "environment", None),
-        send_default_pii=getattr(settings, "sentry_send_default_pii", False),
-        enable_logs=False,
-        traces_sample_rate=getattr(settings, "sentry_traces_sample_rate", 0.0),
-        profile_session_sample_rate=getattr(settings, "sentry_profiles_sample_rate", 0.0),
-        before_send=before_send,
-    )
+    try:
+        sentry_sdk_module.init(
+            dsn=dsn,
+            environment=getattr(settings, "environment", None),
+            send_default_pii=getattr(settings, "sentry_send_default_pii", False),
+            enable_logs=False,
+            traces_sample_rate=getattr(settings, "sentry_traces_sample_rate", 0.0),
+            profile_session_sample_rate=getattr(settings, "sentry_profiles_sample_rate", 0.0),
+            before_send=before_send,
+        )
+    except Exception:
+        logger.warning("Sentry initialization failed; continuing without it", exc_info=True)
+        return False
     return True

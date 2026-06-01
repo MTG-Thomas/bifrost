@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/react";
 
 type SentryModule = Pick<typeof Sentry, "init">;
+type SentryOptions = Parameters<typeof Sentry.init>[0];
 
 function parseSampleRate(value: string | undefined): number {
 	if (value === undefined || value.trim() === "") {
@@ -21,13 +22,23 @@ export function configureSentry(sentryModule: SentryModule = Sentry): boolean {
 		return false;
 	}
 
-	sentryModule.init({
+	const release = import.meta.env.VITE_SENTRY_RELEASE?.trim();
+	const options: SentryOptions = {
 		dsn,
 		environment: import.meta.env.VITE_SENTRY_ENVIRONMENT ?? import.meta.env.MODE,
-		release: import.meta.env.VITE_SENTRY_RELEASE,
 		sendDefaultPii: false,
 		tracesSampleRate: parseSampleRate(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE),
-	});
+	};
+	if (release) {
+		options.release = release;
+	}
+
+	try {
+		sentryModule.init(options);
+	} catch (error) {
+		console.warn("Sentry initialization failed; continuing without it", error);
+		return false;
+	}
 
 	return true;
 }

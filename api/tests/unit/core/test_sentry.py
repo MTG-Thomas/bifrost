@@ -13,8 +13,11 @@ from src.core import sentry as sentry_core
 class FakeSentrySdk:
     def __init__(self):
         self.calls = []
+        self.error = None
 
     def init(self, **kwargs):
+        if self.error:
+            raise self.error
         self.calls.append(kwargs)
 
 
@@ -105,6 +108,19 @@ def test_configure_sentry_without_settings_uses_env(monkeypatch):
     assert init_kwargs["traces_sample_rate"] == pytest.approx(0.25)
     assert init_kwargs["profile_session_sample_rate"] == pytest.approx(0.10)
     assert init_kwargs["send_default_pii"] is False
+
+
+def test_configure_sentry_returns_false_when_init_fails(caplog):
+    fake_sdk = FakeSentrySdk()
+    fake_sdk.error = ValueError("bad DSN")
+
+    configured = sentry_core.configure_sentry(
+        settings(sentry_dsn="not-a-valid-dsn"),
+        sentry_sdk_module=fake_sdk,
+    )
+
+    assert configured is False
+    assert "Sentry initialization failed" in caplog.text
 
 
 def test_before_send_scrubs_sensitive_request_data():
