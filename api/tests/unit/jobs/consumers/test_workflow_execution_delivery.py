@@ -165,7 +165,7 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
             )
 
     consumer._redis_client.delete_pending_execution.assert_not_called()
-    create_execution.assert_not_awaited()
+    create_execution.assert_awaited_once()
     update_execution.assert_not_awaited()
     consumer._pool.route_execution.assert_awaited_once()
     publish_execution_update.assert_awaited_once()
