@@ -77,6 +77,10 @@ from src.services.oauth_scope_resolution import (
     get_oauth_provider_for_scope,
     get_oauth_token_for_scope,
 )
+from shared.cli_integration_mappings import (
+    get_cli_integration_mapping,
+    list_cli_integration_mappings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -937,7 +941,13 @@ async def sdk_integrations_list_mappings(
             logger.warning(f"SDK integrations.list_mappings: integration '{log_safe(request.name)}' not found")
             return None
 
-        mappings = await repo.list_mappings(integration.id)
+        mappings = await list_cli_integration_mappings(
+            repo,
+            current_user,
+            request.scope,
+            integration.id,
+            db,
+        )
 
         logger.info(f"SDK listed {len(mappings)} mappings for integration '{log_safe(request.name)}' for user {current_user.email}")
 
@@ -959,6 +969,8 @@ async def sdk_integrations_list_mappings(
 
         return SDKIntegrationsListMappingsResponse(items=items)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"SDK integrations.list_mappings failed: {log_safe(e)}")
         return None
@@ -985,31 +997,20 @@ async def sdk_integrations_get_mapping(
             logger.warning(f"SDK integrations.get_mapping: integration '{log_safe(request.name)}' not found")
             return None
 
-        mapping = None
-
-        # Look up by scope (org_id) if provided
-        if request.scope:
-            org_uuid = UUID(request.scope)
-            mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
-
-        # If no mapping found and entity_id provided, search by entity_id
-        if not mapping and request.entity_id:
-            # Search through all mappings for the entity_id
-            all_mappings = await repo.list_mappings(integration.id)
-            for m in all_mappings:
-                if m.entity_id == request.entity_id:
-                    mapping = m
-                    break
+        mapping = await get_cli_integration_mapping(
+            repo,
+            current_user,
+            request.scope,
+            integration.id,
+            db,
+            request.entity_id,
+        )
 
         if not mapping:
             return None
 
         # Get merged config for the mapping
-        config = await repo.get_config_for_mapping(
-            integration.id,
-            mapping.organization_id,
-            include_default_secrets=True,
-        )
+        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
 
@@ -1025,6 +1026,8 @@ async def sdk_integrations_get_mapping(
             updated_at=mapping.updated_at.isoformat(),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"SDK integrations.get_mapping failed: {log_safe(e)}")
         return None

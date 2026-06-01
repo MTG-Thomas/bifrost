@@ -377,20 +377,29 @@ class IntegrationsRepository(BaseRepository[Integration]):
         return result.unique().scalar_one_or_none()
 
     async def list_mappings(
-        self, integration_id: UUID
+        self,
+        integration_id: UUID,
+        organization_id: UUID | None = None,
     ) -> list[IntegrationMapping]:
         """
         List all mappings for an integration.
 
         Args:
             integration_id: Integration UUID
+            organization_id: Optional organization scope. When provided, only
+                mappings for that org are returned.
 
         Returns:
             List of mappings for the integration
         """
+        stmt = select(IntegrationMapping).where(
+            IntegrationMapping.integration_id == integration_id
+        )
+        if organization_id is not None:
+            stmt = stmt.where(IntegrationMapping.organization_id == organization_id)
+
         result = await self.session.execute(
-            select(IntegrationMapping)
-            .where(IntegrationMapping.integration_id == integration_id)
+            stmt
             .options(
                 joinedload(IntegrationMapping.integration)
                 .options(joinedload(Integration.oauth_provider)),
