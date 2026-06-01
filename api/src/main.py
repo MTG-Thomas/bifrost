@@ -36,6 +36,7 @@ from src.routers import (
     workflows_router,
     forms_router,
     config_router,
+    codex_gateway_router,
     websocket_router,
     branding_router,
     files_router,
@@ -532,6 +533,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows_router)
     app.include_router(forms_router)
     app.include_router(config_router)
+    app.include_router(codex_gateway_router)
     app.include_router(websocket_router)
     app.include_router(branding_router)
     app.include_router(files_router)

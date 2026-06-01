@@ -11,6 +11,7 @@ from src.routers.executions import router as executions_router
 from src.routers.workflows import router as workflows_router
 from src.routers.forms import router as forms_router
 from src.routers.config import router as config_router
+from src.routers.codex_gateway import router as codex_gateway_router
 from src.routers.websocket import router as websocket_router
 from src.routers.branding import router as branding_router
 from src.routers.files import router as files_router
@@ -81,6 +82,7 @@ __all__ = [
     "workflows_router",
     "forms_router",
     "config_router",
+    "codex_gateway_router",
     "websocket_router",
     "branding_router",
     "files_router",

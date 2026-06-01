@@ -41,6 +41,7 @@ from src.models.contracts.applications import (
 from src.models.orm.applications import Application
 from src.models.orm.file_index import FileIndex
 from src.core.exceptions import AccessDeniedError
+from src.services.repo_storage import RepoStorage
 from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,11 @@ async def get_application_or_404(
 async def ensure_no_stale_app_source(db, slug: str) -> None:
     """Reject app creation when unclaimed source already exists for the slug."""
     prefix = f"apps/{slug}/"
+    repo_paths = await RepoStorage().list(prefix)
+    if repo_paths:
+        raise ValueError(
+            f"Source files already exist under '{prefix}'. Move or delete them before creating this app."
+        )
     result = await db.execute(
         select(FileIndex.path).where(FileIndex.path.like(f"{prefix}%")).limit(1)
     )
@@ -242,6 +248,7 @@ async def create_application(
     )
 
     try:
+        await ensure_no_stale_app_source(ctx.db, data.slug)
         application = await repo.create_application(data, created_by=user.email)
         return await application_to_public(application, repo)
     except ValueError as e:
@@ -556,6 +563,12 @@ async def replace_application_endpoint(
     Validates that the new path is unique, non-nested with other apps, and has
     source files under it. ``force: true`` bypasses all three checks.
     """
+    if not user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform admins can repoint app source roots",
+        )
+
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,

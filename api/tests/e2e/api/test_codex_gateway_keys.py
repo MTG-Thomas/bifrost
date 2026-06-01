@@ -1,12 +1,14 @@
 """E2E coverage for Codex Gateway downstream key lifecycle."""
 
 import pytest
+import httpx
 
 
 @pytest.mark.e2e
 class TestCodexGatewayKeys:
     def test_requires_authenticated_user(self, e2e_client):
-        response = e2e_client.get("/api/codex-gateway/keys")
+        with httpx.Client(base_url=e2e_client.base_url, timeout=30.0) as fresh_client:
+            response = fresh_client.get("/api/codex-gateway/keys")
 
         assert response.status_code == 401
 
