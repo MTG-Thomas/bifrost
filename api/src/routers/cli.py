@@ -1004,13 +1004,17 @@ async def sdk_integrations_get_mapping(
             mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
 
         # If no mapping found and entity_id provided, search by entity_id.
-        # Non-global callers are restricted to their resolved org, so entity_id
-        # cannot be used to probe mappings in another organization.
+        # Only explicit global scope may search across orgs; unscoped superusers
+        # get no results, matching list_mappings behavior.
         if not mapping and request.entity_id:
-            all_mappings = await repo.list_mappings(
-                integration.id,
-                organization_id=UUID(resolved_org_id) if resolved_org_id else None,
-            )
+            if resolved_org_id is None and request.scope == "global":
+                all_mappings = await repo.list_mappings(integration.id)
+            elif resolved_org_id is None:
+                all_mappings = []
+            else:
+                all_mappings = await repo.list_mappings(
+                    integration.id, organization_id=UUID(resolved_org_id)
+                )
             for m in all_mappings:
                 if m.entity_id == request.entity_id:
                     mapping = m
