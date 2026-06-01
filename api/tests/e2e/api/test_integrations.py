@@ -1207,6 +1207,155 @@ class TestIntegrationConfigSecrets:
                 headers=platform_admin.headers,
             )
 
+    def test_sdk_get_mapping_omits_default_secrets(
+        self, e2e_client, platform_admin, integration_with_secret_schema, org1
+    ):
+        """Direct mapping reads must not disclose integration-level default secrets."""
+        integration = integration_with_secret_schema
+
+        response = e2e_client.put(
+            f"/api/integrations/{integration['id']}/config",
+            headers=platform_admin.headers,
+            json={
+                "config": {
+                    "base_url": "https://api.default.com",
+                    "api_key": "global-default-secret",
+                }
+            },
+        )
+        assert response.status_code == 200, response.text
+
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": str(org1["id"]),
+                "entity_id": "get-mapping-no-default-secret",
+            },
+        )
+        assert response.status_code == 201, response.text
+        mapping = response.json()
+
+        try:
+            response = e2e_client.post(
+                "/api/cli/integrations/get_mapping",
+                headers=platform_admin.headers,
+                json={"name": integration["name"], "scope": str(org1["id"])},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()
+
+            assert data["id"] == mapping["id"]
+            assert data["config"]["base_url"] == "https://api.default.com"
+            assert "api_key" not in data["config"]
+
+            response = e2e_client.post(
+                "/api/cli/integrations/list_mappings",
+                headers=platform_admin.headers,
+                json={"name": integration["name"], "scope": str(org1["id"])},
+            )
+            assert response.status_code == 200, response.text
+            listed = [
+                item for item in response.json()["items"]
+                if item["id"] == mapping["id"]
+            ]
+            assert len(listed) == 1
+            assert listed[0]["config"]["base_url"] == "https://api.default.com"
+            assert "api_key" not in listed[0]["config"]
+        finally:
+            e2e_client.delete(
+                f"/api/integrations/{integration['id']}/mappings/{mapping['id']}",
+                headers=platform_admin.headers,
+            )
+
+    def test_sdk_get_mapping_returns_org_secret_override(
+        self, e2e_client, platform_admin, integration_with_secret_schema, org1
+    ):
+        """Direct mapping reads may return secrets explicitly scoped to that mapping's org."""
+        integration = integration_with_secret_schema
+
+        response = e2e_client.put(
+            f"/api/integrations/{integration['id']}/config",
+            headers=platform_admin.headers,
+            json={
+                "config": {
+                    "base_url": "https://api.default.com",
+                    "api_key": "global-default-secret",
+                }
+            },
+        )
+        assert response.status_code == 200, response.text
+
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": str(org1["id"]),
+                "entity_id": "get-mapping-org-secret",
+                "config": {
+                    "api_key": "org-scoped-secret",
+                },
+            },
+        )
+        assert response.status_code == 201, response.text
+        mapping = response.json()
+
+        try:
+            response = e2e_client.post(
+                "/api/cli/integrations/get_mapping",
+                headers=platform_admin.headers,
+                json={"name": integration["name"], "scope": str(org1["id"])},
+            )
+            assert response.status_code == 200, response.text
+            data = response.json()
+
+            assert data["id"] == mapping["id"]
+            assert data["config"]["base_url"] == "https://api.default.com"
+            assert data["config"]["api_key"] == "org-scoped-secret"
+        finally:
+            e2e_client.delete(
+                f"/api/integrations/{integration['id']}/mappings/{mapping['id']}",
+                headers=platform_admin.headers,
+            )
+
+    def test_sdk_mapping_endpoints_reject_cross_org_scope(
+        self, e2e_client, platform_admin, org1_user, integration_with_secret_schema, org2
+    ):
+        """Regular org users cannot use SDK mapping endpoints to read another org."""
+        integration = integration_with_secret_schema
+
+        response = e2e_client.post(
+            f"/api/integrations/{integration['id']}/mappings",
+            headers=platform_admin.headers,
+            json={
+                "organization_id": str(org2["id"]),
+                "entity_id": "org2-tenant-secret",
+                "entity_name": "Org2 Tenant",
+            },
+        )
+        assert response.status_code == 201, response.text
+        mapping = response.json()
+
+        try:
+            response = e2e_client.post(
+                "/api/cli/integrations/get_mapping",
+                headers=org1_user.headers,
+                json={"name": integration["name"], "scope": str(org2["id"])},
+            )
+            assert response.status_code == 403, response.text
+
+            response = e2e_client.post(
+                "/api/cli/integrations/list_mappings",
+                headers=org1_user.headers,
+                json={"name": integration["name"], "scope": str(org2["id"])},
+            )
+            assert response.status_code == 403, response.text
+        finally:
+            e2e_client.delete(
+                f"/api/integrations/{integration['id']}/mappings/{mapping['id']}",
+                headers=platform_admin.headers,
+            )
+
 
 @pytest.mark.e2e
 class TestIntegrationsAuthorization:
