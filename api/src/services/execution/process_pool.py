@@ -1520,6 +1520,7 @@ class ProcessPoolManager:
         # Keep `idle_count` in the heartbeat shape for back-compat (always 0).
         idle_count = 0
         busy_count = len([p for p in self.processes.values() if p.state == ProcessState.BUSY])
+        available_slots = max(0, self.max_workers - busy_count)
 
         memory_current, memory_max = get_cgroup_memory()
 
@@ -1534,10 +1535,22 @@ class ProcessPoolManager:
             "pool_size": len(self.processes),
             "idle_count": idle_count,
             "busy_count": busy_count,
+            "available_slots": available_slots,
             "requirements_installed": self._requirements_installed,
             "requirements_total": self._requirements_total,
             "memory_current_bytes": memory_current,
             "memory_max_bytes": memory_max,
+            "admission": {
+                "attempts": getattr(self, "_admission_attempts", 0),
+                "successes": getattr(self, "_admission_successes", 0),
+                "rejections": dict(getattr(self, "_admission_rejections", {})),
+                "wait_seconds_total": getattr(
+                    self, "_admission_wait_seconds_total", 0.0
+                ),
+                "wait_seconds_max": getattr(
+                    self, "_admission_wait_seconds_max", 0.0
+                ),
+            },
         }
 
     def _get_process_memory(self, pid: int | None) -> float:
