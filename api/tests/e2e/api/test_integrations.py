@@ -1370,14 +1370,17 @@ class TestIntegrationConfigSecrets:
                     "entity_id": "org2-tenant-secret",
                 },
             )
-            assert response.status_code == 403, response.text
+            assert response.status_code == 200, response.text
+            assert response.json()["id"] == mapping["id"]
 
             response = e2e_client.post(
                 "/api/cli/integrations/list_mappings",
                 headers=platform_admin_without_org,
                 json={"name": integration["name"], "scope": str(org2["id"])},
             )
-            assert response.status_code == 403, response.text
+            assert response.status_code == 200, response.text
+            scoped_items = response.json()["items"]
+            assert [item["id"] for item in scoped_items] == [mapping["id"]]
 
             response = e2e_client.post(
                 "/api/cli/integrations/get_mapping",

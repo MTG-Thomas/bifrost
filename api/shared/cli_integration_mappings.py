@@ -50,11 +50,6 @@ async def _resolve_mapping_org_id(
 
     if scope:
         requested_org_id = _parse_scope_uuid(scope)
-        if user_org_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Use global scope for platform-wide integration mappings",
-            )
         return requested_org_id
 
     if user_org_id is not None:
