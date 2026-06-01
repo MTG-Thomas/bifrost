@@ -1520,7 +1520,8 @@ class ProcessPoolManager:
         # Keep `idle_count` in the heartbeat shape for back-compat (always 0).
         idle_count = 0
         busy_count = len([p for p in self.processes.values() if p.state == ProcessState.BUSY])
-        available_slots = max(0, self.max_workers - busy_count)
+        max_workers = getattr(self, "max_workers", len(self.processes))
+        available_slots = max(0, max_workers - busy_count)
 
         memory_current, memory_max = get_cgroup_memory()
 
