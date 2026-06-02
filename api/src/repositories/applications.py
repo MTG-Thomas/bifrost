@@ -190,47 +190,61 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         if data.access_level is not None:
             application.access_level = data.access_level
 
-        # Handle slug change with uniqueness check
-        if data.slug is not None and data.slug != application.slug:
-            # Check if new slug already exists in the same scope
-            existing = await self.get_by_slug_global(data.slug)
-            if existing and existing.id != application.id:
-                raise ValueError(f"Application with slug '{data.slug}' already exists")
-            application.slug = data.slug
-
-        # Handle scope change (platform admin only)
-        if data.scope is not None and is_platform_admin:
-            if data.scope == "global":
-                application.organization_id = None
-            else:
-                try:
-                    application.organization_id = UUID(data.scope)
-                except ValueError:
-                    pass  # Invalid UUID, ignore
-
-        # Update role associations if provided
-        if data.role_ids is not None:
-            # Delete existing role associations
-            existing_roles_query = select(AppRole).where(AppRole.app_id == application.id)
-            result = await self.session.execute(existing_roles_query)
-            for existing_role in result.scalars().all():
-                await self.session.delete(existing_role)
-
-            # Add new role associations (deduplicate to avoid unique constraint violation)
-            unique_role_ids = set(data.role_ids)
-            for role_id in unique_role_ids:
-                app_role = AppRole(
-                    app_id=application.id,
-                    role_id=role_id,
-                    assigned_by=updated_by,
-                )
-                self.session.add(app_role)
+        await self._update_slug(application, data.slug)
+        self._update_scope(application, data.scope, is_platform_admin)
+        await self._replace_role_associations(application, data.role_ids, updated_by)
 
         await self.session.flush()
         await self.session.refresh(application)
 
         logger.info(f"Updated application '{log_safe(app_id)}'")
         return application
+
+    async def _update_slug(
+        self, application: Application, new_slug: str | None
+    ) -> None:
+        if new_slug is None or new_slug == application.slug:
+            return
+        existing = await self.get_by_slug_global(new_slug)
+        if existing and existing.id != application.id:
+            raise ValueError(f"Application with slug '{new_slug}' already exists")
+        application.slug = new_slug
+
+    @staticmethod
+    def _update_scope(
+        application: Application, scope: str | None, is_platform_admin: bool
+    ) -> None:
+        if scope is None or not is_platform_admin:
+            return
+        if scope == "global":
+            application.organization_id = None
+            return
+        try:
+            application.organization_id = UUID(scope)
+        except ValueError:
+            pass
+
+    async def _replace_role_associations(
+        self,
+        application: Application,
+        role_ids: list[UUID] | None,
+        updated_by: str,
+    ) -> None:
+        if role_ids is None:
+            return
+        existing_roles_query = select(AppRole).where(AppRole.app_id == application.id)
+        result = await self.session.execute(existing_roles_query)
+        for existing_role in result.scalars().all():
+            await self.session.delete(existing_role)
+
+        for role_id in set(role_ids):
+            self.session.add(
+                AppRole(
+                    app_id=application.id,
+                    role_id=role_id,
+                    assigned_by=updated_by,
+                )
+            )
 
     async def replace_application(
         self,

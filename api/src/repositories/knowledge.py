@@ -173,19 +173,7 @@ class KnowledgeRepository(OrgScopedRepository[KnowledgeStore]):
             KnowledgeStore.namespace.in_(namespaces)
         )
 
-        # Organization scoping with optional fallback
-        if target_org_id and fallback:
-            # Search both org and global
-            stmt = stmt.where(
-                (KnowledgeStore.organization_id == target_org_id) |
-                (KnowledgeStore.organization_id.is_(None))
-            )
-        elif target_org_id:
-            # Only org scope
-            stmt = stmt.where(KnowledgeStore.organization_id == target_org_id)
-        else:
-            # Only global scope
-            stmt = stmt.where(KnowledgeStore.organization_id.is_(None))
+        stmt = self._apply_search_scope(stmt, target_org_id, fallback)
 
         # Metadata filtering using JSONB containment
         if metadata_filter:
@@ -201,7 +189,26 @@ class KnowledgeRepository(OrgScopedRepository[KnowledgeStore]):
 
         result = await self.session.execute(stmt)
         rows = result.all()
+        return self._search_rows_to_documents(rows, min_score, group_by_key, limit)
 
+    @staticmethod
+    def _apply_search_scope(stmt, target_org_id: UUID | None, fallback: bool):
+        if target_org_id and fallback:
+            return stmt.where(
+                (KnowledgeStore.organization_id == target_org_id) |
+                (KnowledgeStore.organization_id.is_(None))
+            )
+        if target_org_id:
+            return stmt.where(KnowledgeStore.organization_id == target_org_id)
+        return stmt.where(KnowledgeStore.organization_id.is_(None))
+
+    @staticmethod
+    def _search_rows_to_documents(
+        rows,
+        min_score: float | None,
+        group_by_key: bool,
+        limit: int,
+    ) -> list[KnowledgeDocument]:
         documents: list[KnowledgeDocument] = []
         seen_keys: set[tuple[str, str | None, str]] = set()
         for row in rows:

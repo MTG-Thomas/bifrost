@@ -37,6 +37,7 @@ from src.models.orm.tables import Table
 
 router = APIRouter(prefix="/api/claims", tags=["Claims"])
 CLAIM_NOT_FOUND = "claim not found"
+CLAIM_SCOPE_DESCRIPTION = "Target organization scope (org UUID). Defaults to caller's home org."
 
 
 def _resolve_target_org(ctx: Context, scope: str | None) -> UUID:
@@ -187,7 +188,7 @@ async def get_claim(
     user: CurrentSuperuser,
     scope: str | None = Query(
         default=None,
-        description="Target organization scope (org UUID). Defaults to caller's home org.",
+        description=CLAIM_SCOPE_DESCRIPTION,
     ),
 ) -> ClaimDTO:
     org_id = _resolve_target_org(ctx, scope)
@@ -215,7 +216,7 @@ async def create_claim(
     user: CurrentSuperuser,
     scope: str | None = Query(
         default=None,
-        description="Target organization scope (org UUID). Defaults to caller's home org.",
+        description=CLAIM_SCOPE_DESCRIPTION,
     ),
 ) -> ClaimDTO:
     org_id = _resolve_target_org(ctx, scope)
@@ -262,7 +263,7 @@ async def update_claim(
     user: CurrentSuperuser,
     scope: str | None = Query(
         default=None,
-        description="Target organization scope (org UUID). Defaults to caller's home org.",
+        description=CLAIM_SCOPE_DESCRIPTION,
     ),
 ) -> ClaimDTO:
     org_id = _resolve_target_org(ctx, scope)
@@ -310,7 +311,7 @@ async def delete_claim(
     user: CurrentSuperuser,
     scope: str | None = Query(
         default=None,
-        description="Target organization scope (org UUID). Defaults to caller's home org.",
+        description=CLAIM_SCOPE_DESCRIPTION,
     ),
 ) -> None:
     org_id = _resolve_target_org(ctx, scope)
@@ -322,7 +323,7 @@ async def delete_claim(
         )
     ).scalar_one_or_none()
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="claim not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CLAIM_NOT_FOUND)
 
     refs = await _tables_referencing_claim(ctx.db, org_id, name)
     if refs:

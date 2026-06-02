@@ -222,44 +222,14 @@ async def bulk_update_users(
     )
 
     for uid in request.user_ids:
-        u = users_by_id.get(uid)
-        if u is None:
-            failed.append(BulkUserFailure(user_id=uid, reason="User not found"))
-            continue
-        if u.is_system:
-            failed.append(BulkUserFailure(user_id=uid, reason="System user cannot be modified"))
-            continue
-
-        if request.operation == "move_org":
-            target = request.organization_id  # may be None (= platform)
-            if u.is_superuser and target is not None and target != PROVIDER_ORG_ID:
-                failed.append(BulkUserFailure(
-                    user_id=uid,
-                    reason="Platform admin must be demoted before moving to a non-provider org",
-                ))
-                continue
-            u.organization_id = target
-            u.updated_at = datetime.now(timezone.utc)
-            succeeded.append(uid)
-
-        elif request.operation == "replace_roles":
-            if uid == actor_id:
-                failed.append(BulkUserFailure(user_id=uid, reason="Cannot change your own roles via bulk action"))
-                continue
-            await db.execute(
-                UserRoleORM.__table__.delete().where(UserRoleORM.user_id == uid)
-            )
-            for rid in (request.role_ids or []):
-                db.add(UserRoleORM(user_id=uid, role_id=rid, assigned_by=str(actor_id)))
-            u.updated_at = datetime.now(timezone.utc)
-            succeeded.append(uid)
-
-        elif request.operation == "set_active":
-            if uid == actor_id:
-                failed.append(BulkUserFailure(user_id=uid, reason="Cannot change your own active state"))
-                continue
-            u.is_active = bool(request.is_active)
-            u.updated_at = datetime.now(timezone.utc)
+        if await _apply_bulk_user_operation(
+            db=db,
+            request=request,
+            uid=uid,
+            user=users_by_id.get(uid),
+            actor_id=actor_id,
+            failed=failed,
+        ):
             succeeded.append(uid)
 
     await db.flush()
@@ -278,11 +248,88 @@ async def bulk_update_users(
     return BulkUserResponse(succeeded=succeeded, failed=failed)
 
 
+async def _apply_bulk_user_operation(
+    *,
+    db: DbSession,
+    request: BulkUserOperation,
+    uid: UUID,
+    user: UserORM | None,
+    actor_id: UUID,
+    failed: list[BulkUserFailure],
+) -> bool:
+    if user is None:
+        failed.append(BulkUserFailure(user_id=uid, reason="User not found"))
+        return False
+    if user.is_system:
+        failed.append(BulkUserFailure(user_id=uid, reason="System user cannot be modified"))
+        return False
+    if request.operation == "move_org":
+        return _move_bulk_user(user, request.organization_id, uid, failed)
+    if request.operation == "replace_roles":
+        return await _replace_bulk_user_roles(db, request, uid, actor_id, failed, user)
+    if request.operation == "set_active":
+        return _set_bulk_user_active(user, request.is_active, uid, actor_id, failed)
+    return False
+
+
+def _move_bulk_user(
+    user: UserORM,
+    target_org_id: UUID | None,
+    uid: UUID,
+    failed: list[BulkUserFailure],
+) -> bool:
+    if user.is_superuser and target_org_id is not None and target_org_id != PROVIDER_ORG_ID:
+        failed.append(BulkUserFailure(
+            user_id=uid,
+            reason="Platform admin must be demoted before moving to a non-provider org",
+        ))
+        return False
+    user.organization_id = target_org_id
+    user.updated_at = datetime.now(timezone.utc)
+    return True
+
+
+async def _replace_bulk_user_roles(
+    db: DbSession,
+    request: BulkUserOperation,
+    uid: UUID,
+    actor_id: UUID,
+    failed: list[BulkUserFailure],
+    user: UserORM,
+) -> bool:
+    if uid == actor_id:
+        failed.append(BulkUserFailure(user_id=uid, reason="Cannot change your own roles via bulk action"))
+        return False
+    await db.execute(
+        UserRoleORM.__table__.delete().where(UserRoleORM.user_id == uid)
+    )
+    for rid in (request.role_ids or []):
+        db.add(UserRoleORM(user_id=uid, role_id=rid, assigned_by=str(actor_id)))
+    user.updated_at = datetime.now(timezone.utc)
+    return True
+
+
+def _set_bulk_user_active(
+    user: UserORM,
+    is_active: bool | None,
+    uid: UUID,
+    actor_id: UUID,
+    failed: list[BulkUserFailure],
+) -> bool:
+    if uid == actor_id:
+        failed.append(BulkUserFailure(user_id=uid, reason="Cannot change your own active state"))
+        return False
+    user.is_active = bool(is_active)
+    user.updated_at = datetime.now(timezone.utc)
+    return True
+
+
 @router.post(
     "/{user_id}/invite/resend",
     response_model=CreateInviteResponse,
     summary="Resend invite",
     description="Generate a fresh invite token and email it to the user.",
+    responses={404: {"description": "User not found"}},
 )
 async def resend_invite(
     user_id: UUID,
@@ -297,6 +344,7 @@ async def resend_invite(
     response_model=CreateInviteResponse,
     summary="Regenerate invite link",
     description="Generate a fresh invite token without sending an email; returns the URL.",
+    responses={404: {"description": "User not found"}},
 )
 async def regenerate_invite(
     user_id: UUID,

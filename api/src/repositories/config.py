@@ -108,32 +108,66 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         """Get config by key with cascade scoping: org-specific > global."""
         return await self.get(key=key)
 
-    async def merged_for_sdk(self) -> dict[str, Any]:
-        """Return the full merged config dict for this scope."""
-        from src.core.cache.keys import (
-            TTL_CONFIG,
-            config_hash_key_versioned,
+    @staticmethod
+    def _config_entry(config: ConfigModel) -> dict[str, Any]:
+        value = (
+            config.value.get("value")
+            if isinstance(config.value, dict)
+            else config.value
         )
-        from src.core.cache.redis_client import get_shared_redis
+        return {
+            "value": value,
+            "type": config.config_type.value if config.config_type else "string",
+        }
 
-        org_id_str = str(self.org_id) if self.org_id is not None else None
+    async def _read_sdk_config_cache(self, org_id_str: str | None) -> dict[str, Any] | None:
+        from src.core.cache.keys import config_hash_key_versioned
+        from src.core.cache.redis_client import get_shared_redis
 
         try:
             redis = await get_shared_redis()
             hash_key = await config_hash_key_versioned(redis, org_id_str)
             cached = await redis.hgetall(hash_key)  # type: ignore[misc]
-            if cached:
-                out: dict[str, Any] = {}
-                for key, value in cached.items():
-                    key_str = key.decode() if isinstance(key, bytes) else key
-                    value_str = value.decode() if isinstance(value, bytes) else value
-                    try:
-                        out[key_str] = json.loads(value_str)
-                    except json.JSONDecodeError:
-                        out[key_str] = {"value": value_str, "type": "string"}
-                return out
         except Exception as e:
             logger.warning(f"Config cache read failed: {e}")
+            return None
+        if not cached:
+            return None
+
+        out: dict[str, Any] = {}
+        for key, value in cached.items():
+            key_str = key.decode() if isinstance(key, bytes) else key
+            value_str = value.decode() if isinstance(value, bytes) else value
+            try:
+                out[key_str] = json.loads(value_str)
+            except json.JSONDecodeError:
+                out[key_str] = {"value": value_str, "type": "string"}
+        return out
+
+    async def _write_sdk_config_cache(
+        self, org_id_str: str | None, config_dict: dict[str, Any]
+    ) -> None:
+        from src.core.cache.keys import TTL_CONFIG, config_hash_key_versioned
+        from src.core.cache.redis_client import get_shared_redis
+
+        if not config_dict:
+            return
+        try:
+            redis = await get_shared_redis()
+            hash_key = await config_hash_key_versioned(redis, org_id_str)
+            mapping = {key: json.dumps(value) for key, value in config_dict.items()}
+            await redis.hset(hash_key, mapping=mapping)  # type: ignore[misc]
+            await redis.expire(hash_key, TTL_CONFIG)
+        except Exception as e:
+            logger.warning(f"Config cache write failed: {e}")
+
+    async def merged_for_sdk(self) -> dict[str, Any]:
+        """Return the full merged config dict for this scope."""
+        org_id_str = str(self.org_id) if self.org_id is not None else None
+
+        cached = await self._read_sdk_config_cache(org_id_str)
+        if cached is not None:
+            return cached
 
         config_dict: dict[str, Any] = {}
 
@@ -143,15 +177,7 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         )
         global_rows = (await self.session.execute(global_q)).scalars()
         for config in global_rows:
-            value = (
-                config.value.get("value")
-                if isinstance(config.value, dict)
-                else config.value
-            )
-            config_dict[config.key] = {
-                "value": value,
-                "type": config.config_type.value if config.config_type else "string",
-            }
+            config_dict[config.key] = self._config_entry(config)
 
         if self.org_id is not None:
             org_q = select(self.model).where(
@@ -160,27 +186,9 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
             )
             org_rows = (await self.session.execute(org_q)).scalars()
             for config in org_rows:
-                value = (
-                    config.value.get("value")
-                    if isinstance(config.value, dict)
-                    else config.value
-                )
-                config_dict[config.key] = {
-                    "value": value,
-                    "type": config.config_type.value
-                    if config.config_type
-                    else "string",
-                }
+                config_dict[config.key] = self._config_entry(config)
 
-        if config_dict:
-            try:
-                redis = await get_shared_redis()
-                hash_key = await config_hash_key_versioned(redis, org_id_str)
-                mapping = {key: json.dumps(value) for key, value in config_dict.items()}
-                await redis.hset(hash_key, mapping=mapping)  # type: ignore[misc]
-                await redis.expire(hash_key, TTL_CONFIG)
-            except Exception as e:
-                logger.warning(f"Config cache write failed: {e}")
+        await self._write_sdk_config_cache(org_id_str, config_dict)
 
         logger.debug(
             f"Loaded {len(config_dict)} config entries for org={log_safe(org_id_str)}"

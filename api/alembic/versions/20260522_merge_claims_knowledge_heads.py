@@ -20,8 +20,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # No schema changes; this revision only merges two Alembic heads.
     pass
 
 
 def downgrade() -> None:
+    # No schema changes to reverse for this merge-only revision.
     pass

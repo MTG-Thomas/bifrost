@@ -84,9 +84,7 @@ export function JsonYamlEditor<T>({
 	onParseErrorChange,
 	className,
 }: JsonYamlEditorProps<T>): JSX.Element {
-	// `_schema` accepted but not yet wired into Monaco. Read here once so
-	// linters don't flag the unused prop while preserving the API contract.
-	void _schema;
+	const schemaConfigured = _schema != null;
 
 	// Stringify-as-memo-key: callers commonly pass `seed={{...}}` inline
 	// without memoizing, so reference identity churns every render. We key
@@ -284,7 +282,7 @@ export function JsonYamlEditor<T>({
 	}, [activeParseError]);
 
 	return (
-		<div className={className}>
+		<div className={className} data-schema-configured={schemaConfigured ? "true" : undefined}>
 			<Tabs
 				value={activeTab}
 				onValueChange={handleTabChange}
