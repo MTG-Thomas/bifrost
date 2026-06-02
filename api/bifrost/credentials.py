@@ -368,14 +368,15 @@ def credentials_are_ephemeral(api_url: str) -> bool:
     return False
 
 
-def _resolve_url(api_url: str | None) -> str | None:
+def _resolve_url(api_url: str | None, *, include_cwd_dotenv: bool = False) -> str | None:
     """
     Resolve which URL the no-arg credentials calls should target.
 
     Order:
       1. The argument (if given).
       2. BIFROST_API_URL env var.
-      3. BIFROST_API_URL in CWD .env (password-grant ephemeral sessions).
+      3. BIFROST_API_URL in CWD .env when explicitly requested
+         (password-grant ephemeral sessions).
       4. The first URL in the persistent backend (back-compat for users
          who only have one set; ordering is stable per backend but not
          guaranteed across backends).
@@ -385,9 +386,10 @@ def _resolve_url(api_url: str | None) -> str | None:
     env_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
     if env_url:
         return env_url
-    cwd_url = _resolve_url_from_cwd_dotenv()
-    if cwd_url:
-        return cwd_url
+    if include_cwd_dotenv:
+        cwd_url = _resolve_url_from_cwd_dotenv()
+        if cwd_url:
+            return cwd_url
     urls = get_persistent_backend().list_urls()
     if urls:
         return urls[0]
@@ -464,7 +466,7 @@ def get_credentials(api_url: str | None = None) -> dict | None:
     or None. Returns dict (not Credentials) for back-compat with existing
     callers in client.py / cli.py.
     """
-    resolved = _resolve_url(api_url)
+    resolved = _resolve_url(api_url, include_cwd_dotenv=True)
 
     if resolved is None:
         # No URL anywhere; try legacy file as last resort to learn one.
@@ -520,7 +522,7 @@ def clear_credentials(api_url: str | None = None) -> None:
     targets the same record `get_credentials()` would have returned, even
     when multiple URLs are present.
     """
-    target = _resolve_url(api_url)
+    target = _resolve_url(api_url, include_cwd_dotenv=True)
     if target is None:
         return
     get_persistent_backend().clear(target)
