@@ -1596,7 +1596,7 @@ class ProcessPoolManager:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "processes": processes,
             "active_process_count": len(self.processes),
-            "configured_capacity": self.max_workers,
+            "configured_capacity": max_workers,
             "max_workers": max_workers,
             "pool_size": len(self.processes),
             "available_slots": available_slots,
