@@ -1980,6 +1980,14 @@ class ManifestResolver:
 
         present_integ_uuids = [UUID(m.id) for m in manifest.integrations.values()]
         present_config_uuids = [UUID(m.id) for m in manifest.configs.values()]
+        present_config_natural_keys = {
+            (
+                UUID(m.integration_id) if m.integration_id else None,
+                UUID(m.organization_id) if m.organization_id else None,
+                m.key,
+            )
+            for m in manifest.configs.values()
+        }
         present_claim_uuids = [UUID(m.id) for m in manifest.claims.values()]
         present_table_uuids = [UUID(m.id) for m in manifest.tables.values()]
         present_event_uuids = [UUID(m.id) for m in manifest.events.values()]
@@ -2111,7 +2119,7 @@ class ManifestResolver:
         # Delete configs not in manifest (skip integration-schema-linked configs —
         # those are user-set values managed by IntegrationConfigSchema cascade)
         cfg_q = select(
-            Config.id, Config.organization_id, Config.key
+            Config.id, Config.integration_id, Config.organization_id, Config.key
         ).where(Config.config_schema_id.is_(None))
         explicit_config_ids = _explicit_ids("configs")
         if explicit_config_ids == []:
@@ -2124,10 +2132,14 @@ class ManifestResolver:
             if present_config_uuids:
                 cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
             cfg_result = await self.db.execute(cfg_q)
-            stale_cfg_rows = cfg_result.all()
+            stale_cfg_rows = [
+                row
+                for row in cfg_result.all()
+                if (row[1], row[2], row[3]) not in present_config_natural_keys
+            ]
         stale_cfg_ids = [row[0] for row in stale_cfg_rows]
         if stale_cfg_ids:
-            for sid, s_org_id, s_key in stale_cfg_rows:
+            for sid, _s_integ_id, s_org_id, s_key in stale_cfg_rows:
                 logger.info(f"Deleting config {sid} — removed from repo")
                 entity_changes.append(EntityChange(
                     action="removed",
@@ -2547,6 +2559,8 @@ class ManifestResolver:
             update_values = self._config_upsert_values(
                 mcfg, ct, integ_id, org_id, schema_id, include_value=not is_secret
             )
+            if existing_id != cfg_id:
+                update_values["id"] = cfg_id
 
             return [Upsert(
                 model=Config,
