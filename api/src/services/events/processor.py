@@ -51,6 +51,13 @@ from src.services.webhooks.registry import get_adapter
 
 logger = logging.getLogger(__name__)
 
+EXECUTION_DELIVERY_STATUS = {
+    "Success": EventDeliveryStatus.SUCCESS,
+    "Failed": EventDeliveryStatus.FAILED,
+    "Timeout": EventDeliveryStatus.FAILED,
+    "Cancelled": EventDeliveryStatus.FAILED,
+}
+
 
 async def resolve_webhook_source(
     db: AsyncSession,
@@ -778,6 +785,130 @@ class EventProcessor:
 
 
 
+def _delivery_status_from_execution(status: str) -> EventDeliveryStatus:
+    return EXECUTION_DELIVERY_STATUS.get(status, EventDeliveryStatus.FAILED)
+
+
+def _delivery_failure_target(delivery: EventDelivery) -> tuple[str, Any]:
+    subscription = delivery.subscription
+    target_type = getattr(subscription, "target_type", "workflow") or "workflow"
+    target_id = (
+        getattr(subscription, "agent_id", None)
+        if target_type == "agent"
+        else delivery.workflow_id
+    )
+    return target_type, target_id
+
+
+async def _emit_delivery_retry_exhausted(
+    db: AsyncSession,
+    delivery: EventDelivery,
+    error_message: str | None = None,
+) -> None:
+    event_obj = delivery.event or await EventRepository(db).get_by_id(delivery.event_id)
+    target_type, target_id = _delivery_failure_target(delivery)
+
+    from src.services.events.builtins import emit_event_delivery_retry_exhausted
+
+    await emit_event_delivery_retry_exhausted(
+        event_id=delivery.event_id,
+        event_type=event_obj.event_type if event_obj else None,
+        source_id=event_obj.event_source_id if event_obj else None,
+        organization_id=event_obj.organization_id if event_obj else None,
+        delivery_id=delivery.id,
+        target_type=target_type,
+        target_id=target_id,
+        attempt=delivery.attempt_count,
+        max_attempts=delivery.attempt_count,
+        error_type="DeliveryError",
+        error_message=error_message or "Delivery failed after all retry attempts.",
+    )
+
+
+async def _broadcast_event_status_update(
+    db: AsyncSession,
+    delivery_repo: EventDeliveryRepository,
+    delivery: EventDelivery,
+) -> None:
+    event = await EventRepository(db).get_by_id(delivery.event_id)
+    if not event or not event.event_source:
+        return
+
+    from src.core.pubsub import manager
+
+    deliveries = await delivery_repo.get_by_event(delivery.event_id)
+    success_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS)
+    failed_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.FAILED)
+
+    channel = f"event-source:{event.event_source_id}"
+    message = {
+        "type": "event_updated",
+        "event": {
+            "id": str(event.id),
+            "event_source_id": str(event.event_source_id),
+            "event_type": event.event_type,
+            "status": getattr(event.status, "value", event.status),
+            "received_at": event.received_at.isoformat() if event.received_at else None,
+            "source_ip": event.source_ip,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "delivery_count": len(deliveries),
+        },
+    }
+
+    try:
+        await manager.broadcast(channel, message)
+        logger.debug(f"Broadcast event_updated for {event.id}")
+    except Exception as e:
+        logger.warning(f"Failed to broadcast event update: {e}")
+
+
+async def _run_delivery_execution_update(
+    db: AsyncSession,
+    execution_id: str,
+    delivery_status: EventDeliveryStatus,
+    error_message: str | None,
+) -> None:
+    result = await db.execute(
+        sa.select(EventDelivery).options(
+            joinedload(EventDelivery.event),
+            joinedload(EventDelivery.subscription),
+        ).where(
+            EventDelivery.execution_id == uuid.UUID(execution_id)
+        )
+    )
+    delivery = result.unique().scalar_one_or_none()
+
+    if not delivery:
+        return
+
+    delivery.status = delivery_status
+    delivery.completed_at = datetime.now(timezone.utc)
+    delivery.attempt_count += 1
+
+    if error_message:
+        delivery.error_message = error_message
+
+    await db.flush()
+
+    delivery_repo = EventDeliveryRepository(db)
+    await delivery_repo.update_event_status(delivery.event_id)
+
+    logger.info(
+        "Updated event delivery status",
+        extra={
+            "delivery_id": str(delivery.id),
+            "execution_id": execution_id,
+            "status": delivery_status.value,
+        },
+    )
+
+    if delivery_status == EventDeliveryStatus.FAILED:
+        await _emit_delivery_retry_exhausted(db, delivery, error_message)
+
+    await _broadcast_event_status_update(db, delivery_repo, delivery)
+
+
 async def update_delivery_from_execution(
     execution_id: str,
     status: str,
@@ -797,123 +928,24 @@ async def update_delivery_from_execution(
         session: Optional database session. If provided, uses it and
                  caller is responsible for commit. If None, creates own session.
     """
-    from sqlalchemy import select
-    from sqlalchemy.orm import joinedload
-
-    # Map execution status to delivery status
-    status_map = {
-        "Success": EventDeliveryStatus.SUCCESS,
-        "Failed": EventDeliveryStatus.FAILED,
-        "Timeout": EventDeliveryStatus.FAILED,
-        "Cancelled": EventDeliveryStatus.FAILED,
-    }
-
-    delivery_status = status_map.get(status, EventDeliveryStatus.FAILED)
-
-    async def _do_update(db: AsyncSession) -> None:
-        # Find delivery by execution_id
-        result = await db.execute(
-            select(EventDelivery).options(
-                joinedload(EventDelivery.event),
-                joinedload(EventDelivery.subscription),
-            ).where(
-                EventDelivery.execution_id == uuid.UUID(execution_id)
-            )
-        )
-        delivery = result.unique().scalar_one_or_none()
-
-        if not delivery:
-            # Not an event-triggered execution, nothing to update
-            return
-
-        # Update delivery status
-        delivery.status = delivery_status
-        delivery.completed_at = datetime.now(timezone.utc)
-        delivery.attempt_count += 1
-
-        if error_message:
-            delivery.error_message = error_message
-
-        await db.flush()
-
-        # Update the parent event status
-        delivery_repo = EventDeliveryRepository(db)
-        await delivery_repo.update_event_status(delivery.event_id)
-
-        logger.info(
-            "Updated event delivery status",
-            extra={
-                "delivery_id": str(delivery.id),
-                "execution_id": execution_id,
-                "status": delivery_status.value,
-            },
-        )
-
-        if delivery_status == EventDeliveryStatus.FAILED:
-            event_obj = delivery.event or await EventRepository(db).get_by_id(delivery.event_id)
-            subscription = delivery.subscription
-            target_type = getattr(subscription, "target_type", "workflow") or "workflow"
-            target_id = (
-                getattr(subscription, "agent_id", None)
-                if target_type == "agent"
-                else delivery.workflow_id
-            )
-            from src.services.events.builtins import emit_event_delivery_retry_exhausted
-
-            await emit_event_delivery_retry_exhausted(
-                event_id=delivery.event_id,
-                event_type=event_obj.event_type if event_obj else None,
-                source_id=event_obj.event_source_id if event_obj else None,
-                organization_id=event_obj.organization_id if event_obj else None,
-                delivery_id=delivery.id,
-                target_type=target_type,
-                target_id=target_id,
-                attempt=delivery.attempt_count,
-                max_attempts=delivery.attempt_count,
-                error_type="DeliveryError",
-                error_message=error_message or "Delivery failed after all retry attempts.",
-            )
-
-        # Broadcast event status update to WebSocket subscribers
-        event = await EventRepository(db).get_by_id(delivery.event_id)
-        if event and event.event_source:
-            from src.core.pubsub import manager
-
-            # Get delivery counts for this event
-            deliveries = await delivery_repo.get_by_event(delivery.event_id)
-            success_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.SUCCESS)
-            failed_count = sum(1 for d in deliveries if d.status == EventDeliveryStatus.FAILED)
-
-            channel = f"event-source:{event.event_source_id}"
-            message = {
-                "type": "event_updated",
-                "event": {
-                    "id": str(event.id),
-                    "event_source_id": str(event.event_source_id),
-                    "event_type": event.event_type,
-                    "status": getattr(event.status, "value", event.status),
-                    "received_at": event.received_at.isoformat() if event.received_at else None,
-                    "source_ip": event.source_ip,
-                    "success_count": success_count,
-                    "failed_count": failed_count,
-                    "delivery_count": len(deliveries),
-                },
-            }
-
-            try:
-                await manager.broadcast(channel, message)
-                logger.debug(f"Broadcast event_updated for {event.id}")
-            except Exception as e:
-                logger.warning(f"Failed to broadcast event update: {e}")
+    delivery_status = _delivery_status_from_execution(status)
 
     if session is not None:
-        # Use provided session (caller manages commit)
-        await _do_update(session)
+        await _run_delivery_execution_update(
+            session,
+            execution_id,
+            delivery_status,
+            error_message,
+        )
     else:
-        # Create own session
         from src.core.database import get_session_factory
 
         session_factory = get_session_factory()
         async with session_factory() as db:
-            await _do_update(db)
+            await _run_delivery_execution_update(
+                db,
+                execution_id,
+                delivery_status,
+                error_message,
+            )
             await db.commit()

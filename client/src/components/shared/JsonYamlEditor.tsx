@@ -72,6 +72,34 @@ function serializeYaml<T>(value: T | null, seed: T | object): string {
 	return yaml.dump(value ?? seed);
 }
 
+function parseJsonBuffer<T>(
+	text: string,
+	validateParsed?: (raw: unknown) => T,
+): T | null {
+	if (!text.trim()) return null;
+
+	const raw = JSON.parse(text);
+	return validateParsed ? validateParsed(raw) : (raw as T);
+}
+
+function parseYamlValue<T>(
+	raw: unknown,
+	validateParsed?: (raw: unknown) => T,
+): T | null {
+	if (raw === null) return null;
+	return validateParsed ? validateParsed(raw) : (raw as T);
+}
+
+function parseYamlBuffer<T>(
+	text: string,
+	validateParsed?: (raw: unknown) => T,
+): T | null {
+	const raw = text.trim()
+		? yaml.load(text, { schema: yaml.JSON_SCHEMA })
+		: null;
+	return parseYamlValue(raw, validateParsed);
+}
+
 export function JsonYamlEditor<T>({
 	value,
 	onChange,
@@ -163,17 +191,8 @@ export function JsonYamlEditor<T>({
 
 	function handleJsonText(next: string) {
 		setJsonText(next);
-		const trimmed = next.trim();
-		if (!trimmed) {
-			setJsonParseError(null);
-			emit(null);
-			return;
-		}
 		try {
-			const raw = JSON.parse(next);
-			const parsed = validateParsed
-				? validateParsed(raw)
-				: (raw as T);
+			const parsed = parseJsonBuffer(next, validateParsed);
 			setJsonParseError(null);
 			emit(parsed);
 		} catch (err) {
@@ -185,22 +204,8 @@ export function JsonYamlEditor<T>({
 
 	function handleYamlText(next: string) {
 		setYamlText(next);
-		const trimmed = next.trim();
-		if (!trimmed) {
-			setYamlParseError(null);
-			emit(null);
-			return;
-		}
 		try {
-			const raw = yaml.load(next, { schema: yaml.JSON_SCHEMA });
-			let parsed: T | null;
-			if (raw === null) {
-				parsed = null;
-			} else if (validateParsed) {
-				parsed = validateParsed(raw);
-			} else {
-				parsed = raw as T;
-			}
+			const parsed = parseYamlBuffer(next, validateParsed);
 			setYamlParseError(null);
 			emit(parsed);
 		} catch (err) {
@@ -217,47 +222,27 @@ export function JsonYamlEditor<T>({
 		// Leaving a code tab: parse its buffer first so we have a fresh
 		// AST to feed the destination tab. If parsing fails, stay put.
 		if (activeTab === "json") {
-			const trimmed = jsonText.trim();
-			let parsed: T | null;
 			try {
-				if (!trimmed) {
-					parsed = null;
-				} else {
-					const raw = JSON.parse(jsonText);
-					parsed = validateParsed
-						? validateParsed(raw)
-						: (raw as T);
-				}
+				const parsed = parseJsonBuffer(jsonText, validateParsed);
+				setJsonParseError(null);
+				emit(parsed);
 			} catch (err) {
 				setJsonParseError(
 					err instanceof Error ? err.message : "Invalid JSON",
 				);
 				return;
 			}
-			setJsonParseError(null);
-			emit(parsed);
 		} else if (activeTab === "yaml") {
-			const trimmed = yamlText.trim();
-			let parsed: T | null;
 			try {
-				const raw = trimmed
-					? yaml.load(yamlText, { schema: yaml.JSON_SCHEMA })
-					: null;
-				if (raw === null) {
-					parsed = null;
-				} else if (validateParsed) {
-					parsed = validateParsed(raw);
-				} else {
-					parsed = raw as T;
-				}
+				const parsed = parseYamlBuffer(yamlText, validateParsed);
+				setYamlParseError(null);
+				emit(parsed);
 			} catch (err) {
 				setYamlParseError(
 					err instanceof Error ? err.message : "Invalid YAML",
 				);
 				return;
 			}
-			setYamlParseError(null);
-			emit(parsed);
 		}
 
 		setActiveTab(next);

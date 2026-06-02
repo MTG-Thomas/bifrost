@@ -57,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
 
+REFRESH_FAILED_MESSAGE = "Refresh failed"
+
 
 # =============================================================================
 # Response Models
@@ -1370,7 +1372,7 @@ def _apply_successful_refresh(token: OAuthToken, outcome: dict[str, Any], now: d
 
 def _apply_failed_refresh(token: OAuthToken, outcome: dict[str, Any], now: datetime) -> None:
     token.status = "failed"
-    token.status_message = (outcome.get("error", "Refresh failed"))[:200]
+    token.status_message = (outcome.get("error", REFRESH_FAILED_MESSAGE))[:200]
     token.last_refresh_at = now
 
 
@@ -1421,7 +1423,7 @@ async def _emit_refresh_failed(
             attempt=1,
             last_success_at=previous_success_at,
             error_code=outcome.get("error_code"),
-            error_message=token.status_message or "Refresh failed",
+            error_message=token.status_message or REFRESH_FAILED_MESSAGE,
             retryable=False,
             reauth_required=True,
         )
@@ -1510,7 +1512,7 @@ async def refresh_mapping_oauth(
         )
         raise HTTPException(
             status_code=502,
-            detail=token.status_message or "Refresh failed",
+            detail=token.status_message or REFRESH_FAILED_MESSAGE,
         )
 
     await ctx.db.flush()
