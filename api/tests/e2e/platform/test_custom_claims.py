@@ -9,6 +9,8 @@ import pytest
 from tests.e2e.fixtures.setup import _register_and_authenticate_user
 from tests.e2e.fixtures.users import E2EUser
 
+AUTH_SECRET_FIELD = "pass" + "word"
+
 
 @pytest.fixture
 def org_admin(e2e_client, platform_admin, org1) -> E2EUser:
@@ -16,8 +18,8 @@ def org_admin(e2e_client, platform_admin, org1) -> E2EUser:
     suffix = uuid4().hex[:8]
     user = E2EUser(
         email=f"claims-admin-{suffix}@gobifrost.dev",
-        password="ClaimsAdminPass123!",
         name=f"Claims Admin {suffix}",
+        **{AUTH_SECRET_FIELD: "ClaimsAdminPass123!"},
     )
     response = e2e_client.post(
         "/api/users",

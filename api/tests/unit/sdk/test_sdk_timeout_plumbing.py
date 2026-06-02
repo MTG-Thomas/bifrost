@@ -93,7 +93,7 @@ async def test_knowledge_store_many_forwards_default_timeout(monkeypatch):
     )
 
     kwargs = mock_client.post.call_args.kwargs
-    assert kwargs.get("timeout") == 300.0
+    assert kwargs.get("timeout") == pytest.approx(300.0)
 
 
 @pytest.mark.asyncio
@@ -114,4 +114,4 @@ async def test_knowledge_store_many_respects_explicit_timeout(monkeypatch):
     await mod.knowledge.store_many([], namespace="faq", timeout=600.0)
 
     kwargs = mock_client.post.call_args.kwargs
-    assert kwargs.get("timeout") == 600.0
+    assert kwargs.get("timeout") == pytest.approx(600.0)

@@ -341,7 +341,9 @@ class FileOperationsService:
             try:
                 await op(path)
             except Exception as e:
-                logger.warning(f"Delete side effect failed for {path}: {e}")
+                logger.warning(
+                    f"Delete side effect failed for {log_safe(path)}: {log_safe(e)}"
+                )
 
         # Broadcast file_delete event for watch mode sync
         try:
@@ -356,9 +358,11 @@ class FileOperationsService:
                 session_id=get_request_session_id(),
             )
         except Exception as e:
-            logger.warning(f"Failed to publish file_delete for {path}: {e}")
+            logger.warning(
+                f"Failed to publish file_delete for {log_safe(path)}: {log_safe(e)}"
+            )
 
-        logger.info(f"File deleted: {path}")
+        logger.info(f"File deleted: {log_safe(path)}")
 
     async def _delete_from_s3(self, path: str) -> None:
         """Delete from S3 _repo/ — source-of-truth operation."""
@@ -514,8 +518,8 @@ class FileOperationsService:
             except Exception as e:
                 logger.warning(f"Failed to clear bundler diagnostic for {path}: {e}")
             logger.info(
-                f"App bundle rebuilt: app={app_id} path={relative_path} "
-                f"entry={m.entry} duration_ms={m.duration_ms}"
+                f"App bundle rebuilt: app={app_id} path={log_safe(relative_path)} "
+                f"entry={log_safe(m.entry)} duration_ms={m.duration_ms}"
             )
         else:
             errors = result.errors or []
@@ -561,12 +565,12 @@ class FileOperationsService:
             first_col = first.column if first else None
             first_msg = first.text if first else ""
             logger.warning(
-                f"App bundle BUILD FAILED: app={app_id} path={relative_path} "
+                f"App bundle BUILD FAILED: app={app_id} path={log_safe(relative_path)} "
                 f"errors={len(errors)} "
-                f"first_file={first_file!r} "
+                f"first_file={log_safe(first_file)!r} "
                 f"first_line={first_line} "
                 f"first_col={first_col} "
-                f"first_msg={first_msg!r}"
+                f"first_msg={log_safe(first_msg)!r}"
             )
 
         try:

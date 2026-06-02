@@ -11,7 +11,7 @@
 
 import { test, expect } from "./fixtures/api-fixture";
 
-const SUFFIX = Math.random().toString(36).slice(2, 8);
+const SUFFIX = crypto.randomUUID().slice(0, 8);
 const SOURCE_ORG_NAME = `Bulk Source ${SUFFIX}`;
 const DEST_ORG_NAME = `Bulk Dest ${SUFFIX}`;
 const USER_PREFIX = `bulk-spec-${SUFFIX}`;

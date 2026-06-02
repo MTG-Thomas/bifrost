@@ -12,8 +12,8 @@ from xml.etree.ElementTree import Element, register_namespace, tostring
 
 from defusedxml import ElementTree as DefusedET
 
-_SVG_NS = "http://www.w3.org/2000/svg"
-_XLINK_NS = "http://www.w3.org/1999/xlink"
+_SVG_NS = "http://www.w3.org/2000/svg"  # NOSONAR - W3C namespace URI, not a transport endpoint.
+_XLINK_NS = "http://www.w3.org/1999/xlink"  # NOSONAR - W3C namespace URI, not a transport endpoint.
 _JS_URI = re.compile(r"^\s*javascript:", re.IGNORECASE)
 
 # Register common SVG namespaces so tostring() emits clean tag names

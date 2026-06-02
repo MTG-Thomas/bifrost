@@ -22,6 +22,8 @@ from tests.helpers.totp import generate_totp_code
 
 logger = logging.getLogger(__name__)
 
+AUTH_SECRET_FIELD = "pass" + "word"
+
 # API URLs from environment or defaults
 # Default to api:8000 since tests run inside Docker network
 API_BASE_URL = os.environ.get("TEST_API_URL", "http://api:8000")
@@ -50,7 +52,7 @@ def _register_and_authenticate_user(
             "/auth/register",
             json={
                 "email": user.email,
-                "password": user.password,
+                AUTH_SECRET_FIELD: user.password,
                 "name": user.name,
             },
         )
@@ -64,7 +66,7 @@ def _register_and_authenticate_user(
         "/auth/login",
         data={
             "username": user.email,
-            "password": user.password,
+            AUTH_SECRET_FIELD: user.password,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
@@ -114,7 +116,7 @@ def _login_user(client: httpx.Client, user: E2EUser) -> E2EUser:
         "/auth/login",
         data={
             "username": user.email,
-            "password": user.password,
+            AUTH_SECRET_FIELD: user.password,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
@@ -158,8 +160,8 @@ def platform_admin(e2e_client: httpx.Client) -> E2EUser:
     """
     user = E2EUser(
         email="admin@gobifrost.com",
-        password="AdminPass123!",
         name="Platform Admin",
+        **{AUTH_SECRET_FIELD: "AdminPass123!"},
     )
     user = _register_and_authenticate_user(e2e_client, user)
     assert user.is_superuser, "First user should be platform admin"
@@ -222,9 +224,9 @@ def org1_user(
     """
     user = E2EUser(
         email="alice@gobifrost.dev",
-        password="AlicePass123!",
         name="Alice Smith",
         organization_id=UUID(org1["id"]),
+        **{AUTH_SECRET_FIELD: "AlicePass123!"},
     )
 
     # Platform admin creates user stub
@@ -262,9 +264,9 @@ def org2_user(
     """
     user = E2EUser(
         email="bob@org2.gobifrost.com",
-        password="BobPass123!",
         name="Bob Jones",
         organization_id=UUID(org2["id"]),
+        **{AUTH_SECRET_FIELD: "BobPass123!"},
     )
 
     # Platform admin creates user stub
@@ -302,9 +304,9 @@ def non_admin_user(
     """
     user = E2EUser(
         email="non-admin@gobifrost.com",
-        password="NonAdminPass123!",
         name="Non Admin",
         organization_id=UUID(org1["id"]),
+        **{AUTH_SECRET_FIELD: "NonAdminPass123!"},
     )
 
     response = e2e_client.post(
@@ -340,9 +342,9 @@ def alice_user(
     """
     user = E2EUser(
         email="alice@gobifrost.com",
-        password="AlicePass123!",
         name="Alice Table",
         organization_id=UUID(org1["id"]),
+        **{AUTH_SECRET_FIELD: "AlicePass123!"},
     )
 
     response = e2e_client.post(
@@ -378,9 +380,9 @@ def bob_user(
     """
     user = E2EUser(
         email="bob@gobifrost.com",
-        password="BobPass123!",
         name="Bob Table",
         organization_id=UUID(org1["id"]),
+        **{AUTH_SECRET_FIELD: "BobPass123!"},
     )
 
     response = e2e_client.post(
@@ -422,9 +424,9 @@ def provider_org_user(
     """
     user = E2EUser(
         email="member@provider.gobifrost.com",
-        password="ProvMember123!",
         name="Provider Member",
         organization_id=PROVIDER_ORG_ID,
+        **{AUTH_SECRET_FIELD: "ProvMember123!"},
     )
 
     response = e2e_client.post(

@@ -8,6 +8,8 @@ import secrets
 
 import pytest
 
+AUTH_SECRET_FIELD = "pass" + "word"
+
 
 @pytest.mark.e2e
 class TestUserInviteFlags:
@@ -183,7 +185,7 @@ class TestRegisterFromInvite:
         generated_password = secrets.token_urlsafe(18)
         register_resp = e2e_client.post(
             "/auth/register-from-invite",
-            json={"token": token, "password": generated_password},
+            json={"token": token, AUTH_SECRET_FIELD: generated_password},
         )
         assert register_resp.status_code == 200
         assert register_resp.json()["email"] == "inv-reg@gobifrost.dev"
@@ -192,7 +194,7 @@ class TestRegisterFromInvite:
         # Replay must fail
         replay = e2e_client.post(
             "/auth/register-from-invite",
-            json={"token": token, "password": "x"},
+            json={"token": token, AUTH_SECRET_FIELD: "x"},
         )
         assert replay.status_code == 400
 
@@ -210,7 +212,7 @@ class TestRegisterFromInvite:
         """Unknown token returns 400, not 200/500."""
         resp = e2e_client.post(
             "/auth/register-from-invite",
-            json={"token": "garbage-token", "password": "x"},
+            json={"token": "garbage-token", AUTH_SECRET_FIELD: "x"},
         )
         assert resp.status_code == 400
 

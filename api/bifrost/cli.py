@@ -112,7 +112,10 @@ def _hash_for_cache(raw_bytes: bytes) -> str:
     and S3's ETag is md5 of those. Any hash we compare against a server ETag
     must be computed on the same normalized bytes.
     """
-    return hashlib.md5(_normalize_line_endings(raw_bytes)).hexdigest()
+    return hashlib.md5(
+        _normalize_line_endings(raw_bytes),
+        usedforsecurity=False,
+    ).hexdigest()
 
 
 def _is_bifrost_path(path: str) -> bool:
@@ -2149,7 +2152,7 @@ async def _process_watch_batch(
                 raw = _normalize_line_endings(raw_bytes)
                 rel = abs_p.relative_to(base_path)
                 repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
-                file_hash = hashlib.md5(raw).hexdigest()
+                file_hash = hashlib.md5(raw, usedforsecurity=False).hexdigest()
                 if state.get_known_hash(repo_path) == file_hash:
                     # No-op push: the server already has this content (common
                     # case: observer fired on our own pull write).
@@ -2834,7 +2837,10 @@ async def _sync_files(
 
     for repo_path, content in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
+        local_md5 = hashlib.md5(
+            base64.b64decode(content),
+            usedforsecurity=False,
+        ).hexdigest()
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:

@@ -18,7 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FIXTURE_PNG = path.join(__dirname, "fixtures", "test-logo.png");
 
-const UNIQUE = `${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+const UNIQUE = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 
 test.describe("Entity logos", () => {
 	test.describe("App logo", () => {

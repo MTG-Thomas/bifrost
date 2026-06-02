@@ -35,6 +35,7 @@ RUN npm run build
 # Stage 3: Production with nginx
 # =============================================================================
 # nginx:alpine
+# NOSONAR - nginx master starts as root to bind port 80, then serves workers as configured by the base image.
 FROM nginx:alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a AS production
 
 # Copy built assets from builder

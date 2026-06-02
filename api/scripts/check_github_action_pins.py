@@ -4,14 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
-FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
-USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*(?P<value>.+?)\s*$")
 WORKFLOW_SUFFIXES = {".yml", ".yaml"}
 
 
@@ -45,6 +42,19 @@ def _strip_optional_quotes(value: str) -> str:
     return value
 
 
+def _parse_uses_value(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped.startswith("-"):
+        stripped = stripped[1:].lstrip()
+    if not stripped.startswith("uses:"):
+        return None
+    return stripped.removeprefix("uses:").strip()
+
+
+def _is_full_sha(ref: str) -> bool:
+    return len(ref) == 40 and all(char in "0123456789abcdefABCDEF" for char in ref)
+
+
 def _is_local_or_non_github_action(action: str) -> bool:
     return action.startswith(("./", "../", "docker://"))
 
@@ -53,11 +63,11 @@ def find_unpinned_actions(paths: list[Path]) -> list[Violation]:
     violations: list[Violation] = []
     for path in _iter_workflow_files(paths):
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            match = USES_RE.match(line)
-            if not match:
+            raw_action = _parse_uses_value(line)
+            if raw_action is None:
                 continue
 
-            action = _strip_optional_quotes(_strip_inline_comment(match.group("value")))
+            action = _strip_optional_quotes(_strip_inline_comment(raw_action))
             if _is_local_or_non_github_action(action):
                 continue
 
@@ -66,7 +76,7 @@ def find_unpinned_actions(paths: list[Path]) -> list[Violation]:
                 continue
 
             ref = action.rsplit("@", 1)[1]
-            if not FULL_SHA_RE.fullmatch(ref):
+            if not _is_full_sha(ref):
                 violations.append(
                     Violation(
                         path,

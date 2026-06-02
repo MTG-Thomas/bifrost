@@ -7,7 +7,7 @@ import { authenticateInBrowser } from "./setup/auth-helpers";
 import { generateTOTP } from "./setup/totp";
 import { getCredentialsPath, type UserCredentials } from "./fixtures/users";
 
-const API_URL = process.env.TEST_API_URL || "http://api:8000";
+const API_URL = process.env.TEST_API_URL || "http://api:8000"; // NOSONAR - Docker-internal test service URL.
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,7 +32,7 @@ async function assertOk(response: Response, label: string): Promise<void> {
 
 async function createOrgSuperuser(): Promise<UserCredentials> {
 	const credentials = loadCredentials();
-	const suffix = `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+	const suffix = `${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 	const user = {
 		email: `claims_admin_${suffix}@gobifrost.dev`,
 		password: "ClaimsAdminPass123!",
@@ -106,9 +106,9 @@ async function createOrgSuperuser(): Promise<UserCredentials> {
 }
 
 async function createSourceTable(admin: UserCredentials): Promise<string> {
-	const tableName = `ui_claim_memberships_${Date.now()}_${Math.floor(
-		Math.random() * 10000,
-	)}`;
+	const tableName = `ui_claim_memberships_${Date.now()}_${crypto
+		.randomUUID()
+		.slice(0, 8)}`;
 	const response = await fetch(`${API_URL}/api/tables`, {
 		method: "POST",
 		headers: {

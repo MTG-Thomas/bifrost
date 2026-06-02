@@ -29,7 +29,12 @@ describe("UserEmailCell", () => {
 	it("does not bubble copy clicks up to the row (would otherwise open edit dialog)", () => {
 		const rowClick = vi.fn();
 		renderWithProviders(
-			<div onClick={rowClick}>
+			<div
+				role="button"
+				tabIndex={0}
+				onClick={rowClick}
+				onKeyDown={rowClick}
+			>
 				<UserEmailCell email="alice@example.com" />
 			</div>,
 		);

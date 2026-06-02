@@ -18,9 +18,6 @@ env:
   API_IMAGE: jackmusick/bifrost-api
   CLIENT_IMAGE: jackmusick/bifrost-client
 
-permissions:
-  contents: read
-
 jobs:
   # =============================================================================
   # Lint & Type Check - Fast, gates all builds alongside unit tests
@@ -31,6 +28,8 @@ jobs:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Lint & Type Check
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -95,6 +94,8 @@ jobs:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Unit Tests
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -125,6 +126,8 @@ jobs:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: E2E Tests
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -276,6 +279,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     name: Deploy Dry Run
+    permissions:
+      contents: read
     steps:
       - name: Install doctl
         uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
@@ -283,7 +288,9 @@ jobs:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Save kubeconfig
-        run: doctl kubernetes cluster kubeconfig save "${{ secrets.DO_CLUSTER_NAME }}"
+        env:
+          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
+        run: doctl kubernetes cluster kubeconfig save "$DO_CLUSTER_NAME"
 
       - name: Probe cluster reach + RBAC + label selector
         run: |
@@ -333,6 +340,8 @@ jobs:
     needs: [build-dev]
     runs-on: ubuntu-latest
     name: Deploy Dev to DigitalOcean
+    permissions:
+      contents: read
     # Allow only one deploy at a time; if a newer commit lands mid-rollout we
     # cancel the older deploy so the cluster always converges on HEAD of main.
     concurrency:
@@ -346,7 +355,9 @@ jobs:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Save kubeconfig
-        run: doctl kubernetes cluster kubeconfig save "${{ secrets.DO_CLUSTER_NAME }}"
+        env:
+          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
+        run: doctl kubernetes cluster kubeconfig save "$DO_CLUSTER_NAME"
 
       - name: Roll deployments
         run: |
@@ -369,12 +380,14 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
         run: |
           {
             echo "## Bifrost deploy"
             echo ""
             echo "- Commit: \`${GITHUB_SHA::7}\`"
-            echo "- Cluster: \`${{ secrets.DO_CLUSTER_NAME }}\`"
+            echo "- Cluster: \`$DO_CLUSTER_NAME\`"
             echo "- Namespace: \`bifrost\`"
             echo ""
             echo "### Deployment status"
