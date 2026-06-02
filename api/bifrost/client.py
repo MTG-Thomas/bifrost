@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Global client injection for platform mode
 _injected_client: Optional["BifrostClient"] = None
+_last_refreshed_env_credentials: dict[str, str] | None = None
 
 # Retry config for transient 5xx — see workstream E of issue #171.
 # SDK is machine-to-machine, so the retry budget is more generous than
@@ -139,12 +140,19 @@ async def refresh_tokens() -> bool:
     Returns:
         True if refresh successful, False otherwise
     """
+    global _last_refreshed_env_credentials
+
     creds = get_credentials()
     if not creds:
         return False
 
     api_url = creds["api_url"]
     refresh_token = creds["refresh_token"]
+    is_env_sourced = (
+        os.environ.get("BIFROST_API_URL", "").rstrip("/") == api_url.rstrip("/")
+        and os.environ.get("BIFROST_ACCESS_TOKEN") == creds.get("access_token")
+        and os.environ.get("BIFROST_REFRESH_TOKEN") == refresh_token
+    )
 
     try:
         async with httpx.AsyncClient(
@@ -163,13 +171,18 @@ async def refresh_tokens() -> bool:
             # Calculate expiry time (30 minutes from now)
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 1800))
 
-            # Save new credentials
-            save_credentials(
-                api_url=api_url,
-                access_token=data["access_token"],
-                refresh_token=data["refresh_token"],
-                expires_at=expires_at.isoformat(),
-            )
+            refreshed = {
+                "api_url": api_url,
+                "access_token": data["access_token"],
+                "refresh_token": data["refresh_token"],
+                "expires_at": expires_at.isoformat(),
+            }
+
+            if is_env_sourced:
+                _last_refreshed_env_credentials = refreshed
+            else:
+                _last_refreshed_env_credentials = None
+                save_credentials(**refreshed)
 
             return True
     except Exception:
@@ -494,7 +507,12 @@ class BifrostClient:
     async def _refresh_and_update(self) -> bool:
         """Refresh tokens and update this client's auth headers."""
         if await refresh_tokens():
-            creds = get_credentials()
+            creds = (
+                _last_refreshed_env_credentials
+                if _last_refreshed_env_credentials
+                and _last_refreshed_env_credentials["api_url"].rstrip("/") == self.api_url
+                else get_credentials()
+            )
             if creds:
                 self._access_token = creds["access_token"]
                 # Force new async client on next request (with new token)

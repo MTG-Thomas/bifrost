@@ -498,6 +498,29 @@ def _remove_env_url_line(api_url: str) -> bool:
     return True
 
 
+def _remove_env_keys(keys: set[str]) -> bool:
+    """Remove KEY= or export KEY= lines from CWD's .env."""
+    env_path = pathlib.Path.cwd() / ".env"
+    lines = _read_env_file(env_path)
+    if not lines:
+        return False
+    kept: list[str] = []
+    removed = False
+    for line in lines:
+        stripped = line.lstrip()
+        if any(stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}=") for key in keys):
+            removed = True
+            continue
+        kept.append(line)
+    if not removed:
+        return False
+    if all(not line.strip() for line in kept):
+        env_path.unlink()
+    else:
+        env_path.write_text("".join(kept))
+    return True
+
+
 def main(args: list[str] | None = None) -> int:
     """
     Main CLI entry point.
@@ -754,26 +777,26 @@ Examples:
         assert password is not None
         rc, data = asyncio.run(password_login_flow(api_url, email, password))
         if rc == 0 and data is not None:
-            expires_at = datetime.now(timezone.utc) + timedelta(
-                seconds=data.get("expires_in", 1800)
-            )
-            credentials.save_credentials(
-                api_url=api_url,
-                access_token=data["access_token"],
-                refresh_token=data["refresh_token"],
-                expires_at=expires_at.isoformat(),
-            )
-            # Persist only the target URL to CWD's .env. Tokens belong in the
-            # credential backend, never in a project directory.
+            # Persist URL + tokens to CWD's .env so subsequent `bifrost`
+            # commands from this directory just work — no shell-eval needed.
+            # Isolation is by directory: each sandbox dir has its own .env.
             try:
                 _write_env_url(api_url)
+                _upsert_env_vars(
+                    {
+                        "BIFROST_ACCESS_TOKEN": data["access_token"],
+                        "BIFROST_REFRESH_TOKEN": data["refresh_token"],
+                    }
+                )
             except OSError as e:
                 print(
                     f"Warning: could not update .env in current directory: {e}",
                     file=sys.stderr,
                 )
-                # Fall back to printing the non-secret URL only.
+                # Fall back to printing so the caller can eval them.
                 print(f"BIFROST_API_URL={api_url}")
+                print(f"BIFROST_ACCESS_TOKEN={data['access_token']}")
+                print(f"BIFROST_REFRESH_TOKEN={data['refresh_token']}")
         return rc
 
     # Browser device-code flow (persistent → keychain or JSON fallback).
@@ -871,6 +894,8 @@ Examples:
     if confirm in ("y", "yes"):
         if _remove_env_url_line(target_url):
             print(f"Removed BIFROST_API_URL line from {env_path}")
+        if _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"}):
+            print(f"Removed BIFROST token lines from {env_path}")
     return 0
 
 

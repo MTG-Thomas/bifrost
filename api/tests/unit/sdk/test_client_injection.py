@@ -163,3 +163,51 @@ class TestClientInjection:
             assert callable(client.close)
         finally:
             await client.close()
+
+
+
+class TestEnvCredentialRefresh:
+    @pytest.mark.asyncio
+    async def test_401_refresh_updates_env_sourced_client_without_persisting(self, monkeypatch):
+        """Env-backed sessions refresh the active client without writing keychain/JSON."""
+        from bifrost import client as client_mod
+
+        monkeypatch.setenv("BIFROST_API_URL", "http://localhost:38421")
+        monkeypatch.setenv("BIFROST_ACCESS_TOKEN", "old_access")
+        monkeypatch.setenv("BIFROST_REFRESH_TOKEN", "old_refresh")
+
+        saved = []
+
+        class StubResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "access_token": "new_access",
+                    "refresh_token": "new_refresh",
+                    "expires_in": 1800,
+                }
+
+        class StubAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                assert path == "/auth/refresh"
+                assert json == {"refresh_token": "old_refresh"}
+                return StubResponse()
+
+        monkeypatch.setattr(client_mod.httpx, "AsyncClient", StubAsyncClient)
+        monkeypatch.setattr(client_mod, "save_credentials", lambda **kwargs: saved.append(kwargs))
+
+        client = client_mod.BifrostClient("http://localhost:38421", "old_access")
+        assert await client._refresh_and_update()
+        assert saved == []
+        assert client._access_token == "new_access"
+        assert client._sync_http.headers["Authorization"] == "Bearer new_access"
