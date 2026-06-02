@@ -127,6 +127,29 @@ function activeSelectionMix(selected: User[]): "all_active" | "all_inactive" | "
 	return anyActive ? "all_active" : "all_inactive";
 }
 
+function nextSortState(
+	currentColumn: SortColumn,
+	currentDirection: SortDirection,
+	column: SortColumn,
+): [SortColumn, SortDirection] {
+	if (currentColumn !== column) return [column, "asc"];
+	return [column, currentDirection === "asc" ? "desc" : "asc"];
+}
+
+function openToggleActiveDialog(
+	user: User,
+	setSelectedUser: (user: User) => void,
+	setIsDisableOpen: (open: boolean) => void,
+	enableUser: (user: User) => void,
+) {
+	if (user.is_active) {
+		setSelectedUser(user);
+		setIsDisableOpen(true);
+		return;
+	}
+	enableUser(user);
+}
+
 export function Users() {
 	const [selectedUser, setSelectedUser] = useState<User | undefined>();
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -170,12 +193,9 @@ export function Users() {
 	}, [filteredUsers, sortColumn, sortDirection]);
 
 	const handleSort = (column: SortColumn) => {
-		if (sortColumn === column) {
-			setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
-		} else {
-			setSortColumn(column);
-			setSortDirection("asc");
-		}
+		const [nextColumn, nextDirection] = nextSortState(sortColumn, sortDirection, column);
+		setSortColumn(nextColumn);
+		setSortDirection(nextDirection);
 	};
 
 	// ===== Bulk selection + actions =====
@@ -221,12 +241,7 @@ export function Users() {
 	};
 
 	const handleToggleActive = (user: User) => {
-		if (user.is_active) {
-			setSelectedUser(user);
-			setIsDisableOpen(true);
-		} else {
-			handleEnableUser(user);
-		}
+		openToggleActiveDialog(user, setSelectedUser, setIsDisableOpen, handleEnableUser);
 	};
 
 	const handleDeleteUser = (user: User) => {

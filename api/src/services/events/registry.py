@@ -3,6 +3,7 @@
 COMMON_EXAMPLE_FIELDS = ("schema_version", "occurred_at", "organization", "actor")
 TICKET_CREATED = "ticket.created"
 EXAMPLE_INTEGRATION_NAME = "Microsoft Graph"
+OAUTH_REFRESH_SERVICE = "OAuth refresh service"
 EXAMPLE_TENANT_ID = "tenant-123"
 EXAMPLE_TENANT_NAME = "acme.onmicrosoft.com"
 
@@ -158,7 +159,7 @@ CURATED_TOPICS = [
         "topic": "integration.refresh_failed",
         "description": "Fired when Bifrost cannot refresh integration credentials.",
         "category": "Integrations",
-        "emitted_by": "OAuth refresh service",
+        "emitted_by": OAUTH_REFRESH_SERVICE,
         "example_body": _body(
             actor=_SYSTEM_ACTOR,
             integration={
@@ -187,7 +188,7 @@ CURATED_TOPICS = [
         "topic": "integration.reauth_required",
         "description": "Fired when an integration needs a human to reconnect it.",
         "category": "Integrations",
-        "emitted_by": "OAuth refresh service",
+        "emitted_by": OAUTH_REFRESH_SERVICE,
         "example_body": _body(
             actor=_SYSTEM_ACTOR,
             integration={
@@ -216,7 +217,7 @@ CURATED_TOPICS = [
         "topic": "integration.refresh_recovered",
         "description": "Fired when credential refresh succeeds after a prior failure.",
         "category": "Integrations",
-        "emitted_by": "OAuth refresh service",
+        "emitted_by": OAUTH_REFRESH_SERVICE,
         "example_body": _body(
             actor=_SYSTEM_ACTOR,
             integration={

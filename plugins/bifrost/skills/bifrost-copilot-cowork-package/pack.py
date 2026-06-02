@@ -28,6 +28,7 @@ from pathlib import Path
 
 COWORK_NAMESPACE = uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
 SKILL_MD = "SKILL.md"
+COLOR_ICON = "color.png"
 OUTLINE_ICON = "outline.png"
 
 JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini", ".AppleDouble", ".Spotlight-V100", ".Trashes"}
@@ -168,7 +169,7 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
             else:
                 desc_lines.append(line.strip())
     if desc_lines:
-        desc = " ".join(l for l in desc_lines if l)
+        desc = " ".join(line for line in desc_lines if line)
     if not name:
         raise RuntimeError("SKILL.md frontmatter missing `name:`")
     return skill_dir, name, desc, cleanup
@@ -245,7 +246,7 @@ def build_manifest(agent: dict, skill_name: str, app_id: str,
             "short": short_desc,
             "full": desc_full[:4000],
         },
-        "icons": {"color": "color.png", "outline": OUTLINE_ICON},
+        "icons": {"color": COLOR_ICON, "outline": OUTLINE_ICON},
         "accentColor": "#4F46E5",
         "agentSkills": [{"folder": f"./skills/{skill_name}"}],
         "agentConnectors": [{
@@ -346,9 +347,9 @@ def main() -> int:
         (skills_dir / SKILL_MD).write_text(build_skill_md(agent, skill_name))
 
     if icon_src:
-        render_icon(icon_src, 192, pkg_dir / "color.png")
+        render_icon(icon_src, 192, pkg_dir / COLOR_ICON)
     else:
-        (pkg_dir / "color.png").write_bytes(solid_png(192, (79, 70, 229)))
+        (pkg_dir / COLOR_ICON).write_bytes(solid_png(192, (79, 70, 229)))
     if outline_src:
         render_icon(outline_src, 32, pkg_dir / OUTLINE_ICON)
     else:
