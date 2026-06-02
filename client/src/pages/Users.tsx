@@ -119,6 +119,14 @@ function getOrgInfo(
 	return { name: org?.name || orgId, isProvider: org?.is_provider ?? false };
 }
 
+function activeSelectionMix(selected: User[]): "all_active" | "all_inactive" | "mixed" {
+	if (selected.length === 0) return "all_active";
+	const anyActive = selected.some((u) => u.is_active);
+	const anyInactive = selected.some((u) => !u.is_active);
+	if (anyActive && anyInactive) return "mixed";
+	return anyActive ? "all_active" : "all_inactive";
+}
+
 export function Users() {
 	const [selectedUser, setSelectedUser] = useState<User | undefined>();
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -154,9 +162,6 @@ export function Users() {
 		enabled: isPlatformAdmin,
 	});
 
-	const resolveOrgInfo = (orgId: string | null | undefined) =>
-		getOrgInfo(organizations, orgId);
-
 	const filteredUsers = useSearch(users || [], searchTerm, ["email", "name"]);
 
 	const sortedUsers = useMemo(() => {
@@ -188,12 +193,7 @@ export function Users() {
 	const [bulkResultUsers, setBulkResultUsers] = useState<User[]>([]);
 
 	const activeMix: "all_active" | "all_inactive" | "mixed" = useMemo(() => {
-		const selected = selection.selectedItems;
-		if (selected.length === 0) return "all_active";
-		const anyActive = selected.some((u) => u.is_active);
-		const anyInactive = selected.some((u) => !u.is_active);
-		if (anyActive && anyInactive) return "mixed";
-		return anyActive ? "all_active" : "all_inactive";
+		return activeSelectionMix(selection.selectedItems);
 	}, [selection.selectedItems]);
 
 	const handlePartialFailure = (
@@ -444,7 +444,7 @@ export function Users() {
 						</DataTableHeader>
 						<DataTableBody>
 							{sortedUsers.map((user) => {
-								const orgInfo = resolveOrgInfo(user.organization_id);
+								const orgInfo = getOrgInfo(organizations, user.organization_id);
 								return (
 									<DataTableRow
 										key={user.id}

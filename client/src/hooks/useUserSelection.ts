@@ -29,6 +29,47 @@ export interface UserSelection<T extends SelectableItem> {
 	selectedItems: T[];
 }
 
+function pruneToVisible(selected: Set<string>, visibleIdSet: Set<string>) {
+	const out = new Set<string>();
+	for (const id of selected) {
+		if (visibleIdSet.has(id)) out.add(id);
+	}
+	return out;
+}
+
+function applyRangeSelection(
+	next: Set<string>,
+	visibleIds: string[],
+	disabledSet: Set<string>,
+	from: number,
+	to: number,
+	willSelect: boolean,
+) {
+	for (let i = from; i <= to; i++) {
+		const rid = visibleIds[i];
+		if (disabledSet.has(rid)) continue;
+		if (willSelect) next.add(rid);
+		else next.delete(rid);
+	}
+}
+
+function visibleRange(
+	visibleIds: string[],
+	lastId: string | null,
+	currentId: string,
+): [number, number] | null {
+	if (!lastId) return null;
+	const lastIdx = visibleIds.indexOf(lastId);
+	const curIdx = visibleIds.indexOf(currentId);
+	if (lastIdx === -1 || curIdx === -1) return null;
+	return lastIdx <= curIdx ? [lastIdx, curIdx] : [curIdx, lastIdx];
+}
+
+function toggleOne(next: Set<string>, id: string) {
+	if (next.has(id)) next.delete(id);
+	else next.add(id);
+}
+
 /**
  * Selection state for tabular UIs. Keeps a `Set<string>` and prunes it when the
  * underlying list changes (e.g. filter narrows). Re-selection on filter reversion
@@ -61,11 +102,7 @@ export function useUserSelection<T extends SelectableItem>(
 	// They never resurface because every mutation (toggle, toggleAllVisible, clear)
 	// derives its next state from this pruned set rather than rawSelected.
 	const selected = useMemo(() => {
-		const out = new Set<string>();
-		for (const id of rawSelected) {
-			if (visibleIdSet.has(id)) out.add(id);
-		}
-		return out;
+		return pruneToVisible(rawSelected, visibleIdSet);
 	}, [rawSelected, visibleIdSet]);
 
 	const isSelected = useCallback((id: string) => selected.has(id), [selected]);
@@ -75,29 +112,16 @@ export function useUserSelection<T extends SelectableItem>(
 			if (disabledSet.has(id)) return;
 			setRawSelected((prev) => {
 				// Build "next" from the pruned view so stale ids never bleed back in.
-				const next = new Set<string>();
-				for (const sid of prev) {
-					if (visibleIdSet.has(sid)) next.add(sid);
-				}
+				const next = pruneToVisible(prev, visibleIdSet);
 				const willSelect = !next.has(id);
-				if (opts?.shiftKey && lastToggledRef.current) {
-					const lastIdx = visibleIds.indexOf(lastToggledRef.current);
-					const curIdx = visibleIds.indexOf(id);
-					if (lastIdx !== -1 && curIdx !== -1) {
-						const [from, to] =
-							lastIdx <= curIdx ? [lastIdx, curIdx] : [curIdx, lastIdx];
-						for (let i = from; i <= to; i++) {
-							const rid = visibleIds[i];
-							if (disabledSet.has(rid)) continue;
-							if (willSelect) next.add(rid);
-							else next.delete(rid);
-						}
-						lastToggledRef.current = id;
-						return next;
-					}
+				const range = opts?.shiftKey
+					? visibleRange(visibleIds, lastToggledRef.current, id)
+					: null;
+				if (range) {
+					applyRangeSelection(next, visibleIds, disabledSet, range[0], range[1], willSelect);
+				} else {
+					toggleOne(next, id);
 				}
-				if (next.has(id)) next.delete(id);
-				else next.add(id);
 				lastToggledRef.current = id;
 				return next;
 			});
@@ -107,10 +131,7 @@ export function useUserSelection<T extends SelectableItem>(
 
 	const toggleAllVisible = useCallback(() => {
 		setRawSelected((prev) => {
-			const next = new Set<string>();
-			for (const sid of prev) {
-				if (visibleIdSet.has(sid)) next.add(sid);
-			}
+			const next = pruneToVisible(prev, visibleIdSet);
 			const allSelected = selectableVisibleIds.every((id) => next.has(id));
 			if (allSelected) {
 				for (const id of selectableVisibleIds) next.delete(id);
