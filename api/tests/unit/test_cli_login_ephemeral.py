@@ -64,25 +64,15 @@ class TestPasswordLoginFlagParsing:
 
 
 class TestPasswordLoginSuccess:
-    def test_writes_url_only_to_env_and_credentials_to_backend(
+    def test_writes_three_vars_to_env_and_warning_to_stderr(
         self, capsys, monkeypatch, tmp_path,
     ):
-        from bifrost import credentials as creds_mod
-
         stub = _stub_post({
             "access_token": "at_value",
             "refresh_token": "rt_value",
             "expires_in": 1800,
         })
         monkeypatch.setattr("httpx.AsyncClient", stub)
-        monkeypatch.setattr(
-            creds_mod,
-            "get_credentials_path",
-            lambda: tmp_path / "credentials.json",
-        )
-        creds_mod._reset_persistent_backend_for_tests()
-        monkeypatch.setattr(creds_mod, "_select_persistent_backend", creds_mod.JsonBackend)
-        creds_mod._reset_persistent_backend_for_tests()
         monkeypatch.chdir(tmp_path)
 
         rc = cli.handle_login([
@@ -94,21 +84,17 @@ class TestPasswordLoginSuccess:
 
         env_text = (tmp_path / ".env").read_text()
         assert "BIFROST_API_URL=http://localhost:38421" in env_text
-        assert "BIFROST_ACCESS_TOKEN" not in env_text
-        assert "BIFROST_REFRESH_TOKEN" not in env_text
+        assert "BIFROST_ACCESS_TOKEN=at_value" in env_text
+        assert "BIFROST_REFRESH_TOKEN=rt_value" in env_text
 
-        saved = creds_mod.get_credentials("http://localhost:38421")
-        assert saved is not None
-        assert saved["access_token"] == "at_value"
-        assert saved["refresh_token"] == "rt_value"
-
-        # Warning to stderr
         captured = capsys.readouterr()
+        assert "BIFROST_ACCESS_TOKEN=" not in captured.out
+        assert "BIFROST_REFRESH_TOKEN=" not in captured.out
         assert "MFA" in captured.err
         assert "ephemeral" in captured.err.lower()
 
-    def test_does_not_write_tokens_to_cwd_env(self, capsys, monkeypatch, tmp_path):
-        """Password-grant tokens must not be stored in a project directory."""
+    def test_does_not_write_to_keychain(self, capsys, monkeypatch, tmp_path):
+        """Password-grant must not touch the persistent (keychain/JSON) store."""
         from bifrost import credentials as creds_mod
 
         stub = _stub_post({
@@ -132,10 +118,8 @@ class TestPasswordLoginSuccess:
             "--url", "http://localhost:38421",
         ])
 
-        env_text = (tmp_path / ".env").read_text()
-        assert "BIFROST_API_URL=http://localhost:38421" in env_text
-        assert "BIFROST_ACCESS_TOKEN" not in env_text
-        assert "BIFROST_REFRESH_TOKEN" not in env_text
+        assert not (tmp_path / "credentials.json").exists()
+        assert (tmp_path / ".env").exists()
 
 
 class TestPasswordLoginMfaRefusal:
@@ -255,6 +239,28 @@ class TestBrowserLoginWritesEnv:
         gi = (tmp_path / ".gitignore").read_text()
         assert gi.count(".env") == 1
 
+    def test_browser_login_removes_stale_password_grant_tokens(self, monkeypatch, tmp_path):
+        async def fake_login(api_url=None, auto_open=True):
+            return True
+
+        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            "OTHER_VAR=keep-me\n"
+            "BIFROST_API_URL=https://old.example.com\n"
+            "BIFROST_ACCESS_TOKEN=stale-at\n"
+            "BIFROST_REFRESH_TOKEN=stale-rt\n"
+        )
+
+        rc = cli.handle_login(["--url", "https://prod.example.com"])
+
+        assert rc == 0
+        env_text = (tmp_path / ".env").read_text()
+        assert "OTHER_VAR=keep-me" in env_text
+        assert "BIFROST_API_URL=https://prod.example.com" in env_text
+        assert "BIFROST_ACCESS_TOKEN=" not in env_text
+        assert "BIFROST_REFRESH_TOKEN=" not in env_text
+
     def test_does_not_write_env_when_browser_login_fails(self, monkeypatch, tmp_path):
         async def fake_login(api_url=None, auto_open=True):
             return False
@@ -320,6 +326,38 @@ class TestLogoutClearsKeychainAndPromptsEnv:
         assert "OTHER_VAR=keep-me" in env_text
         assert "BIFROST_API_URL=" not in env_text
 
+    def test_logout_yes_removes_password_grant_token_lines(self, monkeypatch, tmp_path):
+        from bifrost import credentials as creds_mod
+        monkeypatch.setattr(
+            creds_mod,
+            "get_credentials_path",
+            lambda: tmp_path / "credentials.json",
+        )
+        creds_mod._reset_persistent_backend_for_tests()
+        monkeypatch.setattr(creds_mod, "_select_persistent_backend", creds_mod.JsonBackend)
+        creds_mod._reset_persistent_backend_for_tests()
+        monkeypatch.delenv("BIFROST_API_URL", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        creds_mod.save_credentials("https://prod.example.com", "at", "rt", "2099-01-01T00:00:00+00:00")
+        (tmp_path / ".env").write_text(
+            "OTHER_VAR=keep-me\n"
+            "BIFROST_API_URL=https://prod.example.com\n"
+            "BIFROST_ACCESS_TOKEN=secret-at\n"
+            "BIFROST_REFRESH_TOKEN=secret-rt\n"
+        )
+
+        rc = cli.handle_logout([
+            "--url", "https://prod.example.com",
+            "--yes",
+        ])
+        assert rc == 0
+        env_text = (tmp_path / ".env").read_text()
+        assert "OTHER_VAR=keep-me" in env_text
+        assert "BIFROST_API_URL=" not in env_text
+        assert "BIFROST_ACCESS_TOKEN=" not in env_text
+        assert "BIFROST_REFRESH_TOKEN=" not in env_text
+
     def test_logout_no_prompt_leaves_env_alone(self, monkeypatch, tmp_path):
         from bifrost import credentials as creds_mod
         monkeypatch.setattr(
@@ -342,6 +380,36 @@ class TestLogoutClearsKeychainAndPromptsEnv:
         ])
         assert rc == 0
         assert (tmp_path / ".env").read_text() == "BIFROST_API_URL=https://prod.example.com\n"
+
+    def test_logout_no_prompt_leaves_dotenv_only_session_alone(self, monkeypatch, tmp_path):
+        """Password-grant sessions live only in CWD .env — logout must honor --no-prompt."""
+        from bifrost import credentials as creds_mod
+        monkeypatch.setattr(
+            creds_mod,
+            "get_credentials_path",
+            lambda: tmp_path / "credentials.json",
+        )
+        creds_mod._reset_persistent_backend_for_tests()
+        monkeypatch.setattr(creds_mod, "_select_persistent_backend", creds_mod.JsonBackend)
+        creds_mod._reset_persistent_backend_for_tests()
+        monkeypatch.delenv("BIFROST_API_URL", raising=False)
+        monkeypatch.delenv("BIFROST_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("BIFROST_REFRESH_TOKEN", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        env_before = (
+            "BIFROST_API_URL=https://prod.example.com\n"
+            "BIFROST_ACCESS_TOKEN=secret-at\n"
+            "BIFROST_REFRESH_TOKEN=secret-rt\n"
+        )
+        (tmp_path / ".env").write_text(env_before)
+
+        rc = cli.handle_logout([
+            "--url", "https://prod.example.com",
+            "--no-prompt",
+        ])
+        assert rc == 0
+        assert (tmp_path / ".env").read_text() == env_before
 
 
 class TestAuthList:

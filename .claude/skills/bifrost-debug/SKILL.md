@@ -54,35 +54,35 @@ The user picks the mode by setting (or not setting) `NETBIRD_SETUP_KEY` in `~/.c
 
 ## Auto-connect the CLI in this folder
 
-After `./debug.sh up`, wire the per-folder CLI to target this stack. Tokens for multiple instances coexist in the OS keychain, keyed by URL — the user's prod token (if any) is not affected.
+After `./debug.sh up`, wire the per-folder CLI to target this stack without user involvement. Debug stacks have MFA off and print the seed email/password in `./debug.sh status`, so use password-grant login by default. This writes only the current worktree's `.env`; the user's prod keychain token (if any) is not affected.
 
-1. Run the standard browser login against the debug URL:
+1. Run password-grant login against the debug URL:
 
    ```bash
-   bifrost login --url <URL_FROM_DEBUG_STATUS>
+   bifrost login --url <URL_FROM_DEBUG_STATUS> --email <EMAIL_FROM_DEBUG_STATUS> --password <PASSWORD_FROM_DEBUG_STATUS>
    ```
 
-   This opens the device-code page, the user accepts, and the token lands in the keychain (or the JSON fallback on headless Linux). On success, `bifrost login` also writes `BIFROST_API_URL=<URL>` to `.env` in the current directory and adds `.env` to `.gitignore` if it isn't already.
+   This calls `/auth/login`, refuses if MFA is enabled, and writes `BIFROST_API_URL`, `BIFROST_ACCESS_TOKEN`, and `BIFROST_REFRESH_TOKEN` to `.env` in the current directory. It also adds `.env` to `.gitignore` if it isn't already.
 
-2. Tell the user: *"Stack up at <URL>. CLI in this folder is now connected — token is in your keychain alongside any other instances you've logged into."*
+2. Tell the user: *"Stack up at <URL>. CLI in this folder is now connected with an ephemeral dev-stack session; no browser login needed."*
 
 On `./debug.sh down`, run:
 
 ```bash
-bifrost logout --url <URL>
+bifrost logout --url <URL> --yes
 ```
 
-That removes the keychain entry and prompts to remove the matching `BIFROST_API_URL` line from `.env`.
+That removes any matching persistent entry and the matching `BIFROST_API_URL` line from `.env`. If password-grant login wrote token lines, it also removes `BIFROST_ACCESS_TOKEN` and `BIFROST_REFRESH_TOKEN`; if `.env` only contained Bifrost debug credentials, it is deleted.
 
-### When to use password-grant instead
+### When to use browser login instead
 
-If the user wants tokens that *don't* persist anywhere — POC folders, throwaway sessions — use the password-grant path:
+For a long-lived prod or staging instance with MFA enabled, use the browser device-code path:
 
 ```bash
-bifrost login --url <URL> --email <EMAIL_FROM_DEBUG_STATUS> --password <PASSWORD_FROM_DEBUG_STATUS>
+bifrost login --url <URL>
 ```
 
-This prints three `BIFROST_*` lines to stdout and writes nothing to disk. The caller can `eval` them or pipe them into `.env`. Only works on instances with `BIFROST_MFA_ENABLED=false`. Do not suggest this as the default — it exists for the "leave no trace" use case.
+That opens the device-code page, the user accepts, and the token lands in the keychain (or JSON fallback on headless Linux). Do not use this as the default for local debug stacks; it needlessly blocks unattended agents.
 
 ## Lifecycle: who tears down what
 

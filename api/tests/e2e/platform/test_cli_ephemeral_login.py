@@ -34,8 +34,8 @@ def _bifrost_cli() -> list[str]:
     return [sys.executable, "-m", "bifrost"]
 
 
-def test_ephemeral_login_round_trip(e2e_api_url):
-    """Full path: password-grant login, parse env-style output, use tokens via env vars in a child `bifrost api` call.
+def test_ephemeral_login_round_trip(e2e_api_url, tmp_path):
+    """Full path: password-grant login writes .env, then those tokens authenticate `bifrost api`.
 
     Skips if the test stack has global MFA enabled (the default), since
     the password path by design refuses on instances with MFA on. Run with
@@ -62,6 +62,7 @@ def test_ephemeral_login_round_trip(e2e_api_url):
             "--password", password,
             "--url", e2e_api_url,
         ],
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         timeout=30,
@@ -70,9 +71,14 @@ def test_ephemeral_login_round_trip(e2e_api_url):
         f"login failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
 
-    # Step 2: parse the three BIFROST_* lines.
+    assert "BIFROST_ACCESS_TOKEN=" not in result.stdout
+    assert "BIFROST_REFRESH_TOKEN=" not in result.stdout
+
+    # Step 2: parse the three BIFROST_* lines from CWD .env.
+    env_path = tmp_path / ".env"
+    assert env_path.exists(), f"login did not write {env_path}"
     env_lines = {}
-    for line in result.stdout.splitlines():
+    for line in env_path.read_text().splitlines():
         if "=" in line and line.startswith("BIFROST_"):
             k, _, v = line.partition("=")
             env_lines[k] = v
@@ -88,6 +94,7 @@ def test_ephemeral_login_round_trip(e2e_api_url):
     child_env.update(env_lines)
     result2 = subprocess.run(
         _bifrost_cli() + ["api", "GET", "/api/integrations"],
+        cwd=tmp_path,
         env=child_env,
         capture_output=True,
         text=True,

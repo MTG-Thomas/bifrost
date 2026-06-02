@@ -5,10 +5,12 @@ Multi-record credential storage for the CLI. Supports per-URL credentials
 across multiple Bifrost instances simultaneously, with three backends:
 
 - EnvBackend (read-only): BIFROST_API_URL + BIFROST_ACCESS_TOKEN + BIFROST_REFRESH_TOKEN
+- CWD .env (read-only): password-grant ephemeral sessions for this directory
 - KeyringBackend: OS-native credential storage via the `keyring` library
 - JsonBackend: ~/.bifrost/credentials.json as a dict-of-URLs
 
-Resolution order: env vars → persistent (keychain or JSON) → legacy single-record JSON.
+Resolution order for credentials: env vars → CWD .env → persistent
+(keychain or JSON) → legacy single-record JSON.
 """
 
 import json
@@ -325,14 +327,59 @@ def _reset_persistent_backend_for_tests() -> None:
 # Public functions
 # --------------------------------------------------------------------------- #
 
-def _resolve_url(api_url: str | None) -> str | None:
+def _read_cwd_dotenv_values() -> dict[str, str | None]:
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        return {}
+    path = Path.cwd() / ".env"
+    if not path.exists():
+        return {}
+    return dotenv_values(path) or {}
+
+
+def _resolve_url_from_cwd_dotenv() -> str | None:
+    url = (_read_cwd_dotenv_values().get("BIFROST_API_URL") or "").rstrip("/")
+    return url or None
+
+
+def _get_cwd_dotenv_credentials(api_url: str) -> Credentials | None:
+    values = _read_cwd_dotenv_values()
+    env_url = (values.get("BIFROST_API_URL") or "").rstrip("/")
+    if not env_url or env_url != api_url.rstrip("/"):
+        return None
+    access = values.get("BIFROST_ACCESS_TOKEN") or ""
+    refresh = values.get("BIFROST_REFRESH_TOKEN") or ""
+    if not access or not refresh:
+        return None
+    return Credentials(
+        api_url=env_url,
+        access_token=access,
+        refresh_token=refresh,
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
+
+
+def credentials_are_ephemeral(api_url: str) -> bool:
+    """Return True when credentials for api_url come from env vars or CWD .env only."""
+    url = api_url.rstrip("/")
+    if EnvBackend().get(url) is not None:
+        return True
+    if _get_cwd_dotenv_credentials(url) is not None:
+        return True
+    return False
+
+
+def _resolve_url(api_url: str | None, *, include_cwd_dotenv: bool = False) -> str | None:
     """
     Resolve which URL the no-arg credentials calls should target.
 
     Order:
       1. The argument (if given).
       2. BIFROST_API_URL env var.
-      3. The first URL in the persistent backend (back-compat for users
+      3. BIFROST_API_URL in CWD .env when explicitly requested
+         (password-grant ephemeral sessions).
+      4. The first URL in the persistent backend (back-compat for users
          who only have one set; ordering is stable per backend but not
          guaranteed across backends).
     """
@@ -341,6 +388,10 @@ def _resolve_url(api_url: str | None) -> str | None:
     env_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
     if env_url:
         return env_url
+    if include_cwd_dotenv:
+        cwd_url = _resolve_url_from_cwd_dotenv()
+        if cwd_url:
+            return cwd_url
     urls = get_persistent_backend().list_urls()
     if urls:
         return urls[0]
@@ -405,8 +456,9 @@ def get_credentials(api_url: str | None = None) -> dict | None:
 
     Resolution order:
       1. Env vars (EnvBackend) — for ephemeral sessions.
-      2. Persistent backend (keychain or JSON) — for long-lived sessions.
-      3. Legacy single-record JSON — lazily migrated.
+      2. CWD .env file — for password-grant ephemeral sessions.
+      3. Persistent backend (keychain or JSON) — for long-lived sessions.
+      4. Legacy single-record JSON — lazily migrated.
 
     If api_url is None, the URL is resolved via _resolve_url(). When even
     that fails, we fall through to the legacy file as a last resort to
@@ -416,7 +468,7 @@ def get_credentials(api_url: str | None = None) -> dict | None:
     or None. Returns dict (not Credentials) for back-compat with existing
     callers in client.py / cli.py.
     """
-    resolved = _resolve_url(api_url)
+    resolved = _resolve_url(api_url, include_cwd_dotenv=True)
 
     if resolved is None:
         # No URL anywhere; try legacy file as last resort to learn one.
@@ -430,12 +482,17 @@ def get_credentials(api_url: str | None = None) -> dict | None:
     if env_creds is not None:
         return env_creds.to_dict()
 
-    # 2. Persistent backend
+    # 2. CWD .env (password-grant ephemeral sessions)
+    dotenv_creds = _get_cwd_dotenv_credentials(resolved)
+    if dotenv_creds is not None:
+        return dotenv_creds.to_dict()
+
+    # 3. Persistent backend
     creds = get_persistent_backend().get(resolved)
     if creds is not None:
         return creds.to_dict()
 
-    # 3. Legacy fallback (and migrate if found)
+    # 4. Legacy fallback (and migrate if found)
     legacy = _try_migrate_legacy()
     if legacy is not None and legacy.api_url.rstrip("/") == resolved:
         return legacy.to_dict()
@@ -467,7 +524,7 @@ def clear_credentials(api_url: str | None = None) -> None:
     targets the same record `get_credentials()` would have returned, even
     when multiple URLs are present.
     """
-    target = _resolve_url(api_url)
+    target = _resolve_url(api_url, include_cwd_dotenv=True)
     if target is None:
         return
     get_persistent_backend().clear(target)
