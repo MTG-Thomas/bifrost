@@ -10,6 +10,12 @@ All CLI commands accept `--json` for machine output. All commands resolve UUID /
 
 ---
 
+## Authentication
+
+`bifrost login` defaults to native browser OAuth: the CLI binds a localhost callback, opens the Bifrost browser session, and exchanges a one-time PKCE-protected code for CLI tokens. Provide the target API with `--url` or `BIFROST_API_URL`; there is no localhost fallback for production login. Use `bifrost login --device-code` only for the legacy device-code fallback, and use `--email/--password` only for isolated dev stacks with MFA disabled.
+
+---
+
 ## Organizations
 
 Tenant records that scope users, configs, and most other entities.

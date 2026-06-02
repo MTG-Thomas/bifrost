@@ -41,6 +41,8 @@ CSRF_EXEMPT_PATHS = {
     "/auth/setup/passkey/verify",  # First-time passkey setup (no auth)
     "/auth/device/code",  # Device flow: request code (no auth)
     "/auth/device/token",  # Device flow: exchange code for token (no auth)
+    "/auth/cli/start",  # Native CLI OAuth: start localhost callback flow (no auth)
+    "/auth/cli/token",  # Native CLI OAuth: exchange one-time code + PKCE verifier
     "/health",
     "/ready",
     "/",
