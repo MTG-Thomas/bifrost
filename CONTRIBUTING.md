@@ -97,9 +97,22 @@ Call it out in the PR description so the reviewer doesn't have to rediscover it.
 
 ## Reviewer budget
 
-See [Reviewer Budget](./docs/dev/delivery-lanes.md#reviewer-budget) and
-[Codex-Authored PRs](./docs/dev/delivery-lanes.md#codex-authored-prs) in the
-delivery lanes doc.
+Use code review to reduce risk, not to collect redundant opinions. Most PRs get
+one accountable reviewer. Add a second reviewer when the change crosses an
+ownership boundary or touches a sensitive path. Use AI/code-review bots when the
+diff is broad, subtle, security-sensitive, or when the author wants another pass.
+
+Skip extra reviewers for small docs, narrow tests, obvious bug fixes, and
+low-risk chores already covered by focused checks. If reviewers disagree, the
+author or maintainer should resolve the decision explicitly instead of waiting
+for every reviewer to converge.
+
+For Codex-authored PRs, automated review is part of the normal authoring loop:
+human prompt, Codex implementation, automated review, Codex stewardship. Keep
+that loop moving. One primary automated reviewer is the default; add another
+only for sensitive paths, broad diffs, unfamiliar subsystems, or targeted second
+opinions. Codex should fix concrete defects and record why stale, duplicate,
+style-only, or scope-expanding suggestions were not followed.
 
 ## How to pick up work
 

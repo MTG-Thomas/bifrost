@@ -86,11 +86,19 @@ Match verification to the change (see `CLAUDE.md` for detail):
 Before calling significant platform work complete, run the relevant checks from `CLAUDE.md` and report anything skipped with the reason.
 
 Use [docs/dev/delivery-lanes.md](docs/dev/delivery-lanes.md) to choose the
-lightest verification and review path that protects the actual risk, including
-[reviewer budget](docs/dev/delivery-lanes.md#reviewer-budget) and
-[Codex-authored PR stewardship](docs/dev/delivery-lanes.md#codex-authored-prs).
-Do not run the full pre-completion matrix for tiny docs, narrow tests, or
-throwaway spikes unless the task specifically depends on stack behavior.
+lightest verification and review path that protects the actual risk. Do not run
+the full pre-completion matrix for tiny docs, narrow tests, or throwaway spikes
+unless the task specifically depends on stack behavior.
+
+Default PR review to one accountable reviewer. Add extra human or AI reviewers
+only for sensitive paths, broad ownership boundaries, unfamiliar code, or
+explicit user request; stacked generic reviewers are delivery drag, not maturity.
+
+For Codex-authored PRs, treat automated review as a velocity-preserving safety
+net. Address concrete correctness, security, auth, execution, deployment, and
+coverage findings; summarize or dismiss duplicated, stale, style-only, or
+scope-expanding bot feedback. Do one focused stewardship pass by default, then a
+second pass only if real defects remain or the user asks.
 
 ## Security And Sensitive Paths
 
