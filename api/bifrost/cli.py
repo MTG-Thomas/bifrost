@@ -26,6 +26,7 @@ import time
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -389,8 +390,13 @@ def logout_flow(api_url: str | None = None) -> tuple[bool, str | None]:
     """
     creds = credentials.get_credentials(api_url)
     if creds:
-        target_url = creds.get("api_url") or api_url
+        target_url = (creds.get("api_url") or api_url or "").rstrip("/")
+        had_persistent = credentials.get_persistent_backend().get(target_url) is not None
+        had_dotenv_tokens = credentials._get_cwd_dotenv_credentials(target_url) is not None
         credentials.clear_credentials(target_url)
+        if had_dotenv_tokens and not had_persistent:
+            _remove_env_url_line(target_url)
+            _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"})
         print(f"Logged out from {target_url}.")
         return True, target_url
     print("No active session found.")
@@ -468,38 +474,8 @@ def _write_env_url(api_url: str) -> None:
             pass
 
 
-def _remove_env_url_line(api_url: str) -> bool:
-    """
-    Remove a `BIFROST_API_URL=<api_url>` line from CWD's .env, if present.
-
-    Returns True if a line was removed.
-    """
-    env_path = pathlib.Path.cwd() / ".env"
-    lines = _read_env_file(env_path)
-    if not lines:
-        return False
-    target = api_url.rstrip("/")
-    kept: list[str] = []
-    removed = False
-    for line in lines:
-        stripped = line.lstrip()
-        if stripped.startswith("BIFROST_API_URL=") or stripped.startswith("export BIFROST_API_URL="):
-            value = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/")
-            if value == target:
-                removed = True
-                continue
-        kept.append(line)
-    if not removed:
-        return False
-    if all(not line.strip() for line in kept):
-        env_path.unlink()
-    else:
-        env_path.write_text("".join(kept))
-    return True
-
-
-def _remove_env_keys(keys: set[str]) -> bool:
-    """Remove KEY= or export KEY= lines from CWD's .env."""
+def _rewrite_env_file(should_remove_line: Callable[[str], bool]) -> bool:
+    """Remove matching lines from CWD's .env. Returns True if any line was removed."""
     env_path = pathlib.Path.cwd() / ".env"
     lines = _read_env_file(env_path)
     if not lines:
@@ -507,8 +483,7 @@ def _remove_env_keys(keys: set[str]) -> bool:
     kept: list[str] = []
     removed = False
     for line in lines:
-        stripped = line.lstrip()
-        if any(stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}=") for key in keys):
+        if should_remove_line(line):
             removed = True
             continue
         kept.append(line)
@@ -519,6 +494,37 @@ def _remove_env_keys(keys: set[str]) -> bool:
     else:
         env_path.write_text("".join(kept))
     return True
+
+
+def _remove_env_url_line(api_url: str) -> bool:
+    """
+    Remove a `BIFROST_API_URL=<api_url>` line from CWD's .env, if present.
+
+    Returns True if a line was removed.
+    """
+    target = api_url.rstrip("/")
+
+    def should_remove(line: str) -> bool:
+        stripped = line.lstrip()
+        if stripped.startswith("BIFROST_API_URL=") or stripped.startswith("export BIFROST_API_URL="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/")
+            return value == target
+        return False
+
+    return _rewrite_env_file(should_remove)
+
+
+def _remove_env_keys(keys: set[str]) -> bool:
+    """Remove KEY= or export KEY= lines from CWD's .env."""
+
+    def should_remove(line: str) -> bool:
+        stripped = line.lstrip()
+        return any(
+            stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}=")
+            for key in keys
+        )
+
+    return _rewrite_env_file(should_remove)
 
 
 def main(args: list[str] | None = None) -> int:
