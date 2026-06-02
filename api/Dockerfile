@@ -73,11 +73,11 @@ COPY api/scripts/ /app/scripts/
 COPY api/src/services/app_compiler/package.json api/src/services/app_compiler/package-lock.json* /app/src/services/app_compiler/
 COPY api/src/services/app_compiler/compile.js /app/src/services/app_compiler/
 COPY api/src/services/app_compiler/tailwind.js /app/src/services/app_compiler/
-RUN cd /app/src/services/app_compiler && npm install --production
+RUN cd /app/src/services/app_compiler && npm ci --omit=dev
 
 # Install app bundler Node.js dependencies (esbuild)
 COPY api/src/services/app_bundler/package.json api/src/services/app_bundler/package-lock.json* /app/src/services/app_bundler/
-RUN cd /app/src/services/app_bundler && npm install --production
+RUN cd /app/src/services/app_bundler && npm ci --omit=dev
 
 # Create non-root user
 RUN useradd -m -u 1000 bifrost && \
