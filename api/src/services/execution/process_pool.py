@@ -1597,6 +1597,7 @@ class ProcessPoolManager:
             "processes": processes,
             "active_process_count": len(self.processes),
             "configured_capacity": self.max_workers,
+            "max_workers": max_workers,
             "pool_size": len(self.processes),
             "available_slots": available_slots,
             "idle_count": idle_count,
