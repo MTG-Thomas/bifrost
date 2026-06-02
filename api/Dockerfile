@@ -91,8 +91,9 @@ RUN mkdir -p /workspace /tmp/bifrost && \
 COPY api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Don't switch to bifrost here - entrypoint handles user switching
-# This allows the entrypoint to fix volume permissions when needed
+# Compose-based dev/test services override this to root when mounted volume
+# ownership repair is required; production defaults to the non-root user.
+USER bifrost
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Environment variables

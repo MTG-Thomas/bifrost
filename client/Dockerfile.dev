@@ -11,6 +11,8 @@ WORKDIR /app
 # Copy package files and install dependencies
 COPY package*.json ./
 RUN npm ci
+RUN chown -R node:node /app
+USER node
 
 # Don't copy source code - it comes from volume mounts in docker-compose.dev.yml
 # This prevents any risk of stale built code overwriting live source

@@ -516,7 +516,9 @@ class FileOperationsService:
             try:
                 await self._diagnostics.clear_diagnostic_notification(path)
             except Exception as e:
-                logger.warning(f"Failed to clear bundler diagnostic for {path}: {e}")
+                logger.warning(
+                    f"Failed to clear bundler diagnostic for {log_safe(path)}: {log_safe(e)}"
+                )
             logger.info(
                 f"App bundle rebuilt: app={app_id} path={log_safe(relative_path)} "
                 f"entry={log_safe(m.entry)} duration_ms={m.duration_ms}"
