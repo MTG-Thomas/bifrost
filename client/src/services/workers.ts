@@ -57,6 +57,8 @@ export interface PoolDetail {
 	status: string | null;
 	started_at: string | null;
 	last_heartbeat: string | null;
+	configured_capacity?: number | null;
+	max_workers?: number | null;
 	processes: ProcessInfo[];
 	requirements_installed: number | null;
 	requirements_total: number | null;

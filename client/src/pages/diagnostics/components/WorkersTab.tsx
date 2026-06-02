@@ -3,7 +3,7 @@ import { RefreshCw, Loader2, WifiOff, Server } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { usePools, useQueueStatus, type ProcessInfo, type PoolSummary } from "@/services/workers";
+import { usePools, useQueueStatus, type ProcessInfo, type PoolDetail, type PoolSummary } from "@/services/workers";
 import { getErrorMessage } from "@/lib/api-error";
 import { QueueBadge } from "./QueueBadge";
 import { MemoryChart } from "./MemoryChart";
@@ -63,8 +63,12 @@ export function WorkersTab() {
         let totalBusy = 0;
         for (const pool of pools) {
             if ("processes" in pool && Array.isArray(pool.processes)) {
-                totalForks += pool.processes.length;
-                totalCapacity += pool.processes.length;
+                const detail = pool as PoolDetail;
+                const active = pool.processes.length;
+                const capacity =
+                    detail.configured_capacity ?? detail.max_workers ?? active;
+                totalForks += active;
+                totalCapacity += capacity;
                 totalBusy += pool.processes.filter(
                     (p: ProcessInfo) => p.state === "busy"
                 ).length;

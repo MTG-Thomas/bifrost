@@ -82,6 +82,8 @@ export function useWorkerWebSocket(): UseWorkerWebSocketReturn {
 						status: message.status || null,
 						started_at: message.started_at || null,
 						last_heartbeat: message.timestamp || null,
+						configured_capacity: message.configured_capacity ?? null,
+						max_workers: message.max_workers ?? null,
 						processes,
 						requirements_installed: message.requirements_installed ?? null,
 						requirements_total: message.requirements_total ?? null,
