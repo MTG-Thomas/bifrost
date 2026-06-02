@@ -24,9 +24,10 @@ import sys
 import textwrap
 import time
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from collections.abc import Callable
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -48,17 +49,26 @@ from bifrost.platform_names import PLATFORM_EXPORT_NAMES as _PLATFORM_EXPORT_NAM
 
 logger = logging.getLogger(__name__)
 
+GITIGNORE_FILENAME = ".gitignore"
+
 # Default ignore patterns applied even without a .gitignore file.
-# .bifrost/ is always force-included via negation so push/pull/sync round-trip
-# the manifest. The watch handler layers an additional .bifrost/ exclusion on
-# top of these for its own observer (see _WatchChangeHandler).
+# .bifrost/ is import/export-only and is never part of push/pull/sync/watch.
 _DEFAULT_IGNORE_PATTERNS = [
     ".git/",
     "__pycache__/",
     ".ruff_cache/",
+    ".mypy_cache/",
+    ".pytest_cache/",
+    ".pyright/",
     "node_modules/",
+    ".bifrost/",
     ".venv/",
     "venv/",
+    ".tox/",
+    "build/",
+    "dist/",
+    "coverage/",
+    ".coverage",
     ".DS_Store",
     "*.pyc",
     # Editor atomic-write turds (e.g. foo.tsx.tmp.12345.1776000000000).
@@ -73,9 +83,15 @@ _DEFAULT_IGNORE_PATTERNS = [
     ".#*",
 ]
 
-_FORCE_INCLUDE_PATTERNS = [
-    "!.bifrost/",
-]
+
+def _safe_workspace_relative_path(value: str) -> str:
+    normalized = value.replace("\\", "/")
+    rel = PurePosixPath(normalized)
+    if rel.is_absolute() or pathlib.Path(normalized).drive:
+        raise ValueError(f"unsafe server path: {value}")
+    if not rel.parts or any(part in ("", ".", "..") for part in rel.parts):
+        raise ValueError(f"unsafe server path: {value}")
+    return rel.as_posix()
 
 
 # ---------------------------------------------------------------------------
@@ -85,30 +101,22 @@ _FORCE_INCLUDE_PATTERNS = [
 
 def _normalize_line_endings(data: bytes) -> bytes:
     """Normalize CRLF to LF for text files. Binary files pass through unchanged."""
-    from shared.sync_content_hash import normalize_line_endings
-
-    return normalize_line_endings(data)
+    if b"\x00" in data[:8192]:
+        return data
+    return data.replace(b"\r\n", b"\n")
 
 
 def _hash_for_cache(raw_bytes: bytes) -> str:
     """md5 of post-normalization bytes — must match what the server stores.
 
-    Watch normalizes CRLF to LF before pushing, so object storage stores
-    normalized bytes for CLI-driven sync. Any hash we compare against server
-    content must be computed on the same normalized bytes.
+    Watch normalizes CRLF to LF before pushing, so S3 stores normalized bytes
+    and S3's ETag is md5 of those. Any hash we compare against a server ETag
+    must be computed on the same normalized bytes.
     """
-    from shared.sync_content_hash import compute_sync_content_hash
-
-    return compute_sync_content_hash(raw_bytes)
-
-
-def _server_sync_hash(server_info: dict[str, str]) -> str | None:
-    """Prefer API content_hash; fall back to legacy storage etag metadata."""
-    content_hash = server_info.get("content_hash")
-    if content_hash:
-        return content_hash
-    etag = server_info.get("etag")
-    return etag or None
+    return hashlib.md5(
+        _normalize_line_endings(raw_bytes),
+        usedforsecurity=False,
+    ).hexdigest()
 
 
 def _is_bifrost_path(path: str) -> bool:
@@ -116,11 +124,21 @@ def _is_bifrost_path(path: str) -> bool:
     return ".bifrost" in path.replace("\\", "/").split("/")
 
 
+def _workspace_root_for(local_root: pathlib.Path) -> pathlib.Path:
+    """Return the invocation root when ``local_root`` sits under cwd."""
+    try:
+        cwd = pathlib.Path.cwd().resolve()
+        local_root.resolve().relative_to(cwd)
+        return cwd
+    except (OSError, ValueError):
+        return local_root
+
+
 def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     """Build a gitignore-style file filter for the given directory.
 
-    Loads .gitignore if present, otherwise uses sensible defaults.
-    Always force-includes .bifrost/ regardless of ignore rules.
+    Loads cwd-root and local .gitignore files when applicable.
+    Excludes .bifrost/ because manifests are handled only by import/export.
     """
     import pathspec
 
@@ -128,12 +146,14 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     # never lists .git/ because git handles it implicitly, but we need it.
     lines = list(_DEFAULT_IGNORE_PATTERNS)
 
-    gitignore_path = local_root / ".gitignore"
-    if gitignore_path.is_file():
-        lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
+    workspace_root = _workspace_root_for(local_root)
+    workspace_gitignore = workspace_root / GITIGNORE_FILENAME
+    if workspace_gitignore.is_file():
+        lines.extend(workspace_gitignore.read_text(encoding="utf-8").splitlines())
 
-    # Always force-include .bifrost/
-    lines.extend(_FORCE_INCLUDE_PATTERNS)
+    gitignore_path = local_root / GITIGNORE_FILENAME
+    if gitignore_path != workspace_gitignore and gitignore_path.is_file():
+        lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
 
     return pathspec.PathSpec.from_lines("gitwildmatch", lines)
 
@@ -224,6 +244,10 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
         api_url = os.getenv("BIFROST_DEV_URL", "http://localhost:8000")
 
     api_url = api_url.rstrip("/")
+
+    # Surface keyring fallback here — login is the user's chance to fix it.
+    from bifrost.credentials import warn_if_keyring_fallback
+    warn_if_keyring_fallback()
 
     try:
         async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
@@ -448,7 +472,7 @@ def _write_env_url(api_url: str) -> None:
     print(f"Updated {env_path} with BIFROST_API_URL={api_url}")
 
     # gitignore .env if we're in a git repo and it isn't already ignored
-    gitignore = cwd / ".gitignore"
+    gitignore = cwd / GITIGNORE_FILENAME
     if gitignore.exists():
         try:
             existing = gitignore.read_text()
@@ -730,11 +754,9 @@ Browser (default): Device-code flow; tokens stored in OS keychain (with JSON
                    current directory so subsequent CLI commands target this
                    instance.
 Password: When --email and --password are passed, performs an ephemeral
-          password-grant login and writes BIFROST_API_URL +
-          BIFROST_ACCESS_TOKEN + BIFROST_REFRESH_TOKEN to .env in the
-          current directory. Subsequent CLI commands from this directory
-          pick the tokens up automatically. For isolated dev stacks only
-          — refuses if MFA is enabled on the instance.
+          password-grant login and stores tokens in the credential backend.
+          Only BIFROST_API_URL is written to .env. For isolated dev stacks
+          only — refuses if MFA is enabled on the instance.
 
 Options:
   --url, -u URL         API URL (default: BIFROST_API_URL or http://localhost:8000)
@@ -1001,7 +1023,7 @@ def _run_direct(
         if organization_id:
             try:
                 response = client._sync_http.get(
-                    "/api/cli/context",
+                    "/api/sdk/context",
                     params={"org_id": organization_id},
                 )
                 if response.status_code == 403:
@@ -1266,7 +1288,7 @@ async def _run_session_flow(
     print(f"Registering session with {len(workflow_infos)} workflow(s)...")
     try:
         response = await client.post(
-            "/api/cli/sessions",
+            "/api/sdk/sessions",
             json={
                 "session_id": session_id,
                 "file_path": file_path,
@@ -1305,14 +1327,14 @@ async def _run_session_flow(
         # Send heartbeat periodically
         if time.time() - last_heartbeat > heartbeat_interval:
             try:
-                await client.post(f"/api/cli/sessions/{session_id}/heartbeat")
+                await client.post(f"/api/sdk/sessions/{session_id}/heartbeat")
                 last_heartbeat = time.time()
             except Exception:
                 pass  # Ignore heartbeat failures
 
         # Poll for pending execution
         try:
-            response = await client.get(f"/api/cli/sessions/{session_id}/pending")
+            response = await client.get(f"/api/sdk/sessions/{session_id}/pending")
 
             if response.status_code == 204:
                 # No pending execution yet
@@ -1376,7 +1398,7 @@ async def _post_result(
     """Post execution result back to API."""
     try:
         await client.post(
-            f"/api/cli/sessions/{session_id}/executions/{execution_id}/result",
+            f"/api/sdk/sessions/{session_id}/executions/{execution_id}/result",
             json={
                 "status": status,
                 "result": result,
@@ -1623,9 +1645,6 @@ Examples:
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
         return 1
-    if not _ensure_workspace_marker(resolved):
-        _print_not_a_workspace_error("push")
-        return 1
 
     # Block push if a watch (or another sync/push) is already running in
     # this workspace — see handle_sync for rationale.
@@ -1699,9 +1718,6 @@ Examples:
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
         return 1
-    if not _ensure_workspace_marker(resolved):
-        _print_not_a_workspace_error("sync")
-        return 1
 
     # Block sync if a watch (or another sync) is already running in this
     # workspace — concurrent watch+sync would issue separate session_ids
@@ -1737,8 +1753,7 @@ def handle_watch(args: list[str]) -> int:
     """
     Handle 'bifrost watch' command.
 
-    Watches a Bifrost workspace for file changes and auto-pushes.
-    Requires the directory to contain a .bifrost/ directory (workspace root).
+    Watches a directory for file changes and auto-pushes.
 
     Usage:
       bifrost watch [path] [--mirror] [--validate] [--force]
@@ -1748,7 +1763,6 @@ def handle_watch(args: list[str]) -> int:
 Usage: bifrost watch [path] [options]
 
 Watch for file changes and auto-push to Bifrost platform.
-Must be run from a Bifrost workspace (directory containing .bifrost/).
 
 Arguments:
   path                  Local directory to watch (default: current directory)
@@ -1770,14 +1784,9 @@ Examples:
     if parsed is None:
         return 1
 
-    # Resolve path and verify .bifrost/ exists
     resolved = pathlib.Path(parsed.local_path).resolve()
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
-        return 1
-
-    if not _ensure_workspace_marker(resolved):
-        _print_not_a_workspace_error("watch")
         return 1
 
     # Acquire the per-workspace lock. Held for the lifetime of the watch
@@ -1887,9 +1896,6 @@ Examples:
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
         return 1
-    if not _ensure_workspace_marker(resolved):
-        _print_not_a_workspace_error("pull")
-        return 1
 
     # Block pull if a watch (or another sync/push/pull) is already running
     # in this workspace — see handle_sync for rationale.
@@ -1928,8 +1934,7 @@ def _detect_repo_prefix(path: pathlib.Path) -> str:
     yields ``apps/my-app``). The launch directory itself yields ``""``.
 
     Paths that don't sit under the cwd (unusual: an absolute path outside
-    the workspace) fall through to ``""`` — the caller is expected to have
-    already validated the path via ``_ensure_workspace_marker``.
+    the workspace) fall through to ``""``.
     """
     try:
         cwd = pathlib.Path.cwd().resolve()
@@ -1938,90 +1943,6 @@ def _detect_repo_prefix(path: pathlib.Path) -> str:
         return ""
     prefix = str(relative)
     return "" if prefix == "." else prefix
-
-
-_WORKSPACE_SENTINEL = ".workspace"
-
-
-def _is_workspace_bifrost_dir(d: pathlib.Path) -> bool:
-    """Distinguish a workspace ``.bifrost/`` from the CLI config ``~/.bifrost/``.
-
-    A workspace ``.bifrost/`` either contains manifest YAMLs (``tables.yaml``,
-    ``workflows.yaml``, etc., produced by sync/export) or the empty
-    ``.workspace`` sentinel file (created on first ``bifrost watch`` /
-    ``push`` / ``pull`` after the user confirms this is their workspace).
-
-    The CLI config directory at ``~/.bifrost/`` only contains
-    ``credentials.json`` and must NOT be treated as a workspace.
-    """
-    if not d.is_dir():
-        return False
-    try:
-        if (d / _WORKSPACE_SENTINEL).exists():
-            return True
-        return any(d.glob("*.yaml"))
-    except OSError:
-        return False
-
-
-def _find_bifrost_dir(local_root: pathlib.Path) -> pathlib.Path:
-    """Return the workspace ``.bifrost/`` for ``local_root``.
-
-    The launch directory IS the workspace root — no walk-up. Either:
-    1. ``local_root`` itself IS a workspace ``.bifrost/`` (e.g., user ran
-       ``bifrost watch .bifrost``); return it.
-    2. ``local_root/.bifrost/`` exists and looks like a workspace; return it.
-    3. Otherwise return ``local_root/.bifrost`` as the *expected* path. The
-       caller is responsible for verifying existence (and, in interactive
-       contexts, prompting the user to mark this directory as a workspace).
-
-    Removing the walk-up eliminates a class of "wrong workspace inferred"
-    bugs — most notably the credentials-only ``~/.bifrost/`` collision that
-    silently rooted every relative path at ``$HOME``.
-    """
-    if local_root.name == ".bifrost" and _is_workspace_bifrost_dir(local_root):
-        return local_root
-
-    candidate = local_root / ".bifrost"
-    if _is_workspace_bifrost_dir(candidate):
-        return candidate
-
-    return local_root / ".bifrost"  # Expected path; may not exist
-
-
-def _ensure_workspace_marker(local_root: pathlib.Path, *, prompt: bool = True) -> bool:
-    """Confirm ``local_root`` is the user's workspace and create the marker.
-
-    If ``local_root/.bifrost/`` already looks like a workspace, returns True
-    immediately. Otherwise, asks the user (when ``prompt`` is True and stdin
-    is a tty) whether to mark this directory. On confirmation, creates
-    ``.bifrost/.workspace``. Returns True on success, False if the user
-    declined or stdin isn't a tty.
-    """
-    bifrost_dir = local_root / ".bifrost"
-    if _is_workspace_bifrost_dir(bifrost_dir):
-        return True
-
-    if not prompt or not sys.stdin.isatty():
-        return False
-
-    print(f"No .bifrost/ found in {local_root}.", file=sys.stderr)
-    answer = input("Is this your Bifrost workspace? Create a marker so future commands recognize it? [y/N] ").strip().lower()
-    if answer not in {"y", "yes"}:
-        return False
-
-    bifrost_dir.mkdir(parents=True, exist_ok=True)
-    (bifrost_dir / _WORKSPACE_SENTINEL).touch()
-    print(f"Marked {local_root} as a Bifrost workspace.", file=sys.stderr)
-    return True
-
-
-def _print_not_a_workspace_error(command: str) -> None:
-    """Print the standard 'not a workspace' error for a CLI command."""
-    print("Error: not a Bifrost workspace.", file=sys.stderr)
-    print(f"  Run 'bifrost {command}' from a directory that contains .bifrost/,", file=sys.stderr)
-    print("  or confirm the prompt above to mark this directory.", file=sys.stderr)
-
 
 async def _push_with_precheck(
     local_path: str,
@@ -2137,23 +2058,17 @@ class _WatchChangeHandler:
     """
 
     def __init__(self, state: _WatchState):
-        import pathspec
         self.state = state
-        # Watch spec layers .bifrost/ on top of the shared push/pull filter so
-        # observer events under the manifest directory are dropped before they
-        # ever reach the handler. The shared filter still force-includes
-        # .bifrost/ for full sync paths — only watch excludes it.
-        base_lines = list(_DEFAULT_IGNORE_PATTERNS)
-        gitignore_path = state.base_path / ".gitignore"
-        if gitignore_path.is_file():
-            base_lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
-        base_lines.append(".bifrost/")
-        self._spec = pathspec.PathSpec.from_lines("gitwildmatch", base_lines)
+        self._spec = _build_file_filter(state.base_path)
 
     def _should_skip(self, file_path: str) -> bool:
         p = pathlib.Path(file_path)
         rel = str(p.relative_to(self.state.base_path))
-        return _should_skip_path(rel, self._spec)
+        repo_rel: str | None = None
+        workspace_root = _workspace_root_for(self.state.base_path)
+        if p.is_relative_to(workspace_root):
+            repo_rel = str(p.relative_to(workspace_root))
+        return _should_skip_path(rel, self._spec, repo_rel)
 
     def dispatch(self, event: Any) -> None:
         """Called by watchdog for all events."""
@@ -2264,7 +2179,7 @@ async def _process_watch_batch(
                 raw = _normalize_line_endings(raw_bytes)
                 rel = abs_p.relative_to(base_path)
                 repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
-                file_hash = hashlib.md5(raw).hexdigest()
+                file_hash = hashlib.md5(raw, usedforsecurity=False).hexdigest()
                 if state.get_known_hash(repo_path) == file_hash:
                     # No-op push: the server already has this content (common
                     # case: observer fired on our own pull write).
@@ -2549,8 +2464,15 @@ async def _process_incoming(
                     data = resp.json()
                     content = base64.b64decode(data["content"])
                     content_hash = _hash_for_cache(content)
-                    rel = _strip_repo_prefix(repo_path, repo_prefix)
-                    local_file = _safe_local_path(base_path, rel)
+                    # Convert repo_path to local path
+                    if repo_prefix and repo_path.startswith(repo_prefix + "/"):
+                        rel = repo_path[len(repo_prefix) + 1:]
+                    elif repo_prefix and repo_path.startswith(repo_prefix):
+                        rel = repo_path[len(repo_prefix):]
+                    else:
+                        rel = repo_path
+                    rel = _safe_workspace_relative_path(rel)
+                    local_file = base_path / rel
                     local_file.parent.mkdir(parents=True, exist_ok=True)
                     # Skip if we already know the server has this content and
                     # the local file matches (cache hit). Falls back to a byte
@@ -2590,16 +2512,13 @@ async def _process_incoming(
     # Process incoming deletes
     for paths, user_name in deletes:
         for repo_path in paths:
-            try:
-                rel = _strip_repo_prefix(repo_path, repo_prefix)
-                local_file = _safe_local_path(base_path, rel)
-            except ValueError as e:
-                if watch_app:
-                    watch_app.log_error(f"Error deleting {repo_path}: {e}")
-                else:
-                    print(f"  [{ts}] ← Error deleting {repo_path}: {e}", flush=True)
-                state.forget_known_hash(repo_path)
-                continue
+            if repo_prefix and repo_path.startswith(repo_prefix + "/"):
+                rel = repo_path[len(repo_prefix) + 1:]
+            elif repo_prefix and repo_path.startswith(repo_prefix):
+                rel = repo_path[len(repo_prefix):]
+            else:
+                rel = repo_path
+            local_file = base_path / rel
             if local_file.exists():
                 try:
                     local_file.unlink()
@@ -2704,21 +2623,22 @@ async def _watch_loop(
                     logger.debug(f"watch heartbeat failed: {e}")
                 last_heartbeat = now
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         # Expected on Ctrl-C / cancel — graceful exit
-        logger.debug("watch interrupted")
+        pass
     finally:
         if ws_task and not ws_task.done():
             ws_task.cancel()
-        try:
-            if ws_task:
-                result = await asyncio.gather(ws_task, return_exceptions=True)
-                if result and not isinstance(result[0], asyncio.CancelledError):
-                    # Unexpected close error during cancel — log but continue cleanup
-                    logger.debug(f"websocket task cleanup raised: {result[0]}")
-        finally:
-            observer.stop()
-            observer.join()
+            try:
+                await ws_task
+            except asyncio.CancelledError:
+                # Expected — we just cancelled the websocket task
+                raise
+            except Exception as e:
+                # Unexpected close error during cancel — log but continue cleanup
+                logger.debug(f"websocket task cleanup raised: {e}")
+        observer.stop()
+        observer.join()
 
 
 async def _watch_and_push(
@@ -2767,9 +2687,9 @@ async def _watch_and_push(
         if seed_resp.status_code == 200:
             seed_data = seed_resp.json()
             state.seed_known_hashes({
-                item["path"]: item.get("content_hash") or item["etag"]
+                item["path"]: item["etag"]
                 for item in seed_data.get("files_metadata", [])
-                if item.get("path") and (item.get("content_hash") or item.get("etag"))
+                if item.get("path") and item.get("etag")
             })
     except Exception as e:
         # Hash cache seeding is an optimization — cold start just falls back to byte-compare
@@ -2828,40 +2748,20 @@ def _strip_repo_prefix(repo_path: str, repo_prefix: str) -> str:
     """Strip the repo prefix from a repo path to get the local relative path."""
     if repo_prefix and repo_path.startswith(repo_prefix + "/"):
         return repo_path[len(repo_prefix) + 1:]
-    if repo_prefix and repo_path == repo_prefix:
-        return ""
+    if repo_prefix and repo_path.startswith(repo_prefix):
+        return repo_path[len(repo_prefix):]
     return repo_path
 
 
-def _validate_server_rel_path(rel_path: str) -> str:
-    """Return a normalized server path that is safe to join under a local root."""
-    if "\x00" in rel_path or "\\" in rel_path:
-        raise ValueError(f"unsafe server path: {rel_path!r}")
-    if pathlib.PureWindowsPath(rel_path).drive:
-        raise ValueError(f"unsafe server path: {rel_path!r}")
-    pure = pathlib.PurePosixPath(rel_path)
-    if pure.is_absolute():
-        raise ValueError(f"unsafe server path: {rel_path!r}")
-    parts = rel_path.split("/")
-    if not parts or any(part in {"", ".", ".."} for part in parts):
-        raise ValueError(f"unsafe server path: {rel_path!r}")
-    return pure.as_posix()
-
-
-def _safe_local_path(base_path: pathlib.Path, rel_path: str) -> pathlib.Path:
-    """Resolve a server-provided relative path and prove it stays under base_path."""
-    safe_rel = _validate_server_rel_path(rel_path)
-    base_resolved = base_path.resolve(strict=False)
-    target = base_resolved / safe_rel
-    target_resolved = target.resolve(strict=False)
-    if target_resolved != base_resolved and base_resolved not in target_resolved.parents:
-        raise ValueError(f"unsafe server path: {rel_path!r}")
-    return target
-
-
-def _should_skip_path(rel_path: str, spec: "pathspec.PathSpec") -> bool:
+def _should_skip_path(
+    rel_path: str,
+    spec: "pathspec.PathSpec",
+    repo_path: str | None = None,
+) -> bool:
     """Check if a relative path should be skipped during push/watch."""
-    return spec.match_file(rel_path)
+    if spec.match_file(rel_path):
+        return True
+    return repo_path is not None and repo_path != rel_path and spec.match_file(repo_path)
 
 
 def _collect_push_files(
@@ -2881,12 +2781,12 @@ def _collect_push_files(
             continue
         rel = file_path.relative_to(path)
         rel_str = str(rel)
-        if spec.match_file(rel_str):
+        repo_path = f"{repo_prefix}/{rel_str}" if repo_prefix else rel_str
+        if _should_skip_path(rel_str, spec, repo_path):
             continue
         try:
             raw = _normalize_line_endings(file_path.read_bytes())
             content = base64.b64encode(raw).decode("ascii")
-            repo_path = f"{repo_prefix}/{rel_str}" if repo_prefix else rel_str
             files[repo_path] = content
         except OSError:
             skipped += 1
@@ -2943,7 +2843,6 @@ async def _sync_files(
             for item in data.get("files_metadata", []):
                 server_metadata[item["path"]] = {
                     "etag": item["etag"],
-                    "content_hash": item.get("content_hash", ""),
                     "last_modified": item["last_modified"],
                     "updated_by": item.get("updated_by", ""),
                 }
@@ -2962,11 +2861,13 @@ async def _sync_files(
 
     # Track which server paths we've matched to a local file
     matched_server_paths: set[str] = set()
-    unsafe_errors: list[str] = []
 
     for repo_path, content in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_hash = _hash_for_cache(base64.b64decode(content))
+        local_md5 = hashlib.md5(
+            base64.b64decode(content),
+            usedforsecurity=False,
+        ).hexdigest()
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:
@@ -2983,7 +2884,7 @@ async def _sync_files(
                 "rel": rel,
                 "_content": content,
             })
-        elif _server_sync_hash(server_info) != local_hash:
+        elif server_info["etag"] != local_md5:
             matched_server_paths.add(repo_path)
             # Content differs — check timestamps
             local_file = path / rel
@@ -3033,14 +2934,9 @@ async def _sync_files(
         if server_path in files:
             continue
         rel = _strip_repo_prefix(server_path, repo_prefix)
-        try:
-            rel = _validate_server_rel_path(rel)
-        except ValueError as exc:
-            unsafe_errors.append(f"Unsafe server path {server_path!r}: {exc}")
-            continue
         if _is_bifrost_path(rel):
             continue
-        if _should_skip_path(rel, spec):
+        if _should_skip_path(rel, spec, server_path):
             continue
         sync_items.append({
             "name": rel,
@@ -3057,11 +2953,6 @@ async def _sync_files(
 
     # ── 4. Check if there's anything to sync ─────────────────────────────
     if not sync_items:
-        if unsafe_errors:
-            print(f"Errors ({len(unsafe_errors)}):", file=sys.stderr)
-            for error in unsafe_errors:
-                print(f"  {error}", file=sys.stderr)
-            return 1
         print("Already up to date.")
         return 0
 
@@ -3137,6 +3028,7 @@ async def _sync_files(
 
         elif action == "pull_file":
             item = work_data["item"]
+            rel = _safe_workspace_relative_path(item["rel"])
             resp = await client.post("/api/files/read", json={
                 "path": item["repo_path"],
                 "mode": "cloud", "location": "workspace", "binary": True,
@@ -3144,7 +3036,7 @@ async def _sync_files(
             if resp.status_code == 200:
                 file_data = resp.json()
                 content_bytes = base64.b64decode(file_data["content"])
-                local_file = _safe_local_path(path, item["rel"])
+                local_file = path / rel
                 local_file.parent.mkdir(parents=True, exist_ok=True)
                 local_file.write_bytes(content_bytes)
             else:
@@ -3154,7 +3046,7 @@ async def _sync_files(
             item = work_data["item"]
             # Delete locally-only files (new locally + user chose delete)
             if item.get("why") == "new locally":
-                local_file = _safe_local_path(path, item["rel"])
+                local_file = path / item["rel"]
                 if local_file.exists():
                     local_file.unlink()
             else:
@@ -3184,7 +3076,7 @@ async def _sync_files(
             parts.append(f"{unchanged} unchanged")
         return ", ".join(parts) if parts else "No changes"
 
-    errors: list[str] = list(unsafe_errors)
+    errors: list[str] = []
     if progress_items and _is_tty:
         from bifrost.tui.progress import ProgressApp
         app = ProgressApp("Syncing", progress_items, _do_sync_work, post_fn=_post_sync)
@@ -3267,11 +3159,6 @@ Examples:
     endpoint = args[1]
     body = None
 
-    endpoint_error = _validate_api_endpoint(endpoint)
-    if endpoint_error:
-        print(endpoint_error, file=sys.stderr)
-        return 1
-
     if len(args) > 2:
         import pathlib
         raw = args[2]
@@ -3291,6 +3178,11 @@ Examples:
 
     if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
         print(f"Unsupported method: {method}", file=sys.stderr)
+        return 1
+
+    endpoint_error = _validate_api_endpoint(endpoint)
+    if endpoint_error:
+        print(endpoint_error, file=sys.stderr)
         return 1
 
     # Authenticate BEFORE entering asyncio.run() so token refresh works

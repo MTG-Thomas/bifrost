@@ -1,4 +1,5 @@
 """Tests for repo storage service."""
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -61,13 +62,15 @@ async def test_list_prepends_and_strips_prefix(mock_s3_client):
     storage = RepoStorage.__new__(RepoStorage)
     storage._bucket = "test-bucket"
 
-    mock_s3_client.list_objects_v2 = AsyncMock(return_value={
-        "Contents": [
-            {"Key": "_repo/workflows/a.py"},
-            {"Key": "_repo/workflows/b.py"},
-        ],
-        "IsTruncated": False,
-    })
+    mock_s3_client.list_objects_v2 = AsyncMock(
+        return_value={
+            "Contents": [
+                {"Key": "_repo/workflows/a.py"},
+                {"Key": "_repo/workflows/b.py"},
+            ],
+            "IsTruncated": False,
+        }
+    )
 
     paths = await storage._list_from_s3(mock_s3_client, prefix="workflows/")
 
@@ -80,6 +83,7 @@ async def test_list_prepends_and_strips_prefix(mock_s3_client):
 def test_compute_hash():
     """Compute SHA-256 hash of content."""
     from src.services.repo_storage import RepoStorage
+
     h = RepoStorage.compute_hash(b"hello world")
     assert len(h) == 64  # SHA-256 hex
 
@@ -142,8 +146,10 @@ class TestListDirectory:
         s3_folders = ["apps/", "workflows/"]
 
         with patch.object(
-            repo, "_list_directory_from_s3",
-            new_callable=AsyncMock, return_value=(s3_files, s3_folders),
+            repo,
+            "_list_directory_from_s3",
+            new_callable=AsyncMock,
+            return_value=(s3_files, s3_folders),
         ):
             files, folders = await repo.list_directory("")
 
@@ -159,8 +165,10 @@ class TestListDirectory:
         s3_folders = ["apps/myapp/components/", "apps/myapp/pages/"]
 
         with patch.object(
-            repo, "_list_directory_from_s3",
-            new_callable=AsyncMock, return_value=(s3_files, s3_folders),
+            repo,
+            "_list_directory_from_s3",
+            new_callable=AsyncMock,
+            return_value=(s3_files, s3_folders),
         ):
             files, folders = await repo.list_directory("apps/myapp/")
 
@@ -176,8 +184,10 @@ class TestListDirectory:
         s3_folders = ["workflows/"]
 
         with patch.object(
-            repo, "_list_directory_from_s3",
-            new_callable=AsyncMock, return_value=(s3_files, s3_folders),
+            repo,
+            "_list_directory_from_s3",
+            new_callable=AsyncMock,
+            return_value=(s3_files, s3_folders),
         ):
             files, folders = await repo.list_directory("")
 
@@ -190,8 +200,10 @@ class TestListDirectory:
         repo = RepoStorage(settings=_mock_settings())
 
         with patch.object(
-            repo, "_list_directory_from_s3",
-            new_callable=AsyncMock, return_value=([], []),
+            repo,
+            "_list_directory_from_s3",
+            new_callable=AsyncMock,
+            return_value=([], []),
         ):
             files, folders = await repo.list_directory("")
 
@@ -208,16 +220,18 @@ class TestListDirectoryFromS3:
         repo = RepoStorage(settings=_mock_settings())
 
         mock_client = AsyncMock()
-        mock_client.list_objects_v2 = AsyncMock(return_value={
-            "Contents": [
-                {"Key": "_repo/file_at_root.py"},
-            ],
-            "CommonPrefixes": [
-                {"Prefix": "_repo/apps/"},
-                {"Prefix": "_repo/workflows/"},
-            ],
-            "IsTruncated": False,
-        })
+        mock_client.list_objects_v2 = AsyncMock(
+            return_value={
+                "Contents": [
+                    {"Key": "_repo/file_at_root.py"},
+                ],
+                "CommonPrefixes": [
+                    {"Prefix": "_repo/apps/"},
+                    {"Prefix": "_repo/workflows/"},
+                ],
+                "IsTruncated": False,
+            }
+        )
 
         files, folders = await repo._list_directory_from_s3(mock_client, "")
 
@@ -234,19 +248,21 @@ class TestListDirectoryFromS3:
         repo = RepoStorage(settings=_mock_settings())
 
         mock_client = AsyncMock()
-        mock_client.list_objects_v2 = AsyncMock(side_effect=[
-            {
-                "Contents": [{"Key": "_repo/a.py"}],
-                "CommonPrefixes": [{"Prefix": "_repo/dir1/"}],
-                "IsTruncated": True,
-                "NextContinuationToken": "token123",
-            },
-            {
-                "Contents": [{"Key": "_repo/b.py"}],
-                "CommonPrefixes": [{"Prefix": "_repo/dir2/"}],
-                "IsTruncated": False,
-            },
-        ])
+        mock_client.list_objects_v2 = AsyncMock(
+            side_effect=[
+                {
+                    "Contents": [{"Key": "_repo/a.py"}],
+                    "CommonPrefixes": [{"Prefix": "_repo/dir1/"}],
+                    "IsTruncated": True,
+                    "NextContinuationToken": "token123",
+                },
+                {
+                    "Contents": [{"Key": "_repo/b.py"}],
+                    "CommonPrefixes": [{"Prefix": "_repo/dir2/"}],
+                    "IsTruncated": False,
+                },
+            ]
+        )
 
         files, folders = await repo._list_directory_from_s3(mock_client, "")
 

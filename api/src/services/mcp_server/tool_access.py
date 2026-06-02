@@ -420,9 +420,10 @@ class MCPToolAccessService:
     @staticmethod
     def _apply_agent_org_scope(query, org_id: UUID | str | None, is_superuser: bool):
         """Apply AgentRepository-style cascade scoping to MCP-visible agents."""
+        if is_superuser:
+            return query
+
         if org_id is None:
-            if is_superuser:
-                return query
             return query.where(Agent.organization_id.is_(None))
 
         return query.where(
@@ -439,6 +440,9 @@ class MCPToolAccessService:
         is_superuser: bool,
     ) -> bool:
         """Return whether an already-loaded agent is in the caller's org scope."""
+        if is_superuser:
+            return True
+
         agent_org_id = (
             getattr(agent, "organization_id", None)
             if "organization_id" in getattr(agent, "__dict__", {})

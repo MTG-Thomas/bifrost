@@ -29,12 +29,14 @@ class S3FileMetadata:
 
 
 class RepoStorage:
-    """S3 storage scoped to _repo/ prefix."""
+    """Object storage scoped to _repo/ prefix."""
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or get_settings()
         if self._settings.object_storage_provider == "azure_blob":
-            from src.services.file_storage.azure_blob_client import AzureBlobStorageClient
+            from src.services.file_storage.azure_blob_client import (
+                AzureBlobStorageClient,
+            )
 
             self._storage = AzureBlobStorageClient(self._settings)
             self._bucket = self._settings.azure_blob_container or ""

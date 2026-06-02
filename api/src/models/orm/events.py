@@ -25,6 +25,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.enums import EventDeliveryStatus, EventSourceType, EventStatus, ScheduleOverlapPolicy
 from src.models.orm.base import Base
 
+SET_NULL = "SET NULL"
+
 if TYPE_CHECKING:
     from src.models.orm.executions import Execution
     from src.models.orm.integrations import Integration
@@ -32,6 +34,9 @@ if TYPE_CHECKING:
     from src.models.orm.workflows import Workflow
 
 
+# Execution-resolution entity — resolved when an event arrives to find the
+# right workflow trigger. Access via EventSourceRepository (OrgScopedRepository).
+# See api/src/repositories/README.md.
 class EventSource(Base):
     """
     Event source registry.
@@ -48,12 +53,15 @@ class EventSource(Base):
         PgEnum(
             "webhook",
             "schedule",
-            "internal",
+            "topic",
             name="event_source_type",
             create_type=False,
         ),
         nullable=False,
     )
+
+    # For topic sources: the validated topic string (e.g. "user.invited")
+    event_type: Mapped[str | None] = mapped_column(String(100), default=None)
 
     # Scope: NULL = global, otherwise org-specific
     organization_id: Mapped[UUID | None] = mapped_column(
@@ -175,7 +183,7 @@ class WebhookSource(Base):
         String(100), default=None
     )  # NULL = generic
     integration_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("integrations.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
+        ForeignKey("integrations.id", ondelete=SET_NULL, onupdate="CASCADE"), default=None
     )
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
 
@@ -266,7 +274,7 @@ class EventSubscription(Base):
     )
 
     # Relationships
-    event_source: Mapped["EventSource"] = relationship(back_populates="subscriptions")
+    event_source: Mapped["EventSource | None"] = relationship(back_populates="subscriptions")
     workflow: Mapped["Workflow | None"] = relationship(lazy="joined", foreign_keys=[workflow_id])
     agent = relationship("Agent", lazy="joined", foreign_keys=[agent_id])
     deliveries: Mapped[list["EventDelivery"]] = relationship(
@@ -284,6 +292,8 @@ class EventSubscription(Base):
     )
 
 
+# Identity entity — event record post-receipt (telemetry), not name-cascade resolved.
+# See api/src/repositories/README.md.
 class Event(Base):
     """
     Immutable event log.
@@ -296,6 +306,11 @@ class Event(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_source_id: Mapped[UUID] = mapped_column(
         ForeignKey("event_sources.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
+    )
+
+    # Organization that owns this event (stamped at emit time)
+    organization_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete=SET_NULL), default=None
     )
 
     # Event metadata
@@ -332,7 +347,7 @@ class Event(Base):
     )
 
     # Relationships
-    event_source: Mapped["EventSource"] = relationship(back_populates="events")
+    event_source: Mapped["EventSource | None"] = relationship(back_populates="events")
     deliveries: Mapped[list["EventDelivery"]] = relationship(
         back_populates="event",
         cascade="all, delete-orphan",
@@ -378,7 +393,7 @@ class EventDelivery(Base):
 
     # Agent run reference (set when agent run is queued)
     agent_run_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("agent_runs.id", ondelete="SET NULL"), default=None
+        ForeignKey("agent_runs.id", ondelete=SET_NULL), default=None
     )
 
     # Delivery status

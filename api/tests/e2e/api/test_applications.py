@@ -262,12 +262,13 @@ class TestApplicationVersioning:
     @pytest.fixture
     def test_app(self, e2e_client, platform_admin):
         """Create an app for versioning tests."""
+        slug = f"versioning-test-app-{uuid.uuid4().hex[:8]}"
         response = e2e_client.post(
             "/api/applications",
             headers=platform_admin.headers,
             json={
-                "name": "Versioning Test App",
-                "slug": "versioning-test-app",
+                "name": slug,
+                "slug": slug,
                 "description": "Tests draft/live versioning",
             },
         )

@@ -121,6 +121,8 @@ class IntegrationConfigSchema(Base):
     )
 
 
+# Execution-resolution entity — access via IntegrationMappingRepository
+# (OrgScopedRepository). See api/src/repositories/README.md.
 class IntegrationMapping(Base):
     """Integration mapping to an organization and external entity.
 

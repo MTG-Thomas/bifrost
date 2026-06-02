@@ -3,7 +3,7 @@ CLI contract models for Bifrost (sessions, file operations, config, oauth).
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,6 +56,8 @@ class CLISessionResponse(BaseModel):
     executions: list[CLISessionExecutionSummary] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
 class CLISessionListResponse(BaseModel):
     """Response for listing CLI sessions."""
 
@@ -110,11 +112,17 @@ class CLISessionResultRequest(BaseModel):
 # ==================== CLI FILE OPERATIONS ====================
 
 
+FILE_LOCATION_DESCRIPTION = (
+    "Storage location. Special values: workspace (default), temp, uploads. "
+    "Custom names like reports are accepted; internal prefixes _repo, _tmp, "
+    "and _apps are blocked."
+)
+
+
 class CLIFileReadRequest(BaseModel):
     """Request to read a file via CLI."""
     path: str = Field(..., description="Relative path to file")
-    location: Literal["temp", "workspace"] = Field(
-        default="workspace", description="Storage location")
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -123,8 +131,7 @@ class CLIFileWriteRequest(BaseModel):
     """Request to write a file via CLI."""
     path: str = Field(..., description="Relative path to file")
     content: str = Field(..., description="File content (text)")
-    location: Literal["temp", "workspace"] = Field(
-        default="workspace", description="Storage location")
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -132,8 +139,7 @@ class CLIFileWriteRequest(BaseModel):
 class CLIFileListRequest(BaseModel):
     """Request to list files in a directory via CLI."""
     directory: str = Field(default="", description="Directory path (relative)")
-    location: Literal["temp", "workspace"] = Field(
-        default="workspace", description="Storage location")
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -141,8 +147,7 @@ class CLIFileListRequest(BaseModel):
 class CLIFileDeleteRequest(BaseModel):
     """Request to delete a file or directory via CLI."""
     path: str = Field(..., description="Path to file or directory")
-    location: Literal["temp", "workspace"] = Field(
-        default="workspace", description="Storage location")
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -217,7 +222,7 @@ class SDKIntegrationsGetRequest(BaseModel):
     )
     oauth_scope: str | None = Field(
         default=None,
-        description="Optional whitespace-delimited OAuth scopes to request from the provider's configured scope allowlist. "
+        description="Override OAuth scope for token request (e.g., 'https://outlook.office365.com/.default'). "
         "When provided, triggers fresh token fetch for client_credentials flows."
     )
 
@@ -261,7 +266,13 @@ class SDKIntegrationsListMappingsRequest(BaseModel):
     name: str = Field(..., description="Integration name")
     scope: str | None = Field(
         default=None,
-        description="Organization scope: None=context default, UUID=specific org, global=all mappings",
+        description=(
+            "Optional org scope. Omit / pass null to list only the caller's "
+            "own org mapping, unless the resolved org is a provider org, "
+            "which lists all mappings. Platform admins and provider-org "
+            "members may pass 'global' (no filter, all orgs) or a specific "
+            "org UUID."
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)

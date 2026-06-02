@@ -9,15 +9,13 @@ Routes user messages to the appropriate agent based on:
 import logging
 import re
 from contextlib import asynccontextmanager
+from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import selectinload
 
 from src.core.log_safety import log_safe
 from src.core.org_filter import OrgFilterType
 from src.models.orm import Agent
-from src.models.orm.users import User
 from src.repositories.agents import AgentRepository
 from src.services.llm import get_llm_client, LLMMessage
 
@@ -39,8 +37,18 @@ class AgentRouter:
     2. Automatic: AI analyzes message intent and routes to best-fit agent
     """
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        user_id: UUID | None = None,
+        org_id: UUID | None = None,
+        is_superuser: bool = False,
+    ):
         self._session_factory = session_factory
+        self._user_id = user_id
+        self._org_id = org_id
+        self._is_superuser = is_superuser
 
     @asynccontextmanager
     async def _db(self):
@@ -49,35 +57,11 @@ class AgentRouter:
             yield session
             await session.commit()
 
-    async def _load_accessible_agents(self, user: User) -> list[Agent]:
-        """Load active agents visible to ``user`` using the normal access model."""
-        async with self._db() as session:
-            repo = AgentRepository(
-                session=session,
-                org_id=user.organization_id,
-                user_id=user.id,
-                is_superuser=user.is_superuser,
-            )
-            if user.is_superuser:
-                return await repo.list_all_in_scope(
-                    OrgFilterType.ALL,
-                    active_only=True,
-                )
-            return await repo.list_agents(active_only=True)
-
-    async def _find_accessible_agent_by_name(
+    async def parse_mention(
         self,
-        agent_name: str,
-        user: User,
+        message: str,
+        available_agents: list[Agent] | None = None,
     ) -> Agent | None:
-        """Resolve an agent mention by name after applying caller access checks."""
-        normalized_name = agent_name.lower()
-        for agent in await self._load_accessible_agents(user):
-            if agent.name.lower() == normalized_name:
-                return agent
-        return None
-
-    async def parse_mention(self, message: str, user: User | None = None) -> Agent | None:
         """
         Parse @mention from user message and find matching agent.
 
@@ -93,31 +77,16 @@ class AgentRouter:
 
         agent_name = match.group(1).strip()
 
-        if user is not None:
-            agent = await self._find_accessible_agent_by_name(agent_name, user)
-            if agent:
+        if available_agents is None:
+            available_agents = await self.get_available_agents()
+
+        for agent in available_agents:
+            if agent.name.lower() == agent_name.lower():
                 logger.info(f"@mention routing to agent: {agent.name}")
-            return agent
+                return agent
 
-        # Compatibility fallback for internal callers that predate user-scoped
-        # routing. Chat execution passes a user and gets access-controlled
-        # resolution.
-        async with self._db() as session:
-            result = await session.execute(
-                select(Agent)
-                .options(
-                    selectinload(Agent.tools),
-                    selectinload(Agent.delegated_agents),
-                )
-                .where(Agent.name.ilike(agent_name))
-                .where(Agent.is_active.is_(True))
-            )
-            agent = result.scalar_one_or_none()
-
-        if agent:
-            logger.info(f"@mention routing to agent: {agent.name}")
-
-        return agent
+        logger.info("@mention did not match an accessible agent: %s", log_safe(agent_name))
+        return None
 
     def _build_agent_description(self, agent: Agent) -> str:
         """Build agent description including tool and knowledge capabilities for routing."""
@@ -144,7 +113,6 @@ class AgentRouter:
         self,
         message: str,
         available_agents: list[Agent] | None = None,
-        user: User | None = None,
     ) -> Agent | None:
         """
         Use AI to route a message to the most appropriate agent.
@@ -156,23 +124,9 @@ class AgentRouter:
         Returns:
             Agent if a good match was found, None to handle directly
         """
-        # Get available agents if not provided.
+        # Get available agents if not provided (with tools and delegations eager-loaded)
         if available_agents is None:
-            if user is not None:
-                available_agents = await self._load_accessible_agents(user)
-            else:
-                # Compatibility fallback for internal callers. Chat execution
-                # passes a user and gets access-controlled routing candidates.
-                async with self._db() as session:
-                    result = await session.execute(
-                        select(Agent)
-                        .options(
-                            selectinload(Agent.tools),
-                            selectinload(Agent.delegated_agents),
-                        )
-                        .where(Agent.is_active.is_(True))
-                    )
-                    available_agents = list(result.scalars().all())
+            available_agents = await self.get_available_agents()
 
         # If no agents available, return None
         if not available_agents:
@@ -247,12 +201,24 @@ Your response (agent name or DIRECT):"""
             return None
 
     async def get_available_agents(self) -> list[Agent]:
-        """Get all active agents for routing."""
+        """Get active agents available to the current user for routing."""
+        if self._user_id is None:
+            logger.warning("Agent routing requested without user context; no agents are routable")
+            return []
+
         async with self._db() as session:
-            result = await session.execute(
-                select(Agent).where(Agent.is_active.is_(True))
+            repo = AgentRepository(
+                session=session,
+                org_id=self._org_id,
+                user_id=self._user_id,
+                is_superuser=self._is_superuser,
             )
-            return list(result.scalars().all())
+            if self._is_superuser:
+                return await repo.list_all_in_scope(
+                    filter_type=OrgFilterType.ALL,
+                    active_only=True,
+                )
+            return await repo.list_agents(active_only=True)
 
     def strip_mention(self, message: str) -> str:
         """

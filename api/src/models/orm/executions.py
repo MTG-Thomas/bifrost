@@ -18,6 +18,8 @@ from src.models.orm.base import Base
 
 
 
+# Identity entity — execution telemetry, not resolved by name with cascade.
+# See api/src/repositories/README.md.
 class Execution(Base):
     """Execution database table."""
 

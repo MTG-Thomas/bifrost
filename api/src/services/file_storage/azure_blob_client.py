@@ -132,12 +132,9 @@ class AzureBlobStorageClient:
         del Bucket
         await self._ensure_client()
 
-        list_kwargs: dict[str, Any] = {"name_starts_with": Prefix}
-        if MaxKeys is not None:
-            list_kwargs["results_per_page"] = MaxKeys
-
-        pager = self._container_client.list_blobs(**list_kwargs).by_page(
+        pager = self._container_client.list_blobs(name_starts_with=Prefix).by_page(
             continuation_token=ContinuationToken,
+            results_per_page=MaxKeys,
         )
         try:
             page = await anext(pager)

@@ -3,7 +3,7 @@ import pathlib
 import threading
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -292,6 +292,34 @@ def test_watch_handler_respects_gitignore(tmp_path):
     assert str(real_path) in state.pending_changes
 
 
+def test_watch_handler_respects_root_gitignore_for_subdirectory_watch(tmp_path):
+    """Root .gitignore patterns should apply when watching a subdirectory."""
+    (tmp_path / ".gitignore").write_text("/apps/my-app/generated/\n*.local\n")
+    app_dir = tmp_path / "apps" / "my-app"
+    app_dir.mkdir(parents=True)
+    state = _WatchState(app_dir)
+    with patch("pathlib.Path.cwd", return_value=tmp_path):
+        handler = _WatchChangeHandler(state)
+
+        generated = app_dir / "generated" / "out.py"
+        generated.parent.mkdir()
+        generated.write_text("print('generated')\n")
+
+        local_config = app_dir / "settings.local"
+        local_config.write_text("secret\n")
+
+        real_path = app_dir / "workflow.py"
+        real_path.write_text("def run(): pass\n")
+
+        handler.dispatch(_fake_event("modified", str(generated)))
+        handler.dispatch(_fake_event("modified", str(local_config)))
+        handler.dispatch(_fake_event("modified", str(real_path)))
+
+    assert str(generated) not in state.pending_changes
+    assert str(local_config) not in state.pending_changes
+    assert str(real_path) in state.pending_changes
+
+
 def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     """Events under .bifrost/ should produce zero queued work, so a subsequent
     drain → push pipeline would issue zero REST calls."""
@@ -308,23 +336,6 @@ def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     assert changes == set()
     assert deletes == set()
 
-    # If a caller naively iterated drained sets and posted per file, no posts
-    # would happen because both sets are empty. This documents the contract.
-    posted: list[tuple[str, dict]] = []
-
-    async def fake_post(url, json=None, **kwargs):  # type: ignore[no-untyped-def]
-        posted.append((url, json or {}))
-
-        class _Resp:
-            status_code = 204
-
-        return _Resp()
-
-    # Iterate as the watch batch would (no asyncio needed since we never await)
-    for _ in changes:
-        # Would have called fake_post; we never get here.
-        pass
-    for _ in deletes:
-        pass
-
-    assert posted == []
+    # The batch push layer only posts drained work; empty sets mean zero calls.
+    assert not changes
+    assert not deletes

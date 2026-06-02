@@ -19,6 +19,9 @@ from src.models.orm.base import Base
 
 
 
+# Execution-resolution entity — access via WorkflowRepository (OrgScopedRepository).
+# RBAC checked at execution start.
+# See api/src/repositories/README.md.
 class Workflow(Base):
     """
     Workflow registry - stores metadata for all executable user code.

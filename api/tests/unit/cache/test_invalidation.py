@@ -47,8 +47,9 @@ class TestConfigInvalidation:
         with patch("src.core.cache.invalidation.get_shared_redis", return_value=mock_redis):
             await invalidate_config("org-123", "api_key")
 
-            # Should delete both the hash and the specific key
-            assert mock_redis.delete.call_count == 2
+            # Should delete at least the legacy hash and the specific key.
+            mock_redis.delete.assert_any_call("bifrost:org:org-123:config")
+            mock_redis.delete.assert_any_call("bifrost:org:org-123:config:api_key")
 
     @pytest.mark.asyncio
     async def test_invalidate_config_all_keys(self, mock_redis):
@@ -56,8 +57,8 @@ class TestConfigInvalidation:
         with patch("src.core.cache.invalidation.get_shared_redis", return_value=mock_redis):
             await invalidate_config("org-456", key=None)
 
-            # Should only delete the hash
-            assert mock_redis.delete.call_count == 1
+            # Should delete the legacy hash; versioned hashes may also be cleared.
+            mock_redis.delete.assert_any_call("bifrost:org:org-456:config")
 
     @pytest.mark.asyncio
     async def test_invalidate_config_global_scope(self, mock_redis):
@@ -82,7 +83,7 @@ class TestConfigInvalidation:
         with patch("src.core.cache.invalidation.get_shared_redis", return_value=mock_redis):
             await invalidate_all_config("org-999")
 
-            mock_redis.delete.assert_called_once()
+            mock_redis.delete.assert_any_call("bifrost:org:org-999:config")
 
     @pytest.mark.asyncio
     async def test_upsert_config_org_scope_invalidates_merged_org_cache(self, mock_redis):
@@ -110,6 +111,95 @@ class TestConfigInvalidation:
             mock_redis.hset.assert_called_once()
             mock_redis.delete.assert_any_call("bifrost:org:org-123:config")
             mock_redis.delete.assert_any_call("bifrost:org:org-456:config")
+
+
+class TestConfigInvalidationCorrectness:
+    """Regression tests for the partial-hash bug and global-version
+    invalidation. These pin down the actual behavior changes from the
+    2026-05 org-scoping overhaul (phase 5).
+
+    The bug being prevented:
+        Org-scoped config caches are merged views. If an org config write
+        does HSET on one field, the cached merged hash now contains a
+        partial overlay — the next read sees the partial hash and treats
+        the missing global fallback fields as deleted.
+
+    The companion bug:
+        Global config writes used to leave per-org merged caches stale
+        until TTL. The new versioned-key scheme invalidates them all in
+        O(1) via INCR.
+    """
+
+    @pytest.fixture
+    def mock_redis(self):
+        mock_r = AsyncMock()
+        mock_r.delete = AsyncMock()
+        mock_r.hset = AsyncMock()
+        mock_r.incr = AsyncMock()
+        mock_r.ttl = AsyncMock(return_value=60)
+        mock_r.expire = AsyncMock()
+        mock_r.get = AsyncMock(return_value=b"0")
+        return mock_r
+
+    @pytest.mark.asyncio
+    async def test_org_upsert_deletes_not_hsets(self, mock_redis):
+        """Regression: org-scoped writes must DELETE the merged hash,
+        never HSET into it. HSET would create a partial hash where
+        global fallback values are silently hidden on the next read.
+        """
+        with patch(
+            "src.core.cache.invalidation.get_shared_redis", return_value=mock_redis
+        ):
+            await upsert_config("org-123", "api_key", "encrypted-value", "secret")
+
+        # The merged hash key must be DELETED — never HSET.
+        mock_redis.delete.assert_called()
+        mock_redis.hset.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_global_upsert_bumps_version(self, mock_redis):
+        """Regression: global writes must INCR the version key so every
+        org's merged cache becomes stale by key. Without this, orgs
+        keep returning the pre-write global fallback until TTL.
+        """
+        with patch(
+            "src.core.cache.invalidation.get_shared_redis", return_value=mock_redis
+        ):
+            await upsert_config(None, "global_setting", "value", "string")
+
+        # Global hash gets HSET (no merge concern at global scope).
+        mock_redis.hset.assert_called()
+        # AND the version is INCR'd to invalidate every org's merged cache.
+        mock_redis.incr.assert_called_once()
+        # The version key name must be the canonical one.
+        assert (
+            mock_redis.incr.call_args.args[0]
+            == "bifrost:config:global_version"
+        )
+
+    @pytest.mark.asyncio
+    async def test_org_invalidate_does_not_bump_version(self, mock_redis):
+        """Org-scoped invalidation must NOT bump the global version —
+        otherwise every other org's cache is invalidated by mistake.
+        """
+        with patch(
+            "src.core.cache.invalidation.get_shared_redis", return_value=mock_redis
+        ):
+            await invalidate_config("org-abc", "some_key")
+
+        mock_redis.incr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_global_invalidate_bumps_version(self, mock_redis):
+        """Global invalidation must bump the version, same as global
+        upsert.
+        """
+        with patch(
+            "src.core.cache.invalidation.get_shared_redis", return_value=mock_redis
+        ):
+            await invalidate_config(None, "some_key")
+
+        mock_redis.incr.assert_called_once()
 
 
 class TestFormInvalidation:

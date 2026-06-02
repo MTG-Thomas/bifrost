@@ -26,6 +26,8 @@ from src.models.orm.base import Base
 
 
 
+# Execution-resolution entity — access via TableRepository (OrgScopedRepository).
+# See api/src/repositories/README.md.
 class Table(Base):
     """Table metadata for document collections.
 

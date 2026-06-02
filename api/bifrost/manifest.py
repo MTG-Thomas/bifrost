@@ -20,7 +20,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field
 
-from bifrost.contracts.integrations import ConfigItemType
+from src.models.contracts.claims import ClaimQuery
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ MANIFEST_FILES: dict[str, str] = {
     "workflows": "workflows.yaml",
     "integrations": "integrations.yaml",
     "configs": "configs.yaml",
+    "claims": "claims.yaml",
     "tables": "tables.yaml",
     "events": "events.yaml",
     "forms": "forms.yaml",
@@ -184,7 +185,7 @@ class ManifestApp(BaseModel):
 class ManifestIntegrationConfigSchema(BaseModel):
     """Config schema item within an integration."""
     key: str = Field(description="Config key name")
-    type: ConfigItemType = Field(description="string | int | bool | json | secret")
+    type: Literal["string", "int", "bool", "json", "secret"] = Field(description="string | int | bool | json | secret")
     required: bool = Field(default=False, description="Whether this config must be set")
     description: str | None = Field(default=None, description="Human-readable description")
     options: list[str] | None = Field(default=None, description="Allowed values (for string type)")
@@ -238,6 +239,16 @@ class ManifestConfig(BaseModel):
     description: str | None = Field(default=None, description="Human-readable description")
     organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
     value: object | None = Field(default=None, description="Config value (null for secret type)")
+
+
+class ManifestCustomClaim(BaseModel):
+    """Custom Claim entry in manifest."""
+    id: str = Field(description="Custom Claim UUID")
+    name: str = Field(description="Claim name, unique per org")
+    description: str | None = Field(default=None, description="Human-readable description")
+    organization_id: str = Field(description="Org UUID")
+    type: Literal["list", "scalar"] = Field(default="list", description="list | scalar")
+    query: ClaimQuery = Field(description="Source table query that resolves the claim")
 
 
 class ManifestPolicy(BaseModel):
@@ -297,7 +308,7 @@ class ManifestEventSource(BaseModel):
     """Event source entry in manifest."""
     id: str = Field(description="Event source UUID")
     name: str = Field(default="", description="Event source display name")
-    source_type: str = Field(description="webhook | schedule | internal")
+    source_type: str = Field(description="webhook | schedule | topic")
     organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
     is_active: bool = Field(default=True, description="Enable/disable this source")
     # Schedule config
@@ -368,6 +379,7 @@ class Manifest(BaseModel):
     workflows: dict[str, ManifestWorkflow] = Field(default_factory=dict)
     integrations: dict[str, ManifestIntegration] = Field(default_factory=dict)
     configs: dict[str, ManifestConfig] = Field(default_factory=dict)
+    claims: dict[str, ManifestCustomClaim] = Field(default_factory=dict)
     tables: dict[str, ManifestTable] = Field(default_factory=dict)
     events: dict[str, ManifestEventSource] = Field(default_factory=dict)
     forms: dict[str, ManifestForm] = Field(default_factory=dict)
@@ -417,6 +429,7 @@ def filter_manifest_by_ids(manifest: Manifest, entity_ids: set[str]) -> Manifest
         workflows={k: v for k, v in manifest.workflows.items() if k in entity_ids},
         integrations={k: v for k, v in manifest.integrations.items() if k in entity_ids},
         configs={k: v for k, v in manifest.configs.items() if k in entity_ids},
+        claims={k: v for k, v in manifest.claims.items() if k in entity_ids},
         tables={k: v for k, v in manifest.tables.items() if k in entity_ids},
         events={k: v for k, v in manifest.events.items() if k in entity_ids},
         forms={k: v for k, v in manifest.forms.items() if k in entity_ids},
@@ -604,6 +617,14 @@ def validate_manifest(manifest: Manifest) -> list[str]:
         if cfg.organization_id and cfg.organization_id not in org_ids:
             errors.append(f"Config '{key}' references unknown organization: {cfg.organization_id}")
 
+    # Claims: organization_id
+    for _key, claim in manifest.claims.items():
+        if claim.organization_id not in org_ids:
+            errors.append(
+                f"Custom claim '{claim.name}' references unknown organization: "
+                f"{claim.organization_id}"
+            )
+
     # Tables: organization_id only (Table.application_id was removed)
     for _key, table in manifest.tables.items():
         table_label = table.name or table.id
@@ -666,6 +687,8 @@ def get_all_entity_ids(manifest: Manifest) -> set[str]:
         ids.add(integ.id)
     for cfg in manifest.configs.values():
         ids.add(cfg.id)
+    for claim in manifest.claims.values():
+        ids.add(claim.id)
     for table in manifest.tables.values():
         ids.add(table.id)
     for evt in manifest.events.values():

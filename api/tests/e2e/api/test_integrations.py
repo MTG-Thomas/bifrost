@@ -1039,7 +1039,7 @@ class TestIntegrationConfig:
 
 # Note: TestIntegrationsCLI class was removed during SDK simplification.
 # CLI endpoints for integrations now use JWT authentication from `bifrost login`
-# rather than developer API keys from `/api/cli/keys`.
+# rather than developer API keys from `/api/sdk/keys`.
 
 
 @pytest.mark.e2e
@@ -1240,7 +1240,7 @@ class TestIntegrationConfigSecrets:
 
         try:
             response = e2e_client.post(
-                "/api/cli/integrations/get_mapping",
+                "/api/sdk/integrations/get_mapping",
                 headers=platform_admin.headers,
                 json={"name": integration["name"], "scope": str(org1["id"])},
             )
@@ -1252,7 +1252,7 @@ class TestIntegrationConfigSecrets:
             assert "api_key" not in data["config"]
 
             response = e2e_client.post(
-                "/api/cli/integrations/list_mappings",
+                "/api/sdk/integrations/list_mappings",
                 headers=platform_admin.headers,
                 json={"name": integration["name"], "scope": str(org1["id"])},
             )
@@ -1306,7 +1306,7 @@ class TestIntegrationConfigSecrets:
 
         try:
             response = e2e_client.post(
-                "/api/cli/integrations/get_mapping",
+                "/api/sdk/integrations/get_mapping",
                 headers=platform_admin.headers,
                 json={"name": integration["name"], "scope": str(org1["id"])},
             )
@@ -1348,21 +1348,21 @@ class TestIntegrationConfigSecrets:
 
         try:
             response = e2e_client.post(
-                "/api/cli/integrations/get_mapping",
+                "/api/sdk/integrations/get_mapping",
                 headers=org1_user.headers,
                 json={"name": integration["name"], "scope": str(org2["id"])},
             )
             assert response.status_code == 403, response.text
 
             response = e2e_client.post(
-                "/api/cli/integrations/list_mappings",
+                "/api/sdk/integrations/list_mappings",
                 headers=org1_user.headers,
                 json={"name": integration["name"], "scope": str(org2["id"])},
             )
             assert response.status_code == 403, response.text
 
             response = e2e_client.post(
-                "/api/cli/integrations/get_mapping",
+                "/api/sdk/integrations/get_mapping",
                 headers=platform_admin_without_org,
                 json={
                     "name": integration["name"],
@@ -1374,7 +1374,7 @@ class TestIntegrationConfigSecrets:
             assert response.json()["id"] == mapping["id"]
 
             response = e2e_client.post(
-                "/api/cli/integrations/list_mappings",
+                "/api/sdk/integrations/list_mappings",
                 headers=platform_admin_without_org,
                 json={"name": integration["name"], "scope": str(org2["id"])},
             )
@@ -1383,7 +1383,7 @@ class TestIntegrationConfigSecrets:
             assert [item["id"] for item in scoped_items] == [mapping["id"]]
 
             response = e2e_client.post(
-                "/api/cli/integrations/get_mapping",
+                "/api/sdk/integrations/get_mapping",
                 headers=platform_admin_without_org,
                 json={
                     "name": integration["name"],
@@ -1395,7 +1395,7 @@ class TestIntegrationConfigSecrets:
             assert response.json()["id"] == mapping["id"]
 
             response = e2e_client.post(
-                "/api/cli/integrations/list_mappings",
+                "/api/sdk/integrations/list_mappings",
                 headers=platform_admin_without_org,
                 json={"name": integration["name"], "scope": "global"},
             )

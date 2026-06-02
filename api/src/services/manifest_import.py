@@ -68,6 +68,15 @@ def _diff_and_collect(
             return "Global"
         return org_lookup.get(oid, oid) or "Global"
 
+    def _diff_dump(entity: object) -> dict:
+        data = entity.model_dump(mode="json", by_alias=True)
+        if "mappings" in data and isinstance(data["mappings"], list):
+            data["mappings"] = [
+                {k: v for k, v in mapping.items() if k != "oauth_token_id"}
+                for mapping in data["mappings"]
+            ]
+        return data
+
     changes: list[dict[str, str]] = []
     changed_ids: set[str] = set()
     changed_integration_ids: set[str] = set()
@@ -87,6 +96,7 @@ def _diff_and_collect(
         ("workflows", "workflows"),
         ("integrations", "integrations"),
         ("configs", "configs"),
+        ("claims", "claims"),
         ("tables", "tables"),
         ("events", "events"),
         ("forms", "forms"),
@@ -115,10 +125,8 @@ def _diff_and_collect(
                 entity = cur
             else:
                 assert inc is not None and cur is not None
-                # Compare serialized form. Environment-owned fields such as
-                # OAuth token links must not make a portable manifest look
-                # different or trigger an import update.
-                if _dump_for_diff(attr, inc) == _dump_for_diff(attr, cur):
+                # Compare serialized form
+                if _diff_dump(inc) == _diff_dump(cur):
                     continue  # No change
                 action = "update"
                 entity = inc
@@ -155,15 +163,6 @@ def _diff_and_collect(
     changes.sort(key=lambda c: (c["entity_type"], _ACTION_ORDER.get(c["action"], 9), c["name"]))
 
     return changes, changed_ids
-
-
-def _dump_for_diff(attr: str, entity: object) -> dict:
-    """Return a manifest entity dump with environment-owned fields stripped."""
-    data = entity.model_dump(mode="json", by_alias=True)
-    if attr == "integrations":
-        for mapping in data.get("mappings") or []:
-            mapping["oauth_token_id"] = None
-    return data
 
 
 def _diff_list_entities(
@@ -223,12 +222,7 @@ def _collect_changed_ids(incoming: "Manifest", current: "Manifest") -> set[str]:
 
 
 def _collect_removed_entity_ids(changes: list[dict[str, str]]) -> dict[str, set[str]]:
-    """Return entity IDs that the manifest diff explicitly removed.
-
-    Destructive sync must be driven by the diff, not by broad absence from a
-    partial or mismatched manifest. The returned map is keyed by manifest
-    entity_type, for example ``{"workflows": {"..."}}``.
-    """
+    """Return entity IDs that the manifest diff explicitly removed."""
     removed: dict[str, set[str]] = {}
     for change in changes:
         if change.get("action") != "delete":
@@ -334,11 +328,13 @@ def _filter_non_file_entities_to_scope(
     }
 
     manifest.organizations = [
-        org for org in manifest.organizations
+        org
+        for org in manifest.organizations
         if scope_manifest.organizations and org.id in scoped_org_ids
     ]
     manifest.roles = [
-        role for role in manifest.roles
+        role
+        for role in manifest.roles
         if scope_manifest.roles and role.id in scoped_role_ids
     ]
 
@@ -408,7 +404,8 @@ def _filter_manifest_to_scope(
 ) -> None:
     """Restrict a DB manifest to the source paths owned by the current repo."""
     manifest.workflows = {
-        k: v for k, v in manifest.workflows.items()
+        k: v
+        for k, v in manifest.workflows.items()
         if path_exists(v.path)
     }
     present_workflow_ids = {v.id for v in manifest.workflows.values()}
@@ -428,18 +425,21 @@ def _filter_manifest_to_scope(
         return bool(path_refs & present_workflow_paths)
 
     manifest.forms = {
-        k: v for k, v in manifest.forms.items()
+        k: v
+        for k, v in manifest.forms.items()
         if _form_in_scope(v)
     }
 
     scoped_agents = {
-        k: v for k, v in manifest.agents.items()
+        k: v
+        for k, v in manifest.agents.items()
         if set(getattr(v, "tool_ids", []) or []) & present_workflow_ids
     }
     while True:
         present_agent_ids = {v.id for v in scoped_agents.values()}
         next_agents = {
-            k: v for k, v in manifest.agents.items()
+            k: v
+            for k, v in manifest.agents.items()
             if (
                 k in scoped_agents
                 or set(getattr(v, "delegated_agent_ids", []) or []) & present_agent_ids
@@ -717,6 +717,7 @@ def _rewrite_org_ids(manifest: "Manifest", target_organization_id: UUID) -> "Man
     new_agents = {k: _with_org(v) for k, v in manifest.agents.items()}
     new_apps = {k: _with_org(v) for k, v in manifest.apps.items()}
     new_configs = {k: _with_org(v) for k, v in manifest.configs.items()}
+    new_claims = {k: _with_org(v) for k, v in manifest.claims.items()}
     new_tables = {k: _with_org(v) for k, v in manifest.tables.items()}
     new_events = {k: _with_org(v) for k, v in manifest.events.items()}
 
@@ -732,6 +733,7 @@ def _rewrite_org_ids(manifest: "Manifest", target_organization_id: UUID) -> "Man
         "agents": new_agents,
         "apps": new_apps,
         "configs": new_configs,
+        "claims": new_claims,
         "tables": new_tables,
         "events": new_events,
         "integrations": new_integrations,
@@ -843,16 +845,6 @@ async def import_manifest_from_repo(
 
     # 4. Compute diff against current DB state
     db_manifest = await generate_manifest(db)
-    all_repo_paths = set(await repo.list(""))
-    _filter_manifest_to_scope(
-        db_manifest,
-        path_exists=lambda path: path in all_repo_paths,
-        dir_exists=lambda path: any(
-            repo_path.startswith(path.rstrip("/") + "/")
-            for repo_path in all_repo_paths
-        ),
-        scope_manifest=manifest,
-    )
     entity_changes, changed_ids = _diff_and_collect(manifest, db_manifest)
 
     # 4a. Dry-run: return diff without writing
@@ -875,8 +867,7 @@ async def import_manifest_from_repo(
         return result
 
     # Check if diff has any deletes (to skip _resolve_deletions later)
-    removed_entity_ids = _collect_removed_entity_ids(entity_changes)
-    has_deletes = bool(removed_entity_ids)
+    has_deletes = any(c["action"] == "delete" for c in entity_changes)
 
     # Helper: read a file from S3, returning None on failure
     async def _read_or_none(path: str) -> bytes | None:
@@ -895,10 +886,7 @@ async def import_manifest_from_repo(
             deletion_changes = []
             if delete_removed_entities and has_deletes:
                 deletion_changes = await resolver._resolve_deletions(
-                    manifest=manifest,
-                    repo=repo,
-                    dry_run=False,
-                    removed_entity_ids=removed_entity_ids,
+                    manifest=manifest, repo=repo, dry_run=False,
                 )
 
             await resolver.plan_import(manifest, repo=repo, dry_run=False, changed_ids=changed_ids)
@@ -951,6 +939,24 @@ async def import_manifest_from_repo(
         except Exception as e:
             logger.warning(f"Failed to refresh MCP workflow tools after manifest import: {e}")
 
+    # 6c. Invalidate the config read-through cache for every config the import
+    # upserted or deleted. The import writes Config rows directly (raw ops),
+    # bypassing the PUT /api/config handler that normally invalidates — so
+    # without this, a renamed/moved/deleted config (or a changed non-secret
+    # value) keeps serving stale from ConfigRepository's cache until TTL.
+    if result.applied and not dry_run and resolver.configs_touched:
+        from src.core.cache import invalidate_config
+        from src.core.log_safety import log_safe
+
+        for cfg_org_id, cfg_key in resolver.configs_touched:
+            try:
+                await invalidate_config(cfg_org_id, cfg_key)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to invalidate config cache after import "
+                    f"(org={cfg_org_id}, key={log_safe(cfg_key)}): {e}"
+                )
+
     # 7. Regenerate manifest from DB (partial: only changed entities).
     # NOTE: control reaches this point only when ``changed_ids`` is truthy —
     # the empty-changes case returns at step 4c (around line 596) before
@@ -979,6 +985,14 @@ class ManifestResolver:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        # (org_id_str_or_None, key) for every Config touched (upserted or
+        # deleted) during this import. The import writes Config rows directly
+        # (raw Upsert/delete ops), bypassing the PUT /api/config handler that
+        # normally invalidates the read-through cache in ConfigRepository. The
+        # importer drains this set after the transaction commits and calls
+        # invalidate_config on each, so a renamed/moved/deleted config (or a
+        # changed non-secret value) does not keep serving stale until TTL.
+        self.configs_touched: set[tuple[str | None, str]] = set()
 
     async def _prefetch_existing_entities(self) -> dict:
         """Prefetch all existing entity IDs/natural-keys in bulk queries.
@@ -1000,6 +1014,7 @@ class ManifestResolver:
         """
         from src.models.orm.applications import Application
         from src.models.orm.config import Config
+        from src.models.orm.custom_claims import CustomClaim
         from src.models.orm.integrations import (
             Integration,
             IntegrationConfigSchema,
@@ -1084,6 +1099,16 @@ class ManifestResolver:
         for row in cfg_result.all():
             cache["config_by_natural"][(row[1], row[2], row[3])] = (row[0], row[4], row[5])
 
+        # Custom Claims: {(name, org_id): id} + {id} set
+        claim_result = await self.db.execute(
+            select(CustomClaim.id, CustomClaim.name, CustomClaim.organization_id)
+        )
+        cache["claim_ids"] = set()
+        cache["claim_by_natural"] = {}
+        for row in claim_result.all():
+            cache["claim_ids"].add(row[0])
+            cache["claim_by_natural"][(row[1], row[2])] = row[0]
+
         return cache
 
     async def plan_import(self, manifest: "Manifest", work_dir: Path | None = None, progress_fn=None, repo: "RepoStorage | None" = None, dry_run: bool = False, changed_ids: set[str] | None = None) -> "list[SyncOp]":
@@ -1148,6 +1173,7 @@ class ManifestResolver:
             total += sum(1 for mwf in manifest.workflows.values() if mwf.id in changed_ids)
             total += sum(1 for minteg in manifest.integrations.values() if minteg.id in changed_ids)
             total += sum(1 for mcfg in manifest.configs.values() if mcfg.id in changed_ids)
+            total += sum(1 for mclaim in manifest.claims.values() if mclaim.id in changed_ids)
             total += sum(1 for mapp in manifest.apps.values() if mapp.id in changed_ids)
             total += sum(1 for mtable in manifest.tables.values() if mtable.id in changed_ids)
             total += sum(1 for mes in manifest.events.values() if mes.id in changed_ids)
@@ -1156,7 +1182,7 @@ class ManifestResolver:
         else:
             total = (len(manifest.organizations) + len(manifest.roles)
                      + len(manifest.workflows) + len(manifest.integrations)
-                     + len(manifest.configs) + len(manifest.apps)
+                     + len(manifest.configs) + len(manifest.claims) + len(manifest.apps)
                      + len(manifest.tables) + len(manifest.events)
                      + len(manifest.forms) + len(manifest.agents))
         current = 0
@@ -1268,8 +1294,7 @@ class ManifestResolver:
                     from src.services.app_storage import AppStorageService
 
                     _synced, errors = await AppStorageService().sync_preview_compiled(
-                        mapp.id,
-                        _safe_app_repo_path(mapp),
+                        mapp.id, mapp.path,
                     )
                     if errors:
                         logger.warning(f"App {mapp.name} compile warnings: {errors}")
@@ -1290,7 +1315,21 @@ class ManifestResolver:
                     await op.execute(self.db)
             all_ops.extend(table_ops)
 
-        # 6. Resolve event sources + subscriptions
+        # 6. Resolve custom claims (refs org + source table by name)
+        for key, mclaim in manifest.claims.items():
+            if changed_ids is not None and mclaim.id not in changed_ids:
+                continue
+            await _prog(f"Importing custom claim: {mclaim.name or key}")
+            claim_ops = await self._resolve_custom_claim(mclaim.name or key, mclaim, cache)
+            for op in claim_ops:
+                if dry_run:
+                    if isinstance(op, Upsert):
+                        op.action_taken = "updated" if op.id in cache.get("claim_ids", set()) else "inserted"
+                else:
+                    await op.execute(self.db)
+            all_ops.extend(claim_ops)
+
+        # 7. Resolve event sources + subscriptions
         for key, mes in manifest.events.items():
             if changed_ids is not None and mes.id not in changed_ids:
                 continue
@@ -1304,7 +1343,7 @@ class ManifestResolver:
                     await op.execute(self.db)
             all_ops.extend(es_ops)
 
-        # 7. Resolve forms (metadata ops only — indexer called in _import_all_entities)
+        # 8. Resolve forms (metadata ops only — indexer called in _import_all_entities)
         for _form_name, mform in manifest.forms.items():
             if changed_ids is not None and mform.id not in changed_ids:
                 continue
@@ -1320,7 +1359,7 @@ class ManifestResolver:
                         await op.execute(self.db)
                 all_ops.extend(form_ops)
 
-        # 8. Resolve agents (metadata ops only — indexer called in _import_all_entities)
+        # 9. Resolve agents (metadata ops only — indexer called in _import_all_entities)
         for _agent_name, magent in manifest.agents.items():
             if changed_ids is not None and magent.id not in changed_ids:
                 continue
@@ -1336,7 +1375,7 @@ class ManifestResolver:
                         await op.execute(self.db)
                 all_ops.extend(agent_ops)
 
-        # 9. Resolve MCP servers (with nested connections + tools)
+        # 10. Resolve MCP servers (with nested connections + tools)
         imported_server_ids: set[str] = set()
         for server_key, mserver in manifest.mcp_servers.items():
             if changed_ids is not None and mserver.id not in changed_ids:
@@ -1853,9 +1892,7 @@ class ManifestResolver:
 
         Optimized: pushes filtering to SQL with NOT IN clauses, returning only
         stale entity IDs. Executes bulk deletes inline instead of generating
-        individual Delete/Deactivate ops. Fail closed: only entity IDs that
-        were explicitly removed by the manifest diff are eligible for
-        destructive action.
+        individual Delete/Deactivate ops.
 
         Deletion strategy per entity type:
         - Workflows, Forms, Agents, Apps: hard-delete (existing behavior)
@@ -1888,6 +1925,8 @@ class ManifestResolver:
         from src.models.orm.tables import Table
         from src.models.orm.users import Role
         from src.models.orm.workflows import Workflow
+
+        _ = removed_paths
 
         if manifest is None:
             if work_dir:
@@ -1936,11 +1975,20 @@ class ManifestResolver:
         ]
         present_app_uuids = [
             UUID(mapp.id) for mapp in manifest.apps.values()
-            if _dir_exists(_safe_app_repo_path(mapp))
+            if _dir_exists(mapp.path)
         ]
 
         present_integ_uuids = [UUID(m.id) for m in manifest.integrations.values()]
         present_config_uuids = [UUID(m.id) for m in manifest.configs.values()]
+        present_config_natural_keys = {
+            (
+                UUID(m.integration_id) if m.integration_id else None,
+                UUID(m.organization_id) if m.organization_id else None,
+                m.key,
+            )
+            for m in manifest.configs.values()
+        }
+        present_claim_uuids = [UUID(m.id) for m in manifest.claims.values()]
         present_table_uuids = [UUID(m.id) for m in manifest.tables.values()]
         present_event_uuids = [UUID(m.id) for m in manifest.events.values()]
         present_sub_uuids: list[UUID] = []
@@ -1961,25 +2009,31 @@ class ManifestResolver:
 
         entity_changes: list[EntityChange] = []
         now = datetime.now(timezone.utc)
-        removed_entity_ids = removed_entity_ids or {}
-        removed_paths = removed_paths or set()
 
-        def _removed_uuids(entity_type: str) -> list[UUID]:
-            return [UUID(eid) for eid in removed_entity_ids.get(entity_type, set())]
+        def _explicit_ids(entity_type: str) -> list[UUID] | None:
+            if not removed_entity_ids:
+                return None
+            return [UUID(entity_id) for entity_id in removed_entity_ids.get(entity_type, set())]
 
         # Helper: query stale IDs (+ names when available) and bulk-delete
-        async def _bulk_delete(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
+        async def _bulk_delete(
+            model: type,
+            base_filter: list,
+            present: list[UUID],
+            entity_type: str,
+            explicit_ids: list[UUID] | None = None,
+        ) -> int:
             """Find IDs not in present list and delete them. Returns count."""
-            candidates = _removed_uuids(entity_type)
-            if not candidates:
+            if explicit_ids == []:
                 return 0
             has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
             if has_name:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
-            q = q.where(model.id.in_(candidates))  # type: ignore[attr-defined]
-            if present:
+            if explicit_ids is not None:
+                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
+            elif present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -2003,17 +2057,23 @@ class ManifestResolver:
             return len(stale_ids)
 
         # Helper: query stale IDs and soft-delete (deactivate)
-        async def _bulk_deactivate(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
-            candidates = _removed_uuids(entity_type)
-            if not candidates:
+        async def _bulk_deactivate(
+            model: type,
+            base_filter: list,
+            present: list[UUID],
+            entity_type: str,
+            explicit_ids: list[UUID] | None = None,
+        ) -> int:
+            if explicit_ids == []:
                 return 0
             has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
             if has_name:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
-            q = q.where(model.id.in_(candidates))  # type: ignore[attr-defined]
-            if present:
+            if explicit_ids is not None:
+                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
+            elif present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -2038,19 +2098,14 @@ class ManifestResolver:
                 )
             return len(stale_ids)
 
-        # Delete workflows only when both the manifest diff removed the entity
-        # and git recorded the backing file deletion in this repo.
-        if removed_paths:
-            await _bulk_delete(
-                Workflow,
-                [
-                    Workflow.is_active == True,  # noqa: E712
-                    Workflow.path.isnot(None),
-                    Workflow.path.in_(removed_paths),
-                ],
-                present_wf_uuids,
-                "workflows",
-            )
+        # Delete workflows synced from git that are no longer present
+        await _bulk_delete(
+            Workflow,
+            [Workflow.is_active == True, Workflow.path.isnot(None)],  # noqa: E712
+            present_wf_uuids,
+            "workflows",
+            _explicit_ids("workflows"),
+        )
 
         # Delete integrations not in manifest
         await _bulk_delete(
@@ -2058,51 +2113,82 @@ class ManifestResolver:
             [Integration.is_deleted == False],  # noqa: E712
             present_integ_uuids,
             "integrations",
+            _explicit_ids("integrations"),
         )
 
         # Delete configs not in manifest (skip integration-schema-linked configs —
         # those are user-set values managed by IntegrationConfigSchema cascade)
-        removed_config_uuids = _removed_uuids("configs")
-        cfg_q = select(Config.id).where(
-            Config.config_schema_id.is_(None),
-            Config.id.in_(removed_config_uuids),
-        )
-        if present_config_uuids:
-            cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
-        cfg_result = await self.db.execute(cfg_q)
-        stale_cfg_ids = [row[0] for row in cfg_result.all()]
+        cfg_q = select(
+            Config.id, Config.integration_id, Config.organization_id, Config.key
+        ).where(Config.config_schema_id.is_(None))
+        explicit_config_ids = _explicit_ids("configs")
+        if explicit_config_ids == []:
+            stale_cfg_rows = []
+        elif explicit_config_ids is not None:
+            cfg_q = cfg_q.where(Config.id.in_(explicit_config_ids))
+            cfg_result = await self.db.execute(cfg_q)
+            stale_cfg_rows = cfg_result.all()
+        else:
+            if present_config_uuids:
+                cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
+            cfg_result = await self.db.execute(cfg_q)
+            stale_cfg_rows = [
+                row
+                for row in cfg_result.all()
+                if (row[1], row[2], row[3]) not in present_config_natural_keys
+            ]
+        stale_cfg_ids = [row[0] for row in stale_cfg_rows]
         if stale_cfg_ids:
-            for sid in stale_cfg_ids:
+            for sid, _s_integ_id, s_org_id, s_key in stale_cfg_rows:
                 logger.info(f"Deleting config {sid} — removed from repo")
                 entity_changes.append(EntityChange(
                     action="removed",
                     entity_type="configs",
                     name=str(sid),
                 ))
+                # Record for post-commit cache invalidation (the deleted row
+                # would otherwise keep serving from the read-through cache).
+                self.configs_touched.add(
+                    (str(s_org_id) if s_org_id is not None else None, s_key)
+                )
             if not dry_run:
                 await self.db.execute(
                     sa_delete(Config).where(Config.id.in_(stale_cfg_ids))
                 )
 
         # Tables not in manifest (data preserved — report as "keep")
-        removed_table_uuids = _removed_uuids("tables")
-        table_q = select(Table.id, Table.name).where(Table.id.in_(removed_table_uuids))
-        if present_table_uuids:
-            table_q = table_q.where(Table.id.notin_(present_table_uuids))
-        table_result = await self.db.execute(table_q)
-        for row in table_result.all():
-            logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
-            entity_changes.append(EntityChange(
-                action="keep",
-                entity_type="tables",
-                name=row[1] or str(row[0]),
-            ))
+        explicit_table_ids = _explicit_ids("tables")
+        if explicit_table_ids != []:
+            table_q = select(Table.id, Table.name)
+            if explicit_table_ids is not None:
+                table_q = table_q.where(Table.id.in_(explicit_table_ids))
+            elif present_table_uuids:
+                table_q = table_q.where(Table.id.notin_(present_table_uuids))
+            table_result = await self.db.execute(table_q)
+            for row in table_result.all():
+                logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
+                entity_changes.append(EntityChange(
+                    action="keep",
+                    entity_type="tables",
+                    name=row[1] or str(row[0]),
+                ))
+
+        # Delete custom claims not in manifest.
+        from src.models.orm.custom_claims import CustomClaim
+
+        await _bulk_delete(CustomClaim, [], present_claim_uuids, "claims", _explicit_ids("claims"))
 
         # Delete event subscriptions not in manifest
-        await _bulk_delete(EventSubscription, [], present_sub_uuids, "event_subscriptions")
+        await _bulk_delete(
+            EventSubscription,
+            [],
+            present_sub_uuids,
+            "event_subscriptions",
+            _explicit_ids("event_subscriptions"),
+        )
 
         # Delete event sources not in manifest
-        await _bulk_delete(EventSource, [], present_event_uuids, "events")
+        await _bulk_delete(EventSource, [], present_event_uuids, "events", _explicit_ids("events"))
 
         # Delete forms not in manifest
         await _bulk_delete(
@@ -2110,13 +2196,20 @@ class ManifestResolver:
             [Form.is_active == True],  # noqa: E712
             present_form_uuids,
             "forms",
+            _explicit_ids("forms"),
         )
 
         # Delete agents not in manifest
-        await _bulk_delete(Agent, [], present_agent_uuids, "agents")
+        await _bulk_delete(Agent, [], present_agent_uuids, "agents", _explicit_ids("agents"))
 
         # Delete apps not in manifest
-        await _bulk_delete(Application, [], present_app_uuids, "applications")
+        await _bulk_delete(
+            Application,
+            [],
+            present_app_uuids,
+            "applications",
+            _explicit_ids("applications"),
+        )
 
         # External MCP cleanup. Delete leaves first, then connections, then
         # servers — although CASCADE FKs on the schema make later deletes
@@ -2126,7 +2219,7 @@ class ManifestResolver:
         # connection is in-manifest but whose tool_name is not present in
         # the manifest's tool list for that connection. Tools for orphaned
         # connections are reaped by the connection delete below via CASCADE.
-        if present_mcp_connection_uuids:
+        if removed_entity_ids is None and present_mcp_connection_uuids:
             present_tool_keys: set[tuple[UUID, str]] = set()
             for mserver in manifest.mcp_servers.values():
                 for cid, mconn in mserver.connections.items():
@@ -2163,6 +2256,7 @@ class ManifestResolver:
             [],
             present_mcp_connection_uuids,
             "mcp_connections",
+            _explicit_ids("mcp_connections"),
         )
         # Delete servers not in manifest (cascades to connections, tools, creds)
         await _bulk_delete(
@@ -2170,6 +2264,7 @@ class ManifestResolver:
             [],
             present_mcp_server_uuids,
             "mcp_servers",
+            _explicit_ids("mcp_servers"),
         )
         # ``user_mcp_credentials`` rows are user-owned, not manifest-owned —
         # they're created via the per-user OAuth connect flow. CASCADE on
@@ -2179,17 +2274,20 @@ class ManifestResolver:
         _ = UserMCPCredential
 
         # Soft-delete organizations not in manifest (only when manifest has orgs)
-        if present_org_uuids:
+        explicit_org_ids = _explicit_ids("organizations")
+        if explicit_org_ids is not None or present_org_uuids:
             await _bulk_deactivate(
                 Organization,
                 [Organization.is_active == True],  # noqa: E712
                 present_org_uuids,
                 "organizations",
+                explicit_org_ids,
             )
 
         # Delete roles not in manifest (only when manifest has roles)
-        if present_role_uuids:
-            await _bulk_delete(Role, [], present_role_uuids, "roles")
+        explicit_role_ids = _explicit_ids("roles")
+        if explicit_role_ids is not None or present_role_uuids:
+            await _bulk_delete(Role, [], present_role_uuids, "roles", explicit_role_ids)
 
         return entity_changes
 
@@ -2332,6 +2430,16 @@ class ManifestResolver:
                 )
             )
 
+        if cache is not None:
+            cs_refresh = await self.db.execute(
+                select(IntegrationConfigSchema).where(
+                    IntegrationConfigSchema.integration_id == integ_id
+                )
+            )
+            cache["integ_cs"][integ_id] = {
+                cs.key: cs for cs in cs_refresh.scalars().all()
+            }
+
         # Sync OAuth provider (structure only — client_secret never imported)
         if minteg.oauth_provider:
             op_data = minteg.oauth_provider
@@ -2367,9 +2475,7 @@ class ManifestResolver:
             )
             await self.db.execute(op_stmt)
 
-        # Sync mappings: upsert by (integration_id, organization_id).
-        # OAuth tokens are user/environment-owned and are never trusted from
-        # manifest input; existing linked tokens are preserved in place.
+        # Sync mappings: upsert by (integration_id, organization_id) to preserve oauth_token_id
         if cache is not None:
             existing_m_by_org: dict[str | None, IntegrationMapping] = dict(cache["integ_mappings"].get(integ_id, {}))
         else:
@@ -2390,23 +2496,25 @@ class ManifestResolver:
                 existing_m = existing_m_by_org[org_key]
                 existing_m.entity_id = mapping.entity_id
                 existing_m.entity_name = mapping.entity_name
+                if mapping.oauth_token_id is not None:
+                    existing_m.oauth_token_id = UUID(mapping.oauth_token_id)
             else:
                 m_stmt = insert(IntegrationMapping).values(
                     integration_id=integ_id,
                     organization_id=UUID(mapping.organization_id) if mapping.organization_id else None,
                     entity_id=mapping.entity_id,
                     entity_name=mapping.entity_name,
-                    oauth_token_id=None,
+                    oauth_token_id=UUID(mapping.oauth_token_id) if mapping.oauth_token_id else None,
                 )
                 await self.db.execute(m_stmt)
 
         for org_key, existing_m in existing_m_by_org.items():
-            if org_key in manifest_org_ids:
-                continue
-            logger.info(
-                "Preserving integration mapping %s outside manifest org scope",
-                existing_m.id,
-            )
+            if org_key not in manifest_org_ids:
+                await self.db.execute(
+                    sa_delete(IntegrationMapping).where(
+                        IntegrationMapping.id == existing_m.id
+                    )
+                )
 
         # Return empty list — all operations executed directly above
         return []
@@ -2426,8 +2534,15 @@ class ManifestResolver:
         integ_id = UUID(mcfg.integration_id) if mcfg.integration_id else None
         org_id = UUID(mcfg.organization_id) if mcfg.organization_id else None
 
+        # Record for post-commit cache invalidation. Only non-integration
+        # configs are read through ConfigRepository's cache (merged_for_sdk /
+        # get_config exclude integration_id IS NOT NULL), so those are the only
+        # ones whose cache can go stale on a value/key change here.
+        self._track_config_cache_touch(integ_id, org_id, mcfg.key)
+
         # Check prefetch cache for existing config by natural key
         cache_hit = cache["config_by_natural"].get((mcfg.key, integ_id, org_id))
+        schema_id = self._config_schema_id(cache, integ_id, mcfg.key)
 
         # Convert string config_type to enum for proper DB storage
         from src.models.enums import ConfigType
@@ -2438,21 +2553,14 @@ class ManifestResolver:
             existing_id, existing_value, _config_schema_id = cache_hit
 
             # Secret with existing value — don't overwrite
-            if is_secret and existing_value is not None:
+            if is_secret and existing_value is not None and schema_id is None:
                 return []
 
-            # Update existing row (including ID if it changed)
-            update_values: dict = {
-                "id": cfg_id,
-                "key": mcfg.key,
-                "config_type": ct,
-                "description": mcfg.description,
-                "integration_id": integ_id,
-                "organization_id": org_id,
-                "updated_by": "git-sync",
-            }
-            if not is_secret:
-                update_values["value"] = mcfg.value if mcfg.value is not None else {}
+            update_values = self._config_upsert_values(
+                mcfg, ct, integ_id, org_id, schema_id, include_value=not is_secret
+            )
+            if existing_id != cfg_id:
+                update_values["id"] = cfg_id
 
             return [Upsert(
                 model=Config,
@@ -2462,15 +2570,9 @@ class ManifestResolver:
             )]
         else:
             # New config — return Upsert op (uses ON CONFLICT)
-            insert_values: dict = {
-                "key": mcfg.key,
-                "config_type": ct,
-                "description": mcfg.description,
-                "integration_id": integ_id,
-                "organization_id": org_id,
-                "value": mcfg.value if mcfg.value is not None else {},
-                "updated_by": "git-sync",
-            }
+            insert_values = self._config_upsert_values(
+                mcfg, ct, integ_id, org_id, schema_id, include_value=True
+            )
             return [Upsert(
                 model=Config,
                 id=cfg_id,
@@ -2478,21 +2580,57 @@ class ManifestResolver:
                 match_on="id",
             )]
 
+    def _track_config_cache_touch(self, integ_id, org_id, key: str) -> None:
+        if integ_id is None:
+            self.configs_touched.add((str(org_id) if org_id is not None else None, key))
+
+    @staticmethod
+    def _config_schema_id(cache: dict, integ_id, key: str):
+        if integ_id is None:
+            return None
+        schema = cache.get("integ_cs", {}).get(integ_id, {}).get(key)
+        return schema.id if schema is not None else None
+
+    @staticmethod
+    def _config_upsert_values(
+        mcfg, config_type, integ_id, org_id, schema_id, *, include_value: bool
+    ) -> dict:
+        values: dict = {
+            "key": mcfg.key,
+            "config_type": config_type,
+            "description": mcfg.description,
+            "integration_id": integ_id,
+            "organization_id": org_id,
+            "updated_by": "git-sync",
+        }
+        if schema_id is not None:
+            values["config_schema_id"] = schema_id
+        if include_value:
+            values["value"] = mcfg.value if mcfg.value is not None else {}
+        return values
+
     def _resolve_app(self, mapp, cache: dict) -> "list[SyncOp]":
         """Resolve an app from manifest into SyncOps (metadata only).
         Uses prefetch cache for slug lookup.
         """
+        from pathlib import PurePosixPath
         from uuid import UUID
 
         from src.models.orm.app_roles import AppRole
         from src.models.orm.applications import Application
         from src.services.sync_ops import SyncOp, SyncRoles, Upsert  # noqa: F401
 
-        repo_path = _safe_app_repo_path(mapp)
-        slug = mapp.slug or repo_path.rsplit("/", 1)[1]
+        # repo_path is now the directory directly (no /app.yaml to strip)
+        repo_path = mapp.path.rstrip("/") if mapp.path else None
+
+        # Slug from manifest entry, or derive from repo_path leaf
+        slug = mapp.slug or (PurePosixPath(repo_path).name if repo_path else None)
         if not slug:
             logger.warning(f"App {mapp.id} has no slug or path, skipping")
             return []
+
+        if not repo_path:
+            repo_path = f"apps/{slug}"
 
         app_id = UUID(mapp.id)
         org_id = UUID(mapp.organization_id) if mapp.organization_id else None
@@ -2508,9 +2646,8 @@ class ManifestResolver:
             "organization_id": org_id,
             "dependencies": mapp.dependencies or None,
         }
-        access_level = _manifest_access_level(mapp.access_level, getattr(mapp, "roles", None))
-        if access_level is not None:
-            app_values["access_level"] = access_level
+        if mapp.access_level is not None:
+            app_values["access_level"] = mapp.access_level
 
         ops: list[SyncOp] = []
 
@@ -2651,6 +2788,92 @@ class ManifestResolver:
             schema=mtable.table_schema,
             access=access,
             created_by="git-sync",
+        ).on_conflict_do_nothing()
+        await self.db.execute(stmt)
+
+        return []
+
+    async def _resolve_custom_claim(self, claim_name: str, mclaim, cache: dict | None = None) -> "list[SyncOp]":
+        """Resolve a custom claim from manifest into the DB.
+
+        Uses upsert-by-natural-key ``(organization_id, name)`` first so importing
+        the same portable claim into another environment preserves existing rows
+        and then realigns the DB id to the manifest UUID.
+        """
+        from uuid import UUID
+
+        from sqlalchemy import update
+        from sqlalchemy.dialects.postgresql import insert
+
+        from src.models.orm.custom_claims import CustomClaim
+        from src.services.sync_ops import SyncOp  # noqa: F401
+
+        claim_id = UUID(mclaim.id)
+        org_id = UUID(mclaim.organization_id)
+        now = datetime.now(timezone.utc)
+        query = mclaim.query.model_dump(mode="json")
+
+        if cache is not None:
+            existing_by_natural = cache["claim_by_natural"].get((claim_name, org_id))
+        else:
+            natural_q = select(CustomClaim.id).where(
+                CustomClaim.name == claim_name,
+                CustomClaim.organization_id == org_id,
+            )
+            existing_by_natural = (await self.db.execute(natural_q)).scalar_one_or_none()
+
+        if existing_by_natural is not None:
+            # Keep the DB-assigned id stable. Claims are referenced by
+            # (org_id, name) everywhere (policies, manifest dependency graph),
+            # so realigning the PK to match a foreign manifest UUID would
+            # invalidate any in-flight ORM identity map without buying us
+            # anything. Matches the upsert pattern in _resolve_config /
+            # _resolve_integration.
+            await self.db.execute(
+                update(CustomClaim)
+                .where(CustomClaim.id == existing_by_natural)
+                .values(
+                    name=claim_name,
+                    description=mclaim.description,
+                    organization_id=org_id,
+                    type=mclaim.type,
+                    query=query,
+                    updated_at=now,
+                )
+            )
+            return []
+
+        if cache is not None:
+            existing_by_id = claim_id if claim_id in cache["claim_ids"] else None
+        else:
+            existing_by_id = (
+                await self.db.execute(
+                    select(CustomClaim.id).where(CustomClaim.id == claim_id)
+                )
+            ).scalar_one_or_none()
+
+        if existing_by_id is not None:
+            await self.db.execute(
+                update(CustomClaim)
+                .where(CustomClaim.id == claim_id)
+                .values(
+                    name=claim_name,
+                    description=mclaim.description,
+                    organization_id=org_id,
+                    type=mclaim.type,
+                    query=query,
+                    updated_at=now,
+                )
+            )
+            return []
+
+        stmt = insert(CustomClaim).values(
+            id=claim_id,
+            name=claim_name,
+            description=mclaim.description,
+            organization_id=org_id,
+            type=mclaim.type,
+            query=query,
         ).on_conflict_do_nothing()
         await self.db.execute(stmt)
 
@@ -2998,12 +3221,8 @@ class ManifestResolver:
                 "created_by": "git-sync",
                 "organization_id": org_id,
             }
-            access_level = _manifest_access_level(
-                mform.access_level,
-                getattr(mform, "roles", None),
-            )
-            if access_level is not None:
-                form_values["access_level"] = access_level
+            if mform.access_level is not None:
+                form_values["access_level"] = mform.access_level
             ops.append(Upsert(
                 model=Form,
                 id=form_id,
@@ -3053,12 +3272,8 @@ class ManifestResolver:
                 "max_iterations": data.get("max_iterations"),
                 "max_token_budget": data.get("max_token_budget"),
             }
-            access_level = _manifest_access_level(
-                magent.access_level,
-                getattr(magent, "roles", None),
-            )
-            if access_level is not None:
-                agent_values["access_level"] = access_level
+            if magent.access_level is not None:
+                agent_values["access_level"] = magent.access_level
             ops.append(Upsert(
                 model=Agent,
                 id=agent_id,
