@@ -2603,7 +2603,7 @@ async def _watch_loop(
                 await ws_task
             except asyncio.CancelledError:
                 # Expected — we just cancelled the websocket task
-                pass
+                raise
             except Exception as e:
                 # Unexpected close error during cancel — log but continue cleanup
                 logger.debug(f"websocket task cleanup raised: {e}")

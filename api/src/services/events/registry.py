@@ -2,6 +2,8 @@
 
 COMMON_EXAMPLE_FIELDS = ("schema_version", "occurred_at", "organization", "actor")
 TICKET_CREATED = "ticket.created"
+EXAMPLE_TENANT_ID = "tenant-123"
+EXAMPLE_TENANT_NAME = "acme.onmicrosoft.com"
 
 _ORGANIZATION = {
     "id": "550e8400-e29b-41d4-a716-446655440010",
@@ -128,8 +130,8 @@ CURATED_TOPICS = [
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
-                "external_account_id": "tenant-123",
-                "external_account_name": "acme.onmicrosoft.com",
+                "external_account_id": EXAMPLE_TENANT_ID,
+                "external_account_name": EXAMPLE_TENANT_NAME,
             },
         ),
     },
@@ -146,8 +148,8 @@ CURATED_TOPICS = [
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
-                "external_account_id": "tenant-123",
-                "external_account_name": "acme.onmicrosoft.com",
+                "external_account_id": EXAMPLE_TENANT_ID,
+                "external_account_name": EXAMPLE_TENANT_NAME,
             },
         ),
     },
@@ -164,8 +166,8 @@ CURATED_TOPICS = [
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
-                "external_account_id": "tenant-123",
-                "external_account_name": "acme.onmicrosoft.com",
+                "external_account_id": EXAMPLE_TENANT_ID,
+                "external_account_name": EXAMPLE_TENANT_NAME,
             },
             refresh={
                 "attempt": 3,
@@ -193,8 +195,8 @@ CURATED_TOPICS = [
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
-                "external_account_id": "tenant-123",
-                "external_account_name": "acme.onmicrosoft.com",
+                "external_account_id": EXAMPLE_TENANT_ID,
+                "external_account_name": EXAMPLE_TENANT_NAME,
             },
             refresh={
                 "attempt": 3,
@@ -222,8 +224,8 @@ CURATED_TOPICS = [
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
-                "external_account_id": "tenant-123",
-                "external_account_name": "acme.onmicrosoft.com",
+                "external_account_id": EXAMPLE_TENANT_ID,
+                "external_account_name": EXAMPLE_TENANT_NAME,
             },
             refresh={
                 "attempt": 1,

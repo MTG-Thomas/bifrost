@@ -154,35 +154,36 @@ async def update_config(
     result, old_org_id, old_key = update
 
     if CACHE_AVAILABLE and upsert_config and invalidate_config:
-        new_org_id_str = str(result.org_id) if result.org_id else None
-        old_org_id_str = str(old_org_id) if old_org_id else None
-
-        # If the row's identity changed (rename or org-move), the old
-        # cache entry would otherwise survive until TTL with stale —
-        # possibly secret — data. Drop the old (old_org, old_key)
-        # entry before writing the new one. ``invalidate_config`` also
-        # bumps CONFIG_GLOBAL_VERSION_KEY when ``old_org`` was global,
-        # so org-merged caches re-fetch.
-        if old_org_id_str != new_org_id_str or old_key != result.key:
-            await invalidate_config(old_org_id_str, old_key)
-
-        # If this update crosses the global↔org boundary, bump the
-        # global version so org caches that merged the old global
-        # value re-fetch even though the new write is org-scoped.
-        if (old_org_id is None) != (result.org_id is None):
-            from src.core.cache import get_shared_redis
-            from src.core.cache.keys import CONFIG_GLOBAL_VERSION_KEY
-            try:
-                r = await get_shared_redis()
-                await r.incr(CONFIG_GLOBAL_VERSION_KEY)
-            except Exception as e:
-                logger.warning(f"Failed to bump global config version on transition: {e}")
-
-        config_type_str = result.type.value if result.type else "string"
-        stored_value = result.value
-        await upsert_config(new_org_id_str, result.key, stored_value, config_type_str)
+        await _refresh_config_cache_after_update(result, old_org_id, old_key)
 
     return result
+
+
+async def _refresh_config_cache_after_update(
+    result: ConfigResponse, old_org_id: UUID | None, old_key: str
+) -> None:
+    new_org_id_str = str(result.org_id) if result.org_id else None
+    old_org_id_str = str(old_org_id) if old_org_id else None
+
+    if old_org_id_str != new_org_id_str or old_key != result.key:
+        await invalidate_config(old_org_id_str, old_key)
+
+    if (old_org_id is None) != (result.org_id is None):
+        await _bump_global_config_version_on_transition()
+
+    config_type_str = result.type.value if result.type else "string"
+    await upsert_config(new_org_id_str, result.key, result.value, config_type_str)
+
+
+async def _bump_global_config_version_on_transition() -> None:
+    from src.core.cache import get_shared_redis
+    from src.core.cache.keys import CONFIG_GLOBAL_VERSION_KEY
+
+    try:
+        r = await get_shared_redis()
+        await r.incr(CONFIG_GLOBAL_VERSION_KEY)
+    except Exception:
+        logger.exception("Failed to bump global config version on transition")
 
 
 @router.delete(

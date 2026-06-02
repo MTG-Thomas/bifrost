@@ -83,6 +83,33 @@ function SortIcon({ column, sortColumn, sortDirection }: { column: SortColumn; s
 	);
 }
 
+function compareUsers(
+	a: User,
+	b: User,
+	sortColumn: SortColumn,
+	sortDirection: SortDirection,
+) {
+	const dir = sortDirection === "asc" ? 1 : -1;
+	switch (sortColumn) {
+		case "name":
+			return dir * (a.name || a.email || "").localeCompare(b.name || b.email || "");
+		case "email":
+			return dir * (a.email || "").localeCompare(b.email || "");
+		case "status":
+			return dir * (a.invite_status ?? "active").localeCompare(b.invite_status ?? "active");
+		case "created":
+			return dir * (timestampOrZero(a.created_at) - timestampOrZero(b.created_at));
+		case "last_login":
+			return dir * (timestampOrZero(a.last_login) - timestampOrZero(b.last_login));
+		default:
+			return 0;
+	}
+}
+
+function timestampOrZero(value: string | null | undefined) {
+	return value ? new Date(value).getTime() : 0;
+}
+
 export function Users() {
 	const [selectedUser, setSelectedUser] = useState<User | undefined>();
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -130,32 +157,7 @@ export function Users() {
 
 	const sortedUsers = useMemo(() => {
 		if (!filteredUsers) return [];
-		return [...filteredUsers].sort((a, b) => {
-			const dir = sortDirection === "asc" ? 1 : -1;
-			switch (sortColumn) {
-				case "name":
-					return dir * (a.name || a.email || "").localeCompare(b.name || b.email || "");
-				case "email":
-					return dir * (a.email || "").localeCompare(b.email || "");
-				case "status": {
-					const aVal = a.invite_status ?? "active";
-					const bVal = b.invite_status ?? "active";
-					return dir * aVal.localeCompare(bVal);
-				}
-				case "created": {
-					const aDate = a.created_at ? new Date(a.created_at).getTime() : 0;
-					const bDate = b.created_at ? new Date(b.created_at).getTime() : 0;
-					return dir * (aDate - bDate);
-				}
-				case "last_login": {
-					const aDate = a.last_login ? new Date(a.last_login).getTime() : 0;
-					const bDate = b.last_login ? new Date(b.last_login).getTime() : 0;
-					return dir * (aDate - bDate);
-				}
-				default:
-					return 0;
-			}
-		});
+		return [...filteredUsers].sort((a, b) => compareUsers(a, b, sortColumn, sortDirection));
 	}, [filteredUsers, sortColumn, sortDirection]);
 
 	const handleSort = (column: SortColumn) => {

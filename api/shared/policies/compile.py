@@ -190,32 +190,43 @@ def _compile_comparison_operands(
     is type-aware: type mismatches in row data return false instead of
     raising. Spec: docs/superpowers/specs/2026-04-30-table-policies-design.md
     """
-    left_row = (
-        left_node["row"]
-        if isinstance(left_node, dict) and set(left_node.keys()) == {"row"}
-        else None
-    )
-    right_row = (
-        right_node["row"]
-        if isinstance(right_node, dict) and set(right_node.keys()) == {"row"}
-        else None
-    )
+    left_row = _row_reference(left_node)
+    right_row = _row_reference(right_node)
 
     # Detect the "JSONB row vs non-string scalar literal" shape on either side.
     if left_row is not None and right_row is None:
-        scalar = _resolve_to_scalar(right_node, user)
-        if scalar is not _NOT_SCALAR and isinstance(scalar, (bool, int, float)) and not isinstance(scalar, str):
-            jsonb_col = _resolve_row_to_jsonb(left_row)
-            if jsonb_col is not None:
-                return jsonb_col, _jsonb_literal(scalar)
+        jsonb_pair = _jsonb_scalar_operands(left_row, right_node, user)
+        if jsonb_pair is not None:
+            return jsonb_pair
     if right_row is not None and left_row is None:
-        scalar = _resolve_to_scalar(left_node, user)
-        if scalar is not _NOT_SCALAR and isinstance(scalar, (bool, int, float)) and not isinstance(scalar, str):
-            jsonb_col = _resolve_row_to_jsonb(right_row)
-            if jsonb_col is not None:
-                return _jsonb_literal(scalar), jsonb_col
+        jsonb_pair = _jsonb_scalar_operands(right_row, left_node, user)
+        if jsonb_pair is not None:
+            jsonb_col, scalar_literal = jsonb_pair
+            return scalar_literal, jsonb_col
 
     return _compile_node(left_node, user), _compile_node(right_node, user)
+
+
+def _row_reference(node: Any) -> str | None:
+    if isinstance(node, dict) and set(node.keys()) == {"row"}:
+        return node["row"]
+    return None
+
+
+def _jsonb_scalar_operands(
+    row_name: str, scalar_node: Any, user: Any
+) -> tuple[ColumnElement, ColumnElement] | None:
+    scalar = _resolve_to_scalar(scalar_node, user)
+    if scalar is _NOT_SCALAR or not _is_jsonb_scalar(scalar):
+        return None
+    jsonb_col = _resolve_row_to_jsonb(row_name)
+    if jsonb_col is None:
+        return None
+    return jsonb_col, _jsonb_literal(scalar)
+
+
+def _is_jsonb_scalar(value: Any) -> bool:
+    return isinstance(value, (bool, int, float)) and not isinstance(value, str)
 
 
 def _compile_ordered_comparison(op: str, value: Any, user: Any) -> ColumnElement:

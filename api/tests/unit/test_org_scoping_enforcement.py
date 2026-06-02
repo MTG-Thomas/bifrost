@@ -264,22 +264,29 @@ def _models_with_org_id() -> dict[str, Path]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-            # Must be a Base subclass (any base named "Base")
-            is_base_subclass = any(
-                isinstance(b, ast.Name) and b.id == "Base"
-                for b in node.bases
-            )
-            if not is_base_subclass:
+            if not _is_base_model_class(node):
                 continue
-
-            for stmt in node.body:
-                # Looking for `organization_id: Mapped[...] = mapped_column(...)`.
-                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                    if stmt.target.id == "organization_id":
-                        found[node.name] = py_file
-                        break
+            if _class_declares_field(node, "organization_id"):
+                found[node.name] = py_file
 
     return found
+
+
+def _is_base_model_class(node: ast.ClassDef) -> bool:
+    return any(isinstance(base, ast.Name) and base.id == "Base" for base in node.bases)
+
+
+def _class_declares_field(node: ast.ClassDef, field_name: str) -> bool:
+    for stmt in node.body:
+        if _ann_assign_target_name(stmt) == field_name:
+            return True
+    return False
+
+
+def _ann_assign_target_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return node.target.id
+    return None
 
 
 def _file_import_aliases(tree: ast.AST) -> dict[str, str]:
@@ -314,17 +321,26 @@ def _repository_subclasses() -> set[str]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-            for base in node.bases:
-                if (
-                    isinstance(base, ast.Subscript)
-                    and isinstance(base.value, ast.Name)
-                    and base.value.id == "OrgScopedRepository"
-                    and isinstance(base.slice, ast.Name)
-                ):
-                    type_param = base.slice.id
-                    # If the type-param was an alias, resolve to the original.
-                    bound.add(aliases.get(type_param, type_param))
+            type_param = _org_scoped_repository_type_param(node)
+            if type_param is not None:
+                bound.add(aliases.get(type_param, type_param))
     return bound
+
+
+def _org_scoped_repository_type_param(node: ast.ClassDef) -> str | None:
+    for base in node.bases:
+        if _is_org_scoped_repository_base(base):
+            return base.slice.id
+    return None
+
+
+def _is_org_scoped_repository_base(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "OrgScopedRepository"
+        and isinstance(node.slice, ast.Name)
+    )
 
 
 def _is_classified_org_model(model_name: str, repos: set[str]) -> bool:
@@ -488,14 +504,20 @@ def _models_with_scope_field() -> set[str]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-            for stmt in node.body:
-                # ``scope: str | None = Field(...)`` is an AnnAssign with
-                # target.id == "scope". That's all we need.
-                if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                    if stmt.target.id == "scope":
-                        models.add(node.name)
-                        break
+            if _class_declares_field(node, "scope"):
+                models.add(node.name)
     return models
+
+
+def _annotation_name_matches_scope_model(
+    ann: ast.AST,
+    scope_models: set[str],
+) -> bool:
+    if isinstance(ann, ast.Name) and ann.id in scope_models:
+        return True
+    if isinstance(ann, ast.Attribute) and ann.attr in scope_models:
+        return True
+    return False
 
 
 def _handler_body_annotation_has_scope(
@@ -517,18 +539,14 @@ def _handler_body_annotation_has_scope(
         ann = a.annotation
         if ann is None:
             continue
-        # Bare name annotation, e.g. ``request: SDKIntegrationsGetRequest``
-        if isinstance(ann, ast.Name) and ann.id in scope_models:
-            return True
-        # Attribute annotation, e.g. ``request: contracts.SDKFoo``
-        if isinstance(ann, ast.Attribute) and ann.attr in scope_models:
+        if _annotation_name_matches_scope_model(ann, scope_models):
             return True
         # Subscript / generic / union — walk inner names too.
-        for sub in ast.walk(ann):
-            if isinstance(sub, ast.Name) and sub.id in scope_models:
-                return True
-            if isinstance(sub, ast.Attribute) and sub.attr in scope_models:
-                return True
+        if any(
+            _annotation_name_matches_scope_model(sub, scope_models)
+            for sub in ast.walk(ann)
+        ):
+            return True
     return False
 
 
