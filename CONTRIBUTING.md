@@ -61,11 +61,16 @@ enabled.
 
 ## Before you open a PR
 
-- [ ] Dev stack is running (`./debug.sh`) and your change works end-to-end in the browser at `http://localhost:3000`.
-- [ ] Tests exist for the code you changed (see **Testing expectations** below).
-- [ ] `pyright` + `ruff check` pass in `api/`; `npm run tsc` + `npm run lint` pass in `client/`.
+Pick the delivery lane first: [docs/dev/delivery-lanes.md](./docs/dev/delivery-lanes.md).
+Small docs and chores should not pay the same process cost as auth, execution,
+migrations, or live-ops changes.
+
+- [ ] The PR description names the lane or otherwise explains the verification scope.
+- [ ] Tests exist for changed runtime behavior (see **Testing expectations** below).
+- [ ] Relevant targeted checks pass for the touched area.
 - [ ] If you changed `api/shared/models.py` or API contracts, you re-ran `npm run generate:types` in `client/`.
 - [ ] If you touched a sensitive path, you've called it out in the PR description.
+- [ ] For product/API or platform/live-ops lanes, the dev stack or CI has exercised the behavior that matters.
 
 ## Testing expectations
 
@@ -89,6 +94,25 @@ If your change touches any of those, expect:
 - Higher scrutiny on any code path that could cross tenant boundaries, leak secrets, or skip an audit.
 
 Call it out in the PR description so the reviewer doesn't have to rediscover it.
+
+## Reviewer budget
+
+Use code review to reduce risk, not to collect redundant opinions. Most PRs get
+one accountable reviewer. Add a second reviewer when the change crosses an
+ownership boundary or touches a sensitive path. Use AI/code-review bots when the
+diff is broad, subtle, security-sensitive, or when the author wants another pass.
+
+Skip extra reviewers for small docs, narrow tests, obvious bug fixes, and
+low-risk chores already covered by focused checks. If reviewers disagree, the
+author or maintainer should resolve the decision explicitly instead of waiting
+for every reviewer to converge.
+
+For Codex-authored PRs, automated review is part of the normal authoring loop:
+human prompt, Codex implementation, automated review, Codex stewardship. Keep
+that loop moving. One primary automated reviewer is the default; add another
+only for sensitive paths, broad diffs, unfamiliar subsystems, or targeted second
+opinions. Codex should fix concrete defects and record why stale, duplicate,
+style-only, or scope-expanding suggestions were not followed.
 
 ## How to pick up work
 
