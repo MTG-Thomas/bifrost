@@ -814,6 +814,7 @@ Examples:
         resolved_url = "http://localhost:8000"
     try:
         _write_env_url(resolved_url)
+        _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"})
     except OSError as e:
         print(f"Warning: could not update .env in current directory: {e}", file=sys.stderr)
     return 0

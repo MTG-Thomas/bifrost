@@ -239,6 +239,28 @@ class TestBrowserLoginWritesEnv:
         gi = (tmp_path / ".gitignore").read_text()
         assert gi.count(".env") == 1
 
+    def test_browser_login_removes_stale_password_grant_tokens(self, monkeypatch, tmp_path):
+        async def fake_login(api_url=None, auto_open=True):
+            return True
+
+        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            "OTHER_VAR=keep-me\n"
+            "BIFROST_API_URL=https://old.example.com\n"
+            "BIFROST_ACCESS_TOKEN=stale-at\n"
+            "BIFROST_REFRESH_TOKEN=stale-rt\n"
+        )
+
+        rc = cli.handle_login(["--url", "https://prod.example.com"])
+
+        assert rc == 0
+        env_text = (tmp_path / ".env").read_text()
+        assert "OTHER_VAR=keep-me" in env_text
+        assert "BIFROST_API_URL=https://prod.example.com" in env_text
+        assert "BIFROST_ACCESS_TOKEN=" not in env_text
+        assert "BIFROST_REFRESH_TOKEN=" not in env_text
+
     def test_does_not_write_env_when_browser_login_fails(self, monkeypatch, tmp_path):
         async def fake_login(api_url=None, auto_open=True):
             return False
@@ -362,7 +384,6 @@ class TestLogoutClearsKeychainAndPromptsEnv:
     def test_logout_no_prompt_leaves_dotenv_only_session_alone(self, monkeypatch, tmp_path):
         """Password-grant sessions live only in CWD .env — logout must honor --no-prompt."""
         from bifrost import credentials as creds_mod
-
         monkeypatch.setattr(
             creds_mod,
             "get_credentials_path",

@@ -72,7 +72,7 @@ On `./debug.sh down`, run:
 bifrost logout --url <URL> --yes
 ```
 
-That removes any matching persistent entry and the matching `BIFROST_API_URL` line from `.env`. If password-grant login wrote token lines, remove `BIFROST_ACCESS_TOKEN` and `BIFROST_REFRESH_TOKEN` from `.env` as well, or delete `.env` if it only contains Bifrost debug credentials.
+That removes any matching persistent entry and the matching `BIFROST_API_URL` line from `.env`. If password-grant login wrote token lines, it also removes `BIFROST_ACCESS_TOKEN` and `BIFROST_REFRESH_TOKEN`; if `.env` only contained Bifrost debug credentials, it is deleted.
 
 ### When to use browser login instead
 

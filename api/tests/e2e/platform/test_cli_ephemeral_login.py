@@ -94,6 +94,7 @@ def test_ephemeral_login_round_trip(e2e_api_url, tmp_path):
     child_env.update(env_lines)
     result2 = subprocess.run(
         _bifrost_cli() + ["api", "GET", "/api/integrations"],
+        cwd=tmp_path,
         env=child_env,
         capture_output=True,
         text=True,

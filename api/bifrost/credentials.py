@@ -5,10 +5,12 @@ Multi-record credential storage for the CLI. Supports per-URL credentials
 across multiple Bifrost instances simultaneously, with three backends:
 
 - EnvBackend (read-only): BIFROST_API_URL + BIFROST_ACCESS_TOKEN + BIFROST_REFRESH_TOKEN
+- CWD .env (read-only): password-grant ephemeral sessions for this directory
 - KeyringBackend: OS-native credential storage via the `keyring` library
 - JsonBackend: ~/.bifrost/credentials.json as a dict-of-URLs
 
-Resolution order: env vars → persistent (keychain or JSON) → legacy single-record JSON.
+Resolution order for credentials: env vars → CWD .env → persistent
+(keychain or JSON) → legacy single-record JSON.
 """
 
 import json
