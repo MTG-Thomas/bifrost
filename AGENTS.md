@@ -85,6 +85,21 @@ Match verification to the change (see `CLAUDE.md` for detail):
 
 Before calling significant platform work complete, run the relevant checks from `CLAUDE.md` and report anything skipped with the reason.
 
+Use [docs/dev/delivery-lanes.md](docs/dev/delivery-lanes.md) to choose the
+lightest verification and review path that protects the actual risk. Do not run
+the full pre-completion matrix for tiny docs, narrow tests, or throwaway spikes
+unless the task specifically depends on stack behavior.
+
+Default PR review to one accountable reviewer. Add extra human or AI reviewers
+only for sensitive paths, broad ownership boundaries, unfamiliar code, or
+explicit user request; stacked generic reviewers are delivery drag, not maturity.
+
+For Codex-authored PRs, treat automated review as a velocity-preserving safety
+net. Address concrete correctness, security, auth, execution, deployment, and
+coverage findings; summarize or dismiss duplicated, stale, style-only, or
+scope-expanding bot feedback. Do one focused stewardship pass by default, then a
+second pass only if real defects remain or the user asks.
+
 ## Security And Sensitive Paths
 
 Use extra care around auth, execution, multi-tenancy filters, migrations, secrets, manifest round-trips, and audit logging. Call out sensitive-path changes in summaries and PR descriptions.
@@ -95,6 +110,7 @@ Do not expose secret values in chat, logs, test fixtures, screenshots, or commit
 
 - `CLAUDE.md` — upstream-style platform commands, manifest rules, verification checklist
 - `CONTRIBUTING.md` — human-facing PR expectations, DCO, and governance links
+- [docs/dev/delivery-lanes.md](docs/dev/delivery-lanes.md) — right-sized verification and reviewer budget
 - [GOVERNANCE.md](./GOVERNANCE.md) — maintainer roles, culture, continuity
 - [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — community standards
 - [docs/security/openssf-best-practices-badge.md](docs/security/openssf-best-practices-badge.md) — BadgeApp tiers and submit flow
