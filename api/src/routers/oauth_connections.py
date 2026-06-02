@@ -422,10 +422,17 @@ async def refresh_token(
             detail="No token URL configured for this connection",
         )
 
+    # The token's scope follows the provider, not the caller. A global
+    # provider must write/read the global token row (organization_id NULL)
+    # no matter which provider-org admin triggers the refresh.
+    token_repo = OAuthProviderRepository(
+        ctx.db, org_id=provider.organization_id, is_superuser=True
+    )
+
     # For authorization_code flows we need the stored token up front.
     stored_token: OAuthToken | None = None
     if provider.oauth_flow_type != "client_credentials":
-        stored_token = await repo.get_token(connection_name)
+        stored_token = await token_repo.get_token(connection_name)
         if not stored_token or not stored_token.encrypted_refresh_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -445,7 +452,7 @@ async def refresh_token(
         db=ctx.db,
         provider=provider,
         token=stored_token,
-        org_id=org_id,
+        org_id=provider.organization_id,
     )
     outcome = await refresh_oauth_token_http(td)
 
@@ -470,7 +477,7 @@ async def refresh_token(
             # Default to 1 hour from now if no expiry provided
             new_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        await repo.store_token(
+        await token_repo.store_token(
             connection_name=connection_name,
             access_token=outcome["access_token"],
             refresh_token=None,  # client_credentials doesn't have refresh tokens
@@ -496,10 +503,10 @@ async def refresh_token(
 
         logger.info(f"Token refreshed successfully for {log_safe(connection_name)}")
 
-    # Invalidate cache (token was updated)
+    # Invalidate cache under the token scope that changed.
     if CACHE_INVALIDATION_AVAILABLE and invalidate_oauth_token:
-        org_id_str = str(org_id) if org_id else None
-        await invalidate_oauth_token(org_id_str, connection_name)
+        token_org_str = str(provider.organization_id) if provider.organization_id else None
+        await invalidate_oauth_token(token_org_str, connection_name)
 
     expires_at_str = new_expires_at.isoformat() if new_expires_at else None
     return RefreshTokenResponse(
