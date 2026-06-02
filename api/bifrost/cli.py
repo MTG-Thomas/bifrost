@@ -391,12 +391,7 @@ def logout_flow(api_url: str | None = None) -> tuple[bool, str | None]:
     creds = credentials.get_credentials(api_url)
     if creds:
         target_url = (creds.get("api_url") or api_url or "").rstrip("/")
-        had_persistent = credentials.get_persistent_backend().get(target_url) is not None
-        had_dotenv_tokens = credentials._get_cwd_dotenv_credentials(target_url) is not None
         credentials.clear_credentials(target_url)
-        if had_dotenv_tokens and not had_persistent:
-            _remove_env_url_line(target_url)
-            _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"})
         print(f"Logged out from {target_url}.")
         return True, target_url
     print("No active session found.")

@@ -359,6 +359,37 @@ class TestLogoutClearsKeychainAndPromptsEnv:
         assert rc == 0
         assert (tmp_path / ".env").read_text() == "BIFROST_API_URL=https://prod.example.com\n"
 
+    def test_logout_no_prompt_leaves_dotenv_only_session_alone(self, monkeypatch, tmp_path):
+        """Password-grant sessions live only in CWD .env — logout must honor --no-prompt."""
+        from bifrost import credentials as creds_mod
+
+        monkeypatch.setattr(
+            creds_mod,
+            "get_credentials_path",
+            lambda: tmp_path / "credentials.json",
+        )
+        creds_mod._reset_persistent_backend_for_tests()
+        monkeypatch.setattr(creds_mod, "_select_persistent_backend", creds_mod.JsonBackend)
+        creds_mod._reset_persistent_backend_for_tests()
+        monkeypatch.delenv("BIFROST_API_URL", raising=False)
+        monkeypatch.delenv("BIFROST_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("BIFROST_REFRESH_TOKEN", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        env_before = (
+            "BIFROST_API_URL=https://prod.example.com\n"
+            "BIFROST_ACCESS_TOKEN=secret-at\n"
+            "BIFROST_REFRESH_TOKEN=secret-rt\n"
+        )
+        (tmp_path / ".env").write_text(env_before)
+
+        rc = cli.handle_logout([
+            "--url", "https://prod.example.com",
+            "--no-prompt",
+        ])
+        assert rc == 0
+        assert (tmp_path / ".env").read_text() == env_before
+
 
 class TestAuthList:
     def test_auth_list_with_no_credentials(self, monkeypatch, tmp_path, capsys):
