@@ -110,6 +110,15 @@ function timestampOrZero(value: string | null | undefined) {
 	return value ? new Date(value).getTime() : 0;
 }
 
+function getOrgInfo(
+	organizations: Organization[] | undefined,
+	orgId: string | null | undefined,
+): { name: string; isProvider: boolean } {
+	if (!orgId) return { name: "Platform", isProvider: false };
+	const org = organizations?.find((o: Organization) => o.id === orgId);
+	return { name: org?.name || orgId, isProvider: org?.is_provider ?? false };
+}
+
 export function Users() {
 	const [selectedUser, setSelectedUser] = useState<User | undefined>();
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -145,13 +154,8 @@ export function Users() {
 		enabled: isPlatformAdmin,
 	});
 
-	const getOrgInfo = (
-		orgId: string | null | undefined,
-	): { name: string; isProvider: boolean } => {
-		if (!orgId) return { name: "Platform", isProvider: false };
-		const org = organizations?.find((o: Organization) => o.id === orgId);
-		return { name: org?.name || orgId, isProvider: org?.is_provider ?? false };
-	};
+	const resolveOrgInfo = (orgId: string | null | undefined) =>
+		getOrgInfo(organizations, orgId);
 
 	const filteredUsers = useSearch(users || [], searchTerm, ["email", "name"]);
 
@@ -440,7 +444,7 @@ export function Users() {
 						</DataTableHeader>
 						<DataTableBody>
 							{sortedUsers.map((user) => {
-								const orgInfo = getOrgInfo(user.organization_id);
+								const orgInfo = resolveOrgInfo(user.organization_id);
 								return (
 									<DataTableRow
 										key={user.id}

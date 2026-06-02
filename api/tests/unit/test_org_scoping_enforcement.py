@@ -256,20 +256,23 @@ def _models_with_org_id() -> dict[str, Path]:
     an organization_id column."""
     found: dict[str, Path] = {}
     for py_file in sorted(MODELS_ORM_DIR.rglob("*.py")):
-        try:
-            tree = ast.parse(py_file.read_text())
-        except SyntaxError:
-            continue
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            if not _is_base_model_class(node):
-                continue
-            if _class_declares_field(node, "organization_id"):
-                found[node.name] = py_file
+        found.update(_models_with_org_id_in_file(py_file))
 
     return found
+
+
+def _models_with_org_id_in_file(py_file: Path) -> dict[str, Path]:
+    try:
+        tree = ast.parse(py_file.read_text())
+    except SyntaxError:
+        return {}
+    return {
+        node.name: py_file
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and _is_base_model_class(node)
+        and _class_declares_field(node, "organization_id")
+    }
 
 
 def _is_base_model_class(node: ast.ClassDef) -> bool:

@@ -2,6 +2,7 @@
 
 COMMON_EXAMPLE_FIELDS = ("schema_version", "occurred_at", "organization", "actor")
 TICKET_CREATED = "ticket.created"
+EXAMPLE_INTEGRATION_NAME = "Microsoft Graph"
 EXAMPLE_TENANT_ID = "tenant-123"
 EXAMPLE_TENANT_NAME = "acme.onmicrosoft.com"
 
@@ -126,7 +127,7 @@ CURATED_TOPICS = [
             actor=_ADMIN_ACTOR,
             integration={
                 "id": "550e8400-e29b-41d4-a716-446655440070",
-                "name": "Microsoft Graph",
+                "name": EXAMPLE_INTEGRATION_NAME,
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
@@ -144,7 +145,7 @@ CURATED_TOPICS = [
             actor=_ADMIN_ACTOR,
             integration={
                 "id": "550e8400-e29b-41d4-a716-446655440070",
-                "name": "Microsoft Graph",
+                "name": EXAMPLE_INTEGRATION_NAME,
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
@@ -162,7 +163,7 @@ CURATED_TOPICS = [
             actor=_SYSTEM_ACTOR,
             integration={
                 "id": "550e8400-e29b-41d4-a716-446655440070",
-                "name": "Microsoft Graph",
+                "name": EXAMPLE_INTEGRATION_NAME,
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
@@ -191,7 +192,7 @@ CURATED_TOPICS = [
             actor=_SYSTEM_ACTOR,
             integration={
                 "id": "550e8400-e29b-41d4-a716-446655440070",
-                "name": "Microsoft Graph",
+                "name": EXAMPLE_INTEGRATION_NAME,
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",
@@ -220,7 +221,7 @@ CURATED_TOPICS = [
             actor=_SYSTEM_ACTOR,
             integration={
                 "id": "550e8400-e29b-41d4-a716-446655440070",
-                "name": "Microsoft Graph",
+                "name": EXAMPLE_INTEGRATION_NAME,
             },
             connection={
                 "id": "550e8400-e29b-41d4-a716-446655440080",

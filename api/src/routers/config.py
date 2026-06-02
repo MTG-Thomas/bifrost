@@ -7,6 +7,8 @@ Uses OrgScopedRepository for standardized org scoping.
 """
 
 import logging
+from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -154,25 +156,31 @@ async def update_config(
     result, old_org_id, old_key = update
 
     if CACHE_AVAILABLE and upsert_config and invalidate_config:
-        await _refresh_config_cache_after_update(result, old_org_id, old_key)
+        await _refresh_config_cache_after_update(
+            result, old_org_id, old_key, invalidate_config, upsert_config
+        )
 
     return result
 
 
 async def _refresh_config_cache_after_update(
-    result: ConfigResponse, old_org_id: UUID | None, old_key: str
+    result: ConfigResponse,
+    old_org_id: UUID | None,
+    old_key: str,
+    invalidate_cache: Callable[[str | None, str], Awaitable[Any]],
+    upsert_cache: Callable[[str | None, str, Any, str], Awaitable[Any]],
 ) -> None:
     new_org_id_str = str(result.org_id) if result.org_id else None
     old_org_id_str = str(old_org_id) if old_org_id else None
 
     if old_org_id_str != new_org_id_str or old_key != result.key:
-        await invalidate_config(old_org_id_str, old_key)
+        await invalidate_cache(old_org_id_str, old_key)
 
     if (old_org_id is None) != (result.org_id is None):
         await _bump_global_config_version_on_transition()
 
     config_type_str = result.type.value if result.type else "string"
-    await upsert_config(new_org_id_str, result.key, result.value, config_type_str)
+    await upsert_cache(new_org_id_str, result.key, result.value, config_type_str)
 
 
 async def _bump_global_config_version_on_transition() -> None:

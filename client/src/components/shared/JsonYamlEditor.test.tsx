@@ -78,7 +78,7 @@ describe("JsonYamlEditor", () => {
 	});
 
 	it("respects defaultFormat=yaml", async () => {
-		const { user } = renderWithProviders(
+		renderWithProviders(
 			<JsonYamlEditor<Doc>
 				value={null}
 				onChange={onChange}
@@ -86,8 +86,6 @@ describe("JsonYamlEditor", () => {
 				defaultFormat="yaml"
 			/>,
 		);
-		// Avoid unused-var on user
-		void user;
 		const yamlTab = screen.getByRole("tab", { name: /yaml/i });
 		expect(yamlTab).toHaveAttribute("data-state", "active");
 		expect(screen.getByLabelText("document.yaml")).toBeVisible();

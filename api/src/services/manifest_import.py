@@ -2526,17 +2526,11 @@ class ManifestResolver:
         # configs are read through ConfigRepository's cache (merged_for_sdk /
         # get_config exclude integration_id IS NOT NULL), so those are the only
         # ones whose cache can go stale on a value/key change here.
-        if integ_id is None:
-            self.configs_touched.add(
-                (str(org_id) if org_id is not None else None, mcfg.key)
-            )
+        self._track_config_cache_touch(integ_id, org_id, mcfg.key)
 
         # Check prefetch cache for existing config by natural key
         cache_hit = cache["config_by_natural"].get((mcfg.key, integ_id, org_id))
-        schema_id = None
-        if integ_id is not None:
-            schema = cache.get("integ_cs", {}).get(integ_id, {}).get(mcfg.key)
-            schema_id = schema.id if schema is not None else None
+        schema_id = self._config_schema_id(cache, integ_id, mcfg.key)
 
         # Convert string config_type to enum for proper DB storage
         from src.models.enums import ConfigType
@@ -2550,20 +2544,9 @@ class ManifestResolver:
             if is_secret and existing_value is not None and schema_id is None:
                 return []
 
-            # Update existing row (including ID if it changed)
-            update_values: dict = {
-                "id": cfg_id,
-                "key": mcfg.key,
-                "config_type": ct,
-                "description": mcfg.description,
-                "integration_id": integ_id,
-                "organization_id": org_id,
-                "updated_by": "git-sync",
-            }
-            if schema_id is not None:
-                update_values["config_schema_id"] = schema_id
-            if not is_secret:
-                update_values["value"] = mcfg.value if mcfg.value is not None else {}
+            update_values = self._config_upsert_values(
+                mcfg, ct, integ_id, org_id, schema_id, include_value=not is_secret
+            )
 
             return [Upsert(
                 model=Config,
@@ -2573,23 +2556,44 @@ class ManifestResolver:
             )]
         else:
             # New config — return Upsert op (uses ON CONFLICT)
-            insert_values: dict = {
-                "key": mcfg.key,
-                "config_type": ct,
-                "description": mcfg.description,
-                "integration_id": integ_id,
-                "organization_id": org_id,
-                "value": mcfg.value if mcfg.value is not None else {},
-                "updated_by": "git-sync",
-            }
-            if schema_id is not None:
-                insert_values["config_schema_id"] = schema_id
+            insert_values = self._config_upsert_values(
+                mcfg, ct, integ_id, org_id, schema_id, include_value=True
+            )
             return [Upsert(
                 model=Config,
                 id=cfg_id,
                 values=insert_values,
                 match_on="id",
             )]
+
+    def _track_config_cache_touch(self, integ_id, org_id, key: str) -> None:
+        if integ_id is None:
+            self.configs_touched.add((str(org_id) if org_id is not None else None, key))
+
+    @staticmethod
+    def _config_schema_id(cache: dict, integ_id, key: str):
+        if integ_id is None:
+            return None
+        schema = cache.get("integ_cs", {}).get(integ_id, {}).get(key)
+        return schema.id if schema is not None else None
+
+    @staticmethod
+    def _config_upsert_values(
+        mcfg, config_type, integ_id, org_id, schema_id, *, include_value: bool
+    ) -> dict:
+        values: dict = {
+            "key": mcfg.key,
+            "config_type": config_type,
+            "description": mcfg.description,
+            "integration_id": integ_id,
+            "organization_id": org_id,
+            "updated_by": "git-sync",
+        }
+        if schema_id is not None:
+            values["config_schema_id"] = schema_id
+        if include_value:
+            values["value"] = mcfg.value if mcfg.value is not None else {}
+        return values
 
     def _resolve_app(self, mapp, cache: dict) -> "list[SyncOp]":
         """Resolve an app from manifest into SyncOps (metadata only).

@@ -1012,30 +1012,9 @@ async def sdk_integrations_get_mapping(
         # Apply the C2 gate. Non-bypass callers can only target their own
         # org; cross-org or "global" requires platform-admin / provider-org.
         resolved_org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
-        mapping = None
-
-        # Direct lookup by org_id.
-        if resolved_org_id is not None:
-            mapping = await repo.get_mapping_by_org(
-                integration.id, UUID(resolved_org_id)
-            )
-
-        # entity_id fallback search, scoped by the resolved org. For a
-        # global-scoped caller (bypass), search across all mappings;
-        # otherwise restrict to the caller's resolved org so non-bypass
-        # callers can't probe other orgs' entity_ids.
-        if not mapping and request.entity_id:
-            if resolved_org_id is None and request.scope in (None, ""):
-                candidates = []
-            else:
-                candidates = await repo.list_mappings(
-                    integration.id,
-                    organization_id=UUID(resolved_org_id) if resolved_org_id else None,
-                )
-            for m in candidates:
-                if m.entity_id == request.entity_id:
-                    mapping = m
-                    break
+        mapping = await _sdk_find_integration_mapping(
+            repo, integration.id, resolved_org_id, request
+        )
 
         if not mapping:
             return None
@@ -1067,6 +1046,27 @@ async def sdk_integrations_get_mapping(
     except Exception as e:
         logger.error(f"SDK integrations.get_mapping failed: {log_safe(e)}")
         return None
+
+
+async def _sdk_find_integration_mapping(
+    repo,
+    integration_id: UUID,
+    resolved_org_id: str | None,
+    request: SDKIntegrationsGetMappingRequest,
+):
+    if resolved_org_id is not None:
+        mapping = await repo.get_mapping_by_org(integration_id, UUID(resolved_org_id))
+        if mapping:
+            return mapping
+
+    if not request.entity_id or (resolved_org_id is None and request.scope in (None, "")):
+        return None
+
+    candidates = await repo.list_mappings(
+        integration_id,
+        organization_id=UUID(resolved_org_id) if resolved_org_id else None,
+    )
+    return next((m for m in candidates if m.entity_id == request.entity_id), None)
 
 
 @router.post(
