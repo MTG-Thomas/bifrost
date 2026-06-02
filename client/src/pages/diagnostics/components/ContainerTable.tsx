@@ -47,7 +47,7 @@ function formatBytes(bytes: number): string {
     return `${mb.toFixed(0)} MB`;
 }
 
-function getPoolCounts(pool: PoolData) {
+export function getPoolCounts(pool: PoolData) {
     if ("processes" in pool && Array.isArray(pool.processes)) {
         const processes = pool.processes as ProcessInfo[];
         const detail = pool as PoolDetail;
