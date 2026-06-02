@@ -361,9 +361,11 @@ def _get_cwd_dotenv_credentials(api_url: str) -> Credentials | None:
 def credentials_are_ephemeral(api_url: str) -> bool:
     """Return True when credentials for api_url come from env vars or CWD .env only."""
     url = api_url.rstrip("/")
-    if get_persistent_backend().get(url) is not None:
-        return False
-    return EnvBackend().get(url) is not None or _get_cwd_dotenv_credentials(url) is not None
+    if EnvBackend().get(url) is not None:
+        return True
+    if _get_cwd_dotenv_credentials(url) is not None:
+        return True
+    return False
 
 
 def _resolve_url(api_url: str | None) -> str | None:
