@@ -4,6 +4,8 @@ Verifies the invite-management endpoints on the users router and the
 unauthenticated register-from-invite flow on the auth router.
 """
 
+import secrets
+
 import pytest
 
 
@@ -178,9 +180,10 @@ class TestRegisterFromInvite:
         url: str = regen.json()["registration_url"]
         token = url.split("token=", 1)[1]
 
+        generated_password = secrets.token_urlsafe(18)
         register_resp = e2e_client.post(
             "/auth/register-from-invite",
-            json={"token": token, "password": "supersecret-1234"},
+            json={"token": token, "password": generated_password},
         )
         assert register_resp.status_code == 200
         assert register_resp.json()["email"] == "inv-reg@gobifrost.dev"

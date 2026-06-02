@@ -1356,6 +1356,81 @@ async def disconnect_mapping(
         except Exception as e:
             logger.warning(f"Failed to emit integration.disconnected: {e}", exc_info=True)
 
+def _apply_successful_refresh(token: OAuthToken, outcome: dict[str, Any], now: datetime) -> None:
+    token.encrypted_access_token = outcome["encrypted_access_token"]
+    token.expires_at = outcome["expires_at"]
+    if outcome.get("encrypted_refresh_token"):
+        token.encrypted_refresh_token = outcome["encrypted_refresh_token"]
+    if outcome.get("scopes"):
+        token.scopes = outcome["scopes"]
+    token.status = "completed"
+    token.status_message = None
+    token.last_refresh_at = now
+
+
+def _apply_failed_refresh(token: OAuthToken, outcome: dict[str, Any], now: datetime) -> None:
+    token.status = "failed"
+    token.status_message = (outcome.get("error", "Refresh failed"))[:200]
+    token.last_refresh_at = now
+
+
+async def _emit_refresh_recovered(
+    integration: Integration,
+    mapping: IntegrationMapping,
+    now: datetime,
+) -> None:
+    try:
+        from src.services.events.builtins import emit_integration_refresh_recovered
+
+        await emit_integration_refresh_recovered(
+            integration_id=integration.id,
+            integration_name=integration.name,
+            organization_id=mapping.organization_id,
+            organization_name=mapping.organization.name if mapping.organization else None,
+            connection_id=mapping.id,
+            external_account_id=mapping.entity_id,
+            external_account_name=mapping.entity_name,
+            attempt=1,
+            last_success_at=now,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to emit integration.refresh_recovered: {e}",
+            exc_info=True,
+        )
+
+
+async def _emit_refresh_failed(
+    integration: Integration,
+    mapping: IntegrationMapping,
+    token: OAuthToken,
+    outcome: dict[str, Any],
+    previous_success_at: datetime | None,
+) -> None:
+    try:
+        from src.services.events.builtins import emit_integration_refresh_failed
+
+        await emit_integration_refresh_failed(
+            integration_id=integration.id,
+            integration_name=integration.name,
+            organization_id=mapping.organization_id,
+            organization_name=mapping.organization.name if mapping.organization else None,
+            connection_id=mapping.id,
+            external_account_id=mapping.entity_id,
+            external_account_name=mapping.entity_name,
+            attempt=1,
+            last_success_at=previous_success_at,
+            error_code=outcome.get("error_code"),
+            error_message=token.status_message or "Refresh failed",
+            retryable=False,
+            reauth_required=True,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to emit integration.refresh_failed: {e}",
+            exc_info=True,
+        )
+
 
 @router.post(
     "/{integration_id}/mappings/{mapping_id}/oauth/refresh",
@@ -1424,63 +1499,15 @@ async def refresh_mapping_oauth(
 
     now = datetime.now(timezone.utc)
     if outcome["success"]:
-        token.encrypted_access_token = outcome["encrypted_access_token"]
-        token.expires_at = outcome["expires_at"]
-        if outcome.get("encrypted_refresh_token"):
-            token.encrypted_refresh_token = outcome["encrypted_refresh_token"]
-        if outcome.get("scopes"):
-            token.scopes = outcome["scopes"]
-        token.status = "completed"
-        token.status_message = None
-        token.last_refresh_at = now
+        _apply_successful_refresh(token, outcome, now)
         if was_failed:
-            try:
-                from src.services.events.builtins import emit_integration_refresh_recovered
-
-                await emit_integration_refresh_recovered(
-                    integration_id=integration.id,
-                    integration_name=integration.name,
-                    organization_id=mapping.organization_id,
-                    organization_name=mapping.organization.name if mapping.organization else None,
-                    connection_id=mapping.id,
-                    external_account_id=mapping.entity_id,
-                    external_account_name=mapping.entity_name,
-                    attempt=1,
-                    last_success_at=now,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to emit integration.refresh_recovered: {e}",
-                    exc_info=True,
-                )
+            await _emit_refresh_recovered(integration, mapping, now)
     else:
-        token.status = "failed"
-        token.status_message = (outcome.get("error", "Refresh failed"))[:200]
-        token.last_refresh_at = now
+        _apply_failed_refresh(token, outcome, now)
         await ctx.db.flush()
-        try:
-            from src.services.events.builtins import emit_integration_refresh_failed
-
-            await emit_integration_refresh_failed(
-                integration_id=integration.id,
-                integration_name=integration.name,
-                organization_id=mapping.organization_id,
-                organization_name=mapping.organization.name if mapping.organization else None,
-                connection_id=mapping.id,
-                external_account_id=mapping.entity_id,
-                external_account_name=mapping.entity_name,
-                attempt=1,
-                last_success_at=previous_success_at,
-                error_code=outcome.get("error_code"),
-                error_message=token.status_message or "Refresh failed",
-                retryable=False,
-                reauth_required=True,
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to emit integration.refresh_failed: {e}",
-                exc_info=True,
-            )
+        await _emit_refresh_failed(
+            integration, mapping, token, outcome, previous_success_at
+        )
         raise HTTPException(
             status_code=502,
             detail=token.status_message or "Refresh failed",

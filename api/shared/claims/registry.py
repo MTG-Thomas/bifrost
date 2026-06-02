@@ -49,36 +49,57 @@ def claim_dependency_graph(claims: Iterable[CustomClaimDTO]) -> dict[str, set[st
     return graph
 
 
+def _reconstruct_cycle(parent: dict[str, str | None], start: str, end: str) -> list[str]:
+    cycle = [start, end]
+    node = end
+    while parent[node] is not None and parent[node] != start:
+        node = parent[node]
+        cycle.append(node)
+    cycle.append(start)
+    return list(reversed(cycle))
+
+
+def _visit_dependency(
+    graph: dict[str, set[str]],
+    color: dict[str, int],
+    parent: dict[str, str | None],
+    node: str,
+    dependency: str,
+) -> list[str] | None:
+    if dependency not in color:
+        return None
+    if color[dependency] == 1:
+        return _reconstruct_cycle(parent, dependency, node)
+    if color[dependency] == 0:
+        parent[dependency] = node
+        return _find_cycle_from(graph, color, parent, dependency)
+    return None
+
+
+def _find_cycle_from(
+    graph: dict[str, set[str]],
+    color: dict[str, int],
+    parent: dict[str, str | None],
+    node: str,
+) -> list[str] | None:
+    color[node] = 1
+    for dependency in graph.get(node, ()):
+        cycle = _visit_dependency(graph, color, parent, node, dependency)
+        if cycle:
+            return cycle
+    color[node] = 2
+    return None
+
+
 def find_cycle(graph: dict[str, set[str]]) -> list[str] | None:
     """Return a cycle path if any, else None."""
-    WHITE, GRAY, BLACK = 0, 1, 2
+    WHITE = 0
     color: dict[str, int] = {n: WHITE for n in graph}
     parent: dict[str, str | None] = {n: None for n in graph}
 
-    def dfs(u: str) -> list[str] | None:
-        color[u] = GRAY
-        for v in graph.get(u, ()):
-            if v not in color:
-                continue  # reference to a name that doesn't exist (caught elsewhere)
-            if color[v] == GRAY:
-                # reconstruct cycle
-                cycle = [v, u]
-                while parent[u] is not None and parent[u] != v:
-                    u = parent[u]  # type: ignore[assignment]
-                    cycle.append(u)
-                cycle.append(v)
-                return list(reversed(cycle))
-            if color[v] == WHITE:
-                parent[v] = u
-                found = dfs(v)
-                if found:
-                    return found
-        color[u] = BLACK
-        return None
-
     for node in graph:
         if color[node] == WHITE:
-            cycle = dfs(node)
+            cycle = _find_cycle_from(graph, color, parent, node)
             if cycle:
                 return cycle
     return None

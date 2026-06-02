@@ -331,6 +331,43 @@ async def get_dev_context(
 # =============================================================================
 
 
+def _parse_sdk_scope(scope: str | None) -> object:
+    from fastapi import HTTPException, status
+    from shared.scope_resolver import UNSET
+
+    if scope is None or scope == "":
+        return UNSET
+    if scope == "global":
+        return None
+    try:
+        return UUID(scope)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
+        ) from None
+
+
+def _principal_org_id(current_user: "UserPrincipal") -> UUID | None:
+    if current_user.organization_id is None:
+        return None
+    if isinstance(current_user.organization_id, UUID):
+        return current_user.organization_id
+    return UUID(str(current_user.organization_id))
+
+
+async def _is_provider_org(db: AsyncSession, caller_org_id: UUID) -> bool:
+    from inspect import isawaitable
+
+    org_row = await db.execute(
+        select(Organization.is_provider).where(Organization.id == caller_org_id)
+    )
+    provider_value = org_row.scalar_one_or_none()
+    if isawaitable(provider_value):
+        provider_value = await cast(Awaitable[Any], provider_value)
+    return provider_value is True
+
+
 async def _resolve_sdk_org_id(
     current_user: "UserPrincipal",
     scope: str | None,
@@ -370,30 +407,8 @@ async def _resolve_sdk_org_id(
         resolve_effective_scope,
     )
 
-    # Parse the requested scope into the resolver's input domain.
-    requested: object
-    if scope is None or scope == "":
-        # Empty string preserved as "unset" for backwards compat with
-        # CLI clients that pass `--scope ''` to mean "use my default."
-        requested = UNSET
-    elif scope == "global":
-        requested = None
-    else:
-        try:
-            requested = UUID(scope)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
-            ) from None
-
-    caller_org_id: UUID | None
-    if current_user.organization_id is None:
-        caller_org_id = None
-    elif isinstance(current_user.organization_id, UUID):
-        caller_org_id = current_user.organization_id
-    else:
-        caller_org_id = UUID(str(current_user.organization_id))
+    requested = _parse_sdk_scope(scope)
+    caller_org_id = _principal_org_id(current_user)
     is_platform_admin = current_user.is_superuser
 
     # Provider-org membership is only needed if the caller is requesting
@@ -402,15 +417,7 @@ async def _resolve_sdk_org_id(
     is_provider_org = False
     needs_bypass_check = requested is not UNSET and requested != caller_org_id
     if needs_bypass_check and not is_platform_admin and caller_org_id is not None:
-        from inspect import isawaitable
-
-        org_row = await db.execute(
-            select(Organization.is_provider).where(Organization.id == caller_org_id)
-        )
-        provider_value = org_row.scalar_one_or_none()
-        if isawaitable(provider_value):
-            provider_value = await cast(Awaitable[Any], provider_value)
-        is_provider_org = provider_value is True
+        is_provider_org = await _is_provider_org(db, caller_org_id)
 
     try:
         resolved = resolve_effective_scope(

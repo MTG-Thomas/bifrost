@@ -27,6 +27,8 @@ from pathlib import Path
 
 
 COWORK_NAMESPACE = uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
+SKILL_MD = "SKILL.md"
+OUTLINE_ICON = "outline.png"
 
 JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini", ".AppleDouble", ".Spotlight-V100", ".Trashes"}
 
@@ -117,24 +119,24 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
         with zipfile.ZipFile(path) as z:
             z.extractall(tmp)
         # Look for a single top-level folder containing SKILL.md.
-        candidates = [p.parent for p in tmp.rglob("SKILL.md")]
+        candidates = [p.parent for p in tmp.rglob(SKILL_MD)]
         if not candidates:
-            raise RuntimeError(f"No SKILL.md found inside {path}")
+            raise RuntimeError(f"No {SKILL_MD} found inside {path}")
         skill_dir = candidates[0]
     elif path.is_dir():
-        if (path / "SKILL.md").exists():
+        if (path / SKILL_MD).exists():
             skill_dir = path
         else:
-            candidates = [p.parent for p in path.rglob("SKILL.md")]
+            candidates = [p.parent for p in path.rglob(SKILL_MD)]
             if not candidates:
-                raise RuntimeError(f"No SKILL.md found under {path}")
+                raise RuntimeError(f"No {SKILL_MD} found under {path}")
             skill_dir = candidates[0]
     else:
         raise RuntimeError(f"--skill-source must be a folder, .zip, or .skill: {path}")
 
-    text = (skill_dir / "SKILL.md").read_text()
+    text = (skill_dir / SKILL_MD).read_text()
     if not text.startswith("---"):
-        raise RuntimeError(f"SKILL.md missing YAML frontmatter: {skill_dir/'SKILL.md'}")
+        raise RuntimeError(f"{SKILL_MD} missing YAML frontmatter: {skill_dir / SKILL_MD}")
     _, fm, _ = text.split("---", 2)
     name = ""
     desc = ""
@@ -234,7 +236,7 @@ def build_manifest(agent: dict, skill_name: str, app_id: str,
             "short": short_desc,
             "full": desc_full[:4000],
         },
-        "icons": {"color": "color.png", "outline": "outline.png"},
+        "icons": {"color": "color.png", "outline": OUTLINE_ICON},
         "accentColor": "#4F46E5",
         "agentSkills": [{"folder": f"./skills/{skill_name}"}],
         "agentConnectors": [{
@@ -332,16 +334,16 @@ def main() -> int:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(entry, dest)
     else:
-        (skills_dir / "SKILL.md").write_text(build_skill_md(agent, skill_name))
+        (skills_dir / SKILL_MD).write_text(build_skill_md(agent, skill_name))
 
     if icon_src:
         render_icon(icon_src, 192, pkg_dir / "color.png")
     else:
         (pkg_dir / "color.png").write_bytes(solid_png(192, (79, 70, 229)))
     if outline_src:
-        render_icon(outline_src, 32, pkg_dir / "outline.png")
+        render_icon(outline_src, 32, pkg_dir / OUTLINE_ICON)
     else:
-        (pkg_dir / "outline.png").write_bytes(solid_png(32, (255, 255, 255)))
+        (pkg_dir / OUTLINE_ICON).write_bytes(solid_png(32, (255, 255, 255)))
 
     if src_cleanup:
         shutil.rmtree(src_cleanup, ignore_errors=True)

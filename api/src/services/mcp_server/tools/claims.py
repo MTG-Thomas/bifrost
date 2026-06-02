@@ -11,6 +11,7 @@ from src.services.mcp_server.tool_result import error_result, success_result
 from src.services.mcp_server.tools._http_bridge import call_rest, rest_client
 
 logger = logging.getLogger(__name__)
+NAME_REQUIRED = "name is required"
 
 
 def _ref_error_payload(exc: Exception) -> dict[str, Any]:
@@ -68,7 +69,7 @@ async def list_claims(context: Any, scope: str | None = None) -> ToolResult:
 async def get_claim(context: Any, name: str, scope: str | None = None) -> ToolResult:
     """Get a custom claim by name — thin wrapper over ``GET /api/claims/{name}``."""
     if not name:
-        return error_result("name is required")
+        return error_result(NAME_REQUIRED)
 
     status_code, body = await call_rest(
         context, "GET", f"/api/claims/{name}", params=_scope_params(scope)
@@ -91,7 +92,7 @@ async def create_claim(
 ) -> ToolResult:
     """Create a custom claim — thin wrapper over ``POST /api/claims``."""
     if not name:
-        return error_result("name is required")
+        return error_result(NAME_REQUIRED)
     if not query:
         return error_result("query is required")
 
@@ -127,7 +128,7 @@ async def update_claim(
 ) -> ToolResult:
     """Update a custom claim by name — thin wrapper over ``PATCH /api/claims/{name}``."""
     if not name:
-        return error_result("name is required")
+        return error_result(NAME_REQUIRED)
 
     fields = {"description": description, "type": type, "query": query}
     try:
@@ -155,7 +156,7 @@ async def delete_claim(
 ) -> ToolResult:
     """Delete a custom claim by name — thin wrapper over ``DELETE /api/claims/{name}``."""
     if not name:
-        return error_result("name is required")
+        return error_result(NAME_REQUIRED)
 
     status_code, resp = await call_rest(
         context, "DELETE", f"/api/claims/{name}", params=_scope_params(scope)

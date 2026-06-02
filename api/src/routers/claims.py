@@ -36,6 +36,7 @@ from src.models.orm.custom_claims import CustomClaim as ClaimORM
 from src.models.orm.tables import Table
 
 router = APIRouter(prefix="/api/claims", tags=["Claims"])
+CLAIM_NOT_FOUND = "claim not found"
 
 
 def _resolve_target_org(ctx: Context, scope: str | None) -> UUID:
@@ -198,7 +199,7 @@ async def get_claim(
         )
     ).scalar_one_or_none()
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="claim not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CLAIM_NOT_FOUND)
     return ClaimDTO.model_validate(row)
 
 
@@ -273,7 +274,7 @@ async def update_claim(
         )
     ).scalar_one_or_none()
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="claim not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CLAIM_NOT_FOUND)
 
     fields = body.model_fields_set
     if "description" in fields:

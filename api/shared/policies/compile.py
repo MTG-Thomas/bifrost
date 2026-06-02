@@ -218,6 +218,36 @@ def _compile_comparison_operands(
     return _compile_node(left_node, user), _compile_node(right_node, user)
 
 
+def _compile_ordered_comparison(op: str, value: Any, user: Any) -> ColumnElement:
+    left, right = _compile_comparison_operands(value[0], value[1], user)
+    if op == "eq":
+        return left == right
+    if op == "neq":
+        return left != right
+    if op == "lt":
+        return left < right
+    if op == "lte":
+        return left <= right
+    if op == "gt":
+        return left > right
+    return left >= right
+
+
+def _compile_in(value: Any, user: Any) -> ColumnElement:
+    left_node, right_node = value[0], value[1]
+    # Claims-RHS short-circuit: `{in: [{row: x}, {claims: name}]}` expands
+    # to a SQL IN clause over the user's pre-resolved claim list.
+    if isinstance(right_node, dict) and set(right_node.keys()) == {"claims"}:
+        marker = _resolve_claims_to_literal(user, right_node["claims"])
+        values = marker.values if isinstance(marker.values, list) else []
+        if not values:
+            return sa_false()
+        left_sql = _compile_node(left_node, user)
+        return left_sql.in_([literal(v) for v in values])
+    left = _compile_node(left_node, user)
+    return left.in_(right_node)
+
+
 def _compile_op(op: str, value: Any, user: Any) -> ColumnElement:
     if op == "and":
         return sa_and(*(_compile_node(item, user) for item in value))
@@ -229,32 +259,9 @@ def _compile_op(op: str, value: Any, user: Any) -> ColumnElement:
         # NULL-as-false semantics survive the negation.
         return sa_not(_compile_node(value, user).self_group())
     if op in ("eq", "neq", "lt", "lte", "gt", "gte"):
-        left, right = _compile_comparison_operands(value[0], value[1], user)
-        if op == "eq":
-            return left == right
-        if op == "neq":
-            return left != right
-        if op == "lt":
-            return left < right
-        if op == "lte":
-            return left <= right
-        if op == "gt":
-            return left > right
-        if op == "gte":
-            return left >= right
+        return _compile_ordered_comparison(op, value, user)
     if op == "in":
-        left_node, right_node = value[0], value[1]
-        # Claims-RHS short-circuit: `{in: [{row: x}, {claims: name}]}` expands
-        # to a SQL IN clause over the user's pre-resolved claim list.
-        if isinstance(right_node, dict) and set(right_node.keys()) == {"claims"}:
-            marker = _resolve_claims_to_literal(user, right_node["claims"])
-            values = marker.values if isinstance(marker.values, list) else []
-            if not values:
-                return sa_false()
-            left_sql = _compile_node(left_node, user)
-            return left_sql.in_([literal(v) for v in values])
-        left = _compile_node(left_node, user)
-        return left.in_(right_node)
+        return _compile_in(value, user)
     if op == "is_null":
         return _compile_node(value, user).is_(None)
     raise ValueError(f"unknown operator {op!r}")

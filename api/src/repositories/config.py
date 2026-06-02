@@ -272,15 +272,12 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         old_key = config.key
         now = datetime.now(timezone.utc)
 
-        effective_type = (
-            request.type
-            if request.type is not None
-            else (
-                ConfigType(config.config_type.value)
-                if config.config_type
-                else ConfigType.STRING
-            )
-        )
+        if request.type is not None:
+            effective_type = request.type
+        elif config.config_type:
+            effective_type = ConfigType(config.config_type.value)
+        else:
+            effective_type = ConfigType.STRING
 
         if request.value is not None and request.value != "":
             stored_value = request.value

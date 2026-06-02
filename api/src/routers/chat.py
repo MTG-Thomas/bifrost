@@ -11,7 +11,7 @@ For real-time streaming, use the WebSocket endpoint at /ws/connect
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Literal, cast
+from typing import Any, Literal, TypedDict, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, status
@@ -35,6 +35,15 @@ from src.services.agent_executor import AgentExecutor
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
+
+
+class NonStreamingChatResult(TypedDict):
+    message_id: str | None
+    content: str
+    tool_calls: list[Any]
+    input_tokens: int | None
+    output_tokens: int | None
+    duration_ms: int | None
 
 
 # =============================================================================
@@ -351,7 +360,30 @@ async def send_message(
     # Execute chat — executor manages its own short-lived sessions
     from src.core.database import get_session_factory
     executor = AgentExecutor(get_session_factory())
+    collected = await _collect_non_streaming_chat(
+        executor=executor,
+        conversation=conversation,
+        request=request,
+        user=user,
+    )
 
+    return ChatResponse(
+        message_id=UUID(collected["message_id"]) if collected["message_id"] else uuid4(),
+        content=collected["content"],
+        tool_calls=collected["tool_calls"] if collected["tool_calls"] else None,
+        token_count_input=collected["input_tokens"],
+        token_count_output=collected["output_tokens"],
+        duration_ms=collected["duration_ms"],
+    )
+
+
+async def _collect_non_streaming_chat(
+    *,
+    executor: AgentExecutor,
+    conversation: Conversation,
+    request: ChatRequest,
+    user,
+) -> NonStreamingChatResult:
     # Collect streaming response into a single response
     final_content = ""
     final_tool_calls = []
@@ -385,14 +417,14 @@ async def send_message(
                 detail=chunk.error or "Unknown error during chat",
             )
 
-    return ChatResponse(
-        message_id=UUID(final_message_id) if final_message_id else uuid4(),
-        content=final_content,
-        tool_calls=final_tool_calls if final_tool_calls else None,
-        token_count_input=final_input_tokens,
-        token_count_output=final_output_tokens,
-        duration_ms=final_duration_ms,
-    )
+    return {
+        "message_id": final_message_id,
+        "content": final_content,
+        "tool_calls": final_tool_calls,
+        "input_tokens": final_input_tokens,
+        "output_tokens": final_output_tokens,
+        "duration_ms": final_duration_ms,
+    }
 
 
 # =============================================================================
