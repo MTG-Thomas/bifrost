@@ -38,20 +38,8 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  docs-only-notice:
     runs-on: ubuntu-latest
-    name: Docs-only Lint Notice
+    name: Docs-only CI notice
     steps:
-      - run: echo "Docs-only change — real lint runs from ci.yml when code changes."
-
-  test-unit:
-    runs-on: ubuntu-latest
-    name: Docs-only Unit Notice
-    steps:
-      - run: echo "Docs-only change — real unit tests run from ci.yml when code changes."
-
-  test-e2e:
-    runs-on: ubuntu-latest
-    name: Docs-only E2E Notice
-    steps:
-      - run: echo "Docs-only change — real E2E tests run from ci.yml when code changes."
+      - run: echo "Docs-only change — real CI runs from ci.yml when code changes."
