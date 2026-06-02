@@ -1,0 +1,21 @@
+{
+    "include": [
+        "src/core/typed_core.py",
+        "tests/unit/test_typed_core.py"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        "**/.pytest_cache",
+        "**/node_modules",
+        "**/.venv",
+        "**/stubs"
+    ],
+    "venvPath": "..",
+    "venv": ".venv",
+    "pythonVersion": "3.12",
+    "pythonPlatform": "Linux",
+    "typeCheckingMode": "strict",
+    "useLibraryCodeForTypes": true,
+    "reportMissingImports": true,
+    "reportMissingTypeStubs": false
+}
