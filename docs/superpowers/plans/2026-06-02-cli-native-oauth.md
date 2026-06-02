@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: URL Resolution And CLI Mode Selection
+## Task 1: URL Resolution And CLI Mode Selection
 
 **Files:**
 - Modify: `api/bifrost/credentials.py`
@@ -23,7 +23,7 @@
 - [ ] Keep `--email/--password` dev-only password-grant behavior unchanged except it shares the strict URL resolver.
 - [ ] Add unit tests for `bifrost login` using `BIFROST_API_URL`, missing URL errors, and `--device-code` dispatch.
 
-### Task 2: Backend Native CLI Auth Contracts And Endpoints
+## Task 2: Backend Native CLI Auth Contracts And Endpoints
 
 **Files:**
 - Modify: `api/src/models/contracts/auth.py`
@@ -37,7 +37,7 @@
 - [ ] Add `POST /auth/cli/token` to validate transaction id, code, verifier, and state, then call `_generate_login_tokens()` and delete transaction state.
 - [ ] Add e2e coverage for success, invalid redirect URI, invalid verifier, one-time code use, and inactive user rejection.
 
-### Task 3: Native OAuth CLI Flow
+## Task 3: Native OAuth CLI Flow
 
 **Files:**
 - Modify: `api/bifrost/cli.py`
@@ -49,7 +49,7 @@
 - [ ] If callback bind fails, report a clear error telling the user to rerun with `--device-code`.
 - [ ] Add unit tests with mocked `httpx.AsyncClient`, mocked browser open, and a fake callback result.
 
-### Task 4: Docs, LLM Text, And Verification
+## Task 4: Docs, LLM Text, And Verification
 
 **Files:**
 - Modify: `.claude/skills/bifrost-debug/SKILL.md` if needed
@@ -68,7 +68,7 @@
 
 ---
 
-### Notes
+## Notes
 
 - Do not use password grant for production.
 - Do not silently fall back to localhost for production login.

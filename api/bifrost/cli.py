@@ -929,9 +929,10 @@ Browser (default): Native OAuth flow using your browser session and a local
                    instance.
 Device code: Pass --device-code for the legacy browser device-code flow.
 Password: When --email and --password are passed, performs an ephemeral
-          password-grant login and stores tokens in the credential backend.
-          Only BIFROST_API_URL is written to .env. For isolated dev stacks
-          only — refuses if MFA is enabled on the instance.
+          password-grant login that skips the persistent credential backend.
+          It writes BIFROST_ACCESS_TOKEN and BIFROST_REFRESH_TOKEN into the
+          current directory's .env; otherwise only BIFROST_API_URL is written.
+          For isolated dev stacks only — refuses if MFA is enabled.
 
 Options:
   --url, -u URL         API URL (default: BIFROST_API_URL; required otherwise)

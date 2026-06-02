@@ -1550,7 +1550,8 @@ async def exchange_cli_native_auth_token(
     await auth_limiter.check("cli_native_token", client_ip)
 
     r = await get_shared_redis()
-    cli_auth_data_json = await r.get(_cli_native_auth_key(token_request.transaction_id))
+    cli_auth_key = _cli_native_auth_key(token_request.transaction_id)
+    cli_auth_data_json = await r.execute_command("GETDEL", cli_auth_key)
     if not cli_auth_data_json:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1594,7 +1595,6 @@ async def exchange_cli_native_auth_token(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Login token generation failed",
         )
-    await r.delete(_cli_native_auth_key(token_request.transaction_id))
 
     logger.info(
         f"CLI native OAuth completed for user: {log_safe(user.email)}",
