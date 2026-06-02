@@ -4,7 +4,7 @@
  * Lists all App Builder applications with management capabilities.
  */
 
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import {
 	Plus,
@@ -55,7 +55,36 @@ import { useSearch } from "@/hooks/useSearch";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import type { components } from "@/lib/v1";
 
+type ApplicationPublic = components["schemas"]["ApplicationPublic"];
 type Organization = components["schemas"]["OrganizationPublic"];
+
+function appOrgLabel(
+	app: ApplicationPublic,
+	isPlatformAdmin: boolean,
+	getOrgName: (orgId: string) => string,
+) {
+	if (!isPlatformAdmin) return null;
+	return app.organization_id ? getOrgName(app.organization_id) : "Global";
+}
+
+function appDefaultTarget(
+	app: ApplicationPublic,
+	handleLaunch: (slug: string) => void,
+	handlePreview: (slug: string) => void,
+) {
+	return app.is_published
+		? () => handleLaunch(app.slug)
+		: () => handlePreview(app.slug);
+}
+
+function openCardFromKeyboard(
+	event: KeyboardEvent,
+	defaultTarget: () => void,
+) {
+	if (event.key !== "Enter" && event.key !== " ") return;
+	event.preventDefault();
+	defaultTarget();
+}
 
 export function Applications() {
 	const navigate = useNavigate();
@@ -265,14 +294,16 @@ export function Applications() {
 				viewMode === "grid" || !canManageApps ? (
 					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(260px,1fr))]">
 						{filteredApps.map((app) => {
-							const defaultTarget = app.is_published
-								? () => handleLaunch(app.slug)
-								: () => handlePreview(app.slug);
-							const orgLabel = isPlatformAdmin
-								? app.organization_id
-									? getOrgName(app.organization_id)
-									: "Global"
-								: null;
+							const defaultTarget = appDefaultTarget(
+								app,
+								handleLaunch,
+								handlePreview,
+							);
+							const orgLabel = appOrgLabel(
+								app,
+								isPlatformAdmin,
+								getOrgName,
+							);
 							return (
 								<div
 									key={app.id}
@@ -280,10 +311,7 @@ export function Applications() {
 									tabIndex={0}
 									onClick={defaultTarget}
 									onKeyDown={(e) => {
-										if (e.key === "Enter" || e.key === " ") {
-											e.preventDefault();
-											defaultTarget();
-										}
+										openCardFromKeyboard(e, defaultTarget);
 									}}
 									className="group relative flex cursor-pointer flex-col overflow-hidden rounded-[10px] border bg-card transition-colors hover:border-border/80 hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 								>

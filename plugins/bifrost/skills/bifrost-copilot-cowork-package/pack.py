@@ -122,6 +122,12 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
     the `name:` from frontmatter, the `description:` from frontmatter, and an
     optional tmpdir handle for the caller to clean up.
     """
+    skill_dir, cleanup = resolve_skill_dir(path)
+    name, desc = parse_skill_frontmatter(skill_dir / SKILL_MD)
+    return skill_dir, name, desc, cleanup
+
+
+def resolve_skill_dir(path: Path) -> tuple[Path, Path | None]:
     cleanup: Path | None = None
     if path.is_file() and zipfile.is_zipfile(path):
         tmp = Path(tempfile.mkdtemp(prefix="copilot-skill-src-"))
@@ -143,10 +149,13 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
             skill_dir = candidates[0]
     else:
         raise RuntimeError(f"--skill-source must be a folder, .zip, or .skill: {path}")
+    return skill_dir, cleanup
 
-    text = (skill_dir / SKILL_MD).read_text()
+
+def parse_skill_frontmatter(skill_path: Path) -> tuple[str, str]:
+    text = skill_path.read_text()
     if not text.startswith("---"):
-        raise RuntimeError(f"{SKILL_MD} missing YAML frontmatter: {skill_dir / SKILL_MD}")
+        raise RuntimeError(f"{SKILL_MD} missing YAML frontmatter: {skill_path}")
     _, fm, _ = text.split("---", 2)
     name = ""
     desc = ""
@@ -172,7 +181,7 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
         desc = " ".join(line for line in desc_lines if line)
     if not name:
         raise RuntimeError("SKILL.md frontmatter missing `name:`")
-    return skill_dir, name, desc, cleanup
+    return name, desc
 
 
 def build_skill_md(agent: dict, skill_name: str) -> str:

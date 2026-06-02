@@ -73,6 +73,13 @@ type Organization = components["schemas"]["OrganizationPublic"];
 
 type SortColumn = "name" | "email" | "status" | "created" | "last_login";
 type SortDirection = "asc" | "desc";
+type UpdateUserActive = (args: {
+	params: { path: { user_id: string } };
+	body: { is_active: boolean };
+}) => Promise<unknown>;
+type DeleteUserById = (args: {
+	params: { path: { user_id: string } };
+}) => Promise<unknown>;
 
 function SortIcon({ column, sortColumn, sortDirection }: { column: SortColumn; sortColumn: SortColumn; sortDirection: SortDirection }) {
 	if (sortColumn !== column) return null;
@@ -148,6 +155,69 @@ function openToggleActiveDialog(
 		return;
 	}
 	enableUser(user);
+}
+
+function errorMessage(error: unknown) {
+	return error instanceof Error ? error.message : "Unknown error occurred";
+}
+
+async function disableUser(
+	user: User | undefined,
+	updateUser: UpdateUserActive,
+	onSuccess: () => void,
+) {
+	if (!user) return;
+	try {
+		await updateUser({
+			params: { path: { user_id: user.id } },
+			body: { is_active: false },
+		});
+		toast.success("User disabled", {
+			description: `${user.name || user.email} has been disabled`,
+		});
+		onSuccess();
+	} catch (error) {
+		toast.error("Failed to disable user", {
+			description: errorMessage(error),
+		});
+	}
+}
+
+async function enableUser(user: User, updateUser: UpdateUserActive) {
+	try {
+		await updateUser({
+			params: { path: { user_id: user.id } },
+			body: { is_active: true },
+		});
+		toast.success("User enabled", {
+			description: `${user.name || user.email} has been re-enabled`,
+		});
+	} catch (error) {
+		toast.error("Failed to enable user", {
+			description: errorMessage(error),
+		});
+	}
+}
+
+async function deleteUser(
+	user: User | undefined,
+	removeUser: DeleteUserById,
+	onSuccess: () => void,
+) {
+	if (!user) return;
+	try {
+		await removeUser({
+			params: { path: { user_id: user.id } },
+		});
+		toast.success("User permanently deleted", {
+			description: `${user.name || user.email} has been permanently removed`,
+		});
+		onSuccess();
+	} catch (error) {
+		toast.error("Failed to delete user", {
+			description: errorMessage(error),
+		});
+	}
 }
 
 export function Users() {
@@ -250,70 +320,21 @@ export function Users() {
 	};
 
 	const handleConfirmDisable = async () => {
-		if (!selectedUser) return;
-
-		try {
-			await updateMutation.mutateAsync({
-				params: { path: { user_id: selectedUser.id } },
-				body: { is_active: false },
-			});
-			toast.success("User disabled", {
-				description: `${selectedUser.name || selectedUser.email} has been disabled`,
-			});
+		await disableUser(selectedUser, updateMutation.mutateAsync, () => {
 			setIsDisableOpen(false);
 			setSelectedUser(undefined);
-		} catch (error) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: "Unknown error occurred";
-			toast.error("Failed to disable user", {
-				description: errorMessage,
-			});
-		}
+		});
 	};
 
 	const handleEnableUser = async (user: User) => {
-		try {
-			await updateMutation.mutateAsync({
-				params: { path: { user_id: user.id } },
-				body: { is_active: true },
-			});
-			toast.success("User enabled", {
-				description: `${user.name || user.email} has been re-enabled`,
-			});
-		} catch (error) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: "Unknown error occurred";
-			toast.error("Failed to enable user", {
-				description: errorMessage,
-			});
-		}
+		await enableUser(user, updateMutation.mutateAsync);
 	};
 
 	const handleConfirmDelete = async () => {
-		if (!selectedUser) return;
-
-		try {
-			await deleteMutation.mutateAsync({
-				params: { path: { user_id: selectedUser.id } },
-			});
-			toast.success("User permanently deleted", {
-				description: `${selectedUser.name || selectedUser.email} has been permanently removed`,
-			});
+		await deleteUser(selectedUser, deleteMutation.mutateAsync, () => {
 			setIsDeleteOpen(false);
 			setSelectedUser(undefined);
-		} catch (error) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: "Unknown error occurred";
-			toast.error("Failed to delete user", {
-				description: errorMessage,
-			});
-		}
+		});
 	};
 
 	const handleEditClose = () => {
