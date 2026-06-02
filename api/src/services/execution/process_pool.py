@@ -1533,6 +1533,9 @@ class ProcessPoolManager:
             "started_at": self._started_at.isoformat() if self._started_at else None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "processes": processes,
+            "active_process_count": len(self.processes),
+            "configured_capacity": max_workers,
+            "max_workers": max_workers,
             "pool_size": len(self.processes),
             "idle_count": idle_count,
             "busy_count": busy_count,
@@ -1598,6 +1601,9 @@ class ProcessPoolManager:
             "shutdown": self._shutdown,
             "worker_id": self.worker_id,
             "pool_size": len(self.processes),
+            "active_process_count": len(self.processes),
+            "configured_capacity": self.max_workers,
+            "max_workers": self.max_workers,
             "processes": [
                 {
                     "process_id": p.id,

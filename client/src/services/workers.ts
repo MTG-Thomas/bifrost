@@ -41,6 +41,9 @@ export interface PoolSummary {
 	status: string | null;
 	started_at: string | null;
 	pool_size: number;
+	active_process_count?: number;
+	configured_capacity?: number | null;
+	max_workers?: number | null;
 	idle_count: number;
 	busy_count: number;
 	last_heartbeat: string | null;
@@ -54,6 +57,10 @@ export interface PoolDetail {
 	status: string | null;
 	started_at: string | null;
 	last_heartbeat: string | null;
+	pool_size?: number;
+	active_process_count?: number;
+	configured_capacity?: number | null;
+	max_workers?: number | null;
 	processes: ProcessInfo[];
 	requirements_installed: number | null;
 	requirements_total: number | null;
@@ -69,6 +76,7 @@ export interface PoolsListResponse {
 export interface PoolStatsResponse {
 	total_pools: number;
 	total_processes: number;
+	total_configured_capacity?: number | null;
 	total_idle: number;
 	total_busy: number;
 }
@@ -288,4 +296,3 @@ export function useWorkerMetrics(range: string = "1h") {
         refetchInterval: 60_000, // Refresh every 60s to get new data points
     });
 }
-
