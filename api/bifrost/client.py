@@ -22,6 +22,7 @@ import httpx
 
 from .credentials import (
     clear_credentials,
+    credentials_are_ephemeral,
     get_credentials,
     is_token_expired,
     load_allowed_dotenv,
@@ -147,12 +148,15 @@ async def refresh_tokens() -> bool:
         return False
 
     api_url = creds["api_url"]
-    refresh_token = creds["refresh_token"]
-    is_env_sourced = (
-        os.environ.get("BIFROST_API_URL", "").rstrip("/") == api_url.rstrip("/")
-        and os.environ.get("BIFROST_ACCESS_TOKEN") == creds.get("access_token")
-        and os.environ.get("BIFROST_REFRESH_TOKEN") == refresh_token
-    )
+    if (
+        _last_refreshed_env_credentials
+        and _last_refreshed_env_credentials["api_url"].rstrip("/") == api_url.rstrip("/")
+    ):
+        refresh_token = _last_refreshed_env_credentials["refresh_token"]
+        is_env_sourced = True
+    else:
+        refresh_token = creds["refresh_token"]
+        is_env_sourced = credentials_are_ephemeral(api_url)
 
     try:
         async with httpx.AsyncClient(
