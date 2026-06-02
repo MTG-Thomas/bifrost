@@ -422,22 +422,28 @@ async def refresh_token(
             detail="No token URL configured for this connection",
         )
 
-    # The token's scope follows the provider, not the caller. A global
-    # provider must write/read the global token row (organization_id NULL)
-    # no matter which provider-org admin triggers the refresh.
-    token_repo = OAuthProviderRepository(
-        ctx.db, org_id=provider.organization_id, is_superuser=True
-    )
+    token_org_id = provider.organization_id
+    token_repo = OAuthProviderRepository(ctx.db, org_id=token_org_id, is_superuser=True)
 
-    # For authorization_code flows we need the stored token up front.
+    # For authorization_code flows, refresh the actual stored token row. Per-
+    # mapping callbacks store tokens under the mapping/caller org even when the
+    # provider itself is global, while client_credentials tokens follow provider
+    # scope and are created through store_token below.
     stored_token: OAuthToken | None = None
     if provider.oauth_flow_type != "client_credentials":
+        token_repo = OAuthProviderRepository(ctx.db, org_id=org_id, is_superuser=True)
         stored_token = await token_repo.get_token(connection_name)
+        if not stored_token and org_id != provider.organization_id:
+            token_repo = OAuthProviderRepository(
+                ctx.db, org_id=provider.organization_id, is_superuser=True
+            )
+            stored_token = await token_repo.get_token(connection_name)
         if not stored_token or not stored_token.encrypted_refresh_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No refresh token available for this connection",
             )
+        token_org_id = stored_token.organization_id
 
     if provider.oauth_flow_type == "client_credentials" and not provider.encrypted_client_secret:
         raise HTTPException(
@@ -452,7 +458,7 @@ async def refresh_token(
         db=ctx.db,
         provider=provider,
         token=stored_token,
-        org_id=provider.organization_id,
+        org_id=token_org_id,
     )
     outcome = await refresh_oauth_token_http(td)
 
@@ -505,7 +511,7 @@ async def refresh_token(
 
     # Invalidate cache under the token scope that changed.
     if CACHE_INVALIDATION_AVAILABLE and invalidate_oauth_token:
-        token_org_str = str(provider.organization_id) if provider.organization_id else None
+        token_org_str = str(token_org_id) if token_org_id else None
         await invalidate_oauth_token(token_org_str, connection_name)
 
     expires_at_str = new_expires_at.isoformat() if new_expires_at else None

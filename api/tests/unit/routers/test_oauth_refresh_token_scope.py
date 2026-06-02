@@ -23,6 +23,7 @@ import pytest
 from sqlalchemy import select
 
 from src.core.auth import ExecutionContext, UserPrincipal
+from src.core.security import encrypt_secret
 from src.models.orm.oauth import OAuthProvider, OAuthToken
 from src.models.orm.organizations import Organization
 
@@ -215,3 +216,77 @@ async def test_refresh_of_org_specific_connection_stays_org_scoped(db_session):
     assert rows[0].organization_id == org.id, (
         "org-specific connection's token must stay scoped to its own org"
     )
+
+
+@pytest.mark.asyncio
+async def test_refresh_of_global_auth_code_connection_uses_existing_org_token(db_session):
+    """A global authorization-code provider can still have per-mapping org
+    tokens. Refresh must update the existing org token instead of looking only
+    in the provider/global token scope.
+    """
+    from src.routers.oauth_connections import refresh_token
+
+    org = await _make_org(db_session, f"Managed Org {uuid4().hex[:6]}")
+    connection_name = f"halo_{uuid4().hex[:8]}"
+    provider = OAuthProvider(
+        provider_name=connection_name,
+        display_name=connection_name,
+        oauth_flow_type="authorization_code",
+        client_id="test-client-id",
+        encrypted_client_secret=b"encrypted-secret",
+        token_url="https://login.example.com/oauth/token",
+        scopes=["scope.default"],
+        status="completed",
+        organization_id=None,  # global provider, but token is org-scoped
+    )
+    db_session.add(provider)
+    await db_session.flush()
+
+    existing = OAuthToken(
+        organization_id=org.id,
+        provider_id=provider.id,
+        user_id=None,
+        encrypted_access_token=b"old-access",
+        encrypted_refresh_token=encrypt_secret("old-refresh").encode(),
+        scopes=["scope.default"],
+        status="completed",
+    )
+    db_session.add(existing)
+    await db_session.flush()
+
+    ctx = ExecutionContext(user=_principal(org.id), org_id=org.id, db=db_session)
+    new_expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+    outcome = {
+        "success": True,
+        "access_token": "fresh-access-token",
+        "encrypted_access_token": b"enc-access",
+        "encrypted_refresh_token": b"enc-refresh",
+        "expires_at": new_expiry,
+        "scopes": ["scope.default"],
+    }
+
+    with (
+        patch(
+            "src.routers.oauth_connections.refresh_oauth_token_http",
+            new=AsyncMock(return_value=outcome),
+        ),
+        patch(
+            "src.routers.oauth_connections.invalidate_oauth_token",
+            new=AsyncMock(),
+        ) as invalidate_token,
+        patch("src.routers.oauth_connections.CACHE_INVALIDATION_AVAILABLE", True),
+    ):
+        await refresh_token(connection_name, ctx, ctx.user)
+
+    await db_session.flush()
+    rows = (
+        await db_session.execute(
+            select(OAuthToken).where(OAuthToken.provider_id == provider.id)
+        )
+    ).scalars().all()
+
+    assert len(rows) == 1
+    assert rows[0].id == existing.id
+    assert rows[0].organization_id == org.id
+    assert rows[0].encrypted_access_token == b"enc-access"
+    invalidate_token.assert_awaited_once_with(str(org.id), connection_name)

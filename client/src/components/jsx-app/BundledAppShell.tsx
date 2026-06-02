@@ -312,11 +312,13 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 		// Preview-only: subscribe to draft bundle updates for this app.
 		// Success → reload entry. Failure → show banner over last-good render.
 		let unsub: (() => void) | null = null;
+		let disposed = false;
 		if (isPreview) {
-			(async () => {
+			void (async () => {
 				try {
 					await webSocketService.connectToAppDraft(appId);
-					unsub = webSocketService.onAppCodeFileUpdate(
+					if (disposed) return;
+					const nextUnsub = webSocketService.onAppCodeFileUpdate(
 						appId,
 						(update: AppCodeFileUpdate) => {
 							if (update.error && update.error.messages.length > 0) {
@@ -327,6 +329,11 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 							}
 						},
 					);
+					if (disposed) {
+						nextUnsub();
+						return;
+					}
+					unsub = nextUnsub;
 				} catch (e) {
 					console.warn("[Bifrost] Failed to subscribe to app updates:", e);
 				}
@@ -334,6 +341,7 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 		}
 
 		return () => {
+			disposed = true;
 			controller.abort();
 			if (unsub) unsub();
 		};

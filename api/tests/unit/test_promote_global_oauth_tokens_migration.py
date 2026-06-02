@@ -55,7 +55,7 @@ def _migration_sql() -> list[str]:
         module.upgrade()
     finally:
         sys.modules.pop("alembic", None)
-    assert len(captured) == 2, "migration should issue exactly DELETE then UPDATE"
+    assert len(captured) == 3, "migration should delete, dedupe, then promote"
     return captured
 
 
@@ -144,6 +144,27 @@ async def test_drops_redundant_provider_org_token_when_global_exists(db_session)
     assert good.id in ids, "the real global token must survive"
     assert dup.id not in ids, "the redundant provider-org token must be dropped"
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_deduplicates_multiple_provider_org_tokens_before_promotion(db_session):
+    provider_org_a = await _org(db_session, f"Provider {uuid4().hex[:6]}", is_provider=True)
+    provider_org_b = await _org(db_session, f"Provider {uuid4().hex[:6]}", is_provider=True)
+    gp = await _provider(db_session, organization_id=None)
+    first = await _token(db_session, provider_id=gp.id, organization_id=provider_org_a.id)
+    second = await _token(db_session, provider_id=gp.id, organization_id=provider_org_b.id)
+
+    await _run_migration(db_session)
+
+    rows = (
+        await db_session.execute(
+            select(OAuthToken).where(OAuthToken.provider_id == gp.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    await db_session.refresh(rows[0])
+    assert rows[0].id in {first.id, second.id}
+    assert rows[0].organization_id is None
 
 
 @pytest.mark.asyncio

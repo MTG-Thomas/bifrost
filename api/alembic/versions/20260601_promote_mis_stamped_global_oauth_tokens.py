@@ -60,7 +60,35 @@ def upgrade() -> None:
         """
     )
 
-    # 2. Promote the remaining provider-org-stamped org-level tokens of global
+    # 2. If several provider orgs refreshed the same global provider before
+    #    the code fix, keep one canonical row and delete the rest before the
+    #    NULL-promotion below.
+    op.execute(
+        """
+        WITH ranked AS (
+            SELECT t.id,
+                   row_number() OVER (PARTITION BY t.provider_id ORDER BY t.id) AS rn
+            FROM oauth_tokens t
+            JOIN organizations o ON t.organization_id = o.id
+            JOIN oauth_providers p ON p.id = t.provider_id
+            WHERE o.is_provider = true
+              AND t.user_id IS NULL
+              AND p.organization_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM oauth_tokens g
+                  WHERE g.provider_id = t.provider_id
+                    AND g.organization_id IS NULL
+                    AND g.user_id IS NULL
+              )
+        )
+        DELETE FROM oauth_tokens t
+        USING ranked r
+        WHERE t.id = r.id
+          AND r.rn > 1
+        """
+    )
+
+    # 3. Promote the remaining provider-org-stamped org-level tokens of global
     #    providers to global (organization_id = NULL).
     op.execute(
         """
