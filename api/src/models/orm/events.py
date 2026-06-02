@@ -25,6 +25,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.enums import EventDeliveryStatus, EventSourceType, EventStatus, ScheduleOverlapPolicy
 from src.models.orm.base import Base
 
+SET_NULL = "SET NULL"
+
 if TYPE_CHECKING:
     from src.models.orm.executions import Execution
     from src.models.orm.integrations import Integration
@@ -181,7 +183,7 @@ class WebhookSource(Base):
         String(100), default=None
     )  # NULL = generic
     integration_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("integrations.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
+        ForeignKey("integrations.id", ondelete=SET_NULL, onupdate="CASCADE"), default=None
     )
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
 
@@ -308,7 +310,7 @@ class Event(Base):
 
     # Organization that owns this event (stamped at emit time)
     organization_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("organizations.id", ondelete="SET NULL"), default=None
+        ForeignKey("organizations.id", ondelete=SET_NULL), default=None
     )
 
     # Event metadata
@@ -391,7 +393,7 @@ class EventDelivery(Base):
 
     # Agent run reference (set when agent run is queued)
     agent_run_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("agent_runs.id", ondelete="SET NULL"), default=None
+        ForeignKey("agent_runs.id", ondelete=SET_NULL), default=None
     )
 
     # Delivery status

@@ -327,6 +327,14 @@ def _repository_subclasses() -> set[str]:
     return bound
 
 
+def _is_classified_org_model(model_name: str, repos: set[str]) -> bool:
+    return (
+        model_name in IDENTITY_MODELS
+        or model_name in repos
+        or model_name in EXECUTION_RESOLUTION_MODELS_WITHOUT_REPO_YET
+    )
+
+
 class TestOrgScopedModelsHaveRepository:
     """Every ORM model with organization_id must be classified.
 
@@ -342,11 +350,7 @@ class TestOrgScopedModelsHaveRepository:
 
         unclassified: list[tuple[str, str]] = []
         for model_name, file_path in models_with_org_id.items():
-            if model_name in IDENTITY_MODELS:
-                continue
-            if model_name in repos:
-                continue
-            if model_name in EXECUTION_RESOLUTION_MODELS_WITHOUT_REPO_YET:
+            if _is_classified_org_model(model_name, repos):
                 continue
             unclassified.append((model_name, file_path.relative_to(API_ROOT).as_posix()))
 

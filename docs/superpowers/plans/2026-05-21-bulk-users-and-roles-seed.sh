@@ -15,7 +15,7 @@ req() {
     local method=$1
     local path=$2
     local body=${3:-}
-    if [ -n "$body" ]; then
+    if [[ -n "$body" ]]; then
         curl -s -X "$method" "$API$path" -H "$H_AUTH" -H "$H_JSON" -d "$body"
     else
         curl -s -X "$method" "$API$path" -H "$H_AUTH"
@@ -39,7 +39,7 @@ create_user() {
     local name=$2
     local org=$3
     local body
-    if [ "$org" = "null" ]; then
+    if [[ "$org" = "null" ]]; then
         body="{\"email\":\"$email\",\"name\":\"$name\",\"is_superuser\":false,\"invite\":false}"
     else
         body="{\"email\":\"$email\",\"name\":\"$name\",\"organization_id\":\"$org\",\"is_superuser\":false,\"invite\":false}"

@@ -22,6 +22,7 @@ from src.models.orm.integrations import Integration
 from src.repositories.org_scoped import OrgScopedRepository
 
 logger = logging.getLogger(__name__)
+_VALUE_NOT_PROVIDED = object()
 
 
 class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-var]
@@ -35,6 +36,14 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         filter_type: OrgFilterType = OrgFilterType.ORG_PLUS_GLOBAL,
     ) -> list[ConfigResponse]:
         """List configs with specified filter type."""
+        query = self._list_configs_query(filter_type).order_by(self.model.key)
+        result = await self.session.execute(query)
+        return [
+            self._config_response(config, integration_name=integration_name)
+            for config, integration_name in result.all()
+        ]
+
+    def _list_configs_query(self, filter_type: OrgFilterType):
         query = select(self.model, Integration.name.label("integration_name")).outerjoin(
             Integration,
             and_(
@@ -50,59 +59,57 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         elif filter_type == OrgFilterType.ORG_ONLY:
             query = query.where(self.model.organization_id == self.org_id)
         else:
-            if self.org_id is not None:
-                query = query.where(
-                    or_(
-                        self.model.organization_id == self.org_id,
-                        self.model.organization_id.is_(None),
-                    )
-                )
-            else:
-                query = query.where(self.model.organization_id.is_(None))
+            query = self._apply_org_plus_global_filter(query)
+        return query
 
-        query = query.order_by(self.model.key)
-
-        result = await self.session.execute(query)
-        rows = result.all()
-
-        schemas = []
-        for row in rows:
-            config = row[0]
-            integration_name = row[1]
-
-            raw_value = (
-                config.value.get("value")
-                if isinstance(config.value, dict)
-                else config.value
+    def _apply_org_plus_global_filter(self, query):
+        if self.org_id is None:
+            return query.where(self.model.organization_id.is_(None))
+        return query.where(
+            or_(
+                self.model.organization_id == self.org_id,
+                self.model.organization_id.is_(None),
             )
-            display_value = (
-                "[SECRET]"
-                if config.config_type == ConfigTypeEnum.SECRET
-                else raw_value
-            )
+        )
 
-            schemas.append(
-                ConfigResponse(
-                    id=config.id,
-                    key=config.key,
-                    value=display_value,
-                    type=ConfigType(config.config_type.value)
-                    if config.config_type
-                    else ConfigType.STRING,
-                    scope="org" if config.organization_id else "GLOBAL",
-                    org_id=str(config.organization_id)
-                    if config.organization_id
-                    else None,
-                    integration_id=str(config.integration_id)
-                    if config.integration_id
-                    else None,
-                    integration_name=integration_name,
-                    description=config.description,
-                    updated_at=config.updated_at,
-                    updated_by=config.updated_by,
-                )
-            )
-        return schemas
+    @staticmethod
+    def _raw_config_value(config: ConfigModel) -> Any:
+        return config.value.get("value") if isinstance(config.value, dict) else config.value
+
+    @classmethod
+    def _config_response(
+        cls,
+        config: ConfigModel,
+        *,
+        integration_name: str | None = None,
+        value: Any = _VALUE_NOT_PROVIDED,
+        response_type: ConfigType | None = None,
+    ) -> ConfigResponse:
+        value_provided = value is not _VALUE_NOT_PROVIDED
+        raw_value = value if value_provided else cls._raw_config_value(config)
+        display_value = (
+            "[SECRET]"
+            if config.config_type == ConfigTypeEnum.SECRET and not value_provided
+            else raw_value
+        )
+        resolved_type = response_type or (
+            ConfigType(config.config_type.value)
+            if config.config_type
+            else ConfigType.STRING
+        )
+        return ConfigResponse(
+            id=config.id,
+            key=config.key,
+            value=display_value,
+            type=resolved_type,
+            scope="org" if config.organization_id else "GLOBAL",
+            org_id=str(config.organization_id) if config.organization_id else None,
+            integration_id=str(config.integration_id) if config.integration_id else None,
+            integration_name=integration_name,
+            description=config.description,
+            updated_at=config.updated_at,
+            updated_by=config.updated_by,
+        )
 
     async def get_config(self, key: str) -> ConfigModel | None:
         """Get config by key with cascade scoping: org-specific > global."""
@@ -250,17 +257,10 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
 
         logger.info(f"Set config {log_safe(request.key)} in org {self.org_id}")
 
-        value = config.value.get("value") if isinstance(config.value, dict) else config.value
-        return ConfigResponse(
-            id=config.id,
-            key=config.key,
-            value=value,
-            type=request.type if request.type else ConfigType.STRING,
-            scope="org" if config.organization_id else "GLOBAL",
-            org_id=str(config.organization_id) if config.organization_id else None,
-            description=config.description,
-            updated_at=config.updated_at,
-            updated_by=config.updated_by,
+        return self._config_response(
+            config,
+            value=self._raw_config_value(config),
+            response_type=request.type if request.type else ConfigType.STRING,
         )
 
     async def update_config_by_id(
@@ -280,31 +280,9 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         old_key = config.key
         now = datetime.now(timezone.utc)
 
-        if request.type is not None:
-            effective_type = request.type
-        elif config.config_type:
-            effective_type = ConfigType(config.config_type.value)
-        else:
-            effective_type = ConfigType.STRING
-
-        if request.value is not None and request.value != "":
-            stored_value = request.value
-            if effective_type == ConfigType.SECRET:
-                from src.core.security import encrypt_secret
-
-                stored_value = encrypt_secret(request.value)
-            config.value = {"value": stored_value}
-        elif effective_type != ConfigType.SECRET and request.value is not None:
-            config.value = {"value": request.value}
-
-        if request.key is not None:
-            config.key = request.key
-        if request.type is not None:
-            config.config_type = ConfigTypeEnum(request.type.value)
-        if "description" in (request.model_fields_set or set()):
-            config.description = request.description
-        if "organization_id" in (request.model_fields_set or set()):
-            config.organization_id = request.organization_id
+        effective_type = self._effective_config_type(config, request)
+        self._apply_config_value_update(config, request, effective_type)
+        self._apply_config_metadata_update(config, request)
         config.updated_at = now
         config.updated_by = updated_by
         await self.session.flush()
@@ -315,24 +293,53 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
             f"(id={log_safe(config_id)}) org={log_safe(config.organization_id)}"
         )
 
-        response_type = (
-            ConfigType(config.config_type.value)
-            if config.config_type
-            else ConfigType.STRING
-        )
-        value = config.value.get("value") if isinstance(config.value, dict) else config.value
-        response = ConfigResponse(
-            id=config.id,
-            key=config.key,
-            value=value,
-            type=response_type,
-            scope="org" if config.organization_id else "GLOBAL",
-            org_id=str(config.organization_id) if config.organization_id else None,
-            description=config.description,
-            updated_at=config.updated_at,
-            updated_by=config.updated_by,
+        response = self._config_response(
+            config,
+            value=self._raw_config_value(config),
+            response_type=self._effective_config_type(config, request),
         )
         return response, old_org_id, old_key
+
+    @staticmethod
+    def _effective_config_type(
+        config: ConfigModel, request: UpdateConfigRequest
+    ) -> ConfigType:
+        if request.type is not None:
+            return request.type
+        if config.config_type:
+            return ConfigType(config.config_type.value)
+        return ConfigType.STRING
+
+    @staticmethod
+    def _apply_config_value_update(
+        config: ConfigModel,
+        request: UpdateConfigRequest,
+        effective_type: ConfigType,
+    ) -> None:
+        if request.value is None:
+            return
+        if request.value == "" and effective_type == ConfigType.SECRET:
+            return
+        stored_value = request.value
+        if effective_type == ConfigType.SECRET and request.value != "":
+            from src.core.security import encrypt_secret
+
+            stored_value = encrypt_secret(request.value)
+        config.value = {"value": stored_value}
+
+    @staticmethod
+    def _apply_config_metadata_update(
+        config: ConfigModel, request: UpdateConfigRequest
+    ) -> None:
+        if request.key is not None:
+            config.key = request.key
+        if request.type is not None:
+            config.config_type = ConfigTypeEnum(request.type.value)
+        fields_set = request.model_fields_set or set()
+        if "description" in fields_set:
+            config.description = request.description
+        if "organization_id" in fields_set:
+            config.organization_id = request.organization_id
 
     async def delete_config(self, config_id: UUID) -> ConfigModel | None:
         """Delete config by ID. Returns the deleted config or None if missing."""

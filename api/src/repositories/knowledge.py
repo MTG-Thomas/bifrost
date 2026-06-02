@@ -215,36 +215,47 @@ class KnowledgeRepository(OrgScopedRepository[KnowledgeStore]):
             doc = row[0]
             score = row[1]
 
-            # Filter by min_score if specified
-            if min_score is not None and score < min_score:
+            if KnowledgeRepository._below_min_score(score, min_score):
                 continue
 
-            if group_by_key and doc.key is not None:
-                dedup_key = (
-                    doc.namespace,
-                    str(doc.organization_id) if doc.organization_id else None,
-                    doc.key,
-                )
+            dedup_key = KnowledgeRepository._dedup_key(doc, group_by_key)
+            if dedup_key is not None:
                 if dedup_key in seen_keys:
                     continue
                 seen_keys.add(dedup_key)
 
-            documents.append(
-                KnowledgeDocument(
-                    id=str(doc.id),
-                    namespace=doc.namespace,
-                    content=doc.content,
-                    metadata=doc.doc_metadata,
-                    score=float(score),
-                    organization_id=str(doc.organization_id) if doc.organization_id else None,
-                    key=doc.key,
-                    created_at=doc.created_at,
-                )
-            )
+            documents.append(KnowledgeRepository._document_from_row(doc, score))
             if len(documents) >= limit:
                 break
 
         return documents
+
+    @staticmethod
+    def _below_min_score(score: float, min_score: float | None) -> bool:
+        return min_score is not None and score < min_score
+
+    @staticmethod
+    def _dedup_key(doc, group_by_key: bool) -> tuple[str, str | None, str] | None:
+        if not group_by_key or doc.key is None:
+            return None
+        return (
+            doc.namespace,
+            str(doc.organization_id) if doc.organization_id else None,
+            doc.key,
+        )
+
+    @staticmethod
+    def _document_from_row(doc, score: float) -> KnowledgeDocument:
+        return KnowledgeDocument(
+            id=str(doc.id),
+            namespace=doc.namespace,
+            content=doc.content,
+            metadata=doc.doc_metadata,
+            score=float(score),
+            organization_id=str(doc.organization_id) if doc.organization_id else None,
+            key=doc.key,
+            created_at=doc.created_at,
+        )
 
     async def delete_by_key(
         self,

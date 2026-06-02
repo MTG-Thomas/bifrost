@@ -48,6 +48,8 @@ from bifrost.platform_names import PLATFORM_EXPORT_NAMES as _PLATFORM_EXPORT_NAM
 
 logger = logging.getLogger(__name__)
 
+GITIGNORE_FILENAME = ".gitignore"
+
 # Default ignore patterns applied even without a .gitignore file.
 # .bifrost/ is import/export-only and is never part of push/pull/sync/watch.
 _DEFAULT_IGNORE_PATTERNS = [
@@ -141,11 +143,11 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     lines = list(_DEFAULT_IGNORE_PATTERNS)
 
     workspace_root = _workspace_root_for(local_root)
-    workspace_gitignore = workspace_root / ".gitignore"
+    workspace_gitignore = workspace_root / GITIGNORE_FILENAME
     if workspace_gitignore.is_file():
         lines.extend(workspace_gitignore.read_text(encoding="utf-8").splitlines())
 
-    gitignore_path = local_root / ".gitignore"
+    gitignore_path = local_root / GITIGNORE_FILENAME
     if gitignore_path != workspace_gitignore and gitignore_path.is_file():
         lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
 
@@ -466,7 +468,7 @@ def _write_env_url(api_url: str) -> None:
     print(f"Updated {env_path} with BIFROST_API_URL={api_url}")
 
     # gitignore .env if we're in a git repo and it isn't already ignored
-    gitignore = cwd / ".gitignore"
+    gitignore = cwd / GITIGNORE_FILENAME
     if gitignore.exists():
         try:
             existing = gitignore.read_text()

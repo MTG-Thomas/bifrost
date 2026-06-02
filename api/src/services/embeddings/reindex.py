@@ -265,9 +265,9 @@ async def run_reindex(notification_id: str) -> None:
                         .values(embedding=vector)
                     )
                     await db.commit()
-                except Exception as e:
+                except Exception:
                     failed_batches += 1
-                    logger.error(f"Reindex keyless row {row.id} failed: {e}")
+                    logger.exception("Reindex keyless row %s failed", row.id)
                     await db.rollback()
                     await _push_progress(
                         notif_service, notification_id, processed, total

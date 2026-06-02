@@ -1,6 +1,7 @@
 """Curated topic registry for the events system."""
 
 COMMON_EXAMPLE_FIELDS = ("schema_version", "occurred_at", "organization", "actor")
+TICKET_CREATED = "ticket.created"
 
 _ORGANIZATION = {
     "id": "550e8400-e29b-41d4-a716-446655440010",
@@ -74,7 +75,7 @@ CURATED_TOPICS = [
             },
             trigger={
                 "type": "event",
-                "event_type": "ticket.created",
+                "event_type": TICKET_CREATED,
                 "event_id": "550e8400-e29b-41d4-a716-446655440060",
             },
             error={
@@ -103,7 +104,7 @@ CURATED_TOPICS = [
             },
             trigger={
                 "type": "event",
-                "event_type": "ticket.created",
+                "event_type": TICKET_CREATED,
                 "event_id": "550e8400-e29b-41d4-a716-446655440060",
             },
             error={
@@ -240,7 +241,7 @@ CURATED_TOPICS = [
             actor=_SYSTEM_ACTOR,
             event={
                 "id": "550e8400-e29b-41d4-a716-446655440090",
-                "type": "ticket.created",
+                "type": TICKET_CREATED,
                 "source_id": "550e8400-e29b-41d4-a716-4466554400a0",
             },
             delivery={

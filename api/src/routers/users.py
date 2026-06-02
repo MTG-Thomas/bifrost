@@ -329,7 +329,10 @@ def _set_bulk_user_active(
     response_model=CreateInviteResponse,
     summary="Resend invite",
     description="Generate a fresh invite token and email it to the user.",
-    responses={404: {"description": "User not found"}},
+    responses={
+        404: {"description": "User not found"},
+        409: {"description": "User is already registered"},
+    },
 )
 async def resend_invite(
     user_id: UUID,
@@ -344,7 +347,10 @@ async def resend_invite(
     response_model=CreateInviteResponse,
     summary="Regenerate invite link",
     description="Generate a fresh invite token without sending an email; returns the URL.",
-    responses={404: {"description": "User not found"}},
+    responses={
+        404: {"description": "User not found"},
+        409: {"description": "User is already registered"},
+    },
 )
 async def regenerate_invite(
     user_id: UUID,
