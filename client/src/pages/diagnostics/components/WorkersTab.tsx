@@ -64,7 +64,7 @@ export function WorkersTab() {
         for (const pool of pools) {
             if ("processes" in pool && Array.isArray(pool.processes)) {
                 const detail = pool as PoolDetail;
-                const active = pool.processes.length;
+                const active = detail.active_process_count ?? detail.pool_size ?? pool.processes.length;
                 const capacity =
                     detail.configured_capacity ?? detail.max_workers ?? active;
                 totalForks += active;

@@ -671,6 +671,9 @@ class TestProcessPoolManagerStatus:
         assert status["shutdown"] is False
         assert status["worker_id"] == "test-worker"
         assert status["pool_size"] == 1
+        assert status["active_process_count"] == 1
+        assert status["configured_capacity"] == pool.max_workers
+        assert status["max_workers"] == pool.max_workers
         assert len(status["processes"]) == 1
         assert status["processes"][0]["process_id"] == "process-1"
         assert status["processes"][0]["state"] == "idle"

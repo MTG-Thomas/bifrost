@@ -50,8 +50,8 @@ function formatBytes(bytes: number): string {
 function getPoolCounts(pool: PoolData) {
     if ("processes" in pool && Array.isArray(pool.processes)) {
         const processes = pool.processes as ProcessInfo[];
-        const active = processes.length;
         const detail = pool as PoolDetail;
+        const active = detail.active_process_count ?? detail.pool_size ?? processes.length;
         const capacity =
             detail.configured_capacity ?? detail.max_workers ?? active;
         return {

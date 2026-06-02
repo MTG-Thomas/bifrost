@@ -215,6 +215,77 @@ class TestWorkersListEndpoint:
         assert pool.max_workers == 4
         assert pool.busy_count == 1
 
+    async def test_get_worker_stats_includes_configured_capacity(
+        self,
+        redis_client,
+        db_session: AsyncSession,
+        clean_redis_workers,
+    ):
+        """Worker stats aggregate active processes and configured capacity."""
+        from src.routers.platform.workers import get_pool_stats
+        from src.core.auth import UserPrincipal
+
+        now = datetime.now(timezone.utc).isoformat()
+        workers = [
+            (
+                "stats-worker-001",
+                {
+                    "pool_size": 2,
+                    "active_process_count": 2,
+                    "configured_capacity": 4,
+                    "max_workers": 4,
+                    "idle_count": 1,
+                    "busy_count": 1,
+                },
+            ),
+            (
+                "stats-worker-002",
+                {
+                    "pool_size": 1,
+                    "active_process_count": 1,
+                    "max_workers": 3,
+                    "idle_count": 0,
+                    "busy_count": 1,
+                },
+            ),
+        ]
+
+        for worker_id, counts in workers:
+            await redis_client.hset(
+                f"bifrost:pool:{worker_id}",
+                mapping={
+                    "hostname": f"{worker_id}-host",
+                    "status": "online",
+                    "started_at": now,
+                },
+            )
+            await redis_client.set(
+                f"bifrost:pool:{worker_id}:heartbeat",
+                json.dumps(
+                    {
+                        "type": "worker_heartbeat",
+                        "worker_id": worker_id,
+                        "timestamp": now,
+                        **counts,
+                    }
+                ),
+            )
+
+        admin = UserPrincipal(
+            user_id=uuid4(),
+            email="admin@test.com",
+            organization_id=None,
+            is_superuser=True,
+        )
+
+        result = await get_pool_stats(admin)
+
+        assert result.total_pools == 2
+        assert result.total_processes == 3
+        assert result.total_configured_capacity == 7
+        assert result.total_idle == 1
+        assert result.total_busy == 2
+
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
