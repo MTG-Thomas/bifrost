@@ -110,6 +110,14 @@ class PoolDetail(BaseModel):
     status: str | None = None
     started_at: str | None = None
     last_heartbeat: str | None = None
+    configured_capacity: int | None = Field(
+        default=None,
+        description="Maximum concurrent child processes this pool may admit",
+    )
+    max_workers: int | None = Field(
+        default=None,
+        description="Configured ProcessPoolManager max_workers value",
+    )
     processes: list[ProcessInfo] = Field(default_factory=list)
 
 

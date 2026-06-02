@@ -348,6 +348,8 @@ async def get_pool(
         try:
             hb = json.loads(heartbeat_data)
             result.last_heartbeat = hb.get("timestamp")
+            result.configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
+            result.max_workers = hb.get("max_workers", result.configured_capacity)
 
             # Parse process info from heartbeat
             for p in hb.get("processes", []):
