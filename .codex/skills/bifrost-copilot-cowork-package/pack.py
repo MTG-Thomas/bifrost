@@ -47,18 +47,27 @@ def reverse_dns(name: str) -> str:
     return f"com.bifrost.{kebab(name).replace('-', '')}"
 
 
+def _host_from_api_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname:
+        if parsed.port is not None:
+            return f"{parsed.hostname}:{parsed.port}"
+        return parsed.hostname
+    return url
+
+
 def get_bifrost_host() -> str:
     """Resolve the Bifrost API host the CLI is currently pointed at."""
     env = os.environ.get("BIFROST_API_URL")
     if env:
-        return urllib.parse.urlparse(env).hostname or env
+        return _host_from_api_url(env)
     out = subprocess.run(
         ["bifrost", "auth", "list"], check=True, capture_output=True, text=True,
     ).stdout
     for line in out.splitlines():
         if "(current" in line:
             url = line.strip().split()[0]
-            return urllib.parse.urlparse(url).hostname or url
+            return _host_from_api_url(url)
     raise RuntimeError(
         "Could not determine the current Bifrost host from `bifrost auth list`. "
         "Pass --bifrost-host explicitly or set BIFROST_API_URL."

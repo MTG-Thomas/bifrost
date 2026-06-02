@@ -20,6 +20,7 @@
 /docs/                          @jackmusick
 /.agents/                       @jackmusick
 /.claude/                       @jackmusick
+/.claude-plugin/                @jackmusick
 /.codex-plugin/                 @jackmusick
 /.codex/                        @jackmusick
 /scripts/                       @jackmusick
