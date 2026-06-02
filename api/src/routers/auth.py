@@ -15,10 +15,17 @@ Key Features:
 """
 
 import logging
+import base64
+import hashlib
+import json
+import secrets
 from datetime import datetime, timezone
+from typing import Annotated
+from urllib.parse import quote, urlencode, urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 
@@ -33,6 +40,10 @@ from src.core.cache.keys import (
 )
 from src.models import (
     AuthStatusResponse,
+    CliNativeAuthStartRequest,
+    CliNativeAuthStartResponse,
+    CliNativeAuthTokenRequest,
+    CliNativeAuthTokenResponse,
     DeviceAuthorizeRequest,
     DeviceCodeResponse,
     DeviceTokenErrorResponse,
@@ -47,7 +58,7 @@ from src.models.contracts.passkeys import (
     SetupPasskeyVerifyResponse,
 )
 from src.config import get_settings
-from src.core.auth import CurrentActiveUser
+from src.core.auth import CurrentActiveUser, UserPrincipal, get_current_user_optional
 from src.core.database import DbSession
 from src.core.log_safety import log_safe
 from src.core.rate_limit import auth_limiter, mfa_limiter, get_client_ip
@@ -69,6 +80,8 @@ from src.services.user_provisioning import ensure_user_provisioned, get_user_rol
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+TTL_CLI_NATIVE_AUTH = 300
 
 
 # =============================================================================
@@ -1367,6 +1380,236 @@ def _generate_user_code() -> str:
 
     # Format as XXXX-YYYY
     return f"{''.join(code_chars[:4])}-{''.join(code_chars[4:])}"
+
+
+def _cli_native_auth_key(transaction_id: str) -> str:
+    return f"bifrost:auth:cli-native:{transaction_id}"
+
+
+def _sha256_urlsafe(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _validate_cli_redirect_uri(redirect_uri: str) -> None:
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme != "http":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri must use http for localhost callback",
+        )
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri must point to localhost",
+        )
+    if parsed.port is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri must include a port",
+        )
+
+
+@router.post("/cli/start", response_model=CliNativeAuthStartResponse)
+async def start_cli_native_auth(
+    request: Request,
+    start_request: CliNativeAuthStartRequest,
+) -> CliNativeAuthStartResponse:
+    """
+    Start first-party native CLI OAuth login.
+
+    The CLI starts a localhost callback listener, sends the callback URI plus
+    PKCE challenge here, then opens the returned authorization URL in the
+    user's browser. Browser login and MFA remain handled by normal Bifrost
+    session cookies.
+    """
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("cli_native_start", client_ip)
+
+    _validate_cli_redirect_uri(start_request.redirect_uri)
+    if start_request.code_challenge_method != "S256":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only S256 PKCE code_challenge_method is supported",
+        )
+
+    transaction_id = secrets.token_urlsafe(32)
+    cli_auth_data = {
+        "status": "pending",
+        "redirect_uri": start_request.redirect_uri,
+        "state": start_request.state,
+        "code_challenge": start_request.code_challenge,
+        "code_challenge_method": start_request.code_challenge_method,
+        "user_id": None,
+        "code_hash": None,
+    }
+
+    r = await get_shared_redis()
+    await r.setex(
+        _cli_native_auth_key(transaction_id),
+        TTL_CLI_NATIVE_AUTH,
+        json.dumps(cli_auth_data),
+    )
+
+    authorization_url = "/auth/cli/authorize?" + urlencode({"transaction_id": transaction_id})
+    logger.info(
+        "CLI native OAuth started",
+        extra={"transaction_id": log_safe(transaction_id[:8]) + "..."},
+    )
+
+    return CliNativeAuthStartResponse(
+        transaction_id=transaction_id,
+        authorization_url=authorization_url,
+        expires_in=TTL_CLI_NATIVE_AUTH,
+    )
+
+
+@router.get("/cli/authorize")
+async def authorize_cli_native_auth(
+    request: Request,
+    transaction_id: str,
+    current_user: Annotated[UserPrincipal | None, Depends(get_current_user_optional)],
+    db: DbSession = None,
+) -> RedirectResponse:
+    """
+    Authorize native CLI OAuth using the current browser session.
+
+    Unauthenticated browser users are sent through the normal login page and
+    returned here after password/MFA/passkey auth completes.
+    """
+    if current_user is None:
+        return_to = request.url.path
+        if request.url.query:
+            return_to = f"{return_to}?{request.url.query}"
+        return RedirectResponse(url=f"/login?returnTo={quote(return_to, safe='')}")
+
+    r = await get_shared_redis()
+    cli_auth_data_json = await r.get(_cli_native_auth_key(transaction_id))
+    if not cli_auth_data_json:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid or expired CLI authorization request",
+        )
+
+    cli_auth_data = json.loads(cli_auth_data_json)
+    if cli_auth_data.get("status") != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CLI authorization request is no longer pending",
+        )
+
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_id(current_user.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
+
+    code = secrets.token_urlsafe(32)
+    cli_auth_data["status"] = "authorized"
+    cli_auth_data["user_id"] = str(current_user.user_id)
+    cli_auth_data["code_hash"] = _sha256_urlsafe(code)
+
+    ttl = await r.ttl(_cli_native_auth_key(transaction_id))
+    await r.setex(
+        _cli_native_auth_key(transaction_id),
+        ttl if ttl > 0 else TTL_CLI_NATIVE_AUTH,
+        json.dumps(cli_auth_data),
+    )
+
+    redirect_uri = cli_auth_data["redirect_uri"]
+    params = urlencode(
+        {
+            "code": code,
+            "state": cli_auth_data["state"],
+            "transaction_id": transaction_id,
+        }
+    )
+    separator = "&" if "?" in redirect_uri else "?"
+
+    logger.info(
+        f"CLI native OAuth authorized by user: {current_user.email}",
+        extra={
+            "user_id": str(current_user.user_id),
+            "transaction_id": log_safe(transaction_id[:8]) + "...",
+        },
+    )
+
+    return RedirectResponse(url=f"{redirect_uri}{separator}{params}")
+
+
+@router.post("/cli/token", response_model=CliNativeAuthTokenResponse)
+async def exchange_cli_native_auth_token(
+    request: Request,
+    token_request: CliNativeAuthTokenRequest,
+    db: DbSession = None,
+) -> CliNativeAuthTokenResponse:
+    """Exchange a native CLI OAuth callback code plus PKCE verifier for tokens."""
+    client_ip = get_client_ip(request)
+    await auth_limiter.check("cli_native_token", client_ip)
+
+    r = await get_shared_redis()
+    cli_auth_key = _cli_native_auth_key(token_request.transaction_id)
+    cli_auth_data_json = await r.execute_command("GETDEL", cli_auth_key)
+    if not cli_auth_data_json:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired CLI authorization request",
+        )
+
+    cli_auth_data = json.loads(cli_auth_data_json)
+    if cli_auth_data.get("status") != "authorized":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CLI authorization has not completed",
+        )
+    if not secrets.compare_digest(token_request.state, cli_auth_data.get("state") or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state")
+    if not secrets.compare_digest(_sha256_urlsafe(token_request.code), cli_auth_data.get("code_hash") or ""):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code")
+    if not secrets.compare_digest(
+        _sha256_urlsafe(token_request.code_verifier),
+        cli_auth_data.get("code_challenge") or "",
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid PKCE verifier")
+
+    user_id = cli_auth_data.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CLI authorization is missing user",
+        )
+
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_id(UUID(user_id))
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
+
+    login_response = await _generate_login_tokens(user, db, response=None)
+    if not login_response.access_token or not login_response.refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login token generation failed",
+        )
+
+    logger.info(
+        f"CLI native OAuth completed for user: {log_safe(user.email)}",
+        extra={
+            "user_id": str(user.id),
+            "transaction_id": log_safe(token_request.transaction_id[:8]) + "...",
+        },
+    )
+
+    return CliNativeAuthTokenResponse(
+        access_token=login_response.access_token,
+        refresh_token=login_response.refresh_token,
+        token_type=login_response.token_type,
+        expires_in=1800,
+    )
 
 
 @router.post("/device/code", response_model=DeviceCodeResponse)

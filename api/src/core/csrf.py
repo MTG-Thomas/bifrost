@@ -42,6 +42,8 @@ CSRF_EXEMPT_PATHS = {
     "/auth/register-from-invite",  # Invite-based registration (token-gated, no cookies yet)
     "/auth/device/code",  # Device flow: request code (no auth)
     "/auth/device/token",  # Device flow: exchange code for token (no auth)
+    "/auth/cli/start",  # Native CLI OAuth: start localhost callback flow (no auth)
+    "/auth/cli/token",  # Native CLI OAuth: exchange one-time code + PKCE verifier
     "/health",
     "/ready",
     "/",

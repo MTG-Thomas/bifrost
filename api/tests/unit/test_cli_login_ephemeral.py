@@ -1,9 +1,11 @@
 """Tests for `bifrost login` and `bifrost logout` flows.
 
-Two login modes:
-  * Browser device-code (default) — token stored in keychain (or JSON
+Three login modes:
+  * Browser native OAuth (default) — token stored in keychain (or JSON
     fallback). On success, login also writes BIFROST_API_URL=<url> to the
     CWD .env so subsequent CLI commands in this folder target this stack.
+  * Browser device-code (explicit --device-code) — legacy browser fallback
+    using the same persistent credential storage.
   * Password-grant (when --email and --password are passed) — tokens are
     written to the credential backend and only the URL is written to the
     CWD .env. Refuses MFA-enabled instances.
@@ -185,7 +187,7 @@ class TestBrowserLoginWritesEnv:
         async def fake_login(api_url=None, auto_open=True):
             return True
 
-        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
         monkeypatch.chdir(tmp_path)
 
         rc = cli.handle_login(["--url", "https://prod.example.com"])
@@ -198,7 +200,7 @@ class TestBrowserLoginWritesEnv:
         async def fake_login(api_url=None, auto_open=True):
             return True
 
-        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
         monkeypatch.chdir(tmp_path)
 
         # Pre-existing .env with another var and a stale BIFROST_API_URL line
@@ -217,7 +219,7 @@ class TestBrowserLoginWritesEnv:
         async def fake_login(api_url=None, auto_open=True):
             return True
 
-        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitignore").write_text("node_modules\n*.pyc\n")
 
@@ -230,7 +232,7 @@ class TestBrowserLoginWritesEnv:
         async def fake_login(api_url=None, auto_open=True):
             return True
 
-        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".gitignore").write_text("node_modules\n.env\n*.pyc\n")
 
@@ -243,7 +245,7 @@ class TestBrowserLoginWritesEnv:
         async def fake_login(api_url=None, auto_open=True):
             return True
 
-        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env").write_text(
             "OTHER_VAR=keep-me\n"
@@ -265,12 +267,65 @@ class TestBrowserLoginWritesEnv:
         async def fake_login(api_url=None, auto_open=True):
             return False
 
-        monkeypatch.setattr(cli, "login_flow", fake_login)
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
         monkeypatch.chdir(tmp_path)
 
         rc = cli.handle_login(["--url", "https://prod.example.com"])
         assert rc == 1
         assert not (tmp_path / ".env").exists()
+
+    def test_default_browser_login_uses_bifrost_api_url_env(self, monkeypatch, tmp_path):
+        seen: dict[str, object] = {}
+
+        async def fake_login(api_url=None, auto_open=True):
+            seen["api_url"] = api_url
+            seen["auto_open"] = auto_open
+            return True
+
+        monkeypatch.setenv("BIFROST_API_URL", "https://env.example.com/")
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
+        monkeypatch.chdir(tmp_path)
+
+        rc = cli.handle_login([])
+
+        assert rc == 0
+        assert seen == {"api_url": "https://env.example.com", "auto_open": True}
+        assert "BIFROST_API_URL=https://env.example.com" in (tmp_path / ".env").read_text()
+
+    def test_default_browser_login_requires_explicit_or_env_url(self, monkeypatch, tmp_path, capsys):
+        async def fake_login(api_url=None, auto_open=True):  # pragma: no cover - must not be called
+            raise AssertionError("native login should not run without a URL")
+
+        monkeypatch.delenv("BIFROST_API_URL", raising=False)
+        monkeypatch.setattr(cli, "native_login_flow", fake_login)
+        monkeypatch.chdir(tmp_path)
+
+        rc = cli.handle_login([])
+
+        assert rc == 1
+        assert "requires --url or BIFROST_API_URL" in capsys.readouterr().err
+        assert not (tmp_path / ".env").exists()
+
+    def test_device_code_flag_uses_legacy_device_flow(self, monkeypatch, tmp_path):
+        seen: dict[str, object] = {}
+
+        async def fake_native(api_url=None, auto_open=True):  # pragma: no cover - must not be called
+            raise AssertionError("native login should not run for --device-code")
+
+        async def fake_device(api_url=None, auto_open=True):
+            seen["api_url"] = api_url
+            seen["auto_open"] = auto_open
+            return True
+
+        monkeypatch.setattr(cli, "native_login_flow", fake_native)
+        monkeypatch.setattr(cli, "device_login_flow", fake_device)
+        monkeypatch.chdir(tmp_path)
+
+        rc = cli.handle_login(["--url", "https://prod.example.com/", "--device-code", "--no-browser"])
+
+        assert rc == 0
+        assert seen == {"api_url": "https://prod.example.com", "auto_open": False}
+        assert "BIFROST_API_URL=https://prod.example.com" in (tmp_path / ".env").read_text()
 
 
 class TestLogoutClearsKeychainAndPromptsEnv:

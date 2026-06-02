@@ -67,6 +67,10 @@ from src.models.contracts.users import (
 # Authentication & MFA
 from src.models.contracts.auth import (
     AuthStatusResponse,
+    CliNativeAuthStartRequest,
+    CliNativeAuthStartResponse,
+    CliNativeAuthTokenRequest,
+    CliNativeAuthTokenResponse,
     DeviceAuthorizeRequest,
     DeviceCodeResponse,
     DeviceTokenErrorResponse,
@@ -658,6 +662,10 @@ __all__ = [
     "MFAEnrollVerifyRequest",
     "MFAEnrollVerifyResponse",
     "OAuthLoginRequest",
+    "CliNativeAuthStartRequest",
+    "CliNativeAuthStartResponse",
+    "CliNativeAuthTokenRequest",
+    "CliNativeAuthTokenResponse",
     "DeviceCodeResponse",
     "DeviceTokenRequest",
     "DeviceTokenResponse",
