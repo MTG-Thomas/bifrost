@@ -39,6 +39,15 @@ _blob_container_client: Any = None
 _blob_available: bool | None = None
 
 
+def _object_storage_provider() -> str:
+    explicit_provider = os.environ.get("BIFROST_OBJECT_STORAGE_PROVIDER")
+    if explicit_provider:
+        return explicit_provider.lower()
+    if os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL") and os.environ.get("BIFROST_AZURE_BLOB_CONTAINER"):
+        return "azure_blob"
+    return "s3"
+
+
 @lru_cache(maxsize=1)
 def _get_sync_redis() -> Any:
     """
@@ -59,6 +68,7 @@ def _get_s3_client() -> Any:
     global _s3_client, _s3_available
 
     if _object_storage_provider() != "s3":
+        _s3_available = False
         return None
 
     if _s3_available is False:
@@ -97,86 +107,6 @@ def _get_s3_client() -> Any:
         return None
 
 
-def _object_storage_provider() -> str:
-    provider = os.environ.get("BIFROST_OBJECT_STORAGE_PROVIDER")
-    if provider:
-        return provider.lower()
-    if os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL") and os.environ.get("BIFROST_AZURE_BLOB_CONTAINER"):
-        return "azure_blob"
-    return "s3"
-
-
-def _get_blob_container_client() -> Any:
-    """
-    Get or create a sync Azure Blob container client.
-
-    This is used by the synchronous import hook and requirements-cache fallback
-    paths that run outside the async RepoStorage API.
-    """
-    global _blob_available, _blob_container_client
-
-    if _blob_available is False:
-        return None
-
-    if _blob_container_client is not None:
-        return _blob_container_client
-
-    account_url = os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL")
-    container = os.environ.get("BIFROST_AZURE_BLOB_CONTAINER")
-    auth_mode = os.environ.get("BIFROST_AZURE_BLOB_AUTH", "default_credential")
-    account_key = os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_KEY")
-
-    if not account_url or not container:
-        logger.debug("Azure Blob not configured, skipping Blob fallback")
-        _blob_available = False
-        return None
-
-    try:
-        from azure.storage.blob import BlobServiceClient
-
-        credential: Any
-        if auth_mode == "account_key":
-            if not account_key:
-                logger.debug("Azure Blob account_key auth selected without account key")
-                _blob_available = False
-                return None
-            credential = account_key
-        elif auth_mode == "default_credential":
-            from azure.identity import DefaultAzureCredential
-
-            credential = DefaultAzureCredential()
-        else:
-            logger.debug("Unsupported Azure Blob auth mode: %s", auth_mode)
-            _blob_available = False
-            return None
-
-        service_client = BlobServiceClient(account_url, credential=credential)
-        _blob_container_client = service_client.get_container_client(container)
-        _blob_available = True
-        return _blob_container_client
-    except Exception as e:
-        _blob_available = False
-        logger.debug("Azure Blob fallback disabled: %s", e)
-        return None
-
-
-def _get_blob_module(path: str) -> bytes | None:
-    """Fetch a module from Azure Blob _repo/ prefix (synchronous)."""
-    client = _get_blob_container_client()
-    if client is None:
-        return None
-
-    try:
-        return client.download_blob(f"{REPO_PREFIX}{path}").readall()
-    except Exception as e:
-        error_code = getattr(e, "error_code", "")
-        if error_code == "BlobNotFound":
-            logger.debug(f"Module not found in Azure Blob: {path}")
-            return None
-        logger.warning(f"Azure Blob fallback error for {path}: {e}")
-        return None
-
-
 def _get_s3_module(path: str) -> bytes | None:
     """
     Fetch a module from S3 _repo/ prefix (synchronous).
@@ -209,6 +139,80 @@ def _get_s3_module(path: str) -> bytes | None:
         return None
 
 
+def _get_blob_container_client() -> Any:
+    """
+    Get or create a sync Azure Blob container client.
+
+    The import hook runs in synchronous worker subprocesses, so this cannot use
+    the async RepoStorage adapter.
+    """
+    global _blob_container_client, _blob_available
+
+    if _blob_available is False:
+        return None
+
+    if _blob_container_client is not None:
+        return _blob_container_client
+
+    account_url = os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL")
+    container = os.environ.get("BIFROST_AZURE_BLOB_CONTAINER")
+    auth = os.environ.get("BIFROST_AZURE_BLOB_AUTH", "default_credential")
+    account_key = os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_KEY")
+
+    if not account_url or not container:
+        logger.debug("Azure Blob not configured, skipping Blob fallback")
+        _blob_available = False
+        return None
+
+    try:
+        from azure.storage.blob import BlobServiceClient
+
+        credential: Any
+        if auth == "account_key":
+            if not account_key:
+                logger.debug("Azure Blob account key missing, skipping Blob fallback")
+                _blob_available = False
+                return None
+            credential = account_key
+        elif auth == "default_credential":
+            from azure.identity import DefaultAzureCredential
+
+            credential = DefaultAzureCredential()
+        else:
+            logger.warning(f"Unsupported Azure Blob auth mode: {auth}")
+            _blob_available = False
+            return None
+
+        service_client = BlobServiceClient(account_url, credential=credential)
+        _blob_container_client = service_client.get_container_client(container)
+        _blob_available = True
+        return _blob_container_client
+    except Exception as e:
+        _blob_available = False
+        logger.warning(f"Azure Blob fallback unavailable: {e}")
+        return None
+
+
+def _get_blob_module(path: str) -> bytes | None:
+    """
+    Fetch a module from Azure Blob _repo/ prefix (synchronous).
+    """
+    client = _get_blob_container_client()
+    if client is None:
+        return None
+
+    key = f"{REPO_PREFIX}{path}"
+    try:
+        return client.download_blob(key).readall()
+    except Exception as e:
+        error_code = getattr(e, "error_code", "")
+        if error_code == "BlobNotFound":
+            logger.debug(f"Module not found in Azure Blob: {path}")
+            return None
+        logger.warning(f"Azure Blob fallback error for {path}: {e}")
+        return None
+
+
 def _get_object_storage_module(path: str) -> bytes | None:
     if _object_storage_provider() == "azure_blob":
         return _get_blob_module(path)
@@ -223,7 +227,7 @@ def get_module_sync(path: str) -> CachedModule | None:
 
     Lookup order:
     1. Redis cache (fast path)
-    2. S3 _repo/ (fallback, re-caches to Redis)
+    2. Object storage _repo/ (fallback, re-caches to Redis)
     3. None (module not found)
     """
     try:
@@ -257,7 +261,7 @@ def get_module_sync(path: str) -> CachedModule | None:
                 # Also add to module index
                 client.sadd(MODULE_INDEX_KEY, path)
             except redis.RedisError as e:
-                logger.warning(f"Failed to cache object storage module to Redis: {e}")
+                logger.warning(f"Failed to cache S3 module to Redis: {e}")
 
             return module
 
@@ -373,6 +377,6 @@ def reset_s3_client() -> None:
 
 def reset_blob_client() -> None:
     """Reset the cached Azure Blob client. Used for testing."""
-    global _blob_available, _blob_container_client
+    global _blob_container_client, _blob_available
     _blob_container_client = None
     _blob_available = None

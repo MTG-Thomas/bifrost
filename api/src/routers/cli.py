@@ -1,7 +1,38 @@
 """
-CLI Router
+SDK Execution Router (historically named "CLI Router").
 
-Endpoints for the Bifrost CLI:
+This is the **SDK execution surface**. The Bifrost CLI is one consumer;
+the workflow runtime SDK and agent execution paths are equally first-class
+callers. The "CLI" in the path and the file name is historical and will
+be renamed in phase 7 of the org-scoping consolidation (see
+`docs/plans/2026-05-26-org-scoping-consolidation.md`).
+
+## Org scoping contract for this file
+
+Every endpoint here that reads or writes an execution-resolution entity
+(anything with `organization_id`: Config, Table, OAuth, Knowledge, etc.)
+MUST:
+
+- Use an `OrgScopedRepository` subclass for data access. Do NOT write
+  inline cascade queries (`WHERE organization_id == x OR
+  organization_id IS NULL`). The lint test
+  `test_no_inline_org_scoping_in_routers` catches this.
+- Pass `is_superuser=True` to the repository — the engine sentinel is
+  the authenticated principal here, and the SDK has already resolved
+  scope before the call reaches us.
+- Receive the scope as a request body field; trust it as-is. The engine
+  did the platform-admin-or-own-org check via
+  `api/shared/scope_resolver.py::resolve_effective_scope` before
+  calling us.
+
+Endpoints that do NOT touch execution-resolution entities (auth,
+context, health, download, CLI session management) are exempt. Document
+the exemption in the endpoint docstring.
+
+See `api/src/repositories/README.md` for the full canonical doc.
+
+## Endpoints
+
 - Developer context (default organization, parameters)
 - CLI package download
 - Config operations (get, set, list, delete)
@@ -17,7 +48,7 @@ import logging
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -26,10 +57,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.auth import CurrentUser
+from src.core.auth import CurrentUser, UserPrincipal
 from src.core.database import get_db
 from src.core.log_safety import log_safe
-from src.models import DeveloperContext, Organization
+from src.models import Organization
 from src.models.contracts.cli import (
     CLIAICompleteRequest,
     CLIAICompleteResponse,
@@ -70,21 +101,20 @@ from src.models.contracts.cli import (
     SDKTableListRequest,
     SDKTableInfo,
 )
-from src.models.orm.oauth import OAuthToken
 from src.core.pubsub import publish_cli_session_update, publish_execution_log, publish_execution_update, publish_history_update
 from src.repositories.cli_sessions import CLISessionRepository
-from src.services.oauth_scope_resolution import (
-    get_oauth_provider_for_scope,
-    get_oauth_token_for_scope,
-)
-from shared.cli_integration_mappings import (
-    get_cli_integration_mapping,
-    list_cli_integration_mappings,
-)
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/cli", tags=["CLI"])
+router = APIRouter(prefix="/api/sdk", tags=["SDK"])
+
+# /api/cli/download is the permanent home for the CLI install
+# endpoint. It lives at /api/cli/ (not /api/sdk/) because users type
+# the URL — `pip install <SERVER_URL>/api/cli/download` — so the path
+# is intentionally "the CLI." Not a legacy shim; not a compat carve-out.
+# The rest of /api/cli/* moved to /api/sdk/* in the 2026-05 overhaul
+# because those endpoints are the SDK execution surface, not the CLI.
+install_router = APIRouter(prefix="/api/cli", tags=["CLI Install"])
 
 
 # =============================================================================
@@ -130,12 +160,10 @@ def should_auto_refresh_token(
 
 
 def _resolve_requested_oauth_scopes(provider: Any, oauth_scope: str | None) -> str:
-    """Return the configured OAuth scopes selected for a token request.
-
-    ``oauth_scope`` is a selector, not an arbitrary resource-audience override:
-    callers may request only scopes already configured on the provider.
-    """
-    configured_scopes = [str(scope) for scope in (provider.scopes or []) if str(scope).strip()]
+    """Return configured OAuth scopes selected for a token request."""
+    configured_scopes = [
+        str(scope) for scope in (provider.scopes or []) if str(scope).strip()
+    ]
     if not oauth_scope:
         return " ".join(configured_scopes)
 
@@ -145,7 +173,9 @@ def _resolve_requested_oauth_scopes(provider: Any, oauth_scope: str | None) -> s
 
     unauthorized = sorted(set(requested_scopes) - set(configured_scopes))
     if unauthorized:
-        raise ValueError("oauth_scope contains scopes that are not configured for this provider")
+        raise ValueError(
+            "oauth_scope contains scopes that are not configured for this provider"
+        )
 
     return " ".join(requested_scopes)
 
@@ -156,20 +186,18 @@ def _resolve_requested_oauth_scopes(provider: Any, oauth_scope: str | None) -> s
 
 
 class DeveloperContextResponse(BaseModel):
-    """Developer context for CLI initialization."""
+    """Developer context for CLI initialization.
+
+    Sourced entirely from the auth-verified ``current_user`` and their
+    ``organization_id``. There is no mutable per-user default-org override.
+    Platform admins / provider-org members targeting another org pass
+    ``?org_id=<uuid>`` on this endpoint or ``scope`` on each SDK call.
+    """
 
     user: dict = Field(description="User information")
     organization: dict | None = Field(description="Default organization")
     default_parameters: dict = Field(default={}, description="Default workflow parameters")
     track_executions: bool = Field(default=True, description="Whether to track executions in history")
-
-
-class DeveloperContextUpdate(BaseModel):
-    """Update developer context settings."""
-
-    default_org_id: UUID | None = Field(default=None, description="Default organization ID")
-    default_parameters: dict | None = Field(default=None, description="Default workflow parameters")
-    track_executions: bool | None = Field(default=None, description="Track executions in history")
 
 
 # =============================================================================
@@ -239,23 +267,44 @@ async def get_dev_context(
 ) -> DeveloperContextResponse:
     """Get development context for CLI initialization.
 
-    When org_id is provided, returns context for that specific organization
-    (superusers only). Otherwise uses the user's default organization.
+    Returns the authenticated user and their ``organization_id``-resolved
+    org. The optional ``org_id`` query parameter lets platform admins and
+    provider-org members target another org for the session — gated by
+    the same C2 rule the scope resolver applies elsewhere.
     """
-    # If org_id override requested, require superuser
-    if org_id is not None:
-        if not current_user.is_superuser:
+    # Resolve which org to return.
+    if org_id is not None and org_id != current_user.organization_id:
+        # Explicit override of another org — C2 gate: platform admin or
+        # provider-org member only. Provider-org membership is looked up
+        # against the caller's own org's ``is_provider`` flag.
+        is_provider_org = False
+        if not current_user.is_superuser and current_user.organization_id is not None:
+            row = await db.execute(
+                select(Organization.is_provider).where(
+                    Organization.id == current_user.organization_id
+                )
+            )
+            is_provider_org = bool(row.scalar_one_or_none())
+        if not (current_user.is_superuser or is_provider_org):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only superusers can specify an organization override",
+                detail="Only platform admins or provider-org members can target another organization",
             )
-        stmt = select(Organization).where(Organization.id == org_id)
+        target_org_id = org_id
+    elif org_id is not None:
+        target_org_id = org_id
+    else:
+        target_org_id = current_user.organization_id
+
+    org_data = None
+    if target_org_id is not None:
+        stmt = select(Organization).where(Organization.id == target_org_id)
         result = await db.execute(stmt)
         org = result.scalar_one_or_none()
-        if not org or not org.is_active:
+        if org is None or not org.is_active:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Organization {org_id} not found or inactive",
+                detail=f"Organization {target_org_id} not found or inactive",
             )
         org_data = {
             "id": str(org.id),
@@ -263,34 +312,6 @@ async def get_dev_context(
             "is_active": org.is_active,
             "is_provider": org.is_provider,
         }
-        return DeveloperContextResponse(
-            user={
-                "id": str(current_user.user_id),
-                "email": current_user.email,
-                "name": current_user.name,
-                "is_superuser": current_user.is_superuser,
-            },
-            organization=org_data,
-            default_parameters={},
-            track_executions=True,
-        )
-
-    stmt = select(DeveloperContext).where(DeveloperContext.user_id == current_user.user_id)
-    result = await db.execute(stmt)
-    dev_ctx = result.scalar_one_or_none()
-
-    org_data = None
-    if dev_ctx and dev_ctx.default_org_id:
-        stmt = select(Organization).where(Organization.id == dev_ctx.default_org_id)
-        result = await db.execute(stmt)
-        org = result.scalar_one_or_none()
-        if org:
-            org_data = {
-                "id": str(org.id),
-                "name": org.name,
-                "is_active": org.is_active,
-                "is_provider": org.is_provider,
-            }
 
     return DeveloperContextResponse(
         user={
@@ -300,68 +321,8 @@ async def get_dev_context(
             "is_superuser": current_user.is_superuser,
         },
         organization=org_data,
-        default_parameters=dev_ctx.default_parameters if dev_ctx else {},
-        track_executions=dev_ctx.track_executions if dev_ctx else True,
-    )
-
-
-@router.put(
-    "/context",
-    response_model=DeveloperContextResponse,
-    summary="Update developer context",
-)
-async def update_dev_context(
-    request: DeveloperContextUpdate,
-    current_user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
-) -> DeveloperContextResponse:
-    """Update developer context settings."""
-    stmt = select(DeveloperContext).where(DeveloperContext.user_id == current_user.user_id)
-    result = await db.execute(stmt)
-    dev_ctx = result.scalar_one_or_none()
-
-    if not dev_ctx:
-        dev_ctx = DeveloperContext(
-            user_id=current_user.user_id,
-            default_org_id=request.default_org_id,
-            default_parameters=request.default_parameters or {},
-            track_executions=request.track_executions if request.track_executions is not None else True,
-        )
-        db.add(dev_ctx)
-    else:
-        if request.default_org_id is not None:
-            dev_ctx.default_org_id = request.default_org_id
-        if request.default_parameters is not None:
-            dev_ctx.default_parameters = request.default_parameters
-        if request.track_executions is not None:
-            dev_ctx.track_executions = request.track_executions
-
-    await db.commit()
-    await db.refresh(dev_ctx)
-
-    org_data = None
-    if dev_ctx.default_org_id:
-        stmt = select(Organization).where(Organization.id == dev_ctx.default_org_id)
-        result = await db.execute(stmt)
-        org = result.scalar_one_or_none()
-        if org:
-            org_data = {
-                "id": str(org.id),
-                "name": org.name,
-                "is_active": org.is_active,
-                "is_provider": org.is_provider,
-            }
-
-    return DeveloperContextResponse(
-        user={
-            "id": str(current_user.user_id),
-            "email": current_user.email,
-            "name": current_user.name,
-            "is_superuser": current_user.is_superuser,
-        },
-        organization=org_data,
-        default_parameters=dev_ctx.default_parameters,
-        track_executions=dev_ctx.track_executions,
+        default_parameters={},
+        track_executions=True,
     )
 
 
@@ -370,84 +331,108 @@ async def update_dev_context(
 # =============================================================================
 
 
-async def _get_cli_org_id(
-    current_user: Any,
+def _parse_sdk_scope(scope: str | None) -> object:
+    from fastapi import HTTPException, status
+    from shared.scope_resolver import UNSET
+
+    if scope is None or scope == "":
+        return UNSET
+    if scope == "global":
+        return None
+    try:
+        return UUID(scope)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
+        ) from None
+
+
+def _principal_org_id(current_user: "UserPrincipal") -> UUID | None:
+    if current_user.organization_id is None:
+        return None
+    if isinstance(current_user.organization_id, UUID):
+        return current_user.organization_id
+    return UUID(str(current_user.organization_id))
+
+
+async def _is_provider_org(db: AsyncSession, caller_org_id: UUID) -> bool:
+    from inspect import isawaitable
+
+    org_row = await db.execute(
+        select(Organization.is_provider).where(Organization.id == caller_org_id)
+    )
+    provider_value = org_row.scalar_one_or_none()
+    if isawaitable(provider_value):
+        provider_value = await cast(Awaitable[Any], provider_value)
+    return provider_value is True
+
+
+async def _resolve_sdk_org_id(
+    current_user: "UserPrincipal",
     scope: str | None,
     db: AsyncSession,
 ) -> str | None:
-    """Get the organization ID for CLI config operations.
+    """Resolve the effective organization scope for an SDK call.
+
+    The C2 gate: platform admins (``is_superuser``) AND provider-org members
+    can bypass scope restrictions. The caller's "own org" is sourced from
+    the auth-verified ``current_user.organization_id`` — never from a
+    mutable per-user default. Provider-org membership is checked by a
+    single ``SELECT is_provider`` against the caller's org, only when the
+    requested scope is not UNSET / not the caller's own org.
 
     Args:
-        current_user: Current authenticated user
-        scope: Organization scope - can be:
-            - None: Use execution context default org
-            - org UUID string: Target specific organization
-            - "global": Returns None (global scope, no org)
-        db: Database session
+        current_user: The auth-verified user principal.
+        scope: Requested scope:
+            - ``None`` or ``""``: UNSET — use caller's own org.
+            - ``"global"``: Explicit global scope (bypass required).
+            - org UUID string: Target specific organization (own org
+              always; other orgs bypass required).
+        db: Database session.
 
     Returns:
-        Organization UUID string, or None for global scope
+        Organization UUID string, or None for global scope.
 
     Raises:
         HTTPException 422: If ``scope`` is a non-empty string that is
-            neither ``"global"`` nor a valid UUID. Without this gate the
-            value flows into raw SQL and surfaces as a downstream
-            asyncpg type error (500).
+            neither ``"global"`` nor a valid UUID.
+        HTTPException 403: If the caller is not authorized to use the
+            requested scope.
     """
-    user_id = current_user.user_id
-    user_org_id = current_user.organization_id
-    is_superuser = bool(current_user.is_superuser)
+    from fastapi import HTTPException, status
+    from shared.scope_resolver import (
+        UNSET,
+        ScopeNotAllowed,
+        resolve_effective_scope,
+    )
 
-    if not is_superuser:
-        if user_org_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="CLI scope requires an organization",
-            )
-        if scope and scope != "global":
-            try:
-                requested_org_id = UUID(scope)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
-                ) from None
-            if requested_org_id != user_org_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Cannot access another organization's CLI scope",
-                )
-        elif scope == "global":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only superusers can access global CLI scope",
-            )
-        return str(user_org_id)
+    requested = _parse_sdk_scope(scope)
+    caller_org_id = _principal_org_id(current_user)
+    is_platform_admin = current_user.is_superuser
 
-    # "global" scope means no org resolution
-    if scope == "global":
-        return None
+    # Provider-org membership is only needed if the caller is requesting
+    # something other than UNSET / their own org. UNSET resolves to
+    # caller_org_id without any bypass check.
+    is_provider_org = False
+    needs_bypass_check = requested is not UNSET and requested != caller_org_id
+    if needs_bypass_check and not is_platform_admin and caller_org_id is not None:
+        is_provider_org = await _is_provider_org(db, caller_org_id)
 
-    # If scope is a UUID, use it directly as the org_id
-    if scope:
-        try:
-            UUID(scope)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
-            ) from None
-        return scope
+    try:
+        resolved = resolve_effective_scope(
+            caller_org_id=caller_org_id,
+            is_platform_admin=is_platform_admin,
+            is_provider_org=is_provider_org,
+            requested_scope=requested,  # type: ignore[arg-type]
+        )
+    except ScopeNotAllowed as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        ) from None
 
-    # Fall back to developer context default org
-    stmt = select(DeveloperContext).where(DeveloperContext.user_id == user_id)
-    result = await db.execute(stmt)
-    dev_ctx = result.scalar_one_or_none()
-
-    if dev_ctx and dev_ctx.default_org_id:
-        return str(dev_ctx.default_org_id)
-
-    return None
+    return str(resolved) if resolved is not None else None
 
 
 @router.post(
@@ -461,13 +446,14 @@ async def cli_get_config(
     db: AsyncSession = Depends(get_db),
 ) -> CLIConfigValue | None:
     """Get a config value via CLI API."""
-    from src.core.config_resolver import ConfigResolver
+    from src.repositories.config import ConfigRepository
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
-    scope = org_id or "GLOBAL"
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
+    org_uuid = UUID(org_id) if org_id else None
 
-    resolver = ConfigResolver()
-    all_config = await resolver.load_config_for_scope(scope, db=db)
+    # Canonical SDK config load: cascade (global + org-specific) merged.
+    repo = ConfigRepository(db, org_id=org_uuid, is_superuser=True)
+    all_config = await repo.merged_for_sdk()
 
     if request.key not in all_config:
         return None
@@ -518,7 +504,7 @@ async def cli_set_config(
     from src.models import Config as ConfigModel
     from src.models.enums import ConfigType as ConfigTypeEnum
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
     now = datetime.now(timezone.utc)
 
@@ -544,7 +530,6 @@ async def cli_set_config(
     stmt = select(ConfigModel).where(
         ConfigModel.key == request.key,
         ConfigModel.organization_id == org_uuid,
-        ConfigModel.integration_id.is_(None),
     )
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
@@ -589,13 +574,13 @@ async def cli_list_config(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """List all config values via CLI API."""
-    from src.core.config_resolver import ConfigResolver
+    from src.repositories.config import ConfigRepository
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
-    scope = org_id or "GLOBAL"
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
+    org_uuid = UUID(org_id) if org_id else None
 
-    resolver = ConfigResolver()
-    all_config = await resolver.load_config_for_scope(scope, db=db)
+    repo = ConfigRepository(db, org_id=org_uuid, is_superuser=True)
+    all_config = await repo.merged_for_sdk()
 
     if not all_config:
         return {}
@@ -637,13 +622,12 @@ async def cli_delete_config(
     """Delete a config value via CLI API."""
     from src.models import Config as ConfigModel
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
     stmt = select(ConfigModel).where(
         ConfigModel.key == request.key,
         ConfigModel.organization_id == org_uuid,
-        ConfigModel.integration_id.is_(None),
     )
     result = await db.execute(stmt)
     config = result.scalar_one_or_none()
@@ -689,10 +673,11 @@ async def sdk_integrations_get(
        integration.default_entity_id, integration-level config, and OAuth data
     """
     from src.repositories.integrations import IntegrationsRepository
+    from src.repositories.oauth import OAuthTokenRepository
     from src.services.oauth_provider import resolve_url_template
     from src.core.security import decrypt_secret
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
     try:
@@ -705,11 +690,7 @@ async def sdk_integrations_get(
 
         if mapping:
             # Org-specific mapping found
-            config = await repo.get_config_for_mapping(
-                mapping.integration_id,
-                org_uuid,
-                include_default_secrets=True,
-            )
+            config = await repo.get_config_for_mapping(mapping.integration_id, org_uuid)
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
 
@@ -727,9 +708,13 @@ async def sdk_integrations_get(
             if integration and integration.oauth_provider:
                 token = mapping.oauth_token
                 if not token:
-                    token = await repo.get_provider_org_token(
-                        integration.oauth_provider.id,
-                        org_uuid,
+                    # Cascade: prefer org-scoped token, fall back to global.
+                    # See api/src/repositories/README.md for the pattern.
+                    oauth_token_repo = OAuthTokenRepository(
+                        db, org_id=org_uuid, is_superuser=True
+                    )
+                    token = await oauth_token_repo.get_org_level_for_provider(
+                        integration.oauth_provider.id
                     )
                 response_data["oauth"] = await _build_oauth_data(
                     integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
@@ -748,10 +733,7 @@ async def sdk_integrations_get(
             return None
 
         entity_id = integration.default_entity_id or integration.entity_id
-        config = await repo.get_integration_defaults(
-            integration.id,
-            include_secrets=org_uuid is None,
-        )
+        config = await repo.get_integration_defaults(integration.id)
 
         secret_keys = [s.key for s in integration.config_schema if s.type == "secret"]
         response_data = {
@@ -765,9 +747,13 @@ async def sdk_integrations_get(
 
         # Build OAuth data if provider exists
         if integration.oauth_provider:
-            token = await repo.get_provider_org_token(
-                integration.oauth_provider.id,
-                org_uuid,
+            # Cascade: prefer org-scoped token, fall back to global.
+            # See api/src/repositories/README.md for the pattern.
+            oauth_token_repo = OAuthTokenRepository(
+                db, org_id=org_uuid, is_superuser=True
+            )
+            token = await oauth_token_repo.get_org_level_for_provider(
+                integration.oauth_provider.id
             )
             response_data["oauth"] = await _build_oauth_data(
                 integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
@@ -779,6 +765,9 @@ async def sdk_integrations_get(
         logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (defaults) for user {current_user.email}")
         return SDKIntegrationsGetResponse(**response_data)
 
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"SDK integrations.get failed: {log_safe(e)}")
         return None
@@ -803,11 +792,10 @@ async def _build_oauth_data(
         resolve_url_template: Function to resolve {entity_id} in URLs
         decrypt_secret: Function to decrypt encrypted values
         oauth_scope: Override scope for token request (triggers fresh token fetch)
-        db: Optional DB session — when set, successful auto-refresh persists the
-            recovered token and clears stale integration-level provider failure
+        db: Optional DB session for persisting successful auto-refresh recovery
         org_uuid: Organization scope for token persistence during auto-refresh
     """
-    # Decrypt client secret (needed for both stored tokens and auto-refresh)
+    # Decrypt client secret for runtime SDK data and server-side token refresh.
     client_secret = None
     if provider.encrypted_client_secret:
         try:
@@ -833,8 +821,7 @@ async def _build_oauth_data(
 
     # Check if we should auto-fetch a fresh token
     if should_auto_refresh_token(provider, entity_id, oauth_scope):
-        refresh_mode = "oauth_scope" if oauth_scope else "entity_id"
-        logger.info("Auto-refreshing token using %s selector", refresh_mode)
+        logger.info("Auto-refreshing SDK integration OAuth token")
 
         if client_secret and resolved_token_url:
             from src.services.oauth_provider import OAuthProviderClient
@@ -859,7 +846,6 @@ async def _build_oauth_data(
                         if hasattr(expires_at_dt, "isoformat")
                         else str(expires_at_dt)
                     )
-                logger.info("Auto-refresh token successful")
                 if db is not None and access_token:
                     from src.core.security import encrypt_secret
                     from src.services.oauth_provider import persist_integration_oauth_recovery
@@ -879,6 +865,7 @@ async def _build_oauth_data(
                         scopes=scope_list,
                     )
                     await db.commit()
+                logger.info("Auto-refresh token successful")
             else:
                 error_msg = result.get("error_description", result.get("error", "Unknown error"))
                 logger.error(f"Auto-refresh token failed: {log_safe(error_msg)}")
@@ -941,20 +928,41 @@ async def sdk_integrations_list_mappings(
             logger.warning(f"SDK integrations.list_mappings: integration '{log_safe(request.name)}' not found")
             return None
 
-        mappings = await list_cli_integration_mappings(
-            repo,
-            current_user,
-            request.scope,
-            integration.id,
-            db,
-        )
+        # Apply the C2 gate: explicit ``scope`` (UUID or "global") requires
+        # platform-admin or provider-org bypass. UNSET (None / "") falls
+        # back to the caller's own org. ``scope="global"`` returns None
+        # from the resolver — list all mappings (bypass already enforced).
+        # A resolved provider org is also an enumerate-all scope for mapping
+        # listing: providers need to see every customer mapping by default.
+        resolved_org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
+        if resolved_org_id is None and request.scope in (None, ""):
+            # Caller has no org — system account on UNSET. Return empty.
+            mappings = []
+        elif resolved_org_id is None:
+            # Bypass verified by the resolver — request was "global".
+            mappings = await repo.list_mappings(integration.id)
+        else:
+            resolved_org_uuid = UUID(resolved_org_id)
+            org_row = await db.execute(
+                select(Organization.is_provider).where(Organization.id == resolved_org_uuid)
+            )
+            if bool(org_row.scalar_one_or_none()):
+                mappings = await repo.list_mappings(integration.id)
+            else:
+                mappings = await repo.list_mappings(
+                    integration.id, organization_id=resolved_org_uuid
+                )
 
         logger.info(f"SDK listed {len(mappings)} mappings for integration '{log_safe(request.name)}' for user {current_user.email}")
 
         items = []
         for mapping in mappings:
             # Get merged config (integration defaults + org overrides)
-            config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+            config = await repo.get_config_for_mapping(
+                integration.id,
+                mapping.organization_id,
+                include_default_secrets=False,
+            )
             items.append({
                 "id": str(mapping.id),
                 "integration_id": str(mapping.integration_id),
@@ -970,6 +978,10 @@ async def sdk_integrations_list_mappings(
         return SDKIntegrationsListMappingsResponse(items=items)
 
     except HTTPException:
+        # Authorization failures (e.g. 403 from _resolve_sdk_org_id) must
+        # surface to the client. The blanket ``except Exception`` below
+        # would otherwise downgrade a 403 to a 200/null response and
+        # make unauthorized requests indistinguishable from misses.
         raise
     except Exception as e:
         logger.error(f"SDK integrations.list_mappings failed: {log_safe(e)}")
@@ -997,20 +1009,22 @@ async def sdk_integrations_get_mapping(
             logger.warning(f"SDK integrations.get_mapping: integration '{log_safe(request.name)}' not found")
             return None
 
-        mapping = await get_cli_integration_mapping(
-            repo,
-            current_user,
-            request.scope,
-            integration.id,
-            db,
-            request.entity_id,
+        # Apply the C2 gate. Non-bypass callers can only target their own
+        # org; cross-org or "global" requires platform-admin / provider-org.
+        resolved_org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
+        mapping = await _sdk_find_integration_mapping(
+            repo, integration.id, resolved_org_id, request
         )
 
         if not mapping:
             return None
 
         # Get merged config for the mapping
-        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+        config = await repo.get_config_for_mapping(
+            integration.id,
+            mapping.organization_id,
+            include_default_secrets=False,
+        )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
 
@@ -1027,10 +1041,32 @@ async def sdk_integrations_get_mapping(
         )
 
     except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
         raise
     except Exception as e:
         logger.error(f"SDK integrations.get_mapping failed: {log_safe(e)}")
         return None
+
+
+async def _sdk_find_integration_mapping(
+    repo,
+    integration_id: UUID,
+    resolved_org_id: str | None,
+    request: SDKIntegrationsGetMappingRequest,
+):
+    if resolved_org_id is not None:
+        mapping = await repo.get_mapping_by_org(integration_id, UUID(resolved_org_id))
+        if mapping:
+            return mapping
+
+    if not request.entity_id or (resolved_org_id is None and request.scope in (None, "")):
+        return None
+
+    candidates = await repo.list_mappings(
+        integration_id,
+        organization_id=UUID(resolved_org_id) if resolved_org_id else None,
+    )
+    return next((m for m in candidates if m.entity_id == request.entity_id), None)
 
 
 @router.post(
@@ -1057,7 +1093,14 @@ async def sdk_integrations_upsert_mapping(
                 detail=f"Integration '{request.name}' not found",
             )
 
-        org_uuid = UUID(request.scope)
+        # Apply the C2 gate before touching another org's mapping row.
+        resolved_org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
+        if resolved_org_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="upsert_mapping requires an org scope; global is not a valid mapping target",
+            )
+        org_uuid = UUID(resolved_org_id)
 
         # Check if mapping already exists
         existing_mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
@@ -1142,7 +1185,11 @@ async def sdk_integrations_delete_mapping(
             logger.warning(f"SDK integrations.delete_mapping: integration '{log_safe(request.name)}' not found")
             return {"deleted": False}
 
-        org_uuid = UUID(request.scope)
+        # Apply the C2 gate before touching another org's mapping row.
+        resolved_org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
+        if resolved_org_id is None:
+            return {"deleted": False}
+        org_uuid = UUID(resolved_org_id)
 
         # Find the mapping
         mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
@@ -1159,6 +1206,9 @@ async def sdk_integrations_delete_mapping(
 
         return {"deleted": deleted}
 
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"SDK integrations.delete_mapping failed: {log_safe(e)}")
         return {"deleted": False}
@@ -1186,22 +1236,26 @@ async def sdk_integrations_refresh_token(
     :func:`src.services.oauth_provider.refresh_oauth_token_http`; this handler
     only owns the provider lookup, context build, and persistence.
     """
+    from src.models.orm.oauth import OAuthToken
+    from src.repositories.oauth import (
+        OAuthProviderRepository,
+        OAuthTokenRepository,
+    )
     from src.services.oauth_provider import (
         build_token_refresh_context,
         refresh_oauth_token_http,
     )
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
     try:
-        # Look up provider by connection_name (== provider_name), preferring
-        # org-specific rows while allowing global providers for scoped mappings.
-        provider = await get_oauth_provider_for_scope(
-            db,
-            request.connection_name,
-            org_uuid,
+        # Cascade: prefer org-scoped provider, fall back to global.
+        # See api/src/repositories/README.md for the pattern.
+        provider_repo = OAuthProviderRepository(
+            db, org_id=org_uuid, is_superuser=True
         )
+        provider = await provider_repo.get(provider_name=request.connection_name)
 
         if not provider:
             raise HTTPException(
@@ -1211,9 +1265,12 @@ async def sdk_integrations_refresh_token(
 
         # For authorization_code flow we need the stored token up front so
         # build_token_refresh_context can carry the encrypted refresh token.
+        token_repo = OAuthTokenRepository(
+            db, org_id=org_uuid, is_superuser=True
+        )
         stored_token = None
         if provider.oauth_flow_type == "authorization_code":
-            stored_token = await get_oauth_token_for_scope(db, provider.id, org_uuid)
+            stored_token = await token_repo.get_org_level_for_provider(provider.id)
             if not stored_token or not stored_token.encrypted_refresh_token:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -1261,8 +1318,9 @@ async def sdk_integrations_refresh_token(
         # remains per-caller.
         token_obj = stored_token
         if token_obj is None:
-            # client_credentials path — fetch (or later create) the user_id=NULL row
-            token_obj = await get_oauth_token_for_scope(db, provider.id, org_uuid)
+            # client_credentials path — fetch (or later create) the user_id=NULL row.
+            # Cascade: prefer org-scoped token, fall back to global.
+            token_obj = await token_repo.get_org_level_for_provider(provider.id)
 
         if token_obj:
             token_obj.encrypted_access_token = outcome["encrypted_access_token"]
@@ -1270,20 +1328,14 @@ async def sdk_integrations_refresh_token(
                 token_obj.encrypted_refresh_token = outcome["encrypted_refresh_token"]
             if expires_at_dt and hasattr(expires_at_dt, "isoformat"):
                 token_obj.expires_at = expires_at_dt
-            token_obj.status = "completed"
-            token_obj.status_message = None
-            token_obj.last_refresh_at = datetime.now(timezone.utc)
         else:
             new_token = OAuthToken(
-                organization_id=org_uuid,
+                organization_id=provider.organization_id,
                 provider_id=provider.id,
                 encrypted_access_token=outcome["encrypted_access_token"],
                 encrypted_refresh_token=outcome.get("encrypted_refresh_token"),
                 expires_at=expires_at_dt if expires_at_dt and hasattr(expires_at_dt, "isoformat") else None,
                 scopes=provider.scopes or [],
-                status="completed",
-                status_message=None,
-                last_refresh_at=datetime.now(timezone.utc),
             )
             db.add(new_token)
 
@@ -1948,7 +2000,7 @@ async def cli_ai_complete(
             from src.core.cache import get_shared_redis
 
             redis_client = await get_shared_redis()
-            org_id = await _get_cli_org_id(current_user, request.org_id, db)
+            org_id = await _resolve_sdk_org_id(current_user, request.org_id, db)
             await record_ai_usage(
                 session=db,
                 redis_client=redis_client,
@@ -2004,9 +2056,11 @@ async def cli_ai_stream(
     """Generate a streaming AI completion using SSE."""
     from src.services.llm import get_llm_client, LLMMessage
 
-    # Capture context for usage recording
+    # Capture context for usage recording. Resolve scope upfront against
+    # the authenticated user so the streaming closure doesn't have to
+    # re-derive bypass after CurrentUser falls out of scope.
     user_id = current_user.user_id
-    org_id_str = request.org_id
+    resolved_org_id = await _resolve_sdk_org_id(current_user, request.org_id, db)
     execution_id_str = request.execution_id
 
     async def generate():
@@ -2036,7 +2090,6 @@ async def cli_ai_stream(
                         from src.core.cache import get_shared_redis
 
                         redis_client = await get_shared_redis()
-                        org_id = await _get_cli_org_id(current_user, org_id_str, db)
                         await record_ai_usage(
                             session=db,
                             redis_client=redis_client,
@@ -2045,7 +2098,7 @@ async def cli_ai_stream(
                             input_tokens=chunk.input_tokens or 0,
                             output_tokens=chunk.output_tokens or 0,
                             execution_id=UUID(execution_id_str) if execution_id_str else None,
-                            organization_id=UUID(org_id) if org_id else None,
+                            organization_id=UUID(resolved_org_id) if resolved_org_id else None,
                             user_id=user_id,
                         )
                     except Exception as e:
@@ -2125,23 +2178,22 @@ async def cli_knowledge_store(
     from src.services.embeddings import get_embedding_client
 
     try:
-        org_id = await _get_cli_org_id(current_user, request.scope, db)
+        org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        # Generate embedding
         embedding_client = await get_embedding_client(db)
-        embedding = await embedding_client.embed_single(request.content)
 
         # Store document
         repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
-        doc_id = await repo.store(
+        doc_ids = await repo.store_chunked(
             content=request.content,
-            embedding=embedding,
             namespace=request.namespace,
             key=request.key,
             metadata=request.metadata,
             created_by=current_user.user_id,
+            embedder=embedding_client,
         )
+        doc_id = doc_ids[0]
 
         await db.commit()
 
@@ -2153,6 +2205,9 @@ async def cli_knowledge_store(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e),
         )
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"CLI knowledge store failed: {log_safe(e)}")
         raise HTTPException(
@@ -2175,28 +2230,24 @@ async def cli_knowledge_store_many(
     from src.services.embeddings import get_embedding_client
 
     try:
-        org_id = await _get_cli_org_id(current_user, request.scope, db)
+        org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        # Extract contents for batch embedding
-        contents = [doc["content"] for doc in request.documents]
-
-        # Batch generate embeddings
         embedding_client = await get_embedding_client(db)
-        embeddings = await embedding_client.embed(contents)
 
         # Store each document
         repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         doc_ids = []
-        for doc, embedding in zip(request.documents, embeddings):
-            doc_id = await repo.store(
+        for doc in request.documents:
+            inserted_ids = await repo.store_chunked(
                 content=doc["content"],
-                embedding=embedding,
                 namespace=request.namespace,
                 key=doc.get("key"),
                 metadata=doc.get("metadata"),
                 created_by=current_user.user_id,
+                embedder=embedding_client,
             )
+            doc_id = inserted_ids[0]
             doc_ids.append(doc_id)
 
         await db.commit()
@@ -2209,6 +2260,9 @@ async def cli_knowledge_store_many(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e),
         )
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"CLI knowledge store-many failed: {log_safe(e)}")
         raise HTTPException(
@@ -2232,7 +2286,7 @@ async def cli_knowledge_search(
     from src.services.embeddings import get_embedding_client
 
     try:
-        org_id = await _get_cli_org_id(current_user, request.scope, db)
+        org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
         # Generate query embedding
@@ -2270,6 +2324,9 @@ async def cli_knowledge_search(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e),
         )
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"CLI knowledge search failed: {log_safe(e)}")
         raise HTTPException(
@@ -2291,7 +2348,7 @@ async def cli_knowledge_delete(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        org_id = await _get_cli_org_id(current_user, request.scope, db)
+        org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
@@ -2305,6 +2362,9 @@ async def cli_knowledge_delete(
         logger.info(f"CLI knowledge delete: namespace={log_safe(request.namespace)}, key={log_safe(request.key)}, deleted={deleted}")
 
         return {"deleted": deleted}
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"CLI knowledge delete failed: {log_safe(e)}")
         raise HTTPException(
@@ -2327,7 +2387,7 @@ async def cli_knowledge_delete_namespace(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        org_id = await _get_cli_org_id(current_user, scope, db)
+        org_id = await _resolve_sdk_org_id(current_user, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
@@ -2340,6 +2400,9 @@ async def cli_knowledge_delete_namespace(
         logger.info(f"CLI knowledge delete namespace: namespace={log_safe(namespace)}, deleted_count={deleted_count}")
 
         return {"deleted_count": deleted_count}
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"CLI knowledge delete namespace failed: {log_safe(e)}")
         raise HTTPException(
@@ -2363,7 +2426,7 @@ async def cli_knowledge_list_namespaces(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        org_id = await _get_cli_org_id(current_user, scope, db)
+        org_id = await _resolve_sdk_org_id(current_user, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
@@ -2378,6 +2441,9 @@ async def cli_knowledge_list_namespaces(
             )
             for ns in results
         ]
+    except HTTPException:
+        # Auth/scope failures (e.g. 403 from _resolve_sdk_org_id) must surface.
+        raise
     except Exception as e:
         logger.error(f"CLI knowledge list namespaces failed: {log_safe(e)}")
         raise HTTPException(
@@ -2402,7 +2468,7 @@ async def cli_knowledge_get(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
-        org_id = await _get_cli_org_id(current_user, scope, db)
+        org_id = await _resolve_sdk_org_id(current_user, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
         repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
@@ -2479,7 +2545,7 @@ def _to_pep440(version: str) -> str:
     return f"0.0.0+{local}"
 
 
-@router.get(
+@install_router.get(
     "/download",
     summary="Download CLI package",
     description="Download the Bifrost CLI as a pip-installable tarball",
@@ -2598,10 +2664,12 @@ async def cli_create_table(
     """Create a new table via SDK."""
     from src.models.orm.tables import Table
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
-    # Check if table exists in the same scope.
+    # Exact-scope uniqueness check (not a cascade): "is there already a
+    # table named X in MY scope?" Cascade would mask collisions when a
+    # global Table with the same name exists. See repositories/README.md.
     stmt = select(Table).where(
         Table.name == request.name,
         Table.organization_id == org_uuid,
@@ -2654,28 +2722,21 @@ async def cli_list_tables(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> list[SDKTableInfo]:
-    """List tables via SDK."""
-    from src.models.orm.tables import Table
-    from sqlalchemy import or_
+    """List tables via SDK.
 
-    org_id = await _get_cli_org_id(current_user, request.scope, db)
+    Engine sentinel: the SDK has already resolved scope, so we pass
+    is_superuser=True to TableRepository and trust the org_uuid.
+    The base class handles the cascade (org + global) for us.
+    """
+    # Local import keeps the router file's top-level imports lean.
+    from src.repositories.tables import TableRepository
+
+    org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
-    # Build query with cascade scoping (org + global)
-    stmt = select(Table)
-    if org_uuid:
-        stmt = stmt.where(
-            or_(
-                Table.organization_id == org_uuid,
-                Table.organization_id.is_(None),
-            )
-        )
-    else:
-        stmt = stmt.where(Table.organization_id.is_(None))
-
-    stmt = stmt.order_by(Table.name)
-    result = await db.execute(stmt)
-    tables = result.scalars().all()
+    repo = TableRepository(db, org_id=org_uuid, is_superuser=True)
+    tables = await repo.list()
+    tables = sorted(tables, key=lambda t: t.name)
 
     return [
         SDKTableInfo(

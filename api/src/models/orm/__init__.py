@@ -28,7 +28,6 @@ from src.models.orm.codex_gateway import (
     CodexGatewayUpstreamAccount,
 )
 from src.models.orm.config import Config, SystemConfig
-from src.models.orm.developer import DeveloperContext
 from src.models.orm.events import Event, EventDelivery, EventSource, EventSubscription, WebhookSource
 from src.models.orm.executions import Execution, ExecutionLog
 from src.models.orm.external_mcp import (
@@ -46,8 +45,10 @@ from src.models.orm.metrics import ExecutionMetricsDaily, KnowledgeStorageDaily,
 from src.models.orm.mfa import MFARecoveryCode, TrustedDevice, UserMFAMethod, UserOAuthAccount
 from src.models.orm.oauth import OAuthProvider, OAuthToken
 from src.models.orm.organizations import Organization
+from src.models.orm.custom_claims import CustomClaim
 from src.models.orm.tables import Document, Table
 from src.models.orm.users import Role, User, UserRole
+from src.models.orm.user_invites import UserInvite
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
 from src.models.orm.file_index import FileIndex
@@ -66,6 +67,7 @@ __all__ = [
     "User",
     "Role",
     "UserRole",
+    "UserInvite",
     # Agent Runs
     "AgentRun",
     "AgentRunFlagConversation",
@@ -132,8 +134,6 @@ __all__ = [
     "FileIndex",
     # Worker Metrics
     "WorkerMetric",
-    # Developer
-    "DeveloperContext",
     # Events
     "EventSource",
     "WebhookSource",
@@ -149,4 +149,6 @@ __all__ = [
     # Tables (App Builder)
     "Table",
     "Document",
+    # Custom Claims
+    "CustomClaim",
 ]

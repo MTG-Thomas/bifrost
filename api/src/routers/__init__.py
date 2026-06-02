@@ -11,6 +11,7 @@ from src.routers.executions import router as executions_router
 from src.routers.workflows import router as workflows_router
 from src.routers.forms import router as forms_router
 from src.routers.config import router as config_router
+from src.routers.codex_gateway import router as codex_gateway_router
 from src.routers.websocket import router as websocket_router
 from src.routers.branding import router as branding_router
 from src.routers.files import router as files_router
@@ -22,8 +23,7 @@ from src.routers.packages import router as packages_router
 from src.routers.github import router as github_router
 from src.routers.oauth_connections import router as oauth_connections_router
 from src.routers.endpoints import router as endpoints_router
-from src.routers.cli import router as cli_router
-from src.routers.codex_gateway import router as codex_gateway_router
+from src.routers.cli import router as cli_router, install_router as cli_install_router
 from src.routers.notifications import router as notifications_router
 from src.routers.profile import router as profile_router
 from src.routers.agents import router as agents_router
@@ -38,14 +38,13 @@ from src.routers.roi_settings import router as roi_settings_router
 from src.routers.roi_reports import router as roi_reports_router
 from src.routers.usage_reports import router as usage_reports_router
 from src.routers.ai_pricing import router as ai_pricing_router
-from src.routers.email_config import router as email_config_router
-from src.routers.email_config import sdk_router as email_sdk_router
 from src.routers.oauth_config import router as oauth_config_router
 from src.routers.tools import router as tools_router
 from src.routers.mcp import router as mcp_router
 from src.routers.events import router as events_router
 from src.routers.hooks import router as hooks_router
 from src.routers.tables import router as tables_router
+from src.routers.claims import router as claims_router
 from src.routers.knowledge_sources import router as knowledge_sources_router
 from src.routers.app_embed_secrets import router as app_embed_secrets_router
 from src.routers.applications import router as applications_router
@@ -57,7 +56,6 @@ from src.routers.form_embed_secrets import router as form_embed_secrets_router
 from src.routers.export_import import router as export_import_router
 from src.routers.docs import router as docs_router
 from src.routers.jobs import router as jobs_router
-from src.routers.nuclei_scans import router as nuclei_scans_router
 from src.routers.platform import (
     workers_router as platform_workers_router,
     queue_router as platform_queue_router,
@@ -84,6 +82,7 @@ __all__ = [
     "workflows_router",
     "forms_router",
     "config_router",
+    "codex_gateway_router",
     "websocket_router",
     "branding_router",
     "files_router",
@@ -96,7 +95,7 @@ __all__ = [
     "oauth_connections_router",
     "endpoints_router",
     "cli_router",
-    "codex_gateway_router",
+    "cli_install_router",
     "notifications_router",
     "profile_router",
     "agents_router",
@@ -111,14 +110,13 @@ __all__ = [
     "roi_reports_router",
     "usage_reports_router",
     "ai_pricing_router",
-    "email_config_router",
-    "email_sdk_router",
     "oauth_config_router",
     "tools_router",
     "mcp_router",
     "events_router",
     "hooks_router",
     "tables_router",
+    "claims_router",
     "knowledge_sources_router",
     "app_embed_secrets_router",
     "applications_router",
@@ -130,7 +128,6 @@ __all__ = [
     "export_import_router",
     "docs_router",
     "jobs_router",
-    "nuclei_scans_router",
     "platform_workers_router",
     "platform_queue_router",
     "platform_stuck_router",

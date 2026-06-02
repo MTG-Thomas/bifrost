@@ -100,39 +100,9 @@ class Settings(BaseSettings):
         default=30,
         description="TTL in seconds for worker registration in Redis (refreshed by heartbeat)",
     )
-    worker_install_requirements_on_startup: bool = Field(
-        default=True,
-        description="Install workspace requirements.txt during worker template startup",
-    )
     memory_pressure_threshold: float = Field(
         default=0.85,
         description="Reject new forks when container memory usage exceeds this ratio (0.0-1.0)",
-    )
-
-    # ==========================================================================
-    # Error Monitoring (Sentry)
-    # ==========================================================================
-    sentry_dsn: str | None = Field(
-        default=None, description="Sentry DSN. When unset, Sentry is disabled."
-    )
-
-    sentry_traces_sample_rate: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Sentry performance trace sample rate. Defaults to errors only.",
-    )
-
-    sentry_profiles_sample_rate: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Sentry profiling sample rate. Defaults to disabled.",
-    )
-
-    sentry_send_default_pii: bool = Field(
-        default=False,
-        description="Allow Sentry to send default PII such as headers and user IPs.",
     )
 
     # ==========================================================================
@@ -195,6 +165,11 @@ class Settings(BaseSettings):
         default="s3",
         description="Object storage backend provider: s3 or azure_blob",
     )
+
+    sentry_dsn: str | None = Field(default=None, description="Sentry DSN for optional error reporting")
+    sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sentry_profiles_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sentry_send_default_pii: bool = Field(default=False)
 
     s3_bucket: str | None = Field(
         default=None,

@@ -6,9 +6,6 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
-    # Pull requests always run the real required checks. Do not replace these
-    # status names with docs-only noop jobs: branch protection matches check
-    # names, so duplicate always-green jobs can spoof the gate.
   # GitHub merge queue runs CI on a synthetic ref containing
   # main + queued PRs stacked in queue order. Required status
   # checks must fire on this event or the queue blocks forever
@@ -18,13 +15,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: mtg-thomas
-  API_IMAGE: bifrost-api
-  CLIENT_IMAGE: bifrost-client
-  WORKER_IMAGE: bifrost-worker
-
-permissions:
-  contents: read
+  API_IMAGE: jackmusick/bifrost-api
+  CLIENT_IMAGE: jackmusick/bifrost-client
 
 jobs:
   # =============================================================================
@@ -36,9 +28,14 @@ jobs:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Lint & Type Check
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check GitHub Action pins
+        run: python3 api/scripts/check_github_action_pins.py
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -97,6 +94,8 @@ jobs:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Unit Tests
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -120,13 +119,15 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # =============================================================================
-  # E2E Tests - PR smoke lane, full suite on merge queue/tags/manual dispatch
+  # E2E Tests - Slow, only gates tag releases
   # =============================================================================
   test-e2e:
     # Skip on push: main — covered by the merge_group run.
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: E2E Tests
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -134,32 +135,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      # PRs and semver tags use the smoke suite (same gate as merge review).
-      # Full E2E runs on merge_group / manual dispatch until the suite is stable
-      # on MTG fork CI — see ongoing git-sync and MCP matrix failures on main.
-      - name: Run E2E smoke tests
-        if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
-        run: |
-          chmod +x test.sh
-          ./test.sh stack up
-          ./test.sh e2e-smoke
-
-      - name: Run full E2E tests
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/v')
+      - name: Run E2E tests
         run: |
           chmod +x test.sh
           ./test.sh stack up
           ./test.sh e2e
-
-      - name: Upload E2E timing and JUnit artifacts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-test-artifacts
-          path: |
-            /tmp/bifrost-*/test-results.xml
-            /tmp/bifrost-*/test-runner.log
-          if-no-files-found: ignore
 
   # =============================================================================
   # Dev Build - Every push to main, gated by unit tests only
@@ -186,28 +166,31 @@ jobs:
         id: version
         run: |
           VERSION=$(./scripts/compute-dev-version.sh)
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      # Surface manifest drift to the job summary. The plugin manifest is
-      # updated at tag time (see bifrost-release skill) — between tags the
-      # `version` field reflects the last released version, not the current
-      # dev version. This step is informational only; it does not fail the
-      # build and does not commit anything back. See PR #246 for the
-      # rationale (branch protection + commit-back loop avoidance).
+      # Surface manifest drift to the job summary. Plugin manifests are updated
+      # at tag time (see bifrost-release skill) — between tags the `version`
+      # field reflects the last released version, not the current dev version.
+      # This step is informational only; it does not fail the build and does
+      # not commit anything back. See PR #246 for the rationale (branch
+      # protection + commit-back loop avoidance).
       - name: Report plugin manifest drift
         run: |
-          MANIFEST_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
           DEV_VERSION="${{ steps.version.outputs.version }}"
           {
-            echo "## Plugin manifest version"
+            echo "## Plugin manifest versions"
             echo ""
-            echo "- Manifest (.claude-plugin/plugin.json): \`${MANIFEST_VERSION}\`"
             echo "- Computed dev version: \`${DEV_VERSION}\`"
-            if [[ "$MANIFEST_VERSION" != "$DEV_VERSION" ]]; then
-              echo ""
-              echo "Manifest reflects the last tagged release; it advances at tag time via the bifrost-release skill."
-            fi
+            for manifest in \
+              .claude-plugin/plugin.json \
+              .codex-plugin/plugin.json \
+              plugins/bifrost/.codex-plugin/plugin.json; do
+              manifest_version=$(jq -r '.version' "$manifest")
+              echo "- Manifest (${manifest}): \`${manifest_version}\`"
+            done
+            echo ""
+            echo "Manifests reflect the last tagged release; they advance at tag time via the bifrost-release skill."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Docker Buildx
@@ -232,9 +215,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}:dev
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
+            ghcr.io/${{ env.API_IMAGE }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ env.API_IMAGE }}:dev
+            ghcr.io/${{ env.API_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
           build-args: |
             BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
@@ -245,44 +228,13 @@ jobs:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           cosign sign --yes \
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
+            ghcr.io/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
 
       - name: Attest API dev image provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}
+          subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
-          push-to-registry: true
-
-      - name: Build and push worker dev image
-        id: build-worker
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          file: ./api/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}:dev
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
-          build-args: |
-            BIFROST_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Sign worker dev image
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
-
-      - name: Attest worker dev image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
-        with:
-          subject-name: ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}
-          subject-digest: ${{ steps.build-worker.outputs.digest }}
           push-to-registry: true
 
       - name: Build and push client dev image
@@ -295,9 +247,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}:dev
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
+            ghcr.io/${{ env.CLIENT_IMAGE }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ env.CLIENT_IMAGE }}:dev
+            ghcr.io/${{ env.CLIENT_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
           build-args: |
             VITE_BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
@@ -308,14 +260,143 @@ jobs:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           cosign sign --yes \
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
+            ghcr.io/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
 
       - name: Attest client dev image provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}
+          subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
           push-to-registry: true
+
+  # =============================================================================
+  # Deploy Dry Run - Manual trigger only (workflow_dispatch from any branch).
+  # Validates the DO auth chain (token, cluster name, RBAC, label selector)
+  # WITHOUT touching any deployment. Used once before merging this PR to
+  # confirm the deploy job will succeed when it fires for real.
+  # =============================================================================
+  deploy-dry-run:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    name: Deploy Dry Run
+    permissions:
+      contents: read
+    steps:
+      - name: Install doctl
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Save kubeconfig
+        env:
+          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
+        run: doctl kubernetes cluster kubeconfig save "$DO_CLUSTER_NAME"
+
+      - name: Probe cluster reach + RBAC + label selector
+        run: |
+          set -e
+          echo "::group::cluster info"
+          kubectl cluster-info
+          echo "::endgroup::"
+
+          echo "::group::RBAC — can I patch deployments in the bifrost namespace?"
+          kubectl auth can-i patch deployment -n bifrost
+          echo "::endgroup::"
+
+          echo "::group::Deployments the real job would restart"
+          kubectl -n bifrost get deployment \
+            -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
+            -o wide
+          echo "::endgroup::"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Bifrost deploy dry run"
+            echo ""
+            echo "If the step above passed, the real \`deploy-dev\` job will work when this PR merges."
+            echo ""
+            echo "### Deployments that would be restarted"
+            echo ""
+            echo '```'
+            kubectl -n bifrost get deployment \
+              -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
+              -o custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas \
+              || echo "kubectl unavailable"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # =============================================================================
+  # Deploy Dev - Push-to-main only. Rolls the DigitalOcean deployment once
+  # the :dev images are published. Targets anything labeled
+  # `app.kubernetes.io/part-of=bifrost` in the `bifrost` namespace so new
+  # services are picked up automatically. Failures page the maintainer via
+  # GitHub's built-in workflow-failure email (no extra wiring).
+  # =============================================================================
+  deploy-dev:
+    # Fires only after build-dev lands a new image on push: main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-dev]
+    runs-on: ubuntu-latest
+    name: Deploy Dev to DigitalOcean
+    permissions:
+      contents: read
+    # Allow only one deploy at a time; if a newer commit lands mid-rollout we
+    # cancel the older deploy so the cluster always converges on HEAD of main.
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: true
+
+    steps:
+      - name: Install doctl
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Save kubeconfig
+        env:
+          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
+        run: doctl kubernetes cluster kubeconfig save "$DO_CLUSTER_NAME"
+
+      - name: Roll deployments
+        run: |
+          kubectl -n bifrost rollout restart deployment \
+            -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker
+
+      - name: Wait for rollouts
+        run: |
+          set -e
+          # Query the same label selector we restarted, so new services are
+          # picked up without editing this workflow.
+          DEPLOYMENTS=$(kubectl -n bifrost get deployment \
+            -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+          for d in $DEPLOYMENTS; do
+            echo "::group::rollout status $d"
+            kubectl -n bifrost rollout status "deployment/$d" --timeout=5m
+            echo "::endgroup::"
+          done
+
+      - name: Summary
+        if: always()
+        env:
+          DO_CLUSTER_NAME: ${{ secrets.DO_CLUSTER_NAME }}
+        run: |
+          {
+            echo "## Bifrost deploy"
+            echo ""
+            echo "- Commit: \`${GITHUB_SHA::7}\`"
+            echo "- Cluster: \`$DO_CLUSTER_NAME\`"
+            echo "- Namespace: \`bifrost\`"
+            echo ""
+            echo "### Deployment status"
+            echo ""
+            kubectl -n bifrost get deployment \
+              -l app.kubernetes.io/part-of=bifrost,app.kubernetes.io/component!=message-broker \
+              -o custom-columns=NAME:.metadata.name,READY:.status.readyReplicas,AVAILABLE:.status.availableReplicas,UPDATED:.status.updatedReplicas \
+              || echo "kubectl unavailable"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # =============================================================================
   # Build API Image - Only on version tags, after tests pass
@@ -345,20 +426,29 @@ jobs:
             echo "::error::Release tag '${GITHUB_REF#refs/tags/}' must be strict semver like v1.2.3 or v1.2.3-beta.1."
             exit 1
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-      # Hard guard: the plugin manifest version must match the tag, otherwise
-      # Claude Code's plugin marketplace will keep serving stale skill content
-      # to users who installed via this repo. The bifrost-release skill runs
-      # `scripts/update-plugin-version.sh <version>` locally before tagging,
-      # so when this fails the maintainer either forgot the skill step or the
-      # bump commit didn't make it onto the tagged ref.
+      # Hard guard: plugin manifest versions must match the tag, otherwise
+      # Claude Code and Codex plugin marketplaces can keep serving stale skill
+      # content to users who installed via this repo. The bifrost-release skill
+      # runs `scripts/update-plugin-version.sh <version>` locally before
+      # tagging, so when this fails the maintainer either forgot the skill step
+      # or the bump commit didn't make it onto the tagged ref.
       - name: Verify plugin manifest matches tag
         run: |
-          MANIFEST_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          if [[ "$MANIFEST_VERSION" != "$TAG_VERSION" ]]; then
-            echo "::error::.claude-plugin/plugin.json version ($MANIFEST_VERSION) does not match tag ($TAG_VERSION)."
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          failed=0
+          for manifest in \
+            .claude-plugin/plugin.json \
+            .codex-plugin/plugin.json \
+            plugins/bifrost/.codex-plugin/plugin.json; do
+            manifest_version=$(jq -r '.version' "$manifest")
+            if [[ "$manifest_version" != "$TAG_VERSION" ]]; then
+              echo "::error::${manifest} version (${manifest_version}) does not match tag (${TAG_VERSION})."
+              failed=1
+            fi
+          done
+          if [[ "$failed" -ne 0 ]]; then
             echo "::error::Run 'scripts/update-plugin-version.sh $TAG_VERSION' on main, commit, then re-tag."
             exit 1
           fi
@@ -380,7 +470,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ env.API_IMAGE }}
           tags: |
             # Semantic version tags
             type=semver,pattern={{version}}
@@ -410,12 +500,12 @@ jobs:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           cosign sign --yes \
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
+            ghcr.io/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
 
       - name: Attest API image provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}
+          subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
           push-to-registry: true
 
@@ -447,7 +537,7 @@ jobs:
             echo "::error::Release tag '${GITHUB_REF#refs/tags/}' must be strict semver like v1.2.3 or v1.2.3-beta.1."
             exit 1
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -466,7 +556,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ env.CLIENT_IMAGE }}
           tags: |
             # Semantic version tags
             type=semver,pattern={{version}}
@@ -497,99 +587,13 @@ jobs:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           cosign sign --yes \
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
+            ghcr.io/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
 
       - name: Attest client image provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-name: ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}
+          subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
-          push-to-registry: true
-
-  # =============================================================================
-  # Build Worker Image - Only on version tags, after tests pass
-  # =============================================================================
-  build-worker:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test-unit, test-e2e, lint]
-    runs-on: ubuntu-latest
-    name: Build Worker Image
-    permissions:
-      contents: read
-      packages: write
-      id-token: write # OIDC for keyless cosign signing
-      attestations: write # for actions/attest-build-provenance
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Compute version from tag
-        id: version
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "::error::Release tag '${GITHUB_REF#refs/tags/}' must be strict semver like v1.2.3 or v1.2.3-beta.1."
-            exit 1
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}
-          tags: |
-            # Semantic version tags
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            # SHA for traceability
-            type=sha
-            # Latest tag only on stable releases (not pre-releases like v1.0.0-beta)
-            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
-
-      - name: Build and push worker image
-        id: build-worker
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          file: ./api/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: BIFROST_VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Sign worker image
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
-
-      - name: Attest worker image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
-        with:
-          subject-name: ghcr.io/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}
-          subject-digest: ${{ steps.build-worker.outputs.digest }}
           push-to-registry: true
 
   # =============================================================================
@@ -600,7 +604,7 @@ jobs:
   # =============================================================================
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-api, build-client, build-worker]
+    needs: [build-api, build-client]
     runs-on: ubuntu-latest
     name: Create Release
     permissions:
@@ -616,18 +620,14 @@ jobs:
         id: get_version
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
           IMAGE_TAG="${VERSION#v}"
-          if [[ ! "$IMAGE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "::error::Release tag '$VERSION' must be strict semver like v1.2.3 or v1.2.3-beta.1."
-            exit 1
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           # Check if this is a pre-release (contains hyphen like v1.0.0-beta)
           if [[ "$VERSION" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> $GITHUB_OUTPUT
           else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Copy type stubs
@@ -644,7 +644,7 @@ jobs:
       - name: Build source tarball
         id: source_tarball
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${{ steps.get_version.outputs.version }}"
           TARBALL="bifrost-${VERSION}-source.tar.gz"
           git archive --format=tar.gz --prefix="bifrost-${VERSION}/" -o "${TARBALL}" HEAD
           sha256sum "${TARBALL}" | tee "${TARBALL}.sha256"
@@ -700,17 +700,12 @@ jobs:
 
             **API:**
             ```bash
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.API_IMAGE }}:${{ steps.get_version.outputs.image_tag }}
+            docker pull ${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${{ steps.get_version.outputs.image_tag }}
             ```
 
             **Client:**
             ```bash
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.CLIENT_IMAGE }}:${{ steps.get_version.outputs.image_tag }}
-            ```
-
-            **Worker:**
-            ```bash
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.WORKER_IMAGE }}:${{ steps.get_version.outputs.image_tag }}
+            docker pull ${{ env.REGISTRY }}/${{ env.CLIENT_IMAGE }}:${{ steps.get_version.outputs.image_tag }}
             ```
 
             ### Type Stubs for IDEs
@@ -729,7 +724,7 @@ jobs:
             ```bash
             cosign verify-blob \
               --bundle bifrost-${{ steps.get_version.outputs.version }}-source.tar.gz.sigstore \
-              --certificate-identity-regexp 'https://github\.com/MTG-Thomas/bifrost/.*' \
+              --certificate-identity-regexp 'https://github\.com/jackmusick/bifrost/.*' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               bifrost-${{ steps.get_version.outputs.version }}-source.tar.gz
             ```
@@ -738,7 +733,7 @@ jobs:
 
             ```bash
             gh attestation verify bifrost-${{ steps.get_version.outputs.version }}-source.tar.gz \
-              --owner MTG-Thomas
+              --owner jackmusick
             ```
 
           draft: false

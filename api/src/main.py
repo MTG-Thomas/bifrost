@@ -16,11 +16,13 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
 from src.config import get_settings
+from src.core.sentry import configure_sentry
 from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
 from src.core.database import close_db, init_db
 from src.core.pubsub import manager as pubsub_manager
+from src.routers.health import close_health_check_clients
 from src.routers import (
     auth_router,
     mfa_router,
@@ -34,6 +36,7 @@ from src.routers import (
     workflows_router,
     forms_router,
     config_router,
+    codex_gateway_router,
     websocket_router,
     branding_router,
     files_router,
@@ -47,7 +50,7 @@ from src.routers import (
     oauth_connections_router,
     endpoints_router,
     cli_router,
-    codex_gateway_router,
+    cli_install_router,
     notifications_router,
     profile_router,
     agent_runs_router,
@@ -62,14 +65,13 @@ from src.routers import (
     roi_reports_router,
     usage_reports_router,
     ai_pricing_router,
-    email_config_router,
-    email_sdk_router,
     oauth_config_router,
     tools_router,
     mcp_router,
     events_router,
     hooks_router,
     tables_router,
+    claims_router,
     knowledge_sources_router,
     app_embed_secrets_router,
     applications_router,
@@ -80,7 +82,6 @@ from src.routers import (
     form_embed_secrets_router,
     export_import_router,
     docs_router,
-    nuclei_scans_router,
     platform_workers_router,
     platform_queue_router,
     platform_stuck_router,
@@ -164,6 +165,7 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down Bifrost API...")
 
     await pubsub_manager.close()
+    await close_health_check_clients()
     await close_db()
     logger.info("Bifrost API shutdown complete")
 
@@ -269,10 +271,7 @@ def create_app() -> FastAPI:
     Returns:
         Configured FastAPI application instance
     """
-    from src.core.sentry import configure_sentry
     from shared.version import get_version
-
-    configure_sentry(get_settings())
 
     app = FastAPI(
         title="Bifrost API",
@@ -534,6 +533,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows_router)
     app.include_router(forms_router)
     app.include_router(config_router)
+    app.include_router(codex_gateway_router)
     app.include_router(websocket_router)
     app.include_router(branding_router)
     app.include_router(files_router)
@@ -547,7 +547,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_connections_router)
     app.include_router(endpoints_router)
     app.include_router(cli_router)
-    app.include_router(codex_gateway_router)
+    app.include_router(cli_install_router)
     app.include_router(notifications_router)
     app.include_router(profile_router)
     app.include_router(agents_router)
@@ -562,14 +562,13 @@ def create_app() -> FastAPI:
     app.include_router(roi_reports_router)
     app.include_router(usage_reports_router)
     app.include_router(ai_pricing_router)
-    app.include_router(email_config_router)
-    app.include_router(email_sdk_router)
     app.include_router(oauth_config_router)
     app.include_router(tools_router)
     app.include_router(mcp_router)
     app.include_router(events_router)
     app.include_router(hooks_router)
     app.include_router(tables_router)
+    app.include_router(claims_router)
     app.include_router(knowledge_sources_router)
     app.include_router(app_embed_secrets_router)
     app.include_router(applications_router)
@@ -580,7 +579,6 @@ def create_app() -> FastAPI:
     app.include_router(form_embed_secrets_router)
     app.include_router(export_import_router)
     app.include_router(docs_router)
-    app.include_router(nuclei_scans_router)
     app.include_router(platform_workers_router)
     app.include_router(platform_queue_router)
     app.include_router(platform_stuck_router)
@@ -625,6 +623,7 @@ def create_app() -> FastAPI:
 
 
 # Create app instance
+configure_sentry(get_settings())
 app = create_app()
 
 

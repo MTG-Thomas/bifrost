@@ -72,11 +72,12 @@ def _client_with_blob_names(names, *, next_token=None):
             self._blobs = blobs
 
         def by_page(self, **kwargs):
-            del kwargs
-            return FakePager(self._blobs)
+            page_size = kwargs["results_per_page"]
+            blobs = self._blobs[:page_size] if page_size else self._blobs
+            return FakePager(blobs)
 
     class FakeContainer:
-        def list_blobs(self, name_starts_with="", results_per_page=None):
+        def list_blobs(self, name_starts_with=""):
             blobs = [
                 SimpleNamespace(
                     name=name,
@@ -87,8 +88,6 @@ def _client_with_blob_names(names, *, next_token=None):
                 for name in names
                 if name.startswith(name_starts_with)
             ]
-            if results_per_page is not None:
-                blobs = blobs[:results_per_page]
             return FakePaged(blobs)
 
     client._container_client = FakeContainer()

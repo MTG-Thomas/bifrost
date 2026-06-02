@@ -30,7 +30,6 @@ from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import (
     BaseConsumer,
-    ConsumerDeliveryError,
     DomainFailureHandled,
     DuplicateMessage,
     MalformedMessage,
@@ -108,33 +107,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
         # Call parent stop
         await super().stop()
-
-    async def _get_existing_execution_status(self, execution_id: str) -> str | None:
-        """Return existing durable execution status for duplicate classification."""
-        from uuid import UUID
-
-        from sqlalchemy import select
-
-        from src.core.database import get_session_factory
-        from src.models.orm.executions import Execution
-
-        try:
-            execution_uuid = UUID(execution_id)
-        except ValueError as e:
-            raise MalformedMessage(f"invalid execution_id UUID: {execution_id}") from e
-
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            result = await session.execute(
-                select(Execution.status).where(Execution.id == execution_uuid)
-            )
-            status = result.scalar_one_or_none()
-
-        if status is None:
-            return None
-        if hasattr(status, "value"):
-            return status.value
-        return str(status)
 
     async def _handle_result(self, result: dict[str, Any]) -> None:
         """
@@ -345,6 +317,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         workflow_name = pending.get("workflow_name", "unknown")
         org_id = pending.get("org_id")
         user_id = pending.get("user_id")
+        user_email = pending.get("user_email")
         user_name = pending.get("user_name")
         is_sync = pending.get("sync", False)
 
@@ -450,6 +423,22 @@ class WorkflowExecutionConsumer(BaseConsumer):
             },
         )
 
+        from src.services.events.builtins import emit_workflow_failure_events
+
+        await emit_workflow_failure_events(
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            execution_id=execution_id,
+            organization_id=org_id,
+            user_id=user_id,
+            user_email=user_email,
+            user_name=user_name,
+            error_type=error_type,
+            error_message=error,
+            status=status.value,
+            trigger_event=pending.get("event"),
+        )
+
     async def process_message(self, message_data: dict[str, Any]) -> None:
         """Process a workflow execution message."""
         from src.core.database import get_db_context
@@ -497,6 +486,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         form_id = pending.get("form_id")
         api_key_id = pending.get("api_key_id")  # Workflow ID whose API key triggered this
         startup = pending.get("startup")  # Launch workflow results
+        event_data = pending.get("event")  # EventContext dict if event-triggered
 
         # Determine if this is a code or workflow execution
         is_script = bool(code_base64)
@@ -567,6 +557,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
             roi_value = 0.0
             workflow_function_name: str | None = None  # Function name for exec_from_db()
             content_hash: str | None = None  # Content hash pinned at dispatch time
+            workflow_type = "workflow"
+            cache_ttl_seconds = 300
 
             if not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
@@ -579,6 +571,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     workflow_name = workflow_data["name"]
                     workflow_function_name = workflow_data["function_name"]
                     file_path = workflow_data["path"]  # Used for __file__ injection and Redis/S3 loading
+                    workflow_type = workflow_data["type"]
+                    cache_ttl_seconds = workflow_data["cache_ttl_seconds"]
 
                     timeout_seconds = workflow_data["timeout_seconds"]
                     # Initialize ROI from workflow defaults
@@ -650,16 +644,44 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 },
             )
 
-            # Load organization
+            # Create PostgreSQL record with RUNNING status
+            await create_execution(
+                execution_id=execution_id,
+                workflow_name=workflow_name,
+                parameters=parameters,
+                org_id=org_id,
+                user_id=user_id,
+                user_name=user_name,
+                form_id=form_id,
+                api_key_id=api_key_id,
+                status=ExecutionStatus.RUNNING,
+                execution_model="process",
+                workflow_id=workflow_id,
+            )
+            await publish_execution_update(execution_id, "Running")
+            await publish_history_update(
+                execution_id=execution_id,
+                status="Running",
+                executed_by=user_id,
+                executed_by_name=user_name,
+                workflow_name=workflow_name,
+                org_id=org_id,
+                started_at=start_time,
+            )
+
+            # Rehydrate the org from org_id (the enqueue boundary only carried
+            # the scalar org_id, not the Organization object built API-side).
+            # is_provider MUST come through here — it is the SDK-side C2
+            # scope-bypass flag the worker hands to resolve_scope. See
+            # OrganizationRepository.get_with_cache.
             org = None
             org_data = None
 
             if org_id:
-                from src.core.config_resolver import ConfigResolver
+                from src.repositories.organizations import OrganizationRepository
 
-                resolver = ConfigResolver()
                 async with get_db_context() as db:
-                    org = await resolver.get_organization(org_id, db=db)
+                    org = await OrganizationRepository(db).get_with_cache(org_id)
                 if org:
                     org_data = {
                         "id": org.id,
@@ -682,8 +704,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     "name": user_name,
                 },
                 "organization": org_data,
-                "tags": ["workflow"] if not is_script else [],
+                "tags": [workflow_type] if not is_script else [],
                 "timeout_seconds": timeout_seconds,
+                "cache_ttl_seconds": cache_ttl_seconds,
                 "transient": False,
                 "is_platform_admin": pending.get("is_platform_admin", False),
                 "startup": startup,  # Launch workflow results (available via context.startup)
@@ -693,43 +716,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 },
                 "file_path": file_path,  # Path for __file__ injection and fallback loading
                 "content_hash": content_hash,  # Pinned hash at dispatch time
+                "event": event_data,  # EventContext dict (None if not event-triggered)
             }
 
-            # Reserve process capacity before claiming the execution as Running.
-            # Results are handled asynchronously via _handle_result callback once
-            # the reserved execution is committed to the child process.
-            reservation = await self._pool.reserve_execution_slot(
+            # Route to process pool
+            # Results are handled asynchronously via _handle_result callback
+            await self._pool.route_execution(
                 execution_id=execution_id,
                 context=context_data,
             )
-            try:
-                await create_execution(
-                    execution_id=execution_id,
-                    workflow_name=workflow_name,
-                    parameters=parameters,
-                    org_id=org_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    form_id=form_id,
-                    api_key_id=api_key_id,
-                    status=ExecutionStatus.RUNNING,
-                    execution_model="process",
-                    workflow_id=workflow_id,
-                )
-                await publish_execution_update(execution_id, "Running")
-                await publish_history_update(
-                    execution_id=execution_id,
-                    status="Running",
-                    executed_by=user_id,
-                    executed_by_name=user_name,
-                    workflow_name=workflow_name,
-                    org_id=org_id,
-                    started_at=start_time,
-                )
-                await self._pool.commit_reserved_execution(reservation)
-            except Exception:
-                await self._pool.release_reserved_execution(reservation)
-                raise
             # Don't wait for result - pool will call back
 
         except asyncio.CancelledError:
@@ -738,24 +733,15 @@ class WorkflowExecutionConsumer(BaseConsumer):
             raise
 
         except (MemoryError, ProcessPoolAdmissionRejected) as e:
-            # Admission rejected before execution ownership - requeue for retry.
+            # Admission rejected due to memory pressure — requeue for retry
             logger.warning(
                 f"Admission rejected for {execution_id[:8]}: {e}. "
                 "Will requeue for retry."
             )
-            await publish_execution_update(
-                execution_id,
-                "Pending",
-                {"error": str(e), "errorType": "ProcessPoolAdmissionRejected", "retrying": True},
-            )
-            # Don't mark as terminal or delete pending state - retry needs the
-            # Redis context and may still start successfully.
-            raise RetryableConsumerError(
-                f"process pool admission rejected for {execution_id}: {e}"
-            ) from e
-
-        except ConsumerDeliveryError:
-            raise
+            # Don't mark as failed — the execution hasn't started yet.
+            # Keep pending state intact so the requeued message can be routed later.
+            # Re-raise so the consumer framework NACKs with requeue=True
+            raise RetryableConsumerError(f"process pool admission rejected: {e}") from e
 
         except Exception as e:
             # Unexpected error during setup (before routing to pool)
@@ -814,6 +800,31 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 },
                 exc_info=True,
             )
-            raise DomainFailureHandled(
-                f"workflow setup failure recorded for {execution_id}: {error_type}"
-            ) from e
+            raise DomainFailureHandled("workflow setup failure recorded") from e
+
+    async def _get_existing_execution_status(self, execution_id: str) -> str | None:
+        """Return existing durable execution status for duplicate classification."""
+        from uuid import UUID
+
+        from sqlalchemy import select
+
+        from src.core.database import get_session_factory
+        from src.models.orm.executions import Execution
+
+        try:
+            execution_uuid = UUID(execution_id)
+        except ValueError as e:
+            raise MalformedMessage(f"invalid execution_id UUID: {execution_id}") from e
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            result = await session.execute(
+                select(Execution.status).where(Execution.id == execution_uuid)
+            )
+            status = result.scalar_one_or_none()
+
+        if status is None:
+            return None
+        if hasattr(status, "value"):
+            return status.value
+        return str(status)

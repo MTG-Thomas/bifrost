@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from src.core.system_agents import is_privileged_agent_management_tool
+from src.core.auth import UserPrincipal
 from src.models.contracts.agents import (
     AgentSwitch,
     ChatStreamChunk,
@@ -36,6 +36,7 @@ from src.models.contracts.agents import (
 )
 from src.models.enums import MessageRole
 from src.models.orm import Agent, Conversation, Message, Workflow
+from src.repositories.agents import AgentRepository
 from src.services.llm import (
     LLMMessage,
     ToolCallRequest,
@@ -117,7 +118,9 @@ class AgentExecutor:
         conversation: Conversation,
         new_agent: Agent,
         reason: str,
-    ) -> AsyncIterator[ChatStreamChunk]:
+        *,
+        user: UserPrincipal | None,
+    ) -> tuple[ChatStreamChunk | None, Agent | None]:
         """
         Centralized agent switching with all rule checks.
 
@@ -128,27 +131,56 @@ class AgentExecutor:
             conversation: The conversation to update
             new_agent: The agent to switch to
             reason: Why the switch happened ("@mention", "routed", etc.)
+            user: Current user whose agent access must authorize the switch
 
-        Yields:
-            - agent_switch event (always)
+        Returns:
+            Tuple of optional agent_switch event and the access-checked agent.
         """
-        # 1. Emit agent switch event
-        yield ChatStreamChunk(
-            type="agent_switch",
-            agent_switch=AgentSwitch(
-                agent_id=str(new_agent.id),
-                agent_name=new_agent.name,
-                reason=reason,
-            ),
-        )
+        if user is None:
+            logger.warning(
+                "Denied agent switch without user context: conversation_id=%s agent_id=%s reason=%s",
+                conversation.id,
+                new_agent.id,
+                reason,
+            )
+            return None, None
 
-        # 2. Persist to conversation
+        # Persist only after reloading the target through the repository access
+        # boundary. This prevents high-level routing or mention logic from
+        # binding a conversation to an otherwise inaccessible agent.
         async with self._db() as session:
+            repo = AgentRepository(
+                session,
+                org_id=user.organization_id,
+                user_id=user.user_id,
+                is_superuser=user.is_superuser,
+            )
+            accessible_agent = await repo.get_agent_with_access_check(new_agent.id)
+            if accessible_agent is None:
+                logger.warning(
+                    "Denied agent switch because user lacks access: user_id=%s conversation_id=%s agent_id=%s reason=%s",
+                    user.user_id,
+                    conversation.id,
+                    new_agent.id,
+                    reason,
+                )
+                return None, None
+
             conv = await session.get(Conversation, conversation.id)
             if conv:
-                conv.agent_id = new_agent.id
+                conv.agent_id = accessible_agent.id
+
         # Update in-memory object too so caller sees the change
-        conversation.agent_id = new_agent.id
+        conversation.agent_id = accessible_agent.id
+
+        return ChatStreamChunk(
+            type="agent_switch",
+            agent_switch=AgentSwitch(
+                agent_id=str(accessible_agent.id),
+                agent_name=accessible_agent.name,
+                reason=reason,
+            ),
+        ), accessible_agent
 
     async def chat(
         self,
@@ -159,6 +191,7 @@ class AgentExecutor:
         stream: bool = True,
         enable_routing: bool = True,
         local_id: str | None = None,
+        user: UserPrincipal | None = None,
     ) -> AsyncIterator[ChatStreamChunk]:
         """
         Process a user message and generate a response.
@@ -172,6 +205,7 @@ class AgentExecutor:
             user_message: The user's message text
             stream: Whether to stream the response (default True)
             enable_routing: Whether to enable @mention and AI routing (default True)
+            user: Current user for permission-aware agent routing
 
         Yields:
             ChatStreamChunk objects with response content, tool calls, etc.
@@ -179,22 +213,30 @@ class AgentExecutor:
         from src.services.agent_router import AgentRouter
 
         start_time = time.time()
-        router = AgentRouter(self._session_factory)
+        router = AgentRouter(
+            self._session_factory,
+            user_id=user.user_id if user else None,
+            org_id=user.organization_id if user else None,
+            is_superuser=user.is_superuser if user else False,
+        )
 
         try:
             # 1. Check for @mention agent switching
             if enable_routing:
-                mentioned_agent = await router.parse_mention(
-                    user_message,
-                    conversation.user,
-                )
+                mentioned_agent = await router.parse_mention(user_message)
                 if mentioned_agent:
-                    # Strip @mention from message for cleaner processing
-                    user_message = router.strip_mention(user_message)
                     # Switch to mentioned agent (handles events and persistence)
-                    async for chunk in self._switch_agent(conversation, mentioned_agent, "@mention"):
-                        yield chunk
-                    agent = mentioned_agent
+                    switch_chunk, switched_agent = await self._switch_agent(
+                        conversation,
+                        mentioned_agent,
+                        "@mention",
+                        user=user,
+                    )
+                    if switch_chunk and switched_agent:
+                        # Strip @mention from message for cleaner processing
+                        user_message = router.strip_mention(user_message)
+                        yield switch_chunk
+                        agent = switched_agent
 
             # 2. AI-based routing for agentless chat (first message only)
             if enable_routing and agent is None:
@@ -202,14 +244,19 @@ class AgentExecutor:
                 is_first_message = await self._is_first_user_message(conversation.id)
                 if is_first_message:
                     routed_agent = await router.route_message(
-                        user_message,
-                        user=conversation.user,
+                        user_message
                     )
                     if routed_agent:
                         # Switch to routed agent (handles events and persistence)
-                        async for chunk in self._switch_agent(conversation, routed_agent, "routed"):
-                            yield chunk
-                        agent = routed_agent
+                        switch_chunk, switched_agent = await self._switch_agent(
+                            conversation,
+                            routed_agent,
+                            "routed",
+                            user=user,
+                        )
+                        if switch_chunk and switched_agent:
+                            yield switch_chunk
+                            agent = switched_agent
 
             # 3. Save user message
             user_msg = await self._save_message(
@@ -1191,19 +1238,18 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
         # Check if this is a delegation tool call
         if tool_call.name.startswith("delegate_to_") and agent:
-            return await self._execute_delegation(tool_call, agent, conversation)
+            return await self._execute_delegation(tool_call, agent)
 
         # Check if this is a system tool call
         if agent and tool_call.name in (agent.system_tools or []):
+            from src.core.system_agents import is_privileged_agent_management_tool
+
             if is_privileged_agent_management_tool(tool_call.name):
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     tool_name=tool_call.name,
                     result=None,
-                    error=(
-                        f"System tool '{tool_call.name}' cannot be executed "
-                        "from chat agents"
-                    ),
+                    error=f"System tool '{tool_call.name}' cannot be executed from chat agents",
                     duration_ms=int((time.time() - start_time) * 1000),
                 )
             return await self._execute_system_tool(tool_call, agent, conversation)
@@ -1551,7 +1597,6 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         self,
         tool_call: ToolCallRequest,
         agent: Agent,
-        conversation: Conversation | None = None,
     ) -> ToolResult:
         """Execute a delegation to another agent via AutonomousAgentExecutor."""
         start_time = time.time()
@@ -1595,23 +1640,11 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             redis_client = await get_shared_redis()
             sub_executor = AutonomousAgentExecutor(self._session_factory, redis_client=redis_client)
             try:
-                user = conversation.user if conversation else None
-                caller = None
-                if user is not None:
-                    caller = {
-                        "user_id": str(user.id),
-                        "email": user.email,
-                        "name": user.name,
-                        "is_platform_admin": bool(user.is_superuser),
-                    }
-                run_kwargs: dict[str, Any] = {
-                    "agent": delegated_agent,
-                    "input_data": {"task": task, "_delegated_from": agent.name},
-                }
-                if caller is not None:
-                    run_kwargs["_caller"] = caller
                 sub_result = await asyncio.wait_for(
-                    sub_executor.run(**run_kwargs),
+                    sub_executor.run(
+                        agent=delegated_agent,
+                        input_data={"task": task, "_delegated_from": agent.name},
+                    ),
                     timeout=DELEGATION_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
@@ -1676,17 +1709,15 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             # Get user from conversation (same pattern as workflow tool execution)
             user = conversation.user if conversation else None
 
-            # Create context from the caller first. Agent organization controls
-            # visibility of the agent, not the tenant scope for tool effects.
-            user_org_id = getattr(user, "organization_id", None) if user else None
-            context_org_id = user_org_id or agent.organization_id
+            caller_org_id = getattr(user, "organization_id", None) if user else None
+            agent_org_id = getattr(agent, "organization_id", None)
 
-            # Create context from agent/conversation/user
+            # Create context from caller/conversation/user
             # session=None: system tools create their own short-lived sessions
             # via get_tool_db() fallback, avoiding long-lived connection holds
             context = MCPContext(
                 user_id=str(user.id) if user else "",
-                org_id=str(context_org_id) if context_org_id else None,
+                org_id=str(caller_org_id or agent_org_id) if (caller_org_id or agent_org_id) else None,
                 is_platform_admin=user.is_superuser if user else False,
                 user_email=user.email if user else "",
                 user_name=user.name if user else "",

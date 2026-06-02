@@ -1,19 +1,16 @@
 import { useState, useMemo } from "react";
 import {
-	Shield,
-	Users as UsersIcon,
+	Crown,
 	RefreshCw,
 	UserCog,
-	Edit,
 	Plus,
-	Trash2,
-	Globe,
-	Building2,
 	Star,
+	Building2,
 	ArrowUp,
 	ArrowDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
 	DataTable,
 	DataTableBody,
@@ -22,7 +19,6 @@ import {
 	DataTableHeader,
 	DataTableRow,
 } from "@/components/ui/data-table";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -48,19 +44,42 @@ import {
 	useDeleteUser,
 	useUpdateUser,
 } from "@/hooks/useUsers";
+import { useUserSelection } from "@/hooks/useUserSelection";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { CreateUserDialog } from "@/components/users/CreateUserDialog";
 import { EditUserDialog } from "@/components/users/EditUserDialog";
+import { UserActionsMenu } from "@/components/users/UserActionsMenu";
+import { UserStatusBadge } from "@/components/users/UserStatusBadge";
+import { BulkActionBar } from "@/components/users/BulkActionBar";
+import { UserEmailCell } from "@/components/users/UserEmailCell";
+import {
+	BulkMoveOrgDialog,
+	BulkReplaceRolesDialog,
+	BulkResultDialog,
+	BulkSetActiveDialog,
+} from "@/components/users/BulkUserDialogs";
+import {
+	useRegenerateInvite,
+	useResendInvite,
+	useRevokeInvite,
+} from "@/hooks/useUserInvites";
 import { toast } from "sonner";
-import type { components } from "@/lib/v1";
+import type { components, components as v1 } from "@/lib/v1";
 type User = components["schemas"]["UserPublic"];
 type Organization = components["schemas"]["OrganizationPublic"];
 
-type SortColumn = "organization" | "name" | "email" | "type" | "created" | "last_login";
+type SortColumn = "name" | "email" | "status" | "created" | "last_login";
 type SortDirection = "asc" | "desc";
+type UpdateUserActive = (args: {
+	params: { path: { user_id: string } };
+	body: { is_active: boolean };
+}) => Promise<unknown>;
+type DeleteUserById = (args: {
+	params: { path: { user_id: string } };
+}) => Promise<unknown>;
 
 function SortIcon({ column, sortColumn, sortDirection }: { column: SortColumn; sortColumn: SortColumn; sortDirection: SortDirection }) {
 	if (sortColumn !== column) return null;
@@ -69,6 +88,136 @@ function SortIcon({ column, sortColumn, sortDirection }: { column: SortColumn; s
 	) : (
 		<ArrowDown className="inline ml-1 h-3 w-3" />
 	);
+}
+
+function compareUsers(
+	a: User,
+	b: User,
+	sortColumn: SortColumn,
+	sortDirection: SortDirection,
+) {
+	const dir = sortDirection === "asc" ? 1 : -1;
+	switch (sortColumn) {
+		case "name":
+			return dir * (a.name || a.email || "").localeCompare(b.name || b.email || "");
+		case "email":
+			return dir * (a.email || "").localeCompare(b.email || "");
+		case "status":
+			return dir * (a.invite_status ?? "active").localeCompare(b.invite_status ?? "active");
+		case "created":
+			return dir * (timestampOrZero(a.created_at) - timestampOrZero(b.created_at));
+		case "last_login":
+			return dir * (timestampOrZero(a.last_login) - timestampOrZero(b.last_login));
+		default:
+			return 0;
+	}
+}
+
+function timestampOrZero(value: string | null | undefined) {
+	return value ? new Date(value).getTime() : 0;
+}
+
+function getOrgInfo(
+	organizations: Organization[] | undefined,
+	orgId: string | null | undefined,
+): { name: string; isProvider: boolean } {
+	if (!orgId) return { name: "Platform", isProvider: false };
+	const org = organizations?.find((o: Organization) => o.id === orgId);
+	return { name: org?.name || orgId, isProvider: org?.is_provider ?? false };
+}
+
+function activeSelectionMix(selected: User[]): "all_active" | "all_inactive" | "mixed" {
+	if (selected.length === 0) return "all_active";
+	const anyActive = selected.some((u) => u.is_active);
+	const anyInactive = selected.some((u) => !u.is_active);
+	if (anyActive && anyInactive) return "mixed";
+	return anyActive ? "all_active" : "all_inactive";
+}
+
+function nextSortState(
+	currentColumn: SortColumn,
+	currentDirection: SortDirection,
+	column: SortColumn,
+): [SortColumn, SortDirection] {
+	if (currentColumn !== column) return [column, "asc"];
+	return [column, currentDirection === "asc" ? "desc" : "asc"];
+}
+
+function openToggleActiveDialog(
+	user: User,
+	setSelectedUser: (user: User) => void,
+	setIsDisableOpen: (open: boolean) => void,
+	enableUser: (user: User) => void,
+) {
+	if (user.is_active) {
+		setSelectedUser(user);
+		setIsDisableOpen(true);
+		return;
+	}
+	enableUser(user);
+}
+
+function errorMessage(error: unknown) {
+	return error instanceof Error ? error.message : "Unknown error occurred";
+}
+
+async function disableUser(
+	user: User | undefined,
+	updateUser: UpdateUserActive,
+	onSuccess: () => void,
+) {
+	if (!user) return;
+	try {
+		await updateUser({
+			params: { path: { user_id: user.id } },
+			body: { is_active: false },
+		});
+		toast.success("User disabled", {
+			description: `${user.name || user.email} has been disabled`,
+		});
+		onSuccess();
+	} catch (error) {
+		toast.error("Failed to disable user", {
+			description: errorMessage(error),
+		});
+	}
+}
+
+async function enableUser(user: User, updateUser: UpdateUserActive) {
+	try {
+		await updateUser({
+			params: { path: { user_id: user.id } },
+			body: { is_active: true },
+		});
+		toast.success("User enabled", {
+			description: `${user.name || user.email} has been re-enabled`,
+		});
+	} catch (error) {
+		toast.error("Failed to enable user", {
+			description: errorMessage(error),
+		});
+	}
+}
+
+async function deleteUser(
+	user: User | undefined,
+	removeUser: DeleteUserById,
+	onSuccess: () => void,
+) {
+	if (!user) return;
+	try {
+		await removeUser({
+			params: { path: { user_id: user.id } },
+		});
+		toast.success("User permanently deleted", {
+			description: `${user.name || user.email} has been permanently removed`,
+		});
+		onSuccess();
+	} catch (error) {
+		toast.error("Failed to delete user", {
+			description: errorMessage(error),
+		});
+	}
 }
 
 export function Users() {
@@ -88,7 +237,6 @@ export function Users() {
 	const { scope } = useOrgScope();
 	const { user: currentUser, isPlatformAdmin } = useAuth();
 
-	// Fetch users with scope filter (undefined = all, null = global only, UUID = specific org)
 	const {
 		data: users,
 		isLoading,
@@ -99,71 +247,62 @@ export function Users() {
 	);
 	const deleteMutation = useDeleteUser();
 	const updateMutation = useUpdateUser();
+	const resendMutation = useResendInvite();
+	const regenerateMutation = useRegenerateInvite();
+	const revokeMutation = useRevokeInvite();
 
-	// Fetch organizations for the org name lookup (platform admins only)
 	const { data: organizations } = useOrganizations({
 		enabled: isPlatformAdmin,
 	});
 
-	// Helper to get organization info from ID
-	const getOrgInfo = (
-		orgId: string | null | undefined,
-	): { name: string; isProvider: boolean } => {
-		if (!orgId) return { name: "Platform", isProvider: false };
-		const org = organizations?.find((o: Organization) => o.id === orgId);
-		return { name: org?.name || orgId, isProvider: org?.is_provider ?? false };
-	};
-
-	// Apply search filter
 	const filteredUsers = useSearch(users || [], searchTerm, ["email", "name"]);
 
-	// Apply sorting
 	const sortedUsers = useMemo(() => {
 		if (!filteredUsers) return [];
-		return [...filteredUsers].sort((a, b) => {
-			const dir = sortDirection === "asc" ? 1 : -1;
-			switch (sortColumn) {
-				case "organization": {
-					const aOrg = a.organization_id
-						? (organizations?.find((o: Organization) => o.id === a.organization_id)?.name || a.organization_id)
-						: "Platform";
-					const bOrg = b.organization_id
-						? (organizations?.find((o: Organization) => o.id === b.organization_id)?.name || b.organization_id)
-						: "Platform";
-					return dir * aOrg.localeCompare(bOrg);
-				}
-				case "name":
-					return dir * (a.name || a.email || "").localeCompare(b.name || b.email || "");
-				case "email":
-					return dir * (a.email || "").localeCompare(b.email || "");
-				case "type": {
-					const aVal = a.is_superuser ? 1 : 0;
-					const bVal = b.is_superuser ? 1 : 0;
-					return dir * (aVal - bVal);
-				}
-				case "created": {
-					const aDate = a.created_at ? new Date(a.created_at).getTime() : 0;
-					const bDate = b.created_at ? new Date(b.created_at).getTime() : 0;
-					return dir * (aDate - bDate);
-				}
-				case "last_login": {
-					const aDate = a.last_login ? new Date(a.last_login).getTime() : 0;
-					const bDate = b.last_login ? new Date(b.last_login).getTime() : 0;
-					return dir * (aDate - bDate);
-				}
-				default:
-					return 0;
-			}
-		});
-	}, [filteredUsers, sortColumn, sortDirection, organizations]);
+		return [...filteredUsers].sort((a, b) => compareUsers(a, b, sortColumn, sortDirection));
+	}, [filteredUsers, sortColumn, sortDirection]);
 
 	const handleSort = (column: SortColumn) => {
-		if (sortColumn === column) {
-			setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
-		} else {
-			setSortColumn(column);
-			setSortDirection("asc");
-		}
+		const [nextColumn, nextDirection] = nextSortState(sortColumn, sortDirection, column);
+		setSortColumn(nextColumn);
+		setSortDirection(nextDirection);
+	};
+
+	// ===== Bulk selection + actions =====
+	const disabledSelectionIds = useMemo(
+		() => (currentUser ? [currentUser.id] : []),
+		[currentUser],
+	);
+	const selection = useUserSelection(sortedUsers, disabledSelectionIds);
+
+	type BulkMode = "move_org" | "replace_roles" | "disable" | "enable" | null;
+	const [bulkMode, setBulkMode] = useState<BulkMode>(null);
+	const [bulkResult, setBulkResult] = useState<
+		v1["schemas"]["BulkUserResponse"] | null
+	>(null);
+	const [bulkResultUsers, setBulkResultUsers] = useState<User[]>([]);
+
+	const activeMix: "all_active" | "all_inactive" | "mixed" = useMemo(() => {
+		return activeSelectionMix(selection.selectedItems);
+	}, [selection.selectedItems]);
+
+	const handlePartialFailure = (
+		result: v1["schemas"]["BulkUserResponse"],
+		opUsers: User[],
+	) => {
+		setBulkResult(result);
+		setBulkResultUsers(opUsers);
+	};
+
+	// Cancel/dismiss: just close the dialog, keep the selection so the user
+	// can pivot to a different action without re-ticking every row. Selection
+	// is cleared via `onSuccess` (below) only after a successful submit.
+	const closeBulk = () => {
+		setBulkMode(null);
+	};
+
+	const onBulkSuccess = () => {
+		selection.clear();
 	};
 
 	const handleEditUser = (user: User) => {
@@ -172,14 +311,7 @@ export function Users() {
 	};
 
 	const handleToggleActive = (user: User) => {
-		if (user.is_active) {
-			// Disabling requires confirmation
-			setSelectedUser(user);
-			setIsDisableOpen(true);
-		} else {
-			// Enabling is instant
-			handleEnableUser(user);
-		}
+		openToggleActiveDialog(user, setSelectedUser, setIsDisableOpen, handleEnableUser);
 	};
 
 	const handleDeleteUser = (user: User) => {
@@ -188,89 +320,26 @@ export function Users() {
 	};
 
 	const handleConfirmDisable = async () => {
-		if (!selectedUser) return;
-
-		try {
-			await updateMutation.mutateAsync({
-				params: { path: { user_id: selectedUser.id } },
-				body: { is_active: false },
-			});
-			toast.success("User disabled", {
-				description: `${selectedUser.name || selectedUser.email} has been disabled`,
-			});
+		await disableUser(selectedUser, updateMutation.mutateAsync, () => {
 			setIsDisableOpen(false);
 			setSelectedUser(undefined);
-		} catch (error) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: "Unknown error occurred";
-			toast.error("Failed to disable user", {
-				description: errorMessage,
-			});
-		}
+		});
 	};
 
 	const handleEnableUser = async (user: User) => {
-		try {
-			await updateMutation.mutateAsync({
-				params: { path: { user_id: user.id } },
-				body: { is_active: true },
-			});
-			toast.success("User enabled", {
-				description: `${user.name || user.email} has been re-enabled`,
-			});
-		} catch (error) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: "Unknown error occurred";
-			toast.error("Failed to enable user", {
-				description: errorMessage,
-			});
-		}
+		await enableUser(user, updateMutation.mutateAsync);
 	};
 
 	const handleConfirmDelete = async () => {
-		if (!selectedUser) return;
-
-		try {
-			await deleteMutation.mutateAsync({
-				params: { path: { user_id: selectedUser.id } },
-			});
-			toast.success("User permanently deleted", {
-				description: `${selectedUser.name || selectedUser.email} has been permanently removed`,
-			});
+		await deleteUser(selectedUser, deleteMutation.mutateAsync, () => {
 			setIsDeleteOpen(false);
 			setSelectedUser(undefined);
-		} catch (error) {
-			const errorMessage =
-				error instanceof Error
-					? error.message
-					: "Unknown error occurred";
-			toast.error("Failed to delete user", {
-				description: errorMessage,
-			});
-		}
+		});
 	};
 
 	const handleEditClose = () => {
 		setIsEditOpen(false);
 		setSelectedUser(undefined);
-	};
-
-	const getUserTypeBadge = (isSuperuser: boolean) => {
-		return isSuperuser ? (
-			<Badge variant="default">
-				<Shield className="mr-1 h-3 w-3" />
-				Platform Admin
-			</Badge>
-		) : (
-			<Badge variant="secondary">
-				<UsersIcon className="mr-1 h-3 w-3" />
-				Organization User
-			</Badge>
-		);
 	};
 
 	const isSelf = (user: User) =>
@@ -355,24 +424,31 @@ export function Users() {
 					<DataTable>
 						<DataTableHeader>
 							<DataTableRow>
-								{isPlatformAdmin && (
-									<DataTableHead
-										className="w-0 whitespace-nowrap cursor-pointer select-none"
-										onClick={() => handleSort("organization")}
-									>
-										Organization
-										<SortIcon column="organization" sortColumn={sortColumn} sortDirection={sortDirection} />
-									</DataTableHead>
-								)}
+								<DataTableHead className="w-0 whitespace-nowrap">
+									<Checkbox
+										aria-label="Select all visible users"
+										checked={
+											selection.allVisibleSelected
+												? true
+												: selection.someVisibleSelected
+													? "indeterminate"
+													: false
+										}
+										onCheckedChange={() => selection.toggleAllVisible()}
+									/>
+								</DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap">
+									Organization
+								</DataTableHead>
 								<DataTableHead
-									className="cursor-pointer select-none"
+									className="w-0 whitespace-nowrap cursor-pointer select-none"
 									onClick={() => handleSort("name")}
 								>
 									Name
 									<SortIcon column="name" sortColumn={sortColumn} sortDirection={sortDirection} />
 								</DataTableHead>
 								<DataTableHead
-									className="w-0 whitespace-nowrap cursor-pointer select-none"
+									className="cursor-pointer select-none"
 									onClick={() => handleSort("email")}
 								>
 									Email
@@ -380,10 +456,10 @@ export function Users() {
 								</DataTableHead>
 								<DataTableHead
 									className="w-0 whitespace-nowrap cursor-pointer select-none"
-									onClick={() => handleSort("type")}
+									onClick={() => handleSort("status")}
 								>
-									Type
-									<SortIcon column="type" sortColumn={sortColumn} sortDirection={sortDirection} />
+									Status
+									<SortIcon column="status" sortColumn={sortColumn} sortDirection={sortDirection} />
 								</DataTableHead>
 								<DataTableHead
 									className="w-0 whitespace-nowrap cursor-pointer select-none"
@@ -399,133 +475,171 @@ export function Users() {
 									Last Login
 									<SortIcon column="last_login" sortColumn={sortColumn} sortDirection={sortDirection} />
 								</DataTableHead>
-								<DataTableHead className="w-0 whitespace-nowrap text-right"></DataTableHead>
+								<DataTableHead className="w-0 whitespace-nowrap text-right sticky right-0 bg-background"></DataTableHead>
 							</DataTableRow>
 						</DataTableHeader>
 						<DataTableBody>
-							{sortedUsers.map((user) => (
-								<DataTableRow
-									key={user.id}
-									clickable
-									onClick={() => handleEditUser(user)}
-									className={
-										!user.is_active
-											? "opacity-60"
-											: undefined
-									}
-								>
-									{isPlatformAdmin && (
-										<DataTableCell className="w-0 whitespace-nowrap">
-											{(() => {
-												const orgInfo = getOrgInfo(
-													user.organization_id,
-												);
-												return user.organization_id ? (
-													<Badge
-														variant="outline"
-														className="text-xs"
-													>
-														{orgInfo.isProvider ? (
-															<Star className="mr-1 h-3 w-3 text-amber-500 fill-amber-500" />
-														) : (
-															<Building2 className="mr-1 h-3 w-3" />
-														)}
-														{orgInfo.name}
-													</Badge>
-												) : (
-													<Badge
-														variant="default"
-														className="text-xs"
-													>
-														<Globe className="mr-1 h-3 w-3" />
-														Platform
-													</Badge>
-												);
-											})()}
-										</DataTableCell>
-									)}
-									<DataTableCell className="font-medium">
-										{user.name || user.email}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap text-muted-foreground">
-										{user.email}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap">
-										{getUserTypeBadge(user.is_superuser)}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
-										{user.created_at
-											? new Date(
-													user.created_at,
-												).toLocaleDateString()
-											: "N/A"}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
-										{user.last_login
-											? new Date(
-													user.last_login,
-												).toLocaleDateString()
-											: "Never"}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap text-right">
-										<div
-											className="flex items-center justify-end gap-2"
+							{sortedUsers.map((user) => {
+								const orgInfo = getOrgInfo(organizations, user.organization_id);
+								return (
+									<DataTableRow
+										key={user.id}
+										clickable
+										onClick={() => handleEditUser(user)}
+										className={
+											"group/row" +
+											(!user.is_active ? " opacity-60" : "")
+										}
+									>
+										<DataTableCell
+											className="w-0 whitespace-nowrap"
 											onClick={(e) => e.stopPropagation()}
 										>
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<div className="w-fit">
-														<Switch
-															checked={
-																user.is_active
-															}
-															onCheckedChange={() =>
-																handleToggleActive(
-																	user,
-																)
-															}
-															disabled={
-																isSelf(
-																	user,
-																) ||
-																updateMutation.isPending
-															}
-														/>
-													</div>
-												</TooltipTrigger>
-												<TooltipContent>
-													{isSelf(user)
-														? "You cannot disable your own account"
-														: user.is_active
-															? "Enabled — click to disable"
-															: "Disabled — click to enable"}
-												</TooltipContent>
-											</Tooltip>
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() =>
-													handleEditUser(user)
+											{isSelf(user) ? (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Checkbox
+																checked={false}
+																disabled
+																aria-label="Cannot select yourself"
+															/>
+														</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														You can't include yourself in a bulk action
+													</TooltipContent>
+												</Tooltip>
+											) : (
+												<Checkbox
+													aria-label={`Select ${user.name || user.email}`}
+													checked={selection.isSelected(user.id)}
+													onClick={(e) => {
+														selection.toggle(user.id, {
+															shiftKey: e.shiftKey,
+														});
+														e.preventDefault();
+													}}
+												/>
+											)}
+										</DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap text-sm">
+											{user.is_superuser ? (
+												<span className="text-muted-foreground">—</span>
+											) : (
+												<span className="inline-flex items-center gap-1">
+													{orgInfo.isProvider ? (
+														<Star className="h-3.5 w-3.5 text-amber-500 fill-amber-500" />
+													) : (
+														<Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+													)}
+													<span>{orgInfo.name}</span>
+												</span>
+											)}
+										</DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
+											<div className="flex items-center gap-1.5">
+												<span className="font-medium">
+													{user.name || user.email}
+												</span>
+												{user.is_superuser && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Crown className="h-4 w-4 shrink-0 text-amber-500 fill-amber-500" />
+														</TooltipTrigger>
+														<TooltipContent>Platform Admin</TooltipContent>
+													</Tooltip>
+												)}
+											</div>
+										</DataTableCell>
+										<DataTableCell
+											className="text-muted-foreground max-w-0"
+											onClick={(e) => e.stopPropagation()}
+										>
+											<UserEmailCell email={user.email} />
+										</DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap">
+											<UserStatusBadge
+												status={user.invite_status ?? "active"}
+											/>
+										</DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
+											{user.created_at
+												? new Date(
+														user.created_at,
+													).toLocaleDateString()
+												: "N/A"}
+										</DataTableCell>
+										<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
+											{user.last_login
+												? new Date(
+														user.last_login,
+													).toLocaleDateString()
+												: "Never"}
+										</DataTableCell>
+										<DataTableCell
+											className="w-0 whitespace-nowrap text-right sticky right-0 bg-card group-hover/row:bg-[color-mix(in_oklch,var(--card),var(--muted)_50%)]"
+											onClick={(e) => e.stopPropagation()}
+										>
+											<UserActionsMenu
+												status={user.invite_status ?? "active"}
+												isActive={user.is_active}
+												isSelf={isSelf(user)}
+												onResend={() =>
+													resendMutation.mutate(user.id, {
+														onSuccess: (res) => {
+															toast.success(
+																res.event_emitted
+																	? `Invite automation triggered for ${user.email}`
+																	: "Invite regenerated (no automations — copy link from regenerate)",
+															);
+														},
+														onError: (e: unknown) =>
+															toast.error(
+																e instanceof Error ? e.message : "Failed to resend invite",
+															),
+													})
 												}
-												title="Edit user"
-											>
-												<Edit className="h-4 w-4" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() =>
-													handleDeleteUser(user)
+												onRegenerate={() =>
+													regenerateMutation.mutate(user.id, {
+														onSuccess: (res) => {
+															void navigator.clipboard.writeText(res.registration_url);
+															toast.success("New invite link generated and copied");
+														},
+														onError: (e: unknown) =>
+															toast.error(
+																e instanceof Error ? e.message : "Failed to regenerate link",
+															),
+													})
 												}
-												title="Permanently delete"
-												disabled={isSelf(user)}
-											>
-												<Trash2 className="h-4 w-4 text-destructive" />
-											</Button>
-										</div>
-									</DataTableCell>
-								</DataTableRow>
-							))}
+												onCopyLink={() =>
+													regenerateMutation.mutate(user.id, {
+														onSuccess: (res) => {
+															void navigator.clipboard.writeText(res.registration_url);
+															toast.success("Registration link copied");
+														},
+														onError: (e: unknown) =>
+															toast.error(
+																e instanceof Error ? e.message : "Failed to copy link",
+															),
+													})
+												}
+												onRevoke={() =>
+													revokeMutation.mutate(user.id, {
+														onSuccess: () => toast.success("Invite revoked"),
+														onError: (e: unknown) =>
+															toast.error(
+																e instanceof Error ? e.message : "Failed to revoke invite",
+															),
+													})
+												}
+												onToggleActive={() => handleToggleActive(user)}
+												onDelete={() => handleDeleteUser(user)}
+											/>
+										</DataTableCell>
+									</DataTableRow>
+								);
+							})}
 						</DataTableBody>
 					</DataTable>
 				) : (
@@ -544,6 +658,53 @@ export function Users() {
 					</div>
 				)}
 			</div>
+
+			<BulkActionBar
+				count={selection.count}
+				activeMix={activeMix}
+				onClear={selection.clear}
+				onMoveOrg={() => setBulkMode("move_org")}
+				onReplaceRoles={() => setBulkMode("replace_roles")}
+				onDisable={() => setBulkMode("disable")}
+				onEnable={() => setBulkMode("enable")}
+			/>
+
+			<BulkMoveOrgDialog
+				open={bulkMode === "move_org"}
+				onOpenChange={(o) => !o && closeBulk()}
+				users={selection.selectedItems}
+				onPartialFailure={handlePartialFailure}
+				onSuccess={onBulkSuccess}
+			/>
+			<BulkReplaceRolesDialog
+				open={bulkMode === "replace_roles"}
+				onOpenChange={(o) => !o && closeBulk()}
+				users={selection.selectedItems}
+				onPartialFailure={handlePartialFailure}
+				onSuccess={onBulkSuccess}
+			/>
+			<BulkSetActiveDialog
+				open={bulkMode === "disable"}
+				mode="disable"
+				onOpenChange={(o) => !o && closeBulk()}
+				users={selection.selectedItems}
+				onPartialFailure={handlePartialFailure}
+				onSuccess={onBulkSuccess}
+			/>
+			<BulkSetActiveDialog
+				open={bulkMode === "enable"}
+				mode="enable"
+				onOpenChange={(o) => !o && closeBulk()}
+				users={selection.selectedItems}
+				onPartialFailure={handlePartialFailure}
+				onSuccess={onBulkSuccess}
+			/>
+			<BulkResultDialog
+				open={bulkResult !== null}
+				onOpenChange={(o) => !o && setBulkResult(null)}
+				result={bulkResult}
+				users={bulkResultUsers}
+			/>
 
 			<CreateUserDialog
 				open={isCreateOpen}
