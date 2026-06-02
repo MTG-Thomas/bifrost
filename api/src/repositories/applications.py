@@ -222,6 +222,7 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         try:
             application.organization_id = UUID(scope)
         except ValueError:
+            # Invalid non-global scopes leave the existing organization unchanged.
             pass
 
     async def _replace_role_associations(

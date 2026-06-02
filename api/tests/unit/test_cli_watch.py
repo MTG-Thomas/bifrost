@@ -336,23 +336,6 @@ def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     assert changes == set()
     assert deletes == set()
 
-    # If a caller naively iterated drained sets and posted per file, no posts
-    # would happen because both sets are empty. This documents the contract.
-    posted: list[tuple[str, dict]] = []
-
-    async def fake_post(url, json=None, **kwargs):  # type: ignore[no-untyped-def]
-        posted.append((url, json or {}))
-
-        class _Resp:
-            status_code = 204
-
-        return _Resp()
-
-    # Iterate as the watch batch would (no asyncio needed since we never await)
-    for _ in changes:
-        # Would have called fake_post; we never get here.
-        pass
-    for _ in deletes:
-        pass
-
-    assert posted == []
+    # The batch push layer only posts drained work; empty sets mean zero calls.
+    assert not changes
+    assert not deletes

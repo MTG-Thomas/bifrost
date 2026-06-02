@@ -377,18 +377,20 @@ class TestAzureBlobFallback:
 
     def test_blob_not_found_logs_debug_not_warning(self, caplog):
         """BlobNotFound should be a cache miss, not a noisy warning."""
-        import src.core.module_cache_sync as mod
+        from src.core.module_cache_sync import _get_blob_module
 
         class BlobNotFound(Exception):
             error_code = "BlobNotFound"
 
         mock_client = MagicMock()
         mock_client.download_blob.side_effect = BlobNotFound("missing")
-        mod._blob_container_client = mock_client
-        mod._blob_available = True
 
-        with caplog.at_level(logging.DEBUG, logger="src.core.module_cache_sync"):
-            result = mod._get_blob_module("missing/module.py")
+        with (
+            patch("src.core.module_cache_sync._blob_container_client", mock_client),
+            patch("src.core.module_cache_sync._blob_available", True),
+            caplog.at_level(logging.DEBUG, logger="src.core.module_cache_sync"),
+        ):
+            result = _get_blob_module("missing/module.py")
 
         assert result is None
         debug_msgs = [r for r in caplog.records if r.levelno == logging.DEBUG]
