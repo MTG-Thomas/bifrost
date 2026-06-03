@@ -15,8 +15,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  API_IMAGE: jackmusick/bifrost-api
-  CLIENT_IMAGE: jackmusick/bifrost-client
+  API_IMAGE: mtg-thomas/bifrost-api
+  CLIENT_IMAGE: mtg-thomas/bifrost-client
 
 jobs:
   # =============================================================================
@@ -724,7 +724,7 @@ jobs:
             ```bash
             cosign verify-blob \
               --bundle bifrost-${{ steps.get_version.outputs.version }}-source.tar.gz.sigstore \
-              --certificate-identity-regexp 'https://github\.com/jackmusick/bifrost/.*' \
+              --certificate-identity-regexp 'https://github\.com/${{ github.repository }}/.*' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               bifrost-${{ steps.get_version.outputs.version }}-source.tar.gz
             ```
@@ -733,7 +733,7 @@ jobs:
 
             ```bash
             gh attestation verify bifrost-${{ steps.get_version.outputs.version }}-source.tar.gz \
-              --owner jackmusick
+              --owner ${{ github.repository_owner }}
             ```
 
           draft: false
