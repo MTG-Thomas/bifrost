@@ -292,8 +292,10 @@ async def list_pools(
                 pool_info.max_workers = hb.get("max_workers", pool_info.configured_capacity)
                 pool_info.idle_count = hb.get("idle_count", 0)
                 pool_info.busy_count = hb.get("busy_count", 0)
-                pool_info.runtime = hb.get("runtime", pool_info.runtime)
-                pool_info.runtime_label = hb.get("runtime_label", pool_info.runtime_label)
+                if (rt := hb.get("runtime")) is not None:
+                    pool_info.runtime = rt
+                if (rtl := hb.get("runtime_label")) is not None:
+                    pool_info.runtime_label = rtl
                 pool_info.last_heartbeat = hb.get("timestamp")
                 pool_info.requirements_installed = hb.get("requirements_installed")
                 pool_info.requirements_total = hb.get("requirements_total")
@@ -356,8 +358,10 @@ async def get_pool(
             result.last_heartbeat = hb.get("timestamp")
             result.configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
             result.max_workers = hb.get("max_workers", result.configured_capacity)
-            result.runtime = hb.get("runtime", result.runtime)
-            result.runtime_label = hb.get("runtime_label", result.runtime_label)
+            if (rt := hb.get("runtime")) is not None:
+                result.runtime = rt
+            if (rtl := hb.get("runtime_label")) is not None:
+                result.runtime_label = rtl
 
             # Parse process info from heartbeat
             for p in hb.get("processes", []):
