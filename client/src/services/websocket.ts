@@ -358,6 +358,8 @@ export interface PoolHeartbeatMessage {
 	type: "worker_heartbeat";
 	worker_id: string;
 	hostname?: string;
+	runtime?: string | null;
+	runtime_label?: string | null;
 	status?: string;
 	started_at?: string;
 	timestamp?: string;
@@ -391,6 +393,8 @@ export interface PoolOnlineMessage {
 	type: "worker_online";
 	worker_id: string;
 	hostname?: string;
+	runtime?: string | null;
+	runtime_label?: string | null;
 	started_at?: string;
 }
 
