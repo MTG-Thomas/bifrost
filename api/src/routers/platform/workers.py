@@ -293,7 +293,10 @@ async def list_pools(
                 pool_info.idle_count = hb.get("idle_count", 0)
                 pool_info.busy_count = hb.get("busy_count", 0)
                 if (rt := hb.get("runtime")) is not None:
+                    runtime_changed = rt != pool_info.runtime
                     pool_info.runtime = rt
+                    if runtime_changed and hb.get("runtime_label") is None:
+                        pool_info.runtime_label = None
                 if (rtl := hb.get("runtime_label")) is not None:
                     pool_info.runtime_label = rtl
                 pool_info.last_heartbeat = hb.get("timestamp")
@@ -359,7 +362,10 @@ async def get_pool(
             result.configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
             result.max_workers = hb.get("max_workers", result.configured_capacity)
             if (rt := hb.get("runtime")) is not None:
+                runtime_changed = rt != result.runtime
                 result.runtime = rt
+                if runtime_changed and hb.get("runtime_label") is None:
+                    result.runtime_label = None
             if (rtl := hb.get("runtime_label")) is not None:
                 result.runtime_label = rtl
 
