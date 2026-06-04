@@ -23,6 +23,7 @@ Assume **Persona A** unless the task clearly changes `api/`, `client/`, migratio
 - Keep changes narrow and reviewable. Avoid drive-by refactors, dead code, commented-out code, and unrequested fallback paths.
 - Treat `.bifrost/` as export-only. Mutate platform entities through the CLI or MCP tools — not by hand-editing manifest YAML.
 - New MCP tools must be thin HTTP wrappers around REST endpoints. Do not add direct ORM/repository access in MCP tools.
+- When merging upstream `jackmusick/bifrost` changes into this fork, do not recreate or re-enable DigitalOcean deployment CI/CD for `MTG-Thomas/bifrost`. MTG deploys from `bifrost-infra` to Azure. Keep the `.github/workflows/ci.yml` `deploy-dev` job guarded with `github.repository == 'jackmusick/bifrost'`; CI runs `api/scripts/check_mtg_ci_boundaries.py` to fail fast if that guard is removed or weakened.
 
 ## Development Environment (Persona B only)
 
