@@ -328,15 +328,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # =============================================================================
-  # Deploy Dev - Push-to-main only. Rolls the DigitalOcean deployment once
-  # the :dev images are published. Targets anything labeled
+  # Deploy Dev - upstream-only. MTG-Thomas deploys from bifrost-infra to Azure,
+  # so fork image promotion must not be blocked by upstream DigitalOcean wiring.
+  # In jackmusick/bifrost this rolls the DigitalOcean deployment once the :dev
+  # images are published. Targets anything labeled
   # `app.kubernetes.io/part-of=bifrost` in the `bifrost` namespace so new
   # services are picked up automatically. Failures page the maintainer via
   # GitHub's built-in workflow-failure email (no extra wiring).
   # =============================================================================
   deploy-dev:
     # Fires only after build-dev lands a new image on push: main.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'jackmusick/bifrost' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [build-dev]
     runs-on: ubuntu-latest
     name: Deploy Dev to DigitalOcean
