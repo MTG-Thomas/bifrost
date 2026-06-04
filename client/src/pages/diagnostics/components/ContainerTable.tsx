@@ -90,7 +90,7 @@ function getRuntimeKind(pool: PoolData): RuntimeKind {
     const hostname = (pool.hostname ?? "").toLowerCase();
     const source = `${workerId} ${hostname}`;
 
-    if (source.includes("talos")) {
+    if (/\btalos\b/.test(source)) {
         return "Talos";
     }
     if (source.includes("aks") || source.includes("k8s")) {
