@@ -633,8 +633,9 @@ class IntegrationsRepository(BaseRepository[Integration]):
             integration_id: Integration UUID
             org_id: Organization UUID
             include_default_secrets: Whether integration-level secret defaults
-                may be included. Direct mapping enumeration disables this so
-                global secrets do not leak through org mapping reads.
+                may be included. SDK execution reads need these for mapped
+                integrations; mapping-list/admin responses should not leak
+                global secrets through org mappings.
 
         Returns:
             dict: Merged configuration (integration defaults + org overrides)
