@@ -116,8 +116,14 @@ class PoolDetail(BaseModel):
 
     worker_id: str
     hostname: str | None = None
-    runtime: str | None = None
-    runtime_label: str | None = None
+    runtime: str | None = Field(
+        default=None,
+        description="Operator/runtime hint for the pool, such as compose, aks, aca, or talos",
+    )
+    runtime_label: str | None = Field(
+        default=None,
+        description="Display label for the pool runtime, when provided by the worker",
+    )
     status: str | None = None
     started_at: str | None = None
     last_heartbeat: str | None = None
