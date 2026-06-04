@@ -117,8 +117,8 @@ export function useWorkerWebSocket(): UseWorkerWebSocketReturn {
 						{
 							worker_id: message.worker_id,
 							hostname: message.hostname || null,
-							runtime: message.runtime || null,
-							runtime_label: message.runtime_label || null,
+							runtime: message.runtime ?? null,
+							runtime_label: message.runtime_label ?? null,
 							status: "online",
 							started_at: message.started_at || null,
 							last_heartbeat: null,
