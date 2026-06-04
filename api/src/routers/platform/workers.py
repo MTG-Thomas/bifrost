@@ -274,6 +274,8 @@ async def list_pools(
         pool_info = PoolSummary(
             worker_id=worker_id,
             hostname=data.get("hostname"),
+            runtime=data.get("runtime"),
+            runtime_label=data.get("runtime_label"),
             status=data.get("status"),
             started_at=data.get("started_at"),
         )
@@ -290,6 +292,8 @@ async def list_pools(
                 pool_info.max_workers = hb.get("max_workers", pool_info.configured_capacity)
                 pool_info.idle_count = hb.get("idle_count", 0)
                 pool_info.busy_count = hb.get("busy_count", 0)
+                pool_info.runtime = hb.get("runtime", pool_info.runtime)
+                pool_info.runtime_label = hb.get("runtime_label", pool_info.runtime_label)
                 pool_info.last_heartbeat = hb.get("timestamp")
                 pool_info.requirements_installed = hb.get("requirements_installed")
                 pool_info.requirements_total = hb.get("requirements_total")
@@ -340,6 +344,8 @@ async def get_pool(
     result = PoolDetail(
         worker_id=worker_id,
         hostname=data.get("hostname"),
+        runtime=data.get("runtime"),
+        runtime_label=data.get("runtime_label"),
         status=data.get("status"),
         started_at=data.get("started_at"),
     )
@@ -350,6 +356,8 @@ async def get_pool(
             result.last_heartbeat = hb.get("timestamp")
             result.configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
             result.max_workers = hb.get("max_workers", result.configured_capacity)
+            result.runtime = hb.get("runtime", result.runtime)
+            result.runtime_label = hb.get("runtime_label", result.runtime_label)
 
             # Parse process info from heartbeat
             for p in hb.get("processes", []):
