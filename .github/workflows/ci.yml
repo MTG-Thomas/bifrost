@@ -436,24 +436,19 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # =============================================================================
-  # Build API Image - Only on version tags, after tests pass
+  # Release Manifest Check - Fail before any tag image is published
   # =============================================================================
-  build-api:
+  verify-release-manifest:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [test-unit, test-e2e, lint]
     runs-on: ubuntu-latest
-    name: Build API Image
+    name: Verify Release Manifest
     permissions:
       contents: read
-      packages: write
-      id-token: write # OIDC for keyless cosign signing
-      attestations: write # for actions/attest-build-provenance
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
 
       - name: Compute version from tag
         id: version
@@ -489,6 +484,36 @@ jobs:
             echo "::error::Run 'scripts/update-plugin-version.sh $TAG_VERSION' on main, commit, then re-tag."
             exit 1
           fi
+
+  # =============================================================================
+  # Build API Image - Only on version tags, after tests pass
+  # =============================================================================
+  build-api:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify-release-manifest]
+    runs-on: ubuntu-latest
+    name: Build API Image
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # OIDC for keyless cosign signing
+      attestations: write # for actions/attest-build-provenance
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Compute version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Release tag '${GITHUB_REF#refs/tags/}' must be strict semver like v1.2.3 or v1.2.3-beta.1."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -551,7 +576,7 @@ jobs:
   # =============================================================================
   build-client:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test-unit, test-e2e, lint]
+    needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build Client Image
     permissions:
@@ -638,7 +663,7 @@ jobs:
   # =============================================================================
   build-worker:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test-unit, test-e2e, lint]
+    needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build Worker Image
     permissions:
