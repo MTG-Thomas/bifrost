@@ -62,9 +62,13 @@ export async function initOAuth(
  * round-trip. We store only the SHA-256 digest, never the raw token: the
  * browser-binding CSRF check still works by comparing digests, but an XSS
  * reader of sessionStorage can't lift a usable state value. SubtleCrypto is
- * available in the secure (HTTPS/localhost) contexts where OAuth runs.
+ * available in secure (HTTPS/localhost) contexts; non-secure dev hosts fall
+ * back to storing the raw state so OAuth still works.
  */
 export async function hashOAuthState(state: string): Promise<string> {
+	if (!crypto.subtle) {
+		return state;
+	}
 	const digest = await crypto.subtle.digest(
 		"SHA-256",
 		new TextEncoder().encode(state),
