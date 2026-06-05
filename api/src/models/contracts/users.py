@@ -88,7 +88,7 @@ class UserCreate(BaseModel):
     is_active: bool = True
     is_superuser: bool = False
     organization_id: UUID | None = None
-    invite: bool = False  # If True, generate invite record; link returned and event optionally fired
+    invite: bool = True  # If True, generate invite record; link returned and event optionally fired
     trigger_automation: bool | None = None  # None treated as True for contract compat during transition
 
 
