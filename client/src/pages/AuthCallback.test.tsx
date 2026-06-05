@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { render, waitFor } from "@testing-library/react";
+import { hashOAuthState } from "@/services/auth";
 
 import { AuthCallback } from "./AuthCallback";
 
@@ -25,14 +26,17 @@ vi.mock("@/contexts/AuthContext", () => ({
 }));
 
 describe("AuthCallback", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		loginWithOAuth.mockResolvedValue(undefined);
 		navigate.mockReset();
 		sessionStorage.clear();
-		sessionStorage.setItem("oauth_state", "stale-client-state");
+		sessionStorage.setItem(
+			"oauth_state",
+			await hashOAuthState("server-state"),
+		);
 	});
 
-	it("lets the server validate OAuth state instead of reading browser storage", async () => {
+	it("validates the stored OAuth state digest before exchanging the code", async () => {
 		const getItem = vi.spyOn(Storage.prototype, "getItem");
 		const removeItem = vi.spyOn(Storage.prototype, "removeItem");
 
@@ -59,8 +63,8 @@ describe("AuthCallback", () => {
 			);
 		});
 		expect(navigate).toHaveBeenCalledWith("/", { replace: true });
-		expect(getItem).not.toHaveBeenCalledWith("oauth_state");
-		expect(removeItem).not.toHaveBeenCalledWith("oauth_state");
+		expect(getItem).toHaveBeenCalledWith("oauth_state");
+		expect(removeItem).toHaveBeenCalledWith("oauth_state");
 		expect(removeItem).not.toHaveBeenCalledWith("oauth_provider");
 	});
 });

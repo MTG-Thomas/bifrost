@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { hashOAuthState } from "@/services/auth";
 
 const { initOAuth } = vi.hoisted(() => ({
 	initOAuth: vi.fn(),
@@ -58,8 +59,9 @@ describe("Login OAuth flow", () => {
 		window.location.assign = originalAssign;
 	});
 
-	it("redirects to the provider without storing OAuth state in session storage", async () => {
+	it("redirects to the provider after storing only an OAuth state digest", async () => {
 		const setItem = vi.spyOn(Storage.prototype, "setItem");
+		const expectedDigest = await hashOAuthState("server-state");
 
 		render(
 			<MemoryRouter>
@@ -84,9 +86,7 @@ describe("Login OAuth flow", () => {
 			"oauth_provider",
 			expect.any(String),
 		);
-		expect(setItem).not.toHaveBeenCalledWith(
-			"oauth_state",
-			expect.any(String),
-		);
+		expect(setItem).toHaveBeenCalledWith("oauth_state", expectedDigest);
+		expect(setItem).not.toHaveBeenCalledWith("oauth_state", "server-state");
 	});
 });
