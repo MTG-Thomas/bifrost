@@ -2108,8 +2108,6 @@ async def register_from_invite_passkey_verify(
     db: DbSession,
 ) -> SetupPasskeyVerifyResponse:
     """Complete invite registration by verifying a passkey and logging the user in."""
-    import json
-
     from src.services.passkey_service import PasskeyService
 
     invite_svc = UserInviteService(db)

@@ -92,6 +92,12 @@ class TestUserInviteFlags:
         assert target["is_registered"] is False
         assert target["invite_status"] == "active"
 
+        regenerate = e2e_client.post(
+            f"/api/users/{body['id']}/invite/regenerate",
+            headers=platform_admin.headers,
+        )
+        assert regenerate.status_code == 409
+
         e2e_client.patch(
             f"/api/users/{body['id']}",
             headers=platform_admin.headers,
@@ -291,7 +297,7 @@ class TestRegisterFromInvite:
 
         login_resp = e2e_client.post(
             "/auth/login",
-            data={"username": email, "password": "anything"},
+            data={"username": email, AUTH_SECRET_FIELD: "anything"},
         )
         assert login_resp.status_code == 401
         assert (
