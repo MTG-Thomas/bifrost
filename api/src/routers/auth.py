@@ -2122,7 +2122,6 @@ async def register_from_invite_passkey_verify(
             device_name=request.device_name,
         )
         registered = await invite_svc.consume(token=request.token)
-        await db.commit()
     except (InviteConsumeError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
