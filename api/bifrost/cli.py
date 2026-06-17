@@ -3027,6 +3027,7 @@ async def _sync_files(
             for item in data.get("files_metadata", []):
                 server_metadata[item["path"]] = {
                     "etag": item["etag"],
+                    "content_hash": item.get("content_hash") or "",
                     "last_modified": item["last_modified"],
                     "updated_by": item.get("updated_by", ""),
                 }
@@ -3068,7 +3069,14 @@ async def _sync_files(
                 "rel": rel,
                 "_content": content,
             })
-        elif server_info["etag"] != local_md5:
+            continue
+        server_hash = server_info.get("content_hash") or server_info["etag"]
+        if server_hash == local_md5:
+            # Unchanged
+            matched_server_paths.add(repo_path)
+            continue
+
+        else:
             matched_server_paths.add(repo_path)
             # Content differs — check timestamps
             local_file = path / rel
@@ -3104,10 +3112,6 @@ async def _sync_files(
                 "rel": rel,
                 "_content": content,
             })
-        else:
-            # Unchanged
-            matched_server_paths.add(repo_path)
-
     # Server-only files — always show for pull; --mirror adds delete option
     prefix_filter = repo_prefix + "/" if repo_prefix else ""
     for server_path, server_info in server_metadata.items():
