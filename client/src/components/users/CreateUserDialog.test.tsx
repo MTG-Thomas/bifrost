@@ -77,6 +77,17 @@ vi.mock("@/components/ui/combobox", () => ({
 
 import { CreateUserDialog } from "./CreateUserDialog";
 
+async function fillPlatformAdminForm(user: {
+	type: (element: Element, text: string) => Promise<void>;
+	selectOptions: (element: Element, values: string | string[]) => Promise<void>;
+	click: (element: Element) => Promise<void>;
+}) {
+	await user.type(screen.getByLabelText(/email address/i), "admin@example.com");
+	await user.type(screen.getByLabelText(/display name/i), "Admin User");
+	await user.selectOptions(screen.getByLabelText(/userType/i), "platform");
+	await user.click(screen.getByRole("button", { name: /create user/i }));
+}
+
 beforeEach(() => {
 	mockCreateMutate.mockReset();
 	mockCreateMutate.mockResolvedValue({ id: "new-user-1" });
@@ -199,17 +210,9 @@ describe("CreateUserDialog — happy path", () => {
 			<CreateUserDialog open={true} onOpenChange={onOpenChange} />,
 		);
 
-		await user.type(
-			screen.getByLabelText(/email address/i),
-			"admin@example.com",
-		);
-		await user.type(screen.getByLabelText(/display name/i), "Admin User");
-		await user.selectOptions(screen.getByLabelText(/userType/i), "platform");
-
 		orgsLoaded = true;
 		rerender(<CreateUserDialog open={true} onOpenChange={onOpenChange} />);
-
-		await user.click(screen.getByRole("button", { name: /create user/i }));
+		await fillPlatformAdminForm(user);
 
 		await waitFor(() => expect(mockCreateMutate).toHaveBeenCalled());
 		expect(mockCreateMutate.mock.calls[0]![0]).toEqual({
@@ -252,18 +255,43 @@ describe("CreateUserDialog — happy path", () => {
 			<CreateUserDialog open={true} onOpenChange={onOpenChange} />,
 		);
 
-		await user.type(
-			screen.getByLabelText(/email address/i),
-			"admin@example.com",
-		);
-		await user.type(screen.getByLabelText(/display name/i), "Admin User");
-		await user.selectOptions(screen.getByLabelText(/userType/i), "platform");
-		await user.click(screen.getByRole("button", { name: /create user/i }));
+		await fillPlatformAdminForm(user);
 
 		await waitFor(() => expect(mockCreateMutate).toHaveBeenCalled());
 		expect(mockCreateMutate.mock.calls[0]![0].body).toMatchObject({
 			is_superuser: true,
 			organization_id: "provider-from-auth",
+			invite: true,
+			trigger_automation: true,
+		});
+		expect(screen.queryByText(/select an organization/i)).not.toBeInTheDocument();
+	});
+
+	it("allows platform admin creation with no organization fallback", async () => {
+		const onOpenChange = vi.fn();
+		mockOrganizations.mockReturnValue({
+			data: [],
+			isLoading: false,
+		});
+		mockAuth.mockReturnValue({
+			user: {
+				id: "admin-user",
+				email: "admin@example.com",
+				isSuperuser: true,
+				organizationId: null,
+			},
+		});
+
+		const { user } = renderWithProviders(
+			<CreateUserDialog open={true} onOpenChange={onOpenChange} />,
+		);
+
+		await fillPlatformAdminForm(user);
+
+		await waitFor(() => expect(mockCreateMutate).toHaveBeenCalled());
+		expect(mockCreateMutate.mock.calls[0]![0].body).toMatchObject({
+			is_superuser: true,
+			organization_id: null,
 			invite: true,
 			trigger_automation: true,
 		});

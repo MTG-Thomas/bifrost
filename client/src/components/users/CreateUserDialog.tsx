@@ -120,7 +120,7 @@ function CreateUserDialogContent({
 			setValidationError("Please enter a display name");
 			return false;
 		}
-		if (!effectiveOrgId) {
+		if (!isPlatformAdmin && !effectiveOrgId) {
 			setValidationError("Please select an organization");
 			return false;
 		}
