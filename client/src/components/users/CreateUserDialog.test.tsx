@@ -219,6 +219,8 @@ describe("CreateUserDialog — happy path", () => {
 				is_active: true,
 				is_superuser: true,
 				organization_id: "org-provider",
+				invite: true,
+				trigger_automation: true,
 			},
 		});
 		expect(screen.queryByText(/select an organization/i)).not.toBeInTheDocument();
@@ -262,6 +264,8 @@ describe("CreateUserDialog — happy path", () => {
 		expect(mockCreateMutate.mock.calls[0]![0].body).toMatchObject({
 			is_superuser: true,
 			organization_id: "provider-from-auth",
+			invite: true,
+			trigger_automation: true,
 		});
 		expect(screen.queryByText(/select an organization/i)).not.toBeInTheDocument();
 	});
