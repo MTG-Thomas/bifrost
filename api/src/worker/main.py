@@ -1,18 +1,11 @@
+"""Thin worker entry point.
+
+KEEP THIS MODULE STDLIB-ONLY AT MODULE LEVEL. The execution template
+process is started with the multiprocessing "spawn" context, and spawn
+re-imports this module (the parent's __main__) into the child during
+prepare(). Any module-level import here is paid by the ~97MB template
+process. tests/unit/test_import_hygiene.py enforces this.
 """
-Bifrost Worker - Background Worker Service
-
-Main entry point for the background job worker.
-Handles RabbitMQ message consumption for workflow execution and package installation.
-
-This container is responsible for:
-- Consuming workflow execution messages from RabbitMQ
-- Executing workflow code (with thread pool for blocking code)
-- Pushing results to Redis for sync execution requests
-- Package installation
-
-Can be scaled horizontally (replicas: N) for increased throughput.
-"""
-
 import asyncio
 import logging
 import os
@@ -233,4 +226,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run()

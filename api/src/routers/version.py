@@ -10,4 +10,5 @@ router = APIRouter(prefix="/api/version", tags=["version"])
 async def get_version_info() -> VersionResponse:
     return VersionResponse(
         version=get_version(),
+        contract_version=get_contract_version(),
     )

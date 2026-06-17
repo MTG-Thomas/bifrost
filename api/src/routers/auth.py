@@ -52,6 +52,8 @@ from src.models import (
     OAuthProviderInfo,
 )
 from src.models.contracts.passkeys import (
+    InvitePasskeyOptionsRequest,
+    InvitePasskeyVerifyRequest,
     SetupPasskeyOptionsRequest,
     SetupPasskeyOptionsResponse,
     SetupPasskeyVerifyRequest,
@@ -76,6 +78,7 @@ from src.core.security import (
 )
 from src.repositories.users import UserRepository
 from src.services.user_provisioning import ensure_user_provisioned, get_user_roles
+from shared.external_access import resolve_external_claim
 
 logger = logging.getLogger(__name__)
 
@@ -637,6 +640,7 @@ async def mfa_initial_verify(
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
+        "is_external": await resolve_external_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }
@@ -784,6 +788,7 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
+        "is_external": await resolve_external_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }
@@ -946,6 +951,7 @@ async def refresh_token(
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
+        "is_external": await resolve_external_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }
@@ -1113,7 +1119,7 @@ class AdminRevokeRequest(BaseModel):
 @router.post("/admin/revoke-user", response_model=RevokeAllResponse)
 async def admin_revoke_user_sessions(
     revoke_data: AdminRevokeRequest,
-    current_user: CurrentActiveUser,
+    current_user: CurrentSuperuser,
     db: DbSession,
 ) -> RevokeAllResponse:
     """
@@ -1135,13 +1141,6 @@ async def admin_revoke_user_sessions(
     Raises:
         HTTPException: If not admin or user not found
     """
-    # Require platform admin
-    if not current_user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Platform admin privileges required",
-        )
-
     # Verify target user exists
     user_repo = UserRepository(db)
     target_user = await user_repo.get_by_id(revoke_data.user_id)
@@ -1929,6 +1928,7 @@ async def setup_passkey_verify(
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
+        "is_external": await resolve_external_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }
@@ -2075,3 +2075,59 @@ async def register_from_invite(
     public = UserPublic.model_validate(registered)
     public.invite_status = "active"
     return public
+
+
+@router.post("/register-from-invite/passkey/options", response_model=SetupPasskeyOptionsResponse)
+async def register_from_invite_passkey_options(
+    request: InvitePasskeyOptionsRequest,
+    db: DbSession,
+) -> SetupPasskeyOptionsResponse:
+    """Start passkey registration for a user holding a valid invite token."""
+    from src.services.passkey_service import PasskeyService
+
+    invite_svc = UserInviteService(db)
+    try:
+        _, invited_user = await invite_svc.get_valid_invite_user(token=request.token)
+        options = await PasskeyService(db).generate_registration_options(invited_user.id)
+    except (InviteConsumeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return SetupPasskeyOptionsResponse(
+        registration_token=request.token,
+        options=options,
+        expires_in=300,
+    )
+
+
+@router.post("/register-from-invite/passkey/verify", response_model=SetupPasskeyVerifyResponse)
+async def register_from_invite_passkey_verify(
+    request: InvitePasskeyVerifyRequest,
+    response: Response,
+    db: DbSession,
+) -> SetupPasskeyVerifyResponse:
+    """Complete invite registration by verifying a passkey and logging the user in."""
+    import json
+
+    from src.services.passkey_service import PasskeyService
+
+    invite_svc = UserInviteService(db)
+    try:
+        _, invited_user = await invite_svc.get_valid_invite_user(token=request.token)
+        passkey_service = PasskeyService(db)
+        await passkey_service.verify_registration(
+            user_id=invited_user.id,
+            credential_json=json.dumps(request.credential),
+            device_name=request.device_name,
+        )
+        registered = await invite_svc.consume(token=request.token)
+        await db.commit()
+    except (InviteConsumeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    login = await _generate_login_tokens(registered, db, response)
+    return SetupPasskeyVerifyResponse(
+        user_id=str(registered.id),
+        email=registered.email,
+        access_token=login.access_token or "",
+        refresh_token=login.refresh_token or "",
+    )

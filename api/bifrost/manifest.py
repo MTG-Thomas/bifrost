@@ -20,9 +20,24 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field
 
-from src.models.contracts.claims import ClaimQuery
-
 logger = logging.getLogger(__name__)
+
+
+class ClaimQuery(BaseModel):
+    """Portable copy of the server's ``ClaimQuery`` (the lookup producing a
+    custom claim's value).
+
+    The CLI/manifest cannot import ``src.models.contracts.claims`` — the packaged
+    ``bifrost`` distribution has no ``src`` on its path, so a top-level import
+    crashed the old portable export flow the moment a bundle carried manifest files. The
+    portable manifest only needs to round-trip the data, so ``where`` is a loose
+    dict AST here (the server validates it on import) — mirroring the server
+    shape (``table``/``where``/``select``) without the server dependency.
+    """
+
+    table: str = Field(min_length=1, description="Source table name (org-scoped)")
+    where: dict | None = Field(default=None, description="Filter AST (same shape as policies)")
+    select: str = Field(min_length=1, description="Column or JSON path on the source table")
 
 # =============================================================================
 # Constants
@@ -66,7 +81,7 @@ class ManifestRole(BaseModel):
 class ManifestWorkflow(BaseModel):
     """Workflow entry in manifest."""
     id: str = Field(description="Workflow UUID")
-    name: str = Field(default="", description="Workflow display name")
+    name: str = Field(default="", description="MCP tool name; defaults to function_name on registration")
     path: str = Field(description="Relative path to Python file (e.g. 'workflows/onboard.py')")
     function_name: str = Field(description="Python function name decorated with @workflow/@tool/@data_provider")
     type: str = Field(default="workflow", description="workflow | tool | data_provider")
@@ -108,7 +123,7 @@ class ManifestForm(BaseModel):
         default=None,
         description="Role display names (used by portable bundles; resolved to UUIDs on import)",
     )
-    access_level: str | None = Field(default=None, description="role_based | authenticated | public")
+    access_level: str | None = Field(default=None, description="role_based | authenticated | everyone | public")
     # -- Portable content (inline) --
     description: str | None = Field(default=None, description="Form description")
     workflow_id: str | None = Field(default=None, description="Workflow UUID to execute on submit")
@@ -140,7 +155,7 @@ class ManifestAgent(BaseModel):
         default=None,
         description="Role display names (used by portable bundles; resolved to UUIDs on import)",
     )
-    access_level: str | None = Field(default=None, description="role_based | authenticated | public")
+    access_level: str | None = Field(default=None, description="role_based | authenticated | everyone | public")
     # -- Portable content (inline) --
     description: str | None = Field(default=None, description="Agent description")
     system_prompt: str | None = Field(default=None, description="LLM system prompt")
@@ -176,7 +191,12 @@ class ManifestApp(BaseModel):
         default=None,
         description="Role display names (used by portable bundles; resolved to UUIDs on import)",
     )
-    access_level: str | None = Field(default=None, description="role_based | authenticated | public")
+    access_level: str | None = Field(default=None, description="role_based | authenticated | everyone | public")
+    app_model: str = Field(default="inline_v1", description="Render model: inline_v1 | standalone_v2")
+    logo: str | None = Field(
+        default=None,
+        description="Path to a logo image (png/jpeg/svg) relative to the app dir, e.g. 'public/logo.svg'. Shown in BifrostHeader.",
+    )
 
 
 # -- New entity types for manifest expansion --
@@ -239,6 +259,21 @@ class ManifestConfig(BaseModel):
     description: str | None = Field(default=None, description="Human-readable description")
     organization_id: str | None = Field(default=None, description="Org UUID (null = global)")
     value: object | None = Field(default=None, description="Config value (null for secret type)")
+
+
+class ManifestSolutionConfigSchema(BaseModel):
+    """A solution-owned config DECLARATION (portable; never a value)."""
+    id: str = Field(description="Config schema UUID")
+    key: str = Field(description="Config key name")
+    # Intentionally named ``type`` (not ``config_type`` like ManifestConfig) to
+    # match the SolutionConfigSchema ORM column and the collector's body.get("type").
+    type: str = Field(default="string", description="string | int | bool | json | secret")
+    required: bool = Field(default=False, description="Whether a value must be supplied at install time")
+    description: str | None = Field(default=None, description="Human-readable description")
+    # ``object`` not ``str``: a non-string declared type (int/bool/json) needs a
+    # matching default (mirrors ManifestConfig.value being typed ``object | None``).
+    default: object | None = Field(default=None, description="Default value used when none is supplied")
+    position: int = Field(default=0, description="Display ordering within the solution")
 
 
 class ManifestCustomClaim(BaseModel):

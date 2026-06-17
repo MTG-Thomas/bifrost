@@ -45,6 +45,9 @@ import httpx
 import bifrost.credentials as credentials
 from bifrost._workspace_lock import WorkspaceLock, WorkspaceLockError
 from bifrost.client import BifrostClient
+from bifrost.ignore_patterns import (
+    DEFAULT_IGNORE_PATTERNS as _CANONICAL_IGNORE_PATTERNS,
+)
 # Canonical platform export list. Shared with api/src/services/app_bundler.
 # A drift test (tests/unit/test_platform_names_match_runtime.py) keeps this
 # in step with the client's runtime `$` registry so new platform exports
@@ -166,25 +169,43 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
 WATCH_HEARTBEAT_SECONDS = 60
 
 
+def _warn(message: str) -> None:
+    """Emit a one-line yellow warning to stderr (never blocks)."""
+    print(f"\033[33m{message}\033[0m", file=sys.stderr)
+
+
 def _check_cli_version() -> None:
-    """Hard-block the command if the installed CLI doesn't match the deployed server.
+    """Gate the command against the deployed server. Two independent gates:
 
-    Mirrors the policy in ``client/src/hooks/useVersionCheck.ts``: compare the
-    baked-in build version against ``data.version`` from ``GET /api/version``
-    via string equality, treat ``"unknown"`` / ``"0.0.0+source"`` as dev installs
-    and skip. The CLI diverges from the SPA only by ``sys.exit(1)``-ing on
-    mismatch instead of showing a banner — the user must upgrade before any
-    command runs.
+    1. **Contract (HARD).** The server reports ``contract_version`` at
+       ``GET /api/version``. If it differs from the CLI's baked
+       ``CONTRACT_VERSION``, the CLI is contract-incompatible → ``sys.exit(1)``
+       with the upgrade message, for every command. ``CONTRACT_VERSION`` is
+       bumped only on breaking changes to the contract surface the CLI consumes
+       (enforced by ``tests/unit/test_contract_version.py``), so an unrelated
+       server release no longer force-reinstalls every CLI.
+
+    2. **Build drift (SOFT).** ``contract_version`` matches but the build
+       ``version`` differs → a one-line stderr notice, deduped per (url,
+       version). Never blocks.
+
+    **Old server** (response lacks ``contract_version``): we can't verify the
+    contract. Rather than hard-block on build-version equality — a rollout
+    footgun, since a fresh CLI almost always differs from a not-yet-upgraded
+    server — we emit a soft warning and continue.
+
+    **Un-reachable verdict** (network/parse error, missing ``version``): emit a
+    visible warning instead of silently skipping, so a stale CLI proceeding
+    against an incompatible server is never invisible. Never blocks.
     """
+    from bifrost import __version__
+    from bifrost.contract_version import CONTRACT_VERSION
+
+    installed = __version__.lstrip("v")
+    if installed in ("unknown", "0.0.0+source"):
+        return  # dev/source install — nothing to compare against
+
     try:
-        import httpx
-
-        from bifrost import __version__
-
-        installed = __version__.lstrip("v")
-        if installed in ("unknown", "0.0.0+source"):
-            return  # dev/source install — nothing to compare against
-
         # Re-load only the safe CWD-local .env allowlist so BIFROST_API_URL is
         # honored even if bifrost.client imported against a different cwd.
         credentials.load_allowed_dotenv()
@@ -193,37 +214,72 @@ def _check_cli_version() -> None:
         # check only needs the URL — get_credentials returns None unless full
         # tokens are present too, which would skip the check on a logged-out CLI.
         api_url = credentials._resolve_url(None)
-        if not api_url:
-            return
+    except Exception as e:
+        logger.debug(f"CLI version check skipped (no URL): {e}")
+        return
+    if not api_url:
+        return
 
-        # Use httpx (already a hard dep via BifrostClient), not urllib.
-        # CDNs/WAFs in front of prod Bifrost instances (Cloudflare on
-        # bifrost.gocovi.com being the live case) 403 the default
-        # `Python-urllib/X.Y` User-Agent. httpx's default UA gets through
-        # and matches what every other SDK request already sends.
+    # Fetch the server's version document. A failure here is an UN-REACHABLE
+    # verdict — warn, never block. Use httpx (already a hard dep), not urllib.
+    # CDNs/WAFs in front of prod Bifrost (Cloudflare on bifrost.gocovi.com)
+    # 403 the default `Python-urllib/X.Y` UA; httpx's UA gets through and
+    # matches every other SDK request.
+    try:
         resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            # Valid JSON but not an object (e.g. a proxy returning an error
+            # array/string) — treat as an unreadable verdict, not a crash.
+            raise ValueError(f"unexpected response shape: {type(data).__name__}")
+    except Exception as e:
+        _warn(
+            f"Could not verify CLI compatibility with {api_url} ({e}). "
+            f"Continuing — run a command again once the server is reachable."
+        )
+        return
 
-        server_version = (data.get("version") or "").lstrip("v")
-        if not server_version:
-            return  # server didn't tell us its version — best-effort skip
+    server_version = (data.get("version") or "").lstrip("v")
+    server_contract = data.get("contract_version")
 
-        if server_version != installed:
-            print(
-                f"\033[33mYour CLI ({installed}) is out of date. "
-                f"Server is on {server_version}.\nRun:\n"
-                f"  pipx install --force {api_url}/api/cli/download\n\033[0m",
-                file=sys.stderr,
+    # Gate 1 — contract (HARD). Only when the server actually reports one.
+    if server_contract is not None:
+        if server_contract != CONTRACT_VERSION:
+            _warn(
+                f"Your CLI is incompatible with this server "
+                f"(CLI contract v{CONTRACT_VERSION}, server contract "
+                f"v{server_contract}). You must upgrade:\n"
+                f"  pipx install --force {api_url}/api/cli/download"
             )
             sys.exit(1)
-    except SystemExit:
-        raise
-    except Exception as e:
-        # Best-effort: network errors, malformed JSON, missing credentials store,
-        # etc. should never block the user. The exit-on-mismatch above is the
-        # only intentional bail-out.
-        logger.debug(f"CLI version check skipped: {e}")
+        # Gate 2 — build drift (SOFT, deduped). Contract is fine; just nudge.
+        if server_version and server_version != installed:
+            from bifrost import _version_notice
+
+            if _version_notice.should_notify(api_url, server_version):
+                _warn(
+                    f"A newer Bifrost CLI is available "
+                    f"({installed} → {server_version}); your current CLI is still "
+                    f"compatible. Update when convenient:\n"
+                    f"  pipx install --force {api_url}/api/cli/download"
+                )
+                _version_notice.mark_notified(api_url, server_version)
+        return
+
+    # Old server: no contract_version to compare against.
+    if not server_version:
+        _warn(
+            f"Could not verify CLI compatibility with {api_url} "
+            f"(server reported no version). Continuing."
+        )
+        return
+    if server_version != installed:
+        _warn(
+            f"Could not verify contract compatibility — {api_url} predates "
+            f"contract versioning (CLI {installed}, server {server_version}). "
+            f"Continuing; consider upgrading the server."
+        )
 
 
 def _resolve_login_api_url(api_url: str | None) -> str | None:
@@ -728,6 +784,8 @@ def main(args: list[str] | None = None) -> int:
     if args is None:
         args = sys.argv[1:]
 
+    _ensure_utf8_stdio()
+
     # No args - show help
     if not args:
         print_help()
@@ -772,14 +830,6 @@ def main(args: list[str] | None = None) -> int:
         if command == "pull":
             return handle_pull(args[1:])
 
-        if command == "import":
-            from bifrost.commands.import_cmd import handle_import
-            return handle_import(args[1:])
-
-        if command == "export":
-            from bifrost.commands.export import handle_export
-            return handle_export(args[1:])
-
         if command == "watch":
             return handle_watch(args[1:])
 
@@ -792,6 +842,14 @@ def main(args: list[str] | None = None) -> int:
         if command == "skill":
             from bifrost.skill import handle_skill
             return handle_skill(args[1:])
+
+        if command == "solution":
+            from bifrost.commands.solution import handle_solution
+            return handle_solution(args[1:])
+
+        if command == "deploy":
+            from bifrost.commands.solution import handle_deploy
+            return handle_deploy(args[1:])
 
         # Entity mutation subgroups (bifrost orgs ..., bifrost roles ..., etc.).
         from bifrost.commands import ENTITY_GROUPS, dispatch_entity_subgroup
@@ -822,8 +880,8 @@ Commands:
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
-  export      Export a workspace bundle (optionally portable/scrubbed)
-  import      Apply a bundle to the current environment
+  solution    Manage Solution installs (init, scaffold-app, start, deploy, install)
+  deploy      Deploy the current Solution workspace (alias for 'solution deploy')
   watch       Watch for file changes and auto-push
   api         Generic authenticated API request
   migrate-imports  Rewrite "bifrost" imports into user/lucide/router imports
@@ -867,6 +925,9 @@ Examples:
   bifrost pull apps/my-app
   bifrost watch
   bifrost watch apps/my-app
+  bifrost solution init --slug my-solution
+  bifrost solution scaffold-app dashboard
+  bifrost solution start                 # local dev: app + local workflows, one origin
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate
   bifrost migrate-imports apps/my-app --dry-run
@@ -1115,13 +1176,53 @@ Usage: bifrost auth <subcommand>
 
 Subcommands:
   list, ls    List all Bifrost URLs with stored credentials
+  token       Print resolved {api_url, access_token} as JSON (for dev tooling)
 
 Examples:
   bifrost auth list
+  bifrost auth token
+  bifrost auth token --url http://localhost:38421
 """.strip())
         return 0 if args else 1
 
     sub = args[0].lower()
+    if sub == "token":
+        # Emit the resolved url + access token as JSON so a scaffolded Solution
+        # vite dev config can read the credential store — device-code login
+        # stores the token in keyring/JSON, not a nearby .env, so env/.env alone
+        # leave `npm run dev` tokenless (R7-P2-f). Only url + access token are
+        # printed (never the refresh token); the vite config injects it for
+        # `serve` only, so the production bundle stays tokenless (R6-P1-c).
+        url_override = None
+        rest = args[1:]
+        if rest and rest[0] == "--url" and len(rest) > 1:
+            url_override = rest[1]
+        creds = credentials.get_credentials(url_override)
+        if not creds or not creds.get("access_token"):
+            print("Not authenticated. Run `bifrost login` first.", file=sys.stderr)
+            return 1
+        # The token feeds a long-running `npm run dev` session; if it's expired
+        # (or near it), refresh first so the dev server isn't handed a stale token
+        # that 401s with no recovery. Best-effort: if refresh fails, warn but still
+        # emit what we have so the dev gets a clear "re-login" signal, not silence.
+        if credentials.is_token_expired(api_url=url_override):
+            from bifrost.client import refresh_tokens
+            try:
+                if asyncio.run(refresh_tokens()):
+                    creds = credentials.get_credentials(url_override) or creds
+            except Exception:  # noqa: BLE001 - refresh is best-effort here
+                pass
+            if credentials.is_token_expired(api_url=url_override):
+                print(
+                    "Warning: access token is expired and refresh failed; run "
+                    "`bifrost login` to re-authenticate.",
+                    file=sys.stderr,
+                )
+        print(json.dumps({
+            "api_url": creds.get("api_url"),
+            "access_token": creds["access_token"],
+        }))
+        return 0
     if sub in ("list", "ls"):
         urls = credentials.list_credentials()
         if not urls:
@@ -1182,6 +1283,7 @@ def _run_direct(
     params: dict[str, Any],
     verbose: bool = False,
     organization_id: str | None = None,
+    solution_root: "pathlib.Path | None" = None,
 ) -> int:
     """
     Run a workflow directly in standalone mode.
@@ -1242,6 +1344,21 @@ def _run_direct(
             ) if org_info else None
             scope = org_info["id"] if org_info else "GLOBAL"
 
+            # When the workflow lives in a Solution workspace, resolve this
+            # install's id so its SDK data-plane calls (tables/configs) carry
+            # ?solution= and resolve the install's OWN entities own-first —
+            # mirroring the server engine's solution_id propagation (F1). Falls
+            # back to None (the _repo/ cascade) when not resolvable.
+            solution_id: str | None = None
+            if solution_root is not None:
+                from bifrost.commands.solution import (
+                    resolve_install_id_for_workspace,
+                )
+
+                solution_id = resolve_install_id_for_workspace(client, solution_root)
+                if verbose and solution_id:
+                    print(f"Resolved Solution install id: {solution_id}")
+
             ctx = ExecutionContext(
                 user_id=user_info.get("id", "cli-user"),
                 email=user_info.get("email", ""),
@@ -1252,6 +1369,7 @@ def _run_direct(
                 is_function_key=False,
                 execution_id=f"standalone-{uuid.uuid4()}",
                 workflow_name=selected_workflow,
+                solution_id=solution_id,
             )
             set_execution_context(ctx)
         except Exception:
@@ -1362,6 +1480,21 @@ def handle_run(args: list[str]) -> int:
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
 
+    # If the workflow lives inside a Solution workspace (a bifrost.solution.yaml
+    # somewhere above it), put the solution ROOT on sys.path so solution-local
+    # imports (`from modules.x import y`) resolve against the solution root even
+    # when `bifrost run` is invoked from a subdirectory — local execution with a
+    # live data-plane is criterion 15 (offline dev loop).
+    from bifrost.solution_descriptor import find_solution_root
+
+    solution_root = find_solution_root(abs_file_path)
+    if solution_root is not None:
+        root_str = str(solution_root)
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+        if verbose:
+            print(f"Detected Solution workspace root: {root_str}")
+
     # In non-verbose direct mode, suppress decorator warnings before loading the module
     if not interactive and not verbose:
         logging.getLogger("bifrost.decorators").setLevel(logging.ERROR)
@@ -1409,7 +1542,11 @@ def handle_run(args: list[str]) -> int:
             return 1
 
         params = inline_params if inline_params is not None else {}
-        return _run_direct(selected_workflow, workflows, params, verbose=verbose, organization_id=organization_id)
+        return _run_direct(
+            selected_workflow, workflows, params,
+            verbose=verbose, organization_id=organization_id,
+            solution_root=solution_root,
+        )
 
     # Interactive mode (--interactive) — browser-based session
     # Ensure user is authenticated (only needed for API-based flow)
@@ -1592,7 +1729,7 @@ async def _post_result(
             },
         )
         print(f"\nExecution completed ({status})")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort result post; the local run already finished, so a failed callback only loses server-side bookkeeping and must not crash the CLI.
         print(f"\nWarning: Failed to post result: {e}", file=sys.stderr)
 
 
@@ -1745,6 +1882,25 @@ def _warn_if_git_workspace(target_path: str) -> None:
             return
 
 
+def _sync_use_tui(force: bool, is_tty: bool) -> bool:
+    """Single source of truth for whether sync may use any interactive TUI.
+
+    Returns False (headless) when --yes/-y (``force``) is set, when
+    ``BIFROST_NONINTERACTIVE=1`` is in the environment, or when stdin/stdout
+    is not a TTY. Gating BOTH the selection TUI and the progress TUI on this
+    keeps the headless contract whole: the progress TUI blocks on "press Enter"
+    when a file errors, so honoring noninteractivity only for the selection TUI
+    would still hang an unattended run (criterion 17).
+    """
+    if not is_tty:
+        return False
+    if force:
+        return False
+    if os.environ.get("BIFROST_NONINTERACTIVE") == "1":
+        return False
+    return True
+
+
 @dataclass
 class _PushWatchArgs:
     """Parsed arguments for push/watch commands."""
@@ -1764,9 +1920,13 @@ def _parse_push_watch_args(args: list[str]) -> _PushWatchArgs | None:
             result.mirror = True
         elif arg == "--validate":
             result.validate = True
-        elif arg == "--force":
+        elif arg in ("--force", "--yes", "-y"):
+            # --yes/-y are the intent-revealing aliases for headless runs:
+            # take the default per-file action for every change (the
+            # full-replace contract) instead of opening the interactive TUI.
+            # They share --force's mechanism — see _sync_files's guard.
             result.force = True
-        elif arg.startswith("--"):
+        elif arg.startswith("-"):
             print(f"Unknown option: {arg}", file=sys.stderr)
             return None
         elif result.local_path == ".":
@@ -1805,7 +1965,11 @@ Options:
   --mirror              Make target match source exactly (delete files not present locally)
   --validate            Validate after push (for apps)
   --force               Skip confirmation prompts
+  --yes, -y             Non-interactive: take default actions, no TUI (alias of --force)
   --help, -h            Show this help message
+
+Non-interactive: pass --yes/-y, set BIFROST_NONINTERACTIVE=1, or run without a
+TTY (e.g. in CI) to skip the selection TUI and apply default actions.
 
 Use 'bifrost watch' for continuous file watching.
 
@@ -1884,13 +2048,17 @@ Options:
   --mirror              Include server-only files (for pull or delete)
   --validate            Validate after sync (for apps)
   --force               Skip confirmation prompts (use default actions)
+  --yes, -y             Non-interactive: take default actions, no TUI (alias of --force)
   --help, -h            Show this help message
+
+Non-interactive: pass --yes/-y, set BIFROST_NONINTERACTIVE=1, or run without a
+TTY (e.g. in CI) to skip the selection TUI and apply default actions.
 
 Examples:
   bifrost sync
   bifrost sync apps/my-app
   bifrost sync --mirror
-  bifrost sync --force
+  bifrost sync --yes
 """.strip())
         return 0
 
@@ -1971,6 +2139,24 @@ Examples:
     resolved = pathlib.Path(parsed.local_path).resolve()
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
+        return 1
+
+    # Refuse inside a Solution workspace (D1). `watch` only ever syncs to the
+    # global `_repo/` workspace; a Solution developer running it here would
+    # silently push their apps/ and workflows/ to `_repo/` instead of the
+    # install, with no error — actively misleading. Solutions are
+    # local-development-first: `bifrost solution start` runs the app + local
+    # workflows behind one origin and deploys nothing.
+    from bifrost.solution_descriptor import find_solution_root
+
+    if find_solution_root(resolved) is not None:
+        print(
+            "Error: this is a Solution workspace (bifrost.solution.yaml present).\n"
+            "Solutions are local-development-first — run `bifrost solution start` "
+            "for local dev; `watch` is for _repo/ development and would push your "
+            "changes to the wrong place.",
+            file=sys.stderr,
+        )
         return 1
 
     # Acquire the per-workspace lock. Held for the lifetime of the watch
@@ -2125,7 +2311,10 @@ def _detect_repo_prefix(path: pathlib.Path) -> str:
         relative = path.resolve().relative_to(cwd)
     except (OSError, ValueError):
         return ""
-    prefix = str(relative)
+    # Repo keys are always POSIX ("/"). On Windows str(WindowsPath) uses "\",
+    # which would produce backslash repo prefixes and break path matching and
+    # the known-hash cache (causing the same file to re-upload every tick).
+    prefix = relative.as_posix()
     return "" if prefix == "." else prefix
 
 async def _push_with_precheck(
@@ -2236,9 +2425,9 @@ class _WatchChangeHandler:
     """Watchdog event handler that tracks file changes for push.
 
     Watch is exclusion-based: it watches the workspace root and skips
-    .gitignore-derived paths plus .bifrost/. The `.bifrost/` directory is an
-    export artifact written by `bifrost export --portable` and consumed by
-    `bifrost import`; sync/watch/push/pull never read or mutate it.
+    .gitignore-derived paths plus .bifrost/. The `.bifrost/` directory is a
+    generated manifest artifact (produced by `bifrost sync`); sync/watch/push/
+    pull never read or mutate it.
     """
 
     def __init__(self, state: _WatchState):
@@ -2247,11 +2436,13 @@ class _WatchChangeHandler:
 
     def _should_skip(self, file_path: str) -> bool:
         p = pathlib.Path(file_path)
-        rel = str(p.relative_to(self.state.base_path))
+        # POSIX separators: these strings feed pathspec globs and repo keys,
+        # which are always "/"-based. str(WindowsPath) would use "\".
+        rel = p.relative_to(self.state.base_path).as_posix()
         repo_rel: str | None = None
         workspace_root = _workspace_root_for(self.state.base_path)
         if p.is_relative_to(workspace_root):
-            repo_rel = str(p.relative_to(workspace_root))
+            repo_rel = p.relative_to(workspace_root).as_posix()
         return _should_skip_path(rel, self._spec, repo_rel)
 
     def dispatch(self, event: Any) -> None:
@@ -2313,21 +2504,23 @@ async def _process_watch_deletes(
     for abs_path_str in deletes:
         abs_p = pathlib.Path(abs_path_str)
         if not abs_p.exists():
-            rel = abs_p.relative_to(base_path)
-            repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
+            # POSIX separators: repo keys are always "/". str(WindowsPath)
+            # would use "\", desyncing the key from the server's path.
+            rel = abs_p.relative_to(base_path).as_posix()
+            repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
             try:
                 resp = await client.post("/api/files/delete", json={
                     "path": repo_path, "location": "workspace", "mode": "cloud",
                 }, headers=extra_headers)
                 if resp.status_code == 204:
                     deleted_count += 1
-                    deleted_rels.append(str(rel))
+                    deleted_rels.append(rel)
                     state.forget_known_hash(repo_path)
             except Exception as del_err:
                 status_code = getattr(getattr(del_err, "response", None), "status_code", None)
                 if status_code == 404:
                     deleted_count += 1
-                    deleted_rels.append(str(rel))
+                    deleted_rels.append(rel)
                     state.forget_known_hash(repo_path)
                 else:
                     ts = datetime.now().strftime('%H:%M:%S')
@@ -2450,7 +2643,7 @@ async def _process_watch_batch(
                 parts.append(f"{watch_created} written")
             if deleted_count:
                 parts.append(f"{deleted_count} deleted")
-            print(f"  [{ts}] \u2713 Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
+            print(f"  [{ts}] ✓ Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
 
         # Log errors as separate rows (with detail sub-rows in TUI)
         if watch_errors:
@@ -2515,7 +2708,7 @@ async def _auto_validate_app(
                     watch_app.log_success(msg)
                 else:
                     ts = datetime.now().strftime('%H:%M:%S')
-                    print(f"  [{ts}] \u2713 {msg}", flush=True)
+                    print(f"  [{ts}] ✓ {msg}", flush=True)
             else:
                 if errors:
                     msg = f"App '{slug}' validation: {len(errors)} error(s)"
@@ -2754,7 +2947,7 @@ async def _watch_loop(
                     if watch_app:
                         watch_app.log_success("File watcher restarted")
                     else:
-                        print("  \u2713 File watcher restarted", flush=True)
+                        print("  ✓ File watcher restarted", flush=True)
                 except Exception as e:
                     if watch_app:
                         watch_app.log_error(f"Could not restart file watcher: {e}")
@@ -2964,7 +3157,8 @@ def _collect_push_files(
         if file_path.is_dir():
             continue
         rel = file_path.relative_to(path)
-        rel_str = str(rel)
+        # POSIX separators: repo keys and pathspec globs are always "/"-based.
+        rel_str = rel.as_posix()
         repo_path = f"{repo_prefix}/{rel_str}" if repo_prefix else rel_str
         if _should_skip_path(rel_str, spec, repo_path):
             continue
@@ -2991,8 +3185,8 @@ async def _sync_files(
 
     Compares local files vs server state (MD5/ETag + timestamps) and presents
     a TUI for per-item actions (push/pull/delete/skip). Entity state is
-    managed separately via `bifrost export` / `bifrost import` and dedicated
-    mutation commands (`bifrost orgs`, `bifrost workflows`, etc.); this
+    managed separately via Solutions, git sync, and dedicated mutation
+    commands (`bifrost orgs`, `bifrost workflows`, etc.); this
     function does not touch `.bifrost/` manifests.
     """
     path = pathlib.Path(local_path).resolve()
@@ -3152,8 +3346,14 @@ async def _sync_files(
 
     # ── 6. Interactive TUI or auto-accept ────────────────────────────────
     _is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    # _use_tui is the single source of truth for both the selection TUI (below)
+    # AND the progress TUI (further down). When --yes/-y (force), or
+    # BIFROST_NONINTERACTIVE=1, or no TTY, we must use NEITHER — the progress TUI
+    # blocks on "press Enter" when a file errors, which would hang an unattended
+    # run despite skipping the selection TUI (criterion 17).
+    _use_tui = _sync_use_tui(force=force, is_tty=_is_tty)
 
-    if force or not _is_tty:
+    if not _use_tui:
         # Auto-accept: use default actions
         from bifrost.tui.sync_app import SyncResult
         result = SyncResult()
@@ -3164,7 +3364,7 @@ async def _sync_files(
                 bucket.append(item)
             else:
                 result.skip.append(item)
-        if not _is_tty:
+        if not _use_tui:
             push_count = len(result.push)
             pull_count = len(result.pull)
             delete_count = len(result.delete)
@@ -3265,7 +3465,7 @@ async def _sync_files(
         return ", ".join(parts) if parts else "No changes"
 
     errors: list[str] = []
-    if progress_items and _is_tty:
+    if progress_items and _use_tui:
         from bifrost.tui.progress import ProgressApp
         app = ProgressApp("Syncing", progress_items, _do_sync_work, post_fn=_post_sync)
         errors = await app.run_async() or []
@@ -3277,7 +3477,7 @@ async def _sync_files(
                 errors.append(f"{name}: {e}")
                 print(f"  Error: {name}: {e}", file=sys.stderr)
         summary = await _post_sync(errors)
-        print(f"  \u2713 {summary}")
+        _print_sync_summary(summary)
 
     _cols = shutil.get_terminal_size((80, 24)).columns
     if errors:

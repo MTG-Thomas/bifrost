@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from src.core.auth import CurrentActiveUser
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.models.contracts.agents import (
     ChatRequest,
     ChatResponse,
@@ -451,6 +451,7 @@ async def _check_agent_access(db: DbSession, user, agent: Agent) -> bool:
         org_id=user.organization_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=user.is_external,
     )
     accessible = await repo.get(id=agent.id)
     return accessible is not None

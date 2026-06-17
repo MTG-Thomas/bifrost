@@ -12,6 +12,23 @@ from src.models.orm import OAuthProvider
 from tests.fixtures.auth import auth_headers, create_test_jwt
 
 
+def _sdk_get(e2e_client, headers, *, name, org_id=None):
+    """Read merged integration data via the live, org-scoped SDK endpoint.
+
+    Replaces the former GET /api/integrations/sdk/{name}?org_id= calls (that
+    endpoint was DELETED — EXT-1 NEW-H — for taking org_id as a free,
+    unchecked Query param). POST /api/sdk/integrations/get goes through
+    _resolve_sdk_org_id and returns the same merged ``config`` + ``entity_id``;
+    ``scope`` is the org UUID (a bypass platform_admin may target any org).
+    """
+    body = {"name": name}
+    if org_id is not None:
+        body["scope"] = str(org_id)
+    return e2e_client.post(
+        "/api/sdk/integrations/get", headers=headers, json=body
+    )
+
+
 @pytest.mark.e2e
 class TestIntegrationsCRUD:
     """Test Integration CRUD operations."""
@@ -363,11 +380,7 @@ class TestIntegrationsSDK:
         integration = integration_with_mapping["integration"]
         org = integration_with_mapping["org"]
 
-        response = e2e_client.get(
-            f"/api/integrations/sdk/{integration['name']}",
-            headers=platform_admin.headers,
-            params={"org_id": str(org["id"])},
-        )
+        response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org["id"])
         assert response.status_code == 200, f"Get SDK data failed: {response.text}"
         data = response.json()
 
@@ -376,17 +389,18 @@ class TestIntegrationsSDK:
         assert "config" in data
 
     def test_get_sdk_data_not_found(self, e2e_client, platform_admin, org1):
-        """SDK endpoint returns 404 for non-existent integration."""
-        response = e2e_client.get(
-            "/api/integrations/sdk/nonexistent_integration",
-            headers=platform_admin.headers,
-            params={"org_id": str(org1["id"])},
-        )
-        assert response.status_code == 404
+        """The live SDK get endpoint returns null for a non-existent
+        integration (the deleted /sdk/{name} endpoint 404'd; the replacement
+        returns None/200 — a miss, not an error)."""
+        response = _sdk_get(e2e_client, platform_admin.headers, name="nonexistent_integration", org_id=org1["id"])
+        assert response.status_code == 200, response.text
+        assert response.json() is None
 
     def test_get_sdk_data_no_mapping(self, e2e_client, platform_admin, org1):
-        """SDK endpoint returns 404 when org has no mapping."""
-        # Create integration without mapping
+        """With no org mapping, the live SDK get endpoint falls back to
+        integration defaults (the deleted /sdk/{name} endpoint 404'd on a
+        missing mapping; the replacement returns the integration-level
+        defaults, which for a bare integration is an empty config)."""
         integration_name = f"e2e_no_mapping_{uuid4().hex[:8]}"
         response = e2e_client.post(
             "/api/integrations",
@@ -397,14 +411,12 @@ class TestIntegrationsSDK:
         integration = response.json()
 
         try:
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration_name}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
-            assert response.status_code == 404
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration_name, org_id=org1["id"])
+            assert response.status_code == 200, response.text
+            data = response.json()
+            assert data is not None
+            assert data["config"] == {}
         finally:
-            # Cleanup
             e2e_client.delete(
                 f"/api/integrations/{integration['id']}",
                 headers=platform_admin.headers,
@@ -713,11 +725,7 @@ class TestIntegrationConfig:
 
         try:
             # Verify SDK endpoint returns merged config
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             assert response.status_code == 200, f"Get SDK data failed: {response.text}"
             data = response.json()
 
@@ -766,11 +774,7 @@ class TestIntegrationConfig:
 
         try:
             # Get SDK data
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             assert response.status_code == 200
             data = response.json()
 
@@ -815,11 +819,7 @@ class TestIntegrationConfig:
 
         try:
             # Verify override is active
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             data = response.json()
             assert data["config"]["api_url"] == "https://override.com"
 
@@ -834,11 +834,7 @@ class TestIntegrationConfig:
             assert response.status_code == 200
 
             # Verify fallback to default
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             data = response.json()
             assert data["config"]["api_url"] == "https://default.com"
         finally:
@@ -877,11 +873,7 @@ class TestIntegrationConfig:
 
         try:
             # Call SDK endpoint, verify defaults are returned
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             assert response.status_code == 200
             data = response.json()
 
@@ -926,11 +918,7 @@ class TestIntegrationConfig:
 
         try:
             # Call SDK endpoint, verify overrides are returned
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             assert response.status_code == 200
             data = response.json()
 
@@ -968,11 +956,7 @@ class TestIntegrationConfig:
             mapping = response.json()
 
             # Call SDK endpoint, verify config is empty dict
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration_name}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration_name, org_id=org1["id"])
             assert response.status_code == 200
             data = response.json()
             assert data["config"] == {}
@@ -1019,11 +1003,7 @@ class TestIntegrationConfig:
 
         try:
             # Verify SDK returns correctly merged config
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             assert response.status_code == 200
             data = response.json()
 
@@ -1141,11 +1121,7 @@ class TestIntegrationConfigSecrets:
 
         try:
             # Get SDK data - should return decrypted secret
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             assert response.status_code == 200
             data = response.json()
 
@@ -1192,11 +1168,7 @@ class TestIntegrationConfigSecrets:
 
         try:
             # SDK should return the org override (decrypted)
-            response = e2e_client.get(
-                f"/api/integrations/sdk/{integration['name']}",
-                headers=platform_admin.headers,
-                params={"org_id": str(org1["id"])},
-            )
+            response = _sdk_get(e2e_client, platform_admin.headers, name=integration['name'], org_id=org1["id"])
             assert response.status_code == 200
             data = response.json()
 
@@ -1498,9 +1470,11 @@ class TestIntegrationsAuthorization:
                 headers=platform_admin.headers,
             )
 
-    # Note: SDK endpoint (/api/integrations/sdk/{name}) authentication is tested
-    # implicitly in other test classes that use it successfully with auth headers.
-    # The endpoint requires Context dependency which enforces authentication.
+    # Note: the former GET /api/integrations/sdk/{name} endpoint was DELETED
+    # (EXT-1 NEW-H — cross-tenant leak via a free org_id Query param). SDK
+    # integration reads now go through POST /api/sdk/integrations/get, which is
+    # org-scoped (_resolve_sdk_org_id) and external-gated; its isolation is
+    # covered by tests/e2e/platform/test_cli_integrations_external.py.
 
 
 @pytest.mark.e2e

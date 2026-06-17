@@ -61,17 +61,21 @@ services:
   # RabbitMQ Message Broker (Test)
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    # Run as uid 100 so .erlang.cookie is created owned by rabbitmq, not root.
+    # Docker >= 24 creates the mount point 0755 root:root; the root entrypoint
+    # then writes the cookie root-owned 0400 and the uid-100 server can't read
+    # it ("Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces").
+    # Setting the user fixes the root cause without depending on tmpfs mode
+    # bits — important because Docker Desktop/WSL2 does not honour tmpfs
+    # uid/gid/mode under `docker compose` (only under `docker run`).
+    user: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: bifrost
       RABBITMQ_DEFAULT_PASS: bifrost_test
-    # No ports exposed - all access via Docker network
+    # No ports exposed - all access via Docker network.
+    # Ephemeral storage so test runs never inherit broker state.
     tmpfs:
-      # Ephemeral storage - prevents Erlang cookie permission issues.
-      # mode=1777 (sticky world-writable) matches the image's own dir perms
-      # so the rabbitmq user can create .erlang.cookie; Docker >= 24 stopped
-      # defaulting tmpfs to 1777 and now creates it 0755 root:root, which
-      # breaks the boot with "Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces".
-      - /var/lib/rabbitmq:mode=1777
+      - /var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 5s
@@ -105,6 +109,7 @@ services:
 
   # Init Container (Test) - Runs migrations and warms module cache before API/workers start
   init:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -129,6 +134,7 @@ services:
 
   # FastAPI Application (Test) - Only started for E2E tests
   api:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -153,11 +159,24 @@ services:
       - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - /app/src/services/app_bundler/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
       - test-mounts:/mounts  # File storage for uploads, branding, etc.
+      # Share ONLY the fixture subdir the test-runner stages file:// git repos
+      # in, so install/preview-repo can clone them server-side. Do NOT bind the
+      # whole LOG_DIR over the api's /tmp/bifrost: the api runs as root and its
+      # entrypoint `chown -R`s /tmp/bifrost to the bifrost uid (1000), which
+      # would clobber the host-owned LOG_DIR (test-runner.log, test-results.xml,
+      # *.log) — on a CI runner whose uid != 1000 the host-side `tee
+      # $LOG_DIR/test-runner.log` in run_pytest then fails with EPERM and the
+      # step exits 1 even though every test passed. The fixture repos are created
+      # by the uid-1000 test-runner, so chown-ing just this subdir to 1000 is a
+      # no-op and never touches the LOG_DIR root.
+      - ${LOG_DIR:-/tmp/bifrost}/solution-repo-fixtures:/tmp/bifrost/solution-repo-fixtures
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -183,6 +202,7 @@ services:
   # Note: Discovery service has been removed - workflow/form extraction
   # now happens at write time in FileStorageService
   worker:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -205,10 +225,15 @@ services:
       # Worker needs minimal DB connections — Redis-first pattern for agent runs
       BIFROST_DATABASE_POOL_SIZE: "1"
       BIFROST_DATABASE_MAX_OVERFLOW: "2"
+      # C1.5: Parity with production hardening
+      PIP_NO_CACHE_DIR: "1"
+      HOME: /home/bifrost
     volumes:
       - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - /app/src/services/app_bundler/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
     depends_on:
@@ -220,8 +245,10 @@ services:
         condition: service_started
       api:
         condition: service_healthy
-    # Entrypoint handles permissions; run as root so it can fix volume ownership
-    user: root
+    # C1.5: Run as bifrost uid. user: "1000:1000" bypasses gosu so cap_drop: ALL works.
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     command: ["python", "-m", "src.worker.main"]
     profiles:
       - e2e  # Only start in E2E mode
@@ -229,6 +256,7 @@ services:
   # Scheduler (Test) - Only started for E2E tests
   # Handles background jobs like GitHub sync via Redis pubsub
   scheduler:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -253,6 +281,8 @@ services:
       - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - /app/src/services/app_bundler/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
       - test-mounts:/mounts
@@ -275,6 +305,7 @@ services:
 
   # Test Runner - Executes pytest inside container with all dependencies
   test-runner:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -311,10 +342,14 @@ services:
       # Embeddings E2E test configuration (optional - tests skip if not set)
       # Uses OpenAI text-embedding-3-small for vector embeddings
       EMBEDDINGS_AI_TEST_KEY: ${EMBEDDINGS_AI_TEST_KEY:-}
+      # Phase 1 hardening is applied to this stack — posture assertions always on
+      BIFROST_POSTURE_HARDENED: "1"
     volumes:
       - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
       - /app/src/services/app_bundler/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/node_modules  # preserve npm deps from image
+      - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
@@ -368,6 +403,7 @@ services:
   # Client frontend (Vite dev server)
   # Serves the React app for Playwright browser tests
   client:
+    image: bifrost-test-client-dev:latest
     build:
       context: ./client
       dockerfile: Dockerfile.dev

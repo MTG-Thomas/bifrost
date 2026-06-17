@@ -1,32 +1,12 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-	Plus,
-	RefreshCw,
-	FileCode,
-	Pencil,
-	Trash2,
-	PlayCircle,
-	Globe,
-	Building2,
-	LayoutGrid,
-	Table as TableIcon,
-	AlertTriangle,
-} from "lucide-react";
+import { Plus, RefreshCw, LayoutGrid, Table as TableIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
-} from "@/components/ui/card";
+	FormListSurface,
+	type FormListItem,
+	type FormValidationState,
+} from "@/components/forms/FormListSurface";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -37,24 +17,14 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import {
-	DataTable,
-	DataTableBody,
-	DataTableCell,
-	DataTableHead,
-	DataTableHeader,
-	DataTableRow,
-} from "@/components/ui/data-table";
 import { useForms, useDeleteForm, useUpdateForm } from "@/hooks/useForms";
-import { useOrgScope } from "@/contexts/OrgScopeContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { SearchBox } from "@/components/search/SearchBox";
 import { useSearch } from "@/hooks/useSearch";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
+import { term, useTerminology } from "@/lib/terminology";
 import type { components } from "@/lib/v1";
 
 type FormPublic = components["schemas"]["FormPublic"];
@@ -62,7 +32,7 @@ type Organization = components["schemas"]["OrganizationPublic"];
 
 export function Forms() {
 	const navigate = useNavigate();
-	const { scope, isGlobalScope } = useOrgScope();
+	const terminology = useTerminology();
 	const { isPlatformAdmin } = useAuth();
 	const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(
 		undefined,
@@ -211,38 +181,18 @@ export function Forms() {
 
 	return (
 		<div className="flex flex-col space-y-6 max-w-7xl mx-auto">
-			<div className="flex items-center justify-between">
+			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<div className="flex items-center gap-3">
-						<h1 className="text-4xl font-extrabold tracking-tight">
-							Forms
-						</h1>
-						{isPlatformAdmin && (
-							<Badge
-								variant={isGlobalScope ? "default" : "outline"}
-								className="text-sm"
-							>
-								{isGlobalScope ? (
-									<>
-										<Globe className="mr-1 h-3 w-3" />
-										Global
-									</>
-								) : (
-									<>
-										<Building2 className="mr-1 h-3 w-3" />
-										{scope.orgName}
-									</>
-								)}
-							</Badge>
-						)}
-					</div>
+					<h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+						{term(terminology, "form", "plural")}
+					</h1>
 					<p className="mt-2 text-muted-foreground">
 						{canManageForms
-							? "Launch workflows with guided form interfaces"
-							: "Launch workflows with guided forms"}
+							? `Launch workflows with guided ${term(terminology, "form", "singularLower")} interfaces`
+							: `Launch workflows with guided ${term(terminology, "form", "pluralLower")}`}
 					</p>
 				</div>
-				<div className="flex gap-2">
+				<div className="flex flex-wrap gap-2">
 					{canManageForms && (
 						<ToggleGroup
 							type="single"
@@ -280,7 +230,7 @@ export function Forms() {
 							variant="outline"
 							size="icon"
 							onClick={handleCreate}
-							title="Create Form"
+							title={`Create ${term(terminology, "form", "singular")}`}
 						>
 							<Plus className="h-4 w-4" />
 						</Button>
@@ -289,15 +239,15 @@ export function Forms() {
 			</div>
 
 			{/* Search and Filters */}
-			<div className="flex items-center gap-4">
+			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
 				<SearchBox
 					value={searchTerm}
 					onChange={setSearchTerm}
-					placeholder="Search forms by name, description, or workflow..."
+					placeholder={`Search ${term(terminology, "form", "pluralLower")} by name, description, or workflow...`}
 					className="flex-1"
 				/>
 				{isPlatformAdmin && (
-					<div className="w-64">
+					<div className="w-full sm:w-64">
 						<OrganizationSelect
 							value={filterOrgId}
 							onChange={setFilterOrgId}
@@ -309,380 +259,25 @@ export function Forms() {
 				)}
 			</div>
 
-			{isLoading ? (
-				viewMode === "grid" || !canManageForms ? (
-					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-						{[...Array(6)].map((_, i) => (
-							<Skeleton key={i} className="h-48 w-full" />
-						))}
-					</div>
-				) : (
-					<div className="space-y-2">
-						{[...Array(3)].map((_, i) => (
-							<Skeleton key={i} className="h-12 w-full" />
-						))}
-					</div>
-				)
-			) : filteredForms && filteredForms.length > 0 ? (
-				viewMode === "grid" || !canManageForms ? (
-					<div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
-						{filteredForms.map((form) => (
-							<Card
-								key={form.id}
-								className="hover:border-primary transition-colors flex flex-col"
-							>
-								<CardHeader className="pb-3">
-									<CardTitle
-										className="text-base truncate"
-										title={form.name}
-									>
-										{form.name}
-									</CardTitle>
-									{!formValidation.get(form.id)?.valid &&
-										canManageForms && (
-											<Badge
-												variant="destructive"
-												className="gap-1 w-fit mt-1"
-											>
-												<AlertTriangle className="h-3 w-3" />
-												Invalid
-											</Badge>
-										)}
-									<CardDescription className="mt-1.5 text-sm line-clamp-2">
-										{form.description || (
-											<span className="italic text-muted-foreground/60">
-												No description
-											</span>
-										)}
-									</CardDescription>
-								</CardHeader>
-								<CardContent className="flex-1 flex flex-col pt-0">
-									{/* Validation warnings */}
-									{!formValidation.get(form.id)?.valid &&
-										canManageForms && (
-											<div className="mb-3 pb-3 border-b">
-												<span className="text-destructive font-medium text-sm">
-													Missing required parameters:
-												</span>
-												<div className="mt-1.5 flex flex-wrap gap-1">
-													{formValidation
-														.get(form.id)
-														?.missingParams.map(
-															(param) => (
-																<Badge
-																	key={param}
-																	variant="outline"
-																	className="text-xs font-mono"
-																>
-																	{param}
-																</Badge>
-															),
-														)}
-												</div>
-											</div>
-										)}
-
-									{/* Spacer to push bottom content down */}
-									<div className="flex-1" />
-
-									{/* Scope badge - fixed position above buttons */}
-									{isPlatformAdmin && (
-										<div className="mb-3">
-											{form.organization_id ? (
-												<Badge
-													variant="outline"
-													className="text-xs"
-												>
-													<Building2 className="mr-1 h-3 w-3" />
-													{getOrgName(
-														form.organization_id,
-													)}
-												</Badge>
-											) : (
-												<Badge
-													variant="default"
-													className="text-xs"
-												>
-													<Globe className="mr-1 h-3 w-3" />
-													Global
-												</Badge>
-											)}
-										</div>
-									)}
-
-									{/* Action buttons */}
-									<div className="flex items-center gap-2">
-										<Button
-											className="flex-1"
-											onClick={() =>
-												handleLaunch(form.id)
-											}
-											disabled={
-												(!form.is_active &&
-													!canManageForms) ||
-												!formValidation.get(form.id)
-													?.valid
-											}
-											title={
-												!formValidation.get(form.id)
-													?.valid
-													? `Cannot launch: Missing required parameters (${formValidation.get(form.id)?.missingParams.join(", ")})`
-													: !form.is_active &&
-														  !canManageForms
-														? "Form is disabled"
-														: "Launch form"
-											}
-										>
-											<PlayCircle className="mr-2 h-4 w-4" />
-											Launch
-										</Button>
-										{canManageForms && (
-											<>
-												<Button
-													variant="outline"
-													size="icon"
-													onClick={() =>
-														handleEdit(form.id)
-													}
-													title="Edit form"
-												>
-													<Pencil className="h-4 w-4" />
-												</Button>
-												<Button
-													variant="outline"
-													size="icon"
-													onClick={() =>
-														handleDelete(
-															form.id,
-															form.name,
-															form.is_active,
-														)
-													}
-													title="Delete form"
-												>
-													<Trash2 className="h-4 w-4" />
-												</Button>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<div className="shrink-0 ml-auto">
-															<Switch
-																checked={
-																	form.is_active
-																}
-																onCheckedChange={() =>
-																	handleToggleActive(
-																		form.id,
-																		form.name,
-																		form.is_active,
-																	)
-																}
-																id={`form-active-${form.id}`}
-															/>
-														</div>
-													</TooltipTrigger>
-													<TooltipContent>
-														{form.is_active
-															? "Enabled - click to disable"
-															: "Disabled - click to enable"}
-													</TooltipContent>
-												</Tooltip>
-											</>
-										)}
-									</div>
-								</CardContent>
-							</Card>
-						))}
-					</div>
-				) : (
-					<div className="flex-1 min-h-0">
-						<DataTable className="max-h-full">
-							<DataTableHeader>
-								<DataTableRow>
-									{isPlatformAdmin && (
-										<DataTableHead className="w-0 whitespace-nowrap">
-											Organization
-										</DataTableHead>
-									)}
-									<DataTableHead>Name</DataTableHead>
-									<DataTableHead>Description</DataTableHead>
-									<DataTableHead className="w-0 whitespace-nowrap">Status</DataTableHead>
-									<DataTableHead className="w-0 whitespace-nowrap text-right" />
-								</DataTableRow>
-							</DataTableHeader>
-							<DataTableBody>
-								{filteredForms.map((form) => {
-									const validation = formValidation.get(
-										form.id,
-									);
-									return (
-										<DataTableRow key={form.id}>
-											{isPlatformAdmin && (
-												<DataTableCell className="w-0 whitespace-nowrap">
-													{form.organization_id ? (
-														<Badge
-															variant="outline"
-															className="text-xs"
-														>
-															<Building2 className="mr-1 h-3 w-3" />
-															{getOrgName(
-																form.organization_id,
-															)}
-														</Badge>
-													) : (
-														<Badge
-															variant="default"
-															className="text-xs"
-														>
-															<Globe className="mr-1 h-3 w-3" />
-															Global
-														</Badge>
-													)}
-												</DataTableCell>
-											)}
-											<DataTableCell className="font-medium">
-												{form.name}
-											</DataTableCell>
-											<DataTableCell className="max-w-xs truncate text-muted-foreground">
-												{form.description || (
-													<span className="italic">
-														No description
-													</span>
-												)}
-											</DataTableCell>
-											<DataTableCell className="w-0 whitespace-nowrap">
-												{canManageForms ? (
-													<Tooltip>
-														<TooltipTrigger asChild>
-															<div className="w-fit">
-																<Switch
-																	checked={
-																		form.is_active
-																	}
-																	onCheckedChange={() =>
-																		handleToggleActive(
-																			form.id,
-																			form.name,
-																			form.is_active,
-																		)
-																	}
-																	id={`form-active-table-${form.id}`}
-																/>
-															</div>
-														</TooltipTrigger>
-														<TooltipContent>
-															{form.is_active
-																? "Enabled - click to disable"
-																: "Disabled - click to enable"}
-														</TooltipContent>
-													</Tooltip>
-												) : (
-													<Badge
-														variant={
-															form.is_active
-																? "default"
-																: "secondary"
-														}
-													>
-														{form.is_active
-															? "Enabled"
-															: "Inactive"}
-													</Badge>
-												)}
-											</DataTableCell>
-											<DataTableCell className="w-0 whitespace-nowrap text-right">
-												<div className="flex gap-1 justify-end">
-													<Button
-														size="sm"
-														onClick={() =>
-															handleLaunch(
-																form.id,
-															)
-														}
-														disabled={
-															(!form.is_active &&
-																!canManageForms) ||
-															!validation?.valid
-														}
-														title={
-															!validation?.valid
-																? `Cannot launch: Missing ${validation?.missingParams.join(", ")}`
-																: !form.is_active &&
-																	  !canManageForms
-																	? "Form is disabled"
-																	: "Launch form"
-														}
-													>
-														<PlayCircle className="h-4 w-4" />
-													</Button>
-													{canManageForms && (
-														<>
-															<Button
-																variant="ghost"
-																size="sm"
-																onClick={() =>
-																	handleEdit(
-																		form.id,
-																	)
-																}
-																title="Edit form"
-															>
-																<Pencil className="h-4 w-4" />
-															</Button>
-															<Button
-																variant="ghost"
-																size="sm"
-																onClick={() =>
-																	handleDelete(
-																		form.id,
-																		form.name,
-																		form.is_active,
-																	)
-																}
-																title="Delete form"
-															>
-																<Trash2 className="h-4 w-4" />
-															</Button>
-														</>
-													)}
-												</div>
-											</DataTableCell>
-										</DataTableRow>
-									);
-								})}
-							</DataTableBody>
-						</DataTable>
-					</div>
-				)
-			) : (
-				<Card>
-					<CardContent className="flex flex-col items-center justify-center py-12 text-center">
-						<FileCode className="h-12 w-12 text-muted-foreground" />
-						<h3 className="mt-4 text-lg font-semibold">
-							{searchTerm
-								? "No forms match your search"
-								: "No forms found"}
-						</h3>
-						<p className="mt-2 text-sm text-muted-foreground">
-							{searchTerm
-								? "Try adjusting your search term or clear the filter"
-								: canManageForms
-									? "Get started by creating your first form"
-									: "No forms are currently available"}
-						</p>
-						{canManageForms && !searchTerm && (
-							<Button
-								variant="outline"
-								size="icon"
-								onClick={handleCreate}
-								className="mt-4"
-								title="Create Form"
-							>
-								<Plus className="h-4 w-4" />
-							</Button>
-						)}
-					</CardContent>
-				</Card>
-			)}
+			<FormListSurface
+				forms={filteredForms as FormListItem[]}
+				viewMode={viewMode}
+				isLoading={isLoading}
+				isPlatformAdmin={isPlatformAdmin}
+				canManageForms={canManageForms}
+				getOrgName={getOrgName}
+				formValidation={formValidation as Map<string, FormValidationState>}
+				onLaunch={(form) => handleLaunch(form.id)}
+				onEdit={(form) => handleEdit(form.id)}
+				onDelete={(form) =>
+					handleDelete(form.id, form.name, form.is_active)
+				}
+				onToggleActive={(form) =>
+					handleToggleActive(form.id, form.name, form.is_active)
+				}
+				onCreateEmpty={handleCreate}
+				emptySearchActive={Boolean(searchTerm)}
+			/>
 
 			{/* Disable/Enable Confirmation Dialog */}
 			<AlertDialog

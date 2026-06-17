@@ -24,14 +24,7 @@ from src.core.auth import Context, CurrentSuperuser
 from src.core.org_filter import resolve_org_filter
 from src.repositories.config import ConfigRepository
 
-# Import cache functions
-try:
-    from src.core.cache import invalidate_config, upsert_config
-    CACHE_AVAILABLE = True
-except ImportError:
-    CACHE_AVAILABLE = False
-    invalidate_config = None  # type: ignore
-    upsert_config = None  # type: ignore
+from src.core.cache import invalidate_config, upsert_config
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +50,10 @@ async def get_config(
         description="Filter scope: omit for all (superusers), 'global' for global only, "
         "or org UUID for specific org."
     ),
+    include_orphaned: bool = Query(
+        default=False,
+        description="Include orphaned configs (former-install data left by an uninstalled Solution).",
+    ),
 ) -> list[ConfigResponse]:
     """Get configuration for current scope.
 
@@ -74,7 +71,7 @@ async def get_config(
     # Use repository for all filtering
     # Config endpoints are superuser-only, so is_superuser=True (no role checks)
     repo = ConfigRepository(ctx.db, org_id=filter_org, is_superuser=True)
-    return await repo.list_configs(filter_type)
+    return await repo.list_configs(filter_type, include_orphaned=include_orphaned)
 
 
 @router.post(
@@ -107,12 +104,11 @@ async def set_config(
         result = await repo.set_config(request, updated_by=user.email)
 
         # Upsert to cache after successful write (dual-write pattern)
-        if CACHE_AVAILABLE and upsert_config:
-            org_id_str = str(target_org_id) if target_org_id else None
-            config_type_str = request.type.value if request.type else "string"
-            # Note: For secrets, stored_value is already encrypted by the repository
-            stored_value = result.value
-            await upsert_config(org_id_str, request.key, stored_value, config_type_str)
+        org_id_str = str(target_org_id) if target_org_id else None
+        config_type_str = request.type.value if request.type else "string"
+        # Note: For secrets, stored_value is already encrypted by the repository
+        stored_value = result.value
+        await upsert_config(org_id_str, request.key, stored_value, config_type_str)
 
         return result
     except Exception as e:
@@ -217,6 +213,5 @@ async def delete_config(
         )
 
     # Invalidate cache after successful delete
-    if CACHE_AVAILABLE and invalidate_config:
-        org_id_str = str(deleted.organization_id) if deleted.organization_id else None
-        await invalidate_config(org_id_str, deleted.key)
+    org_id_str = str(deleted.organization_id) if deleted.organization_id else None
+    await invalidate_config(org_id_str, deleted.key)

@@ -70,6 +70,7 @@ function mockManifestOk(
 		mode: "preview" | "live";
 		dependencies: Record<string, string>;
 		migrated: boolean;
+		app_model: string;
 	}> = {},
 ) {
 	mockAuthFetch.mockResolvedValueOnce({
@@ -82,6 +83,7 @@ function mockManifestOk(
 			mode: "preview",
 			dependencies: {},
 			migrated: false,
+			app_model: "inline_v1",
 			...overrides,
 		}),
 	});
@@ -99,9 +101,6 @@ afterEach(() => {
 	// Clean any import maps a prior test installed.
 	document
 		.querySelectorAll("script[data-bifrost-import-map]")
-		.forEach((el) => el.remove());
-	document
-		.querySelectorAll('script[src*="es-module-shims"]')
 		.forEach((el) => el.remove());
 });
 
@@ -196,39 +195,101 @@ describe("BundledAppShell — websocket subscription", () => {
 	});
 });
 
-describe("BundledAppShell — dependency shim", () => {
-	it("loads es-module-shims from Bifrost origin instead of a remote CDN", async () => {
-		vi.spyOn(console, "error").mockImplementation(() => {});
-		let shimScript: HTMLScriptElement | null = null;
-		const appendChild = document.head.appendChild.bind(document.head);
-		vi.spyOn(document.head, "appendChild").mockImplementation(
-			<T extends Node>(node: T): T => {
-				if (
-					node instanceof HTMLScriptElement &&
-					node.src.includes("es-module-shims")
-				) {
-					shimScript = node;
-					return node;
-				}
-				return appendChild(node) as T;
-			},
-		);
+describe("BundledAppShell — app_model render branch", () => {
+	it("mounts the standalone v2 app same-document (no iframe) and injects auth", async () => {
 		mockManifestOk({
-			dependencies: {
-				"date-fns": "4.2.1",
-			},
+			app_model: "standalone_v2",
+			entry: "assets/main-abc.js",
+			base_url: "/api/applications/app-1/dist",
 		});
+		// The host token the shell injects for the app.
+		localStorage.setItem("bifrost_access_token", "tok-xyz");
 
 		await renderShell();
 
-		await waitFor(() => {
-			expect(shimScript).not.toBeNull();
-			expect(shimScript?.src).toContain(
-				"/vendor/es-module-shims/es-module-shims-2.8.0.js",
-			);
-			expect(shimScript?.src).not.toMatch(
-				/^https?:\/\/(cdn\.jsdelivr\.net|ga\.jspm\.io)\//,
-			);
+		// v2 → same-document container (its own createRoot/router/SDK); NO iframe
+		// (the iframe never updated the URL, breaking deep-links — P1-b/G7).
+		const root = await screen.findByTestId("solution-v2-app-root");
+		expect(root).toBeInTheDocument();
+		expect(root.querySelector("iframe")).toBeNull();
+
+		// The bootstrap the app's main.tsx reads was injected with the viewer's
+		// token + the /apps/{slug} basename so deep-links resolve.
+		await waitFor(() => expect(window.__BIFROST_APP__).toBeDefined());
+		expect(window.__BIFROST_APP__!.token).toBe("tok-xyz");
+		// basename is built from the app slug (renderShell uses "my-app").
+		expect(window.__BIFROST_APP__!.basename).toBe("/apps/my-app/preview");
+		expect(window.__BIFROST_APP__!.mountEl).toBe(root);
+
+		// v2 is deploy-driven, not hot-reload — no draft subscription.
+		expect(mockConnectToAppDraft).not.toHaveBeenCalled();
+	});
+
+	it("drops the v2 mount when navigating to an inline_v1 app in the same shell", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		localStorage.setItem("bifrost_access_token", "tok-xyz");
+		const { BundledAppShell } = await import("./BundledAppShell");
+
+		// First app: standalone_v2 → same-document container.
+		mockManifestOk({
+			app_model: "standalone_v2",
+			entry: "assets/main-abc.js",
+			base_url: "/api/applications/app-v2/dist",
 		});
+		const { rerender } = renderWithProviders(
+			<BundledAppShell appId="app-v2" appSlug="v2" isPreview />,
+		);
+		expect(await screen.findByTestId("solution-v2-app-root")).toBeInTheDocument();
+
+		// Navigate to a different, inline_v1 app: the v2 container must go away
+		// (the shell re-fetches and resets the model). The inline dynamic import
+		// rejects in happy-dom, but the model reset happens before that.
+		mockManifestOk({ app_model: "inline_v1" });
+		rerender(<BundledAppShell appId="app-v1" appSlug="v1" isPreview />);
+		await waitFor(() =>
+			expect(screen.queryByTestId("solution-v2-app-root")).toBeNull(),
+		);
+	});
+
+	it("does not render a v2 app with the new appId while the new manifest is still pending (Codex #10)", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		localStorage.setItem("bifrost_access_token", "tok-xyz");
+		const { BundledAppShell } = await import("./BundledAppShell");
+
+		// App A: standalone_v2, resolves immediately.
+		mockManifestOk({
+			app_model: "standalone_v2",
+			entry: "assets/A-entry.js",
+			base_url: "/api/applications/app-A/dist",
+		});
+		const { rerender } = renderWithProviders(
+			<BundledAppShell appId="app-A" appSlug="aaa" isPreview />,
+		);
+		const rootA = await screen.findByTestId("solution-v2-app-root");
+		expect(rootA.dataset.bifrostEntry).toContain("A-entry.js");
+
+		// Navigate to app B; B's manifest fetch is PENDING (never resolves here).
+		mockAuthFetch.mockImplementationOnce(() => new Promise<Response>(() => {}));
+		rerender(<BundledAppShell appId="app-B" appSlug="bbb" isPreview />);
+
+		// During the pending window the stale A v2 mount must be cleared — NOT
+		// rendered with B's appId + A's entry. (No mixed-identity mount.)
+		await waitFor(() =>
+			expect(screen.queryByTestId("solution-v2-app-root")).toBeNull(),
+		);
+	});
+
+	it("uses the inline path for inline_v1 (regression) and subscribes to drafts", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		mockManifestOk({ app_model: "inline_v1" });
+
+		await renderShell();
+
+		// No standalone container for v1.
+		expect(screen.queryByTestId("solution-v2-app-root")).toBeNull();
+		// v1 inline path still subscribes to draft rebuilds (unchanged).
+		await waitFor(() =>
+			expect(mockConnectToAppDraft).toHaveBeenCalledWith("app-1"),
+		);
 	});
 });

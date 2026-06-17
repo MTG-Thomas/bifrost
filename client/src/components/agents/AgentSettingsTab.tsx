@@ -24,7 +24,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import {
 	AlertTriangle,
-	Check,
 	ChevronsUpDown,
 	Info,
 	Loader2,
@@ -32,6 +31,7 @@ import {
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { SolutionManagedBanner } from "@/components/solutions/SolutionManagedBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -106,8 +106,13 @@ const ACCESS_LEVELS: {
 }[] = [
 	{
 		value: "authenticated",
-		label: "Authenticated",
-		description: "Available to all authenticated users",
+		label: "Everyone except external users",
+		description: "Available to all signed-in users except external users",
+	},
+	{
+		value: "everyone",
+		label: "Everyone",
+		description: "Available to all signed-in users, including external users",
 	},
 	{
 		value: "role_based",
@@ -121,7 +126,7 @@ const formSchema = z.object({
 	description: z.string().max(500).optional(),
 	system_prompt: z.string().min(1, "System prompt is required"),
 	channels: z.array(z.enum(["chat", "voice", "teams", "slack"])),
-	access_level: z.enum(["authenticated", "role_based"]),
+	access_level: z.enum(["authenticated", "everyone", "role_based"]),
 	organization_id: z.string().nullable(),
 	tool_ids: z.array(z.string()),
 	system_tools: z.array(z.string()),
@@ -177,6 +182,10 @@ export function AgentSettingsTab({
 	const createAgent = useCreateAgent();
 	const updateAgent = useUpdateAgent();
 
+	// Solution-managed agents are read-only on the platform (criterion 6):
+	// show the banner and block Save. Only meaningful in edit mode.
+	const isSolutionManaged = mode === "edit" && (agent?.is_solution_managed ?? false);
+
 	const { data: allAgents } = useAgents();
 	const { data: toolsGrouped } = useToolsGrouped({ include_inactive: true });
 	const { data: roles } = useRoles();
@@ -207,6 +216,7 @@ export function AgentSettingsTab({
 				channels: ((a.channels as AgentChannel[]) ?? ["chat"]) as AgentChannel[],
 				access_level: (a.access_level ?? "role_based") as
 					| "authenticated"
+					| "everyone"
 					| "role_based",
 				organization_id: a.organization_id ?? null,
 				tool_ids: a.tool_ids ?? [],
@@ -372,6 +382,11 @@ export function AgentSettingsTab({
 				className={cn("overflow-hidden", CARD_SURFACE)}
 				data-testid="agent-settings-form"
 			>
+				{isSolutionManaged && (
+					<div className="px-5 pt-4">
+						<SolutionManagedBanner entityLabel="agent" />
+					</div>
+				)}
 				{/* Identity */}
 				<FormSection title="Identity">
 					{isPlatformAdmin ? (
@@ -506,6 +521,10 @@ export function AgentSettingsTab({
 															<CommandItem
 																key={role.id}
 																value={role.name ?? ""}
+																data-checked={
+																	field.value?.includes(role.id) ??
+																	false
+																}
 																onSelect={() => {
 																	const current = field.value ?? [];
 																	field.onChange(
@@ -517,31 +536,16 @@ export function AgentSettingsTab({
 																	);
 																}}
 															>
-																<div className="flex flex-1 items-center gap-2">
-																	<Checkbox
-																		checked={field.value?.includes(
-																			role.id,
-																		)}
-																	/>
-																	<div className="flex flex-col">
-																		<span className="font-medium">
-																			{role.name}
+																<div className="flex flex-col flex-1">
+																	<span className="font-medium">
+																		{role.name}
+																	</span>
+																	{role.description ? (
+																		<span className="text-xs text-muted-foreground">
+																			{role.description}
 																		</span>
-																		{role.description ? (
-																			<span className="text-xs text-muted-foreground">
-																				{role.description}
-																			</span>
-																		) : null}
-																	</div>
+																	) : null}
 																</div>
-																<Check
-																	className={cn(
-																		"ml-auto h-4 w-4",
-																		field.value?.includes(role.id)
-																			? "opacity-100"
-																			: "opacity-0",
-																	)}
-																/>
 															</CommandItem>
 														))}
 													</CommandGroup>
@@ -550,7 +554,7 @@ export function AgentSettingsTab({
 										</PopoverContent>
 									</Popover>
 									{field.value?.length ? (
-										<div className="flex flex-wrap gap-1.5 rounded-md border bg-muted/40 p-2">
+										<div className="flex flex-wrap gap-1.5 rounded-md bg-muted/50 ring-1 ring-foreground/5 p-2">
 											{field.value.map((roleId) => {
 												const role = roles?.find(
 													(r: RolePublic) => r.id === roleId,
@@ -596,7 +600,7 @@ export function AgentSettingsTab({
 						control={form.control}
 						name="is_active"
 						render={({ field }) => (
-							<FormItem className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2.5">
+							<FormItem className="flex items-center justify-between gap-3 rounded-md bg-muted/50 ring-1 ring-foreground/5 px-3 py-2.5">
 								<div className="flex flex-col">
 									<FormLabel className="m-0">
 										{field.value ? "Agent is active" : "Agent is paused"}
@@ -852,6 +856,9 @@ export function AgentSettingsTab({
 													<CommandItem
 														key={tool.id}
 														value={`system-${tool.name}`}
+														data-checked={
+															systemTools?.includes(tool.id) ?? false
+														}
 														onSelect={() => {
 															const current = systemTools ?? [];
 															form.setValue(
@@ -862,14 +869,6 @@ export function AgentSettingsTab({
 															);
 														}}
 													>
-														<Check
-															className={cn(
-																"mr-2 h-4 w-4",
-																systemTools?.includes(tool.id)
-																	? "opacity-100"
-																	: "opacity-0",
-															)}
-														/>
 														<div className="flex flex-col">
 															<span className="font-mono text-sm">
 																{tool.id}
@@ -897,6 +896,9 @@ export function AgentSettingsTab({
 															data-mismatch={
 																isMismatch ? "true" : undefined
 															}
+															data-checked={
+																toolIds?.includes(tool.id) ?? false
+															}
 															onSelect={() => {
 																if (isMismatch) return;
 																const current = toolIds ?? [];
@@ -910,14 +912,6 @@ export function AgentSettingsTab({
 																);
 															}}
 														>
-															<Check
-																className={cn(
-																	"mr-2 h-4 w-4",
-																	toolIds?.includes(tool.id)
-																		? "opacity-100"
-																		: "opacity-0",
-																)}
-															/>
 															<div className="flex flex-col">
 																<span>
 																	{tool.name}
@@ -1060,6 +1054,10 @@ export function AgentSettingsTab({
 														<CommandItem
 															key={delegate.id}
 															value={delegate.name}
+															data-checked={
+																field.value?.includes(delegate.id) ??
+																false
+															}
 															onSelect={() => {
 																const current = field.value ?? [];
 																field.onChange(
@@ -1071,14 +1069,6 @@ export function AgentSettingsTab({
 																);
 															}}
 														>
-															<Check
-																className={cn(
-																	"mr-2 h-4 w-4",
-																	field.value?.includes(delegate.id)
-																		? "opacity-100"
-																		: "opacity-0",
-																)}
-															/>
 															<div className="flex flex-col">
 																<span>{delegate.name}</span>
 																{delegate.description ? (
@@ -1123,7 +1113,7 @@ export function AgentSettingsTab({
 									/>
 								</FormControl>
 								{field.value?.length ? (
-									<div className="flex items-center gap-2 rounded-md border bg-muted/30 p-2">
+									<div className="flex items-center gap-2 rounded-md bg-muted/50 ring-1 ring-foreground/5 p-2">
 										<Badge
 											variant="secondary"
 											className="font-mono text-xs"
@@ -1276,7 +1266,7 @@ export function AgentSettingsTab({
 				<div className="flex items-center justify-end gap-2 border-t bg-muted/30 px-5 py-3">
 					<Button
 						type="submit"
-						disabled={pending || hasMismatchedTools}
+						disabled={pending || hasMismatchedTools || isSolutionManaged}
 						data-testid="save-agent-button"
 					>
 						{pending ? (
@@ -1392,7 +1382,7 @@ function AgentMCPConnectionsPanelInner({
 	if (connections.length === 0) {
 		return (
 			<div
-				className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground"
+				className="rounded-md bg-muted/50 ring-1 ring-foreground/5 p-3 text-xs text-muted-foreground"
 				data-testid="agent-mcp-connections-panel-empty"
 			>
 				This organization has no MCP connections. Add one from the MCP
@@ -1403,7 +1393,7 @@ function AgentMCPConnectionsPanelInner({
 
 	return (
 		<div
-			className="rounded-md border bg-muted/20 p-3 space-y-3"
+			className="rounded-md bg-muted/50 ring-1 ring-foreground/5 p-3 space-y-3"
 			data-testid="agent-mcp-connections-panel"
 		>
 			<div>

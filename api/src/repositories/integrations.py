@@ -638,21 +638,31 @@ class IntegrationsRepository(BaseRepository[Integration]):
                 global secrets through org mappings.
 
         Returns:
-            dict: Merged configuration (integration defaults + org overrides)
+            dict: Merged configuration (integration defaults + org overrides),
+            or org-specific config only for external callers.
         """
         from src.models.orm import Config as ConfigModel
         from sqlalchemy import or_
 
-        # Query for both integration defaults (org_id=NULL) and org-specific overrides
-        config_query = select(ConfigModel).where(
-            and_(
-                ConfigModel.integration_id == integration_id,
-                or_(
-                    ConfigModel.organization_id.is_(None),
+        if external:
+            # External: org tier only — never read the global defaults.
+            config_query = select(ConfigModel).where(
+                and_(
+                    ConfigModel.integration_id == integration_id,
                     ConfigModel.organization_id == org_id,
-                ),
+                )
             )
-        )
+        else:
+            # Both integration defaults (org_id=NULL) and org-specific overrides
+            config_query = select(ConfigModel).where(
+                and_(
+                    ConfigModel.integration_id == integration_id,
+                    or_(
+                        ConfigModel.organization_id.is_(None),
+                        ConfigModel.organization_id == org_id,
+                    ),
+                )
+            )
         result = await self.session.execute(config_query)
         config_entries = result.scalars().all()
 
@@ -734,11 +744,21 @@ class IntegrationsRepository(BaseRepository[Integration]):
 
         Args:
             integration_id: Integration UUID
+            external: REQUIRED (no default — EXT-1 OPEN-E / NEW-G). These
+                defaults ARE the global (org_id=NULL) tier and may carry
+                decrypted SECRETs. An EXTERNAL portal caller passes True and
+                gets nothing (no global leak); engine/sentinel/admin callers
+                pass False explicitly. No default so a new call site can't
+                silently leak the global tier.
 
         Returns:
-            dict: Integration-level config defaults
+            dict: Integration-level config defaults, or empty for externals.
         """
         from src.models.orm import Config as ConfigModel
+
+        if external:
+            # The defaults ARE the global tier — an external never reads it.
+            return {}
 
         config_query = select(ConfigModel).where(
             and_(

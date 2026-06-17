@@ -1,6 +1,9 @@
-"""Tests for ``bifrost.cli._check_cli_version``.
+"""Tests for ``bifrost.cli._check_cli_version`` — URL resolution and transport.
 
-The check must:
+The *behavioral* contract of the gate (contract-version hard gate, build-drift
+soft notice, old-server fallback, un-reachable warning) lives in
+``test_cli_contract_gate.py``. This file keeps the still-valid cross-cutting
+concerns the gate must honor regardless of which gate fires:
 
 * Skip silently for source/dev installs (``__version__`` of ``"unknown"`` or
   ``"0.0.0+source"``).

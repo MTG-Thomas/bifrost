@@ -52,6 +52,7 @@ from bifrost.dto_flags import (
     assemble_body,
     build_cli_flags,
 )
+from bifrost.org_target import org_option, resolve_org_target
 from bifrost.refs import RefResolver
 from bifrost.contracts import WorkflowUpdateRequest
 
@@ -142,17 +143,11 @@ async def get_workflow(
     type=str,
     help="Name of the decorated function to register.",
 )
-@click.option(
-    "--org",
-    "organization_id",
-    type=str,
-    default=None,
-    help="Organization ref (UUID or name) to scope the workflow to; omit for global.",
-)
+@org_option
 @click.option(
     "--access-level",
     "access_level",
-    type=click.Choice(["authenticated", "role_based"]),
+    type=click.Choice(["authenticated", "everyone", "role_based"]),
     default=None,
     help="Access level for the workflow. Omit to leave at default.",
 )
@@ -171,12 +166,13 @@ async def get_workflow(
 @run_async
 async def register_workflow(
     ctx: click.Context,
+    org: str | None,
+    is_global: bool,
     *,
     client: BifrostClient,
     resolver: RefResolver,
     path: str,
     function_name: str,
-    organization_id: str | None,
     access_level: str | None,
     role_ids: tuple[str, ...],
 ) -> None:
@@ -186,13 +182,18 @@ async def register_workflow(
     or the file editor). This command indexes a ``@workflow`` / ``@tool`` /
     ``@data_provider`` function so it becomes executable via the API.
 
+    Org targeting follows the unified ``--org`` standard: HOME (omit) scopes the
+    workflow to the caller's org, ``--global`` makes it global, ``--org
+    <id|name>`` scopes it to that org.
+
     ``--access-level`` and ``--role-ids`` set the workflow's access controls at
     registration time, mirroring the create-time surface for forms and apps.
     Role refs accept names or UUIDs and are resolved before the request.
     """
     body: dict[str, Any] = {"path": path, "function_name": function_name}
-    if organization_id is not None:
-        body["organization_id"] = await resolver.resolve("org", organization_id)
+    target = await resolve_org_target(org, is_global, resolver)
+    if target.is_set:
+        body["organization_id"] = target.organization_id
     if access_level is not None:
         body["access_level"] = access_level
 
@@ -411,6 +412,37 @@ async def update_workflow(
     body = await assemble_body(WorkflowUpdateRequest, fields, resolver=resolver)
     response = await client.patch(
         f"/api/workflows/{workflow_uuid}", json=body
+    )
+    response.raise_for_status()
+    output_result(response.json(), ctx=ctx)
+
+
+@workflows_group.command("remap")
+@click.argument("source_ref")
+@click.option(
+    "--to",
+    "target_ref",
+    required=True,
+    type=str,
+    help="Active workflow ref (UUID, name, or path::func) to receive references.",
+)
+@click.pass_context
+@pass_resolver
+@run_async
+async def remap_workflow(
+    ctx: click.Context,
+    source_ref: str,
+    *,
+    client: BifrostClient,
+    resolver: RefResolver,
+    target_ref: str,
+) -> None:
+    """Move references from one workflow ID to another active workflow ID."""
+    source_uuid = await resolver.resolve("workflow", source_ref)
+    target_uuid = await resolver.resolve("workflow", target_ref)
+    response = await client.post(
+        f"/api/workflows/{source_uuid}/remap",
+        json={"target_workflow_id": target_uuid},
     )
     response.raise_for_status()
     output_result(response.json(), ctx=ctx)

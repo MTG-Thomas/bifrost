@@ -6,11 +6,13 @@ import hmac as hmac_module
 import uuid
 from urllib.parse import urlparse
 
+import jwt
 import pytest
+from sqlalchemy import delete
 
 
 def _create_app(client, headers, slug):
-    r = client.post("/api/applications", headers=headers, json={"name": slug, "slug": slug})
+    r = client.post("/api/applications", headers=headers, json={"name": slug, "slug": slug, "app_model": "inline_v1"})
     assert r.status_code == 201, r.text
     return r.json()
 

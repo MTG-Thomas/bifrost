@@ -67,10 +67,6 @@ except ImportError:
     set_write_buffer = None  # type: ignore
     clear_write_buffer = None  # type: ignore
 
-# Data provider cache is now available via import at top
-DATA_PROVIDER_CACHE_AVAILABLE = True
-
-
 @dataclass
 class ExecutionRequest:
     """Request to execute code or a function"""
@@ -112,6 +108,12 @@ class ExecutionRequest:
 
     # Event context (set when triggered by an event subscription)
     event: Any = None                    # EventContext | None
+
+    # The install this execution belongs to, when the workflow is solution-managed
+    # (from the resolved workflow row's solution_id). Carried onto ExecutionContext
+    # so the SDK can scope name lookups (tables/configs) to the install's OWN
+    # entity — own-first, then _repo/. None for plain _repo/ executions.
+    solution_id: str | None = None
 
 
 @dataclass
@@ -291,6 +293,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         startup=request.startup,  # Launch workflow results (from form execution)
         roi=roi,
         event=request.event,
+        solution_id=request.solution_id,  # install scope for SDK name lookups
     )
 
     # Set bifrost SDK context if available
@@ -320,7 +323,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     try:
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             # Check Redis cache for data providers
-            if is_data_provider and not request.no_cache and DATA_PROVIDER_CACHE_AVAILABLE and get_cached_data_provider:
+            if is_data_provider and not request.no_cache:
                 org_id = request.organization.id if request.organization else None
                 cached_result = await get_cached_data_provider(
                     org_id,
@@ -353,12 +356,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             )
 
             # Cache result to Redis if data provider
-            if (
-                is_data_provider
-                and request.cache_ttl_seconds > 0
-                and DATA_PROVIDER_CACHE_AVAILABLE
-                and cache_data_provider_result
-            ):
+            if is_data_provider and request.cache_ttl_seconds > 0:
                 org_id = request.organization.id if request.organization else None
                 expires_at = await cache_data_provider_result(
                     org_id,
@@ -501,11 +499,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                         'source': 'workflow'
                     })
 
-        # Check if it's a WorkflowError
-        if isinstance(original_exc, WorkflowError):
-            status = ExecutionStatus.FAILED
-        else:
-            status = ExecutionStatus.FAILED
+        status = ExecutionStatus.FAILED
 
         # Free traceback references — already formatted above
         original_exc.__traceback__ = None

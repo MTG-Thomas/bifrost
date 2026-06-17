@@ -48,8 +48,24 @@ from bifrost.refs import RefKind, RefResolver
 # exposed as flags or explicitly excluded with a documented reason.
 # ---------------------------------------------------------------------------
 
+#: Org targeting is handled uniformly by the shared ``org_option`` /
+#: ``resolve_org_target`` machinery (the ``--org``/``--global`` standard), NOT by
+#: the per-DTO flag generator. Any DTO carrying ``organization_id`` excludes it
+#: here so the generator does not also emit an ``--organization`` flag that would
+#: collide with — and diverge from — the unified three-state (home/global/org)
+#: resolver. See ``bifrost/org_target.py``.
+_ORG_TARGET_EXCLUDE = {"organization_id"}
+
 #: Per-DTO field exclusions, keyed by ``model_cls.__name__``.
 DTO_EXCLUDES: dict[str, set[str]] = {
+    # Org targeting via the unified --org/--global standard (org_option), not
+    # the DTO flag generator. See _ORG_TARGET_EXCLUDE above.
+    "ConfigCreate": set(_ORG_TARGET_EXCLUDE),
+    "TableCreate": set(_ORG_TARGET_EXCLUDE),
+    "FormCreate": set(_ORG_TARGET_EXCLUDE),
+    "FormUpdate": set(_ORG_TARGET_EXCLUDE),
+    "AgentCreate": set(_ORG_TARGET_EXCLUDE),
+    "AgentUpdate": set(_ORG_TARGET_EXCLUDE),
     # Organizations: ``domain`` is auto-provisioning policy; ``settings`` is a
     # UI-managed JSON blob; ``is_provider`` is immutable post-create.
     "OrganizationCreate": {"domain", "settings", "is_provider"},
@@ -85,8 +101,10 @@ DTO_EXCLUDES: dict[str, set[str]] = {
     # ``--webhook-config`` collapse into ``webhook``). Excluded here so the
     # DTO-driven generator doesn't produce opaque ``--webhook`` / ``--schedule``
     # JSON-object flags alongside the flat ones.
-    "EventSourceCreate": {"webhook", "schedule"},
-    "EventSourceUpdate": {"webhook", "schedule"},
+    # ``organization_id`` also excluded here — org targeting via the unified
+    # --org standard (org_option), not the DTO flag generator.
+    "EventSourceCreate": {"webhook", "schedule"} | _ORG_TARGET_EXCLUDE,
+    "EventSourceUpdate": {"webhook", "schedule"} | _ORG_TARGET_EXCLUDE,
 }
 
 #: Per-DTO field renames applied to the assembled body.
@@ -101,28 +119,30 @@ DTO_FIELD_ALIASES: dict[str, dict[str, str]] = {
 #: Fields listed here become flags named after the kind (without ``_id``)
 #: and are resolved to a UUID by :class:`RefResolver` before assembly.
 DTO_REF_LOOKUPS: dict[str, dict[str, str]] = {
+    # organization_id is intentionally NOT a ref-lookup on the entity DTOs
+    # below — org targeting is handled by the unified --org standard
+    # (org_option / resolve_org_target), so it is excluded from the DTO flag
+    # generator. See _ORG_TARGET_EXCLUDE.
     "FormCreate": {
         "workflow_id": "workflow",
         "launch_workflow_id": "workflow",
-        "organization_id": "org",
     },
     "FormUpdate": {
         "workflow_id": "workflow",
         "launch_workflow_id": "workflow",
-        "organization_id": "org",
     },
-    "AgentCreate": {"organization_id": "org"},
-    "AgentUpdate": {"organization_id": "org"},
+    "AgentCreate": {},
+    "AgentUpdate": {},
     "ApplicationCreate": {"organization_id": "org"},
     "ApplicationUpdate": {},  # ``scope`` is free-form, not a ref
-    "ConfigCreate": {"organization_id": "org"},
+    "ConfigCreate": {},
     "CustomClaimCreate": {},
     "CustomClaimUpdate": {},
-    "TableCreate": {"organization_id": "org"},
+    "TableCreate": {},
     "IntegrationUpdate": {"list_entities_data_provider_id": "workflow"},
     "IntegrationMappingCreate": {"organization_id": "org"},
-    "EventSourceCreate": {"organization_id": "org"},
-    "EventSourceUpdate": {"organization_id": "org"},
+    "EventSourceCreate": {},
+    "EventSourceUpdate": {},
     "EventSubscriptionCreate": {"workflow_id": "workflow", "agent_id": "agent"},
 }
 
@@ -159,8 +179,9 @@ def _enum_choices(tp: Any) -> list[str]:
 
 
 def _is_list_str(tp: Any) -> bool:
+    # ``list[T]`` and ``typing.List[T]`` share the same origin (``list``).
     inner = _unwrap_optional(tp)
-    return get_origin(inner) in (list, list)  # ``list[T]`` or ``List[T]``
+    return get_origin(inner) is list
 
 
 def _is_dict(tp: Any) -> bool:
@@ -192,17 +213,14 @@ def _kebab(name: str) -> str:
     return name.replace("_", "-")
 
 
-def _ref_flag_name(field_name: str, ref_kind: str) -> str:
+def _ref_flag_name(field_name: str) -> str:
     """Derive a flag name for a ref-lookup field.
 
-    ``workflow_id → --workflow`` (strip ``_id``); when the field stem already
-    matches the ref kind nothing changes.
+    ``workflow_id → --workflow`` (strip ``_id``). The full field stem is kept so
+    paired refs like ``launch_workflow_id`` stay distinct (``--launch-workflow``
+    rather than a colliding ``--workflow``).
     """
     stem = field_name[:-3] if field_name.endswith("_id") else field_name
-    if stem == ref_kind:
-        return _kebab(stem)
-    # Disambiguate paired refs (e.g. ``launch_workflow_id``) by keeping the
-    # field stem rather than the bare kind.
     return _kebab(stem)
 
 
@@ -243,21 +261,6 @@ def load_dict_value(raw: str | None) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-def _generated_flag_fields(
-    model_cls: type,
-    *,
-    exclude: set[str],
-) -> list[str]:
-    """Return the DTO field names that ``build_cli_flags`` would expose.
-
-    Used by the field-parity tests; mirrors the iteration in
-    :func:`build_cli_flags` without constructing Click decorators.
-    """
-    return [
-        name for name in model_cls.model_fields if name not in exclude
-    ]
-
-
 def build_cli_flags(
     model_cls: type,
     *,
@@ -283,16 +286,33 @@ def build_cli_flags(
         if name in exclude:
             continue
         annotation = field.annotation
+        # A DTO field with no default is REQUIRED — surface that on the CLI flag
+        # so the command fails fast ("Missing option --X") instead of letting the
+        # server 422 on a missing field, and so --help / cli-reference.md show
+        # [required]. Create DTOs carry real required fields; Update DTOs make
+        # everything optional, so is_required() is correct for both shapes.
+        required = bool(field.is_required())
+        # Click 8.4.1 changed ``value_is_missing``: a value counts as missing
+        # only when it ``is UNSET`` (Click's sentinel), NOT when it is ``None``.
+        # So a ``required=True`` option that also carries ``default=None`` is
+        # NEVER seen as missing — required-enforcement silently no-ops and the
+        # command runs through to a server 422. For required scalar flags we must
+        # therefore OMIT ``default`` entirely (Click then defaults to UNSET and
+        # required is enforced). Optional flags keep ``default=None`` for their
+        # omit-to-leave-unchanged semantics. ``multiple`` flags are exempt — they
+        # default to ``()`` and Click handles their missing-check separately.
+        scalar_default = {} if required else {"default": None}
 
         if name in verb_ref_lookups:
             ref_kind = verb_ref_lookups[name]
-            flag = f"--{_ref_flag_name(name, ref_kind)}"
+            flag = f"--{_ref_flag_name(name)}"
             decorators.append(
                 click.option(
                     flag,
                     name,
                     type=str,
-                    default=None,
+                    **scalar_default,
+                    required=required,
                     help=f"{ref_kind} ref (UUID or name) for {name}.",
                 )
             )
@@ -300,6 +320,8 @@ def build_cli_flags(
 
         if _is_bool(annotation):
             kebab = _kebab(name)
+            # Bools stay tri-state (omit = unchanged); a required bool flag is a
+            # contradiction, so never mark these required.
             decorators.append(
                 click.option(
                     f"--{kebab}/--no-{kebab}",
@@ -322,6 +344,7 @@ def build_cli_flags(
                     name,
                     type=str if inner_type is not int else int,
                     multiple=multiple,
+                    required=required,
                     help=(
                         f"{name} (repeat for multiple"
                         f"{'; comma-split also accepted' if comma_split else ''})."
@@ -336,7 +359,8 @@ def build_cli_flags(
                     f"--{_kebab(name)}",
                     name,
                     type=str,
-                    default=None,
+                    **scalar_default,
+                    required=required,
                     help=(
                         f"{name} as JSON literal or @path to a YAML/JSON file."
                     ),
@@ -350,7 +374,8 @@ def build_cli_flags(
                     f"--{_kebab(name)}",
                     name,
                     type=click.Choice(_enum_choices(annotation)),
-                    default=None,
+                    **scalar_default,
+                    required=required,
                     help=name,
                 )
             )
@@ -362,7 +387,8 @@ def build_cli_flags(
                     f"--{_kebab(name)}",
                     name,
                     type=int,
-                    default=None,
+                    **scalar_default,
+                    required=required,
                     help=name,
                 )
             )
@@ -374,7 +400,8 @@ def build_cli_flags(
                     f"--{_kebab(name)}",
                     name,
                     type=float,
-                    default=None,
+                    **scalar_default,
+                    required=required,
                     help=name,
                 )
             )
@@ -386,7 +413,8 @@ def build_cli_flags(
                     f"--{_kebab(name)}",
                     name,
                     type=str,
-                    default=None,
+                    **scalar_default,
+                    required=required,
                     help=f"{name} (UUID).",
                 )
             )
@@ -398,7 +426,8 @@ def build_cli_flags(
                 f"--{_kebab(name)}",
                 name,
                 type=str,
-                default=None,
+                **scalar_default,
+                required=required,
                 help=name,
             )
         )

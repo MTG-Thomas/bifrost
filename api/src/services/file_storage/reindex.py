@@ -210,11 +210,16 @@ class WorkspaceReindexService:
 
             counts["files_indexed"] += 1
 
-        # 4. Clean up endpoints for orphaned endpoint-enabled workflows
+        # 4. Clean up endpoints for orphaned endpoint-enabled workflows.
+        # Scope to _repo/ rows (solution_id IS NULL): this reindex covers the
+        # WORKSPACE filesystem only, so a solution-managed workflow (whose path is
+        # legitimately absent from the workspace) must never be touched here —
+        # deploy is its sole writer (Codex #14).
         result = await self.db.execute(
             select(Workflow).where(
                 Workflow.is_active == True,  # noqa: E712
                 Workflow.endpoint_enabled == True,  # noqa: E712
+                Workflow.solution_id.is_(None),
                 ~Workflow.path.in_(existing_paths) if existing_paths else True,
             )
         )
