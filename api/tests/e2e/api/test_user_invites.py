@@ -275,6 +275,59 @@ class TestRegisterFromInvite:
             f"/api/users/{user_id}", headers=platform_admin.headers
         )
 
+    def test_register_without_password_creates_passwordless_user(
+        self, e2e_client, platform_admin, org1
+    ):
+        """Invite registration may complete without enabling password auth."""
+        email = "inv-passkey@gobifrost.dev"
+        create_resp = e2e_client.post(
+            "/api/users",
+            headers=platform_admin.headers,
+            json={
+                "email": email,
+                "name": "Passkey Invite",
+                "organization_id": org1["id"],
+                "is_superuser": False,
+            },
+        )
+        assert create_resp.status_code == 201
+        user_id = create_resp.json()["id"]
+
+        regen = e2e_client.post(
+            f"/api/users/{user_id}/invite/regenerate",
+            headers=platform_admin.headers,
+        )
+        assert regen.status_code == 200
+        url: str = regen.json()["registration_url"]
+        token = url.split("token=", 1)[1]
+
+        register_resp = e2e_client.post(
+            "/auth/register-from-invite",
+            json={"token": token},
+        )
+        assert register_resp.status_code == 200
+        assert register_resp.json()["email"] == email
+        assert register_resp.json()["is_registered"] is True
+
+        login_resp = e2e_client.post(
+            "/auth/login",
+            data={"username": email, AUTH_SECRET_FIELD: "anything"},
+        )
+        assert login_resp.status_code == 401
+        assert (
+            login_resp.json()["detail"]
+            == "Account does not have password authentication enabled"
+        )
+
+        e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": False},
+        )
+        e2e_client.delete(
+            f"/api/users/{user_id}", headers=platform_admin.headers
+        )
+
     def test_register_unknown_token_400(self, e2e_client):
         """Unknown token returns 400, not 200/500."""
         resp = e2e_client.post(

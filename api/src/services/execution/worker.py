@@ -26,6 +26,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlunparse
 
 # Install virtual import hook IMMEDIATELY at module load time.
 # This must happen before any workspace imports (e.g., from shared import ...)
@@ -35,6 +36,10 @@ from src.services.execution.virtual_import import install_virtual_import_hook
 install_virtual_import_hook()
 
 logger = logging.getLogger(__name__)
+
+
+def _default_internal_api_url() -> str:
+    return urlunparse(("http", "api:8000", "", "", "", ""))
 
 
 @dataclass
@@ -124,19 +129,45 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     from src.sdk.context import Caller, Organization
     from src.services.execution.engine import ExecutionRequest, execute
     from src.models.enums import ExecutionStatus
-    from src.core.security import authenticate_engine
-    from bifrost.credentials import is_token_expired
+    from bifrost.credentials import is_token_expired, save_credentials
 
-    # Only refresh engine credentials when token is expired or close to expiry.
-    # This avoids a file-write race when multiple worker processes all call
-    # authenticate_engine() simultaneously with identical content.
-    if is_token_expired(buffer_seconds=3600):
+    # Engine credentials: prefer the pre-minted token handed down from the
+    # consumer via context_data["engine_token"].  This keeps SECRET_KEY out of
+    # the child process entirely.
+    # Fall back to authenticate_engine() only for callers (e.g. direct engine
+    # tests) that bypass the consumer and do not supply a pre-minted token.
+    engine_token = context_data.get("engine_token")
+    if engine_token:
+        import os
+        api_url = os.getenv("BIFROST_API_URL", _default_internal_api_url())
+        expires_at = context_data.get("engine_token_expires_at", "")
+        save_credentials(
+            api_url=api_url,
+            access_token=engine_token,
+            refresh_token=engine_token,  # Not used but required by schema
+            expires_at=expires_at,
+        )
+    elif is_token_expired(buffer_seconds=3600):
+        from src.core.security import authenticate_engine
         authenticate_engine()
 
     start_time = datetime.now(timezone.utc)
 
     # Capture starting resource usage
     start_rss, start_utime, start_stime = _get_resource_usage()
+
+    # Activate the per-execution Solution import root BEFORE any workspace code
+    # loads. With no solution_id this is a no-op (plain _repo/ behavior). The
+    # finally below always clears it so a forked worker reused for the next
+    # execution never inherits a stale root. See module_cache_sync.
+    from src.core.module_cache_sync import clear_solution_context, set_solution_context
+
+    _exec_solution_id = context_data.get("solution_id")
+    if _exec_solution_id:
+        set_solution_context(
+            _exec_solution_id,
+            global_repo_access=bool(context_data.get("solution_global_repo_access", False)),
+        )
 
     try:
         # Reconstruct Organization
@@ -268,6 +299,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             is_platform_admin=context_data.get("is_platform_admin", False),
             broadcaster=None,  # Logs go to Redis Stream directly
             event=event_ctx,
+            solution_id=context_data.get("solution_id"),  # install scope for SDK
         )
 
         # Execute
@@ -322,6 +354,11 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 "cpu_total_seconds": metrics.cpu_total_seconds,
             },
         }
+
+    finally:
+        # Always clear the solution import root — a forked worker is reused for
+        # later executions and must not inherit this one's root.
+        clear_solution_context()
 
 
 async def worker_main(execution_id: str):

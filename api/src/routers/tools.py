@@ -11,7 +11,7 @@ from typing import Literal
 from fastapi import APIRouter, Query
 
 from src.core.auth import CurrentActiveUser
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.core.org_filter import resolve_org_filter
 from src.models.contracts.agents import ToolInfo, ToolsResponse
 from src.repositories.workflows import WorkflowRepository
@@ -100,6 +100,7 @@ async def list_tools(
             org_id=user.organization_id,
             user_id=user.user_id,
             is_superuser=user.is_superuser,
+            is_external=user.is_external,
         )
         workflows = await workflow_repo.list_tools_for_filter(
             filter_type,

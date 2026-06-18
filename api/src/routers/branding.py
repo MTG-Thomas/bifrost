@@ -15,8 +15,8 @@ from fastapi.responses import Response
 
 from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 
-from src.models import BrandingSettings, BrandingUpdateRequest
-from src.core.auth import Context, CurrentActiveUser
+from src.models import BrandingSettings, BrandingTerminology, BrandingUpdateRequest, GlobalBranding
+from src.core.auth import Context, CurrentSuperuser
 from src.core.database import AsyncSession, get_db
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,25 @@ router = APIRouter(prefix="/api/branding", tags=["Branding"])
 # Allowed image types for logo upload
 ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/svg+xml"}
 MAX_LOGO_SIZE = 5 * 1024 * 1024  # 5MB
+
+
+def _branding_response(branding: GlobalBranding | None) -> BrandingSettings:
+    if not branding:
+        return BrandingSettings(
+            application_name=None,
+            square_logo_url=None,
+            rectangle_logo_url=None,
+            primary_color=None,
+            terminology=BrandingTerminology(),
+        )
+
+    return BrandingSettings(
+        application_name=branding.application_name,
+        primary_color=branding.primary_color,
+        terminology=BrandingTerminology.model_validate(branding.terminology or {}),
+        square_logo_url="/api/branding/logo/square" if branding.square_logo_data else None,
+        rectangle_logo_url="/api/branding/logo/rectangle" if branding.rectangle_logo_data else None,
+    )
 
 
 # =============================================================================
@@ -51,20 +70,7 @@ async def get_branding(
     from src.repositories.branding import BrandingRepository
     branding_repo = BrandingRepository(db)
     branding = await branding_repo.get_branding()
-
-    if not branding:
-        # Return defaults if no branding configured
-        return BrandingSettings(
-            square_logo_url=None,
-            rectangle_logo_url=None,
-            primary_color=None,
-        )
-
-    return BrandingSettings(
-        primary_color=branding.primary_color,
-        square_logo_url="/api/branding/logo/square" if branding.square_logo_data else None,
-        rectangle_logo_url="/api/branding/logo/rectangle" if branding.rectangle_logo_data else None,
-    )
+    return _branding_response(branding)
 
 
 # =============================================================================
@@ -81,7 +87,7 @@ async def get_branding(
 async def update_branding(
     request: BrandingUpdateRequest,
     ctx: Context,
-    user: CurrentActiveUser,
+    user: CurrentSuperuser,
 ) -> BrandingSettings:
     """
     Update primary color only.
@@ -89,26 +95,27 @@ async def update_branding(
     Only superusers can update global branding.
     Use POST /logo/{type} to upload logos.
     """
-    if not user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superusers can update branding",
-        )
 
     from src.repositories.branding import BrandingRepository
     branding_repo = BrandingRepository(ctx.db)
 
-    # Update primary color only
-    branding = await branding_repo.set_branding(primary_color=request.primary_color)
+    terminology = request.terminology.model_dump(exclude_none=True) if request.terminology else None
+    # application_name defaults to None in the request DTO ("leave unchanged");
+    # only forward it to the repo when a value was provided. Clearing is done via
+    # DELETE /application-name.
+    extra: dict = {}
+    if request.application_name is not None:
+        extra["application_name"] = request.application_name
+    branding = await branding_repo.set_branding(
+        primary_color=request.primary_color,
+        terminology=terminology,
+        **extra,
+    )
 
     await ctx.db.commit()
-    logger.info(f"Primary color updated by {user.email}")
+    logger.info(f"Branding updated by {user.email}")
 
-    return BrandingSettings(
-        primary_color=branding.primary_color,
-        square_logo_url="/api/branding/logo/square" if branding.square_logo_data else None,
-        rectangle_logo_url="/api/branding/logo/rectangle" if branding.rectangle_logo_data else None,
-    )
+    return _branding_response(branding)
 
 
 @router.post(
@@ -121,7 +128,7 @@ async def upload_logo(
     logo_type: str,
     file: Annotated[UploadFile, File(description="Logo image file")],
     ctx: Context,
-    user: CurrentActiveUser,
+    user: CurrentSuperuser,
 ) -> BrandingSettings:
     """
     Upload a logo file.
@@ -130,11 +137,6 @@ async def upload_logo(
         logo_type: 'square' or 'rectangle'
         file: Image file (PNG, JPEG, SVG)
     """
-    if not user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superusers can upload logos",
-        )
 
     if logo_type not in ("square", "rectangle"):
         raise HTTPException(
@@ -184,11 +186,7 @@ async def upload_logo(
     await ctx.db.commit()
     logger.info(f"Logo '{logo_type}' uploaded by {user.email}")
 
-    return BrandingSettings(
-        primary_color=branding.primary_color,
-        square_logo_url="/api/branding/logo/square" if branding.square_logo_data else None,
-        rectangle_logo_url="/api/branding/logo/rectangle" if branding.rectangle_logo_data else None,
-    )
+    return _branding_response(branding)
 
 
 @router.get(
@@ -249,7 +247,7 @@ async def get_logo(logo_type: str, db: AsyncSession = Depends(get_db)):
 async def reset_logo(
     logo_type: str,
     ctx: Context,
-    user: CurrentActiveUser,
+    user: CurrentSuperuser,
 ) -> BrandingSettings:
     """
     Reset a specific logo to default.
@@ -257,11 +255,6 @@ async def reset_logo(
     Args:
         logo_type: 'square' or 'rectangle'
     """
-    if not user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superusers can reset logos",
-        )
 
     if logo_type not in ("square", "rectangle"):
         raise HTTPException(
@@ -287,11 +280,7 @@ async def reset_logo(
     await ctx.db.commit()
     logger.info(f"Logo '{logo_type}' reset to default by {user.email}")
 
-    return BrandingSettings(
-        primary_color=branding.primary_color,
-        square_logo_url="/api/branding/logo/square" if branding.square_logo_data else None,
-        rectangle_logo_url="/api/branding/logo/rectangle" if branding.rectangle_logo_data else None,
-    )
+    return _branding_response(branding)
 
 
 @router.delete(
@@ -302,14 +291,9 @@ async def reset_logo(
 )
 async def reset_color(
     ctx: Context,
-    user: CurrentActiveUser,
+    user: CurrentSuperuser,
 ) -> BrandingSettings:
     """Reset primary color to default."""
-    if not user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superusers can reset branding",
-        )
 
     from src.repositories.branding import BrandingRepository
     branding_repo = BrandingRepository(ctx.db)
@@ -320,11 +304,30 @@ async def reset_color(
     await ctx.db.commit()
     logger.info(f"Primary color reset to default by {user.email}")
 
-    return BrandingSettings(
-        primary_color=branding.primary_color,
-        square_logo_url="/api/branding/logo/square" if branding.square_logo_data else None,
-        rectangle_logo_url="/api/branding/logo/rectangle" if branding.rectangle_logo_data else None,
-    )
+    return _branding_response(branding)
+
+
+@router.delete(
+    "/application-name",
+    response_model=BrandingSettings,
+    summary="Reset application name to default",
+    description="Remove custom application name and revert to default (superuser only)",
+)
+async def reset_application_name(
+    ctx: Context,
+    user: CurrentSuperuser,
+) -> BrandingSettings:
+    """Reset application name to default."""
+    from src.repositories.branding import BrandingRepository
+    branding_repo = BrandingRepository(ctx.db)
+
+    # Clear application name (pass explicit None to clear, not the unchanged sentinel)
+    branding = await branding_repo.set_branding(application_name=None)
+
+    await ctx.db.commit()
+    logger.info(f"Application name reset to default by {user.email}")
+
+    return _branding_response(branding)
 
 
 @router.delete(
@@ -335,14 +338,9 @@ async def reset_color(
 )
 async def reset_all_branding(
     ctx: Context,
-    user: CurrentActiveUser,
+    user: CurrentSuperuser,
 ) -> BrandingSettings:
     """Reset all branding to defaults."""
-    if not user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superusers can reset branding",
-        )
 
     from src.repositories.branding import BrandingRepository
     branding_repo = BrandingRepository(ctx.db)
@@ -354,7 +352,9 @@ async def reset_all_branding(
     logger.info(f"All branding reset to defaults by {user.email}")
 
     return BrandingSettings(
+        application_name=None,
         primary_color=None,
         square_logo_url=None,
         rectangle_logo_url=None,
+        terminology=BrandingTerminology(),
     )

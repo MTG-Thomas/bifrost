@@ -45,6 +45,7 @@ from src.routers.events import router as events_router
 from src.routers.hooks import router as hooks_router
 from src.routers.tables import router as tables_router
 from src.routers.claims import router as claims_router
+from src.routers.solutions import router as solutions_router
 from src.routers.knowledge_sources import router as knowledge_sources_router
 from src.routers.app_embed_secrets import router as app_embed_secrets_router
 from src.routers.applications import router as applications_router
@@ -68,6 +69,7 @@ from src.routers.mcp_connections import (
     me_router as mcp_me_connections_router,
 )
 from src.routers.mcp_oauth_callback import router as mcp_oauth_callback_router
+from src.routers.sdk_modules import router as sdk_modules_router
 
 __all__ = [
     "auth_router",
@@ -117,6 +119,7 @@ __all__ = [
     "hooks_router",
     "tables_router",
     "claims_router",
+    "solutions_router",
     "knowledge_sources_router",
     "app_embed_secrets_router",
     "applications_router",
@@ -136,4 +139,5 @@ __all__ = [
     "mcp_connections_router",
     "mcp_me_connections_router",
     "mcp_oauth_callback_router",
+    "sdk_modules_router",
 ]

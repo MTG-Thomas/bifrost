@@ -72,6 +72,7 @@ from src.routers import (
     hooks_router,
     tables_router,
     claims_router,
+    solutions_router,
     knowledge_sources_router,
     app_embed_secrets_router,
     applications_router,
@@ -90,6 +91,7 @@ from src.routers import (
     mcp_connections_router,
     mcp_me_connections_router,
     mcp_oauth_callback_router,
+    sdk_modules_router,
 )
 
 # Configure logging
@@ -569,6 +571,7 @@ def create_app() -> FastAPI:
     app.include_router(hooks_router)
     app.include_router(tables_router)
     app.include_router(claims_router)
+    app.include_router(solutions_router)
     app.include_router(knowledge_sources_router)
     app.include_router(app_embed_secrets_router)
     app.include_router(applications_router)
@@ -586,6 +589,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_connections_router)
     app.include_router(mcp_me_connections_router)
     app.include_router(mcp_oauth_callback_router)
+    app.include_router(sdk_modules_router)
 
     # Mount MCP OAuth routes at root level (required by RFC 8414/9728)
     # These must be registered BEFORE the FastMCP ASGI mount

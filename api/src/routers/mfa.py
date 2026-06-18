@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from src.core.cache import get_shared_redis
 from src.core.cache.keys import refresh_token_jti_key, TTL_REFRESH_TOKEN
 from src.core.auth import CurrentActiveUser, get_current_user_from_db
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.core.security import (
     create_access_token,
@@ -25,6 +25,7 @@ from src.core.security import (
 )
 from src.services.mfa_service import MFAService
 from src.services.user_provisioning import get_user_roles
+from shared.external_access import resolve_external_claim
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +229,7 @@ async def verify_mfa(
         "email": user.email,
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
+        "is_external": await resolve_external_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }

@@ -48,6 +48,15 @@ def _diff_and_collect(
         - changes: list of dicts with keys action, entity_type, name, organization
         - changed_ids: set of entity IDs that differ (includes integration-cascade)
     """
+    def _diff_dump(entity: object) -> dict:
+        data = entity.model_dump(mode="json", by_alias=True)
+        if "mappings" in data and isinstance(data["mappings"], list):
+            data["mappings"] = [
+                {k: v for k, v in mapping.items() if k != "oauth_token_id"}
+                for mapping in data["mappings"]
+            ]
+        return data
+
     # Build org ID → name lookup from both manifests
     org_lookup: dict[str, str] = {}
     for org in incoming.organizations:
@@ -67,15 +76,6 @@ def _diff_and_collect(
         if not oid:
             return "Global"
         return org_lookup.get(oid, oid) or "Global"
-
-    def _diff_dump(entity: object) -> dict:
-        data = entity.model_dump(mode="json", by_alias=True)
-        if "mappings" in data and isinstance(data["mappings"], list):
-            data["mappings"] = [
-                {k: v for k, v in mapping.items() if k != "oauth_token_id"}
-                for mapping in data["mappings"]
-            ]
-        return data
 
     changes: list[dict[str, str]] = []
     changed_ids: set[str] = set()
@@ -626,10 +626,28 @@ async def _resolve_agent_content(
 # =============================================================================
 
 
-async def _resolve_role_names(db: AsyncSession, names: list[str]) -> list[str]:
+async def _resolve_role_names(
+    db: AsyncSession,
+    names: list[str],
+    *,
+    create_missing: bool = False,
+    created_out: set[str] | None = None,
+) -> list[str]:
     """Resolve role display names to UUID strings against the target DB.
 
-    Fails loud on any unknown name. Returned list preserves input order.
+    Returned list preserves input order.
+
+    ``create_missing`` controls the unknown-name behavior:
+
+    * ``False`` (default, e.g. git-sync): fail loud — the role must already
+      exist in the target env.
+    * ``True`` (Solution install/deploy): auto-create any missing role as a
+      GLOBAL, empty role (no permissions, no members) and use it. An empty role
+      grants nobody anything until the operator assigns members, so this can't
+      expose anything; it just removes the "create every referenced role by
+      hand first" papercut. Created names are added to ``created_out`` (when
+      provided) so the caller can surface "created N new roles" — which also
+      makes a typo'd manifest role name visible rather than silently absorbed.
     """
     from src.models.orm.users import Role
 
@@ -641,7 +659,16 @@ async def _resolve_role_names(db: AsyncSession, names: list[str]) -> list[str]:
     for name in names:
         role_id = by_name.get(name)
         if role_id is None:
-            raise ValueError(f"unknown role: {name} — create it first in the target env.")
+            if not create_missing:
+                raise ValueError(f"unknown role: {name} — create it first in the target env.")
+            # Auto-create a global, empty role (grants nothing until assigned).
+            role = Role(name=name, created_by="solution-install")
+            db.add(role)
+            await db.flush()
+            role_id = str(role.id)
+            by_name[name] = role_id  # dedupe within this call (same name twice)
+            if created_out is not None:
+                created_out.add(name)
         resolved.append(role_id)
     return resolved
 
@@ -1111,6 +1138,33 @@ class ManifestResolver:
 
         return cache
 
+    async def _apply_ops(
+        self,
+        ops: "list[SyncOp]",
+        all_ops: "list[SyncOp]",
+        *,
+        dry_run: bool,
+        existing_ids: "set[str] | frozenset[str]",
+    ) -> None:
+        """Execute (or, in dry-run, stamp) a batch of resolved ops.
+
+        In dry-run mode each ``Upsert`` is marked ``"updated"`` when its id is
+        already present in ``existing_ids`` (the prefetched id-set for that
+        entity type) and ``"inserted"`` otherwise — entities with no cache pass
+        an empty ``existing_ids`` so everything reads as ``"inserted"``. Outside
+        dry-run the ops execute against the session. All ops are appended to
+        ``all_ops`` for the caller's change-tracking either way.
+        """
+        from src.services.sync_ops import Upsert
+
+        for op in ops:
+            if dry_run:
+                if isinstance(op, Upsert):
+                    op.action_taken = "updated" if op.id in existing_ids else "inserted"
+            else:
+                await op.execute(self.db)
+        all_ops.extend(ops)
+
     async def plan_import(self, manifest: "Manifest", work_dir: Path | None = None, progress_fn=None, repo: "RepoStorage | None" = None, dry_run: bool = False, changed_ids: set[str] | None = None) -> "list[SyncOp]":
         """Build and execute SyncOps for importing a manifest (entities only).
 
@@ -1139,7 +1193,7 @@ class ManifestResolver:
         Returns the collected ops for callers that want to inspect them
         (e.g. for entity change tracking or dry-run analysis).
         """
-        from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
+        from src.services.sync_ops import SyncOp  # noqa: F401
 
         if not work_dir and not repo:
             raise ValueError("plan_import requires either work_dir or repo")
@@ -1203,13 +1257,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing organization: {morg.name}")
             org_ops.extend(self._resolve_organization(morg, cache))
-        for op in org_ops:
-            if dry_run:
-                if isinstance(op, Upsert):
-                    op.action_taken = "updated" if op.id in cache.get("org_ids", set()) else "inserted"
-            else:
-                await op.execute(self.db)
-        all_ops.extend(org_ops)
+        await self._apply_ops(org_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("org_ids", set()))
 
         # 0b. Resolve roles (no deps) — execute immediately
         role_ops: list[SyncOp] = []
@@ -1218,13 +1266,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing role: {mrole.name}")
             role_ops.extend(self._resolve_role(mrole, cache))
-        for op in role_ops:
-            if dry_run:
-                if isinstance(op, Upsert):
-                    op.action_taken = "updated" if op.id in cache.get("role_ids", set()) else "inserted"
-            else:
-                await op.execute(self.db)
-        all_ops.extend(role_ops)
+        await self._apply_ops(role_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("role_ids", set()))
 
         # 1. Resolve workflows — execute immediately
         # Track which workflow IDs were actually imported (file exists in repo/disk)
@@ -1236,13 +1278,7 @@ class ManifestResolver:
             if await _file_exists(mwf.path):
                 await _prog(f"Importing workflow: {mwf.name or key}")
                 wf_ops = self._resolve_workflow(mwf.name or key, mwf, cache)
-                for op in wf_ops:
-                    if dry_run:
-                        if isinstance(op, Upsert):
-                            op.action_taken = "updated" if op.id in cache.get("wf_ids", set()) else "inserted"
-                    else:
-                        await op.execute(self.db)
-                all_ops.extend(wf_ops)
+                await self._apply_ops(wf_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("wf_ids", set()))
                 imported_wf_ids.add(mwf.id)
 
         # 2. Resolve integrations (with config_schema, oauth_provider, mappings)
@@ -1251,13 +1287,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing integration: {minteg.name or key}")
             integ_ops = await self._resolve_integration(minteg.name or key, minteg, cache)
-            for op in integ_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in cache.get("integ_ids", set()) else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(integ_ops)
+            await self._apply_ops(integ_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("integ_ids", set()))
 
         # 3. Resolve configs
         _config_id_set = {v[0] for v in cache.get("config_by_natural", {}).values()}
@@ -1265,13 +1295,7 @@ class ManifestResolver:
             if changed_ids is not None and mcfg.id not in changed_ids:
                 continue
             cfg_ops = self._resolve_config(mcfg, cache)
-            for op in cfg_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in _config_id_set else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(cfg_ops)
+            await self._apply_ops(cfg_ops, all_ops, dry_run=dry_run, existing_ids=_config_id_set)
 
         # 4. Resolve apps (before tables — tables ref application_id)
         _app_id_set = set(cache.get("app_by_slug", {}).values())
@@ -1280,13 +1304,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing app: {mapp.name}")
             app_ops = self._resolve_app(mapp, cache)
-            for op in app_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in _app_id_set else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(app_ops)
+            await self._apply_ops(app_ops, all_ops, dry_run=dry_run, existing_ids=_app_id_set)
 
             # Compile source files from _repo/ into _apps/{id}/preview/
             if not dry_run:
@@ -1307,13 +1325,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing table: {mtable.name or key}")
             table_ops = await self._resolve_table(mtable.name or key, mtable, cache)
-            for op in table_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in cache.get("table_ids", set()) else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(table_ops)
+            await self._apply_ops(table_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("table_ids", set()))
 
         # 6. Resolve custom claims (refs org + source table by name)
         for key, mclaim in manifest.claims.items():
@@ -1321,13 +1333,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing custom claim: {mclaim.name or key}")
             claim_ops = await self._resolve_custom_claim(mclaim.name or key, mclaim, cache)
-            for op in claim_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in cache.get("claim_ids", set()) else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(claim_ops)
+            await self._apply_ops(claim_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("claim_ids", set()))
 
         # 7. Resolve event sources + subscriptions
         for key, mes in manifest.events.items():
@@ -1335,13 +1341,8 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing event source: {mes.name or key}")
             es_ops = await self._resolve_event_source(mes.name or key, mes, imported_wf_ids)
-            for op in es_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "inserted"  # no ES cache; assume new
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(es_ops)
+            # No event-source cache; everything reads as "inserted".
+            await self._apply_ops(es_ops, all_ops, dry_run=dry_run, existing_ids=frozenset())
 
         # 8. Resolve forms (metadata ops only — indexer called in _import_all_entities)
         for _form_name, mform in manifest.forms.items():
@@ -1351,13 +1352,8 @@ class ManifestResolver:
             if content is not None:
                 await _prog(f"Importing form: {mform.name}")
                 form_ops = self._resolve_form(mform, content)
-                for op in form_ops:
-                    if dry_run:
-                        if isinstance(op, Upsert):
-                            op.action_taken = "inserted"  # no form cache; assume new
-                    else:
-                        await op.execute(self.db)
-                all_ops.extend(form_ops)
+                # No form cache; everything reads as "inserted".
+                await self._apply_ops(form_ops, all_ops, dry_run=dry_run, existing_ids=frozenset())
 
         # 9. Resolve agents (metadata ops only — indexer called in _import_all_entities)
         for _agent_name, magent in manifest.agents.items():
@@ -1367,13 +1363,8 @@ class ManifestResolver:
             if content is not None:
                 await _prog(f"Importing agent: {magent.name}")
                 agent_ops = self._resolve_agent(magent, content)
-                for op in agent_ops:
-                    if dry_run:
-                        if isinstance(op, Upsert):
-                            op.action_taken = "inserted"  # no agent cache; assume new
-                    else:
-                        await op.execute(self.db)
-                all_ops.extend(agent_ops)
+                # No agent cache; everything reads as "inserted".
+                await self._apply_ops(agent_ops, all_ops, dry_run=dry_run, existing_ids=frozenset())
 
         # 10. Resolve MCP servers (with nested connections + tools)
         imported_server_ids: set[str] = set()
@@ -1725,7 +1716,6 @@ class ManifestResolver:
 
         # Check prefetch cache for existing workflow
         existing_by_natural = cache["wf_by_natural"].get((mwf.path, mwf.function_name))
-        existing_by_id = wf_id if wf_id in cache["wf_ids"] else None
 
         wf_values = {
             "name": manifest_name,
@@ -1757,16 +1747,9 @@ class ManifestResolver:
                 values={"id": wf_id, **wf_values},
                 match_on="id",
             ))
-        elif existing_by_id is not None:
-            # Same ID but path/function changed (rename) — update
-            ops.append(Upsert(
-                model=Workflow,
-                id=wf_id,
-                values=wf_values,
-                match_on="id",
-            ))
         else:
-            # New workflow — insert
+            # Same ID with a path/function rename, or a brand-new workflow —
+            # both upsert by id with the same values.
             ops.append(Upsert(
                 model=Workflow,
                 id=wf_id,
@@ -2015,6 +1998,19 @@ class ManifestResolver:
                 return None
             return [UUID(entity_id) for entity_id in removed_entity_ids.get(entity_type, set())]
 
+        # Solution-managed rows (solution_id IS NOT NULL) have exactly one
+        # writer: the deploy / git-connected-pull path. They are intentionally
+        # excluded from the committed _repo/ manifest (manifest_generator skips
+        # them), so they never appear in present_*_uuids — without this guard the
+        # stale-entity sweep would match them all and hard-delete them via Core,
+        # bypassing the before_flush backstop and wiping every installed
+        # solution's entities on the next _repo/ git-sync. Exclude them centrally
+        # so no per-entity caller can forget. (See platform-impact audit H1.)
+        def _spare_solution_managed(model: type, q):
+            if "solution_id" in model.__table__.columns:  # type: ignore[attr-defined]
+                return q.where(model.solution_id.is_(None))  # type: ignore[attr-defined]
+            return q
+
         # Helper: query stale IDs (+ names when available) and bulk-delete
         async def _bulk_delete(
             model: type,
@@ -2031,6 +2027,7 @@ class ManifestResolver:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            q = _spare_solution_managed(model, q)
             if explicit_ids is not None:
                 q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
             elif present:
@@ -2071,6 +2068,7 @@ class ManifestResolver:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            q = _spare_solution_managed(model, q)
             if explicit_ids is not None:
                 q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
             elif present:
@@ -2157,21 +2155,17 @@ class ManifestResolver:
                 )
 
         # Tables not in manifest (data preserved — report as "keep")
-        explicit_table_ids = _explicit_ids("tables")
-        if explicit_table_ids != []:
-            table_q = select(Table.id, Table.name)
-            if explicit_table_ids is not None:
-                table_q = table_q.where(Table.id.in_(explicit_table_ids))
-            elif present_table_uuids:
-                table_q = table_q.where(Table.id.notin_(present_table_uuids))
-            table_result = await self.db.execute(table_q)
-            for row in table_result.all():
-                logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
-                entity_changes.append(EntityChange(
-                    action="keep",
-                    entity_type="tables",
-                    name=row[1] or str(row[0]),
-                ))
+        table_q = select(Table.id, Table.name)
+        if present_table_uuids:
+            table_q = table_q.where(Table.id.notin_(present_table_uuids))
+        table_result = await self.db.execute(table_q)
+        for row in table_result.all():
+            logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
+            entity_changes.append(EntityChange(
+                action="keep",
+                entity_type="tables",
+                name=row[1] or str(row[0]),
+            ))
 
         # Delete custom claims not in manifest.
         from src.models.orm.custom_claims import CustomClaim
@@ -2203,13 +2197,7 @@ class ManifestResolver:
         await _bulk_delete(Agent, [], present_agent_uuids, "agents", _explicit_ids("agents"))
 
         # Delete apps not in manifest
-        await _bulk_delete(
-            Application,
-            [],
-            present_app_uuids,
-            "applications",
-            _explicit_ids("applications"),
-        )
+        await _bulk_delete(Application, [], present_app_uuids, "applications", _explicit_ids("applications"))
 
         # External MCP cleanup. Delete leaves first, then connections, then
         # servers — although CASCADE FKs on the schema make later deletes
@@ -2538,11 +2526,17 @@ class ManifestResolver:
         # configs are read through ConfigRepository's cache (merged_for_sdk /
         # get_config exclude integration_id IS NOT NULL), so those are the only
         # ones whose cache can go stale on a value/key change here.
-        self._track_config_cache_touch(integ_id, org_id, mcfg.key)
+        if integ_id is None:
+            self.configs_touched.add(
+                (str(org_id) if org_id is not None else None, mcfg.key)
+            )
 
         # Check prefetch cache for existing config by natural key
         cache_hit = cache["config_by_natural"].get((mcfg.key, integ_id, org_id))
-        schema_id = self._config_schema_id(cache, integ_id, mcfg.key)
+        schema_id = None
+        if integ_id is not None:
+            schema = cache.get("integ_cs", {}).get(integ_id, {}).get(mcfg.key)
+            schema_id = schema.id if schema is not None else None
 
         # Convert string config_type to enum for proper DB storage
         from src.models.enums import ConfigType
@@ -2556,11 +2550,20 @@ class ManifestResolver:
             if is_secret and existing_value is not None and schema_id is None:
                 return []
 
-            update_values = self._config_upsert_values(
-                mcfg, ct, integ_id, org_id, schema_id, include_value=not is_secret
-            )
-            if existing_id != cfg_id:
-                update_values["id"] = cfg_id
+            # Update existing row (including ID if it changed)
+            update_values: dict = {
+                "id": cfg_id,
+                "key": mcfg.key,
+                "config_type": ct,
+                "description": mcfg.description,
+                "integration_id": integ_id,
+                "organization_id": org_id,
+                "updated_by": "git-sync",
+            }
+            if schema_id is not None:
+                update_values["config_schema_id"] = schema_id
+            if not is_secret:
+                update_values["value"] = mcfg.value if mcfg.value is not None else {}
 
             return [Upsert(
                 model=Config,
@@ -2570,44 +2573,23 @@ class ManifestResolver:
             )]
         else:
             # New config — return Upsert op (uses ON CONFLICT)
-            insert_values = self._config_upsert_values(
-                mcfg, ct, integ_id, org_id, schema_id, include_value=True
-            )
+            insert_values: dict = {
+                "key": mcfg.key,
+                "config_type": ct,
+                "description": mcfg.description,
+                "integration_id": integ_id,
+                "organization_id": org_id,
+                "value": mcfg.value if mcfg.value is not None else {},
+                "updated_by": "git-sync",
+            }
+            if schema_id is not None:
+                insert_values["config_schema_id"] = schema_id
             return [Upsert(
                 model=Config,
                 id=cfg_id,
                 values=insert_values,
                 match_on="id",
             )]
-
-    def _track_config_cache_touch(self, integ_id, org_id, key: str) -> None:
-        if integ_id is None:
-            self.configs_touched.add((str(org_id) if org_id is not None else None, key))
-
-    @staticmethod
-    def _config_schema_id(cache: dict, integ_id, key: str):
-        if integ_id is None:
-            return None
-        schema = cache.get("integ_cs", {}).get(integ_id, {}).get(key)
-        return schema.id if schema is not None else None
-
-    @staticmethod
-    def _config_upsert_values(
-        mcfg, config_type, integ_id, org_id, schema_id, *, include_value: bool
-    ) -> dict:
-        values: dict = {
-            "key": mcfg.key,
-            "config_type": config_type,
-            "description": mcfg.description,
-            "integration_id": integ_id,
-            "organization_id": org_id,
-            "updated_by": "git-sync",
-        }
-        if schema_id is not None:
-            values["config_schema_id"] = schema_id
-        if include_value:
-            values["value"] = mcfg.value if mcfg.value is not None else {}
-        return values
 
     def _resolve_app(self, mapp, cache: dict) -> "list[SyncOp]":
         """Resolve an app from manifest into SyncOps (metadata only).
@@ -2648,6 +2630,7 @@ class ManifestResolver:
         }
         if mapp.access_level is not None:
             app_values["access_level"] = mapp.access_level
+        app_values["app_model"] = getattr(mapp, "app_model", "standalone_v2") or "standalone_v2"
 
         ops: list[SyncOp] = []
 

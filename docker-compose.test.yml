@@ -104,6 +104,7 @@ services:
 
   # Init Container (Test) - Runs migrations and warms module cache before API/workers start
   init:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -128,6 +129,7 @@ services:
 
   # FastAPI Application (Test) - Only started for E2E tests
   api:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -157,6 +159,13 @@ services:
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
       - test-mounts:/mounts  # File storage for uploads, branding, etc.
+      # Share ONLY the fixture subdir the test-runner stages file:// git repos
+      # in, so install/preview-repo can clone them server-side. Do NOT bind the
+      # whole LOG_DIR over the api's /tmp/bifrost: the api runs as root and its
+      # entrypoint `chown -R`s /tmp/bifrost to the bifrost uid (1000), which
+      # would clobber the host-owned LOG_DIR (test-runner.log, test-results.xml,
+      # *.log) on CI runners whose uid is not 1000.
+      - ${LOG_DIR:-/tmp/bifrost}/solution-repo-fixtures:/tmp/bifrost/solution-repo-fixtures
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -182,6 +191,7 @@ services:
   # Note: Discovery service has been removed - workflow/form extraction
   # now happens at write time in FileStorageService
   worker:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -228,6 +238,7 @@ services:
   # Scheduler (Test) - Only started for E2E tests
   # Handles background jobs like GitHub sync via Redis pubsub
   scheduler:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -274,6 +285,7 @@ services:
 
   # Test Runner - Executes pytest inside container with all dependencies
   test-runner:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -323,6 +335,7 @@ services:
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
       - ./.github:/app/.github:ro
       - ./.claude:/app/.claude:ro
       - ./.env.debug:/app/.env.debug:ro
@@ -355,6 +368,7 @@ services:
         condition: service_completed_successfully
     # Entrypoint fixes mounted result/coverage directory ownership, then drops to bifrost.
     user: root
+    security_opt: ["no-new-privileges:true"]
     # Default command runs all tests except E2E
     command: ["pytest", "tests/", "--ignore=tests/e2e/", "-v"]
     profiles:
@@ -367,6 +381,7 @@ services:
   # Client frontend (Vite dev server)
   # Serves the React app for Playwright browser tests
   client:
+    image: bifrost-test-client-dev:latest
     build:
       context: ./client
       dockerfile: Dockerfile.dev

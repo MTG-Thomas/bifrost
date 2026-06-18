@@ -70,6 +70,7 @@ class ToolFilterMiddleware(Middleware):
 
         user_roles = token.claims.get("roles", [])
         is_superuser = token.claims.get("is_superuser", False)
+        is_external = token.claims.get("is_external", False)
         user_id = token.claims.get("user_id")
         org_id = token.claims.get("org_id")
 
@@ -85,6 +86,7 @@ class ToolFilterMiddleware(Middleware):
                     is_superuser=is_superuser,
                     user_id=user_id,
                     org_id=org_id,
+                    is_external=is_external,
                 )
 
             if agent_result and agent_result.system_prompt:
@@ -124,6 +126,7 @@ class ToolFilterMiddleware(Middleware):
 
         user_roles = token.claims.get("roles", [])
         is_superuser = token.claims.get("is_superuser", False)
+        is_external = token.claims.get("is_external", False)
         user_email = token.claims.get("email", "unknown")
         user_id = token.claims.get("user_id")
         org_id = token.claims.get("org_id")
@@ -167,6 +170,7 @@ class ToolFilterMiddleware(Middleware):
                         is_superuser=is_superuser,
                         user_id=user_id,
                         org_id=org_id,
+                        is_external=is_external,
                     )
                     return {t.id for t in result.tools}
 
@@ -232,6 +236,7 @@ class ToolFilterMiddleware(Middleware):
 
         user_roles = token.claims.get("roles", [])
         is_superuser = token.claims.get("is_superuser", False)
+        is_external = token.claims.get("is_external", False)
         user_email = token.claims.get("email", "unknown")
         user_id = token.claims.get("user_id")
         org_id = token.claims.get("org_id")
@@ -254,6 +259,7 @@ class ToolFilterMiddleware(Middleware):
                         is_superuser=is_superuser,
                         user_id=user_id,
                         org_id=org_id,
+                        is_external=is_external,
                     )
                     if agent_result is None:
                         raise ToolError(
@@ -267,6 +273,7 @@ class ToolFilterMiddleware(Middleware):
                         is_superuser=is_superuser,
                         user_id=user_id,
                         org_id=org_id,
+                        is_external=is_external,
                     )
                     accessible_ids = {t.id for t in result.tools}
 

@@ -713,6 +713,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/register-from-invite/passkey/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register From Invite Passkey Options
+         * @description Start passkey registration for a user holding a valid invite token.
+         */
+        post: operations["register_from_invite_passkey_options_auth_register_from_invite_passkey_options_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/register-from-invite/passkey/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register From Invite Passkey Verify
+         * @description Complete invite registration by verifying a passkey and logging the user in.
+         */
+        post: operations["register_from_invite_passkey_verify_auth_register_from_invite_passkey_verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/mfa/status": {
         parameters: {
             query?: never;
@@ -1335,6 +1375,26 @@ export interface paths {
          * @description Generate a fresh invite token and email it to the user.
          */
         post: operations["resend_invite_api_users__user_id__invite_resend_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/users/{user_id}/invite/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send invite
+         * @description Emit invite automation for an existing registration link without rotating the token.
+         */
+        post: operations["send_invite_api_users__user_id__invite_send_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2106,6 +2166,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/{workflow_id}/remap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remap workflow references
+         * @description Move references from one workflow ID to another active workflow ID
+         */
+        post: operations["remap_workflow_references_api_workflows__workflow_id__remap_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{workflow_id}/recreate": {
         parameters: {
             query?: never;
@@ -2426,6 +2506,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/branding/application-name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Reset application name to default
+         * @description Remove custom application name and revert to default (superuser only)
+         */
+        delete: operations["reset_application_name_api_branding_application_name_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/read": {
         parameters: {
             query?: never;
@@ -2437,7 +2537,7 @@ export interface paths {
         put?: never;
         /**
          * Read File
-         * @description Read a file from workspace, temp, or uploads.
+         * @description Read a file from a managed or custom location.
          */
         post: operations["read_file_api_files_read_post"];
         delete?: never;
@@ -2457,7 +2557,7 @@ export interface paths {
         put?: never;
         /**
          * Write File
-         * @description Write a file to workspace, temp, or uploads.
+         * @description Write a file to a managed or custom location.
          */
         post: operations["write_file_api_files_write_post"];
         delete?: never;
@@ -2477,7 +2577,7 @@ export interface paths {
         put?: never;
         /**
          * Delete File
-         * @description Delete a file from workspace, temp, or uploads.
+         * @description Delete a file from a managed or custom location.
          */
         post: operations["delete_file_api_files_delete_post"];
         delete?: never;
@@ -3645,22 +3745,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        get: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        put: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        post: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        delete: operations["execute_endpoint_api_endpoints__workflow_id__post"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4264,6 +4364,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sdk/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the bifrost web SDK package
+         * @description Serve the `bifrost` web SDK as an npm-installable tarball. A standalone_v2 app declares `"bifrost": "<instance>/api/sdk/download"` and resolves it identically on a dev laptop (`npm run dev`) and in the platform's server-side build.
+         */
+        get: operations["download_sdk_api_sdk_download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sdk/tables/create": {
         parameters: {
             query?: never;
@@ -4297,9 +4417,11 @@ export interface paths {
          * List tables
          * @description List tables via SDK.
          *
-         *     Engine sentinel: the SDK has already resolved scope, so we pass
-         *     is_superuser=True to TableRepository and trust the org_uuid.
-         *     The base class handles the cascade (org + global) for us.
+         *     Engine sentinel: the SDK has already resolved scope, so non-external
+         *     principals get is_superuser=True and we trust the org_uuid. The base
+         *     class handles the cascade (org + global) for us. EXTERNAL principals
+         *     do not inherit sentinel trust (OPEN-B) — they get the normal user
+         *     cascade (org + global table names/schemas; row data is policy-gated).
          */
         post: operations["cli_list_tables_api_sdk_tables_list_post"];
         delete?: never;
@@ -5791,26 +5913,6 @@ export interface paths {
         patch: operations["set_entity_id_source_api_integrations__integration_id__oauth_entity_id_source_patch"];
         trace?: never;
     };
-    "/api/integrations/sdk/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get integration data for SDK
-         * @description Get integration data with resolved OAuth and merged config for SDK consumption
-         */
-        get: operations["get_integration_sdk_data_api_integrations_sdk__name__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/integrations/{integration_id}/test": {
         parameters: {
             query?: never;
@@ -6783,6 +6885,9 @@ export interface paths {
         /**
          * Update table
          * @description Update table metadata by ID (platform admin only).
+         *
+         *     Solution-managed tables are read-only here: deploy owns schema + policies.
+         *     Row DATA (documents) stays editable — that's runtime state (criterion 7).
          */
         patch: operations["update_table_api_tables__table_id__patch"];
         trace?: never;
@@ -7006,6 +7111,447 @@ export interface paths {
         head?: never;
         /** Update a custom claim (admin only) */
         patch: operations["update_claim_api_claims__name__patch"];
+        trace?: never;
+    };
+    "/api/solutions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Solution installs (admin only) */
+        get: operations["list_solutions_api_solutions_get"];
+        put?: never;
+        /** Create a Solution install (admin only) */
+        post: operations["create_solution_api_solutions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a Solution install (admin only) */
+        get: operations["get_solution_api_solutions__solution_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete an install and everything it owns (admin only)
+         * @description Delete an install non-destructively for customer data.
+         *
+         *     Pure-code entities (workflows/apps/forms/agents) and the install's config
+         *     DECLARATIONS cascade away via the ``solution_id`` FK ``ondelete=CASCADE``.
+         *     Data-bearing entities are ORPHANED instead of cascaded:
+         *
+         *     - Owned tables are DETACHED before the Solution delete (``solution_id`` set
+         *       to NULL so the cascade can't reach them) and survive as ordinary org
+         *       tables. Their documents are untouched — they hang off the surviving table.
+         *     - The install's config VALUES (Config rows in the install's org scope whose
+         *       key matches a declaration) are stamped with orphan provenance and survive
+         *       (Config has no ``solution_id`` FK, so they were never cascade-tied).
+         *
+         *     Both carry ``origin_solution_slug``/``origin_solution_id``/``orphaned_at`` so
+         *     a reinstall can reattach them. The install's S3 artifacts are swept. The git
+         *     repo is NEVER touched — a git-connected install is deletable; only the install
+         *     and its local artifacts go, the upstream repo is left alone.
+         */
+        delete: operations["delete_solution_api_solutions__solution_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update an install's local fields (admin only)
+         * @description Edit INSTALL-LOCAL fields only (name/scope/global_repo_access/git fields).
+         *
+         *     Portable content (workflows/apps/forms/agents/tables/config declarations) is
+         *     owned by the bundle/git and is never touched here. Changing the install's
+         *     ``organization_id`` (scope) re-stamps every owned entity's org to match —
+         *     owned entities inherit the install's org from the deployer — done under the
+         *     per-install write-lock so it can't race a concurrent deploy.
+         *
+         *     DELIBERATELY NOT re-homed on scope change: config VALUES. Config values are
+         *     instance-owned, scope-local data keyed by (org, key) — not FK-tied to the
+         *     install — so a scope change does NOT migrate them to the new org. The
+         *     operator re-enters the values in the new scope. (The 5 entity tables above
+         *     ARE re-homed because they carry ``solution_id`` and are owned by the bundle.)
+         */
+        patch: operations["update_solution_api_solutions__solution_id__patch"];
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Solution icon
+         * @description The solution-level icon (bifrost.solution.yaml ``logo:``), shown on the
+         *     /solutions catalog cards. Bytes only — mirrors the application logo
+         *     endpoint.
+         */
+        get: operations["get_solution_logo_api_solutions__solution_id__logo_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/readme": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an install's README markdown (admin only)
+         * @description The install's long-form README markdown (repo-sourced on deploy, or
+         *     edited directly via PUT). ``null`` when none is set.
+         */
+        get: operations["get_solution_readme_api_solutions__solution_id__readme_get"];
+        /**
+         * Set an install's README markdown (admin only)
+         * @description Full-replace the install's README markdown (``readme=null`` clears it).
+         *
+         *     Normally README is repo-sourced (deploy reads README.md), but the UI can
+         *     edit it directly here on a **disconnected** install. For a git-connected
+         *     install the next auto-pull would clobber any hand edit, so editing the
+         *     README here is refused (409) — the repo owns it. The UI hides the edit
+         *     affordance for connected installs to match.
+         */
+        put: operations["put_solution_readme_api_solutions__solution_id__readme_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Required-config setup status (admin only)
+         * @description Return all config declarations for the install paired with whether each
+         *     has a matching Config value in the install's org scope.  ``setup_complete``
+         *     is True only when every required declaration is satisfied.
+         */
+        get: operations["solution_setup_api_solutions__solution_id__setup_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Download the install's workspace zip (admin only)
+         * @description Rebuild the install's workspace bundle LIVE from the entities it
+         *     currently owns, so the export always reflects present ownership (not the
+         *     last capture/deploy). Directly re-installable via the zip-install path.
+         *
+         *     This is a POST (not GET) specifically so the full-backup ``password`` rides
+         *     in the request BODY rather than the URL query string — a query-string secret
+         *     leaks into access logs, proxies, and browser history. ``mode`` and
+         *     ``include_data`` stay in the query (they are not sensitive).
+         *
+         *     ``mode=shareable`` (default): portable export, no sensitive values.
+         *     ``mode=full``: includes an encrypted ``.bifrost/secrets.enc`` blob carrying
+         *     the config values set for this install; requires ``password`` (in the body).
+         *     ``include_data=true``: include table row data in the encrypted blob.
+         *     Requires ``mode=full`` (data must be encrypted).
+         */
+        post: operations["export_solution_api_solutions__solution_id__export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/entities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an install + everything it owns (admin only)
+         * @description One call for the detail UI: the install, all owned entities, and each
+         *     config declaration paired with whether a value is set in the install's scope
+         *     (plus the derived required-but-unset key list).
+         */
+        get: operations["get_solution_entities_api_solutions__solution_id__entities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/capture/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List loose same-scope entities capturable by an install (admin only) */
+        get: operations["get_solution_capture_candidates_api_solutions__solution_id__capture_candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/capture/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview what a capture selection pulls in + outside references (admin only)
+         * @description Dependency preview for a capture selection (§3.2/§3.3).
+         *
+         *     Returns the forward dependency closure the selection drags in (beyond what's
+         *     already selected) and reverse-reference warnings (loose entities outside the
+         *     selection that point at something inside it). The preview is the guard:
+         *     everything is deselectable in the UI; nothing is silently blocked. The scan
+         *     is static, so computed/dynamic refs are invisible — the UI says so.
+         */
+        post: operations["preview_solution_capture_api_solutions__solution_id__capture_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/deploy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Deploy a bundle to an install (full replace, non-interactive, admin only) */
+        post: operations["deploy_solution_api_solutions__solution_id__deploy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Capture existing loose entities into an install (admin only)
+         * @description Adopt existing `_repo/` entities into this install in place.
+         *
+         *     This is the backend migration primitive for turning legacy app/table/workflow
+         *     clusters into a Solution. It stamps compatible loose entities with
+         *     ``solution_id`` and stores an export zip containing the captured definitions.
+         */
+        post: operations["capture_solution_entities_api_solutions__solution_id__capture_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/pull/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear pending_captures rows the client pulled into source (admin only)
+         * @description Server-authoritative clear of pending_captures rows.
+         *
+         *     ``bifrost solution pull`` materializes captured entities into the workspace
+         *     ``.bifrost/`` manifest, then POSTs exactly what it wrote here so the server
+         *     deletes those queue rows. A stale client can only clear rows it names, so it
+         *     can't double-clear another client's un-pulled captures.
+         */
+        post: operations["ack_pulled_captures_api_solutions__solution_id__pull_ack_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Auto-pull a git-connected install from its repo (admin only)
+         * @description Pull the connected install's repo ``main`` and deploy it (criterion 13).
+         *
+         *     This is the auto-pull entry point (webhook/poll/manual). It is the ONLY
+         *     writer for a connected install — the deploy endpoint is refused for it. For a
+         *     disconnected install there is nothing to pull, so this is refused in turn.
+         */
+        post: operations["sync_solution_api_solutions__solution_id__sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/install/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a Solution install zip (parse-only, admin only)
+         * @description Unzip + parse a Solution workspace zip and report what it would create.
+         *
+         *     Parse-only: no DB write, no S3, no build. The drag-and-drop UI calls this to
+         *     show the install plan + declared configs before committing.
+         *
+         *     When an install already exists for the zip's slug at the requested scope
+         *     (``organization_id`` resolved exactly as the install endpoint does:
+         *     empty/absent → global NULL), the response also carries ``existing_install``
+         *     + ``diff`` so the UI routes to UPGRADE instead of a second install (Task 22).
+         */
+        post: operations["install_preview_api_solutions_install_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/install/preview-repo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a Solution install from a git repo (parse-only, admin only)
+         * @description Clone the repo (+ optional subpath/ref), parse the workspace, and report
+         *     the install plan — the same plan the zip preview returns. No DB write.
+         */
+        post: operations["install_preview_repo_api_solutions_install_preview_repo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/install/from-repo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Install a Solution from a git repo (git-connected, admin only)
+         * @description Create a git-connected install from a repo (+ optional subpath/ref) and
+         *     deploy it. git-connected from birth: deploy is refused, auto-pull is the
+         *     only writer. 409 if an install of the same (slug, scope) already exists.
+         */
+        post: operations["install_from_repo_api_solutions_install_from_repo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Install a Solution zip (atomic deploy + config values, admin only)
+         * @description Atomically install a Solution from a workspace zip.
+         *
+         *     Resolves-or-creates the install at the chosen scope (empty/absent
+         *     ``organization_id`` → global NULL), runs the proven deploy under the
+         *     per-install write lock, and — in the same locked section after the S3 finalize
+         *     — applies the provided ``config_values`` (a JSON object of key→value). A
+         *     missing required config does NOT block the install (warn-not-block).
+         *
+         *     Full-backup zips carry a ``.bifrost/secrets.enc`` blob; ``password`` is
+         *     required to decrypt it.  A wrong password is refused with 422 before
+         *     anything is written.  If the blob contains values for keys that already
+         *     have a Config row in the target org, the import is refused with 409 unless
+         *     ``replace_secrets=true`` (config values) or ``replace_data=true`` (table
+         *     data, Phase 4).
+         *
+         *     A zip whose descriptor ``version`` is OLDER than the installed version is
+         *     refused with 409 (downgrade gate, Task 20) unless ``?force=true``.
+         */
+        post: operations["install_solution_api_solutions_install_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/knowledge-sources": {
@@ -7369,6 +7915,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/applications/swap-slugs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Atomically exchange two applications' slugs
+         * @description Swap two apps' slugs in one transaction (v1→v2 migration cutover).
+         *
+         *     Gives the new (v2) app the live slug and parks the old (v1) app under the
+         *     other slug, so bookmarks/links to ``/apps/{slug}`` keep working. Holds the
+         *     slug advisory lock for both slugs, so it can't race a same-slug deploy or
+         *     leave the live slug momentarily unowned.
+         */
+        post: operations["swap_application_slugs_api_applications_swap_slugs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/applications/{app_id}/validate": {
         parameters: {
             query?: never;
@@ -7590,6 +8161,30 @@ export interface paths {
          *     correct MIME types matter.
          */
         get: operations["get_bundle_asset_api_applications__app_id__bundle_asset__filename__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/dist/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve a standalone_v2 app's built dist/ file from _apps/{id}/dist/
+         * @description Stream a built dist/ file for a standalone_v2 app.
+         *
+         *     BundledAppShell mounts a v2 app SAME-DOCUMENT (not an iframe): it reads the
+         *     hashed entry/css from the bundle-manifest and loads them from this dist/
+         *     prefix; the app's own bundle pulls any further chunks from here too.
+         */
+        get: operations["get_v2_dist_asset_api_applications__app_id__dist__path__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -8385,6 +8980,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sdk/modules/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch Module
+         * @description Fetch a workspace module by path.
+         *
+         *     Returns the module source and hash exactly as the module cache would.
+         *     On miss (module not found in Redis or S3), returns 404.
+         *
+         *     This endpoint is called by the child process's virtual import hook when
+         *     Redis is cold (i.e. after a Redis restart that evicted cached modules).
+         *     The child authenticates with its pre-minted engine token.
+         *
+         *     Args:
+         *         path: Module path relative to workspace root (e.g. "features/api.py").
+         */
+        get: operations["fetch_module_api_sdk_modules__path__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sdk/modules-index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch Module Index
+         * @description Fetch the set of all known workspace module paths.
+         *
+         *     Returns JSON: {"paths": ["features/api.py", ...]}.
+         *     Used by the child's VirtualModuleFinder to rebuild the module index when
+         *     the Redis SET is cold.
+         */
+        get: operations["fetch_module_index_api_sdk_modules_index_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sdk/requirements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch Requirements
+         * @description Fetch requirements.txt content.
+         *
+         *     Returns JSON: {"content": "...", "hash": "..."} or 404 if none exists.
+         *     Used by the child's install_requirements() when Redis is cold.
+         */
+        get: operations["fetch_requirements_api_sdk_requirements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -8664,10 +9336,13 @@ export interface components {
         };
         /**
          * AgentAccessLevel
-         * @description Agent access control levels
+         * @description Agent access control levels.
+         *
+         *     AUTHENTICATED is "Everyone except external users" in the UI; EVERYONE
+         *     additionally grants to external (portal/guest) users.
          * @enum {string}
          */
-        AgentAccessLevel: "authenticated" | "role_based" | "private";
+        AgentAccessLevel: "authenticated" | "everyone" | "role_based" | "private";
         /**
          * AgentChannel
          * @description Supported agent communication channels
@@ -8779,6 +9454,17 @@ export interface components {
             access_level?: components["schemas"]["AgentAccessLevel"] | null;
             /** Organization Id */
             organization_id?: string | null;
+            /**
+             * Is Solution Managed
+             * @description True if managed by a deployed Solution (read-only on platform)
+             * @default false
+             */
+            is_solution_managed: boolean;
+            /**
+             * Solution Id
+             * @description UUID of the owning Solution install (null if not solution-managed)
+             */
+            solution_id?: string | null;
             /** Is Active */
             is_active: boolean;
             /** Created By */
@@ -9151,6 +9837,17 @@ export interface components {
              * @description Inline logo as a data URL, or null when no logo is set. Avoids an N+1 GET per card in list views.
              */
             logo?: string | null;
+            /**
+             * Is Solution Managed
+             * @description True if managed by a deployed Solution (read-only on platform)
+             * @default false
+             */
+            is_solution_managed: boolean;
+            /**
+             * Solution Id
+             * @description UUID of the owning Solution install (null if not solution-managed)
+             */
+            solution_id?: string | null;
         };
         /**
          * AgentUpdate
@@ -9389,6 +10086,12 @@ export interface components {
              */
             access_level: string;
             /**
+             * App Model
+             * @description Render model: 'standalone_v2' (default — own createRoot + router + real SDK) or 'inline_v1' (legacy inline render). New apps default to v2; pass inline_v1 explicitly only for the legacy model.
+             * @default standalone_v2
+             */
+            app_model: string;
+            /**
              * Role Ids
              * @description Role IDs for role_based access (ignored if access_level is 'authenticated')
              */
@@ -9493,6 +10196,23 @@ export interface components {
              * @default authenticated
              */
             access_level: string;
+            /**
+             * App Model
+             * @description Render model: inline_v1 (legacy inline) | standalone_v2
+             * @default inline_v1
+             */
+            app_model: string;
+            /**
+             * Is Solution Managed
+             * @description True if managed by a deployed Solution (read-only on platform)
+             * @default false
+             */
+            is_solution_managed: boolean;
+            /**
+             * Solution Id
+             * @description UUID of the owning Solution install (null if not solution-managed)
+             */
+            solution_id?: string | null;
             /** Role Ids */
             role_ids?: string[];
             /**
@@ -9547,6 +10267,31 @@ export interface components {
              * @description UUID of the version to rollback to
              */
             version_id: string;
+        };
+        /**
+         * ApplicationSwapSlugsRequest
+         * @description Atomically exchange two applications' slugs (v1→v2 migration cutover).
+         *
+         *     The slug is the public URL handle (``/apps/{slug}``). A migration scaffolds
+         *     the v2 app under a temporary slug, then this swap gives it the v1 app's slug
+         *     (so bookmarks/links survive) and parks the v1 app under the temp slug — both
+         *     in ONE transaction holding the slug advisory lock, so there is no observable
+         *     window where the live slug is unowned and no race with a same-slug deploy.
+         *     See ``POST /api/applications/swap-slugs``.
+         */
+        ApplicationSwapSlugsRequest: {
+            /**
+             * App A
+             * Format: uuid
+             * @description First application id.
+             */
+            app_a: string;
+            /**
+             * App B
+             * Format: uuid
+             * @description Second application id; its slug is exchanged with app_a's.
+             */
+            app_b: string;
         };
         /**
          * ApplicationUpdate
@@ -9947,6 +10692,11 @@ export interface components {
              */
             cost_basis: "history" | "fallback";
         };
+        /** Body_export_solution_api_solutions__solution_id__export_post */
+        Body_export_solution_api_solutions__solution_id__export_post: {
+            /** Password */
+            password?: string | null;
+        };
         /** Body_import_all_api_export_import_import_all_post */
         Body_import_all_api_export_import_import_all_post: {
             /** File */
@@ -10013,6 +10763,43 @@ export interface components {
             /** Target Organization Id */
             target_organization_id?: string | null;
         };
+        /** Body_install_preview_api_solutions_install_preview_post */
+        Body_install_preview_api_solutions_install_preview_post: {
+            /**
+             * File
+             * @description Solution workspace zip
+             */
+            file: string;
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /** Body_install_solution_api_solutions_install_post */
+        Body_install_solution_api_solutions_install_post: {
+            /**
+             * File
+             * @description Solution workspace zip
+             */
+            file: string;
+            /** Organization Id */
+            organization_id?: string | null;
+            /**
+             * Config Values
+             * @default {}
+             */
+            config_values: string;
+            /** Password */
+            password?: string | null;
+            /**
+             * Replace Secrets
+             * @default false
+             */
+            replace_secrets: boolean;
+            /**
+             * Replace Data
+             * @default false
+             */
+            replace_data: boolean;
+        };
         /** Body_login_auth_login_post */
         Body_login_auth_login_post: {
             /** Grant Type */
@@ -10072,13 +10859,18 @@ export interface components {
          */
         BrandingSettings: {
             /**
+             * Application Name
+             * @description Product name shown in the UI (login, browser tab, header). Raw stored value; None when unset.
+             */
+            application_name?: string | null;
+            /**
              * Square Logo Url
              * @description Square logo URL (for icons, 1:1 ratio)
              */
             square_logo_url?: string | null;
             /**
              * Rectangle Logo Url
-             * @description Rectangle logo URL (for headers, 16:9 ratio)
+             * @description Horizontal logo URL (for headers, ~4:1 ratio)
              */
             rectangle_logo_url?: string | null;
             /**
@@ -10086,17 +10878,45 @@ export interface components {
              * @description Primary brand color (hex format, e.g., #FF5733)
              */
             primary_color?: string | null;
+            /** @description Fixed product terminology overrides for the platform UI */
+            terminology?: components["schemas"]["BrandingTerminology"];
+        };
+        /**
+         * BrandingTerm
+         * @description Singular and plural labels for a fixed product noun.
+         */
+        BrandingTerm: {
+            /** Singular */
+            singular?: string | null;
+            /** Plural */
+            plural?: string | null;
+        };
+        /**
+         * BrandingTerminology
+         * @description Fixed platform nouns that can be renamed by branding.
+         */
+        BrandingTerminology: {
+            app?: components["schemas"]["BrandingTerm"];
+            agent?: components["schemas"]["BrandingTerm"];
+            form?: components["schemas"]["BrandingTerm"];
         };
         /**
          * BrandingUpdateRequest
-         * @description Request model for updating primary color only - logos use POST /logo/{type}
+         * @description Request model for updating branding settings - logos use POST /logo/{type}
          */
         BrandingUpdateRequest: {
+            /**
+             * Application Name
+             * @description Product name shown in the UI. Omit to leave unchanged; use the reset endpoint to clear.
+             */
+            application_name?: string | null;
             /**
              * Primary Color
              * @description Primary color (hex code, e.g., #0066CC)
              */
             primary_color?: string | null;
+            /** @description Fixed product terminology overrides for the platform UI */
+            terminology?: components["schemas"]["BrandingTerminology"] | null;
         };
         /** BulkExportRequest */
         BulkExportRequest: {
@@ -10982,6 +11802,16 @@ export interface components {
             updated_at?: string | null;
             /** Updated By */
             updated_by?: string | null;
+            /**
+             * Orphaned At
+             * @description When this config was orphaned by a Solution uninstall (null if not orphaned)
+             */
+            orphaned_at?: string | null;
+            /**
+             * Origin Solution Slug
+             * @description Slug of the Solution this config was orphaned from (null if not orphaned)
+             */
+            origin_solution_slug?: string | null;
         };
         /**
          * ConfigSchemaItem
@@ -11377,7 +12207,7 @@ export interface components {
         CustomClaim: {
             /**
              * Name
-             * @description lower_snake; unique per org
+             * @description lower_snake; unique per org/global repo scope or per solution install
              */
             name: string;
             /** Description */
@@ -11394,11 +12224,12 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            /**
-             * Organization Id
-             * Format: uuid
-             */
-            organization_id: string;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Solution Id */
+            solution_id?: string | null;
+            /** Is Solution Managed */
+            readonly is_solution_managed: boolean;
         };
         /**
          * CustomClaimCreate
@@ -11407,7 +12238,7 @@ export interface components {
         CustomClaimCreate: {
             /**
              * Name
-             * @description lower_snake; unique per org
+             * @description lower_snake; unique per org/global repo scope or per solution install
              */
             name: string;
             /** Description */
@@ -11627,6 +12458,31 @@ export interface components {
              * @description ID of the root node
              */
             root_id: string;
+        };
+        /**
+         * DependencyRef
+         * @description One entity the walker pulled in or warned about.
+         *
+         *     ``ref`` is the natural handle: a UUID for DB entities, a key for configs, a
+         *     relative path for modules. ``name`` is the display label; ``in_selection``
+         *     is true when the seed selection already includes this entity (so the UI can
+         *     show it as "already selected" vs "will be pulled in").
+         */
+        DependencyRef: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "workflow" | "table" | "config" | "form" | "app" | "agent" | "module" | "integration";
+            /** Ref */
+            ref: string;
+            /** Name */
+            name: string;
+            /**
+             * In Selection
+             * @default false
+             */
+            in_selection: boolean;
         };
         /**
          * DetailedHealthCheck
@@ -13395,7 +14251,7 @@ export interface components {
             path: string;
             /**
              * Location
-             * @description Storage location: reserved (workspace, temp, uploads) or freeform
+             * @description Storage location. Special values: workspace (default), temp, uploads. Custom names like reports are accepted; internal prefixes _repo, _tmp, and _apps are blocked.
              * @default workspace
              */
             location: string;
@@ -13460,7 +14316,7 @@ export interface components {
             path: string;
             /**
              * Location
-             * @description Storage location: reserved (workspace, temp, uploads) or freeform
+             * @description Storage location. Special values: workspace (default), temp, uploads. Custom names like reports are accepted; internal prefixes _repo, _tmp, and _apps are blocked.
              * @default workspace
              */
             location: string;
@@ -13515,7 +14371,7 @@ export interface components {
             directory: string;
             /**
              * Location
-             * @description Storage location: reserved (workspace, temp, uploads) or freeform
+             * @description Storage location. Special values: workspace (default), temp, uploads. Custom names like reports are accepted; internal prefixes _repo, _tmp, and _apps are blocked.
              * @default workspace
              */
             location: string;
@@ -13663,7 +14519,7 @@ export interface components {
             path: string;
             /**
              * Location
-             * @description Storage location: reserved (workspace, temp, uploads) or freeform
+             * @description Storage location. Special values: workspace (default), temp, uploads. Custom names like reports are accepted; internal prefixes _repo, _tmp, and _apps are blocked.
              * @default workspace
              */
             location: string;
@@ -13775,7 +14631,7 @@ export interface components {
             content: string;
             /**
              * Location
-             * @description Storage location: reserved (workspace, temp, uploads) or freeform
+             * @description Storage location. Special values: workspace (default), temp, uploads. Custom names like reports are accepted; internal prefixes _repo, _tmp, and _apps are blocked.
              * @default workspace
              */
             location: string;
@@ -13838,10 +14694,13 @@ export interface components {
         };
         /**
          * FormAccessLevel
-         * @description Form access control levels
+         * @description Form access control levels.
+         *
+         *     AUTHENTICATED is "Everyone except external users" in the UI; EVERYONE
+         *     additionally grants to external (portal/guest) users.
          * @enum {string}
          */
-        FormAccessLevel: "authenticated" | "role_based";
+        FormAccessLevel: "authenticated" | "everyone" | "role_based";
         /**
          * FormCreate
          * @description Input for creating a form.
@@ -14050,6 +14909,17 @@ export interface components {
              * @default 0
              */
             dependency_count: number;
+            /**
+             * Is Solution Managed
+             * @description True if managed by a deployed Solution (read-only on platform)
+             * @default false
+             */
+            is_solution_managed: boolean;
+            /**
+             * Solution Id
+             * @description UUID of the owning Solution install (null if not solution-managed)
+             */
+            solution_id?: string | null;
         };
         /**
          * FormSchema
@@ -15037,52 +15907,6 @@ export interface components {
             updated_at: string;
         };
         /**
-         * IntegrationSDKResponse
-         * @description Integration data for API SDK endpoint responses.
-         *     Used by /api/integrations/sdk/{name} endpoint.
-         *     Does NOT include decrypted OAuth tokens (use IntegrationData from sdk.py for that).
-         */
-        IntegrationSDKResponse: {
-            /**
-             * Integration Id
-             * Format: uuid
-             * @description Integration ID
-             */
-            integration_id: string;
-            /**
-             * Entity Id
-             * @description Mapped external entity ID
-             */
-            entity_id: string;
-            /**
-             * Entity Name
-             * @description Display name for the mapped entity
-             */
-            entity_name?: string | null;
-            /**
-             * Config
-             * @description Merged configuration (schema defaults + org overrides)
-             */
-            config?: {
-                [key: string]: unknown;
-            };
-            /**
-             * Oauth Client Id
-             * @description OAuth client ID (from provider or override)
-             */
-            oauth_client_id?: string | null;
-            /**
-             * Oauth Token Url
-             * @description OAuth token URL (with {entity_id} placeholder if applicable)
-             */
-            oauth_token_url?: string | null;
-            /**
-             * Oauth Scopes
-             * @description OAuth scopes for this integration
-             */
-            oauth_scopes?: string | null;
-        };
-        /**
          * IntegrationTestRequest
          * @description Request model for testing an integration connection.
          *     POST /api/integrations/{integration_id}/test
@@ -15168,6 +15992,40 @@ export interface components {
              * @description Default value for entity_id in URL templates (e.g., 'common' for Azure multi-tenant)
              */
             default_entity_id?: string | null;
+        };
+        /**
+         * InvitePasskeyOptionsRequest
+         * @description Request to start passkey registration from an invite token.
+         */
+        InvitePasskeyOptionsRequest: {
+            /**
+             * Token
+             * @description Invite token from the registration URL
+             */
+            token: string;
+        };
+        /**
+         * InvitePasskeyVerifyRequest
+         * @description Request to complete invite registration with a passkey.
+         */
+        InvitePasskeyVerifyRequest: {
+            /**
+             * Token
+             * @description Invite token from the registration URL
+             */
+            token: string;
+            /**
+             * Credential
+             * @description WebAuthn credential from navigator.credentials.create()
+             */
+            credential: {
+                [key: string]: unknown;
+            };
+            /**
+             * Device Name
+             * @description Friendly name for the passkey
+             */
+            device_name?: string | null;
         };
         /**
          * JobStatusResponse
@@ -17381,6 +18239,34 @@ export interface components {
             workflows?: components["schemas"]["OrphanedWorkflowInfo"][];
         };
         /**
+         * OutsideReference
+         * @description An entity OUTSIDE the selection that references something INSIDE it.
+         *
+         *     The capture/export preview surfaces these as non-blocking warnings: the
+         *     referenced entity is being adopted by the install while ``referencer`` is
+         *     left loose and will keep pointing at it across the scope boundary.
+         */
+        OutsideReference: {
+            /**
+             * Referencer Kind
+             * @enum {string}
+             */
+            referencer_kind: "workflow" | "table" | "config" | "form" | "app" | "agent" | "module" | "integration";
+            /** Referencer Ref */
+            referencer_ref: string;
+            /** Referencer Name */
+            referencer_name: string;
+            /**
+             * Target Kind
+             * @enum {string}
+             */
+            target_kind: "workflow" | "table" | "config" | "form" | "app" | "agent" | "module" | "integration";
+            /** Target Ref */
+            target_ref: string;
+            /** Target Name */
+            target_name: string;
+        };
+        /**
          * PackageInstallResponse
          * @description Response model for package installation
          */
@@ -18036,6 +18922,34 @@ export interface components {
             at?: string;
         };
         /**
+         * PullAckEntity
+         * @description One captured entity the client has materialized into source `.bifrost/`.
+         */
+        PullAckEntity: {
+            /** Entity Type */
+            entity_type: string;
+            /** Entity Id */
+            entity_id: string;
+        };
+        /**
+         * PullAckRequest
+         * @description Tell the server which pending_captures rows `bifrost solution pull`
+         *     materialized into source, so it can clear exactly those rows
+         *     (server-authoritative — a stale client can't clear what it didn't pull).
+         */
+        PullAckRequest: {
+            /** Entities */
+            entities?: components["schemas"]["PullAckEntity"][];
+        };
+        /** PullAckResponse */
+        PullAckResponse: {
+            /**
+             * Cleared
+             * @default 0
+             */
+            cleared: number;
+        };
+        /**
          * QueueItem
          * @description An item in the execution queue.
          */
@@ -18439,7 +19353,7 @@ export interface components {
             organization_id?: string | null;
             /**
              * Access Level
-             * @description Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required). Omit to leave at the schema default.
+             * @description Access level: 'authenticated' (any signed-in user except externals), 'everyone' (any signed-in user incl. externals), or 'role_based' (specific roles required). Omit to leave at the schema default.
              */
             access_level?: string | null;
             /**
@@ -18460,7 +19374,7 @@ export interface components {
             id: string;
             /**
              * Name
-             * @description Workflow name (from decorator or function name)
+             * @description MCP tool name, defaulted from function_name on registration
              */
             name: string;
             /**
@@ -18504,6 +19418,45 @@ export interface components {
              * @description Job ID for polling via GET /api/jobs/{job_id}
              */
             job_id: string;
+        };
+        /**
+         * RemapWorkflowRequest
+         * @description Request to move references from one workflow row to another.
+         */
+        RemapWorkflowRequest: {
+            /**
+             * Target Workflow Id
+             * @description Active workflow UUID that should receive the references
+             */
+            target_workflow_id: string;
+        };
+        /**
+         * RemapWorkflowResponse
+         * @description Response after remapping workflow references.
+         */
+        RemapWorkflowResponse: {
+            /**
+             * Success
+             * @description Whether remap succeeded
+             */
+            success: boolean;
+            /**
+             * Source Workflow Id
+             * @description UUID references were moved from
+             */
+            source_workflow_id: string;
+            /**
+             * Target Workflow Id
+             * @description UUID references were moved to
+             */
+            target_workflow_id: string;
+            /**
+             * Updated
+             * @description Counts of references updated by category
+             */
+            updated?: {
+                [key: string]: number;
+            };
         };
         /**
          * RenderFileResponse
@@ -18925,6 +19878,11 @@ export interface components {
              * @description Override OAuth scope for token request (e.g., 'https://outlook.office365.com/.default'). When provided, triggers fresh token fetch for client_credentials flows.
              */
             oauth_scope?: string | null;
+            /**
+             * Solution
+             * @description Solution install id (from ctx.solution_id) — when set and the named integration is missing but DECLARED by this solution, the server raises 424 instead of returning null.
+             */
+            solution?: string | null;
         };
         /**
          * SDKIntegrationsGetResponse
@@ -18973,7 +19931,7 @@ export interface components {
             name: string;
             /**
              * Scope
-             * @description Optional org scope. Omit / pass null to list only the caller's own org mapping. Platform admins and provider-org members may pass 'global' (no filter, all orgs) or a specific org UUID.
+             * @description Optional org scope. Omit / pass null to list only the caller's own org mapping, unless the resolved org is a provider org, which lists all mappings. Platform admins and provider-org members may pass 'global' (no filter, all orgs) or a specific org UUID.
              */
             scope?: string | null;
         };
@@ -19412,6 +20370,14 @@ export interface components {
             content: string;
         };
         /**
+         * SendInviteRequest
+         * @description Request to emit invite automation for an existing raw registration link.
+         */
+        SendInviteRequest: {
+            /** Registration Url */
+            registration_url: string;
+        };
+        /**
          * SetConfigRequest
          * @description Request model for setting config
          */
@@ -19618,6 +20584,780 @@ export interface components {
             compiled?: string | null;
         };
         /**
+         * Solution
+         * @description Read-shape returned by REST.
+         *
+         *     ``scope`` is DERIVED from ``organization_id`` (NULL == global), not stored
+         *     on the ORM row — so it always reflects the install's true scope.
+         */
+        Solution: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Organization Id */
+            organization_id?: string | null;
+            /**
+             * Global Repo Access
+             * @default false
+             */
+            global_repo_access: boolean;
+            /**
+             * Git Connected
+             * @default false
+             */
+            git_connected: boolean;
+            /** Git Repo Url */
+            git_repo_url?: string | null;
+            /** Repo Subpath */
+            repo_subpath?: string | null;
+            /** Git Ref */
+            git_ref?: string | null;
+            /** Version */
+            version?: string | null;
+            /** Upgraded From Version */
+            upgraded_from_version?: string | null;
+            /** Update Available Version */
+            update_available_version?: string | null;
+            /**
+             * Setup Complete
+             * @default true
+             */
+            setup_complete: boolean;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            readonly scope: "org" | "global";
+        };
+        /**
+         * SolutionCaptureCandidates
+         * @description Loose same-scope entities that can be adopted into an install.
+         */
+        SolutionCaptureCandidates: {
+            /** Workflows */
+            workflows?: components["schemas"]["SolutionEntitySummary"][];
+            /** Apps */
+            apps?: components["schemas"]["SolutionEntitySummary"][];
+            /** Forms */
+            forms?: components["schemas"]["SolutionEntitySummary"][];
+            /** Agents */
+            agents?: components["schemas"]["SolutionEntitySummary"][];
+            /** Claims */
+            claims?: components["schemas"]["SolutionEntitySummary"][];
+            /** Tables */
+            tables?: components["schemas"]["SolutionEntitySummary"][];
+            /** Configs */
+            configs?: components["schemas"]["SolutionConfigStatus"][];
+        };
+        /**
+         * SolutionCaptureRequest
+         * @description Move existing loose entities into an install in place.
+         *
+         *     Entity ids must currently be unowned (``solution_id`` is null) and scoped
+         *     the same way as the install. Config keys become declarations; their values
+         *     stay in the install scope.
+         */
+        SolutionCaptureRequest: {
+            /** Workflows */
+            workflows?: string[];
+            /** Tables */
+            tables?: string[];
+            /** Apps */
+            apps?: string[];
+            /** Forms */
+            forms?: string[];
+            /** Agents */
+            agents?: string[];
+            /** Claims */
+            claims?: string[];
+            /** Configs */
+            configs?: string[];
+            /**
+             * Include Imports
+             * @description When false (default), bundle only the captured workflows' own source files. When true, also bundle the transitive import closure of `modules/` they reference (never the whole modules/ tree — only what is actually imported).
+             * @default false
+             */
+            include_imports: boolean;
+        };
+        /** SolutionCaptureResponse */
+        SolutionCaptureResponse: {
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /**
+             * Workflows Captured
+             * @default 0
+             */
+            workflows_captured: number;
+            /**
+             * Tables Captured
+             * @default 0
+             */
+            tables_captured: number;
+            /**
+             * Apps Captured
+             * @default 0
+             */
+            apps_captured: number;
+            /**
+             * Forms Captured
+             * @default 0
+             */
+            forms_captured: number;
+            /**
+             * Agents Captured
+             * @default 0
+             */
+            agents_captured: number;
+            /**
+             * Claims Captured
+             * @default 0
+             */
+            claims_captured: number;
+            /**
+             * Config Declarations Captured
+             * @default 0
+             */
+            config_declarations_captured: number;
+        };
+        /**
+         * SolutionConfigSchemaChange
+         * @description One config declaration whose type/required changed between versions.
+         */
+        SolutionConfigSchemaChange: {
+            /** Key */
+            key: string;
+            from: components["schemas"]["SolutionConfigSchemaState"];
+            to: components["schemas"]["SolutionConfigSchemaState"];
+        };
+        /**
+         * SolutionConfigSchemaDiff
+         * @description Config DECLARATION diff (by key) for an upgrade preview.
+         */
+        SolutionConfigSchemaDiff: {
+            /** Added */
+            added?: string[];
+            /** Removed */
+            removed?: string[];
+            /** Changed */
+            changed?: components["schemas"]["SolutionConfigSchemaChange"][];
+        };
+        /**
+         * SolutionConfigSchemaState
+         * @description The compared portion of a config declaration (type + required).
+         */
+        SolutionConfigSchemaState: {
+            /** Type */
+            type: string;
+            /** Required */
+            required: boolean;
+        };
+        /**
+         * SolutionConfigStatus
+         * @description A config DECLARATION on an install, paired with whether a value is set in
+         *     the install's org scope (values are instance-owned Config rows, never part of
+         *     the declaration).
+         */
+        SolutionConfigStatus: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Key */
+            key: string;
+            /** Type */
+            type: string;
+            /** Required */
+            required: boolean;
+            /** Description */
+            description?: string | null;
+            /** Value Set */
+            value_set: boolean;
+        };
+        /**
+         * SolutionCreate
+         * @description Create-shape for an install.
+         *
+         *     Install kind is DERIVED from ``organization_id``, per the unified --org
+         *     standard — there is no ``scope`` input:
+         *
+         *     - ``organization_id`` absent (HOME) => the caller's own org.
+         *     - ``organization_id`` explicit null  => global (org NULL).
+         *     - ``organization_id`` a UUID         => that org (cross-org admins).
+         *
+         *     ``model_fields_set`` distinguishes absent (HOME) from explicit null (global).
+         */
+        SolutionCreate: {
+            /**
+             * Slug
+             * @description Definition identity (shared across installs)
+             */
+            slug: string;
+            /** Name */
+            name: string;
+            /**
+             * Global Repo Access
+             * @default false
+             */
+            global_repo_access: boolean;
+            /**
+             * Git Connected
+             * @default false
+             */
+            git_connected: boolean;
+            /** Git Repo Url */
+            git_repo_url?: string | null;
+            /** Repo Subpath */
+            repo_subpath?: string | null;
+            /** Git Ref */
+            git_ref?: string | null;
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /**
+         * SolutionDeleteSummary
+         * @description Counts of what a DELETE did. Pure-code entities (workflows/apps/forms/
+         *     agents) and the install's config DECLARATIONS are deleted via DB cascade.
+         *     Data-bearing entities are ORPHANED, not deleted: owned tables (and their
+         *     documents) are detached and survive as ordinary org tables, and the
+         *     install's config VALUES are stamped with orphan provenance and survive.
+         *     The UI echoes these back to the operator.
+         */
+        SolutionDeleteSummary: {
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /**
+             * Workflows Deleted
+             * @default 0
+             */
+            workflows_deleted: number;
+            /**
+             * Apps Deleted
+             * @default 0
+             */
+            apps_deleted: number;
+            /**
+             * Forms Deleted
+             * @default 0
+             */
+            forms_deleted: number;
+            /**
+             * Agents Deleted
+             * @default 0
+             */
+            agents_deleted: number;
+            /**
+             * Claims Deleted
+             * @default 0
+             */
+            claims_deleted: number;
+            /**
+             * Config Declarations Deleted
+             * @default 0
+             */
+            config_declarations_deleted: number;
+            /**
+             * Tables Orphaned
+             * @default 0
+             */
+            tables_orphaned: number;
+            /**
+             * Config Values Orphaned
+             * @default 0
+             */
+            config_values_orphaned: number;
+        };
+        /**
+         * SolutionDependencyPreview
+         * @description What a capture/export selection actually grabs, for human review.
+         *
+         *     ``pulled_in`` is the forward dependency closure beyond the seed selection
+         *     (e.g. a captured workflow's ``modules/`` imports when ``include_imports`` is
+         *     on, the tables/configs it reads, the workflow a captured form launches).
+         *     ``outside_references`` are reverse-dependency warnings. The preview is the
+         *     guard: every item is deselectable, nothing is silently blocked.
+         */
+        SolutionDependencyPreview: {
+            /** Pulled In */
+            pulled_in?: components["schemas"]["DependencyRef"][];
+            /** Outside References */
+            outside_references?: components["schemas"]["OutsideReference"][];
+            /**
+             * Scan Is Static
+             * @default true
+             */
+            scan_is_static: boolean;
+        };
+        /**
+         * SolutionDependencyPreviewRequest
+         * @description Seed selection to preview, mirroring SolutionCaptureRequest's selectors.
+         */
+        SolutionDependencyPreviewRequest: {
+            /** Workflows */
+            workflows?: string[];
+            /** Tables */
+            tables?: string[];
+            /** Apps */
+            apps?: string[];
+            /** Forms */
+            forms?: string[];
+            /** Agents */
+            agents?: string[];
+            /** Claims */
+            claims?: string[];
+            /** Configs */
+            configs?: string[];
+            /**
+             * Include Imports
+             * @default false
+             */
+            include_imports: boolean;
+        };
+        /**
+         * SolutionDeployRequest
+         * @description Full-replace deploy bundle for one install.
+         *
+         *     ``python_files`` maps relative paths (e.g. ``workflows/w.py``,
+         *     ``modules/x.py``) to UTF-8 source text, installed verbatim under the
+         *     install's ``_solutions/{id}/`` prefix. ``workflows`` are manifest-shaped
+         *     entity dicts to upsert (apps/forms/agents/tables join in later sub-plans).
+         *     Deploy is non-interactive by contract — it always applies the full bundle.
+         */
+        SolutionDeployRequest: {
+            /** Python Files */
+            python_files?: {
+                [key: string]: string;
+            };
+            /** Workflows */
+            workflows?: {
+                [key: string]: unknown;
+            }[];
+            /** Tables */
+            tables?: {
+                [key: string]: unknown;
+            }[];
+            /** Apps */
+            apps?: {
+                [key: string]: unknown;
+            }[];
+            /** Forms */
+            forms?: {
+                [key: string]: unknown;
+            }[];
+            /** Agents */
+            agents?: {
+                [key: string]: unknown;
+            }[];
+            /** Claims */
+            claims?: {
+                [key: string]: unknown;
+            }[];
+            /** Config Schemas */
+            config_schemas?: {
+                [key: string]: unknown;
+            }[];
+            /** Connection Schemas */
+            connection_schemas?: {
+                [key: string]: unknown;
+            }[];
+            /** Events */
+            events?: {
+                [key: string]: unknown;
+            }[];
+            /** Version */
+            version?: string | null;
+            /** Logo B64 */
+            logo_b64?: string | null;
+            /** Logo Content Type */
+            logo_content_type?: string | null;
+            /** Readme */
+            readme?: string | null;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+        };
+        /** SolutionDeployResponse */
+        SolutionDeployResponse: {
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /**
+             * Workflows Upserted
+             * @default 0
+             */
+            workflows_upserted: number;
+            /**
+             * Workflows Deleted
+             * @default 0
+             */
+            workflows_deleted: number;
+            /**
+             * Tables Upserted
+             * @default 0
+             */
+            tables_upserted: number;
+            /**
+             * Tables Deleted
+             * @default 0
+             */
+            tables_deleted: number;
+            /**
+             * Apps Upserted
+             * @default 0
+             */
+            apps_upserted: number;
+            /**
+             * Apps Deleted
+             * @default 0
+             */
+            apps_deleted: number;
+            /**
+             * Forms Upserted
+             * @default 0
+             */
+            forms_upserted: number;
+            /**
+             * Forms Deleted
+             * @default 0
+             */
+            forms_deleted: number;
+            /**
+             * Agents Upserted
+             * @default 0
+             */
+            agents_upserted: number;
+            /**
+             * Agents Deleted
+             * @default 0
+             */
+            agents_deleted: number;
+            /**
+             * Claims Upserted
+             * @default 0
+             */
+            claims_upserted: number;
+            /**
+             * Claims Deleted
+             * @default 0
+             */
+            claims_deleted: number;
+            /**
+             * Integrations Shell Created
+             * @default 0
+             */
+            integrations_shell_created: number;
+            /** Roles Created */
+            roles_created?: string[];
+        };
+        /**
+         * SolutionEntities
+         * @description Everything one install owns + its config declaration/value status.
+         */
+        SolutionEntities: {
+            solution: components["schemas"]["Solution"];
+            /** Workflows */
+            workflows?: components["schemas"]["SolutionEntitySummary"][];
+            /** Apps */
+            apps?: components["schemas"]["SolutionEntitySummary"][];
+            /** Forms */
+            forms?: components["schemas"]["SolutionEntitySummary"][];
+            /** Agents */
+            agents?: components["schemas"]["SolutionEntitySummary"][];
+            /** Claims */
+            claims?: components["schemas"]["SolutionEntitySummary"][];
+            /** Tables */
+            tables?: components["schemas"]["SolutionEntitySummary"][];
+            /** Configs */
+            configs?: components["schemas"]["SolutionConfigStatus"][];
+            /** Required Configs Unset */
+            required_configs_unset?: string[];
+        };
+        /**
+         * SolutionEntityDiff
+         * @description Added/removed display names for ONE entity type in an upgrade preview.
+         *
+         *     Identity is the deployer's per-install uuid5 remap (``solution_entity_id``),
+         *     so "kept" (in neither list) means the deploy would UPDATE that row in place.
+         */
+        SolutionEntityDiff: {
+            /** Added */
+            added?: string[];
+            /** Removed */
+            removed?: string[];
+        };
+        /**
+         * SolutionEntitySummary
+         * @description Lightweight entity row for Solution-owned/capturable entity lists.
+         */
+        SolutionEntitySummary: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Slug */
+            slug?: string | null;
+            /** Path */
+            path?: string | null;
+            /** Function Name */
+            function_name?: string | null;
+            /** Type */
+            type?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Access Level */
+            access_level?: string | null;
+            /** App Model */
+            app_model?: string | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            /** Logo */
+            logo?: string | null;
+            /** Source Table */
+            source_table?: string | null;
+            /** Select */
+            select?: string | null;
+            /** Created At */
+            created_at?: string | null;
+        };
+        /**
+         * SolutionExistingInstall
+         * @description The install a previewed zip would UPGRADE (matched by slug + scope).
+         */
+        SolutionExistingInstall: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Version */
+            version?: string | null;
+        };
+        /**
+         * SolutionInstallPreview
+         * @description Parse-only preview of a Solution install zip — what it would create + its
+         *     declared configs. Nothing is persisted by the preview endpoint.
+         *
+         *     When an install already exists for the zip's slug at the requested scope,
+         *     ``existing_install`` + ``diff`` describe the upgrade the install would
+         *     perform (Task 22) — drag-drop routes to UPGRADE, never a second install.
+         *
+         *     ``requires_password`` is True when the zip contains ``.bifrost/secrets.enc``
+         *     (a full-backup export). The install endpoint requires a password to decrypt
+         *     it; the UI should prompt for the password before the install POST.
+         */
+        SolutionInstallPreview: {
+            /** Slug */
+            slug?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Scope */
+            scope?: ("org" | "global") | null;
+            /** Version */
+            version?: string | null;
+            /** Workflows */
+            workflows?: {
+                [key: string]: unknown;
+            }[];
+            /** Tables */
+            tables?: {
+                [key: string]: unknown;
+            }[];
+            /** Apps */
+            apps?: {
+                [key: string]: unknown;
+            }[];
+            /** Forms */
+            forms?: {
+                [key: string]: unknown;
+            }[];
+            /** Agents */
+            agents?: {
+                [key: string]: unknown;
+            }[];
+            /** Claims */
+            claims?: {
+                [key: string]: unknown;
+            }[];
+            /** Config Schemas */
+            config_schemas?: {
+                [key: string]: unknown;
+            }[];
+            /** Connection Schemas */
+            connection_schemas?: {
+                [key: string]: unknown;
+            }[];
+            existing_install?: components["schemas"]["SolutionExistingInstall"] | null;
+            diff?: components["schemas"]["SolutionUpgradeDiff"] | null;
+            /**
+             * Requires Password
+             * @default false
+             */
+            requires_password: boolean;
+            /** Readme */
+            readme?: string | null;
+        };
+        /**
+         * SolutionReadme
+         * @description GET/PUT response shape for an install's README markdown.
+         */
+        SolutionReadme: {
+            /** Readme */
+            readme?: string | null;
+        };
+        /**
+         * SolutionReadmeUpdate
+         * @description PUT body for an install's README markdown (Task 6).
+         *
+         *     ``readme=None`` clears the README; a string sets it. The README is normally
+         *     repo-sourced (deploy reads it from the repo-root README.md), but the UI can
+         *     edit it directly on a disconnected install via this endpoint.
+         */
+        SolutionReadmeUpdate: {
+            /** Readme */
+            readme?: string | null;
+        };
+        /**
+         * SolutionRepoPreviewRequest
+         * @description Resolve an install plan from a git repo (+ optional subfolder/ref).
+         *     Parse-only — no DB write, no S3, no build.
+         */
+        SolutionRepoPreviewRequest: {
+            /** Repo Url */
+            repo_url: string;
+            /** Repo Subpath */
+            repo_subpath?: string | null;
+            /** Git Ref */
+            git_ref?: string | null;
+            /**
+             * Organization Id
+             * @description Target org for the install (absent => caller's org, null => global).
+             */
+            organization_id?: string | null;
+        };
+        /**
+         * SolutionSetupItem
+         * @description One declared requirement paired with whether it's satisfied.
+         *
+         *     For ``kind="config"``: a config declaration; ``is_set`` = a Config value
+         *     exists in the install scope. For ``kind="connection"``: an integration
+         *     declaration; ``is_set`` = a global Integration with that name exists.
+         */
+        SolutionSetupItem: {
+            /** Key */
+            key: string;
+            /** Type */
+            type: string;
+            /** Required */
+            required: boolean;
+            /** Is Set */
+            is_set: boolean;
+            /** Description */
+            description?: string | null;
+            /** Default */
+            default?: string | null;
+            /**
+             * Kind
+             * @default config
+             * @enum {string}
+             */
+            kind: "config" | "connection";
+            /**
+             * Has Oauth
+             * @default false
+             */
+            has_oauth: boolean;
+            /**
+             * Connected
+             * @default false
+             */
+            connected: boolean;
+        };
+        /**
+         * SolutionSetupStatus
+         * @description Required-config setup status for a Solution install.
+         *
+         *     ``setup_complete`` is True when every required declaration has a matching
+         *     Config value in the install's org scope.
+         */
+        SolutionSetupStatus: {
+            /** Setup Complete */
+            setup_complete: boolean;
+            /** Items */
+            items: components["schemas"]["SolutionSetupItem"][];
+        };
+        /**
+         * SolutionUpdate
+         * @description Partial-update (PATCH) of an install's INSTALL-LOCAL fields only.
+         *
+         *     ``slug`` is identity and is NOT editable here. Portable content
+         *     (workflows/apps/forms/agents/tables/config declarations) is owned by the
+         *     bundle/git and is read-only on this surface.
+         *
+         *     PATCH semantics: ``organization_id=None`` is a legitimate value (global
+         *     scope), so it is distinguished from "not provided" via
+         *     ``model_fields_set`` — the endpoint applies only fields present in the
+         *     request (``model_dump(exclude_unset=True)``).
+         */
+        SolutionUpdate: {
+            /** Name */
+            name?: string | null;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Global Repo Access */
+            global_repo_access?: boolean | null;
+            /** Git Connected */
+            git_connected?: boolean | null;
+            /** Git Repo Url */
+            git_repo_url?: string | null;
+            /** Repo Subpath */
+            repo_subpath?: string | null;
+            /** Git Ref */
+            git_ref?: string | null;
+        };
+        /**
+         * SolutionUpgradeDiff
+         * @description What deploying the previewed zip would change on the existing install.
+         */
+        SolutionUpgradeDiff: {
+            workflows?: components["schemas"]["SolutionEntityDiff"];
+            tables?: components["schemas"]["SolutionEntityDiff"];
+            forms?: components["schemas"]["SolutionEntityDiff"];
+            agents?: components["schemas"]["SolutionEntityDiff"];
+            apps?: components["schemas"]["SolutionEntityDiff"];
+            claims?: components["schemas"]["SolutionEntityDiff"];
+            config_schemas?: components["schemas"]["SolutionConfigSchemaDiff"];
+        };
+        /** SolutionsList */
+        SolutionsList: {
+            /** Solutions */
+            solutions?: components["schemas"]["Solution"][];
+        };
+        /**
          * StuckExecutionsResponse
          * @description Response model for stuck executions query
          */
@@ -19800,6 +21540,27 @@ export interface components {
             updated_at: string | null;
             /** Created By */
             created_by: string | null;
+            /**
+             * Is Solution Managed
+             * @description True if managed by a deployed Solution (read-only on platform)
+             * @default false
+             */
+            is_solution_managed: boolean;
+            /**
+             * Solution Id
+             * @description UUID of the owning Solution install (null if not solution-managed)
+             */
+            solution_id?: string | null;
+            /**
+             * Orphaned At
+             * @description When this table was orphaned by a Solution uninstall (null if not orphaned)
+             */
+            orphaned_at?: string | null;
+            /**
+             * Origin Solution Slug
+             * @description Slug of the Solution this table was orphaned from (null if not orphaned)
+             */
+            origin_solution_slug?: string | null;
         };
         /**
          * TableUpdate
@@ -19938,6 +21699,23 @@ export interface components {
             topic: string;
             /** Description */
             description: string;
+            /**
+             * Category
+             * @description Grouping for this built-in topic.
+             */
+            category: string;
+            /**
+             * Emitted By
+             * @description Platform surface that emits this topic.
+             */
+            emitted_by: string;
+            /**
+             * Example Body
+             * @description Representative context.event.data body for this topic.
+             */
+            example_body?: {
+                [key: string]: unknown;
+            };
         };
         /**
          * TopicsRegistryResponse
@@ -20409,6 +22187,12 @@ export interface components {
              */
             is_system: boolean;
             /**
+             * Is External
+             * @description External (portal/guest) user: sees only their own org tier — no global entities and no 'authenticated' access-level entitlement
+             * @default false
+             */
+            is_external: boolean;
+            /**
              * Mfa Enabled
              * @default false
              */
@@ -20431,6 +22215,8 @@ export interface components {
              * @default active
              */
             invite_status: string;
+            /** Registration Url */
+            registration_url?: string | null;
         };
         /**
          * UserResponse
@@ -20501,6 +22287,8 @@ export interface components {
             is_superuser?: boolean | null;
             /** Is Verified */
             is_verified?: boolean | null;
+            /** Is External */
+            is_external?: boolean | null;
             /** Mfa Enabled */
             mfa_enabled?: boolean | null;
             /** Organization Id */
@@ -20582,6 +22370,8 @@ export interface components {
         VersionResponse: {
             /** Version */
             version: string;
+            /** Contract Version */
+            contract_version: number;
         };
         /**
          * WatchSessionRequest
@@ -20913,6 +22703,16 @@ export interface components {
              */
             form_id?: string | null;
             /**
+             * App Id
+             * @description Optional app ID of the calling Solution app. Used to scope a path::function workflow ref to the app's own install (so it resolves the install's own workflow, not a sibling install's that shares the path).
+             */
+            app_id?: string | null;
+            /**
+             * Solution Id
+             * @description Optional install id of the calling Solution form/agent. Used to scope a path::function workflow ref to that install (so it resolves the install's own workflow, not a sibling install's or the bare _repo/ one). Takes precedence over form_id/app_id derivation.
+             */
+            solution_id?: string | null;
+            /**
              * Transient
              * @description If true, skip database persistence (for code editor debugging)
              * @default false
@@ -21158,7 +22958,7 @@ export interface components {
             id: string;
             /**
              * Name
-             * @description Human-readable workflow name
+             * @description MCP tool name for this workflow. Defaults to the Python function name on registration.
              */
             name: string;
             /**
@@ -21168,7 +22968,7 @@ export interface components {
             function_name?: string | null;
             /**
              * Display Name
-             * @description Optional display name for UI (falls back to name if not set)
+             * @description Optional UI display name (falls back to the tool name if not set)
              */
             display_name?: string | null;
             /**
@@ -21187,8 +22987,19 @@ export interface components {
              */
             organization_id?: string | null;
             /**
+             * Is Solution Managed
+             * @description True if managed by a deployed Solution (read-only on platform)
+             * @default false
+             */
+            is_solution_managed: boolean;
+            /**
+             * Solution Id
+             * @description UUID of the owning Solution install (null if not solution-managed)
+             */
+            solution_id?: string | null;
+            /**
              * Access Level
-             * @description Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required)
+             * @description Access level: 'authenticated' (any signed-in user except externals), 'everyone' (any signed-in user incl. externals), or 'role_based' (specific roles required)
              * @default role_based
              */
             access_level: string;
@@ -21432,7 +23243,7 @@ export interface components {
             organization_id?: string | null;
             /**
              * Access Level
-             * @description Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required)
+             * @description Access level: 'authenticated' (any signed-in user except externals), 'everyone' (any signed-in user incl. externals), or 'role_based' (specific roles required)
              */
             access_level?: string | null;
             /**
@@ -21447,8 +23258,13 @@ export interface components {
              */
             role_ids?: string[] | null;
             /**
+             * Name
+             * @description MCP tool name for this workflow. Defaults to the Python function name on registration.
+             */
+            name?: string | null;
+            /**
              * Display Name
-             * @description User-facing display name (defaults to code name if not set)
+             * @description Optional UI display name (falls back to the tool name if not set)
              */
             display_name?: string | null;
             /**
@@ -21676,6 +23492,11 @@ export interface components {
              * @default false
              */
             is_superuser: boolean;
+            /**
+             * Is External
+             * @default false
+             */
+            is_external: boolean;
             /** Organization Id */
             organization_id?: string | null;
             /**
@@ -22379,6 +24200,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_from_invite_passkey_options_auth_register_from_invite_passkey_options_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitePasskeyOptionsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupPasskeyOptionsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_from_invite_passkey_verify_auth_register_from_invite_passkey_verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitePasskeyVerifyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetupPasskeyVerifyResponse"];
                 };
             };
             /** @description Validation Error */
@@ -23211,6 +25098,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateInviteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_invite_api_users__user_id__invite_send_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendInviteRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -24278,7 +26200,7 @@ export interface operations {
                 workflowName?: string | null;
                 /** @description Filter by workflow UUID */
                 workflowId?: string | null;
-                /** @description Filter by execution status */
+                /** @description Filter by execution status (comma-separated values match any) */
                 status?: string | null;
                 /** @description Filter by start date (ISO format) */
                 startDate?: string | null;
@@ -24994,6 +26916,41 @@ export interface operations {
             };
         };
     };
+    remap_workflow_references_api_workflows__workflow_id__remap_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemapWorkflowRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemapWorkflowResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     recreate_workflow_file_api_workflows__workflow_id__recreate_post: {
         parameters: {
             query?: never;
@@ -25425,6 +27382,8 @@ export interface operations {
             query?: {
                 /** @description Filter scope: omit for all (superusers), 'global' for global only, or org UUID for specific org. */
                 scope?: string | null;
+                /** @description Include orphaned configs (former-install data left by an uninstalled Solution). */
+                include_orphaned?: boolean;
             };
             header?: never;
             path?: never;
@@ -25730,6 +27689,26 @@ export interface operations {
         };
     };
     reset_color_api_branding_color_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingSettings"];
+                };
+            };
+        };
+    };
+    reset_application_name_api_branding_application_name_delete: {
         parameters: {
             query?: never;
             header?: never;
@@ -27672,7 +29651,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -27705,7 +29684,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -27738,7 +29717,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -27771,7 +29750,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints__workflow_id__post: {
         parameters: {
             query?: never;
             header: {
@@ -28774,6 +30753,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_sdk_api_sdk_download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -31498,40 +33497,6 @@ export interface operations {
             };
         };
     };
-    get_integration_sdk_data_api_integrations_sdk__name__get: {
-        parameters: {
-            query: {
-                /** @description Organization ID for resolving mapping */
-                org_id: string;
-            };
-            header?: never;
-            path: {
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IntegrationSDKResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     test_integration_connection_api_integrations__integration_id__test_post: {
         parameters: {
             query?: never;
@@ -33144,6 +35109,8 @@ export interface operations {
             query?: {
                 /** @description Filter scope: 'global' for global only, org UUID for specific org. */
                 scope?: string | null;
+                /** @description Include orphaned tables (former-install data left by an uninstalled Solution). */
+                include_orphaned?: boolean;
             };
             header?: never;
             path?: never;
@@ -33825,6 +35792,709 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CustomClaim"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_solutions_api_solutions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionsList"];
+                };
+            };
+        };
+    };
+    create_solution_api_solutions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Solution"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_api_solutions__solution_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Solution"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_solution_api_solutions__solution_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionDeleteSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_solution_api_solutions__solution_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Solution"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_logo_api_solutions__solution_id__logo_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "image/png": unknown;
+                    "image/jpeg": unknown;
+                    "image/svg+xml": unknown;
+                };
+            };
+            /** @description No icon set */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_readme_api_solutions__solution_id__readme_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionReadme"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_solution_readme_api_solutions__solution_id__readme_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionReadmeUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionReadme"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    solution_setup_api_solutions__solution_id__setup_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionSetupStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_solution_api_solutions__solution_id__export_post: {
+        parameters: {
+            query?: {
+                mode?: string;
+                include_data?: boolean;
+            };
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["Body_export_solution_api_solutions__solution_id__export_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/zip": unknown;
+                };
+            };
+            /** @description Install not found, or it predates export support */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_entities_api_solutions__solution_id__entities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionEntities"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_capture_candidates_api_solutions__solution_id__capture_candidates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionCaptureCandidates"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_solution_capture_api_solutions__solution_id__capture_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionDependencyPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionDependencyPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deploy_solution_api_solutions__solution_id__deploy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionDeployRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionDeployResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    capture_solution_entities_api_solutions__solution_id__capture_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionCaptureRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionCaptureResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ack_pulled_captures_api_solutions__solution_id__pull_ack_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PullAckRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullAckResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_solution_api_solutions__solution_id__sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    install_preview_api_solutions_install_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_install_preview_api_solutions_install_preview_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionInstallPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    install_preview_repo_api_solutions_install_preview_repo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionRepoPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionInstallPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    install_from_repo_api_solutions_install_from_repo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionRepoPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Solution"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    install_solution_api_solutions_install_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_install_solution_api_solutions_install_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Solution"];
                 };
             };
             /** @description Validation Error */
@@ -34654,6 +37324,39 @@ export interface operations {
             };
         };
     };
+    swap_application_slugs_api_applications_swap_slugs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationSwapSlugsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     validate_application_api_applications__app_id__validate_post: {
         parameters: {
             query?: never;
@@ -35082,6 +37785,40 @@ export interface operations {
                 app_id: string;
                 /** @description Bundle asset filename */
                 filename: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_v2_dist_asset_api_applications__app_id__dist__path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Application UUID */
+                app_id: string;
+                /** @description Path within the app's dist/ (e.g. index.html) */
+                path: string;
             };
             cookie?: never;
         };
@@ -36535,6 +39272,77 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fetch_module_api_sdk_modules__path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fetch_module_index_api_sdk_modules_index_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    fetch_requirements_api_sdk_requirements_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

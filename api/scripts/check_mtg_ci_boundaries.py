@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 EXPECTED_DEPLOY_DEV_IF = (
-    "github.repository == 'jackmusick/bifrost' "
+    "github.repository == 'gobifrost/bifrost' "
     "&& github.event_name == 'push' "
     "&& github.ref == 'refs/heads/main'"
 )

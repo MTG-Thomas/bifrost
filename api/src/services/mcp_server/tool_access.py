@@ -69,6 +69,7 @@ class MCPToolAccessService:
         is_superuser: bool,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> MCPToolAccessResult:
         """
         Get all MCP tools accessible to the user.
@@ -98,6 +99,7 @@ class MCPToolAccessService:
             is_superuser=is_superuser,
             user_id=user_id,
             org_id=org_id,
+            is_external=is_external,
         )
 
         # Step 2: Collect tools from accessible agents, enforcing per-workflow
@@ -163,6 +165,7 @@ class MCPToolAccessService:
         is_superuser: bool,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> AgentScopedToolResult | None:
         """
         Get MCP tools for a specific agent, verifying user access.
@@ -205,7 +208,13 @@ class MCPToolAccessService:
             logger.warning(f"User denied org-scoped access to agent {agent_id}")
             return None
 
-        if not self._check_agent_access(agent, user_roles, is_superuser, user_id=user_id):
+        if not self._check_agent_access(
+            agent,
+            user_roles,
+            is_superuser,
+            user_id=user_id,
+            is_external=is_external,
+        ):
             logger.warning(f"User denied access to agent {agent_id}")
             return None
 
@@ -344,11 +353,12 @@ class MCPToolAccessService:
         agent: Agent,
         user_roles: list[str],
         is_superuser: bool,
+        is_external: bool = False,
         user_id: UUID | str | None = None,
     ) -> bool:
         """Check if user has access to a specific agent (same rules as _get_accessible_agents)."""
         if agent.access_level == AgentAccessLevel.AUTHENTICATED:
-            return True
+            return is_superuser or not is_external
 
         if agent.access_level == AgentAccessLevel.ROLE_BASED:
             agent_role_names = {role.name for role in agent.roles}
@@ -370,6 +380,7 @@ class MCPToolAccessService:
         is_superuser: bool,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> list[Agent]:
         """
         Get agents accessible to the user based on access_level and roles.
@@ -406,10 +417,16 @@ class MCPToolAccessService:
 
         for agent in all_agents:
             if agent.access_level == AgentAccessLevel.AUTHENTICATED:
-                # Any authenticated user can access
-                accessible_agents.append(agent)
+                if is_superuser or not is_external:
+                    accessible_agents.append(agent)
 
-            elif self._check_agent_access(agent, list(user_role_set), is_superuser, user_id=user_id):
+            elif self._check_agent_access(
+                agent,
+                list(user_role_set),
+                is_superuser,
+                user_id=user_id,
+                is_external=is_external,
+            ):
                 accessible_agents.append(agent)
 
             # Note: PUBLIC agents are not included for MCP access

@@ -41,6 +41,7 @@ from src.models.contracts.applications import (
 from src.models.orm.applications import Application
 from src.models.orm.file_index import FileIndex
 from src.core.exceptions import AccessDeniedError
+from src.services.solutions.guard import assert_entity_id_not_solution_managed
 from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 
 logger = logging.getLogger(__name__)
@@ -122,9 +123,12 @@ async def application_to_public(
         is_published=application.is_published,
         has_unpublished_changes=application.has_unpublished_changes,
         access_level=application.access_level,
+        app_model=application.app_model,
         role_ids=role_ids,
         repo_path=application.repo_path,
         logo=_logo_data_url(application.logo_data, application.logo_content_type),
+        is_solution_managed=application.solution_id is not None,
+        solution_id=application.solution_id,
     )
 
 
@@ -157,7 +161,7 @@ async def get_application_or_404(
             if not app:
                 raise AccessDeniedError(f"Application '{slug}' not found")
             return app
-        return await repo.can_access(slug=slug)
+        return await repo.can_access(slug=slug, include_solution_managed=True)
     except AccessDeniedError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -242,7 +246,8 @@ async def create_application(
     )
 
     try:
-        await ensure_no_stale_app_source(ctx.db, data.slug)
+        if data.app_model == "standalone_v2":
+            await ensure_no_stale_app_source(ctx.db, data.slug)
         application = await repo.create_application(data, created_by=user.email)
         return await application_to_public(application, repo)
     except ValueError as e:
@@ -512,6 +517,7 @@ async def publish_application(
     )
 
     try:
+        await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
         message = data.message if data else None
         application = await repo.publish(app_id, user.email, message)
         if not application:
@@ -571,6 +577,7 @@ async def replace_application_endpoint(
     )
 
     try:
+        await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
         application = await repo.replace_application(
             app_id, data.repo_path, force=data.force
         )
@@ -836,6 +843,7 @@ async def rollback_application(
         is_superuser=user.is_platform_admin,
     )
     application = await get_application_by_id_or_404(ctx, app_id)
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
 
     try:
         await repo.rollback_to_version(application, data.version_id)

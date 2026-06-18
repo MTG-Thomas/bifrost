@@ -22,10 +22,12 @@ import pathlib
 import secrets
 import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 import time
 import webbrowser
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -45,6 +47,7 @@ import httpx
 import bifrost.credentials as credentials
 from bifrost._workspace_lock import WorkspaceLock, WorkspaceLockError
 from bifrost.client import BifrostClient
+from bifrost.contract_version import CONTRACT_VERSION
 # Canonical platform export list. Shared with api/src/services/app_bundler.
 # A drift test (tests/unit/test_platform_names_match_runtime.py) keeps this
 # in step with the client's runtime `$` registry so new platform exports
@@ -96,6 +99,35 @@ def _safe_workspace_relative_path(value: str) -> str:
     if not rel.parts or any(part in ("", ".", "..") for part in rel.parts):
         raise ValueError(f"unsafe server path: {value}")
     return rel.as_posix()
+
+
+def _ensure_utf8_stdio() -> None:
+    """Make stdout/stderr tolerate non-ASCII output on Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):
+            pass
+
+
+def _stdout_can_encode(text: str) -> bool:
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(enc)
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def _check_glyph() -> str:
+    return "✓" if _stdout_can_encode("✓") else "OK"
+
+
+def _print_sync_summary(summary: str) -> None:
+    print(f"  {_check_glyph()} {summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +198,29 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
 WATCH_HEARTBEAT_SECONDS = 60
 
 
+def _warn_cli_version(message: str) -> None:
+    print(f"\033[33m{message}\033[0m", file=sys.stderr)
+
+
+def _version_notice_marker(api_url: str, server_version: str) -> pathlib.Path:
+    key = f"{zlib.crc32(f'{api_url}|{server_version}'.encode()):08x}"
+    return pathlib.Path(tempfile.gettempdir()) / f"bifrost-cli-version-notice-{key}"
+
+
+def _warn_build_drift_once(api_url: str, installed: str, server_version: str) -> None:
+    marker = _version_notice_marker(api_url, server_version)
+    if marker.exists():
+        return
+    try:
+        marker.write_text("1", encoding="utf-8")
+    except OSError:
+        pass
+    _warn_cli_version(
+        f"Your CLI ({installed}) differs from server build {server_version}. "
+        f"Run: pipx install --force {api_url}/api/cli/download"
+    )
+
+
 def _check_cli_version() -> None:
     """Hard-block the command if the installed CLI doesn't match the deployed server.
 
@@ -204,25 +259,39 @@ def _check_cli_version() -> None:
         resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            _warn_cli_version("Could not verify Bifrost CLI/server compatibility: version response was not an object.")
+            return
 
         server_version = (data.get("version") or "").lstrip("v")
-        if not server_version:
-            return  # server didn't tell us its version — best-effort skip
+        server_contract_version = data.get("contract_version")
+        if server_contract_version is None:
+            if server_version and server_version == installed:
+                return
+            _warn_cli_version(
+                "Could not verify Bifrost CLI/server compatibility: server did not report a contract version."
+            )
+            return
 
-        if server_version != installed:
+        if server_contract_version != CONTRACT_VERSION:
             print(
-                f"\033[33mYour CLI ({installed}) is out of date. "
-                f"Server is on {server_version}.\nRun:\n"
+                f"\033[33mYour CLI contract ({CONTRACT_VERSION}) is incompatible "
+                f"with server contract {server_contract_version}.\nRun:\n"
                 f"  pipx install --force {api_url}/api/cli/download\n\033[0m",
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        if not server_version:
+            _warn_cli_version("Could not verify Bifrost CLI/server build: server did not report a version.")
+            return
+
+        if server_version != installed:
+            _warn_build_drift_once(api_url, installed, server_version)
     except SystemExit:
         raise
     except Exception as e:
-        # Best-effort: network errors, malformed JSON, missing credentials store,
-        # etc. should never block the user. The exit-on-mismatch above is the
-        # only intentional bail-out.
+        _warn_cli_version(f"Could not verify Bifrost CLI/server compatibility: {e}")
         logger.debug(f"CLI version check skipped: {e}")
 
 
@@ -793,6 +862,14 @@ def main(args: list[str] | None = None) -> int:
             from bifrost.skill import handle_skill
             return handle_skill(args[1:])
 
+        if command == "solution":
+            from bifrost.commands.solution import handle_solution
+            return handle_solution(args[1:])
+
+        if command == "deploy":
+            from bifrost.commands.solution import handle_deploy
+            return handle_deploy(args[1:])
+
         # Entity mutation subgroups (bifrost orgs ..., bifrost roles ..., etc.).
         from bifrost.commands import ENTITY_GROUPS, dispatch_entity_subgroup
 
@@ -824,6 +901,8 @@ Commands:
   pull        Pull files from Bifrost platform to local directory (alias for sync)
   export      Export a workspace bundle (optionally portable/scrubbed)
   import      Apply a bundle to the current environment
+  solution    Manage Solution installs (init, scaffold-app, start, deploy, install)
+  deploy      Deploy the current Solution workspace (alias for 'solution deploy')
   watch       Watch for file changes and auto-push
   api         Generic authenticated API request
   migrate-imports  Rewrite "bifrost" imports into user/lucide/router imports
@@ -867,6 +946,9 @@ Examples:
   bifrost pull apps/my-app
   bifrost watch
   bifrost watch apps/my-app
+  bifrost solution init --slug my-solution
+  bifrost solution scaffold-app dashboard
+  bifrost solution start
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate
   bifrost migrate-imports apps/my-app --dry-run
@@ -1115,9 +1197,11 @@ Usage: bifrost auth <subcommand>
 
 Subcommands:
   list, ls    List all Bifrost URLs with stored credentials
+  token       Print the resolved API URL and access token as JSON
 
 Examples:
   bifrost auth list
+  bifrost auth token
 """.strip())
         return 0 if args else 1
 
@@ -1136,6 +1220,52 @@ Examples:
             elif not env_url and url == urls[0]:
                 marker = "  (current — first stored)"
             print(f"  {url}{marker}")
+        return 0
+
+    if sub == "token":
+        api_url = None
+        idx = 1
+        while idx < len(args):
+            arg = args[idx]
+            if arg in ("--url", "--api-url"):
+                if idx + 1 >= len(args):
+                    print(f"{arg} requires a value", file=sys.stderr)
+                    return 1
+                api_url = args[idx + 1]
+                idx += 2
+                continue
+            if arg in ("--help", "-h"):
+                print("""
+Usage: bifrost auth token [--url <api-url>]
+
+Print the resolved API URL and access token as JSON.
+""".strip())
+                return 0
+            print(f"Unknown option for auth token: {arg}", file=sys.stderr)
+            return 1
+
+        resolved = credentials.get_credentials(api_url)
+        if not resolved:
+            print("Not authenticated. Run `bifrost login` first.", file=sys.stderr)
+            return 1
+
+        if credentials.is_token_expired(api_url):
+            try:
+                from bifrost.client import refresh_tokens
+
+                refreshed = asyncio.run(refresh_tokens())
+            except Exception as exc:
+                refreshed = False
+                print(f"Warning: token expired and refresh failed: {exc}", file=sys.stderr)
+            if refreshed:
+                resolved = credentials.get_credentials(api_url) or resolved
+            else:
+                print("Warning: token is expired; emitting stored token.", file=sys.stderr)
+
+        print(json.dumps({
+            "api_url": resolved["api_url"],
+            "access_token": resolved["access_token"],
+        }))
         return 0
 
     print(f"Unknown auth subcommand: {sub}", file=sys.stderr)
@@ -1359,6 +1489,17 @@ def handle_run(args: list[str]) -> int:
     # Add current working directory to sys.path for workspace imports
     # This allows workflows to import from their workspace (e.g., `from features.x import y`)
     cwd = os.getcwd()
+    try:
+        from bifrost.solution_descriptor import find_solution_root
+
+        solution_root = find_solution_root(pathlib.Path(abs_file_path).parent)
+        if solution_root is not None:
+            solution_root_str = str(solution_root)
+            if solution_root_str not in sys.path:
+                sys.path.insert(0, solution_root_str)
+    except Exception:
+        pass
+
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
 
@@ -1764,7 +1905,7 @@ def _parse_push_watch_args(args: list[str]) -> _PushWatchArgs | None:
             result.mirror = True
         elif arg == "--validate":
             result.validate = True
-        elif arg == "--force":
+        elif arg in ("--force", "--yes", "-y"):
             result.force = True
         elif arg.startswith("--"):
             print(f"Unknown option: {arg}", file=sys.stderr)
@@ -1776,6 +1917,13 @@ def _parse_push_watch_args(args: list[str]) -> _PushWatchArgs | None:
             return None
         i += 1
     return result
+
+
+def _sync_use_tui(*, force: bool, is_tty: bool) -> bool:
+    """Return whether sync should use the interactive TUI."""
+    if os.environ.get("BIFROST_NONINTERACTIVE") or os.environ.get("BIFROST_SYNC_NO_TUI"):
+        return False
+    return is_tty and not force
 
 
 def handle_push(args: list[str]) -> int:
@@ -1804,7 +1952,7 @@ Arguments:
 Options:
   --mirror              Make target match source exactly (delete files not present locally)
   --validate            Validate after push (for apps)
-  --force               Skip confirmation prompts
+  --force, --yes, -y    Skip confirmation prompts (non-interactive)
   --help, -h            Show this help message
 
 Use 'bifrost watch' for continuous file watching.
@@ -1883,14 +2031,14 @@ Arguments:
 Options:
   --mirror              Include server-only files (for pull or delete)
   --validate            Validate after sync (for apps)
-  --force               Skip confirmation prompts (use default actions)
+  --force, --yes, -y    Skip confirmation prompts (use default actions)
   --help, -h            Show this help message
 
 Examples:
   bifrost sync
   bifrost sync apps/my-app
   bifrost sync --mirror
-  bifrost sync --force
+  bifrost sync --yes
 """.strip())
         return 0
 

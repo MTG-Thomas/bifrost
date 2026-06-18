@@ -621,6 +621,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
         integration_id: UUID,
         org_id: UUID,
         *,
+        external: bool = False,
         include_default_secrets: bool = False,
     ) -> dict:
         """
@@ -632,27 +633,38 @@ class IntegrationsRepository(BaseRepository[Integration]):
         Args:
             integration_id: Integration UUID
             org_id: Organization UUID
-            include_default_secrets: Whether integration-level secret defaults
-                may be included. SDK execution reads need these for mapped
-                integrations; mapping-list/admin responses should not leak
-                global secrets through org mappings.
+            external: External portal callers pass True to drop the global
+                org_id=NULL integration defaults entirely.
+            include_default_secrets: Include integration-default secret fallback
+                values. SDK mapping reads can leave this false so global
+                defaults do not leak as decrypted org config.
 
         Returns:
-            dict: Merged configuration (integration defaults + org overrides)
+            dict: Merged configuration (integration defaults + org overrides),
+            or org-specific config only for external callers.
         """
         from src.models.orm import Config as ConfigModel
         from sqlalchemy import or_
 
-        # Query for both integration defaults (org_id=NULL) and org-specific overrides
-        config_query = select(ConfigModel).where(
-            and_(
-                ConfigModel.integration_id == integration_id,
-                or_(
-                    ConfigModel.organization_id.is_(None),
+        if external:
+            # External: org tier only — never read the global defaults.
+            config_query = select(ConfigModel).where(
+                and_(
+                    ConfigModel.integration_id == integration_id,
                     ConfigModel.organization_id == org_id,
-                ),
+                )
             )
-        )
+        else:
+            # Both integration defaults (org_id=NULL) and org-specific overrides
+            config_query = select(ConfigModel).where(
+                and_(
+                    ConfigModel.integration_id == integration_id,
+                    or_(
+                        ConfigModel.organization_id.is_(None),
+                        ConfigModel.organization_id == org_id,
+                    ),
+                )
+            )
         result = await self.session.execute(config_query)
         config_entries = result.scalars().all()
 
@@ -667,22 +679,22 @@ class IntegrationsRepository(BaseRepository[Integration]):
             else:
                 val = value
 
-            is_default = entry.organization_id is None
+            is_secret = entry.config_type == ConfigType.SECRET
             if (
-                is_default
-                and entry.config_type == ConfigType.SECRET
+                is_secret
+                and entry.organization_id is None
                 and not include_default_secrets
             ):
                 continue
 
-            if entry.config_type == ConfigType.SECRET and isinstance(val, str):
+            if is_secret and isinstance(val, str):
                 try:
                     val = decrypt_secret(val)
                 except Exception:
                     logger.warning(f"Failed to decrypt config '{entry.key}'")
                     val = None
 
-            if is_default:
+            if entry.organization_id is None:
                 defaults[entry.key] = val
             else:
                 overrides[entry.key] = val
@@ -692,41 +704,9 @@ class IntegrationsRepository(BaseRepository[Integration]):
 
         return config
 
-    async def get_provider_org_token(
-        self, provider_id: UUID, organization_id: UUID | None
-    ) -> Any:
-        """Return the latest org-level OAuth token for a provider.
-
-        When an organization is provided, this intentionally does not fall back
-        to a global token; callers that need cascade semantics must use
-        OAuthTokenRepository.get_org_level_for_provider instead.
-        """
-        from src.models.orm.oauth import OAuthToken
-
-        if organization_id is not None:
-            result = await self.session.execute(
-                select(OAuthToken)
-                .where(
-                    OAuthToken.provider_id == provider_id,
-                    OAuthToken.organization_id == organization_id,
-                    OAuthToken.user_id.is_(None),
-                )
-                .order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
-            )
-            return result.scalars().first()
-
-        result = await self.session.execute(
-            select(OAuthToken)
-            .where(
-                OAuthToken.provider_id == provider_id,
-                OAuthToken.organization_id.is_(None),
-                OAuthToken.user_id.is_(None),
-            )
-            .order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
-        )
-        return result.scalars().first()
-
-    async def get_integration_defaults(self, integration_id: UUID) -> dict[str, Any]:
+    async def get_integration_defaults(
+        self, integration_id: UUID, *, external: bool
+    ) -> dict[str, Any]:
         """
         Get integration-level config defaults (org_id=NULL).
 
@@ -734,11 +714,21 @@ class IntegrationsRepository(BaseRepository[Integration]):
 
         Args:
             integration_id: Integration UUID
+            external: REQUIRED (no default — EXT-1 OPEN-E / NEW-G). These
+                defaults ARE the global (org_id=NULL) tier and may carry
+                decrypted SECRETs. An EXTERNAL portal caller passes True and
+                gets nothing (no global leak); engine/sentinel/admin callers
+                pass False explicitly. No default so a new call site can't
+                silently leak the global tier.
 
         Returns:
-            dict: Integration-level config defaults
+            dict: Integration-level config defaults, or empty for externals.
         """
         from src.models.orm import Config as ConfigModel
+
+        if external:
+            # The defaults ARE the global tier — an external never reads it.
+            return {}
 
         config_query = select(ConfigModel).where(
             and_(
@@ -767,3 +757,31 @@ class IntegrationsRepository(BaseRepository[Integration]):
             config[entry.key] = val
 
         return config
+
+    async def get_provider_org_token(
+        self,
+        provider_id: UUID,
+        organization_id: UUID | None,
+    ) -> Any:
+        """Get org-level OAuth token for a provider, scoped to org or global."""
+        from src.models.orm.oauth import OAuthToken
+
+        if organization_id is not None:
+            result = await self.session.execute(
+                select(OAuthToken).where(
+                    OAuthToken.provider_id == provider_id,
+                    OAuthToken.organization_id == organization_id,
+                    OAuthToken.user_id.is_(None),
+                ).order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
+            )
+            token = result.scalars().first()
+            return token
+
+        result = await self.session.execute(
+            select(OAuthToken).where(
+                OAuthToken.provider_id == provider_id,
+                OAuthToken.organization_id.is_(None),
+                OAuthToken.user_id.is_(None),
+            ).order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
+        )
+        return result.scalars().first()

@@ -3,8 +3,6 @@ Config and SystemConfig ORM models.
 
 Represents configuration key-value storage for organizations and system settings.
 """
-# ruff: noqa: F821
-# pyright: reportUndefinedVariable=false
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -15,7 +13,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.enums import ConfigType
 from src.models.orm.base import Base
-
 
 
 # Execution-resolution entity — access via ConfigRepository (OrgScopedRepository).
@@ -55,6 +52,14 @@ class Config(Base):
     config_schema_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("integration_config_schema.id", ondelete="CASCADE"), default=None
     )
+    # Orphan provenance — set when a Solution install is deleted non-
+    # destructively. Records which Solution this config value came from so a
+    # reinstall can reattach it. origin_solution_id is informational (NOT a FK
+    # — the Solution row is gone); origin_solution_slug is the stable reattach
+    # key. orphaned_at non-null ⇔ currently orphaned.
+    origin_solution_slug: Mapped[str | None] = mapped_column(String(255), default=None, nullable=True)
+    origin_solution_id: Mapped[UUID | None] = mapped_column(default=None, nullable=True)
+    orphaned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
@@ -67,7 +72,7 @@ class Config(Base):
     updated_by: Mapped[str] = mapped_column(String(255))
 
     # Relationships
-    organization: Mapped["Organization | None"] = relationship(back_populates="configs")
+    organization: Mapped["Organization | None"] = relationship(back_populates="configs")  # type: ignore[name-defined]  # noqa: F821
 
     __table_args__ = (
         Index("ix_configs_integration_org_key", "integration_id", "organization_id", "key", unique=True),
@@ -121,6 +126,6 @@ class SystemConfig(Base):
     updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships
-    organization: Mapped["Organization | None"] = relationship(
+    organization: Mapped["Organization | None"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         "Organization", back_populates="system_configs"
     )
