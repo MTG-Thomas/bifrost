@@ -690,6 +690,41 @@ async def _insert_scheduled_execution(
     return exec_id
 
 
+async def _derive_solution_scope(
+    db: DbSession,
+    *,
+    solution_id: str | None,
+    form_id: str | None,
+    app_id: str | None,
+) -> UUID | None:
+    """Resolve the calling install's scope for a path::fn workflow ref."""
+    from src.models.orm.forms import Form
+    from src.models.orm.applications import Application
+
+    if solution_id:
+        try:
+            return UUID(solution_id)
+        except ValueError:
+            return None
+    if form_id:
+        try:
+            form_uuid = UUID(form_id)
+        except ValueError:
+            return None
+        return (
+            await db.execute(select(Form.solution_id).where(Form.id == form_uuid))
+        ).scalar_one_or_none()
+    if app_id:
+        try:
+            app_uuid = UUID(app_id)
+        except ValueError:
+            return None
+        return (
+            await db.execute(select(Application.solution_id).where(Application.id == app_uuid))
+        ).scalar_one_or_none()
+    return None
+
+
 @router.post(
     "/execute",
     response_model=WorkflowExecutionResponse,
@@ -740,9 +775,17 @@ async def execute_workflow(
     )
 
     # Look up workflow metadata for type checking (needed for data provider handling)
+    solution_scope = await _derive_solution_scope(
+        db,
+        solution_id=request.solution_id,
+        form_id=request.form_id,
+        app_id=request.app_id,
+    )
     workflow = None
     if request.workflow_id:
-        workflow = await workflow_repo.resolve(request.workflow_id)
+        workflow = await workflow_repo.resolve(
+            request.workflow_id, solution_scope=solution_scope
+        )
         if not workflow:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

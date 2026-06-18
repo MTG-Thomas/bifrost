@@ -18,8 +18,11 @@ import hashlib
 import json
 import logging
 import os
+import threading
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
+from uuid import UUID
 
 import redis
 
@@ -31,6 +34,56 @@ logger = logging.getLogger(__name__)
 MODULE_CACHE_TTL = 86400
 
 REPO_PREFIX = "_repo/"
+SOLUTIONS_ROOT = "_solutions"
+
+_solution_ctx = threading.local()
+
+
+@dataclass(frozen=True)
+class SolutionContext:
+    """Active per-execution solution import root."""
+
+    solution_id: str
+    global_repo_access: bool
+
+
+def set_solution_context(solution_id: UUID | str, global_repo_access: bool) -> None:
+    """Activate the solution import root for the current thread/execution."""
+    _solution_ctx.value = SolutionContext(
+        solution_id=str(solution_id), global_repo_access=bool(global_repo_access)
+    )
+
+
+def clear_solution_context() -> None:
+    """Deactivate the solution import root and restore plain _repo/ behavior."""
+    _solution_ctx.value = None
+
+
+def get_solution_context() -> SolutionContext | None:
+    """Return the active solution context for this thread, or None."""
+    return getattr(_solution_ctx, "value", None)
+
+
+def _candidate_storage_paths(path: str) -> list[str]:
+    ctx = get_solution_context()
+    if ctx is None:
+        return [path]
+    rooted = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{path.lstrip('/')}"
+    if ctx.global_repo_access:
+        return [rooted, path]
+    return [rooted]
+
+
+def candidate_index_prefixes(base_path: str) -> list[str]:
+    """Storage-path prefixes used for namespace-package detection."""
+    base = base_path.rstrip("/")
+    ctx = get_solution_context()
+    if ctx is None:
+        return [f"{base}/"]
+    rooted = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{base}/"
+    if ctx.global_repo_access:
+        return [rooted, f"{base}/"]
+    return [rooted]
 
 # Cached object storage clients — reused across calls to avoid repeated setup
 _s3_client: Any = None
@@ -107,6 +160,12 @@ def _get_s3_client() -> Any:
         return None
 
 
+def _storage_key(storage_path: str) -> str:
+    if storage_path.startswith(f"{SOLUTIONS_ROOT}/"):
+        return storage_path
+    return f"{REPO_PREFIX}{storage_path}"
+
+
 def _get_s3_module(path: str) -> bytes | None:
     """
     Fetch a module from S3 _repo/ prefix (synchronous).
@@ -123,7 +182,7 @@ def _get_s3_module(path: str) -> bytes | None:
         return None
 
     try:
-        key = f"{REPO_PREFIX}{path}"
+        key = _storage_key(path)
         response = client.get_object(Bucket=bucket, Key=key)
         return response["Body"].read()
 
@@ -201,7 +260,7 @@ def _get_blob_module(path: str) -> bytes | None:
     if client is None:
         return None
 
-    key = f"{REPO_PREFIX}{path}"
+    key = _storage_key(path)
     try:
         return client.download_blob(key).readall()
     except Exception as e:
@@ -232,26 +291,29 @@ def get_module_sync(path: str) -> CachedModule | None:
     """
     try:
         client = _get_sync_redis()
-        key = f"{MODULE_KEY_PREFIX}{path}"
-        data = client.get(key)
-        if data:
-            return json.loads(data)
+        for storage_path in _candidate_storage_paths(path):
+            key = f"{MODULE_KEY_PREFIX}{storage_path}"
+            data = client.get(key)
+            if data:
+                return json.loads(data)
 
-        # Redis miss — try object storage fallback
-        storage_content = _get_object_storage_module(path)
-        if storage_content is not None:
+            # Redis miss — try object storage fallback
+            storage_content = _get_object_storage_module(storage_path)
+            if storage_content is None:
+                continue
+
             try:
                 content_str = storage_content.decode("utf-8")
             except UnicodeDecodeError:
                 logger.warning(
-                    f"Could not decode object storage module as UTF-8: {path}"
+                    f"Could not decode object storage module as UTF-8: {storage_path}"
                 )
                 return None
 
             content_hash = hashlib.sha256(storage_content).hexdigest()
             module: CachedModule = {
                 "content": content_str,
-                "path": path,
+                "path": storage_path,
                 "hash": content_hash,
             }
 
@@ -259,9 +321,9 @@ def get_module_sync(path: str) -> CachedModule | None:
             try:
                 client.setex(key, MODULE_CACHE_TTL, json.dumps(module))
                 # Also add to module index
-                client.sadd(MODULE_INDEX_KEY, path)
+                client.sadd(MODULE_INDEX_KEY, storage_path)
             except redis.RedisError as e:
-                logger.warning(f"Failed to cache S3 module to Redis: {e}")
+                logger.warning(f"Failed to cache object storage module to Redis: {e}")
 
             return module
 
@@ -361,6 +423,37 @@ def get_module_index_sync() -> set[str]:
     except redis.RedisError as e:
         logger.warning(f"Redis error fetching module index: {e}")
         return set()
+
+
+def solution_has_submodules(base_path: str) -> bool:
+    """True when the active solution has any object under base_path."""
+    ctx = get_solution_context()
+    if ctx is None:
+        return False
+
+    prefix = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{base_path.rstrip('/')}/"
+    if _object_storage_provider() == "azure_blob":
+        client = _get_blob_container_client()
+        if client is None:
+            return False
+        try:
+            return next(client.list_blobs(name_starts_with=prefix), None) is not None
+        except Exception as e:
+            logger.debug(f"Azure Blob submodule check failed for {prefix}: {e}")
+            return False
+
+    bucket = os.environ.get("BIFROST_S3_BUCKET")
+    if not bucket:
+        return False
+    client = _get_s3_client()
+    if client is None:
+        return False
+    try:
+        resp = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+        return resp.get("KeyCount", 0) > 0 or bool(resp.get("Contents"))
+    except Exception as e:
+        logger.debug(f"S3 submodule check failed for {prefix}: {e}")
+        return False
 
 
 def reset_sync_redis() -> None:
