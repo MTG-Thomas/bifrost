@@ -76,6 +76,8 @@ _DEFAULT_IGNORE_PATTERNS = [
     "dist/",
     "coverage/",
     ".coverage",
+    ".env",
+    ".env.*",
     ".DS_Store",
     "*.pyc",
     # Editor atomic-write turds (e.g. foo.tsx.tmp.12345.1776000000000).
@@ -128,6 +130,18 @@ def _check_glyph() -> str:
 
 def _print_sync_summary(summary: str) -> None:
     print(f"  {_check_glyph()} {summary}")
+
+
+# Module-level TTY override. ``None`` means "detect from the real stdio";
+# tests set this to ``True``/``False`` to exercise the interactive vs
+# line-oriented (non-TTY) progress paths deterministically.
+_is_tty: bool | None = None
+
+
+def _resolve_is_tty() -> bool:
+    if _is_tty is not None:
+        return _is_tty
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 # ---------------------------------------------------------------------------
@@ -1936,7 +1950,7 @@ def handle_push(args: list[str]) -> int:
       bifrost push <path> [--mirror] [--validate]
 
     Args:
-      path: Local directory to push (defaults to ".")
+      path: Local file or directory to push (defaults to ".")
       --mirror: Make target match source exactly (delete files not present locally)
       --validate: Validate after push (for apps)
     """
@@ -1947,7 +1961,7 @@ Usage: bifrost push [path] [options]
 Push local files to Bifrost platform.
 
 Arguments:
-  path                  Local directory to push (default: current directory)
+  path                  Local file or directory to push (default: current directory)
 
 Options:
   --mirror              Make target match source exactly (delete files not present locally)
@@ -1960,6 +1974,7 @@ Use 'bifrost watch' for continuous file watching.
 Examples:
   bifrost push apps/my-app
   bifrost push apps/my-app --mirror
+  bifrost push workflows/my_workflow.py
   bifrost push .
 """.strip())
         return 0
@@ -1974,14 +1989,23 @@ Examples:
         return 1
 
     resolved = pathlib.Path(parsed.local_path).resolve()
-    if not resolved.exists() or not resolved.is_dir():
-        print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
+    single_file: str | None = None
+    if resolved.is_file():
+        single_file = parsed.local_path
+        lock_target = resolved.parent
+    elif resolved.is_dir():
+        lock_target = resolved
+    else:
+        print(f"Error: {parsed.local_path} is not a valid file or directory", file=sys.stderr)
         return 1
+
+    from bifrost._solution_workspace import assert_not_solution_workspace
+    assert_not_solution_workspace(parsed.local_path, "push")
 
     # Block push if a watch (or another sync/push) is already running in
     # this workspace — see handle_sync for rationale.
     try:
-        lock = WorkspaceLock(resolved, "push").__enter__()
+        lock = WorkspaceLock(lock_target, "push").__enter__()
     except WorkspaceLockError as e:
         print(f"\nError: {e}", file=sys.stderr)
         return 1
@@ -2000,7 +2024,7 @@ Examples:
         try:
             return asyncio.run(_sync_files(
                 parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, force=parsed.force,
-                client=client,
+                client=client, single_file=single_file, one_way=not parsed.mirror,
             ))
         except KeyboardInterrupt:
             return 130
@@ -2050,6 +2074,9 @@ Examples:
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
         return 1
+
+    from bifrost._solution_workspace import assert_not_solution_workspace
+    assert_not_solution_workspace(parsed.local_path, "sync")
 
     # Block sync if a watch (or another sync) is already running in this
     # workspace — concurrent watch+sync would issue separate session_ids
@@ -2120,6 +2147,13 @@ Examples:
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
         return 1
+
+    # Refuse inside a Solution workspace (D1). `watch` only ever syncs to the
+    # global `_repo/` workspace; a Solution developer running it here would
+    # silently push their apps/ and workflows/ to `_repo/` instead of the
+    # install, with no error — actively misleading.
+    from bifrost._solution_workspace import assert_not_solution_workspace
+    assert_not_solution_workspace(parsed.local_path, "watch")
 
     # Acquire the per-workspace lock. Held for the lifetime of the watch
     # process; the kernel releases it on any exit (including crashes), so no
@@ -2228,6 +2262,9 @@ Examples:
     if not resolved.exists() or not resolved.is_dir():
         print(f"Error: {local_path} is not a valid directory", file=sys.stderr)
         return 1
+
+    from bifrost._solution_workspace import assert_not_solution_workspace
+    assert_not_solution_workspace(local_path, "pull")
 
     # Block pull if a watch (or another sync/push/pull) is already running
     # in this workspace — see handle_sync for rationale.
@@ -3099,13 +3136,33 @@ def _should_skip_path(
 def _collect_push_files(
     path: pathlib.Path,
     repo_prefix: str,
+    single_file: str | None = None,
 ) -> tuple[dict[str, str], int]:
     """Walk a directory and collect text files for push.
+
+    When ``single_file`` is set, collect exactly that one file (keyed by its
+    repo path relative to ``path``, with ``repo_prefix`` prepended) instead of
+    walking the directory tree.
 
     Returns (files_dict, skipped_count).
     """
     files: dict[str, str] = {}
     skipped = 0
+
+    if single_file is not None:
+        p = pathlib.Path(single_file).resolve()
+        rel_str = p.relative_to(path).as_posix()
+        repo_path = f"{repo_prefix}/{rel_str}" if repo_prefix else rel_str
+        spec = _build_file_filter(path)
+        if _should_skip_path(rel_str, spec, repo_path):
+            return {}, 1
+        try:
+            raw = _normalize_line_endings(p.read_bytes())
+            files[repo_path] = base64.b64encode(raw).decode("ascii")
+        except OSError:
+            skipped += 1
+        return files, skipped
+
     spec = _build_file_filter(path)
 
     for file_path in sorted(path.rglob("*")):
@@ -3134,6 +3191,8 @@ async def _sync_files(
     validate: bool = False,
     force: bool = False,
     client: "BifrostClient | None" = None,
+    single_file: str | None = None,
+    one_way: bool = False,
 ) -> int:
     """Unified bidirectional sync between local directory and Bifrost platform.
 
@@ -3142,8 +3201,22 @@ async def _sync_files(
     managed separately via `bifrost export` / `bifrost import` and dedicated
     mutation commands (`bifrost orgs`, `bifrost workflows`, etc.); this
     function does not touch `.bifrost/` manifests.
+
+    ``one_way`` (set for plain `bifrost push`) and ``single_file`` (single-file
+    push) both make this a non-interactive one-way push: the per-file selection
+    TUI is never opened and default (push) actions are applied. Only the
+    destructive `--mirror` path or the bidirectional `sync`/`pull` callers keep
+    the interactive TUI. When ``single_file`` is set, ``local_path`` may point
+    at the file itself — the containing directory is used as the sync root.
     """
-    path = pathlib.Path(local_path).resolve()
+    push_only = single_file is not None or one_way
+    if single_file is not None:
+        # Single-file push: anchor the sync root at the file's containing
+        # directory so prefix detection and repo keys stay correct whether
+        # local_path was the file or its directory.
+        path = pathlib.Path(single_file).resolve().parent
+    else:
+        path = pathlib.Path(local_path).resolve()
 
     if not path.exists():
         print(f"Error: path does not exist: {local_path}", file=sys.stderr)
@@ -3159,7 +3232,13 @@ async def _sync_files(
         repo_prefix = _detect_repo_prefix(path)
 
     # ── 1. Collect local files ───────────────────────────────────────────
-    files, skipped = _collect_push_files(path, repo_prefix)
+    # Non-TTY (CI, piped, agent-driven) runs get line-oriented progress so a
+    # large push never looks hung. Detect once up front so the phase banners
+    # can be printed before the slow scan/compare/upload steps.
+    line_progress = push_only and not _resolve_is_tty()
+    if line_progress:
+        print("Scanning files...", flush=True)
+    files, skipped = _collect_push_files(path, repo_prefix, single_file=single_file)
     regular_files = {k: v for k, v in files.items() if not _is_bifrost_path(k)}
 
     # ── 2. Fetch server file metadata ────────────────────────────────────
@@ -3287,6 +3366,12 @@ async def _sync_files(
             "_content": "",
         })
 
+    if push_only:
+        sync_items = [
+            item for item in sync_items
+            if item.get("default_action") == "push"
+        ]
+
     # ── 4. Check if there's anything to sync ─────────────────────────────
     if not sync_items:
         print("Already up to date.")
@@ -3294,14 +3379,28 @@ async def _sync_files(
 
     unchanged = len(regular_files) - len(sync_items)
 
+    if line_progress:
+        print(f"Scanned {len(regular_files)} files, {unchanged} unchanged", flush=True)
+        print("Comparing remote state...", flush=True)
+
     subtitle = f"Scanned {len(regular_files)} file(s), {unchanged} unchanged"
     if skipped:
         subtitle += f", {skipped} skipped"
 
     # ── 6. Interactive TUI or auto-accept ────────────────────────────────
-    _is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    is_tty = _resolve_is_tty()
+    # _use_tui is the single source of truth for both the selection TUI (below)
+    # AND the progress TUI (further down). When --yes/-y (force), or
+    # BIFROST_NONINTERACTIVE=1, or no TTY, we must use NEITHER — the progress TUI
+    # blocks on "press Enter" when a file errors, which would hang an unattended
+    # run despite skipping the selection TUI (criterion 17).
+    # One-way push (plain `bifrost push` or a single-file push) is never
+    # interactive — it always applies default (push) actions. Only the
+    # destructive --mirror path and the bidirectional sync/pull callers reach
+    # the selection/progress TUI.
+    _use_tui = (not push_only) and _sync_use_tui(force=force, is_tty=is_tty)
 
-    if force or not _is_tty:
+    if not _use_tui:
         # Auto-accept: use default actions
         from bifrost.tui.sync_app import SyncResult
         result = SyncResult()
@@ -3312,7 +3411,7 @@ async def _sync_files(
                 bucket.append(item)
             else:
                 result.skip.append(item)
-        if not _is_tty:
+        if not is_tty:
             push_count = len(result.push)
             pull_count = len(result.pull)
             delete_count = len(result.delete)
@@ -3413,10 +3512,33 @@ async def _sync_files(
         return ", ".join(parts) if parts else "No changes"
 
     errors: list[str] = []
-    if progress_items and _is_tty:
+    if progress_items and _use_tui:
         from bifrost.tui.progress import ProgressApp
         app = ProgressApp("Syncing", progress_items, _do_sync_work, post_fn=_post_sync)
         errors = await app.run_async() or []
+    elif progress_items and line_progress:
+        total = len(progress_items)
+        pushed = 0
+        failed = 0
+        last_print = time.monotonic()
+        for i, (name, data) in enumerate(progress_items, start=1):
+            repo_path = data["item"].get("rel", name)
+            now = time.monotonic()
+            if total <= 50 or i % 25 == 0 or (now - last_print) >= 1.0:
+                print(f"Uploading {i}/{total} {repo_path}", flush=True)
+                last_print = now
+            try:
+                await _do_sync_work(data, name)
+                pushed += 1
+            except Exception as e:
+                failed += 1
+                errors.append(f"{name}: {e}")
+                print(f"  Error: {name}: {e}", file=sys.stderr)
+        print(
+            f"Done: {pushed} pushed, {unchanged} unchanged, "
+            f"{skipped} skipped, {failed} failed",
+            flush=True,
+        )
     elif progress_items:
         for name, data in progress_items:
             try:

@@ -162,7 +162,7 @@ class TestBeforeFlushBackstop:
         wf_id = str(uuid.uuid4())
         await SolutionDeployer(db).deploy(SolutionBundle(
             solution=sol,
-            python_files={"workflows/w.py": "x"},
+            python_files={"workflows/w.py": "def run():\n    return 1\n"},
             workflows=[{"id": wf_id, "name": "bfd_w", "function_name": "run", "path": "workflows/w.py", "type": "workflow"}],
         ))
         await db.flush()  # must not raise

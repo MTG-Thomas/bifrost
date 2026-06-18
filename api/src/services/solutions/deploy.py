@@ -50,6 +50,7 @@ from src.models.orm.solutions import Solution
 from src.models.orm.tables import Table
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
+from src.services.solution_deploy_preflight import preflight_workflows
 from src.services.solutions.storage import SolutionStorage
 from src.services.sync_ops import Upsert
 
@@ -147,6 +148,10 @@ class SolutionDowngradeBlocked(Exception):
     Refused by default (Task 20) — re-run with ``force`` to downgrade. Only
     raised when BOTH versions parse as PEP 440; unordered versions never block.
     """
+
+
+class SolutionWorkflowNameMismatch(Exception):
+    """A bundle workflow's ``function_name`` is missing from its source."""
 
 
 def _is_downgrade(new: str | None, current: str | None) -> bool:
@@ -350,6 +355,22 @@ class SolutionDeployer:
         # a byte-identical bundle installs independently into N scopes (and a
         # redeploy is stable).
         rb = await self._remapped_bundle(bundle)
+
+        # ── Workflow source preflight (before ANY writes) ───────────────────
+        # Execution resolves by module-level function_name. Populate missing
+        # inline source from python_files so bundles carrying source separately
+        # are still validated before any DB writes.
+        workflows_for_preflight = []
+        for workflow in rb.workflows:
+            enriched = dict(workflow)
+            if enriched.get("source") is None:
+                path = enriched.get("path")
+                if isinstance(path, str) and path in rb.python_files:
+                    enriched["source"] = rb.python_files[path]
+            workflows_for_preflight.append(enriched)
+        name_errors = preflight_workflows(workflows_for_preflight)
+        if name_errors:
+            raise SolutionWorkflowNameMismatch("\n".join(name_errors))
 
         # ── DB-only phase (validates + reconciles; rolls back cleanly) ───────
         await self._upsert_workflows(solution, rb.workflows)
