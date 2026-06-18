@@ -45,6 +45,8 @@
 
 ## ~~Task 1 (original): Resolve `.env` tokens when only `BIFROST_API_URL` is set~~ (superseded above)
 
+**Historical context only — do not implement.** This was the original hypothesis before the live reproduction above showed the timeout, not auth resolution, was the defect addressed by this plan.
+
 **Root cause:** `EnvBackend.get()` returns `None` unless `BIFROST_API_URL` AND both tokens are in `os.environ`. A `.env` with only the URL (the sandbox case) plus an empty `~/.bifrost/credentials.json` → nothing resolves. `apps list` only worked when tokens happened to be exported. The `.env` IS loaded into `os.environ` at import (`client.py:133` `load_dotenv`), so tokens placed in `.env` ARE in `os.environ` — the bug is only that the guard treats a URL-only `.env` as unusable instead of looking for tokens it does have. The real failure is the user had no tokens in `.env` and none in the store; the fix makes the resolver's behavior honest: if the env has a URL but not tokens, fall through cleanly to the persistent backend (already happens), AND `bifrost login` writing to the persistent store must be the documented path. **The concrete code defect to fix:** `EnvBackend.get()` silently returns `None` with no signal, so a user who set only `BIFROST_API_URL` in `.env` gets the global-default behavior with zero diagnostics. Add a one-line diagnostic to `get_credentials()` when a URL resolves but no credentials back it.
 
 **Files:**

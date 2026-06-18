@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
@@ -80,22 +80,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/solutions", tags=["Solutions"])
 
-DEPLOY_JOB_ORPHAN_THRESHOLD = timedelta(minutes=15)
-
-
 async def reconcile_orphaned_deploy_jobs(
     db: AsyncSession,
     *,
-    older_than: timedelta = DEPLOY_JOB_ORPHAN_THRESHOLD,
     now: datetime | None = None,
 ) -> int:
     """Fail in-process deploy jobs that cannot survive an API restart."""
     resolved_now = now or datetime.now(timezone.utc)
-    cutoff = resolved_now - older_than
     result = await db.execute(
         select(SolutionDeployJob).where(
             SolutionDeployJob.status.in_(("queued", "running")),
-            SolutionDeployJob.updated_at < cutoff,
         )
     )
     jobs = list(result.scalars().all())

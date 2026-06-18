@@ -10,7 +10,7 @@ from src.routers.solutions import reconcile_orphaned_deploy_jobs
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphaned_deploy_jobs_fails_stale_non_terminal_jobs(db_session):
+async def test_reconcile_orphaned_deploy_jobs_fails_non_terminal_jobs(db_session):
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     sol = Solution(slug="demo", name="Demo")
     db_session.add(sol)
@@ -43,17 +43,13 @@ async def test_reconcile_orphaned_deploy_jobs_fails_stale_non_terminal_jobs(db_s
     db_session.add_all([stale_queued, stale_running, fresh_queued, succeeded])
     await db_session.flush()
 
-    changed = await reconcile_orphaned_deploy_jobs(
-        db_session,
-        older_than=timedelta(minutes=10),
-        now=now,
-    )
+    changed = await reconcile_orphaned_deploy_jobs(db_session, now=now)
 
-    assert changed == 2
+    assert changed == 3
     assert stale_queued.status == "failed"
     assert stale_running.status == "failed"
+    assert fresh_queued.status == "failed"
     assert "API restarted" in (stale_queued.error or "")
     assert "API restarted" in (stale_running.error or "")
-    assert fresh_queued.status == "queued"
-    assert fresh_queued.error is None
+    assert "API restarted" in (fresh_queued.error or "")
     assert succeeded.status == "succeeded"

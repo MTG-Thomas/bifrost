@@ -73,6 +73,38 @@ def test_no_source_is_skipped():
     assert preflight_workflows(wfs) == []
 
 
+def test_empty_source_reports_missing_function():
+    wfs = [
+        {
+            "name": "hello",
+            "function_name": "main",
+            "path": "workflows/snap.py",
+            "source": "",
+        }
+    ]
+
+    errors = preflight_workflows(wfs)
+
+    assert len(errors) == 1
+    assert "main" in errors[0]
+
+
+def test_nested_function_does_not_satisfy_preflight():
+    wfs = [
+        {
+            "name": "hello",
+            "function_name": "main",
+            "path": "workflows/snap.py",
+            "source": "def wrapper():\n    def main():\n        return {}\n",
+        }
+    ]
+
+    errors = preflight_workflows(wfs)
+
+    assert len(errors) == 1
+    assert "main" in errors[0]
+
+
 def test_unparseable_source_is_not_blocked():
     # Static verification is impossible; preflight defers to the engine.
     wfs = [

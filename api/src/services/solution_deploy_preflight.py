@@ -21,13 +21,13 @@ def _source_defines_function(source: str, function_name: str) -> bool:
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        # Unparseable source can't be statically verified — don't block on it
-        # (the engine, not preflight, owns runtime import failures).
+        # Unparseable source can't be statically verified; the engine owns
+        # runtime import failures and returns the concrete traceback.
         return True
     return any(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name == function_name
-        for node in ast.walk(tree)
+        for node in tree.body
     )
 
 
@@ -46,7 +46,7 @@ def preflight_workflows(workflows: list[dict]) -> list[str]:
     errors: list[str] = []
     for wf in workflows:
         src = wf.get("source")
-        if not src:
+        if src is None:
             continue
         function_name = wf.get("function_name", "")
         if not function_name:

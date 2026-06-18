@@ -151,13 +151,7 @@ class SolutionDowngradeBlocked(Exception):
 
 
 class SolutionWorkflowNameMismatch(Exception):
-    """A bundle workflow's manifest name diverges from its decorated name.
-
-    The execution engine matches a workflow by ``@workflow(name=...)``; a bundle
-    whose manifest entry name differs from the decorated name in its carried
-    source would deploy a workflow that execution can't resolve. Refused before
-    any write so the operator fixes the manifest or the decorator.
-    """
+    """A bundle workflow's ``function_name`` is missing from its source."""
 
 
 def _is_downgrade(new: str | None, current: str | None) -> bool:
@@ -362,11 +356,19 @@ class SolutionDeployer:
         # redeploy is stable).
         rb = await self._remapped_bundle(bundle)
 
-        # ── Workflow-name preflight (before ANY writes) ─────────────────────
-        # A bundle whose manifest entry name diverges from its decorated
-        # @workflow(name=...) would deploy a Workflow.name the execution engine
-        # can't resolve. Catch it up front with actionable guidance.
-        name_errors = preflight_workflows(rb.workflows)
+        # ── Workflow source preflight (before ANY writes) ───────────────────
+        # Execution resolves by module-level function_name. Populate missing
+        # inline source from python_files so bundles carrying source separately
+        # are still validated before any DB writes.
+        workflows_for_preflight = []
+        for workflow in rb.workflows:
+            enriched = dict(workflow)
+            if enriched.get("source") is None:
+                path = enriched.get("path")
+                if isinstance(path, str) and path in rb.python_files:
+                    enriched["source"] = rb.python_files[path]
+            workflows_for_preflight.append(enriched)
+        name_errors = preflight_workflows(workflows_for_preflight)
         if name_errors:
             raise SolutionWorkflowNameMismatch("\n".join(name_errors))
 
