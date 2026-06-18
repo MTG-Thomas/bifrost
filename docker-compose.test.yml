@@ -104,6 +104,7 @@ services:
 
   # Init Container (Test) - Runs migrations and warms module cache before API/workers start
   init:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -128,6 +129,7 @@ services:
 
   # FastAPI Application (Test) - Only started for E2E tests
   api:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -182,6 +184,7 @@ services:
   # Note: Discovery service has been removed - workflow/form extraction
   # now happens at write time in FileStorageService
   worker:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -228,6 +231,7 @@ services:
   # Scheduler (Test) - Only started for E2E tests
   # Handles background jobs like GitHub sync via Redis pubsub
   scheduler:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -274,6 +278,7 @@ services:
 
   # Test Runner - Executes pytest inside container with all dependencies
   test-runner:
+    image: bifrost-test-api-dev:latest
     build:
       context: .
       dockerfile: api/Dockerfile.dev
@@ -368,6 +373,7 @@ services:
   # Client frontend (Vite dev server)
   # Serves the React app for Playwright browser tests
   client:
+    image: bifrost-test-client-dev:latest
     build:
       context: ./client
       dockerfile: Dockerfile.dev
