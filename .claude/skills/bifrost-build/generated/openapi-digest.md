@@ -472,6 +472,9 @@
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
 | POST | `/auth/admin/revoke-user` |
+| GET | `/auth/cli/authorize` |
+| POST | `/auth/cli/start` |
+| POST | `/auth/cli/token` |
 | POST | `/auth/device/authorize` |
 | POST | `/auth/device/code` |
 | POST | `/auth/device/token` |
