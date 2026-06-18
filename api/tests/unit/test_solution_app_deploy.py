@@ -131,18 +131,22 @@ class TestSolutionAppDeploy:
         expected_id = solution_entity_id(sol.id, uuid.UUID(app_id))
         assert await db.get(Application, expected_id) is None
 
-    async def test_inline_v1_default_when_app_model_omitted_is_rejected(
+    async def test_app_model_omitted_defaults_to_standalone_v2(
         self, db_session, _stub_app_build
     ):
-        """A manifest entry with NO app_model defaults to inline_v1 — also rejected
-        (a bare/legacy manifest can't silently produce a broken app)."""
+        """A manifest entry with NO app_model follows the solution v2 default."""
         db = db_session
         sol = await self._install(db)
         app_id = str(uuid.uuid4())
         bare = {"id": app_id, "slug": "bare", "name": "Bare"}  # no app_model
 
-        with pytest.raises(SolutionDeployConflict, match="standalone_v2"):
-            await SolutionDeployer(db).deploy(SolutionBundle(solution=sol, apps=[bare]))
+        await SolutionDeployer(db).deploy(SolutionBundle(solution=sol, apps=[bare]))
+        await db.flush()
+
+        expected_id = solution_entity_id(sol.id, uuid.UUID(app_id))
+        app = await db.get(Application, expected_id)
+        assert app is not None
+        assert app.app_model == "standalone_v2"
 
     async def test_redeploy_without_app_removes_for_this_install(
         self, db_session, _stub_app_build
