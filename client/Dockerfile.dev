@@ -4,7 +4,7 @@
 
 # node:20-slim
 # NOSONAR - dev image runs Vite against mounted source volumes; production image is separate.
-FROM node:26-slim@sha256:1e738cb88890a15c71880323fbc35a739b7bbc703d72e8bfd1613128f8182f78
+FROM node:26-slim@sha256:191ef878ecb351d68b78219593de18bd8942afd59af59f29960dc4b24805a3f1
 
 WORKDIR /app
 
