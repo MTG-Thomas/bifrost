@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 import sys
 from typing import Any
 
@@ -267,8 +268,10 @@ async def execute_workflow(
         except json.JSONDecodeError as exc:
             raise click.UsageError(f"--params is not valid JSON: {exc}")
     elif params_file:
-        with open(params_file, "r", encoding="utf-8") as fh:
-            input_data = json.load(fh)
+        input_text = await asyncio.to_thread(
+            lambda: Path(params_file).read_text(encoding="utf-8")
+        )
+        input_data = json.loads(input_text)
     if not isinstance(input_data, dict):
         raise click.UsageError("Input parameters must be a JSON object")
 

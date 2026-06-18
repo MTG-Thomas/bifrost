@@ -26,6 +26,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlunparse
 
 # Install virtual import hook IMMEDIATELY at module load time.
 # This must happen before any workspace imports (e.g., from shared import ...)
@@ -35,6 +36,10 @@ from src.services.execution.virtual_import import install_virtual_import_hook
 install_virtual_import_hook()
 
 logger = logging.getLogger(__name__)
+
+
+def _default_internal_api_url() -> str:
+    return urlunparse(("http", "api:8000", "", "", "", ""))
 
 
 @dataclass
@@ -134,7 +139,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     engine_token = context_data.get("engine_token")
     if engine_token:
         import os
-        api_url = os.getenv("BIFROST_API_URL", "http://api:8000")
+        api_url = os.getenv("BIFROST_API_URL", _default_internal_api_url())
         expires_at = context_data.get("engine_token_expires_at", "")
         save_credentials(
             api_url=api_url,
