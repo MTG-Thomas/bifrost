@@ -208,6 +208,73 @@ class TestRegisterFromInvite:
             f"/api/users/{user_id}", headers=platform_admin.headers
         )
 
+    def test_platform_admin_invite_sets_password_login_credentials(
+        self, e2e_client, platform_admin
+    ):
+        """Platform admin invite registration sets a usable password hash."""
+        email = "inv-platform-admin@gobifrost.dev"
+        create_resp = e2e_client.post(
+            "/api/users",
+            headers=platform_admin.headers,
+            json={
+                "email": email,
+                "name": "Invited Platform Admin",
+                "organization_id": None,
+                "is_superuser": True,
+                "invite": True,
+                "trigger_automation": False,
+            },
+        )
+        assert create_resp.status_code == 201
+        body = create_resp.json()
+        assert body["invite_status"] == "pending"
+        assert body["organization_id"] is None
+        assert body["is_superuser"] is True
+        user_id = body["id"]
+
+        regen = e2e_client.post(
+            f"/api/users/{user_id}/invite/regenerate",
+            headers=platform_admin.headers,
+        )
+        assert regen.status_code == 200
+        url: str = regen.json()["registration_url"]
+        token = url.split("token=", 1)[1]
+
+        generated_password = secrets.token_urlsafe(18)
+        register_resp = e2e_client.post(
+            "/auth/register-from-invite",
+            json={"token": token, AUTH_SECRET_FIELD: generated_password},
+        )
+        assert register_resp.status_code == 200
+        registered = register_resp.json()
+        assert registered["email"] == email
+        assert registered["is_registered"] is True
+
+        login_resp = e2e_client.post(
+            "/auth/login",
+            data={"username": email, AUTH_SECRET_FIELD: generated_password},
+        )
+        assert login_resp.status_code != 401
+        assert login_resp.json().get("detail") != (
+            "Account does not have password authentication enabled"
+        )
+        login_body = login_resp.json()
+        assert (
+            login_body.get("access_token")
+            or login_body.get("mfa_setup_required")
+            or login_body.get("mfa_required")
+        )
+
+        # Cleanup
+        e2e_client.patch(
+            f"/api/users/{user_id}",
+            headers=platform_admin.headers,
+            json={"is_active": False},
+        )
+        e2e_client.delete(
+            f"/api/users/{user_id}", headers=platform_admin.headers
+        )
+
     def test_register_unknown_token_400(self, e2e_client):
         """Unknown token returns 400, not 200/500."""
         resp = e2e_client.post(
