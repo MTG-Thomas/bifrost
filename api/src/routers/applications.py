@@ -40,7 +40,7 @@ from src.models.contracts.applications import (
     ApplicationUpdate,
 )
 from src.models.orm.applications import Application
-from src.models.orm.file_index import FileIndex
+from src.services.solutions.guard import assert_entity_id_not_solution_managed
 from src.core.exceptions import AccessDeniedError
 from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 
@@ -200,18 +200,6 @@ async def get_application_or_404(
         )
 
 
-async def ensure_no_stale_app_source(db, slug: str) -> None:
-    """Reject app creation when unclaimed source already exists for the slug."""
-    prefix = f"apps/{slug}/"
-    result = await db.execute(
-        select(FileIndex.path).where(FileIndex.path.like(f"{prefix}%")).limit(1)
-    )
-    if result.first() is not None:
-        raise ValueError(
-            f"Source files already exist under '{prefix}'. Move or delete them before creating this app."
-        )
-
-
 async def get_application_by_id_or_404(
     ctx: Context,
     app_id: UUID,
@@ -291,7 +279,6 @@ async def create_application(
     )
 
     try:
-        await ensure_no_stale_app_source(ctx.db, data.slug)
         application = await repo.create_application(data, created_by=user.email)
         return await application_to_public(application, repo)
     except ValueError as e:
@@ -386,14 +373,7 @@ async def update_application(
     user: CurrentUser,
 ) -> ApplicationPublic:
     """Update application metadata and access control by ID."""
-    sensitive_fields = {"slug", "scope", "access_level", "role_ids"}
-    requested_sensitive_fields = sensitive_fields & data.model_fields_set
-    if requested_sensitive_fields and not user.is_platform_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only platform admins can update application control-plane fields",
-        )
-
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
@@ -617,12 +597,8 @@ async def replace_application_endpoint(
     Validates that the new path is unique, non-nested with other apps, and has
     source files under it. ``force: true`` bypasses all three checks.
     """
-    if not user.is_platform_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only platform admins can repoint app source roots",
-        )
-
+    # Repointing a solution-managed app's source is a deploy-owned action.
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,

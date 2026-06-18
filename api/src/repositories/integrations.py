@@ -617,11 +617,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
         return config
 
     async def get_config_for_mapping(
-        self,
-        integration_id: UUID,
-        org_id: UUID,
-        *,
-        include_default_secrets: bool = False,
+        self, integration_id: UUID, org_id: UUID, *, external: bool
     ) -> dict:
         """
         Get merged configuration for an integration mapping.
@@ -632,10 +628,16 @@ class IntegrationsRepository(BaseRepository[Integration]):
         Args:
             integration_id: Integration UUID
             org_id: Organization UUID
-            include_default_secrets: Whether integration-level secret defaults
-                may be included. SDK execution reads need these for mapped
-                integrations; mapping-list/admin responses should not leak
-                global secrets through org mappings.
+            external: REQUIRED (no default — EXT-1 OPEN-E / NEW-G). Every call
+                site MUST consciously decide: an EXTERNAL portal caller passes
+                True (drop the global org_id=NULL integration defaults entirely
+                so a decrypted global SECRET is never returned — org-specific
+                config only); engine/sentinel/admin callers pass False
+                explicitly (keep the defaults+overrides merge). The default was
+                removed so a new sibling endpoint can't silently re-open the
+                global tier by forgetting the flag (the OPEN-E/NEW-G failure
+                mode — four sibling endpoints, one missed flag = a hospital
+                portal user reading another tenant's secrets).
 
         Returns:
             dict: Merged configuration (integration defaults + org overrides),
@@ -677,14 +679,6 @@ class IntegrationsRepository(BaseRepository[Integration]):
             else:
                 val = value
 
-            is_default = entry.organization_id is None
-            if (
-                is_default
-                and entry.config_type == ConfigType.SECRET
-                and not include_default_secrets
-            ):
-                continue
-
             if entry.config_type == ConfigType.SECRET and isinstance(val, str):
                 try:
                     val = decrypt_secret(val)
@@ -692,7 +686,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
                     logger.warning(f"Failed to decrypt config '{entry.key}'")
                     val = None
 
-            if is_default:
+            if entry.organization_id is None:
                 defaults[entry.key] = val
             else:
                 overrides[entry.key] = val
@@ -702,41 +696,9 @@ class IntegrationsRepository(BaseRepository[Integration]):
 
         return config
 
-    async def get_provider_org_token(
-        self, provider_id: UUID, organization_id: UUID | None
-    ) -> Any:
-        """Return the latest org-level OAuth token for a provider.
-
-        When an organization is provided, this intentionally does not fall back
-        to a global token; callers that need cascade semantics must use
-        OAuthTokenRepository.get_org_level_for_provider instead.
-        """
-        from src.models.orm.oauth import OAuthToken
-
-        if organization_id is not None:
-            result = await self.session.execute(
-                select(OAuthToken)
-                .where(
-                    OAuthToken.provider_id == provider_id,
-                    OAuthToken.organization_id == organization_id,
-                    OAuthToken.user_id.is_(None),
-                )
-                .order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
-            )
-            return result.scalars().first()
-
-        result = await self.session.execute(
-            select(OAuthToken)
-            .where(
-                OAuthToken.provider_id == provider_id,
-                OAuthToken.organization_id.is_(None),
-                OAuthToken.user_id.is_(None),
-            )
-            .order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
-        )
-        return result.scalars().first()
-
-    async def get_integration_defaults(self, integration_id: UUID) -> dict[str, Any]:
+    async def get_integration_defaults(
+        self, integration_id: UUID, *, external: bool
+    ) -> dict[str, Any]:
         """
         Get integration-level config defaults (org_id=NULL).
 
@@ -787,3 +749,11 @@ class IntegrationsRepository(BaseRepository[Integration]):
             config[entry.key] = val
 
         return config
+
+# Deleted (2026-05): get_provider_org_token had no organization_id filter
+# and could return any org's user_id=NULL token. The cross-tenant token
+# leak is fixed by routing all OAuth token reads through
+# OAuthTokenRepository.get_org_level_for_provider in
+# api/src/repositories/oauth.py, which applies the standard cascade
+# (org-specific preferred, falls back to global) and never silently
+# returns another org's token.

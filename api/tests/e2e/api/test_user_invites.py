@@ -4,11 +4,11 @@ Verifies the invite-management endpoints on the users router and the
 unauthenticated register-from-invite flow on the auth router.
 """
 
-import secrets
+from uuid import UUID
 
 import pytest
 
-AUTH_SECRET_FIELD = "pass" + "word"
+from src.models.orm import UserOAuthAccount
 
 
 @pytest.mark.e2e
@@ -228,10 +228,9 @@ class TestRegisterFromInvite:
         url: str = regen.json()["registration_url"]
         token = url.split("token=", 1)[1]
 
-        generated_password = secrets.token_urlsafe(18)
         register_resp = e2e_client.post(
             "/auth/register-from-invite",
-            json={"token": token, AUTH_SECRET_FIELD: generated_password},
+            json={"token": token, "password": "supersecret-1234"},
         )
         assert register_resp.status_code == 200
         assert register_resp.json()["email"] == "inv-reg@gobifrost.dev"
@@ -240,7 +239,7 @@ class TestRegisterFromInvite:
         # Replay must fail
         replay = e2e_client.post(
             "/auth/register-from-invite",
-            json={"token": token, AUTH_SECRET_FIELD: "x"},
+            json={"token": token, "password": "x"},
         )
         assert replay.status_code == 400
 
@@ -309,7 +308,7 @@ class TestRegisterFromInvite:
         """Unknown token returns 400, not 200/500."""
         resp = e2e_client.post(
             "/auth/register-from-invite",
-            json={"token": "garbage-token", AUTH_SECRET_FIELD: "x"},
+            json={"token": "garbage-token", "password": "x"},
         )
         assert resp.status_code == 400
 

@@ -97,7 +97,7 @@ class MCPToolAccessService:
         accessible_agents = await self._get_accessible_agents(
             user_roles=user_roles,
             is_superuser=is_superuser,
-            user_id=user_id,
+            is_external=is_external,
             org_id=org_id,
         )
 
@@ -197,7 +197,6 @@ class MCPToolAccessService:
             .where(Agent.id == str(agent_id))
             .where(Agent.is_active.is_(True))
         )
-        query = self._apply_agent_org_scope(query, org_id=org_id, is_superuser=is_superuser)
 
         if not is_superuser:
             scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
@@ -219,11 +218,7 @@ class MCPToolAccessService:
             return None
 
         # Check access using same rules as _get_accessible_agents
-        if not self._agent_in_org_scope(agent, org_id=org_id, is_superuser=is_superuser):
-            logger.warning(f"User denied org-scoped access to agent {agent_id}")
-            return None
-
-        if not self._check_agent_access(agent, user_roles, is_superuser, user_id=user_id):
+        if not self._check_agent_access(agent, user_roles, is_superuser, is_external):
             logger.warning(f"User denied access to agent {agent_id}")
             return None
 
@@ -365,7 +360,7 @@ class MCPToolAccessService:
         agent: Agent,
         user_roles: list[str],
         is_superuser: bool,
-        user_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> bool:
         """Check if user has access to a specific agent (same rules as _get_accessible_agents)."""
         if agent.access_level == AgentAccessLevel.AUTHENTICATED:
@@ -382,19 +377,13 @@ class MCPToolAccessService:
                 return is_superuser
             return is_superuser or bool(set(user_roles) & agent_role_names)
 
-        if agent.access_level == AgentAccessLevel.PRIVATE:
-            owner_id = getattr(agent, "owner_user_id", None)
-            if is_superuser:
-                return True
-            return owner_id is not None and user_id is not None and str(owner_id) == str(user_id)
-
         return False
 
     async def _get_accessible_agents(
         self,
         user_roles: list[str],
         is_superuser: bool,
-        user_id: UUID | str | None = None,
+        is_external: bool = False,
         org_id: UUID | str | None = None,
     ) -> list[Agent]:
         """
@@ -420,7 +409,6 @@ class MCPToolAccessService:
             )
             .where(Agent.is_active.is_(True))
         )
-        query = self._apply_agent_org_scope(query, org_id=org_id, is_superuser=is_superuser)
 
         if not is_superuser:
             scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
@@ -437,11 +425,6 @@ class MCPToolAccessService:
 
         result = await self.session.execute(query)
         all_agents = result.scalars().unique().all()
-        all_agents = [
-            agent
-            for agent in all_agents
-            if self._agent_in_org_scope(agent, org_id=org_id, is_superuser=is_superuser)
-        ]
 
         # Filter by access level
         accessible_agents: list[Agent] = []
@@ -457,50 +440,23 @@ class MCPToolAccessService:
             elif agent.access_level == AgentAccessLevel.EVERYONE:
                 accessible_agents.append(agent)
 
-            elif self._check_agent_access(agent, list(user_role_set), is_superuser, user_id=user_id):
-                accessible_agents.append(agent)
+            elif agent.access_level == AgentAccessLevel.ROLE_BASED:
+                # Get role names from agent's roles
+                agent_role_names = {role.name for role in agent.roles}
+
+                if not agent_role_names:
+                    # ROLE_BASED with no roles = only superusers can access
+                    if is_superuser:
+                        accessible_agents.append(agent)
+                elif is_superuser or (user_role_set & agent_role_names):
+                    # User has at least one matching role, or is a platform
+                    # admin (superuser bypass — issue #244)
+                    accessible_agents.append(agent)
 
             # Note: PUBLIC agents are not included for MCP access
             # as MCP requires authentication
 
         return accessible_agents
-
-    @staticmethod
-    def _apply_agent_org_scope(query, org_id: UUID | str | None, is_superuser: bool):
-        """Apply AgentRepository-style cascade scoping to MCP-visible agents."""
-        if is_superuser:
-            return query
-
-        if org_id is None:
-            return query.where(Agent.organization_id.is_(None))
-
-        return query.where(
-            or_(
-                Agent.organization_id == org_id,
-                Agent.organization_id.is_(None),
-            )
-        )
-
-    @staticmethod
-    def _agent_in_org_scope(
-        agent: Agent,
-        org_id: UUID | str | None,
-        is_superuser: bool,
-    ) -> bool:
-        """Return whether an already-loaded agent is in the caller's org scope."""
-        if is_superuser:
-            return True
-
-        agent_org_id = (
-            getattr(agent, "organization_id", None)
-            if "organization_id" in getattr(agent, "__dict__", {})
-            else None
-        )
-
-        if org_id is None:
-            return is_superuser or agent_org_id is None
-
-        return agent_org_id is None or str(agent_org_id) == str(org_id)
 
     def _apply_config_filters(
         self,

@@ -4,7 +4,7 @@ Bifrost CLI
 Command-line interface for the Bifrost SDK.
 
 Commands:
-  bifrost login   - Authenticate with native browser OAuth
+  bifrost login   - Authenticate with device authorization flow
   bifrost logout  - Clear stored credentials
 
 Note: This module is standalone and doesn't import the main bifrost package
@@ -19,20 +19,14 @@ import json
 import logging
 import os
 import pathlib
-import secrets
 import shutil
 import sys
 import textwrap
-import threading
 import time
 import webbrowser
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlparse
 
 if TYPE_CHECKING:
     import pathspec
@@ -56,49 +50,66 @@ from bifrost.platform_names import PLATFORM_EXPORT_NAMES as _PLATFORM_EXPORT_NAM
 
 logger = logging.getLogger(__name__)
 
-GITIGNORE_FILENAME = ".gitignore"
-
-# Default ignore patterns applied even without a .gitignore file.
-# .bifrost/ is import/export-only and is never part of push/pull/sync/watch.
-_DEFAULT_IGNORE_PATTERNS = [
-    ".git/",
-    "__pycache__/",
-    ".ruff_cache/",
-    ".mypy_cache/",
-    ".pytest_cache/",
-    ".pyright/",
-    "node_modules/",
-    ".bifrost/",
-    ".venv/",
-    "venv/",
-    ".tox/",
-    "build/",
-    "dist/",
-    "coverage/",
-    ".coverage",
-    ".DS_Store",
-    "*.pyc",
-    # Editor atomic-write turds (e.g. foo.tsx.tmp.12345.1776000000000).
-    # Without this, watchdog sees these files and pushes them to S3; the
-    # editor then renames them to the real file and watchdog emits a 'moved'
-    # event that deliberately does NOT delete the source. Result: every save
-    # leaves a turd in S3 forever.
-    "*.tmp.*",
-    "*.swp",
-    "*.swo",
-    "*~",
-    ".#*",
-]
+# Canonical gitignore-style skip patterns applied even without a .gitignore file
+# (build output, caches, editor turds, .env secrets). Shared with server-side
+# Solution capture/export so both surfaces skip the same files. The matcher is
+# built from this list at _build_file_filter.
+_DEFAULT_IGNORE_PATTERNS = _CANONICAL_IGNORE_PATTERNS
 
 
-def _safe_workspace_relative_path(value: str) -> str:
-    normalized = value.replace("\\", "/")
-    rel = PurePosixPath(normalized)
-    if rel.is_absolute() or pathlib.Path(normalized).drive:
-        raise ValueError(f"unsafe server path: {value}")
-    if not rel.parts or any(part in ("", ".", "..") for part in rel.parts):
-        raise ValueError(f"unsafe server path: {value}")
-    return rel.as_posix()
+def _ensure_utf8_stdio() -> None:
+    """Make stdout/stderr tolerate non-ASCII output on Windows.
+
+    Windows consoles default to cp1252, so printing the status glyphs and
+    em-dashes the CLI uses (✓, ✗, ⚠, ←, —) raises UnicodeEncodeError and
+    aborts the command mid-run. Reconfiguring the streams to UTF-8 fixes the
+    whole class at once; on a terminal that is already UTF-8 (Linux/macOS,
+    Windows Terminal) this is a no-op. ``errors="backslashreplace"`` keeps a
+    legacy console from crashing even if a glyph can't be rendered.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):
+            # Stream doesn't support reconfigure (e.g. already-wrapped or a
+            # non-text buffer in tests). Output safety still holds for the
+            # tested summary path via _check_glyph(); nothing to do here.
+            pass
+
+
+def _stdout_can_encode(text: str) -> bool:
+    """True if the current stdout encoding can represent ``text``.
+
+    Windows consoles default to cp1252, which cannot encode the glyphs we
+    like to use on UTF-8 terminals (✓, ✗, —). Printing them there raises
+    UnicodeEncodeError mid-command. Callers use this to pick an ASCII
+    fallback instead of crashing.
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(enc)
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def _check_glyph() -> str:
+    """Status glyph for plain-stdout (non-TUI) output.
+
+    On UTF-8 terminals it renders as ✓; on cp1252 Windows consoles it
+    degrades to "OK" so the CLI never crashes printing a result. Evaluated
+    per call (not cached) so it honours the actual stdout at print time.
+    The Textual TUI renders to its own buffer and is unaffected, so it keeps
+    using the Unicode glyphs directly.
+    """
+    return "✓" if _stdout_can_encode("✓") else "OK"
+
+
+def _print_sync_summary(summary: str) -> None:
+    print(f"  {_check_glyph()} {summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -120,10 +131,7 @@ def _hash_for_cache(raw_bytes: bytes) -> str:
     and S3's ETag is md5 of those. Any hash we compare against a server ETag
     must be computed on the same normalized bytes.
     """
-    return hashlib.md5(
-        _normalize_line_endings(raw_bytes),
-        usedforsecurity=False,
-    ).hexdigest()
+    return hashlib.md5(_normalize_line_endings(raw_bytes)).hexdigest()
 
 
 def _is_bifrost_path(path: str) -> bool:
@@ -154,11 +162,11 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     lines = list(_DEFAULT_IGNORE_PATTERNS)
 
     workspace_root = _workspace_root_for(local_root)
-    workspace_gitignore = workspace_root / GITIGNORE_FILENAME
+    workspace_gitignore = workspace_root / ".gitignore"
     if workspace_gitignore.is_file():
         lines.extend(workspace_gitignore.read_text(encoding="utf-8").splitlines())
 
-    gitignore_path = local_root / GITIGNORE_FILENAME
+    gitignore_path = local_root / ".gitignore"
     if gitignore_path != workspace_gitignore and gitignore_path.is_file():
         lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
 
@@ -198,6 +206,8 @@ def _check_cli_version() -> None:
     visible warning instead of silently skipping, so a stale CLI proceeding
     against an incompatible server is never invisible. Never blocks.
     """
+    import httpx
+
     from bifrost import __version__
     from bifrost.contract_version import CONTRACT_VERSION
 
@@ -205,14 +215,18 @@ def _check_cli_version() -> None:
     if installed in ("unknown", "0.0.0+source"):
         return  # dev/source install — nothing to compare against
 
+    # Re-load dotenv so a CWD-local .env's BIFROST_API_URL is honored even
+    # if bifrost.client's import-time load happened against a different cwd.
     try:
-        # Re-load only the safe CWD-local .env allowlist so BIFROST_API_URL is
-        # honored even if bifrost.client imported against a different cwd.
-        credentials.load_allowed_dotenv()
+        from dotenv import find_dotenv, load_dotenv
+        load_dotenv(find_dotenv(usecwd=True), override=False)
+    except ImportError:
+        pass  # python-dotenv is optional; without it, only os.environ is consulted
 
-        # Use credentials._resolve_url (not get_credentials) because the version
-        # check only needs the URL — get_credentials returns None unless full
-        # tokens are present too, which would skip the check on a logged-out CLI.
+    # Use credentials._resolve_url (not get_credentials) because the version
+    # check only needs the URL — get_credentials returns None unless full
+    # tokens are present too, which would skip the check on a logged-out CLI.
+    try:
         api_url = credentials._resolve_url(None)
     except Exception as e:
         logger.debug(f"CLI version check skipped (no URL): {e}")
@@ -221,12 +235,12 @@ def _check_cli_version() -> None:
         return
 
     # Fetch the server's version document. A failure here is an UN-REACHABLE
-    # verdict — warn, never block. Use httpx (already a hard dep), not urllib.
-    # CDNs/WAFs in front of prod Bifrost (Cloudflare on bifrost.gocovi.com)
-    # 403 the default `Python-urllib/X.Y` UA; httpx's UA gets through and
-    # matches every other SDK request.
+    # verdict — warn (Q2), never block. Use httpx (already a hard dep), not
+    # urllib: CDNs/WAFs in front of prod Bifrost (Cloudflare on
+    # bifrost.gocovi.com) 403 the default `Python-urllib/X.Y` UA; httpx's UA
+    # gets through and matches every other SDK request.
     try:
-        resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
+        resp = httpx.get(f"{api_url}/api/version", timeout=3)
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
@@ -282,176 +296,7 @@ def _check_cli_version() -> None:
         )
 
 
-def _resolve_login_api_url(api_url: str | None) -> str | None:
-    """Resolve the API URL for production login without localhost fallbacks."""
-    resolved = (api_url or os.environ.get("BIFROST_API_URL") or "").rstrip("/")
-    return resolved or None
-
-
-def _pkce_s256(value: str) -> str:
-    digest = hashlib.sha256(value.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-
-
-def _open_cli_callback_server(expected_state: str):
-    loop = asyncio.get_running_loop()
-    callback_future: asyncio.Future[dict[str, str]] = loop.create_future()
-
-    class CallbackHandler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:
-            return
-
-        def do_GET(self) -> None:
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            payload = {key: values[0] for key, values in params.items() if values}
-
-            if parsed.path != "/callback":
-                self.send_response(404)
-                self.end_headers()
-                return
-
-            if payload.get("state") != expected_state:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Invalid Bifrost CLI login state. You can close this tab.")
-                if not callback_future.done():
-                    loop.call_soon_threadsafe(
-                        callback_future.set_exception,
-                        RuntimeError("Invalid OAuth state returned to callback"),
-                    )
-                return
-
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h1>Bifrost CLI login complete</h1>"
-                b"<p>You can close this tab and return to your terminal.</p></body></html>"
-            )
-            if not callback_future.done():
-                loop.call_soon_threadsafe(callback_future.set_result, payload)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    redirect_uri = f"http://127.0.0.1:{server.server_port}/callback"
-    return server, callback_future, redirect_uri
-
-
-async def native_login_flow(api_url: str, auto_open: bool = True) -> bool:
-    """
-    Native browser OAuth login with localhost callback.
-
-    The default production login path is implemented by the API's native CLI
-    OAuth endpoints. Device-code login remains available through
-    `bifrost login --device-code`.
-    """
-    api_url = api_url.rstrip("/")
-
-    # Surface keyring fallback here — login is the user's chance to fix it.
-    from bifrost.credentials import warn_if_keyring_fallback
-    warn_if_keyring_fallback()
-
-    state = secrets.token_urlsafe(32)
-    code_verifier = secrets.token_urlsafe(64)
-    code_challenge = _pkce_s256(code_verifier)
-
-    try:
-        server, callback_future, redirect_uri = _open_cli_callback_server(state)
-    except OSError as e:
-        print(
-            f"Could not start localhost callback listener: {e}\n"
-            "Try 'bifrost login --device-code' for the legacy browser flow.",
-            file=sys.stderr,
-        )
-        return False
-
-    try:
-        async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
-            start_response = await client.post(
-                "/auth/cli/start",
-                json={
-                    "redirect_uri": redirect_uri,
-                    "state": state,
-                    "code_challenge": code_challenge,
-                    "code_challenge_method": "S256",
-                },
-            )
-            if start_response.status_code != 200:
-                print(f"Error starting native OAuth login: {start_response.status_code}", file=sys.stderr)
-                return False
-
-            start_data = start_response.json()
-            authorization_url = f"{api_url}{start_data['authorization_url']}"
-            print(f"\nOpening browser to {authorization_url}\n")
-
-            if auto_open:
-                try:
-                    webbrowser.open(authorization_url)
-                except Exception:
-                    pass
-            else:
-                print(f"Open this URL to continue: {authorization_url}\n")
-
-            print("Waiting for browser authorization...", flush=True)
-            callback_data = await asyncio.wait_for(
-                callback_future,
-                timeout=float(start_data.get("expires_in", 300)),
-            )
-
-            token_response = await client.post(
-                "/auth/cli/token",
-                json={
-                    "transaction_id": callback_data["transaction_id"],
-                    "code": callback_data["code"],
-                    "state": callback_data["state"],
-                    "code_verifier": code_verifier,
-                },
-            )
-            if token_response.status_code != 200:
-                print(f"Error exchanging native OAuth token: {token_response.status_code}", file=sys.stderr)
-                return False
-
-            token_data = token_response.json()
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 1800))
-            credentials.save_credentials(
-                api_url=api_url,
-                access_token=token_data["access_token"],
-                refresh_token=token_data["refresh_token"],
-                expires_at=expires_at.isoformat(),
-            )
-
-            try:
-                user_response = await client.get(
-                    "/auth/me",
-                    headers={"Authorization": f"Bearer {token_data['access_token']}"},
-                )
-                if user_response.status_code == 200:
-                    user_data = user_response.json()
-                    print(f"Logged in as {user_data.get('email', 'unknown')}\n")
-                else:
-                    print("Logged in successfully\n")
-            except Exception:
-                print("Logged in successfully\n")
-
-            return True
-    except asyncio.TimeoutError:
-        print(
-            "\nTimed out waiting for browser authorization. "
-            "Try 'bifrost login --device-code' if this environment cannot open a browser.",
-            file=sys.stderr,
-        )
-        return False
-    except Exception as e:
-        print(f"\nNative OAuth login failed: {e}", file=sys.stderr)
-        return False
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
-async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
+async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool:
     """
     Interactive device authorization flow.
 
@@ -462,12 +307,16 @@ async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
     5. Save credentials when authorized
 
     Args:
-        api_url: Bifrost API URL
+        api_url: Bifrost API URL (uses BIFROST_DEV_URL env var if not provided)
         auto_open: Whether to automatically open browser (default: True)
 
     Returns:
         True if login successful, False otherwise
     """
+    # Get API URL
+    if not api_url:
+        api_url = os.getenv("BIFROST_DEV_URL", "http://localhost:8000")
+
     api_url = api_url.rstrip("/")
 
     # Surface keyring fallback here — login is the user's chance to fix it.
@@ -639,7 +488,7 @@ def logout_flow(api_url: str | None = None) -> tuple[bool, str | None]:
     """
     creds = credentials.get_credentials(api_url)
     if creds:
-        target_url = (creds.get("api_url") or api_url or "").rstrip("/")
+        target_url = creds.get("api_url") or api_url
         credentials.clear_credentials(target_url)
         print(f"Logged out from {target_url}.")
         return True, target_url
@@ -697,7 +546,7 @@ def _write_env_url(api_url: str) -> None:
     print(f"Updated {env_path} with BIFROST_API_URL={api_url}")
 
     # gitignore .env if we're in a git repo and it isn't already ignored
-    gitignore = cwd / GITIGNORE_FILENAME
+    gitignore = cwd / ".gitignore"
     if gitignore.exists():
         try:
             existing = gitignore.read_text()
@@ -718,18 +567,26 @@ def _write_env_url(api_url: str) -> None:
             pass
 
 
-def _rewrite_env_file(should_remove_line: Callable[[str], bool]) -> bool:
-    """Remove matching lines from CWD's .env. Returns True if any line was removed."""
+def _remove_env_url_line(api_url: str) -> bool:
+    """
+    Remove a `BIFROST_API_URL=<api_url>` line from CWD's .env, if present.
+
+    Returns True if a line was removed.
+    """
     env_path = pathlib.Path.cwd() / ".env"
     lines = _read_env_file(env_path)
     if not lines:
         return False
+    target = api_url.rstrip("/")
     kept: list[str] = []
     removed = False
     for line in lines:
-        if should_remove_line(line):
-            removed = True
-            continue
+        stripped = line.lstrip()
+        if stripped.startswith("BIFROST_API_URL=") or stripped.startswith("export BIFROST_API_URL="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/")
+            if value == target:
+                removed = True
+                continue
         kept.append(line)
     if not removed:
         return False
@@ -738,37 +595,6 @@ def _rewrite_env_file(should_remove_line: Callable[[str], bool]) -> bool:
     else:
         env_path.write_text("".join(kept))
     return True
-
-
-def _remove_env_url_line(api_url: str) -> bool:
-    """
-    Remove a `BIFROST_API_URL=<api_url>` line from CWD's .env, if present.
-
-    Returns True if a line was removed.
-    """
-    target = api_url.rstrip("/")
-
-    def should_remove(line: str) -> bool:
-        stripped = line.lstrip()
-        if stripped.startswith("BIFROST_API_URL=") or stripped.startswith("export BIFROST_API_URL="):
-            value = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/")
-            return value == target
-        return False
-
-    return _rewrite_env_file(should_remove)
-
-
-def _remove_env_keys(keys: set[str]) -> bool:
-    """Remove KEY= or export KEY= lines from CWD's .env."""
-
-    def should_remove(line: str) -> bool:
-        stripped = line.lstrip()
-        return any(
-            stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}=")
-            for key in keys
-        )
-
-    return _rewrite_env_file(should_remove)
 
 
 def main(args: list[str] | None = None) -> int:
@@ -946,7 +772,6 @@ def handle_login(args: list[str]) -> int:
     auto_open = True
     email: str | None = None
     password: str | None = None
-    device_code = False
 
     i = 0
     while i < len(args):
@@ -960,9 +785,6 @@ def handle_login(args: list[str]) -> int:
             i += 2
         elif arg in ("--no-browser", "-n"):
             auto_open = False
-            i += 1
-        elif arg == "--device-code":
-            device_code = True
             i += 1
         elif arg == "--email":
             if i + 1 >= len(args):
@@ -980,25 +802,23 @@ def handle_login(args: list[str]) -> int:
             print("""
 Usage: bifrost login [options]
 
-Authenticate with Bifrost. Three modes:
+Authenticate with Bifrost. Two modes:
 
-Browser (default): Native OAuth flow using your browser session and a local
-                   callback. Tokens are stored in OS keychain (with JSON
+Browser (default): Device-code flow; tokens stored in OS keychain (with JSON
                    fallback on headless Linux). Multiple URLs can coexist.
                    On success, writes BIFROST_API_URL=<url> to .env in the
                    current directory so subsequent CLI commands target this
                    instance.
-Device code: Pass --device-code for the legacy browser device-code flow.
 Password: When --email and --password are passed, performs an ephemeral
-          password-grant login that skips the persistent credential backend.
-          It writes BIFROST_ACCESS_TOKEN and BIFROST_REFRESH_TOKEN into the
-          current directory's .env; otherwise only BIFROST_API_URL is written.
-          For isolated dev stacks only — refuses if MFA is enabled.
+          password-grant login and writes BIFROST_API_URL +
+          BIFROST_ACCESS_TOKEN + BIFROST_REFRESH_TOKEN to .env in the
+          current directory. Subsequent CLI commands from this directory
+          pick the tokens up automatically. For isolated dev stacks only
+          — refuses if MFA is enabled on the instance.
 
 Options:
-  --url, -u URL         API URL (default: BIFROST_API_URL; required otherwise)
-  --no-browser, -n      Don't automatically open browser (browser modes only)
-  --device-code         Use the legacy device-code browser flow
+  --url, -u URL         API URL (default: BIFROST_API_URL or http://localhost:8000)
+  --no-browser, -n      Don't automatically open browser (browser mode only)
   --email EMAIL         Email for ephemeral password-grant login
   --password PASSWORD   Password for ephemeral password-grant login
   --help, -h            Show this help message
@@ -1020,13 +840,11 @@ Examples:
         return 1
 
     is_password_grant = email is not None and password is not None
-    if device_code and is_password_grant:
-        print("Error: --device-code cannot be used with --email/--password", file=sys.stderr)
-        return 1
 
     if is_password_grant:
         # Resolve URL: --url > BIFROST_API_URL env var > error. No default.
-        api_url = _resolve_login_api_url(api_url)
+        if not api_url:
+            api_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
         if not api_url:
             print(
                 "Error: password-grant login requires --url or BIFROST_API_URL env var "
@@ -1062,26 +880,20 @@ Examples:
                 print(f"BIFROST_REFRESH_TOKEN={data['refresh_token']}")
         return rc
 
-    resolved_url = _resolve_login_api_url(api_url)
-    if not resolved_url:
-        print(
-            "Error: login requires --url or BIFROST_API_URL env var "
-            "(no fallback default to avoid logging into the wrong stack)",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Browser flow (persistent → keychain or JSON fallback).
-    login_coro = device_login_flow if device_code else native_login_flow
-    success = asyncio.run(login_coro(api_url=resolved_url, auto_open=auto_open))
+    # Browser device-code flow (persistent → keychain or JSON fallback).
+    success = asyncio.run(login_flow(api_url=api_url, auto_open=auto_open))
     if not success:
         return 1
 
     # Wire up the CWD .env so subsequent commands in this folder target this URL.
     # The token lives in the keychain keyed by URL; .env just carries the URL.
+    resolved_url = (api_url or os.environ.get("BIFROST_API_URL") or "").rstrip("/")
+    if not resolved_url:
+        # login_flow's default — match what login_flow used so the .env line agrees
+        # with where the token landed.
+        resolved_url = "http://localhost:8000"
     try:
         _write_env_url(resolved_url)
-        _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"})
     except OSError as e:
         print(f"Warning: could not update .env in current directory: {e}", file=sys.stderr)
     return 0
@@ -1163,8 +975,6 @@ Examples:
     if confirm in ("y", "yes"):
         if _remove_env_url_line(target_url):
             print(f"Removed BIFROST_API_URL line from {env_path}")
-        if _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"}):
-            print(f"Removed BIFROST token lines from {env_path}")
     return 0
 
 
@@ -2554,9 +2364,13 @@ async def _process_watch_batch(
             try:
                 raw_bytes = abs_p.read_bytes()
                 raw = _normalize_line_endings(raw_bytes)
-                rel = abs_p.relative_to(base_path)
-                repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
-                file_hash = hashlib.md5(raw, usedforsecurity=False).hexdigest()
+                # POSIX separators so the repo_path (and thus the known-hash
+                # cache key) matches the server. With str(WindowsPath) the "\"
+                # key never matches the server's "/" key, so the no-op-push
+                # guard below never fires and every file re-uploads each tick.
+                rel = abs_p.relative_to(base_path).as_posix()
+                repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
+                file_hash = hashlib.md5(raw).hexdigest()
                 if state.get_known_hash(repo_path) == file_hash:
                     # No-op push: the server already has this content (common
                     # case: observer fired on our own pull write).
@@ -2848,7 +2662,6 @@ async def _process_incoming(
                         rel = repo_path[len(repo_prefix):]
                     else:
                         rel = repo_path
-                    rel = _safe_workspace_relative_path(rel)
                     local_file = base_path / rel
                     local_file.parent.mkdir(parents=True, exist_ok=True)
                     # Skip if we already know the server has this content and
@@ -3010,7 +2823,7 @@ async def _watch_loop(
                 await ws_task
             except asyncio.CancelledError:
                 # Expected — we just cancelled the websocket task
-                raise
+                pass
             except Exception as e:
                 # Unexpected close error during cancel — log but continue cleanup
                 logger.debug(f"websocket task cleanup raised: {e}")
@@ -3185,8 +2998,8 @@ async def _sync_files(
 
     Compares local files vs server state (MD5/ETag + timestamps) and presents
     a TUI for per-item actions (push/pull/delete/skip). Entity state is
-    managed separately via Solutions, git sync, and dedicated mutation
-    commands (`bifrost orgs`, `bifrost workflows`, etc.); this
+    managed separately via `bifrost export` / `bifrost import` and dedicated
+    mutation commands (`bifrost orgs`, `bifrost workflows`, etc.); this
     function does not touch `.bifrost/` manifests.
     """
     path = pathlib.Path(local_path).resolve()
@@ -3221,7 +3034,6 @@ async def _sync_files(
             for item in data.get("files_metadata", []):
                 server_metadata[item["path"]] = {
                     "etag": item["etag"],
-                    "content_hash": item.get("content_hash") or "",
                     "last_modified": item["last_modified"],
                     "updated_by": item.get("updated_by", ""),
                 }
@@ -3243,10 +3055,7 @@ async def _sync_files(
 
     for repo_path, content in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_md5 = hashlib.md5(
-            base64.b64decode(content),
-            usedforsecurity=False,
-        ).hexdigest()
+        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:
@@ -3263,14 +3072,7 @@ async def _sync_files(
                 "rel": rel,
                 "_content": content,
             })
-            continue
-        server_hash = server_info.get("content_hash") or server_info["etag"]
-        if server_hash == local_md5:
-            # Unchanged
-            matched_server_paths.add(repo_path)
-            continue
-
-        else:
+        elif server_info["etag"] != local_md5:
             matched_server_paths.add(repo_path)
             # Content differs — check timestamps
             local_file = path / rel
@@ -3306,6 +3108,10 @@ async def _sync_files(
                 "rel": rel,
                 "_content": content,
             })
+        else:
+            # Unchanged
+            matched_server_paths.add(repo_path)
+
     # Server-only files — always show for pull; --mirror adds delete option
     prefix_filter = repo_prefix + "/" if repo_prefix else ""
     for server_path, server_info in server_metadata.items():
@@ -3416,7 +3222,6 @@ async def _sync_files(
 
         elif action == "pull_file":
             item = work_data["item"]
-            rel = _safe_workspace_relative_path(item["rel"])
             resp = await client.post("/api/files/read", json={
                 "path": item["repo_path"],
                 "mode": "cloud", "location": "workspace", "binary": True,
@@ -3424,7 +3229,7 @@ async def _sync_files(
             if resp.status_code == 200:
                 file_data = resp.json()
                 content_bytes = base64.b64decode(file_data["content"])
-                local_file = path / rel
+                local_file = path / item["rel"]
                 local_file.parent.mkdir(parents=True, exist_ok=True)
                 local_file.write_bytes(content_bytes)
             else:
@@ -3568,11 +3373,6 @@ Examples:
         print(f"Unsupported method: {method}", file=sys.stderr)
         return 1
 
-    endpoint_error = _validate_api_endpoint(endpoint)
-    if endpoint_error:
-        print(endpoint_error, file=sys.stderr)
-        return 1
-
     # Authenticate BEFORE entering asyncio.run() so token refresh works
     try:
         client = BifrostClient.get_instance(require_auth=True)
@@ -3581,23 +3381,6 @@ Examples:
         return 1
 
     return asyncio.run(_api_request(method, endpoint, body, client=client))
-
-
-def _validate_api_endpoint(endpoint: str) -> str | None:
-    """Validate the CLI API endpoint before attaching auth credentials.
-
-    ``httpx`` accepts absolute and scheme-relative URLs even when a client has
-    a ``base_url``. The CLI's authenticated ``api`` command is intentionally
-    scoped to the configured Bifrost API origin, so only absolute paths are
-    accepted here.
-    """
-    if endpoint.startswith("//"):
-        return "Error: endpoint must not be a scheme-relative URL."
-    if "://" in endpoint:
-        return "Error: endpoint must not include a URL scheme or host."
-    if not endpoint.startswith("/"):
-        return "Error: endpoint must be an absolute API path starting with '/'."
-    return None
 
 
 async def _api_request(method: str, endpoint: str, body: Any | None, client: "BifrostClient | None" = None) -> int:
