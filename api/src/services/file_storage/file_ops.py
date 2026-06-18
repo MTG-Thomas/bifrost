@@ -14,7 +14,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings
-from src.core.log_safety import log_safe
 from src.models import Workflow
 from src.models.orm.file_index import FileIndex
 from src.core.module_cache import set_module, invalidate_module
@@ -254,9 +253,7 @@ class FileOperationsService:
             try:
                 await self._diagnostics.scan_for_sdk_issues(path, final_content)
             except Exception as e:
-                logger.warning(
-                    f"Failed to scan for SDK issues in {log_safe(path)}: {log_safe(e)}"
-                )
+                logger.warning(f"Failed to scan for SDK issues in {path}: {e}")
 
         # Create or clear system notification based on diagnostic errors
         has_errors = diagnostics and any(d.severity == "error" for d in diagnostics)
@@ -264,22 +261,18 @@ class FileOperationsService:
             try:
                 await self._diagnostics.create_diagnostic_notification(path, diagnostics)
             except Exception as e:
-                logger.warning(
-                    f"Failed to create diagnostic notification for {log_safe(path)}: {log_safe(e)}"
-                )
+                logger.warning(f"Failed to create diagnostic notification for {path}: {e}")
         else:
             try:
                 await self._diagnostics.clear_diagnostic_notification(path)
             except Exception as e:
-                logger.warning(
-                    f"Failed to clear diagnostic notification for {log_safe(path)}: {log_safe(e)}"
-                )
+                logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
 
         # App files: rebuild bundle + fire pubsub for real-time preview
         app = await self._find_app_by_path(path)
         if not app and path.startswith("apps/"):
             logger.info(
-                f"No Application matched path {log_safe(path)!r} — preview refresh skipped. "
+                f"No Application matched path {path!r} — preview refresh skipped. "
                 f"Check Application.repo_path."
             )
         if app:
@@ -291,7 +284,7 @@ class FileOperationsService:
             try:
                 await mark_repo_dirty()
             except Exception as e:
-                logger.warning(f"Failed to mark repo dirty: {log_safe(e)}")
+                logger.warning(f"Failed to mark repo dirty: {e}")
 
         # Broadcast file_push event for watch mode sync
         try:
@@ -306,13 +299,9 @@ class FileOperationsService:
                 session_id=get_request_session_id(),
             )
         except Exception as e:
-            logger.warning(
-                f"Failed to publish file_push for {log_safe(path)}: {log_safe(e)}"
-            )
+            logger.warning(f"Failed to publish file_push for {path}: {e}")
 
-        logger.info(
-            f"File written: {log_safe(path)} ({size_bytes} bytes) by {log_safe(updated_by)}"
-        )
+        logger.info(f"File written: {path} ({size_bytes} bytes) by {updated_by}")
         return WriteResult(
             file_record=None,
             final_content=final_content,
@@ -341,9 +330,7 @@ class FileOperationsService:
             try:
                 await op(path)
             except Exception as e:
-                logger.warning(
-                    f"Delete side effect failed for {log_safe(path)}: {log_safe(e)}"
-                )
+                logger.warning(f"Delete side effect failed for {path}: {e}")
 
         # Broadcast file_delete event for watch mode sync
         try:
@@ -358,11 +345,9 @@ class FileOperationsService:
                 session_id=get_request_session_id(),
             )
         except Exception as e:
-            logger.warning(
-                f"Failed to publish file_delete for {log_safe(path)}: {log_safe(e)}"
-            )
+            logger.warning(f"Failed to publish file_delete for {path}: {e}")
 
-        logger.info(f"File deleted: {log_safe(path)}")
+        logger.info(f"File deleted: {path}")
 
     async def _delete_from_s3(self, path: str) -> None:
         """Delete from S3 _repo/ — source-of-truth operation."""
@@ -516,12 +501,10 @@ class FileOperationsService:
             try:
                 await self._diagnostics.clear_diagnostic_notification(path)
             except Exception as e:
-                logger.warning(
-                    f"Failed to clear bundler diagnostic for {log_safe(path)}: {log_safe(e)}"
-                )
+                logger.warning(f"Failed to clear bundler diagnostic for {path}: {e}")
             logger.info(
-                f"App bundle rebuilt: app={app_id} path={log_safe(relative_path)} "
-                f"entry={log_safe(m.entry)} duration_ms={m.duration_ms}"
+                f"App bundle rebuilt: app={app_id} path={relative_path} "
+                f"entry={m.entry} duration_ms={m.duration_ms}"
             )
         else:
             errors = result.errors or []
@@ -558,21 +541,19 @@ class FileOperationsService:
                     target_path, diagnostics
                 )
             except Exception as e:
-                logger.warning(
-                    f"Failed to create bundler diagnostic for {log_safe(path)}: {log_safe(e)}"
-                )
+                logger.warning(f"Failed to create bundler diagnostic for {path}: {e}")
             first = errors[0] if errors else None
             first_file = first.file if first else None
             first_line = first.line if first else None
             first_col = first.column if first else None
             first_msg = first.text if first else ""
             logger.warning(
-                f"App bundle BUILD FAILED: app={app_id} path={log_safe(relative_path)} "
+                f"App bundle BUILD FAILED: app={app_id} path={relative_path} "
                 f"errors={len(errors)} "
-                f"first_file={log_safe(first_file)!r} "
+                f"first_file={first_file!r} "
                 f"first_line={first_line} "
                 f"first_col={first_col} "
-                f"first_msg={log_safe(first_msg)!r}"
+                f"first_msg={first_msg!r}"
             )
 
         try:

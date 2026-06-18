@@ -53,9 +53,6 @@ from bifrost.manifest import (
 )
 from src.services.manifest_import import (
     ManifestResolver,
-    _collect_removed_entity_ids,
-    _filter_manifest_to_scope,
-    _safe_app_repo_path,
 )
 
 
@@ -94,44 +91,6 @@ def _walk_tree(root: Path) -> dict[str, bytes]:
             continue
         files[rel] = p.read_bytes()
     return files
-
-
-def _filter_manifest_to_work_dir(manifest: Manifest, work_dir: Path) -> None:
-    """Restrict regenerated manifest entries to entities owned by this repo."""
-    _filter_manifest_to_scope(
-        manifest,
-        path_exists=lambda path: (work_dir / path).exists(),
-        dir_exists=lambda path: (work_dir / path).is_dir(),
-    )
-
-
-def _filter_db_manifest_to_import_scope(
-    db_manifest: Manifest,
-    incoming_manifest: Manifest,
-    work_dir: Path,
-) -> None:
-    """Restrict DB-side diff candidates to this repo/import scope."""
-    _filter_manifest_to_scope(
-        db_manifest,
-        path_exists=lambda path: (work_dir / path).exists(),
-        dir_exists=lambda path: (work_dir / path).is_dir(),
-        scope_manifest=incoming_manifest,
-    )
-
-
-def _deleted_paths_in_head(repo: GitRepo) -> set[str]:
-    """Return paths deleted by the current HEAD commit."""
-    try:
-        output = repo.git.diff_tree("--no-commit-id", "--name-status", "-r", "HEAD")
-    except Exception as exc:
-        logger.debug("Could not inspect deleted paths in HEAD: %s", exc)
-        return set()
-    deleted: set[str] = set()
-    for line in output.splitlines():
-        parts = line.split("\t", 1)
-        if len(parts) == 2 and parts[0] == "D":
-            deleted.add(parts[1])
-    return deleted
 
 
 def _three_way_merge_dicts(
@@ -742,7 +701,19 @@ class GitHubSyncService:
 
         manifest = await generate_manifest(db)
 
-        _filter_manifest_to_work_dir(manifest, work_dir)
+        # Filter out entities whose files don't exist in work_dir.
+        # The DB may contain entities from other workspaces or deleted files;
+        # the manifest should only reference files actually present in the repo.
+        # Forms/agents carry inline content under their UUID — they have no
+        # required companion file, so they are NOT filtered by file existence.
+        manifest.workflows = {
+            k: v for k, v in manifest.workflows.items()
+            if (work_dir / v.path).exists()
+        }
+        manifest.apps = {
+            k: v for k, v in manifest.apps.items()
+            if (work_dir / v.path).is_dir()
+        }
 
         # Filter configs to only include those whose integration_id is present
         # in the manifest (or has no integration_id). This prevents stale configs
@@ -866,24 +837,18 @@ class GitHubSyncService:
                 # Step 4: Entity import — always full import (safe, idempotent upserts)
                 await _progress("Importing entities...")
                 all_entity_changes: list = []
-                removed_paths = _deleted_paths_in_head(repo)
                 async with self.db.begin_nested():
-                    entities_imported, entity_changes, removed_entity_ids = await self._import_all_entities(
+                    entities_imported, entity_changes = await self._import_all_entities(
                         work_dir, progress_fn=_progress,
                     )
                     all_entity_changes.extend(entity_changes)
                     await _progress("Updating file index...")
-                    await self._update_file_index(work_dir, removed_paths=removed_paths)
+                    await self._update_file_index(work_dir)
                 await self.db.commit()
 
                 # Step 5: Clean up removed entities (gated on confirmation)
                 await _progress("Checking for removed entities...")
-                pending_deletes = await self._resolver._resolve_deletions(
-                    work_dir=work_dir,
-                    dry_run=True,
-                    removed_entity_ids=removed_entity_ids,
-                    removed_paths=removed_paths,
-                )
+                pending_deletes = await self._resolver._resolve_deletions(work_dir=work_dir, dry_run=True)
                 # Filter out "keep" entries (e.g. tables) — only actual removals need confirmation
                 pending_removals = [e for e in pending_deletes if e.action != "keep"]
                 if pending_removals and not confirm_deletes:
@@ -905,11 +870,7 @@ class GitHubSyncService:
                 if pending_removals:
                     await _progress("Deleting removed entities...")
                     async with self.db.begin_nested():
-                        deletion_changes = await self._resolver._resolve_deletions(
-                            work_dir=work_dir,
-                            removed_entity_ids=removed_entity_ids,
-                            removed_paths=removed_paths,
-                        )
+                        deletion_changes = await self._resolver._resolve_deletions(work_dir=work_dir)
                         all_entity_changes.extend(deletion_changes)
                     await self.db.commit()
 
@@ -1172,13 +1133,13 @@ class GitHubSyncService:
         self,
         work_dir: Path,
         progress_fn=None,
-    ) -> "tuple[int, list, dict[str, set[str]]]":
+    ) -> "tuple[int, list]":
         """Import entities from the working tree into the DB (incremental).
 
         Computes a diff against current DB state and only resolves changed
         entities, matching the incremental approach used by CLI push.
 
-        Returns tuple of (count, non-delete entity changes, explicit removed IDs).
+        Returns tuple of (count of entities resolved, list of entity changes).
         """
         from src.models.contracts.github import EntityChange
         from src.services.manifest_generator import generate_manifest
@@ -1194,17 +1155,15 @@ class GitHubSyncService:
             or manifest.events
         )
         if not has_entities:
-            return 0, [], {}
+            return 0, []
 
         # Diff against current DB state to find what actually changed
         db_manifest = await generate_manifest(self.db)
-        _filter_db_manifest_to_import_scope(db_manifest, manifest, work_dir)
         diff_changes, changed_ids = _diff_and_collect(manifest, db_manifest)
-        removed_entity_ids = _collect_removed_entity_ids(diff_changes)
 
         if not changed_ids:
             # No entity-level changes detected — nothing to import
-            return 0, [], {}
+            return 0, []
 
         # Resolve only changed entities
         await self._resolver.plan_import(
@@ -1272,7 +1231,7 @@ class GitHubSyncService:
         # Index agents from manifest
         await self._resolver._index_agents_from_manifest(manifest, _read_work_dir, changed_ids)
 
-        return count, entity_changes, removed_entity_ids
+        return count, entity_changes
 
     # -----------------------------------------------------------------
     # App preview sync
@@ -1310,14 +1269,10 @@ class GitHubSyncService:
                 logger.warning(f"Failed to sync preview for app {mapp_id}: {e}")
 
         # Process all apps concurrently
-        preview_tasks = []
-        for mapp in manifest.apps.values():
-            try:
-                preview_tasks.append(_sync_one_app(mapp.id, _safe_app_repo_path(mapp)))
-            except ValueError as exc:
-                logger.warning("Skipping unsafe app preview path: %s", exc)
-
-        await asyncio.gather(*preview_tasks)
+        await asyncio.gather(*(
+            _sync_one_app(mapp.id, mapp.path)
+            for mapp in manifest.apps.values()
+        ))
 
     # -----------------------------------------------------------------
     # Reimport from repo (no git operations)
@@ -1337,12 +1292,8 @@ class GitHubSyncService:
 
             # Import entities atomically with savepoint
             async with self.db.begin_nested():
-                count, _changes, removed_entity_ids = await self._import_all_entities(work_dir)
-                await self._resolver._resolve_deletions(
-                    work_dir=work_dir,
-                    removed_entity_ids=removed_entity_ids,
-                    removed_paths=_deleted_paths_in_head(GitRepo(str(work_dir))),
-                )
+                count, _changes = await self._import_all_entities(work_dir)
+                await self._resolver._resolve_deletions(work_dir=work_dir)
                 await self._update_file_index(work_dir)
             await self.db.commit()
 
@@ -1406,11 +1357,7 @@ class GitHubSyncService:
                 return repo
             raise SyncError(f"Failed to clone {self.repo_url}: {e}") from e
 
-    async def _update_file_index(
-        self,
-        work_dir: Path,
-        removed_paths: set[str] | None = None,
-    ) -> None:
+    async def _update_file_index(self, work_dir: Path) -> None:
         """Update file_index from all files in the working tree, remove stale entries.
 
         Optimized: prefetches existing (path, content_hash) pairs in one query,
@@ -1470,12 +1417,8 @@ class GitHubSyncService:
         if pending_upserts:
             logger.info(f"File index: upserted {len(pending_upserts)} changed files, skipped {len(files) - len(pending_upserts)} unchanged")
 
-        # Remove file_index entries only when git explicitly deleted those
-        # paths in this sync. A partial checkout/import must not turn absence
-        # from the current working tree into global file-index deletion.
+        # Remove file_index entries that no longer exist in the repo
         stale_paths = set(existing_hashes.keys()) - repo_paths
-        if removed_paths is not None:
-            stale_paths &= removed_paths
         if stale_paths:
             await self.db.execute(
                 delete(FileIndex).where(FileIndex.path.in_(stale_paths))

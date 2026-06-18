@@ -378,15 +378,15 @@ def _get_blob_container_client() -> Any:
     """Get or create a sync Azure Blob container client."""
     global _blob_container_client, _blob_available
 
-    if _object_storage_provider() != "azure_blob":
-        _blob_available = False
-        return None
-
     if _blob_available is False:
         return None
 
     if _blob_container_client is not None:
         return _blob_container_client
+
+    if _object_storage_provider() != "azure_blob":
+        _blob_available = False
+        return None
 
     account_url = os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL")
     container = os.environ.get("BIFROST_AZURE_BLOB_CONTAINER")
