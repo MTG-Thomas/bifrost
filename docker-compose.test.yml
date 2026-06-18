@@ -159,6 +159,13 @@ services:
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
       - test-mounts:/mounts  # File storage for uploads, branding, etc.
+      # Share ONLY the fixture subdir the test-runner stages file:// git repos
+      # in, so install/preview-repo can clone them server-side. Do NOT bind the
+      # whole LOG_DIR over the api's /tmp/bifrost: the api runs as root and its
+      # entrypoint `chown -R`s /tmp/bifrost to the bifrost uid (1000), which
+      # would clobber the host-owned LOG_DIR (test-runner.log, test-results.xml,
+      # *.log) on CI runners whose uid is not 1000.
+      - ${LOG_DIR:-/tmp/bifrost}/solution-repo-fixtures:/tmp/bifrost/solution-repo-fixtures
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -328,6 +335,7 @@ services:
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
       - ./.github:/app/.github:ro
       - ./.claude:/app/.claude:ro
       - ./.env.debug:/app/.env.debug:ro
