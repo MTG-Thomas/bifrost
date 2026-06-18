@@ -122,6 +122,10 @@ install_router = APIRouter(prefix="/api/cli", tags=["CLI Install"])
 # =============================================================================
 
 
+def _is_external_user(current_user: CurrentUser) -> bool:
+    return getattr(current_user, "is_external", False) is True
+
+
 def should_auto_refresh_token(
     provider: Any, entity_id: str | None, oauth_scope: str | None = None
 ) -> bool:
@@ -693,7 +697,7 @@ async def sdk_integrations_get(
             config = await repo.get_config_for_mapping(
                 mapping.integration_id,
                 org_uuid,
-                include_default_secrets=not getattr(current_user, "is_external", False),
+                include_default_secrets=not _is_external_user(current_user),
             )
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
@@ -711,7 +715,7 @@ async def sdk_integrations_get(
             # Build OAuth data if provider exists
             if integration and integration.oauth_provider:
                 token = mapping.oauth_token
-                if not token:
+                if not token and not _is_external_user(current_user):
                     # Cascade: prefer org-scoped token, fall back to global.
                     # See api/src/repositories/README.md for the pattern.
                     oauth_token_repo = OAuthTokenRepository(
@@ -737,7 +741,10 @@ async def sdk_integrations_get(
             return None
 
         entity_id = integration.default_entity_id or integration.entity_id
-        config = await repo.get_integration_defaults(integration.id)
+        config = await repo.get_integration_defaults(
+            integration.id,
+            external=_is_external_user(current_user),
+        )
 
         secret_keys = [s.key for s in integration.config_schema if s.type == "secret"]
         response_data = {
@@ -750,7 +757,7 @@ async def sdk_integrations_get(
         }
 
         # Build OAuth data if provider exists
-        if integration.oauth_provider:
+        if integration.oauth_provider and not _is_external_user(current_user):
             # Cascade: prefer org-scoped token, fall back to global.
             # See api/src/repositories/README.md for the pattern.
             oauth_token_repo = OAuthTokenRepository(
@@ -965,7 +972,7 @@ async def sdk_integrations_list_mappings(
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                include_default_secrets=not getattr(current_user, "is_external", False),
+                include_default_secrets=not _is_external_user(current_user),
             )
             items.append({
                 "id": str(mapping.id),
@@ -1027,7 +1034,7 @@ async def sdk_integrations_get_mapping(
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=not getattr(current_user, "is_external", False),
+            include_default_secrets=not _is_external_user(current_user),
         )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
@@ -1148,7 +1155,7 @@ async def sdk_integrations_upsert_mapping(
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=not getattr(current_user, "is_external", False),
+            include_default_secrets=not _is_external_user(current_user),
         )
 
         return SDKIntegrationsMappingItem(
@@ -2624,7 +2631,7 @@ async def download_cli() -> Response:
                     continue
                 if file_path.name in exclude_files:
                     continue
-                if file_path.suffix not in (".py", ".toml"):
+                if file_path.suffix not in (".py", ".toml", ".json"):
                     continue
                 if file_path.name == "pyproject.toml":
                     continue  # Already added above

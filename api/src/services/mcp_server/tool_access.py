@@ -353,8 +353,8 @@ class MCPToolAccessService:
         agent: Agent,
         user_roles: list[str],
         is_superuser: bool,
-        user_id: UUID | str | None = None,
         is_external: bool = False,
+        user_id: UUID | str | None = None,
     ) -> bool:
         """Check if user has access to a specific agent (same rules as _get_accessible_agents)."""
         if agent.access_level == AgentAccessLevel.AUTHENTICATED:

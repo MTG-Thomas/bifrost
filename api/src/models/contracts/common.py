@@ -120,6 +120,7 @@ class UploadedFileMetadata(BaseModel):
 class FileUploadResponse(BaseModel):
     """Response model for file upload SAS URL generation"""
     upload_url: str = Field(..., description="URL for direct upload")
+    upload_headers: dict[str, str] = Field(..., description="Headers required for direct upload")
     blob_uri: str = Field(..., description="Final file URI")
     expires_at: str = Field(..., description="Token expiration timestamp (ISO format)")
     file_metadata: UploadedFileMetadata = Field(..., description="Metadata for accessing the uploaded file in workflows")

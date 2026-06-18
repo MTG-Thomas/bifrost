@@ -22,6 +22,7 @@ import pathlib
 import secrets
 import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -45,6 +46,7 @@ import httpx
 import bifrost.credentials as credentials
 from bifrost._workspace_lock import WorkspaceLock, WorkspaceLockError
 from bifrost.client import BifrostClient
+from bifrost.contract_version import CONTRACT_VERSION
 # Canonical platform export list. Shared with api/src/services/app_bundler.
 # A drift test (tests/unit/test_platform_names_match_runtime.py) keeps this
 # in step with the client's runtime `$` registry so new platform exports
@@ -195,6 +197,29 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
 WATCH_HEARTBEAT_SECONDS = 60
 
 
+def _warn_cli_version(message: str) -> None:
+    print(f"\033[33m{message}\033[0m", file=sys.stderr)
+
+
+def _version_notice_marker(api_url: str, server_version: str) -> pathlib.Path:
+    key = hashlib.sha256(f"{api_url}|{server_version}".encode()).hexdigest()[:16]
+    return pathlib.Path(tempfile.gettempdir()) / f"bifrost-cli-version-notice-{key}"
+
+
+def _warn_build_drift_once(api_url: str, installed: str, server_version: str) -> None:
+    marker = _version_notice_marker(api_url, server_version)
+    if marker.exists():
+        return
+    try:
+        marker.write_text("1", encoding="utf-8")
+    except OSError:
+        pass
+    _warn_cli_version(
+        f"Your CLI ({installed}) differs from server build {server_version}. "
+        f"Run: pipx install --force {api_url}/api/cli/download"
+    )
+
+
 def _check_cli_version() -> None:
     """Hard-block the command if the installed CLI doesn't match the deployed server.
 
@@ -233,25 +258,39 @@ def _check_cli_version() -> None:
         resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            _warn_cli_version("Could not verify Bifrost CLI/server compatibility: version response was not an object.")
+            return
 
         server_version = (data.get("version") or "").lstrip("v")
-        if not server_version:
-            return  # server didn't tell us its version — best-effort skip
+        server_contract_version = data.get("contract_version")
+        if server_contract_version is None:
+            if server_version and server_version == installed:
+                return
+            _warn_cli_version(
+                "Could not verify Bifrost CLI/server compatibility: server did not report a contract version."
+            )
+            return
 
-        if server_version != installed:
+        if server_contract_version != CONTRACT_VERSION:
             print(
-                f"\033[33mYour CLI ({installed}) is out of date. "
-                f"Server is on {server_version}.\nRun:\n"
+                f"\033[33mYour CLI contract ({CONTRACT_VERSION}) is incompatible "
+                f"with server contract {server_contract_version}.\nRun:\n"
                 f"  pipx install --force {api_url}/api/cli/download\n\033[0m",
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        if not server_version:
+            _warn_cli_version("Could not verify Bifrost CLI/server build: server did not report a version.")
+            return
+
+        if server_version != installed:
+            _warn_build_drift_once(api_url, installed, server_version)
     except SystemExit:
         raise
     except Exception as e:
-        # Best-effort: network errors, malformed JSON, missing credentials store,
-        # etc. should never block the user. The exit-on-mismatch above is the
-        # only intentional bail-out.
+        _warn_cli_version(f"Could not verify Bifrost CLI/server compatibility: {e}")
         logger.debug(f"CLI version check skipped: {e}")
 
 
