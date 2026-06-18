@@ -461,13 +461,21 @@ async def cli_get_config(
 ) -> CLIConfigValue | None:
     """Get a config value via CLI API."""
     from src.repositories.config import ConfigRepository
+    from src.models import Config as ConfigModel
 
     org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
     if await _is_external_user_db(current_user, db):
-        repo = ConfigRepository(db, org_id=org_uuid, is_superuser=True)
-        entry_obj = await repo.get(request.key)
+        if org_uuid is None:
+            return None
+        result = await db.execute(
+            select(ConfigModel).where(
+                ConfigModel.key == request.key,
+                ConfigModel.organization_id == org_uuid,
+            )
+        )
+        entry_obj = result.scalar_one_or_none()
         if entry_obj is None:
             return None
         raw_value = entry_obj.value
@@ -713,10 +721,14 @@ async def sdk_integrations_get(
 
         if mapping:
             # Org-specific mapping found
+            is_external = await _is_external_user_db(current_user, db)
+            config_kwargs: dict[str, Any] = {"include_default_secrets": not is_external}
+            if is_external:
+                config_kwargs["external"] = True
             config = await repo.get_config_for_mapping(
                 mapping.integration_id,
                 org_uuid,
-                include_default_secrets=not await _is_external_user_db(current_user, db),
+                **config_kwargs,
             )
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
@@ -732,9 +744,9 @@ async def sdk_integrations_get(
             }
 
             # Build OAuth data if provider exists
-            if integration and integration.oauth_provider:
+            if integration and integration.oauth_provider and not is_external:
                 token = mapping.oauth_token
-                if not token and not await _is_external_user_db(current_user, db):
+                if not token:
                     # Cascade: prefer org-scoped token, fall back to global.
                     # See api/src/repositories/README.md for the pattern.
                     oauth_token_repo = OAuthTokenRepository(
@@ -756,6 +768,23 @@ async def sdk_integrations_get(
         # Fall back to integration defaults
         integration = await repo.get_integration_by_name(request.name)
         if not integration:
+            if request.solution:
+                from src.models.orm.solution_connection_schema import SolutionConnectionSchema
+
+                solution_id = UUID(request.solution)
+                declared = (
+                    await db.execute(
+                        select(SolutionConnectionSchema.id).where(
+                            SolutionConnectionSchema.solution_id == solution_id,
+                            SolutionConnectionSchema.integration_name == request.name,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if declared is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                        detail=f"Solution declares integration '{request.name}', but no Integration exists for it.",
+                    )
             logger.debug(f"SDK integrations.get('{log_safe(request.name)}'): integration not found")
             return None
 
@@ -991,7 +1020,7 @@ async def sdk_integrations_list_mappings(
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                include_default_secrets=not await _is_external_user_db(current_user, db),
+                external=await _is_external_user_db(current_user, db),
             )
             items.append({
                 "id": str(mapping.id),
@@ -1053,7 +1082,7 @@ async def sdk_integrations_get_mapping(
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=not await _is_external_user_db(current_user, db),
+            external=await _is_external_user_db(current_user, db),
         )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
@@ -2471,6 +2500,11 @@ async def cli_knowledge_list_namespaces(
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
+        if await _is_external_user_db(current_user, db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="External users cannot list knowledge namespaces",
+            )
         org_id = await _resolve_sdk_org_id(current_user, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 

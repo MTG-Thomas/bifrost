@@ -2630,7 +2630,7 @@ class ManifestResolver:
         }
         if mapp.access_level is not None:
             app_values["access_level"] = mapp.access_level
-        app_values["app_model"] = getattr(mapp, "app_model", "inline_v1") or "inline_v1"
+        app_values["app_model"] = getattr(mapp, "app_model", "standalone_v2") or "standalone_v2"
 
         ops: list[SyncOp] = []
 

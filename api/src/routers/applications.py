@@ -41,6 +41,7 @@ from src.models.contracts.applications import (
 from src.models.orm.applications import Application
 from src.models.orm.file_index import FileIndex
 from src.core.exceptions import AccessDeniedError
+from src.services.solutions.guard import assert_entity_id_not_solution_managed
 from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 
 logger = logging.getLogger(__name__)
@@ -244,7 +245,8 @@ async def create_application(
     )
 
     try:
-        await ensure_no_stale_app_source(ctx.db, data.slug)
+        if data.app_model == "standalone_v2":
+            await ensure_no_stale_app_source(ctx.db, data.slug)
         application = await repo.create_application(data, created_by=user.email)
         return await application_to_public(application, repo)
     except ValueError as e:
@@ -514,6 +516,7 @@ async def publish_application(
     )
 
     try:
+        await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
         message = data.message if data else None
         application = await repo.publish(app_id, user.email, message)
         if not application:

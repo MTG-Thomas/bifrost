@@ -271,6 +271,7 @@ class TestApplicationVersioning:
                 "name": slug,
                 "slug": slug,
                 "description": "Tests draft/live versioning",
+                "app_model": "inline_v1",
             },
         )
         assert response.status_code == 201
