@@ -91,10 +91,12 @@ def _materialize_sdk_src(workdir: Path) -> Path:
     if (_SDK_SRC / "index.ts").is_file():
         return _SDK_SRC
 
-    candidates = (
-        Path("/client/src/lib/app-sdk"),
-        Path(__file__).resolve().parents[5] / "client" / "src" / "lib" / "app-sdk",
-    )
+    candidates = [Path("/client/src/lib/app-sdk")]
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "client" / "src" / "lib" / "app-sdk"
+        if candidate.is_dir():
+            candidates.append(candidate)
+            break
     client_src = next((c for c in candidates if (c / "index.v2.ts").is_file()), None)
     if client_src is None:
         return _SDK_SRC
