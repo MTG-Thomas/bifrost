@@ -693,7 +693,7 @@ async def sdk_integrations_get(
             config = await repo.get_config_for_mapping(
                 mapping.integration_id,
                 org_uuid,
-                include_default_secrets=True,
+                include_default_secrets=not getattr(current_user, "is_external", False),
             )
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
@@ -965,7 +965,7 @@ async def sdk_integrations_list_mappings(
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                include_default_secrets=False,
+                include_default_secrets=not getattr(current_user, "is_external", False),
             )
             items.append({
                 "id": str(mapping.id),
@@ -1027,7 +1027,7 @@ async def sdk_integrations_get_mapping(
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=False,
+            include_default_secrets=not getattr(current_user, "is_external", False),
         )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
@@ -1145,7 +1145,11 @@ async def sdk_integrations_upsert_mapping(
         await db.commit()
 
         # Get merged config for response
-        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
+        config = await repo.get_config_for_mapping(
+            integration.id,
+            mapping.organization_id,
+            include_default_secrets=not getattr(current_user, "is_external", False),
+        )
 
         return SDKIntegrationsMappingItem(
             id=str(mapping.id),

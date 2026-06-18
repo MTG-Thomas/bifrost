@@ -63,6 +63,21 @@ def _guard_message(err: Exception) -> str:
     return str(detail) if detail is not None else str(err)
 
 
+def _first_row(result: Any) -> Any | None:
+    first = getattr(result, "first", None)
+    if callable(first):
+        return first()
+
+    scalars = getattr(result, "scalars", None)
+    if callable(scalars):
+        scalar_result = scalars()
+        scalar_first = getattr(scalar_result, "first", None)
+        if callable(scalar_first):
+            return scalar_first()
+
+    return None
+
+
 async def list_apps(context: Any) -> ToolResult:
     """List all applications with file summaries."""
     from sqlalchemy import select
@@ -175,12 +190,7 @@ async def create_app(
                     Application.solution_id.is_(None),
                 )
             )
-            existing_first = getattr(existing, "first", None)
-            existing_app = (
-                existing_first()
-                if existing_first is not None
-                else existing.scalars().first()
-            )
+            existing_app = _first_row(existing)
             if existing_app:
                 return error_result(f"Application with slug '{slug}' already exists")
 

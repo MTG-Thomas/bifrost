@@ -622,7 +622,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
         org_id: UUID,
         *,
         external: bool = False,
-        include_default_secrets: bool = True,
+        include_default_secrets: bool = False,
     ) -> dict:
         """
         Get merged configuration for an integration mapping.
@@ -763,7 +763,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
         provider_id: UUID,
         organization_id: UUID | None,
     ) -> Any:
-        """Get org-level OAuth token for a provider, scoped to org then global."""
+        """Get org-level OAuth token for a provider, scoped to org or global."""
         from src.models.orm.oauth import OAuthToken
 
         if organization_id is not None:
@@ -775,8 +775,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
                 ).order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
             )
             token = result.scalars().first()
-            if token:
-                return token
+            return token
 
         result = await self.session.execute(
             select(OAuthToken).where(

@@ -7,7 +7,6 @@ table in migration 20260103_000000.
 """
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, text
@@ -15,12 +14,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
-
-if TYPE_CHECKING:
-    from src.models.orm.agents import Agent
-    from src.models.orm.organizations import Organization
-    from src.models.orm.users import Role
-    from src.models.orm.workflow_roles import WorkflowRole
 
 
 # Execution-resolution entity — access via WorkflowRepository (OrgScopedRepository).
@@ -128,20 +121,20 @@ class Workflow(Base):
     )
 
     # Relationships
-    organization: Mapped["Organization | None"] = relationship(
+    organization: Mapped["Organization | None"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         back_populates="workflows",
         foreign_keys=[organization_id],
     )
-    agents: Mapped[list["Agent"]] = relationship(
+    agents: Mapped[list["Agent"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         secondary="agent_tools",
         back_populates="tools",
     )
     # Roles via junction table
-    workflow_roles: Mapped[list["WorkflowRole"]] = relationship(
+    workflow_roles: Mapped[list["WorkflowRole"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         back_populates="workflow",
         cascade="all, delete-orphan",
     )
-    roles: Mapped[list["Role"]] = relationship(
+    roles: Mapped[list["Role"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         secondary="workflow_roles",
         viewonly=True,
     )
@@ -175,4 +168,3 @@ class Workflow(Base):
             postgresql_where=text("solution_id IS NOT NULL"),
         ),
     )
-

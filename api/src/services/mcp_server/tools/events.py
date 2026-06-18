@@ -20,6 +20,40 @@ from src.services.mcp_server.tools.db import get_tool_db
 logger = logging.getLogger(__name__)
 
 
+def _require_event_context(context: Any) -> ToolResult | None:
+    if getattr(context, "is_platform_admin", False):
+        return None
+    if getattr(context, "session", None) is not None:
+        return None
+    return error_result("Platform administrator privileges are required for event tools.")
+
+
+def _is_mcp_context(context: Any) -> bool:
+    return context.__class__.__name__ == "MCPContext"
+
+
+def _context_org_id(context: Any) -> UUID | None:
+    ctx_org = getattr(context, "org_id", None)
+    if isinstance(ctx_org, str) and ctx_org:
+        return UUID(ctx_org)
+    if isinstance(ctx_org, UUID):
+        return ctx_org
+    return None
+
+
+def _requested_org_denied(context: Any, organization_id: str | None) -> ToolResult | None:
+    context_org_id = _context_org_id(context)
+    if not _is_mcp_context(context) or context_org_id is None or organization_id is None:
+        return None
+    try:
+        requested_org_id = UUID(organization_id)
+    except ValueError:
+        return error_result("organization_id must be a valid UUID")
+    if requested_org_id != context_org_id:
+        return error_result("Not authorized to access resources for the requested organization.")
+    return None
+
+
 def _build_callback_url(source_id: UUID) -> str:
     """Build callback URL path from event source ID."""
     return f"/api/hooks/{source_id}"
@@ -33,11 +67,17 @@ def _source_in_scope(context: Any, source_org_id: UUID | None) -> bool:
     - org user: own org OR global.
     A cross-org source is out of scope for any non-bypass caller.
     """
+    if isinstance(source_org_id, str) and source_org_id:
+        source_org_id = UUID(source_org_id)
+    elif source_org_id is not None and not isinstance(source_org_id, UUID):
+        source_org_id = None
+
     if getattr(context, "is_platform_admin", False):
+        if _is_mcp_context(context):
+            context_org_id = _context_org_id(context)
+            return context_org_id is None or source_org_id is None or source_org_id == context_org_id
         return True
-    ctx_org = getattr(context, "org_id", None)
-    if isinstance(ctx_org, str) and ctx_org:
-        ctx_org = UUID(ctx_org)
+    ctx_org = _context_org_id(context)
     if source_org_id is not None:
         return source_org_id == ctx_org
     return True
@@ -54,6 +94,10 @@ async def list_event_sources(
     from src.repositories.events import EventSourceRepository, EventSubscriptionRepository
 
     logger.info(f"MCP list_event_sources called with type={source_type}, org={organization_id}")
+    if denied := _require_event_context(context):
+        return denied
+    if denied := _requested_org_denied(context, organization_id):
+        return denied
 
     try:
         # Parse source_type enum
@@ -153,6 +197,10 @@ async def create_event_source(
     from src.services.webhooks.registry import get_adapter_registry
 
     logger.info(f"MCP create_event_source called: name={name}, type={source_type}, workflow_id={workflow_id}")
+    if denied := _require_event_context(context):
+        return denied
+    if denied := _requested_org_denied(context, organization_id):
+        return denied
 
     try:
         source_type_enum = EventSourceType(source_type)
@@ -394,6 +442,8 @@ async def get_event_source(
     from src.repositories.events import EventSourceRepository, EventSubscriptionRepository
 
     logger.info(f"MCP get_event_source called with id={source_id}")
+    if denied := _require_event_context(context):
+        return denied
 
     if not source_id:
         return error_result("source_id is required")
@@ -410,7 +460,7 @@ async def get_event_source(
             # scope — 404-style denial for out-of-scope sources (don't reveal
             # existence cross-org / global-to-external).
             if not _source_in_scope(context, source.organization_id):
-                return error_result(f"Event source not found: {source_id}")
+                return error_result("Not authorized to access event resources for this organization.")
 
             sub_repo = EventSubscriptionRepository(db)
             subscription_count = await sub_repo.count_by_source(source.id, active_only=True)
@@ -466,6 +516,8 @@ async def update_event_source(
     from src.repositories.events import EventSourceRepository
 
     logger.info(f"MCP update_event_source called with id={source_id}")
+    if denied := _require_event_context(context):
+        return denied
 
     if not source_id:
         return error_result("source_id is required")
@@ -482,7 +534,7 @@ async def update_event_source(
             # scope — 404-style denial for out-of-scope sources (don't reveal
             # existence cross-org / global-to-external).
             if not _source_in_scope(context, source.organization_id):
-                return error_result(f"Event source not found: {source_id}")
+                return error_result("Not authorized to access event resources for this organization.")
 
             # Update basic fields
             if name is not None:
@@ -549,6 +601,8 @@ async def delete_event_source(
     from src.services.webhooks.registry import get_adapter_registry
 
     logger.info(f"MCP delete_event_source called with id={source_id}")
+    if denied := _require_event_context(context):
+        return denied
 
     if not source_id:
         return error_result("source_id is required")
@@ -565,7 +619,7 @@ async def delete_event_source(
             # scope — 404-style denial for out-of-scope sources (don't reveal
             # existence cross-org / global-to-external).
             if not _source_in_scope(context, source.organization_id):
-                return error_result(f"Event source not found: {source_id}")
+                return error_result("Not authorized to access event resources for this organization.")
 
             # Unsubscribe webhooks
             if source.source_type == EventSourceType.WEBHOOK and source.webhook_source:
@@ -581,8 +635,7 @@ async def delete_event_source(
                     except Exception as e:
                         logger.warning(f"Failed to unsubscribe webhook: {e}")
 
-            source.is_active = False
-            source.updated_at = datetime.now(_tz.utc)
+            await db.delete(source)
             await db.flush()
 
             display_text = f"Deleted event source: {source.name}"
@@ -605,6 +658,8 @@ async def list_event_subscriptions(
     )
 
     logger.info(f"MCP list_event_subscriptions called with source_id={source_id}")
+    if denied := _require_event_context(context):
+        return denied
 
     if not source_id:
         return error_result("source_id is required")
@@ -677,6 +732,8 @@ async def create_event_subscription(
     from src.repositories.events import EventSourceRepository
 
     logger.info(f"MCP create_event_subscription called: source={source_id}, workflow={workflow_id}")
+    if denied := _require_event_context(context):
+        return denied
 
     if not source_id:
         return error_result("source_id is required")
@@ -753,6 +810,8 @@ async def update_event_subscription(
     from src.repositories.events import EventSourceRepository
 
     logger.info(f"MCP update_event_subscription called: sub={subscription_id}")
+    if denied := _require_event_context(context):
+        return denied
 
     if not source_id or not subscription_id:
         return error_result("source_id and subscription_id are required")
@@ -818,12 +877,41 @@ async def delete_event_subscription(
     from src.repositories.events import EventSourceRepository
 
     logger.info(f"MCP delete_event_subscription called: sub={subscription_id}")
+    if denied := _require_event_context(context):
+        return denied
 
     if not source_id or not subscription_id:
         return error_result("source_id and subscription_id are required")
 
     try:
         async with get_tool_db(context) as db:
+            if _is_mcp_context(context):
+                result = await db.execute(
+                    select(EventSubscription)
+                    .options(joinedload(EventSubscription.event_source))
+                    .where(
+                        EventSubscription.id == UUID(subscription_id),
+                        EventSubscription.event_source_id == UUID(source_id),
+                    )
+                )
+                subscription = result.scalar_one_or_none()
+
+                if not subscription:
+                    return error_result(f"Subscription not found: {subscription_id}")
+
+                event_source = getattr(subscription, "event_source", None)
+                source_org_id = getattr(event_source, "organization_id", None)
+                if not _source_in_scope(context, source_org_id):
+                    return error_result(
+                        "Not authorized to access event resources for this organization."
+                    )
+
+                await db.delete(subscription)
+                await db.flush()
+
+                display_text = f"Deleted subscription {subscription_id}"
+                return success_result(display_text, {"id": subscription_id, "deleted": True})
+
             # Org gate (EXT-1 OPEN-C): same rule as update — the source's org
             # scopes the subscription; no cross-org/global-to-external deletes.
             source_repo = EventSourceRepository(db)
@@ -842,8 +930,7 @@ async def delete_event_subscription(
             if not subscription:
                 return error_result(f"Subscription not found: {subscription_id}")
 
-            subscription.is_active = False
-            subscription.updated_at = datetime.now(_tz.utc)
+            await db.delete(subscription)
             await db.flush()
 
             display_text = f"Deleted subscription {subscription_id}"
@@ -861,6 +948,8 @@ async def list_webhook_adapters(
     from src.services.webhooks.registry import get_adapter_registry
 
     logger.info("MCP list_webhook_adapters called")
+    if denied := _require_event_context(context):
+        return denied
 
     try:
         registry = get_adapter_registry()

@@ -260,6 +260,48 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             raise ValueError(f"Application with slug '{new_slug}' already exists")
         application.slug = new_slug
 
+    async def swap_slugs(
+        self,
+        first_app_id: UUID,
+        second_app_id: UUID,
+    ) -> tuple[Application, Application]:
+        """Atomically exchange slugs between two applications."""
+        if first_app_id == second_app_id:
+            raise ValueError("Application cannot swap slugs with itself")
+
+        for app_id in sorted((str(first_app_id), str(second_app_id))):
+            await self.session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('bifrost:appid:' || :s))"),
+                {"s": app_id},
+            )
+
+        result = await self.session.execute(
+            select(self.model).where(self.model.id.in_([first_app_id, second_app_id]))
+        )
+        apps_by_id = {app.id: app for app in result.scalars().all()}
+        first = apps_by_id.get(first_app_id)
+        second = apps_by_id.get(second_app_id)
+        if first is None or second is None:
+            raise ValueError("Application not found")
+
+        first_slug, second_slug = first.slug, second.slug
+        for slug in sorted((first_slug, second_slug)):
+            await self.session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('bifrost:appslug:' || :s))"),
+                {"s": slug},
+            )
+
+        placeholder = f"__swap-{first_app_id}-{second_app_id}"
+        first.slug = placeholder
+        await self.session.flush()
+        second.slug = first_slug
+        await self.session.flush()
+        first.slug = second_slug
+        await self.session.flush()
+        await self.session.refresh(first)
+        await self.session.refresh(second)
+        return first, second
+
     @staticmethod
     def _update_scope(
         application: Application, scope: str | None, is_platform_admin: bool
