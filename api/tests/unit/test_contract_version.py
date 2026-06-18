@@ -158,7 +158,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Solution deploy now returns 202 + deploy_job_id and the CLI polls
     # SolutionDeployJobStatus for the prior summary shape (2026-06-17).
     # CONTRACT_VERSION bumped to 5.
-    "4d84dfc7b2ae64d8be2aba15ca782467b5b92de256507bcbc4228fb36a336ec3"
+    "a799468f53c14a67556701f44e0d2e40bc09f9055369c4eb3a2c2b9a18597514"
 )
 
 

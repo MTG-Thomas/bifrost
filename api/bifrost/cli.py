@@ -76,6 +76,8 @@ _DEFAULT_IGNORE_PATTERNS = [
     "dist/",
     "coverage/",
     ".coverage",
+    ".env",
+    ".env.*",
     ".DS_Store",
     "*.pyc",
     # Editor atomic-write turds (e.g. foo.tsx.tmp.12345.1776000000000).
