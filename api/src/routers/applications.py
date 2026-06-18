@@ -123,6 +123,7 @@ async def application_to_public(
         is_published=application.is_published,
         has_unpublished_changes=application.has_unpublished_changes,
         access_level=application.access_level,
+        app_model=application.app_model,
         role_ids=role_ids,
         repo_path=application.repo_path,
         logo=_logo_data_url(application.logo_data, application.logo_content_type),
@@ -842,6 +843,7 @@ async def rollback_application(
         is_superuser=user.is_platform_admin,
     )
     application = await get_application_by_id_or_404(ctx, app_id)
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
 
     try:
         await repo.rollback_to_version(application, data.version_id)
