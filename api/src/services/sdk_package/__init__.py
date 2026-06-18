@@ -21,12 +21,24 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
+import shutil
 
 _HERE = Path(__file__).resolve().parent
 _SDK_SRC = _HERE / "sdk_src"
 _BUILDER = _HERE / "build_sdk.js"
 # esbuild is installed under the app_bundler package (shared Node toolchain).
 _NODE_MODULES = _HERE.parent / "app_bundler" / "node_modules"
+_SDK_SOURCE_FILES = (
+    "provider.tsx",
+    "tables.ts",
+    "transport.ts",
+    "use-table.ts",
+    "use-infinite-table.ts",
+    "ws-client.ts",
+    "use-workflow.ts",
+    "use-workflow-hooks.ts",
+    "bifrost-header.tsx",
+)
 
 # The peer deps a v2 app must already have for the SDK to resolve at runtime.
 # React (hooks) + lucide-react (BifrostHeader icons). The SDK uses plain fetch +
@@ -54,8 +66,9 @@ def _pep440ish(version: str) -> str:
 def _bundle(workdir: Path) -> bytes:
     """Run esbuild over the SDK source, returning the bundled ESM bytes."""
     out = workdir / "index.mjs"
+    src = _materialize_sdk_src(workdir)
     subprocess.run(  # noqa: S603 - trusted toolchain, fixed argv
-        ["node", str(_BUILDER), str(_SDK_SRC), str(out)],
+        ["node", str(_BUILDER), str(src), str(out)],
         cwd=str(workdir),
         check=True,
         capture_output=True,
@@ -65,6 +78,33 @@ def _bundle(workdir: Path) -> bytes:
         timeout=120,
     )
     return out.read_bytes()
+
+
+def _materialize_sdk_src(workdir: Path) -> Path:
+    """Return a readable SDK source dir without mutating bind-mounted source.
+
+    The production image bakes ``sdk_src/index.ts`` beside this module. In the
+    test stack, ``./api/src`` is bind-mounted over ``/app/src`` and can hide that
+    image copy, while ``/client/src`` is mounted read-only. Stage a temporary
+    copy from the client tree in that case instead of writing into ``/app/src``.
+    """
+    if (_SDK_SRC / "index.ts").is_file():
+        return _SDK_SRC
+
+    candidates = (
+        Path("/client/src/lib/app-sdk"),
+        Path(__file__).resolve().parents[5] / "client" / "src" / "lib" / "app-sdk",
+    )
+    client_src = next((c for c in candidates if (c / "index.v2.ts").is_file()), None)
+    if client_src is None:
+        return _SDK_SRC
+
+    staged = workdir / "sdk_src"
+    staged.mkdir(parents=True, exist_ok=True)
+    for name in _SDK_SOURCE_FILES:
+        shutil.copy(client_src / name, staged / name)
+    shutil.copy(client_src / "index.v2.ts", staged / "index.ts")
+    return staged
 
 
 # Caching is safe: the tarball is a pure function of version + the SDK source

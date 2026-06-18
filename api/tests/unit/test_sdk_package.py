@@ -14,44 +14,22 @@ from __future__ import annotations
 
 import io
 import json
-import shutil
 import tarfile
 from pathlib import Path
 
 import pytest
 
 _SDK_SERVICE = Path("/app/src/services/sdk_package")
-_SRC_FILES = [
-    "provider.tsx",
-    "tables.ts",
-    "use-table.ts",
-    "use-infinite-table.ts",
-    "ws-client.ts",
-    "use-workflow.ts",
-    "use-workflow-hooks.ts",
-    "bifrost-header.tsx",
-]
-
-
 def _ensure_sdk_src() -> bool:
-    """Make sure sdk_src/ holds the SDK source + index.ts barrel. Returns False
-    if neither the image copy nor the client tree is available (skip)."""
+    """Return whether the baked SDK source or client fallback tree is available."""
     dst = _SDK_SERVICE / "sdk_src"
     if (dst / "index.ts").is_file():
         return True
-    # stage from the client tree (mirrors the Dockerfile COPY)
     candidates = [
-        Path("/app").parent / "client" / "src" / "lib" / "app-sdk",
+        Path("/client/src/lib/app-sdk"),
         Path(__file__).resolve().parents[3] / "client" / "src" / "lib" / "app-sdk",
     ]
-    client = next((c for c in candidates if (c / "index.v2.ts").is_file()), None)
-    if client is None:
-        return False
-    dst.mkdir(parents=True, exist_ok=True)
-    for f in _SRC_FILES:
-        shutil.copy(client / f, dst / f)
-    shutil.copy(client / "index.v2.ts", dst / "index.ts")
-    return True
+    return any((c / "index.v2.ts").is_file() for c in candidates)
 
 
 @pytest.mark.e2e
