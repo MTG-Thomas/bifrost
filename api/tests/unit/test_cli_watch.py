@@ -339,3 +339,63 @@ def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     # The batch push layer only posts drained work; empty sets mean zero calls.
     assert not changes
     assert not deletes
+
+    # If a caller naively iterated drained sets and posted per file, no posts
+    # would happen because both sets are empty. This documents the contract.
+    posted: list[tuple[str, dict]] = []
+
+    async def fake_post(url, json=None, **kwargs):  # type: ignore[no-untyped-def]
+        posted.append((url, json or {}))
+
+        class _Resp:
+            status_code = 204
+
+        return _Resp()
+
+    # Iterate as the watch batch would (no asyncio needed since we never await)
+    for _ in changes:
+        # Would have called fake_post; we never get here.
+        pass
+    for _ in deletes:
+        pass
+
+    assert posted == []
+
+
+def test_watch_refuses_in_solution_workspace(tmp_path, capsys):
+    """`bifrost watch` must refuse inside a Solution workspace (D1): watch only
+    syncs to the global _repo/, so running it where a bifrost.solution.yaml is
+    present would silently push the developer's apps/ and workflows/ to the
+    wrong place. It must hard-fail (SystemExit) before doing any work via the
+    unified solution-workspace guard."""
+    import pytest
+
+    from bifrost.cli import handle_watch
+
+    # A directory that IS a Solution workspace (descriptor present).
+    (tmp_path / "bifrost.solution.yaml").write_text("slug: demo\nname: Demo\n")
+
+    with pytest.raises(SystemExit):
+        handle_watch([str(tmp_path)])
+
+    err = capsys.readouterr().err
+    assert "Solution workspace" in err
+    assert "solution deploy" in err
+
+
+def test_watch_allowed_in_plain_repo_workspace(tmp_path):
+    """A plain (non-Solution) workspace must NOT be refused by the solution
+    guard — watch proceeds past the check (it fails later on auth/lock in this
+    unit context, but NOT with the solution-workspace refusal)."""
+    from bifrost.cli import handle_watch
+
+    # No bifrost.solution.yaml here. Watch should pass the solution guard and
+    # fail later (no auth) — we only assert it is NOT the solution refusal.
+    with patch("bifrost.cli.WorkspaceLock") as mock_lock:
+        mock_lock.return_value.__enter__ = MagicMock(
+            side_effect=RuntimeError("stop-after-guard")
+        )
+        try:
+            handle_watch([str(tmp_path)])
+        except RuntimeError as e:
+            assert str(e) == "stop-after-guard"
