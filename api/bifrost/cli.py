@@ -27,6 +27,7 @@ import textwrap
 import threading
 import time
 import webbrowser
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -202,7 +203,7 @@ def _warn_cli_version(message: str) -> None:
 
 
 def _version_notice_marker(api_url: str, server_version: str) -> pathlib.Path:
-    key = hashlib.sha256(f"{api_url}|{server_version}".encode()).hexdigest()[:16]
+    key = f"{zlib.crc32(f'{api_url}|{server_version}'.encode()):08x}"
     return pathlib.Path(tempfile.gettempdir()) / f"bifrost-cli-version-notice-{key}"
 
 

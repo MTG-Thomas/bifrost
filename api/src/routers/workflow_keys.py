@@ -8,7 +8,6 @@ API keys are now stored directly on the workflows table (api_key_* columns).
 Each workflow can have ONE API key. No global keys - each key is workflow-specific.
 """
 
-import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -21,7 +20,7 @@ from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.models import Workflow
 from src.models import WorkflowKeyCreateRequest, WorkflowKeyResponse
-from src.services.workflow_keys import generate_workflow_key
+from src.services.workflow_keys import generate_workflow_key, verify_workflow_key
 
 logger = logging.getLogger(__name__)
 
@@ -252,12 +251,11 @@ async def validate_workflow_key(
     Returns:
         Tuple of (is_valid, workflow_id)
     """
-    hashed_key = hashlib.sha256(api_key.encode()).hexdigest()
     now = datetime.now(timezone.utc)
 
-    # Build query for workflow with matching API key
+    # Build query for candidate workflows, then verify bcrypt hashes in Python.
     query = select(Workflow).where(
-        Workflow.api_key_hash == hashed_key,
+        Workflow.api_key_hash.isnot(None),
         Workflow.api_key_enabled == True,  # noqa: E712
         Workflow.is_active == True,  # noqa: E712
         or_(
@@ -274,7 +272,11 @@ async def validate_workflow_key(
             return (False, None)
 
     result = await db.execute(query)
-    workflow = result.scalar_one_or_none()
+    workflows = result.scalars().all()
+    workflow = next(
+        (wf for wf in workflows if wf.api_key_hash and verify_workflow_key(api_key, wf.api_key_hash)),
+        None,
+    )
 
     if not workflow:
         return (False, None)

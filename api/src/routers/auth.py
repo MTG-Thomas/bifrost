@@ -1409,6 +1409,14 @@ def _validate_cli_redirect_uri(redirect_uri: str) -> None:
         )
 
 
+def _cli_redirect_with_params(redirect_uri: str, params: str) -> RedirectResponse:
+    _validate_cli_redirect_uri(redirect_uri)
+    separator = "&" if "?" in redirect_uri else "?"
+    # The stored redirect URI is revalidated immediately above and may only target localhost.
+    # lgtm[py/url-redirection]
+    return RedirectResponse(url=f"{redirect_uri}{separator}{params}")  # codeql[py/url-redirection]
+
+
 @router.post("/cli/start", response_model=CliNativeAuthStartResponse)
 async def start_cli_native_auth(
     request: Request,
@@ -1513,8 +1521,6 @@ async def authorize_cli_native_auth(
             "transaction_id": transaction_id,
         }
     )
-    separator = "&" if "?" in redirect_uri else "?"
-
     logger.info(
         f"CLI native OAuth authorized by user: {current_user.email}",
         extra={
@@ -1523,7 +1529,7 @@ async def authorize_cli_native_auth(
         },
     )
 
-    return RedirectResponse(url=f"{redirect_uri}{separator}{params}")
+    return _cli_redirect_with_params(redirect_uri, params)
 
 
 @router.post("/cli/token", response_model=CliNativeAuthTokenResponse)
