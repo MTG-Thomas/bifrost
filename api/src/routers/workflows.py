@@ -40,6 +40,8 @@ from src.models import (
     RecreateFileResponse,
     RegisterWorkflowRequest,
     RegisterWorkflowResponse,
+    RemapWorkflowRequest,
+    RemapWorkflowResponse,
     ReplaceWorkflowRequest,
     ReplaceWorkflowResponse,
     WorkflowExecutionRequest,
@@ -60,6 +62,10 @@ from src.models.orm.applications import Application
 from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.users import Role
 from src.services.workflow_validation import _extract_relative_path
+from src.services.solutions.guard import (
+    assert_entity_id_not_solution_managed,
+    assert_not_solution_managed,
+)
 
 from src.core.auth import Context, CurrentActiveUser, CurrentSuperuser
 from src.core.db_deps import DbSession
@@ -105,6 +111,8 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         tags=workflow.tags or [],
         type=workflow_type,
         organization_id=str(workflow.organization_id) if workflow.organization_id else None,
+        is_solution_managed=workflow.solution_id is not None,
+        solution_id=workflow.solution_id,
         access_level=workflow.access_level or "role_based",
         parameters=parameters,
         execution_mode=execution_mode,
@@ -511,11 +519,10 @@ async def get_workflow_usage_stats(
         elif filter_type == OrgFilterType.GLOBAL_ONLY:
             # Global entities only - doesn't make sense for usage stats, return empty
             return WorkflowUsageStats(forms=[], apps=[], agents=[])
-        elif filter_type == OrgFilterType.ORG_ONLY:
-            # Platform admin filtering by specific org - only that org (no global)
-            org_filter = filter_org
         else:
-            # ORG_PLUS_GLOBAL - shouldn't happen for superuser, but handle it
+            # ORG_ONLY (admin filtering by a specific org) or the
+            # shouldn't-happen ORG_PLUS_GLOBAL fallthrough — both scope to the
+            # resolved org.
             org_filter = filter_org
 
         # =========================================================================
@@ -691,13 +698,21 @@ async def _insert_scheduled_execution(
 
 
 async def _derive_solution_scope(
-    db: DbSession,
+    db,
     *,
     solution_id: str | None,
     form_id: str | None,
     app_id: str | None,
-) -> UUID | None:
-    """Resolve the calling install's scope for a path::fn workflow ref."""
+) -> "UUID | None":
+    """Resolve the calling install's scope for a path::fn workflow ref.
+
+    Precedence: explicit solution_id (a Solution form/agent that knows its
+    own install) > form_id (Form.solution_id) > app_id (Application.solution_id).
+    A bad/foreign/missing reference yields None → no narrowing (the path ref
+    resolves the _repo/ row, or 404s for a scoped caller). Each source is
+    client-supplied; the resolver's own org gate (cascade scope) prevents a
+    foreign scope from reaching another org's workflow.
+    """
     from src.models.orm.forms import Form
     from src.models.orm.applications import Application
 
@@ -720,7 +735,9 @@ async def _derive_solution_scope(
         except ValueError:
             return None
         return (
-            await db.execute(select(Application.solution_id).where(Application.id == app_uuid))
+            await db.execute(
+                select(Application.solution_id).where(Application.id == app_uuid)
+            )
         ).scalar_one_or_none()
     return None
 
@@ -772,15 +789,27 @@ async def execute_workflow(
         org_id=lookup_org_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_superuser,
+        # Embed principals carry is_external=True (OPEN-D: external-equivalent
+        # for the config/knowledge/table data gates), but workflow execution
+        # is the HMAC-pre-authorized app function-call channel — deliberately
+        # allowlisted by EmbedScopeMiddleware and execution-scoped by jti.
+        # Keep the pre-OPEN-D resolution semantics for embed sessions here.
+        is_external=ctx.user.is_external and not ctx.user.embed,
     )
 
-    # Look up workflow metadata for type checking (needed for data provider handling)
+    # A Solution caller's path::fn ref carries no install id (it can't know the
+    # per-install uuid5). Derive the install scope from the caller so a path ref
+    # resolves to THIS install's own workflow, not a sibling install's that
+    # shares the path (Codex #8 P1) nor the bare _repo/ one. solution_id (a
+    # form/agent) > form_id > app_id. A bad/foreign ref yields no scope.
     solution_scope = await _derive_solution_scope(
         db,
         solution_id=request.solution_id,
         form_id=request.form_id,
         app_id=request.app_id,
     )
+
+    # Look up workflow metadata for type checking (needed for data provider handling)
     workflow = None
     if request.workflow_id:
         workflow = await workflow_repo.resolve(
@@ -1239,14 +1268,20 @@ async def register_workflow(
         "tool" if target_decorator_type == "tool" else "workflow"
     )
 
-    # Parse organization_id if provided
-    org_uuid = UUID(request.organization_id) if request.organization_id else None
+    # Org targeting follows the unified --org standard (mirrors config's
+    # set_config): if organization_id was explicitly provided (even as null),
+    # honor it — null means global. If it was OMITTED, default to the caller's
+    # own org (HOME) so a bare `register` never silently writes a global row.
+    if "organization_id" in (request.model_fields_set or set()):
+        org_uuid = UUID(request.organization_id) if request.organization_id else None
+    else:
+        org_uuid = user.organization_id
 
     # Validate access_level early so we don't half-register on a typo
-    if request.access_level is not None and request.access_level not in ("authenticated", "role_based"):
+    if request.access_level is not None and request.access_level not in ("authenticated", "everyone", "role_based"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid access_level: '{request.access_level}'. Must be 'authenticated' or 'role_based'",
+            detail=f"Invalid access_level: '{request.access_level}'. Must be 'authenticated', 'everyone', or 'role_based'",
         )
 
     # Parse role_ids and verify they exist before any DB mutation
@@ -1370,7 +1405,8 @@ async def update_workflow(
     - organization_id: Set to null for global scope, or an org UUID for org-scoped
     - access_level: 'authenticated' or 'role_based'
     - clear_roles: If true, clear all role assignments
-    - display_name: User-facing display name (can be set to null to use code name)
+    - name: MCP tool name (defaults to the Python function name on registration)
+    - display_name: User-facing display name (can be set to null to fall back to name)
     - timeout_seconds: Max execution time (0-86400 seconds, where 0 disables the timeout)
     - execution_mode: 'sync' or 'async'
     - time_saved: Minutes saved per execution (for ROI reporting)
@@ -1395,6 +1431,9 @@ async def update_workflow(
                 detail=f"Workflow with ID '{workflow_id}' not found",
             )
 
+        # Solution-managed workflows are read-only here; deploy is the writer.
+        assert_not_solution_managed(workflow)
+
         # Update organization_id - use model_fields_set to distinguish "not provided" from "explicitly null"
         if "organization_id" in request.model_fields_set:
             if request.organization_id is not None:
@@ -1415,10 +1454,10 @@ async def update_workflow(
 
         # Update access_level if provided
         if request.access_level is not None:
-            if request.access_level not in ("authenticated", "role_based"):
+            if request.access_level not in ("authenticated", "everyone", "role_based"):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid access_level: '{request.access_level}'. Must be 'authenticated' or 'role_based'",
+                    detail=f"Invalid access_level: '{request.access_level}'. Must be 'authenticated', 'everyone', or 'role_based'",
                 )
             workflow.access_level = request.access_level
 
@@ -1473,6 +1512,22 @@ async def update_workflow(
             # Also set to role_based access level (effectively no access)
             workflow.access_level = "role_based"
             logger.info(f"Cleared all role assignments for workflow '{log_safe(workflow.name)}'")
+
+        # Update MCP tool name if provided. ``function_name`` remains the
+        # source-code identity used for path::function references.
+        if "name" in request.model_fields_set:
+            if request.name is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="name cannot be null",
+                )
+            new_name = request.name.strip()
+            if not new_name:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="name cannot be empty",
+                )
+            workflow.name = new_name
 
         # Update display_name if provided
         if "display_name" in request.model_fields_set:
@@ -1572,7 +1627,7 @@ async def update_workflow(
             await redis_client.invalidate_endpoint_workflow_cache(str(workflow.id))
             await redis_client.invalidate_workflow_metadata_cache(str(workflow.id))
         except Exception as e:
-            logger.warning(f"Failed to invalidate caches for workflow {workflow.name}: {e}")
+            logger.warning(f"Failed to invalidate caches for workflow {log_safe(workflow.name)}: {e}")
 
         # Refresh MCP tool registry so updated signatures appear immediately
         try:
@@ -1740,6 +1795,7 @@ async def replace_workflow(
     """
     from src.services.workflow_orphan import WorkflowOrphanService
 
+    await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
     try:
         orphan_service = WorkflowOrphanService(db)
         workflow = await orphan_service.replace_workflow(
@@ -1774,6 +1830,50 @@ async def replace_workflow(
 
 
 @router.post(
+    "/{workflow_id}/remap",
+    response_model=RemapWorkflowResponse,
+    summary="Remap workflow references",
+    description="Move references from one workflow ID to another active workflow ID",
+)
+async def remap_workflow_references(
+    workflow_id: UUID,
+    request: RemapWorkflowRequest,
+    ctx: Context,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> RemapWorkflowResponse:
+    """Move references from ``workflow_id`` to ``target_workflow_id``."""
+    from src.services.workflow_orphan import WorkflowOrphanService
+
+    try:
+        target_workflow_id = UUID(request.target_workflow_id)
+        orphan_service = WorkflowOrphanService(db)
+        result = await orphan_service.remap_workflow_references(
+            source_workflow_id=workflow_id,
+            target_workflow_id=target_workflow_id,
+        )
+
+        return RemapWorkflowResponse(
+            success=True,
+            source_workflow_id=result.source_workflow_id,
+            target_workflow_id=result.target_workflow_id,
+            updated=result.updated,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error remapping workflow references: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to remap workflow references",
+        )
+
+
+@router.post(
     "/{workflow_id}/recreate",
     response_model=RecreateFileResponse,
     summary="Recreate file from orphaned workflow",
@@ -1800,6 +1900,7 @@ async def recreate_workflow_file(
     from src.services.workflow_orphan import WorkflowOrphanService
     from src.services.file_storage import FileStorageService
 
+    await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
     try:
         orphan_service = WorkflowOrphanService(db)
 
@@ -1870,6 +1971,7 @@ async def deactivate_workflow(
     """
     from src.services.workflow_orphan import WorkflowOrphanService
 
+    await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
     try:
         orphan_service = WorkflowOrphanService(db)
         workflow, ref_count = await orphan_service.deactivate_workflow(workflow_id)
@@ -1972,6 +2074,10 @@ async def assign_roles_to_workflow(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow with ID '{workflow_id}' not found",
         )
+    # Roles are solution-owned and portable — locked for managed workflows.
+    # The before_flush backstop can't see this (we add WorkflowRole rows, never
+    # dirtying the Workflow itself), so the explicit guard is load-bearing here.
+    await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
 
     now = datetime.now(timezone.utc)
 
@@ -2029,6 +2135,10 @@ async def remove_role_from_workflow(
         workflow_id: UUID of the workflow
         role_id: UUID of the role to remove
     """
+    # Locked for managed workflows. This is a Core delete() that bypasses the
+    # ORM unit-of-work, so the before_flush backstop never sees it — the guard
+    # is the only protection here.
+    await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
     result = await db.execute(
         delete(WorkflowRole).where(
             WorkflowRole.workflow_id == workflow_id,
@@ -2090,6 +2200,9 @@ async def delete_workflow(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow with ID '{workflow_id}' not found",
         )
+
+    # Solution-managed workflows are read-only here; deploy is the writer.
+    assert_not_solution_managed(workflow)
 
     if not workflow.path:
         raise HTTPException(
