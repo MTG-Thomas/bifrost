@@ -1068,7 +1068,7 @@ class SolutionDeployer:
                     f"({'a _repo/ app' if other is None else f'solution {other}'}); "
                     f"two apps cannot share /apps/{slug} for any org — rename one."
                 )
-            app_model = mapp.get("app_model", "inline_v1")
+            app_model = mapp.get("app_model", "standalone_v2")
             # Solution apps must be standalone_v2: only those are built to dist/
             # and served from _apps/{id}/. An inline_v1 app (the legacy default
             # when app_model is omitted) has NO working deploy path here — its

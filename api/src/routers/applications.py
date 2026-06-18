@@ -576,6 +576,7 @@ async def replace_application_endpoint(
     )
 
     try:
+        await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
         application = await repo.replace_application(
             app_id, data.repo_path, force=data.force
         )

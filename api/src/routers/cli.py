@@ -1014,13 +1014,15 @@ async def sdk_integrations_list_mappings(
 
         logger.info(f"SDK listed {len(mappings)} mappings for integration '{log_safe(request.name)}' for user {current_user.email}")
 
+        is_external = await _is_external_user_db(current_user, db)
         items = []
         for mapping in mappings:
             # Get merged config (integration defaults + org overrides)
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                external=await _is_external_user_db(current_user, db),
+                include_default_secrets=not is_external,
+                external=is_external,
             )
             items.append({
                 "id": str(mapping.id),
@@ -1079,10 +1081,12 @@ async def sdk_integrations_get_mapping(
             return None
 
         # Get merged config for the mapping
+        is_external = await _is_external_user_db(current_user, db)
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            external=await _is_external_user_db(current_user, db),
+            include_default_secrets=not is_external,
+            external=is_external,
         )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")

@@ -162,18 +162,18 @@ async def create_user(
         },
     )
 
-    svc = UserInviteService(db)
-    raw_token, invite = await svc.create_or_replace(
-        user_id=new_user.id, created_by=user.user_id
-    )
-    invite_status = InviteStatus.PENDING
-    registration_url = (
-        f"{get_settings().public_url.rstrip('/')}/accept-invite?token={raw_token}"
-    )
-
     response = UserPublic.model_validate(new_user)
-    response.invite_status = invite_status
-    response.registration_url = registration_url
+    if request.invite:
+        svc = UserInviteService(db)
+        raw_token, _invite = await svc.create_or_replace(
+            user_id=new_user.id, created_by=user.user_id
+        )
+        response.invite_status = InviteStatus.PENDING
+        response.registration_url = (
+            f"{get_settings().public_url.rstrip('/')}/accept-invite?token={raw_token}"
+        )
+    else:
+        response.invite_status = InviteStatus.NEVER_INVITED
     return response
 
 
