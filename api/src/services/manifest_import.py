@@ -68,15 +68,6 @@ def _diff_and_collect(
             return "Global"
         return org_lookup.get(oid, oid) or "Global"
 
-    def _diff_dump(entity: object) -> dict:
-        data = entity.model_dump(mode="json", by_alias=True)
-        if "mappings" in data and isinstance(data["mappings"], list):
-            data["mappings"] = [
-                {k: v for k, v in mapping.items() if k != "oauth_token_id"}
-                for mapping in data["mappings"]
-            ]
-        return data
-
     changes: list[dict[str, str]] = []
     changed_ids: set[str] = set()
     changed_integration_ids: set[str] = set()
@@ -126,7 +117,7 @@ def _diff_and_collect(
             else:
                 assert inc is not None and cur is not None
                 # Compare serialized form
-                if _diff_dump(inc) == _diff_dump(cur):
+                if inc.model_dump(mode="json", by_alias=True) == cur.model_dump(mode="json", by_alias=True):
                     continue  # No change
                 action = "update"
                 entity = inc
@@ -219,259 +210,6 @@ def _collect_changed_ids(incoming: "Manifest", current: "Manifest") -> set[str]:
     """Return the set of entity IDs that differ between two manifests."""
     _, ids = _diff_and_collect(incoming, current)
     return ids
-
-
-def _collect_removed_entity_ids(changes: list[dict[str, str]]) -> dict[str, set[str]]:
-    """Return entity IDs that the manifest diff explicitly removed."""
-    removed: dict[str, set[str]] = {}
-    for change in changes:
-        if change.get("action") != "delete":
-            continue
-        entity_type = change.get("entity_type")
-        entity_id = change.get("id")
-        if not entity_type or not entity_id:
-            continue
-        removed.setdefault(entity_type, set()).add(entity_id)
-    return removed
-
-
-def _safe_app_repo_path(mapp) -> str:
-    """Return a normalized app source path or raise on unsafe manifest input."""
-    from pathlib import PurePosixPath
-
-    raw_path = (mapp.path or "").strip().replace("\\", "/").rstrip("/")
-    if not raw_path:
-        slug = mapp.slug
-        if not slug:
-            raise ValueError(f"App {mapp.id} has no slug or path")
-        raw_path = f"apps/{slug}"
-
-    path = PurePosixPath(raw_path)
-    parts = path.parts
-    if (
-        path.is_absolute()
-        or len(parts) != 2
-        or parts[0] != "apps"
-        or any(part in {"", ".", ".."} for part in parts)
-    ):
-        raise ValueError(
-            f"App {mapp.id} path must be exactly apps/<slug>, got {mapp.path!r}"
-        )
-
-    slug = mapp.slug or parts[1]
-    if parts[1] != slug:
-        raise ValueError(
-            f"App {mapp.id} path {raw_path!r} does not match slug {slug!r}"
-        )
-
-    return f"apps/{slug}"
-
-
-def _manifest_org_scope(manifest: "Manifest") -> set[str]:
-    """Collect org IDs explicitly declared or referenced by a manifest."""
-    org_ids = {org.id for org in manifest.organizations}
-
-    def _add_entity_orgs(values) -> None:
-        for entity in values:
-            org_id = getattr(entity, "organization_id", None)
-            if org_id:
-                org_ids.add(org_id)
-
-    _add_entity_orgs(manifest.workflows.values())
-    _add_entity_orgs(manifest.forms.values())
-    _add_entity_orgs(manifest.agents.values())
-    _add_entity_orgs(manifest.apps.values())
-    _add_entity_orgs(manifest.configs.values())
-    _add_entity_orgs(manifest.tables.values())
-    _add_entity_orgs(manifest.events.values())
-    _add_entity_orgs(manifest.mcp_servers.values())
-
-    for integration in manifest.integrations.values():
-        for mapping in integration.mappings:
-            if mapping.organization_id:
-                org_ids.add(mapping.organization_id)
-
-    for server in manifest.mcp_servers.values():
-        for connection in server.connections.values():
-            if connection.organization_id:
-                org_ids.add(connection.organization_id)
-
-    return org_ids
-
-
-def _entity_in_org_scope(entity: object, scoped_org_ids: set[str]) -> bool:
-    org_id = getattr(entity, "organization_id", None)
-    return bool(org_id and org_id in scoped_org_ids)
-
-
-def _filter_non_file_entities_to_scope(
-    manifest: "Manifest",
-    scope_manifest: "Manifest",
-) -> None:
-    """Restrict DB manifest sections that are not directly backed by files.
-
-    File-backed entities are scoped by repo path in ``_filter_manifest_to_scope``.
-    Integrations, configs, tables, events, roles, orgs, and MCP templates need
-    an explicit org/entity scope; otherwise a partial manifest can turn mere
-    absence into a global delete diff.
-    """
-    scoped_org_ids = _manifest_org_scope(scope_manifest)
-    scoped_role_ids = {role.id for role in scope_manifest.roles}
-    scoped_integration_ids = {
-        integration.id for integration in scope_manifest.integrations.values()
-    }
-    scoped_config_ids = {config.id for config in scope_manifest.configs.values()}
-    scoped_table_ids = {table.id for table in scope_manifest.tables.values()}
-    scoped_event_ids = {event.id for event in scope_manifest.events.values()}
-    scoped_mcp_server_ids = {
-        server.id for server in scope_manifest.mcp_servers.values()
-    }
-
-    manifest.organizations = [
-        org
-        for org in manifest.organizations
-        if scope_manifest.organizations and org.id in scoped_org_ids
-    ]
-    manifest.roles = [
-        role
-        for role in manifest.roles
-        if scope_manifest.roles and role.id in scoped_role_ids
-    ]
-
-    manifest.integrations = {
-        key: integration
-        for key, integration in manifest.integrations.items()
-        if scope_manifest.integrations
-        if (
-            integration.id in scoped_integration_ids
-            or any(
-                mapping.organization_id in scoped_org_ids
-                for mapping in integration.mappings
-                if mapping.organization_id
-            )
-        )
-    }
-    scoped_integration_ids |= {
-        integration.id for integration in manifest.integrations.values()
-    }
-
-    manifest.configs = {
-        key: config
-        for key, config in manifest.configs.items()
-        if scope_manifest.configs
-        if (
-            config.id in scoped_config_ids
-            or _entity_in_org_scope(config, scoped_org_ids)
-            or (
-                config.integration_id is not None
-                and config.integration_id in scoped_integration_ids
-            )
-        )
-    }
-    manifest.tables = {
-        key: table
-        for key, table in manifest.tables.items()
-        if scope_manifest.tables
-        if table.id in scoped_table_ids or _entity_in_org_scope(table, scoped_org_ids)
-    }
-    manifest.events = {
-        key: event
-        for key, event in manifest.events.items()
-        if scope_manifest.events
-        if event.id in scoped_event_ids or _entity_in_org_scope(event, scoped_org_ids)
-    }
-
-    manifest.mcp_servers = {
-        key: server
-        for key, server in manifest.mcp_servers.items()
-        if scope_manifest.mcp_servers
-        if (
-            server.id in scoped_mcp_server_ids
-            or _entity_in_org_scope(server, scoped_org_ids)
-            or any(
-                connection.organization_id in scoped_org_ids
-                for connection in server.connections.values()
-            )
-        )
-    }
-
-
-def _filter_manifest_to_scope(
-    manifest: "Manifest",
-    path_exists: Callable[[str], bool],
-    dir_exists: Callable[[str], bool],
-    scope_manifest: "Manifest | None" = None,
-) -> None:
-    """Restrict a DB manifest to the source paths owned by the current repo."""
-    manifest.workflows = {
-        k: v
-        for k, v in manifest.workflows.items()
-        if path_exists(v.path)
-    }
-    present_workflow_ids = {v.id for v in manifest.workflows.values()}
-    present_workflow_paths = {v.path for v in manifest.workflows.values()}
-
-    def _form_in_scope(mform) -> bool:
-        workflow_refs = {
-            getattr(mform, "workflow_id", None),
-            getattr(mform, "launch_workflow_id", None),
-        }
-        if workflow_refs & present_workflow_ids:
-            return True
-        path_refs = {
-            getattr(mform, "workflow_path", None),
-            getattr(mform, "launch_workflow_path", None),
-        }
-        return bool(path_refs & present_workflow_paths)
-
-    manifest.forms = {
-        k: v
-        for k, v in manifest.forms.items()
-        if _form_in_scope(v)
-    }
-
-    scoped_agents = {
-        k: v
-        for k, v in manifest.agents.items()
-        if set(getattr(v, "tool_ids", []) or []) & present_workflow_ids
-    }
-    while True:
-        present_agent_ids = {v.id for v in scoped_agents.values()}
-        next_agents = {
-            k: v
-            for k, v in manifest.agents.items()
-            if (
-                k in scoped_agents
-                or set(getattr(v, "delegated_agent_ids", []) or []) & present_agent_ids
-            )
-        }
-        if next_agents.keys() == scoped_agents.keys():
-            break
-        scoped_agents = next_agents
-    manifest.agents = scoped_agents
-
-    safe_apps = {}
-    for k, app in manifest.apps.items():
-        try:
-            app_path = _safe_app_repo_path(app)
-        except ValueError as exc:
-            logger.warning("Skipping unsafe app manifest path: %s", exc)
-            continue
-        if dir_exists(app_path):
-            safe_apps[k] = app.model_copy(update={"path": app_path})
-    manifest.apps = safe_apps
-
-    if scope_manifest is not None:
-        _filter_non_file_entities_to_scope(manifest, scope_manifest)
-
-
-def _manifest_access_level(access_level: str | None, roles: list[str] | None) -> str | None:
-    """Use role_based when a manifest declares roles but omits access_level."""
-    if access_level is not None:
-        return access_level
-    if roles:
-        return "role_based"
-    return None
 
 
 # =============================================================================
@@ -1862,15 +1600,7 @@ class ManifestResolver:
                     resolved_list.append(item)
             data[field_name] = resolved_list
 
-    async def _resolve_deletions(
-        self,
-        work_dir: Path | None = None,
-        manifest: "Manifest | None" = None,
-        repo: "RepoStorage | None" = None,
-        dry_run: bool = False,
-        removed_entity_ids: dict[str, set[str]] | None = None,
-        removed_paths: set[str] | None = None,
-    ) -> list:
+    async def _resolve_deletions(self, work_dir: Path | None = None, manifest: "Manifest | None" = None, repo: "RepoStorage | None" = None, dry_run: bool = False) -> list:
         """Compute delete/deactivate ops for entities removed from the manifest.
 
         Optimized: pushes filtering to SQL with NOT IN clauses, returning only
@@ -1908,8 +1638,6 @@ class ManifestResolver:
         from src.models.orm.tables import Table
         from src.models.orm.users import Role
         from src.models.orm.workflows import Workflow
-
-        _ = removed_paths
 
         if manifest is None:
             if work_dir:
@@ -1963,14 +1691,6 @@ class ManifestResolver:
 
         present_integ_uuids = [UUID(m.id) for m in manifest.integrations.values()]
         present_config_uuids = [UUID(m.id) for m in manifest.configs.values()]
-        present_config_natural_keys = {
-            (
-                UUID(m.integration_id) if m.integration_id else None,
-                UUID(m.organization_id) if m.organization_id else None,
-                m.key,
-            )
-            for m in manifest.configs.values()
-        }
         present_claim_uuids = [UUID(m.id) for m in manifest.claims.values()]
         present_table_uuids = [UUID(m.id) for m in manifest.tables.values()]
         present_event_uuids = [UUID(m.id) for m in manifest.events.values()]
@@ -1993,30 +1713,29 @@ class ManifestResolver:
         entity_changes: list[EntityChange] = []
         now = datetime.now(timezone.utc)
 
-        def _explicit_ids(entity_type: str) -> list[UUID] | None:
-            if not removed_entity_ids:
-                return None
-            return [UUID(entity_id) for entity_id in removed_entity_ids.get(entity_type, set())]
+        # Solution-managed rows (solution_id IS NOT NULL) have exactly one
+        # writer: the deploy / git-connected-pull path. They are intentionally
+        # excluded from the committed _repo/ manifest (manifest_generator skips
+        # them), so they never appear in present_*_uuids — without this guard the
+        # stale-entity sweep would match them all and hard-delete them via Core,
+        # bypassing the before_flush backstop and wiping every installed
+        # solution's entities on the next _repo/ git-sync. Exclude them centrally
+        # so no per-entity caller can forget. (See platform-impact audit H1.)
+        def _spare_solution_managed(model: type, q):
+            if "solution_id" in model.__table__.columns:  # type: ignore[attr-defined]
+                return q.where(model.solution_id.is_(None))  # type: ignore[attr-defined]
+            return q
 
         # Helper: query stale IDs (+ names when available) and bulk-delete
-        async def _bulk_delete(
-            model: type,
-            base_filter: list,
-            present: list[UUID],
-            entity_type: str,
-            explicit_ids: list[UUID] | None = None,
-        ) -> int:
+        async def _bulk_delete(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
             """Find IDs not in present list and delete them. Returns count."""
-            if explicit_ids == []:
-                return 0
             has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
             if has_name:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
-            if explicit_ids is not None:
-                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
-            elif present:
+            q = _spare_solution_managed(model, q)
+            if present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -2040,23 +1759,14 @@ class ManifestResolver:
             return len(stale_ids)
 
         # Helper: query stale IDs and soft-delete (deactivate)
-        async def _bulk_deactivate(
-            model: type,
-            base_filter: list,
-            present: list[UUID],
-            entity_type: str,
-            explicit_ids: list[UUID] | None = None,
-        ) -> int:
-            if explicit_ids == []:
-                return 0
+        async def _bulk_deactivate(model: type, base_filter: list, present: list[UUID], entity_type: str) -> int:
             has_name = "name" in model.__table__.columns  # type: ignore[attr-defined]
             if has_name:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
-            if explicit_ids is not None:
-                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
-            elif present:
+            q = _spare_solution_managed(model, q)
+            if present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -2087,7 +1797,6 @@ class ManifestResolver:
             [Workflow.is_active == True, Workflow.path.isnot(None)],  # noqa: E712
             present_wf_uuids,
             "workflows",
-            _explicit_ids("workflows"),
         )
 
         # Delete integrations not in manifest
@@ -2096,33 +1805,20 @@ class ManifestResolver:
             [Integration.is_deleted == False],  # noqa: E712
             present_integ_uuids,
             "integrations",
-            _explicit_ids("integrations"),
         )
 
         # Delete configs not in manifest (skip integration-schema-linked configs —
         # those are user-set values managed by IntegrationConfigSchema cascade)
         cfg_q = select(
-            Config.id, Config.integration_id, Config.organization_id, Config.key
+            Config.id, Config.organization_id, Config.key
         ).where(Config.config_schema_id.is_(None))
-        explicit_config_ids = _explicit_ids("configs")
-        if explicit_config_ids == []:
-            stale_cfg_rows = []
-        elif explicit_config_ids is not None:
-            cfg_q = cfg_q.where(Config.id.in_(explicit_config_ids))
-            cfg_result = await self.db.execute(cfg_q)
-            stale_cfg_rows = cfg_result.all()
-        else:
-            if present_config_uuids:
-                cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
-            cfg_result = await self.db.execute(cfg_q)
-            stale_cfg_rows = [
-                row
-                for row in cfg_result.all()
-                if (row[1], row[2], row[3]) not in present_config_natural_keys
-            ]
+        if present_config_uuids:
+            cfg_q = cfg_q.where(Config.id.notin_(present_config_uuids))
+        cfg_result = await self.db.execute(cfg_q)
+        stale_cfg_rows = cfg_result.all()
         stale_cfg_ids = [row[0] for row in stale_cfg_rows]
         if stale_cfg_ids:
-            for sid, _s_integ_id, s_org_id, s_key in stale_cfg_rows:
+            for sid, s_org_id, s_key in stale_cfg_rows:
                 logger.info(f"Deleting config {sid} — removed from repo")
                 entity_changes.append(EntityChange(
                     action="removed",
@@ -2140,38 +1836,28 @@ class ManifestResolver:
                 )
 
         # Tables not in manifest (data preserved — report as "keep")
-        explicit_table_ids = _explicit_ids("tables")
-        if explicit_table_ids != []:
-            table_q = select(Table.id, Table.name)
-            if explicit_table_ids is not None:
-                table_q = table_q.where(Table.id.in_(explicit_table_ids))
-            elif present_table_uuids:
-                table_q = table_q.where(Table.id.notin_(present_table_uuids))
-            table_result = await self.db.execute(table_q)
-            for row in table_result.all():
-                logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
-                entity_changes.append(EntityChange(
-                    action="keep",
-                    entity_type="tables",
-                    name=row[1] or str(row[0]),
-                ))
+        table_q = select(Table.id, Table.name)
+        if present_table_uuids:
+            table_q = table_q.where(Table.id.notin_(present_table_uuids))
+        table_result = await self.db.execute(table_q)
+        for row in table_result.all():
+            logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
+            entity_changes.append(EntityChange(
+                action="keep",
+                entity_type="tables",
+                name=row[1] or str(row[0]),
+            ))
 
         # Delete custom claims not in manifest.
         from src.models.orm.custom_claims import CustomClaim
 
-        await _bulk_delete(CustomClaim, [], present_claim_uuids, "claims", _explicit_ids("claims"))
+        await _bulk_delete(CustomClaim, [], present_claim_uuids, "claims")
 
         # Delete event subscriptions not in manifest
-        await _bulk_delete(
-            EventSubscription,
-            [],
-            present_sub_uuids,
-            "event_subscriptions",
-            _explicit_ids("event_subscriptions"),
-        )
+        await _bulk_delete(EventSubscription, [], present_sub_uuids, "event_subscriptions")
 
         # Delete event sources not in manifest
-        await _bulk_delete(EventSource, [], present_event_uuids, "events", _explicit_ids("events"))
+        await _bulk_delete(EventSource, [], present_event_uuids, "events")
 
         # Delete forms not in manifest
         await _bulk_delete(
@@ -2179,20 +1865,13 @@ class ManifestResolver:
             [Form.is_active == True],  # noqa: E712
             present_form_uuids,
             "forms",
-            _explicit_ids("forms"),
         )
 
         # Delete agents not in manifest
-        await _bulk_delete(Agent, [], present_agent_uuids, "agents", _explicit_ids("agents"))
+        await _bulk_delete(Agent, [], present_agent_uuids, "agents")
 
         # Delete apps not in manifest
-        await _bulk_delete(
-            Application,
-            [],
-            present_app_uuids,
-            "applications",
-            _explicit_ids("applications"),
-        )
+        await _bulk_delete(Application, [], present_app_uuids, "applications")
 
         # External MCP cleanup. Delete leaves first, then connections, then
         # servers — although CASCADE FKs on the schema make later deletes
@@ -2202,7 +1881,7 @@ class ManifestResolver:
         # connection is in-manifest but whose tool_name is not present in
         # the manifest's tool list for that connection. Tools for orphaned
         # connections are reaped by the connection delete below via CASCADE.
-        if removed_entity_ids is None and present_mcp_connection_uuids:
+        if present_mcp_connection_uuids:
             present_tool_keys: set[tuple[UUID, str]] = set()
             for mserver in manifest.mcp_servers.values():
                 for cid, mconn in mserver.connections.items():
@@ -2239,7 +1918,6 @@ class ManifestResolver:
             [],
             present_mcp_connection_uuids,
             "mcp_connections",
-            _explicit_ids("mcp_connections"),
         )
         # Delete servers not in manifest (cascades to connections, tools, creds)
         await _bulk_delete(
@@ -2247,7 +1925,6 @@ class ManifestResolver:
             [],
             present_mcp_server_uuids,
             "mcp_servers",
-            _explicit_ids("mcp_servers"),
         )
         # ``user_mcp_credentials`` rows are user-owned, not manifest-owned —
         # they're created via the per-user OAuth connect flow. CASCADE on
@@ -2257,20 +1934,17 @@ class ManifestResolver:
         _ = UserMCPCredential
 
         # Soft-delete organizations not in manifest (only when manifest has orgs)
-        explicit_org_ids = _explicit_ids("organizations")
-        if explicit_org_ids is not None or present_org_uuids:
+        if present_org_uuids:
             await _bulk_deactivate(
                 Organization,
                 [Organization.is_active == True],  # noqa: E712
                 present_org_uuids,
                 "organizations",
-                explicit_org_ids,
             )
 
         # Delete roles not in manifest (only when manifest has roles)
-        explicit_role_ids = _explicit_ids("roles")
-        if explicit_role_ids is not None or present_role_uuids:
-            await _bulk_delete(Role, [], present_role_uuids, "roles", explicit_role_ids)
+        if present_role_uuids:
+            await _bulk_delete(Role, [], present_role_uuids, "roles")
 
         return entity_changes
 
@@ -2521,11 +2195,17 @@ class ManifestResolver:
         # configs are read through ConfigRepository's cache (merged_for_sdk /
         # get_config exclude integration_id IS NOT NULL), so those are the only
         # ones whose cache can go stale on a value/key change here.
-        self._track_config_cache_touch(integ_id, org_id, mcfg.key)
+        if integ_id is None:
+            self.configs_touched.add(
+                (str(org_id) if org_id is not None else None, mcfg.key)
+            )
 
         # Check prefetch cache for existing config by natural key
         cache_hit = cache["config_by_natural"].get((mcfg.key, integ_id, org_id))
-        schema_id = self._config_schema_id(cache, integ_id, mcfg.key)
+        schema_id = None
+        if integ_id is not None:
+            schema = cache.get("integ_cs", {}).get(integ_id, {}).get(mcfg.key)
+            schema_id = schema.id if schema is not None else None
 
         # Convert string config_type to enum for proper DB storage
         from src.models.enums import ConfigType
@@ -2539,11 +2219,20 @@ class ManifestResolver:
             if is_secret and existing_value is not None and schema_id is None:
                 return []
 
-            update_values = self._config_upsert_values(
-                mcfg, ct, integ_id, org_id, schema_id, include_value=not is_secret
-            )
-            if existing_id != cfg_id:
-                update_values["id"] = cfg_id
+            # Update existing row (including ID if it changed)
+            update_values: dict = {
+                "id": cfg_id,
+                "key": mcfg.key,
+                "config_type": ct,
+                "description": mcfg.description,
+                "integration_id": integ_id,
+                "organization_id": org_id,
+                "updated_by": "git-sync",
+            }
+            if schema_id is not None:
+                update_values["config_schema_id"] = schema_id
+            if not is_secret:
+                update_values["value"] = mcfg.value if mcfg.value is not None else {}
 
             return [Upsert(
                 model=Config,
@@ -2553,44 +2242,23 @@ class ManifestResolver:
             )]
         else:
             # New config — return Upsert op (uses ON CONFLICT)
-            insert_values = self._config_upsert_values(
-                mcfg, ct, integ_id, org_id, schema_id, include_value=True
-            )
+            insert_values: dict = {
+                "key": mcfg.key,
+                "config_type": ct,
+                "description": mcfg.description,
+                "integration_id": integ_id,
+                "organization_id": org_id,
+                "value": mcfg.value if mcfg.value is not None else {},
+                "updated_by": "git-sync",
+            }
+            if schema_id is not None:
+                insert_values["config_schema_id"] = schema_id
             return [Upsert(
                 model=Config,
                 id=cfg_id,
                 values=insert_values,
                 match_on="id",
             )]
-
-    def _track_config_cache_touch(self, integ_id, org_id, key: str) -> None:
-        if integ_id is None:
-            self.configs_touched.add((str(org_id) if org_id is not None else None, key))
-
-    @staticmethod
-    def _config_schema_id(cache: dict, integ_id, key: str):
-        if integ_id is None:
-            return None
-        schema = cache.get("integ_cs", {}).get(integ_id, {}).get(key)
-        return schema.id if schema is not None else None
-
-    @staticmethod
-    def _config_upsert_values(
-        mcfg, config_type, integ_id, org_id, schema_id, *, include_value: bool
-    ) -> dict:
-        values: dict = {
-            "key": mcfg.key,
-            "config_type": config_type,
-            "description": mcfg.description,
-            "integration_id": integ_id,
-            "organization_id": org_id,
-            "updated_by": "git-sync",
-        }
-        if schema_id is not None:
-            values["config_schema_id"] = schema_id
-        if include_value:
-            values["value"] = mcfg.value if mcfg.value is not None else {}
-        return values
 
     def _resolve_app(self, mapp, cache: dict) -> "list[SyncOp]":
         """Resolve an app from manifest into SyncOps (metadata only).

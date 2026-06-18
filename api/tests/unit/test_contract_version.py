@@ -146,7 +146,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # RequiredConnectionUnset escalation). ADDITIVE — an old CLI simply omits the
     # field and keeps silent-None behavior, so no CONTRACT_VERSION bump; fingerprint
     # refreshed only.
-    "a1a2c7ef31c5dabb5b3be5256f1f49e756c8ba3252596fc8efa8e045fcfee16d"
+    "7d00f772f5dc93cbac976f4a9d4aefe7545919e2f0bdbfb5ecb6dcc2a6b26b7c"
 )
 
 
