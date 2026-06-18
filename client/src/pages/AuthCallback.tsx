@@ -8,7 +8,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { hashOAuthState } from "@/services/auth";
 import { Loader2, AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -46,38 +45,11 @@ export function AuthCallback() {
 				return;
 			}
 
-			// Get stored state digest
-			// Note: code_verifier is now handled server-side (stored in Redis when init is called)
-			const storedState = sessionStorage.getItem("oauth_state");
-			const redirectFrom =
-				sessionStorage.getItem("oauth_redirect_from") || "/";
-
-			// Clear stored OAuth data
-			sessionStorage.removeItem("oauth_state");
-			sessionStorage.removeItem("oauth_redirect_from");
-
-			// Verify state matches. We stored only a digest of the state on init,
-			// so compare digests (browser-binding CSRF check; the server also
-			// validates the raw state against Redis).
-			if (!storedState || (await hashOAuthState(state)) !== storedState) {
-				setError("Invalid OAuth state - possible CSRF attack");
-				return;
-			}
-
 			try {
 				// Exchange code for tokens (server handles PKCE verification)
 				await loginWithOAuth(provider, code, state);
 
-				// Redirect to original destination
-				// Use full page navigation for API routes (bypasses React Router),
-				// React Router for normal app routes
-				if (redirectFrom.startsWith("/api/")) {
-					// Small delay to ensure cookies are fully set before redirect
-					await new Promise((resolve) => setTimeout(resolve, 100));
-					window.location.href = redirectFrom;
-				} else {
-					navigate(redirectFrom, { replace: true });
-				}
+				navigate("/", { replace: true });
 			} catch (err) {
 				setError(
 					err instanceof Error ? err.message : "OAuth login failed",

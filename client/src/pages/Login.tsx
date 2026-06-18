@@ -7,11 +7,10 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { getOAuthProviders, hashOAuthState, initOAuth } from "@/services/auth";
+import { getOAuthProviders, initOAuth } from "@/services/auth";
 import { supportsPasskeys } from "@/services/passkeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
 	Card,
@@ -31,8 +30,6 @@ import {
 import { motion } from "framer-motion";
 import type { OAuthProvider } from "@/services/auth";
 import { Logo } from "@/components/branding/Logo";
-import { AuthTransition } from "@/components/auth/AuthTransition";
-import { useApplicationName } from "@/lib/applicationName";
 
 type LoginStep = "credentials" | "mfa" | "mfa-setup";
 
@@ -45,7 +42,6 @@ interface MFAState {
 export function Login() {
 	const navigate = useNavigate();
 	const location = useLocation();
-	const applicationName = useApplicationName();
 	const {
 		login,
 		loginWithMfa,
@@ -66,7 +62,6 @@ export function Login() {
 	// UI state
 	const [isLoading, setIsLoading] = useState(false);
 	const [isPasskeyLoading, setIsPasskeyLoading] = useState(false);
-	const [finalizing, setFinalizing] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [oauthProviders, setOAuthProviders] = useState<OAuthProvider[]>([]);
 	// Derived synchronously — `supportsPasskeys()` is a pure feature check on
@@ -117,7 +112,6 @@ export function Login() {
 		try {
 			// Pass email if user has entered one (helps target specific credentials)
 			await loginWithPasskey(email || undefined);
-			setFinalizing("Signing you in…");
 			redirectToFrom();
 		} catch (err) {
 			// Don't show error for user cancellation
@@ -202,7 +196,6 @@ export function Login() {
 			const result = await login(email, password);
 
 			if (result.success) {
-				setFinalizing("Signing you in…");
 				redirectToFrom();
 				return;
 			}
@@ -240,7 +233,6 @@ export function Login() {
 
 		try {
 			await loginWithMfa(mfaState.mfaToken, mfaCode, trustDevice);
-			setFinalizing("Signing you in…");
 			redirectToFrom();
 		} catch (err) {
 			setError(
@@ -256,25 +248,17 @@ export function Login() {
 		setIsLoading(true);
 
 		try {
-			// Store redirect info for callback
-			// Note: PKCE (code_verifier) is now handled server-side
-			sessionStorage.setItem("oauth_redirect_from", from);
+			if (!oauthProviders.some((known) => known.name === provider)) {
+				throw new Error("OAuth provider is not available");
+			}
 
 			// Build callback URL
 			const callbackUrl = `${window.location.origin}/auth/callback/${provider}`;
 
 			// Get authorization URL (server generates and stores PKCE verifier)
-			const { authorization_url, state } = await initOAuth(
-				provider,
-				callbackUrl,
-			);
-
-			// Store only a digest of the state for the callback CSRF check —
-			// never the raw token (see hashOAuthState).
-			sessionStorage.setItem("oauth_state", await hashOAuthState(state));
+			const { authorization_url } = await initOAuth(provider, callbackUrl);
 
 			// Redirect to OAuth provider
-			setFinalizing("Redirecting to sign-in…");
 			window.location.assign(authorization_url);
 		} catch (err) {
 			setError(
@@ -282,7 +266,6 @@ export function Login() {
 					? err.message
 					: "OAuth initialization failed",
 			);
-			setFinalizing(null);
 			setIsLoading(false);
 		}
 	};
@@ -342,10 +325,6 @@ export function Login() {
 		}
 	};
 
-	if (finalizing) {
-		return <AuthTransition message={finalizing} />;
-	}
-
 	if (authLoading) {
 		return (
 			<div className="min-h-screen flex items-center justify-center bg-background">
@@ -373,12 +352,12 @@ export function Login() {
 							<Logo
 								type="square"
 								className="h-16 w-16"
-								alt={applicationName}
+								alt="Bifrost"
 							/>
 						</motion.div>
 						<div className="space-y-1">
 							<h1 className="text-2xl font-bold tracking-tight">
-								{applicationName}
+								Bifrost
 							</h1>
 							<CardDescription className="text-base">
 								{step === "credentials" &&
@@ -558,13 +537,15 @@ export function Login() {
 								</div>
 
 								<div className="flex items-center space-x-2">
-									<Checkbox
-									id="trustDevice"
-									checked={trustDevice}
-									onCheckedChange={(checked) =>
-										setTrustDevice(checked === true)
-									}
-								/>
+									<input
+										type="checkbox"
+										id="trustDevice"
+										checked={trustDevice}
+										onChange={(e) =>
+											setTrustDevice(e.target.checked)
+										}
+										className="rounded border-gray-300"
+									/>
 									<Label
 										htmlFor="trustDevice"
 										className="text-sm font-normal"
