@@ -87,6 +87,18 @@ require_stack_up() {
     exit 1
 }
 
+dump_stack_startup_logs() {
+    local phase="$1"
+
+    echo "ERROR: stack startup failed during: $phase" >&2
+    echo "Compose service state:" >&2
+    docker compose -f "$COMPOSE_FILE" ps -a >&2 || true
+    echo "" >&2
+    echo "Startup logs:" >&2
+    docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps init api worker scheduler pgbouncer postgres rabbitmq redis seaweedfs >&2 || true
+    export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE" || true
+}
+
 reset_state() {
     echo "Resetting state..."
 
@@ -179,12 +191,21 @@ stack_up() {
     "$SCRIPT_DIR/scripts/stack_template_init.sh"
 
     echo "Starting API + Worker + Scheduler..."
-    docker compose -f "$COMPOSE_FILE" --profile e2e up -d "$build_flag"
+    if ! docker compose -f "$COMPOSE_FILE" --profile e2e up -d "$build_flag"; then
+        dump_stack_startup_logs "api-worker-scheduler compose up"
+        exit 1
+    fi
     echo "Waiting for API to be serving traffic on /health/ready..."
-    wait_for_api_ready "$COMPOSE_FILE"
+    if ! wait_for_api_ready "$COMPOSE_FILE"; then
+        dump_stack_startup_logs "api readiness"
+        exit 1
+    fi
 
     echo "Starting client..."
-    docker compose -f "$COMPOSE_FILE" --profile client up -d "$build_flag" client
+    if ! docker compose -f "$COMPOSE_FILE" --profile client up -d "$build_flag" client; then
+        dump_stack_startup_logs "client compose up"
+        exit 1
+    fi
     echo "Waiting for client to be healthy..."
     for i in {1..120}; do
         cid=$(docker compose -f "$COMPOSE_FILE" ps -q client 2>/dev/null)
