@@ -916,7 +916,6 @@ async def promote_agent(
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, f"Agent {agent_id} not found")
-    assert_not_solution_managed(agent)
 
     if agent.access_level != AgentAccessLevel.PRIVATE:
         raise HTTPException(400, "Agent is not private — nothing to promote")
@@ -930,6 +929,8 @@ async def promote_agent(
             raise HTTPException(403, "You can only promote agents in your own organization")
         if not await _user_has_permission(db, user.user_id, "can_promote_agent"):
             raise HTTPException(403, "You do not have permission to promote agents")
+
+    assert_not_solution_managed(agent)
 
     # Promote: change access_level, clear owner
     agent.access_level = request.access_level

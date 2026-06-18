@@ -57,7 +57,6 @@
 | POST | `/api/agents/{agent_id}/tuning-session/dry-run` |
 | GET | `/api/applications` |
 | POST | `/api/applications` |
-| POST | `/api/applications/swap-slugs` |
 | DELETE | `/api/applications/{app_id}` |
 | PATCH | `/api/applications/{app_id}` |
 | GET | `/api/applications/{app_id}/bundle-asset/{filename}` |
@@ -106,6 +105,13 @@
 | GET | `/api/claims/{name}` |
 | PATCH | `/api/claims/{name}` |
 | GET | `/api/cli/download` |
+| GET | `/api/codex-gateway/keys` |
+| POST | `/api/codex-gateway/keys` |
+| DELETE | `/api/codex-gateway/keys/{key_id}` |
+| DELETE | `/api/codex-gateway/oauth` |
+| POST | `/api/codex-gateway/oauth/connect` |
+| POST | `/api/codex-gateway/oauth/import-auth-cache` |
+| GET | `/api/codex-gateway/oauth/status` |
 | GET | `/api/config` |
 | POST | `/api/config` |
 | DELETE | `/api/config/{config_id}` |
@@ -355,7 +361,6 @@
 | POST | `/api/sdk/config/list` |
 | POST | `/api/sdk/config/set` |
 | GET | `/api/sdk/context` |
-| GET | `/api/sdk/download` |
 | POST | `/api/sdk/integrations/delete_mapping` |
 | POST | `/api/sdk/integrations/get` |
 | POST | `/api/sdk/integrations/get_mapping` |
@@ -444,6 +449,7 @@
 | POST | `/api/users/{user_id}/invite/resend` |
 | POST | `/api/users/{user_id}/invite/send` |
 | GET | `/api/users/{user_id}/roles` |
+| POST | `/api/v1/responses` |
 | GET | `/api/version` |
 | GET | `/api/workflow-keys` |
 | POST | `/api/workflow-keys` |
@@ -510,3 +516,4 @@
 | GET | `/health/detailed` |
 | GET | `/health/live` |
 | GET | `/health/ready` |
+| POST | `/v1/responses` |

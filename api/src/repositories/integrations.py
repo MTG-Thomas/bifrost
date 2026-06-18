@@ -617,7 +617,12 @@ class IntegrationsRepository(BaseRepository[Integration]):
         return config
 
     async def get_config_for_mapping(
-        self, integration_id: UUID, org_id: UUID, *, external: bool
+        self,
+        integration_id: UUID,
+        org_id: UUID,
+        *,
+        external: bool = False,
+        include_default_secrets: bool = True,
     ) -> dict:
         """
         Get merged configuration for an integration mapping.
@@ -628,16 +633,11 @@ class IntegrationsRepository(BaseRepository[Integration]):
         Args:
             integration_id: Integration UUID
             org_id: Organization UUID
-            external: REQUIRED (no default — EXT-1 OPEN-E / NEW-G). Every call
-                site MUST consciously decide: an EXTERNAL portal caller passes
-                True (drop the global org_id=NULL integration defaults entirely
-                so a decrypted global SECRET is never returned — org-specific
-                config only); engine/sentinel/admin callers pass False
-                explicitly (keep the defaults+overrides merge). The default was
-                removed so a new sibling endpoint can't silently re-open the
-                global tier by forgetting the flag (the OPEN-E/NEW-G failure
-                mode — four sibling endpoints, one missed flag = a hospital
-                portal user reading another tenant's secrets).
+            external: External portal callers pass True to drop the global
+                org_id=NULL integration defaults entirely.
+            include_default_secrets: Include integration-default secret fallback
+                values. SDK mapping reads can leave this false so global
+                defaults do not leak as decrypted org config.
 
         Returns:
             dict: Merged configuration (integration defaults + org overrides),
@@ -679,7 +679,15 @@ class IntegrationsRepository(BaseRepository[Integration]):
             else:
                 val = value
 
-            if entry.config_type == ConfigType.SECRET and isinstance(val, str):
+            is_secret = entry.config_type == ConfigType.SECRET
+            if (
+                is_secret
+                and entry.organization_id is None
+                and not include_default_secrets
+            ):
+                continue
+
+            if is_secret and isinstance(val, str):
                 try:
                     val = decrypt_secret(val)
                 except Exception:
@@ -750,10 +758,31 @@ class IntegrationsRepository(BaseRepository[Integration]):
 
         return config
 
-# Deleted (2026-05): get_provider_org_token had no organization_id filter
-# and could return any org's user_id=NULL token. The cross-tenant token
-# leak is fixed by routing all OAuth token reads through
-# OAuthTokenRepository.get_org_level_for_provider in
-# api/src/repositories/oauth.py, which applies the standard cascade
-# (org-specific preferred, falls back to global) and never silently
-# returns another org's token.
+    async def get_provider_org_token(
+        self,
+        provider_id: UUID,
+        organization_id: UUID | None,
+    ) -> Any:
+        """Get org-level OAuth token for a provider, scoped to org then global."""
+        from src.models.orm.oauth import OAuthToken
+
+        if organization_id is not None:
+            result = await self.session.execute(
+                select(OAuthToken).where(
+                    OAuthToken.provider_id == provider_id,
+                    OAuthToken.organization_id == organization_id,
+                    OAuthToken.user_id.is_(None),
+                ).order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
+            )
+            token = result.scalars().first()
+            if token:
+                return token
+
+        result = await self.session.execute(
+            select(OAuthToken).where(
+                OAuthToken.provider_id == provider_id,
+                OAuthToken.organization_id.is_(None),
+                OAuthToken.user_id.is_(None),
+            ).order_by(OAuthToken.created_at.desc(), OAuthToken.id.desc())
+        )
+        return result.scalars().first()

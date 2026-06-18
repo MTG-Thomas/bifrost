@@ -2290,6 +2290,12 @@ async def cli_knowledge_search(
     from src.services.embeddings import get_embedding_client
 
     try:
+        if getattr(current_user, "is_external", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="External users cannot search the knowledge store directly",
+            )
+
         org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 

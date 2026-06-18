@@ -35,6 +35,7 @@ from src.models.orm.tables import Table
 from src.models.orm.users import Role
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
+from src.services.integration_config_schema import parse_config_schema_items
 from bifrost.manifest import (
     ClaimQuery,
     Manifest,
@@ -217,6 +218,11 @@ def serialize_integration(
     mappings: list[IntegrationMapping] | None = None,
 ) -> ManifestIntegration:
     """Serialize an Integration ORM object to ManifestIntegration."""
+    valid_schema_items, _ = parse_config_schema_items(
+        config_schema,
+        integration_name=integ.name,
+    )
+    valid_by_key = {item.key: item for item in valid_schema_items}
     return ManifestIntegration(
         id=str(integ.id),
         name=integ.name,
@@ -230,13 +236,14 @@ def serialize_integration(
         config_schema=[
             ManifestIntegrationConfigSchema(
                 key=cs.key,
-                type=cs.type,
-                required=cs.required,
-                description=cs.description,
-                options=cs.options,
+                type=valid_by_key[cs.key].type,
+                required=valid_by_key[cs.key].required,
+                description=valid_by_key[cs.key].description,
+                options=valid_by_key[cs.key].options,
                 position=cs.position,
             )
             for cs in (config_schema or [])
+            if cs.key in valid_by_key
         ],
         oauth_provider=(
             ManifestOAuthProvider(
@@ -257,7 +264,7 @@ def serialize_integration(
                 organization_id=str(im.organization_id) if im.organization_id else None,
                 entity_id=im.entity_id,
                 entity_name=im.entity_name,
-                oauth_token_id=str(im.oauth_token_id) if im.oauth_token_id else None,
+                oauth_token_id=None,
             )
             for im in (mappings or [])
         ],

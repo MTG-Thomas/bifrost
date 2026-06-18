@@ -477,7 +477,7 @@ class BifrostAuthProvider:
             from src.core.security import decode_token
 
             payload = decode_token(refresh_token, expected_type="refresh")
-            if payload is None or not payload.get("mcp"):
+            if payload is None or not payload.get("sub"):
                 return JSONResponse(
                     {"error": "invalid_grant", "error_description": "Invalid refresh token"},
                     status_code=400

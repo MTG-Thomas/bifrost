@@ -587,7 +587,8 @@ async def get_bundle_manifest(
     # iframe — the iframe never updated the address bar, breaking deep-links /
     # refresh; Codex P1-b/G7). The client reads these instead of scraping
     # index.html.
-    if app.app_model == "standalone_v2":
+    app_model = getattr(app, "app_model", "inline_v1")
+    if app_model == "standalone_v2":
         import re as _re
 
         from src.services.solutions.app_build import SolutionAppBuilder
@@ -690,7 +691,7 @@ async def get_bundle_manifest(
                             "dependencies": m.get("dependencies") or (app.dependencies or {}),
                             "migrated": False,
                             "organization_id": str(app.organization_id) if app.organization_id else None,
-                            "app_model": app.app_model,
+                            "app_model": app_model,
                         }
                 except FileNotFoundError:
                     continue
@@ -723,7 +724,7 @@ async def get_bundle_manifest(
             # so the developer knows to pull.
             "migrated": migrated,
             "organization_id": str(app.organization_id) if app.organization_id else None,
-            "app_model": app.app_model,
+            "app_model": app_model,
         }
 
     assert manifest_bytes is not None
@@ -740,7 +741,7 @@ async def get_bundle_manifest(
         # always run as their org. Global apps return null and fall back to
         # caller's-org behavior.
         "organization_id": str(app.organization_id) if app.organization_id else None,
-        "app_model": app.app_model,
+        "app_model": app_model,
     }
 
 

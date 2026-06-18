@@ -175,7 +175,13 @@ async def create_app(
                     Application.solution_id.is_(None),
                 )
             )
-            if existing.first():
+            existing_first = getattr(existing, "first", None)
+            existing_app = (
+                existing_first()
+                if existing_first is not None
+                else existing.scalars().first()
+            )
+            if existing_app:
                 return error_result(f"Application with slug '{slug}' already exists")
 
             try:
