@@ -145,17 +145,10 @@ class WorkflowIndexer:
                     if self._prefetch_cache is not None:
                         existing_workflow = self._prefetch_cache.get((path, function_name))
                     else:
-                        # Include inactive rows so we can reactivate them. Scope to
-                        # _repo/ rows (solution_id IS NULL): this indexer manages
-                        # WORKSPACE files only — a solution-managed workflow at the
-                        # same (path, function) is written solely by deploy, and
-                        # without this filter scalar_one_or_none() would raise
-                        # MultipleResultsFound on a _repo/+solution path collision,
-                        # or touch the solution row (Codex #14).
+                        # Include inactive rows so we can reactivate them
                         stmt = select(Workflow).where(
                             Workflow.path == path,
                             Workflow.function_name == function_name,
-                            Workflow.solution_id.is_(None),
                         )
                         result = await self.db.execute(stmt)
                         existing_workflow = result.scalar_one_or_none()
@@ -268,14 +261,10 @@ class WorkflowIndexer:
                     if self._prefetch_cache is not None:
                         existing_dp = self._prefetch_cache.get((path, function_name))
                     else:
-                        # Include inactive for reactivation; _repo/-scoped — a
-                        # solution data_provider at the same path is deploy-owned
-                        # (Codex #14), and the bare query would otherwise raise
-                        # MultipleResultsFound on a collision.
+                        # Include inactive for reactivation
                         stmt = select(Workflow).where(
                             Workflow.path == path,
                             Workflow.function_name == function_name,
-                            Workflow.solution_id.is_(None),
                         )
                         result = await self.db.execute(stmt)
                         existing_dp = result.scalar_one_or_none()
@@ -625,16 +614,9 @@ class WorkflowIndexer:
         Returns:
             Number of workflows soft-deleted
         """
-        # Scope to _repo/ rows (solution_id IS NULL): deleting a WORKSPACE file
-        # must never deactivate a solution-managed workflow that happens to share
-        # the path — solution rows are written only by deploy (Codex #14).
         stmt = (
             update(Workflow)
-            .where(
-                Workflow.path == path,
-                Workflow.is_active == True,  # noqa: E712
-                Workflow.solution_id.is_(None),
-            )
+            .where(Workflow.path == path, Workflow.is_active == True)  # noqa: E712
             .values(
                 is_active=False,
                 is_orphaned=True,

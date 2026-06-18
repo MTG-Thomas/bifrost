@@ -25,22 +25,6 @@ logger = logging.getLogger(__name__)
 _VALUE_NOT_PROVIDED = object()
 
 
-class RequiredConfigUnset(RuntimeError):
-    """Raised when a required config key has no value set.
-
-    Provides an actionable message naming the key and telling the operator how
-    to fix it.  Call ``repo.require(key)`` instead of ``repo.get_config(key)``
-    wherever a missing value should be a hard failure rather than a silent None.
-    """
-
-    def __init__(self, key: str) -> None:
-        super().__init__(
-            f"Required config '{key}' is not set. "
-            f"Set it with `bifrost configs set {key} --value <value>` "
-            f"or in the solution's Setup tab."
-        )
-
-
 class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-var]
     """Repository for configuration values."""
 
@@ -50,7 +34,6 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
     async def list_configs(
         self,
         filter_type: OrgFilterType = OrgFilterType.ORG_PLUS_GLOBAL,
-        include_orphaned: bool = False,
     ) -> list[ConfigResponse]:
         """List configs with specified filter type."""
         query = self._list_configs_query(filter_type).order_by(self.model.key)
@@ -207,7 +190,6 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
             org_q = select(self.model).where(
                 self.model.organization_id == self.org_id,
                 self.model.integration_id.is_(None),
-                self.model.orphaned_at.is_(None),
             )
             org_rows = (await self.session.execute(org_q)).scalars()
             for config in org_rows:
@@ -221,17 +203,10 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
         return config_dict
 
     async def get_config_strict(self, key: str) -> ConfigModel | None:
-        """Get a LIVE config strictly in current org scope.
-
-        Orphaned values (former-install data) are unreachable at runtime — they
-        are not returned here, matching the table invariant (invisible until
-        reattach). The orphaned row is healed back to live by ``set_config``
-        when the operator re-enters the value in scope.
-        """
+        """Get config strictly in current org scope."""
         query = select(self.model).where(
             self.model.key == key,
             self.model.organization_id == self.org_id,
-            self.model.orphaned_at.is_(None),
         )
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
@@ -254,17 +229,7 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
             else ConfigTypeEnum.STRING
         )
 
-        # Upsert by the unique natural key (integration_id IS NULL, org, key).
-        # This deliberately matches BOTH live and ORPHANED rows: re-entering a
-        # value for a key whose former-install value was orphaned heals that row
-        # back to live (clears orphan provenance) rather than colliding with the
-        # unique index on insert.
-        existing_q = select(self.model).where(
-            self.model.key == request.key,
-            self.model.organization_id == self.org_id,
-            self.model.integration_id.is_(None),
-        )
-        existing = (await self.session.execute(existing_q)).scalar_one_or_none()
+        existing = await self.get_config_strict(request.key)
 
         if existing:
             existing.value = {"value": stored_value}
@@ -272,10 +237,6 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
             existing.description = request.description
             existing.updated_at = now
             existing.updated_by = updated_by
-            # Heal an orphaned value: an explicit re-set in scope makes it live.
-            existing.orphaned_at = None
-            existing.origin_solution_slug = None
-            existing.origin_solution_id = None
             await self.session.flush()
             await self.session.refresh(existing)
             config = existing

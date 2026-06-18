@@ -48,7 +48,7 @@ import logging
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -57,8 +57,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.auth import CurrentUser
-from src.core.principal import UserPrincipal
+from src.core.auth import CurrentUser, UserPrincipal
 from src.core.database import get_db
 from src.core.log_safety import log_safe
 from src.models import Organization
@@ -158,6 +157,27 @@ def should_auto_refresh_token(
         return True
 
     return False
+
+
+def _resolve_requested_oauth_scopes(provider: Any, oauth_scope: str | None) -> str:
+    """Return configured OAuth scopes selected for a token request."""
+    configured_scopes = [
+        str(scope) for scope in (provider.scopes or []) if str(scope).strip()
+    ]
+    if not oauth_scope:
+        return " ".join(configured_scopes)
+
+    requested_scopes = [scope for scope in oauth_scope.split() if scope]
+    if not requested_scopes:
+        return " ".join(configured_scopes)
+
+    unauthorized = sorted(set(requested_scopes) - set(configured_scopes))
+    if unauthorized:
+        raise ValueError(
+            "oauth_scope contains scopes that are not configured for this provider"
+        )
+
+    return " ".join(requested_scopes)
 
 
 # =============================================================================
@@ -311,6 +331,43 @@ async def get_dev_context(
 # =============================================================================
 
 
+def _parse_sdk_scope(scope: str | None) -> object:
+    from fastapi import HTTPException, status
+    from shared.scope_resolver import UNSET
+
+    if scope is None or scope == "":
+        return UNSET
+    if scope == "global":
+        return None
+    try:
+        return UUID(scope)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
+        ) from None
+
+
+def _principal_org_id(current_user: "UserPrincipal") -> UUID | None:
+    if current_user.organization_id is None:
+        return None
+    if isinstance(current_user.organization_id, UUID):
+        return current_user.organization_id
+    return UUID(str(current_user.organization_id))
+
+
+async def _is_provider_org(db: AsyncSession, caller_org_id: UUID) -> bool:
+    from inspect import isawaitable
+
+    org_row = await db.execute(
+        select(Organization.is_provider).where(Organization.id == caller_org_id)
+    )
+    provider_value = org_row.scalar_one_or_none()
+    if isawaitable(provider_value):
+        provider_value = await cast(Awaitable[Any], provider_value)
+    return provider_value is True
+
+
 async def _resolve_sdk_org_id(
     current_user: "UserPrincipal",
     scope: str | None,
@@ -350,24 +407,8 @@ async def _resolve_sdk_org_id(
         resolve_effective_scope,
     )
 
-    # Parse the requested scope into the resolver's input domain.
-    requested: object
-    if scope is None or scope == "":
-        # Empty string preserved as "unset" for backwards compat with
-        # CLI clients that pass `--scope ''` to mean "use my default."
-        requested = UNSET
-    elif scope == "global":
-        requested = None
-    else:
-        try:
-            requested = UUID(scope)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"scope must be 'global', a UUID, or null; got {scope!r}",
-            ) from None
-
-    caller_org_id: UUID | None = current_user.organization_id
+    requested = _parse_sdk_scope(scope)
+    caller_org_id = _principal_org_id(current_user)
     is_platform_admin = current_user.is_superuser
 
     # Provider-org membership is only needed if the caller is requesting
@@ -376,10 +417,7 @@ async def _resolve_sdk_org_id(
     is_provider_org = False
     needs_bypass_check = requested is not UNSET and requested != caller_org_id
     if needs_bypass_check and not is_platform_admin and caller_org_id is not None:
-        org_row = await db.execute(
-            select(Organization.is_provider).where(Organization.id == caller_org_id)
-        )
-        is_provider_org = bool(org_row.scalar_one_or_none())
+        is_provider_org = await _is_provider_org(db, caller_org_id)
 
     try:
         resolved = resolve_effective_scope(
@@ -414,10 +452,8 @@ async def cli_get_config(
     org_uuid = UUID(org_id) if org_id else None
 
     # Canonical SDK config load: cascade (global + org-specific) merged.
-    # An EXTERNAL portal caller gets org-only — no global tier — so a global
-    # secret value is never returned (and never decrypted below). EXT-1 NEW-1.
     repo = ConfigRepository(db, org_id=org_uuid, is_superuser=True)
-    all_config = await repo.merged_for_sdk(external=current_user.is_external)
+    all_config = await repo.merged_for_sdk()
 
     if request.key not in all_config:
         return None
@@ -543,9 +579,8 @@ async def cli_list_config(
     org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
-    # External callers get org-only (no global tier) — EXT-1 NEW-1.
     repo = ConfigRepository(db, org_id=org_uuid, is_superuser=True)
-    all_config = await repo.merged_for_sdk(external=current_user.is_external)
+    all_config = await repo.merged_for_sdk()
 
     if not all_config:
         return {}
@@ -619,26 +654,6 @@ async def cli_delete_config(
 # =============================================================================
 
 
-async def _connection_is_declared(db: AsyncSession, solution_id: str, name: str) -> bool:
-    """True if ``solution_id`` declares an integration named ``name`` via a
-    SolutionConnectionSchema row. Drives the RequiredConnectionUnset 424."""
-    from src.models.orm.solution_connection_schema import SolutionConnectionSchema
-
-    try:
-        sid = UUID(str(solution_id))
-    except (ValueError, TypeError):
-        return False
-    row = (
-        await db.execute(
-            select(SolutionConnectionSchema.id).where(
-                SolutionConnectionSchema.solution_id == sid,
-                SolutionConnectionSchema.integration_name == name,
-            )
-        )
-    ).first()
-    return row is not None
-
-
 @router.post(
     "/integrations/get",
     response_model=SDKIntegrationsGetResponse | None,
@@ -674,10 +689,11 @@ async def sdk_integrations_get(
             mapping = await repo.get_integration_for_org(request.name, org_uuid)
 
         if mapping:
-            # Org-specific mapping found. EXTERNAL callers (OPEN-E) drop the
-            # global tier on both the config merge and the OAuth-token cascade.
+            # Org-specific mapping found
             config = await repo.get_config_for_mapping(
-                mapping.integration_id, org_uuid, external=current_user.is_external
+                mapping.integration_id,
+                org_uuid,
+                include_default_secrets=True,
             )
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
@@ -698,12 +714,8 @@ async def sdk_integrations_get(
                 if not token:
                     # Cascade: prefer org-scoped token, fall back to global.
                     # See api/src/repositories/README.md for the pattern.
-                    # External callers get org-only (no global token — OPEN-E).
                     oauth_token_repo = OAuthTokenRepository(
-                        db,
-                        org_id=org_uuid,
-                        is_superuser=not current_user.is_external,
-                        is_external=current_user.is_external,
+                        db, org_id=org_uuid, is_superuser=True
                     )
                     token = await oauth_token_repo.get_org_level_for_provider(
                         integration.oauth_provider.id
@@ -711,7 +723,8 @@ async def sdk_integrations_get(
                 response_data["oauth"] = await _build_oauth_data(
                     integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
                     oauth_scope=request.oauth_scope,
-                    external=current_user.is_external,
+                    db=db,
+                    org_uuid=org_uuid,
                 )
 
             logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (org mapping) for user {current_user.email}")
@@ -720,31 +733,11 @@ async def sdk_integrations_get(
         # Fall back to integration defaults
         integration = await repo.get_integration_by_name(request.name)
         if not integration:
-            # RequiredConnectionUnset: if the missing integration was DECLARED by
-            # the calling solution, escalate to a loud 424 (mirrors
-            # RequiredConfigUnset) instead of a silent None. Loose (non-solution
-            # or non-declared) calls keep the silent-None behavior.
-            if request.solution and await _connection_is_declared(
-                db, request.solution, request.name
-            ):
-                raise HTTPException(
-                    status_code=424,
-                    detail=(
-                        f"Required integration '{request.name}' is not set up. "
-                        f"Set it up in the Integrations settings, or in the "
-                        f"solution's Setup tab."
-                    ),
-                )
             logger.debug(f"SDK integrations.get('{log_safe(request.name)}'): integration not found")
             return None
 
         entity_id = integration.default_entity_id or integration.entity_id
-        # Integration DEFAULTS are the global (org_id=NULL) tier — an EXTERNAL
-        # caller (OPEN-E) reading them would receive decrypted global secrets,
-        # so external=True returns no defaults at all.
-        config = await repo.get_integration_defaults(
-            integration.id, external=current_user.is_external
-        )
+        config = await repo.get_integration_defaults(integration.id)
 
         secret_keys = [s.key for s in integration.config_schema if s.type == "secret"]
         response_data = {
@@ -756,12 +749,8 @@ async def sdk_integrations_get(
             "config_secret_keys": secret_keys,
         }
 
-        # Build OAuth data if provider exists. This is the DEFAULTS path: the
-        # only provider here is the INTEGRATION-LEVEL (global) one, and
-        # _build_oauth_data decrypts its client_secret. An EXTERNAL caller
-        # (OPEN-E) must get NO OAuth block at all — there is no org-tier
-        # provider on this branch to fall back to.
-        if integration.oauth_provider and not current_user.is_external:
+        # Build OAuth data if provider exists
+        if integration.oauth_provider:
             # Cascade: prefer org-scoped token, fall back to global.
             # See api/src/repositories/README.md for the pattern.
             oauth_token_repo = OAuthTokenRepository(
@@ -773,6 +762,8 @@ async def sdk_integrations_get(
             response_data["oauth"] = await _build_oauth_data(
                 integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
                 oauth_scope=request.oauth_scope,
+                db=db,
+                org_uuid=org_uuid,
             )
 
         logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (defaults) for user {current_user.email}")
@@ -793,7 +784,8 @@ async def _build_oauth_data(
     resolve_url_template: Any,
     decrypt_secret: Any,
     oauth_scope: str | None = None,
-    external: bool = False,
+    db: Any | None = None,
+    org_uuid: UUID | None = None,
 ) -> SDKIntegrationsOAuthData:
     """Build OAuth data dict from provider and token for CLI response.
 
@@ -804,17 +796,12 @@ async def _build_oauth_data(
         resolve_url_template: Function to resolve {entity_id} in URLs
         decrypt_secret: Function to decrypt encrypted values
         oauth_scope: Override scope for token request (triggers fresh token fetch)
-        external: When True (EXT-1 OPEN-E), an EXTERNAL portal caller — the
-            provider's ``client_secret`` is a GLOBAL third-party credential, so
-            it is never decrypted/returned and the client-credentials
-            auto-refresh (which needs it) is suppressed. Only a stored,
-            org-bound ``access_token`` (already scoped by the caller's repo)
-            is returned. Engine/sentinel/normal callers leave this False.
+        db: Optional DB session for persisting successful auto-refresh recovery
+        org_uuid: Organization scope for token persistence during auto-refresh
     """
-    # Decrypt client secret (needed for both stored tokens and auto-refresh).
-    # An external never receives it (global third-party credential — OPEN-E).
+    # Decrypt client secret for runtime SDK data and server-side token refresh.
     client_secret = None
-    if provider.encrypted_client_secret and not external:
+    if provider.encrypted_client_secret:
         try:
             raw = provider.encrypted_client_secret
             client_secret = await asyncio.to_thread(
@@ -838,17 +825,13 @@ async def _build_oauth_data(
 
     # Check if we should auto-fetch a fresh token
     if should_auto_refresh_token(provider, entity_id, oauth_scope):
-        scope_info = f"oauth_scope={log_safe(oauth_scope)}" if oauth_scope else f"entity_id={entity_id}"
-        logger.info(f"Auto-refreshing token ({scope_info})")
+        logger.info("Auto-refreshing SDK integration OAuth token")
 
         if client_secret and resolved_token_url:
             from src.services.oauth_provider import OAuthProviderClient
 
             oauth_client = OAuthProviderClient()
-            # Use oauth_scope override if provided, otherwise use provider's default
-            scopes = oauth_scope if oauth_scope else (
-                " ".join(provider.scopes) if provider.scopes else ""
-            )
+            scopes = _resolve_requested_oauth_scopes(provider, oauth_scope)
 
             success, result = await oauth_client.get_client_credentials_token(
                 token_url=resolved_token_url,
@@ -867,6 +850,25 @@ async def _build_oauth_data(
                         if hasattr(expires_at_dt, "isoformat")
                         else str(expires_at_dt)
                     )
+                if db is not None and access_token:
+                    from src.core.security import encrypt_secret
+                    from src.services.oauth_provider import persist_integration_oauth_recovery
+
+                    scope_list = scopes.split() if scopes else (provider.scopes or [])
+                    await persist_integration_oauth_recovery(
+                        db,
+                        provider=provider,
+                        org_uuid=org_uuid,
+                        stored_token=token,
+                        encrypted_access_token=encrypt_secret(access_token).encode(),
+                        expires_at=(
+                            expires_at_dt
+                            if expires_at_dt and hasattr(expires_at_dt, "isoformat")
+                            else None
+                        ),
+                        scopes=scope_list,
+                    )
+                    await db.commit()
                 logger.info("Auto-refresh token successful")
             else:
                 error_msg = result.get("error_description", result.get("error", "Unknown error"))
@@ -959,12 +961,11 @@ async def sdk_integrations_list_mappings(
 
         items = []
         for mapping in mappings:
-            # Get merged config (integration defaults + org overrides).
-            # External callers drop the global tier (NEW-G).
+            # Get merged config (integration defaults + org overrides)
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                external=current_user.is_external,
+                include_default_secrets=False,
             )
             items.append({
                 "id": str(mapping.id),
@@ -1015,37 +1016,18 @@ async def sdk_integrations_get_mapping(
         # Apply the C2 gate. Non-bypass callers can only target their own
         # org; cross-org or "global" requires platform-admin / provider-org.
         resolved_org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
-        mapping = None
-
-        # Direct lookup by org_id.
-        if resolved_org_id is not None:
-            mapping = await repo.get_mapping_by_org(
-                integration.id, UUID(resolved_org_id)
-            )
-
-        # entity_id fallback search, scoped by the resolved org. For a
-        # global-scoped caller (bypass), search across all mappings;
-        # otherwise restrict to the caller's resolved org so non-bypass
-        # callers can't probe other orgs' entity_ids.
-        if not mapping and request.entity_id:
-            candidates = await repo.list_mappings(
-                integration.id,
-                organization_id=UUID(resolved_org_id) if resolved_org_id else None,
-            )
-            for m in candidates:
-                if m.entity_id == request.entity_id:
-                    mapping = m
-                    break
+        mapping = await _sdk_find_integration_mapping(
+            repo, integration.id, resolved_org_id, request
+        )
 
         if not mapping:
             return None
 
-        # Get merged config for the mapping. External callers drop the global
-        # tier (NEW-G).
+        # Get merged config for the mapping
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            external=current_user.is_external,
+            include_default_secrets=False,
         )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
@@ -1068,6 +1050,27 @@ async def sdk_integrations_get_mapping(
     except Exception as e:
         logger.error(f"SDK integrations.get_mapping failed: {log_safe(e)}")
         return None
+
+
+async def _sdk_find_integration_mapping(
+    repo,
+    integration_id: UUID,
+    resolved_org_id: str | None,
+    request: SDKIntegrationsGetMappingRequest,
+):
+    if resolved_org_id is not None:
+        mapping = await repo.get_mapping_by_org(integration_id, UUID(resolved_org_id))
+        if mapping:
+            return mapping
+
+    if not request.entity_id or (resolved_org_id is None and request.scope in (None, "")):
+        return None
+
+    candidates = await repo.list_mappings(
+        integration_id,
+        organization_id=UUID(resolved_org_id) if resolved_org_id else None,
+    )
+    return next((m for m in candidates if m.entity_id == request.entity_id), None)
 
 
 @router.post(
@@ -1141,13 +1144,8 @@ async def sdk_integrations_upsert_mapping(
 
         await db.commit()
 
-        # Get merged config for the post-write echo. External callers drop the
-        # global tier (NEW-G).
-        config = await repo.get_config_for_mapping(
-            integration.id,
-            mapping.organization_id,
-            external=current_user.is_external,
-        )
+        # Get merged config for response
+        config = await repo.get_config_for_mapping(integration.id, mapping.organization_id)
 
         return SDKIntegrationsMappingItem(
             id=str(mapping.id),
@@ -1258,15 +1256,8 @@ async def sdk_integrations_refresh_token(
     try:
         # Cascade: prefer org-scoped provider, fall back to global.
         # See api/src/repositories/README.md for the pattern.
-        # EXTERNAL callers (OPEN-E) get org-only on BOTH the provider lookup
-        # and the token lookup: a portal user must never refresh / receive a
-        # global third-party OAuth token. An external with no org provider
-        # 404s (the by-name cascade drops the global tier for externals).
         provider_repo = OAuthProviderRepository(
-            db,
-            org_id=org_uuid,
-            is_superuser=not current_user.is_external,
-            is_external=current_user.is_external,
+            db, org_id=org_uuid, is_superuser=True
         )
         provider = await provider_repo.get(provider_name=request.connection_name)
 
@@ -1279,10 +1270,7 @@ async def sdk_integrations_refresh_token(
         # For authorization_code flow we need the stored token up front so
         # build_token_refresh_context can carry the encrypted refresh token.
         token_repo = OAuthTokenRepository(
-            db,
-            org_id=org_uuid,
-            is_superuser=not current_user.is_external,
-            is_external=current_user.is_external,
+            db, org_id=org_uuid, is_superuser=True
         )
         stored_token = None
         if provider.oauth_flow_type == "authorization_code":
@@ -1367,7 +1355,7 @@ async def sdk_integrations_refresh_token(
         )
 
         return SDKIntegrationsRefreshTokenResponse(
-            access_token=access_token,
+            refreshed=True,
             expires_at=expires_at,
         )
 
@@ -2180,22 +2168,6 @@ async def cli_ai_info(
 # =============================================================================
 
 
-def _deny_external_knowledge(current_user: UserPrincipal) -> None:
-    """403 an external principal off the direct knowledge surface.
-
-    The knowledge store has no grant axis (no roles, no access_level, no row
-    policies), so its direct endpoints are implicitly "any signed-in user" —
-    a tier external (portal/guest) users are excluded from. Externals reach
-    knowledge content only THROUGH workflows/agents they were granted (the
-    engine sentinel keeps the full cascade).
-    """
-    if current_user.is_external:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="External users cannot access the knowledge store directly",
-        )
-
-
 @router.post(
     "/knowledge/store",
     summary="Store a document in knowledge store",
@@ -2206,7 +2178,6 @@ async def cli_knowledge_store(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Store a document with its embedding in the knowledge store."""
-    _deny_external_knowledge(current_user)
     from src.repositories.knowledge import KnowledgeRepository
     from src.services.embeddings import get_embedding_client
 
@@ -2217,10 +2188,7 @@ async def cli_knowledge_store(
         embedding_client = await get_embedding_client(db)
 
         # Store document
-        # Externals were 403'd at the top of this endpoint
-        # (_deny_external_knowledge); every caller past the gate gets the
-        # SDK trust this surface has always extended.
-        repo = KnowledgeRepository(db, org_id=org_uuid)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         doc_ids = await repo.store_chunked(
             content=request.content,
             namespace=request.namespace,
@@ -2262,7 +2230,6 @@ async def cli_knowledge_store_many(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Store multiple documents with batch embedding."""
-    _deny_external_knowledge(current_user)
     from src.repositories.knowledge import KnowledgeRepository
     from src.services.embeddings import get_embedding_client
 
@@ -2273,10 +2240,7 @@ async def cli_knowledge_store_many(
         embedding_client = await get_embedding_client(db)
 
         # Store each document
-        # Externals were 403'd at the top of this endpoint
-        # (_deny_external_knowledge); every caller past the gate gets the
-        # SDK trust this surface has always extended.
-        repo = KnowledgeRepository(db, org_id=org_uuid)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         doc_ids = []
         for doc in request.documents:
             inserted_ids = await repo.store_chunked(
@@ -2321,7 +2285,6 @@ async def cli_knowledge_search(
     db: AsyncSession = Depends(get_db),
 ) -> list[CLIKnowledgeDocumentResponse]:
     """Search for similar documents using vector similarity."""
-    _deny_external_knowledge(current_user)
     from src.models.contracts.cli import CLIKnowledgeDocumentResponse
     from src.repositories.knowledge import KnowledgeRepository
     from src.services.embeddings import get_embedding_client
@@ -2335,10 +2298,7 @@ async def cli_knowledge_search(
         query_embedding = await embedding_client.embed_single(request.query)
 
         # Search
-        # Externals were 403'd at the top of this endpoint
-        # (_deny_external_knowledge); every caller past the gate gets the
-        # SDK trust this surface has always extended.
-        repo = KnowledgeRepository(db, org_id=org_uuid)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         results = await repo.search(
             query_embedding=query_embedding,
             namespace=request.namespace,
@@ -2389,17 +2349,13 @@ async def cli_knowledge_delete(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete a document by key from the knowledge store."""
-    _deny_external_knowledge(current_user)
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
         org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        # Externals were 403'd at the top of this endpoint
-        # (_deny_external_knowledge); every caller past the gate gets the
-        # SDK trust this surface has always extended.
-        repo = KnowledgeRepository(db, org_id=org_uuid)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         deleted = await repo.delete_by_key(
             key=request.key,
             namespace=request.namespace,
@@ -2432,17 +2388,13 @@ async def cli_knowledge_delete_namespace(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete all documents in a namespace."""
-    _deny_external_knowledge(current_user)
     from src.repositories.knowledge import KnowledgeRepository
 
     try:
         org_id = await _resolve_sdk_org_id(current_user, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        # Externals were 403'd at the top of this endpoint
-        # (_deny_external_knowledge); every caller past the gate gets the
-        # SDK trust this surface has always extended.
-        repo = KnowledgeRepository(db, org_id=org_uuid)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         deleted_count = await repo.delete_namespace(
             namespace=namespace,
         )
@@ -2474,7 +2426,6 @@ async def cli_knowledge_list_namespaces(
     db: AsyncSession = Depends(get_db),
 ) -> list[CLIKnowledgeNamespaceInfo]:
     """List all namespaces with document counts per scope."""
-    _deny_external_knowledge(current_user)
     from src.models.contracts.cli import CLIKnowledgeNamespaceInfo
     from src.repositories.knowledge import KnowledgeRepository
 
@@ -2482,10 +2433,7 @@ async def cli_knowledge_list_namespaces(
         org_id = await _resolve_sdk_org_id(current_user, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        # Externals were 403'd at the top of this endpoint
-        # (_deny_external_knowledge); every caller past the gate gets the
-        # SDK trust this surface has always extended.
-        repo = KnowledgeRepository(db, org_id=org_uuid)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         results = await repo.list_namespaces(
             include_global=include_global,
         )
@@ -2520,7 +2468,6 @@ async def cli_knowledge_get(
     db: AsyncSession = Depends(get_db),
 ) -> CLIKnowledgeDocumentResponse | None:
     """Get a document by key from the knowledge store."""
-    _deny_external_knowledge(current_user)
     from src.models.contracts.cli import CLIKnowledgeDocumentResponse
     from src.repositories.knowledge import KnowledgeRepository
 
@@ -2528,10 +2475,7 @@ async def cli_knowledge_get(
         org_id = await _resolve_sdk_org_id(current_user, scope, db)
         org_uuid = UUID(org_id) if org_id else None
 
-        # Externals were 403'd at the top of this endpoint
-        # (_deny_external_knowledge); every caller past the gate gets the
-        # SDK trust this surface has always extended.
-        repo = KnowledgeRepository(db, org_id=org_uuid)
+        repo = KnowledgeRepository(db, org_id=org_uuid, is_superuser=True)
         result = await repo.get_by_key(
             key=key,
             namespace=namespace,
@@ -2670,13 +2614,7 @@ async def download_cli() -> Response:
                     continue
                 if file_path.name in exclude_files:
                     continue
-                # Ship .py + .toml, PLUS the data files the CLI reads at runtime.
-                # lucide_icon_names.json is the snapshot `bifrost migrate-imports`
-                # uses to classify lucide icons; excluding it ships a CLI that
-                # silently leaves icon imports in "bifrost" and breaks a v1→v2
-                # app migration (battle-test 2026-06-13).
-                _data_files = {"lucide_icon_names.json"}
-                if file_path.suffix not in (".py", ".toml") and file_path.name not in _data_files:
+                if file_path.suffix not in (".py", ".toml"):
                     continue
                 if file_path.name == "pyproject.toml":
                     continue  # Already added above
@@ -2709,37 +2647,6 @@ async def download_cli() -> Response:
         media_type="application/gzip",
         headers={
             "Content-Disposition": f"attachment; filename=bifrost-cli-{get_version()}.tar.gz",
-        },
-    )
-
-
-@router.get(
-    "/download",
-    summary="Download the bifrost web SDK package",
-    description=(
-        "Serve the `bifrost` web SDK as an npm-installable tarball. A "
-        "standalone_v2 app declares `\"bifrost\": \"<instance>/api/sdk/download\"` "
-        "and resolves it identically on a dev laptop (`npm run dev`) and in the "
-        "platform's server-side build."
-    ),
-)
-async def download_sdk() -> Response:
-    """Build + serve the installable ``bifrost`` SDK package (npm tarball).
-
-    Mirrors ``/api/cli/download`` (the Python CLI tarball): the package is built
-    on the fly from the SDK source shipped in the api image and version-stamped
-    to the running instance, so dev and deploy use one resolution mechanism.
-    """
-    from shared.version import get_version
-    from src.services.sdk_package import build_sdk_tarball
-
-    version = get_version()
-    tarball = await asyncio.to_thread(build_sdk_tarball, version)
-    return Response(
-        content=tarball,
-        media_type="application/gzip",
-        headers={
-            "Content-Disposition": f"attachment; filename=bifrost-sdk-{version}.tgz",
         },
     )
 
@@ -2821,11 +2728,9 @@ async def cli_list_tables(
 ) -> list[SDKTableInfo]:
     """List tables via SDK.
 
-    Engine sentinel: the SDK has already resolved scope, so non-external
-    principals get is_superuser=True and we trust the org_uuid. The base
-    class handles the cascade (org + global) for us. EXTERNAL principals
-    do not inherit sentinel trust (OPEN-B) — they get the normal user
-    cascade (org + global table names/schemas; row data is policy-gated).
+    Engine sentinel: the SDK has already resolved scope, so we pass
+    is_superuser=True to TableRepository and trust the org_uuid.
+    The base class handles the cascade (org + global) for us.
     """
     # Local import keeps the router file's top-level imports lean.
     from src.repositories.tables import TableRepository
@@ -2833,16 +2738,7 @@ async def cli_list_tables(
     org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
 
-    # Principal-derived sentinel trust (OPEN-B): the sentinel/admins keep
-    # is_superuser=True (their is_external claim is neutralized at mint); an
-    # EXTERNAL principal must not inherit it — they get the regular-user
-    # cascade instead.
-    repo = TableRepository(
-        db,
-        org_id=org_uuid,
-        is_superuser=not current_user.is_external,
-        is_external=current_user.is_external,
-    )
+    repo = TableRepository(db, org_id=org_uuid, is_superuser=True)
     tables = await repo.list()
     tables = sorted(tables, key=lambda t: t.name)
 
