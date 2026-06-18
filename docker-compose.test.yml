@@ -359,6 +359,7 @@ services:
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
       - ./.github:/app/.github:ro
       - ./.claude:/app/.claude:ro
       - ./.env.debug:/app/.env.debug:ro
