@@ -916,7 +916,6 @@ async def promote_agent(
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(404, f"Agent {agent_id} not found")
-    assert_not_solution_managed(agent)
 
     if agent.access_level != AgentAccessLevel.PRIVATE:
         raise HTTPException(400, "Agent is not private — nothing to promote")

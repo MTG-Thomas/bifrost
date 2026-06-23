@@ -285,7 +285,7 @@ async def create_application(
         target_org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
@@ -332,7 +332,7 @@ async def list_applications(
         filter_org,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
 
     # Superusers use list_all_in_scope (respects filter_type, no role checks)
@@ -367,7 +367,7 @@ async def get_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
     application = await get_application_or_404(ctx, slug)
     return await application_to_public(application, repo)
@@ -398,7 +398,7 @@ async def update_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
@@ -454,7 +454,7 @@ async def delete_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
     success = await repo.delete_application(app_id)
 
@@ -490,7 +490,7 @@ async def get_draft(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
     app = await get_application_by_id_or_404(ctx, app_id)
     export_data = await repo.export_application(app)
@@ -523,7 +523,7 @@ async def save_draft(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
     app = await get_application_by_id_or_404(ctx, app_id)
 
@@ -567,7 +567,7 @@ async def publish_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
@@ -628,7 +628,7 @@ async def replace_application_endpoint(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
@@ -682,7 +682,7 @@ async def swap_application_slugs(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
     try:
         app_a, app_b = await repo.swap_slugs(data.app_a, data.app_b)
@@ -912,7 +912,7 @@ async def export_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
     application = await get_application_by_id_or_404(ctx, app_id)
     export_data = await repo.export_application(application, version_id)
@@ -949,7 +949,7 @@ async def rollback_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=user.is_external,
+        is_external=getattr(user, "is_external", False),
     )
     application = await get_application_by_id_or_404(ctx, app_id)
     await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)

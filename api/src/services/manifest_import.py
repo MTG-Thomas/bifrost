@@ -1400,12 +1400,10 @@ class ManifestResolver:
                 match_on="id",
             ))
 
-        # Role sync op. Fire whenever the entry carries a `roles` key — INCLUDING an
-        # empty list — so emptying roles clears the bindings, matching install deploy
-        # (full role sync). git-sync always serializes `roles` (model default []), so
-        # a present-empty list reliably means "no roles" (B3). `is not None` guards a
-        # hypothetical roles-less model; SyncRoles({}) deletes all rows.
-        if getattr(mwf, "roles", None) is not None:
+        # Role sync op. Fire whenever the manifest entry carries a `roles` key,
+        # including an explicit empty list, so authors can clear bindings without
+        # omitting the key accidentally wiping existing access grants.
+        if "roles" in getattr(mwf, "model_fields_set", set()):
             role_ids = {UUID(r) for r in mwf.roles}
             ops.append(SyncRoles(
                 junction_model=WorkflowRole,
