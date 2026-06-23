@@ -1203,43 +1203,6 @@ Examples:
         return 0 if args else 1
 
     sub = args[0].lower()
-    if sub == "token":
-        # Emit the resolved url + access token as JSON so a scaffolded Solution
-        # vite dev config can read the credential store — device-code login
-        # stores the token in keyring/JSON, not a nearby .env, so env/.env alone
-        # leave `npm run dev` tokenless (R7-P2-f). Only url + access token are
-        # printed (never the refresh token); the vite config injects it for
-        # `serve` only, so the production bundle stays tokenless (R6-P1-c).
-        url_override = None
-        rest = args[1:]
-        if rest and rest[0] == "--url" and len(rest) > 1:
-            url_override = rest[1]
-        creds = credentials.get_credentials(url_override)
-        if not creds or not creds.get("access_token"):
-            print("Not authenticated. Run `bifrost login` first.", file=sys.stderr)
-            return 1
-        # The token feeds a long-running `npm run dev` session; if it's expired
-        # (or near it), refresh first so the dev server isn't handed a stale token
-        # that 401s with no recovery. Best-effort: if refresh fails, warn but still
-        # emit what we have so the dev gets a clear "re-login" signal, not silence.
-        if credentials.is_token_expired(api_url=url_override):
-            from bifrost.client import refresh_tokens
-            try:
-                if asyncio.run(refresh_tokens()):
-                    creds = credentials.get_credentials(url_override) or creds
-            except Exception:  # noqa: BLE001 - refresh is best-effort here
-                pass
-            if credentials.is_token_expired(api_url=url_override):
-                print(
-                    "Warning: access token is expired and refresh failed; run "
-                    "`bifrost login` to re-authenticate.",
-                    file=sys.stderr,
-                )
-        print(json.dumps({
-            "api_url": creds.get("api_url"),
-            "access_token": creds["access_token"],
-        }))
-        return 0
     if sub in ("list", "ls"):
         urls = credentials.list_credentials()
         if not urls:
@@ -1540,6 +1503,7 @@ def handle_run(args: list[str]) -> int:
     # Add current working directory to sys.path for workspace imports
     # This allows workflows to import from their workspace (e.g., `from features.x import y`)
     cwd = os.getcwd()
+    solution_root = None
     try:
         from bifrost.solution_descriptor import find_solution_root
 
@@ -1554,20 +1518,9 @@ def handle_run(args: list[str]) -> int:
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
 
-    # If the workflow lives inside a Solution workspace (a bifrost.solution.yaml
-    # somewhere above it), put the solution ROOT on sys.path so solution-local
-    # imports (`from modules.x import y`) resolve against the solution root even
-    # when `bifrost run` is invoked from a subdirectory — local execution with a
-    # live data-plane is criterion 15 (offline dev loop).
-    from bifrost.solution_descriptor import find_solution_root
-
-    solution_root = find_solution_root(abs_file_path)
     if solution_root is not None:
-        root_str = str(solution_root)
-        if root_str not in sys.path:
-            sys.path.insert(0, root_str)
         if verbose:
-            print(f"Detected Solution workspace root: {root_str}")
+            print(f"Detected Solution workspace root: {solution_root}")
 
     # In non-verbose direct mode, suppress decorator warnings before loading the module
     if not interactive and not verbose:

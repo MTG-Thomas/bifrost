@@ -668,6 +668,12 @@ async def swap_application_slugs(
     slug advisory lock for both slugs, so it can't race a same-slug deploy or
     leave the live slug momentarily unowned.
     """
+    if not user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform admins can swap application slugs",
+        )
+
     # Slug is a deploy-owned property for solution-managed apps — refuse both.
     await assert_entity_id_not_solution_managed(ctx.db, Application, data.app_a)
     await assert_entity_id_not_solution_managed(ctx.db, Application, data.app_b)
