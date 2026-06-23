@@ -426,19 +426,30 @@ def _filter_manifest_to_scope(
         if _form_in_scope(v)
     }
 
+    def _agent_is_standalone(agent) -> bool:
+        """Inline agents with no workflow/delegation refs are owned by the manifest."""
+        return not (getattr(agent, "tool_ids", None) or getattr(agent, "delegated_agent_ids", None))
+
     scoped_agents = {
         k: v
         for k, v in manifest.agents.items()
-        if set(getattr(v, "tool_ids", []) or []) & present_workflow_ids
+        if (
+            _agent_is_standalone(v)
+            or set(getattr(v, "tool_ids", []) or []) & present_workflow_ids
+        )
     }
     while True:
-        present_agent_ids = {v.id for v in scoped_agents.values()}
+        delegated_agent_ids = {
+            agent_id
+            for v in scoped_agents.values()
+            for agent_id in (getattr(v, "delegated_agent_ids", []) or [])
+        }
         next_agents = {
             k: v
             for k, v in manifest.agents.items()
             if (
                 k in scoped_agents
-                or set(getattr(v, "delegated_agent_ids", []) or []) & present_agent_ids
+                or v.id in delegated_agent_ids
             )
         }
         if next_agents.keys() == scoped_agents.keys():
