@@ -1956,25 +1956,6 @@ def _warn_if_git_workspace(target_path: str) -> None:
             return
 
 
-def _sync_use_tui(force: bool, is_tty: bool) -> bool:
-    """Single source of truth for whether sync may use any interactive TUI.
-
-    Returns False (headless) when --yes/-y (``force``) is set, when
-    ``BIFROST_NONINTERACTIVE=1`` is in the environment, or when stdin/stdout
-    is not a TTY. Gating BOTH the selection TUI and the progress TUI on this
-    keeps the headless contract whole: the progress TUI blocks on "press Enter"
-    when a file errors, so honoring noninteractivity only for the selection TUI
-    would still hang an unattended run (criterion 17).
-    """
-    if not is_tty:
-        return False
-    if force:
-        return False
-    if os.environ.get("BIFROST_NONINTERACTIVE") == "1":
-        return False
-    return True
-
-
 @dataclass
 class _PushWatchArgs:
     """Parsed arguments for push/watch commands."""
