@@ -187,6 +187,7 @@ class _AbstractConsumer(ABC):
         self.dead_letter_exchange = dead_letter_exchange or f"{queue_name}-dlx"
         self.retry_delays_seconds = retry_delays_seconds or DEFAULT_RETRY_DELAYS_SECONDS
         self.max_retry_attempts = max_retry_attempts or len(self.retry_delays_seconds)
+        self._init_consumer_state()
 
     def _init_consumer_state(self) -> None:
         """Initialize the connection/in-flight bookkeeping shared by subclasses."""
@@ -575,7 +576,6 @@ class BaseConsumer(_AbstractConsumer):
             retry_delays_seconds=retry_delays_seconds,
             max_retry_attempts=max_retry_attempts,
         )
-        self._init_consumer_state()
 
     async def start(self) -> None:
         """Start consuming messages."""
@@ -703,13 +703,8 @@ class BroadcastConsumer(_AbstractConsumer):
         Args:
             exchange_name: Name of the fanout exchange to consume from
         """
-        self._init_consumer_state()
+        super().__init__(queue_name=f"{exchange_name} (broadcast)")
         self.exchange_name = exchange_name
-
-    @property
-    def queue_name(self) -> str:  # type: ignore[override]
-        """Return the exchange name for logging compatibility."""
-        return f"{self.exchange_name} (broadcast)"
 
     async def start(self) -> None:
         """Start consuming messages from the fanout exchange."""
