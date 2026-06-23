@@ -7,7 +7,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { getOAuthProviders, hashOAuthState, initOAuth } from "@/services/auth";
+import { getOAuthProviders, initOAuth } from "@/services/auth";
 import { supportsPasskeys } from "@/services/passkeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

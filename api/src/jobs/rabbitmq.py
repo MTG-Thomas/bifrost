@@ -202,57 +202,11 @@ class _AbstractConsumer(ABC):
     @abstractmethod
     async def start(self) -> None:
         """Declare the consumer's topology and begin consuming.
+
+        Implementations must populate ``self._channel``, ``self._queue`` and
+        ``self._connection_ctx``, then capture ``self._consumer_tag`` from
+        ``queue.consume(self._on_message)`` so ``drain`` can cancel it.
         """
-
-        # Initialize pools and get a dedicated connection for this consumer
-        await rabbitmq.init_pools()
-        # Store the context manager so it stays open
-        self._connection_ctx = rabbitmq.get_connection()
-        connection = await self._connection_ctx.__aenter__()
-        channel = await connection.channel()
-        self._channel = channel
-        await channel.set_qos(prefetch_count=self.prefetch_count)
-
-        # Declare dead letter exchange
-        dlx = await channel.declare_exchange(
-            self.dead_letter_exchange,
-            aio_pika.ExchangeType.DIRECT,
-            durable=True,
-        )
-
-        # Declare dead letter queue
-        dlq = await channel.declare_queue(
-            f"{self.queue_name}-poison",
-            durable=True,
-        )
-        await dlq.bind(dlx, routing_key=self.queue_name)
-
-        for idx, delay in enumerate(self.retry_delays_seconds, start=1):
-            await channel.declare_queue(
-                f"{self.queue_name}-retry-{idx}",
-                durable=True,
-                arguments={
-                    "x-message-ttl": delay * 1000,
-                    "x-dead-letter-exchange": "",
-                    "x-dead-letter-routing-key": self.queue_name,
-                },
-            )
-
-        # Declare main queue with dead letter routing
-        queue = await channel.declare_queue(
-            self.queue_name,
-            durable=True,
-            arguments={
-                "x-dead-letter-exchange": self.dead_letter_exchange,
-                "x-dead-letter-routing-key": self.queue_name,
-            },
-        )
-        self._queue = queue
-
-        logger.info(f"Consumer started for queue: {self.queue_name}")
-
-        # Start consuming, capturing the consumer tag so drain() can cancel it.
-        self._consumer_tag = await queue.consume(self._on_message)
 
     async def stop(self) -> None:
         """Stop consuming messages (hard close — does NOT wait for in-flight).
@@ -595,6 +549,89 @@ class _AbstractConsumer(ABC):
         pass
 
 
+class BaseConsumer(_AbstractConsumer):
+    """
+    Base class for queue-based RabbitMQ consumers (one worker per message).
+
+    Provides:
+    - Automatic connection and channel management
+    - Message acknowledgment handling
+    - Error handling with dead letter queue support
+    - Graceful shutdown
+    """
+
+    def __init__(
+        self,
+        queue_name: str,
+        prefetch_count: int = 1,
+        dead_letter_exchange: str | None = None,
+        retry_delays_seconds: list[int] | None = None,
+        max_retry_attempts: int | None = None,
+    ):
+        super().__init__(
+            queue_name=queue_name,
+            prefetch_count=prefetch_count,
+            dead_letter_exchange=dead_letter_exchange,
+            retry_delays_seconds=retry_delays_seconds,
+            max_retry_attempts=max_retry_attempts,
+        )
+        self._init_consumer_state()
+
+    async def start(self) -> None:
+        """Start consuming messages."""
+        self._running = True
+
+        # Initialize pools and get a dedicated connection for this consumer
+        await rabbitmq.init_pools()
+        # Store the context manager so it stays open
+        self._connection_ctx = rabbitmq.get_connection()
+        connection = await self._connection_ctx.__aenter__()
+        channel = await connection.channel()
+        self._channel = channel
+        await channel.set_qos(prefetch_count=self.prefetch_count)
+
+        # Declare dead letter exchange
+        dlx = await channel.declare_exchange(
+            self.dead_letter_exchange,
+            aio_pika.ExchangeType.DIRECT,
+            durable=True,
+        )
+
+        # Declare dead letter queue
+        dlq = await channel.declare_queue(
+            f"{self.queue_name}-poison",
+            durable=True,
+        )
+        await dlq.bind(dlx, routing_key=self.queue_name)
+
+        for idx, delay in enumerate(self.retry_delays_seconds, start=1):
+            await channel.declare_queue(
+                f"{self.queue_name}-retry-{idx}",
+                durable=True,
+                arguments={
+                    "x-message-ttl": delay * 1000,
+                    "x-dead-letter-exchange": "",
+                    "x-dead-letter-routing-key": self.queue_name,
+                },
+            )
+
+        # Declare main queue with dead letter routing
+        queue = await channel.declare_queue(
+            self.queue_name,
+            durable=True,
+            arguments={
+                "x-dead-letter-exchange": self.dead_letter_exchange,
+                "x-dead-letter-routing-key": self.queue_name,
+            },
+        )
+        self._queue = queue
+
+        logger.info(f"Consumer started for queue: {self.queue_name}")
+
+        # Start consuming, capturing the consumer tag so drain() can cancel it.
+        self._consumer_tag = await queue.consume(self._on_message)
+
+
 def infer_idempotency_key(queue_name: str, message: dict[str, Any]) -> str:
     """Return a stable key used in broker headers for observability and replay."""
     if "idempotency_key" in message:
@@ -647,7 +684,7 @@ def _message_headers(
     return merged
 
 
-class BroadcastConsumer(ABC):
+class BroadcastConsumer(_AbstractConsumer):
     """
     Base class for broadcast (fanout) consumers.
 
@@ -711,6 +748,35 @@ class BroadcastConsumer(ABC):
 
         # Start consuming, capturing the consumer tag so drain() can cancel it.
         self._consumer_tag = await queue.consume(self._on_message)
+
+    async def _process_message_with_ack(self, message: IncomingMessage) -> None:
+        """Process a broadcast message without queue retry or poison routing."""
+        async with message.process(requeue=False):
+            try:
+                body = json.loads(message.body.decode())
+
+                logger.info(
+                    f"Processing message from {self.queue_name}",
+                    extra={"message_id": message.message_id},
+                )
+
+                await self.process_message(body)
+
+                logger.info(
+                    "Message processed successfully",
+                    extra={"message_id": message.message_id},
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error processing message from {self.queue_name}: {e}",
+                    extra={
+                        "message_id": message.message_id,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True,
+                )
+                raise
 
 
 async def publish_broadcast(
