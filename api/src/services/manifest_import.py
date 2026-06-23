@@ -2911,24 +2911,23 @@ class ManifestResolver:
         agent_id = UUID(magent.id)
         ops: list[SyncOp] = []
 
-        if org_id:
-            agent_values: dict = {
-                "name": data.get("name", ""),
-                "system_prompt": data.get("system_prompt", ""),
-                "is_active": True,
-                "created_by": "git-sync",
-                "organization_id": org_id,
-                "max_iterations": data.get("max_iterations"),
-                "max_token_budget": data.get("max_token_budget"),
-            }
-            if magent.access_level is not None:
-                agent_values["access_level"] = magent.access_level
-            ops.append(Upsert(
-                model=Agent,
-                id=agent_id,
-                values=agent_values,
-                match_on="id",
-            ))
+        agent_values: dict = {
+            "name": data.get("name", ""),
+            "system_prompt": data.get("system_prompt", ""),
+            "is_active": True,
+            "created_by": "git-sync",
+            "organization_id": org_id,
+            "max_iterations": data.get("max_iterations"),
+            "max_token_budget": data.get("max_token_budget"),
+        }
+        if magent.access_level is not None:
+            agent_values["access_level"] = magent.access_level
+        ops.append(Upsert(
+            model=Agent,
+            id=agent_id,
+            values=agent_values,
+            match_on="id",
+        ))
 
         # Role sync op (AgentRole.assigned_by is NOT NULL — pass via extra_fields).
         # Fire on present-empty too, to clear bindings (B3; see _resolve_workflow).
