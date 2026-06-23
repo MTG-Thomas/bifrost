@@ -106,3 +106,17 @@ def test_deploy_reports_when_nothing_to_vendor(tmp_path) -> None:
     assert result.exit_code == 0, result.output
     # The vendoring announcement always resolves to a result line, even at zero.
     assert "no shared dependencies to vendor." in result.output
+
+
+def test_deploy_rejects_solution_logo_outside_workspace(tmp_path) -> None:
+    ws = _scaffold(tmp_path)
+    outside_logo = tmp_path / "outside.svg"
+    outside_logo.write_text("<svg />")
+    descriptor = yaml.safe_load((ws / DESCRIPTOR_FILENAME).read_text())
+    descriptor["logo"] = "../outside.svg"
+    (ws / DESCRIPTOR_FILENAME).write_text(yaml.safe_dump(descriptor, sort_keys=False))
+
+    result = CliRunner().invoke(solution_group, ["deploy", str(ws), "--global"])
+
+    assert result.exit_code == 1
+    assert "solution logo path '../outside.svg' escapes the workspace" in result.output

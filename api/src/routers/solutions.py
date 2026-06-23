@@ -704,6 +704,7 @@ async def delete_solution(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
 
     from src.services.solutions.app_build import SolutionAppBuilder
+    from src.services.solutions.source_artifact import SolutionSourceArtifactStorage
     from src.services.solutions.storage import SolutionStorage
     from src.services.solutions.write_lock import (
         SolutionWriteLockHeld,
@@ -869,6 +870,7 @@ async def delete_solution(
             storage = SolutionStorage(solution_id)
             for rel in await storage.list(""):
                 await storage.delete(rel)
+            await SolutionSourceArtifactStorage(solution_id).delete()
             builder = SolutionAppBuilder()
             for app_id in app_ids:
                 await builder.delete_dist(app_id)

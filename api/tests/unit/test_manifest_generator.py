@@ -25,6 +25,7 @@ def _mock_workflow(name="test_wf", org_id=None):
     wf.public_endpoint = False
     wf.category = "General"
     wf.description = None
+    wf.tool_description = None
     wf.tags = []
     wf.is_active = True
     wf.workflow_roles = []

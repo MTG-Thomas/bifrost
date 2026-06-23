@@ -26,6 +26,10 @@ def test_manifest_regeneration_filters_inline_forms_and_agents_to_repo_scope(tmp
     other_form_id = "44444444-4444-4444-4444-444444444444"
     local_agent_id = "55555555-5555-5555-5555-555555555555"
     other_agent_id = "66666666-6666-6666-6666-666666666666"
+    standalone_agent_id = "77777777-7777-7777-7777-777777777777"
+    parent_agent_id = "88888888-8888-8888-8888-888888888888"
+    child_agent_id = "99999999-9999-9999-9999-999999999999"
+    reverse_agent_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
     (tmp_path / "workflows").mkdir()
     (tmp_path / "workflows" / "local.py").write_text("from bifrost import workflow\n")
@@ -66,6 +70,27 @@ def test_manifest_regeneration_filters_inline_forms_and_agents_to_repo_scope(tmp
                 name="Other Agent",
                 tool_ids=[other_wf_id],
             ),
+            standalone_agent_id: ManifestAgent(
+                id=standalone_agent_id,
+                name="Standalone Agent",
+            ),
+            parent_agent_id: ManifestAgent(
+                id=parent_agent_id,
+                name="Parent Agent",
+                tool_ids=[local_wf_id],
+                delegated_agent_ids=[child_agent_id],
+            ),
+            child_agent_id: ManifestAgent(
+                id=child_agent_id,
+                name="Delegated Child Agent",
+                tool_ids=[other_wf_id],
+            ),
+            reverse_agent_id: ManifestAgent(
+                id=reverse_agent_id,
+                name="Reverse Delegation Agent",
+                tool_ids=[other_wf_id],
+                delegated_agent_ids=[local_agent_id],
+            ),
         },
     )
 
@@ -73,7 +98,12 @@ def test_manifest_regeneration_filters_inline_forms_and_agents_to_repo_scope(tmp
 
     assert set(manifest.workflows) == {local_wf_id}
     assert set(manifest.forms) == {local_form_id}
-    assert set(manifest.agents) == {local_agent_id}
+    assert set(manifest.agents) == {
+        local_agent_id,
+        standalone_agent_id,
+        parent_agent_id,
+        child_agent_id,
+    }
 
 
 class TestWorkflowReference:
