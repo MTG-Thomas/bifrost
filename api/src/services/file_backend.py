@@ -128,7 +128,7 @@ class LocalBackend(FileBackend):
         except ValueError as e:
             raise ValueError(f"Path must be within {location} directory: {path}") from e
 
-        return p
+        return Path(resolved)
 
     async def read(self, path: str, location: Location, scope: str | None = None) -> bytes:
         """Read file from local filesystem. Scope is ignored in local mode."""

@@ -176,6 +176,10 @@ function EditUserDialogContent({
 				!isEditingSelf && isExternal !== user.is_external
 					? isExternal
 					: null,
+			is_external:
+				!isEditingSelf && isExternal !== user.is_external
+					? isExternal
+					: null,
 		};
 
 		// Compute role changes
