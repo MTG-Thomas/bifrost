@@ -5,8 +5,11 @@ unauthenticated register-from-invite flow on the auth router.
 """
 
 import secrets
+from uuid import UUID
 
 import pytest
+
+from src.models import UserOAuthAccount
 
 AUTH_SECRET_FIELD = "pass" + "word"
 

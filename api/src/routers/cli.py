@@ -867,6 +867,7 @@ async def _build_oauth_data(
     resolve_url_template: Any,
     decrypt_secret: Any,
     oauth_scope: str | None = None,
+    external: bool = False,
     db: Any | None = None,
     org_uuid: UUID | None = None,
 ) -> SDKIntegrationsOAuthData:
@@ -879,6 +880,7 @@ async def _build_oauth_data(
         resolve_url_template: Function to resolve {entity_id} in URLs
         decrypt_secret: Function to decrypt encrypted values
         oauth_scope: Override scope for token request (triggers fresh token fetch)
+        external: If true, do not decrypt or return global OAuth client secrets
         db: Optional DB session for persisting successful auto-refresh recovery
         org_uuid: Organization scope for token persistence during auto-refresh
     """

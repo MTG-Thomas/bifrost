@@ -15,6 +15,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -26,6 +27,7 @@ from src.core.log_safety import log_safe
 from src.models.contracts.files import (
     FilePullRequest,
     FilePullResponse,
+    ManifestImportResponse,
     WatchSessionRequest,
 )
 from src.core.database import get_db

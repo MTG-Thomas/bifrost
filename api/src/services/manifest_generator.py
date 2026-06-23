@@ -10,6 +10,7 @@ Used for:
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import select
@@ -37,7 +38,6 @@ from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
 from src.services.integration_config_schema import parse_config_schema_items
 from bifrost.manifest import (
-    ClaimQuery,
     Manifest,
     ManifestAgent,
     ManifestApp,
@@ -46,9 +46,12 @@ from bifrost.manifest import (
     ManifestEventSource,
     ManifestForm,
     ManifestIntegration,
+    ManifestIntegrationConfigSchema,
+    ManifestIntegrationMapping,
     ManifestMCPConnection,
     ManifestMCPConnectionTool,
     ManifestMCPServer,
+    ManifestOAuthProvider,
     ManifestOrganization,
     ManifestRole,
     ManifestTable,

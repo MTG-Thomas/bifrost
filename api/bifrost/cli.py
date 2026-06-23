@@ -236,45 +236,9 @@ def _warn_build_drift_once(api_url: str, installed: str, server_version: str) ->
 
 
 def _check_cli_version() -> None:
-    """Gate the command against the deployed server. Two independent gates:
-
-    1. **Contract (HARD).** The server reports ``contract_version`` at
-       ``GET /api/version``. If it differs from the CLI's baked
-       ``CONTRACT_VERSION``, the CLI is contract-incompatible → ``sys.exit(1)``
-       with the upgrade message, for every command. ``CONTRACT_VERSION`` is
-       bumped only on breaking changes to the contract surface the CLI consumes
-       (enforced by ``tests/unit/test_contract_version.py``), so an unrelated
-       server release no longer force-reinstalls every CLI.
-
-    2. **Build drift (SOFT).** ``contract_version`` matches but the build
-       ``version`` differs → a one-line stderr notice, deduped per (url,
-       version). Never blocks.
-
-    **Old server** (response lacks ``contract_version``): we can't verify the
-    contract. Rather than hard-block on build-version equality — a rollout
-    footgun, since a fresh CLI almost always differs from a not-yet-upgraded
-    server — we emit a soft warning and continue.
-
-    **Un-reachable verdict** (network/parse error, missing ``version``): emit a
-    visible warning instead of silently skipping, so a stale CLI proceeding
-    against an incompatible server is never invisible. Never blocks.
-    """
-    import httpx
-
-    from bifrost import __version__
-    from bifrost.contract_version import CONTRACT_VERSION
-
-    installed = __version__.lstrip("v")
-    if installed in ("unknown", "0.0.0+source"):
-        return  # dev/source install — nothing to compare against
-
-    # Re-load dotenv so a CWD-local .env's BIFROST_API_URL is honored even
-    # if bifrost.client's import-time load happened against a different cwd.
+    """Hard-block only when the CLI contract is incompatible with the server."""
     try:
-        from dotenv import find_dotenv, load_dotenv
-        load_dotenv(find_dotenv(usecwd=True), override=False)
-    except ImportError:
-        pass  # python-dotenv is optional; without it, only os.environ is consulted
+        import httpx
 
         from bifrost import __version__
 
@@ -290,17 +254,11 @@ def _check_cli_version() -> None:
         # check only needs the URL — get_credentials returns None unless full
         # tokens are present too, which would skip the check on a logged-out CLI.
         api_url = credentials._resolve_url(None)
-    except Exception as e:
-        logger.debug(f"CLI version check skipped (no URL): {e}")
-        return
-    if not api_url:
-        return
+        if not api_url:
+            return
 
-        # Use httpx (already a hard dep via BifrostClient), not urllib.
-        # CDNs/WAFs in front of prod Bifrost instances (Cloudflare on
-        # bifrost.gocovi.com being the live case) 403 the default
-        # `Python-urllib/X.Y` User-Agent. httpx's default UA gets through
-        # and matches what every other SDK request already sends.
+        # Use httpx (already a hard dep via BifrostClient), not urllib. CDNs/WAFs
+        # in front of prod Bifrost instances 403 the default Python-urllib UA.
         resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()

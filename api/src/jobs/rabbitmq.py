@@ -202,6 +202,7 @@ class _AbstractConsumer(ABC):
     @abstractmethod
     async def start(self) -> None:
         """Declare the consumer's topology and begin consuming.
+        """
 
         # Initialize pools and get a dedicated connection for this consumer
         await rabbitmq.init_pools()
