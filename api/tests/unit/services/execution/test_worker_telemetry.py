@@ -67,6 +67,7 @@ async def test_run_execution_emits_worker_span(monkeypatch):
         "caller": {"user_id": "user-1", "email": "user@example.test", "name": "User One"},
         "organization": {"id": "org-1", "name": "Org One"},
         "parameters": {"x": 1},
+        "created_at": "2026-06-27T14:00:00+00:00",
         "tags": ["workflow"],
         "timeout_seconds": 30,
         "cache_ttl_seconds": 300,
@@ -94,5 +95,6 @@ async def test_run_execution_emits_worker_span(monkeypatch):
     assert span.attributes["bifrost.worker.has_file_path"] is False
     assert span.attributes["bifrost.worker.status"] == ExecutionStatus.SUCCESS.value
     assert span.attributes["bifrost.worker.duration_ms"] == 42
+    assert span.attributes["bifrost.queue.wait_ms"] >= 0
     assert span.attributes["bifrost.worker.peak_memory_bytes"] >= 0
     assert span.attributes["bifrost.worker.cpu_total_seconds"] >= 0

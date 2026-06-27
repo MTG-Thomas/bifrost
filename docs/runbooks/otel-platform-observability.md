@@ -18,7 +18,9 @@ Every workflow execution should answer these questions from one trace:
 The first useful trace path is:
 
 1. `bifrost.workflow.enqueue` from the API process.
-2. `bifrost.worker.execute` from the worker process.
+2. `bifrost.worker.execute` from the worker process, including
+   `bifrost.queue.wait_ms` when the pending execution context includes
+   `created_at`.
 3. `bifrost.workflow.execute` from the execution engine.
 
 The shared join key is `bifrost.execution.id`. Use `bifrost.workflow.name`,
@@ -30,10 +32,12 @@ filtering, not for high-cardinality aggregation.
 Keep the collector as the ingestion boundary and add a real trace backend behind
 it. The recommended progression is:
 
-1. **Debug exporter only** while proving span content in PoC.
-2. **Grafana Tempo** for durable trace storage once spans are useful.
+1. **Debug exporter** while proving span content in PoC.
+2. **Grafana Tempo** for durable trace storage with 3-7 day retention.
 3. **Grafana dashboards** that link OpenCost namespace spend to trace examples.
-4. **Log correlation** by adding trace IDs to structured logs after the trace
+4. **Bifrost UI links** from execution history into Grafana/Tempo once trace
+   IDs are available in logs or persisted execution metadata.
+5. **Log correlation** by adding trace IDs to structured logs after the trace
    shape is stable.
 
 Tempo is the right next backend because it is cheaper to operate than a heavy
@@ -75,20 +79,19 @@ Allowed filter fields:
 - `bifrost.execution.error_type`
 - `bifrost.worker.is_script`
 - `bifrost.worker.has_file_path`
+- `bifrost.queue.wait_ms`
 
 Do not emit secrets, parameters, request bodies, ticket content, log lines, or
 raw results as span attributes.
 
 ## Next Instrumentation Slices
 
-1. Add queue wait timing by carrying an enqueue timestamp into the worker
-   context.
-2. Split worker setup into child spans for context read, module cache load, and
+1. Split worker setup into child spans for context read, module cache load, and
    workflow function load.
-3. Add integration-call spans with provider, status, duration, and sanitized
+2. Add integration-call spans with provider, status, duration, and sanitized
    error type.
-4. Add data-provider cache spans for hit/miss, load duration, and write duration.
-5. Add trace ID to execution logs so Bifrost history can deep-link to Tempo.
+3. Add data-provider cache spans for hit/miss, load duration, and write duration.
+4. Add trace ID to execution logs so Bifrost history can deep-link to Tempo.
 
 ## Maturity Gate
 
