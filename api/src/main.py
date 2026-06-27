@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
 from src.config import get_settings
 from src.core.sentry import configure_sentry
+from src.core.telemetry import configure_opentelemetry
 from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
@@ -125,6 +126,7 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info("Starting Bifrost API...")
     settings = get_settings()
+    configure_opentelemetry("bifrost-api")
 
     # Initialize database
     logger.info("Initializing database connection...")
