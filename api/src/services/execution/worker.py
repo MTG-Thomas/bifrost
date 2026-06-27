@@ -110,6 +110,19 @@ def _annotate_worker_span(span: Any, result: dict[str, Any]) -> None:
         span.set_attribute("bifrost.worker.cpu_total_seconds", float(metrics.get("cpu_total_seconds") or 0.0))
 
 
+def _queue_wait_ms(created_at: str | None, now: datetime | None = None) -> int | None:
+    if not created_at:
+        return None
+    try:
+        enqueued_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if enqueued_at.tzinfo is None:
+        enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
+    observed_at = now or datetime.now(timezone.utc)
+    return max(0, int((observed_at - enqueued_at).total_seconds() * 1000))
+
+
 def _setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
     def handle_sigterm(signum, frame):
@@ -194,6 +207,9 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         "bifrost.worker.has_file_path": bool(context_data.get("file_path")),
         "bifrost.worker.solution_id": str(context_data.get("solution_id") or ""),
     }
+    queue_wait_ms = _queue_wait_ms(context_data.get("created_at"))
+    if queue_wait_ms is not None:
+        span_attributes["bifrost.queue.wait_ms"] = queue_wait_ms
 
     span_context = tracer.start_as_current_span("bifrost.worker.execute", attributes=span_attributes)
     span = span_context.__enter__()
