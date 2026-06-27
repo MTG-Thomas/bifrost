@@ -149,9 +149,9 @@ jobs:
   # Dev Build - Every push to main, gated by unit tests only
   # =============================================================================
   build-dev:
-    # Only fires on push: main — branch protection + merge queue
-    # already gated this commit, so no needs: here.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Fires on push: main for normal dev images and on workflow_dispatch for
+    # temporary proof builds from an explicitly selected branch.
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     name: Build Dev Images
     permissions:
@@ -220,8 +220,8 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ env.API_IMAGE }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ env.API_IMAGE }}:dev
             ghcr.io/${{ env.API_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
+            ghcr.io/${{ env.API_IMAGE }}:cncf-${{ steps.version.outputs.short_sha }}
           build-args: |
             BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
@@ -251,8 +251,8 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ env.WORKER_IMAGE }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ env.WORKER_IMAGE }}:dev
             ghcr.io/${{ env.WORKER_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
+            ghcr.io/${{ env.WORKER_IMAGE }}:cncf-${{ steps.version.outputs.short_sha }}
           build-args: |
             BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
@@ -283,8 +283,8 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ env.CLIENT_IMAGE }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ env.CLIENT_IMAGE }}:dev
             ghcr.io/${{ env.CLIENT_IMAGE }}:sha-${{ steps.version.outputs.short_sha }}
+            ghcr.io/${{ env.CLIENT_IMAGE }}:cncf-${{ steps.version.outputs.short_sha }}
           build-args: |
             VITE_BIFROST_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha

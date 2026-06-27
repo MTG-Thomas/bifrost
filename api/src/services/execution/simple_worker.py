@@ -303,6 +303,9 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
     Returns:
         Result dict with success, result, error, duration_ms, etc.
     """
+    from src.core.telemetry import configure_opentelemetry
+    configure_opentelemetry("bifrost-worker", span_processor="simple")
+
     try:
         result = asyncio.run(_execute_async(execution_id, worker_id))
         return result

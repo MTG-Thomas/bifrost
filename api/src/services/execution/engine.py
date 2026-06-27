@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, get_type_hints, get_origin, get_args, Union
 
 from pydantic import BaseModel
+from opentelemetry import trace
 
 from src.sdk.context import Caller, ExecutionContext, Organization
 from src.sdk.error_handling import WorkflowError
@@ -25,6 +26,7 @@ from src.core.cache import get_cached_data_provider, cache_data_provider_result
 from src.core.secret_string import redact_secrets
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 def _human_size(num_bytes: int) -> str:
@@ -1077,8 +1079,26 @@ async def _execute_workflow_with_trace(
         # Set up trace function for variable capture
         sys.settrace(chained_trace_func if existing_trace else trace_func)
         try:
-            # Run the workflow directly - isolation is provided by subprocess
-            result = await _run_workflow_async()
+            span_attributes = {
+                "bifrost.execution.id": execution_id or context.execution_id,
+                "bifrost.workflow.name": context.workflow_name or func_name,
+                "bifrost.workflow.function": func_name,
+                "bifrost.execution.scope": context.scope,
+                "bifrost.execution.organization_id": context.org_id or "",
+                "bifrost.execution.is_platform_admin": context.is_platform_admin,
+            }
+            with tracer.start_as_current_span(
+                "bifrost.workflow.execute",
+                attributes=span_attributes,
+            ) as span:
+                try:
+                    # Run the workflow directly - isolation is provided by subprocess
+                    result = await _run_workflow_async()
+                    span.set_attribute("bifrost.execution.status", ExecutionStatus.SUCCESS.value)
+                except Exception as exc:
+                    span.set_attribute("bifrost.execution.status", ExecutionStatus.FAILED.value)
+                    span.set_attribute("bifrost.execution.error_type", type(exc).__name__)
+                    raise
         finally:
             # Clear trace function
             sys.settrace(None)
