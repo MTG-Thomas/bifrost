@@ -18,6 +18,8 @@ import logging
 import uuid
 from typing import Any
 
+from opentelemetry import trace
+
 from src.core.constants import SYSTEM_USER_ID, SYSTEM_USER_EMAIL
 from src.core.log_safety import log_safe
 from src.core.redis_client import get_redis_client
@@ -26,6 +28,7 @@ from src.sdk.context import EventContext, ExecutionContext
 from src.services.execution.queue_tracker import add_to_queue
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 QUEUE_NAME = "workflow-executions"
 
@@ -54,41 +57,61 @@ async def _publish_pending(
     execution promoter. Callers are responsible for generating execution_id
     before calling this helper.
     """
-    redis_client = get_redis_client()
-
-    # Store pending execution in Redis (worker needs this for execution context)
-    await redis_client.set_pending_execution(
-        execution_id=execution_id,
-        workflow_id=workflow_id,
-        parameters=parameters,
-        org_id=org_id,
-        user_id=user_id,
-        user_name=user_name,
-        user_email=user_email,
-        form_id=form_id,
-        startup=startup,
-        api_key_id=api_key_id,
-        sync=sync,
-        is_platform_admin=is_platform_admin,
-        event=event,
-    )
-
-    # Add to queue tracking (publishes position updates to all queued executions)
-    await add_to_queue(execution_id)
-
-    # Prepare queue message (minimal - worker reads full context from Redis)
-    message: dict[str, Any] = {
-        "execution_id": execution_id,
-        "workflow_id": workflow_id,
-        "sync": sync,
+    span_attributes = {
+        "bifrost.execution.id": execution_id,
+        "bifrost.workflow.id": workflow_id or "",
+        "bifrost.execution.organization_id": org_id or "",
+        "bifrost.execution.sync": sync,
+        "bifrost.execution.is_platform_admin": is_platform_admin,
+        "bifrost.execution.has_file_path": bool(file_path),
+        "messaging.system": "rabbitmq",
+        "messaging.destination.name": QUEUE_NAME,
     }
+    if event:
+        span_attributes["bifrost.execution.event.source"] = str(event.get("source") or "")
 
-    # Include file_path for fast direct loading (avoids filesystem scan)
-    if file_path:
-        message["file_path"] = file_path
+    with tracer.start_as_current_span("bifrost.workflow.enqueue", attributes=span_attributes) as span:
+        try:
+            redis_client = get_redis_client()
 
-    # Enqueue message via RabbitMQ
-    await publish_message(QUEUE_NAME, message)
+            # Store pending execution in Redis (worker needs this for execution context)
+            await redis_client.set_pending_execution(
+                execution_id=execution_id,
+                workflow_id=workflow_id,
+                parameters=parameters,
+                org_id=org_id,
+                user_id=user_id,
+                user_name=user_name,
+                user_email=user_email,
+                form_id=form_id,
+                startup=startup,
+                api_key_id=api_key_id,
+                sync=sync,
+                is_platform_admin=is_platform_admin,
+                event=event,
+            )
+
+            # Add to queue tracking (publishes position updates to all queued executions)
+            await add_to_queue(execution_id)
+
+            # Prepare queue message (minimal - worker reads full context from Redis)
+            message: dict[str, Any] = {
+                "execution_id": execution_id,
+                "workflow_id": workflow_id,
+                "sync": sync,
+            }
+
+            # Include file_path for fast direct loading (avoids filesystem scan)
+            if file_path:
+                message["file_path"] = file_path
+
+            # Enqueue message via RabbitMQ
+            await publish_message(QUEUE_NAME, message)
+            span.set_attribute("bifrost.execution.enqueue.status", "queued")
+        except Exception as exc:
+            span.set_attribute("bifrost.execution.enqueue.status", "failed")
+            span.set_attribute("bifrost.execution.error_type", type(exc).__name__)
+            raise
 
 
 async def enqueue_workflow_execution(
