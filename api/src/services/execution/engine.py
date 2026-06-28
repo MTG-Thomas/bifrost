@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import time
 from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, get_type_hints, get_origin, get_args, Union
 
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from pydantic import BaseModel
 
 from src.sdk.context import Caller, ExecutionContext, Organization
@@ -27,6 +28,17 @@ from src.core.secret_string import redact_secrets
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+meter = metrics.get_meter(__name__)
+workflow_execution_counter = meter.create_counter(
+    "bifrost.workflow.executions",
+    unit="1",
+    description="Workflow executions completed by status.",
+)
+workflow_execution_duration = meter.create_histogram(
+    "bifrost.workflow.execution.duration",
+    unit="ms",
+    description="Workflow execution duration in milliseconds.",
+)
 
 
 def _human_size(num_bytes: int) -> str:
@@ -1081,6 +1093,13 @@ async def _execute_workflow_with_trace(
                 "bifrost.execution.organization_id": context.org_id or "",
                 "bifrost.execution.is_platform_admin": context.is_platform_admin,
             }
+            metric_attributes = {
+                "bifrost.workflow.name": context.workflow_name or func_name,
+                "bifrost.workflow.function": func_name,
+                "bifrost.execution.scope": context.scope,
+                "bifrost.execution.is_platform_admin": context.is_platform_admin,
+            }
+            start_time = time.perf_counter()
             with tracer.start_as_current_span(
                 "bifrost.workflow.execute",
                 attributes=span_attributes,
@@ -1089,9 +1108,37 @@ async def _execute_workflow_with_trace(
                     # Run the workflow directly - isolation is provided by subprocess
                     result = await _run_workflow_async()
                     span.set_attribute("bifrost.execution.status", ExecutionStatus.SUCCESS.value)
+                    workflow_execution_counter.add(
+                        1,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.SUCCESS.value,
+                        },
+                    )
+                    workflow_execution_duration.record(
+                        (time.perf_counter() - start_time) * 1000,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.SUCCESS.value,
+                        },
+                    )
                 except Exception as exc:
                     span.set_attribute("bifrost.execution.status", ExecutionStatus.FAILED.value)
                     span.set_attribute("bifrost.execution.error_type", type(exc).__name__)
+                    workflow_execution_counter.add(
+                        1,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.FAILED.value,
+                        },
+                    )
+                    workflow_execution_duration.record(
+                        (time.perf_counter() - start_time) * 1000,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.FAILED.value,
+                        },
+                    )
                     raise
         finally:
             # Clear trace function
