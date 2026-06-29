@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from src.models.enums import ExecutionStatus
@@ -32,6 +34,22 @@ class _FakeTracer:
         return span
 
 
+class _FakeCounter:
+    def __init__(self):
+        self.calls: list[tuple[int, dict]] = []
+
+    def add(self, value: int, *, attributes: dict):
+        self.calls.append((value, dict(attributes)))
+
+
+class _FakeHistogram:
+    def __init__(self):
+        self.calls: list[tuple[float, dict]] = []
+
+    def record(self, value: float, *, attributes: dict):
+        self.calls.append((value, dict(attributes)))
+
+
 def _context() -> ExecutionContext:
     return ExecutionContext(
         user_id="user-1",
@@ -46,10 +64,28 @@ def _context() -> ExecutionContext:
     )
 
 
+def _global_context() -> ExecutionContext:
+    return ExecutionContext(
+        user_id="user-1",
+        email="user@example.com",
+        name="User One",
+        scope=None,
+        organization=None,
+        is_platform_admin=True,
+        is_function_key=False,
+        execution_id="exec-1",
+        workflow_name="status_snapshot",
+    )
+
+
 @pytest.mark.asyncio
 async def test_workflow_execution_emits_success_span(monkeypatch):
     fake_tracer = _FakeTracer()
+    fake_counter = _FakeCounter()
+    fake_duration = _FakeHistogram()
     monkeypatch.setattr(engine, "tracer", fake_tracer)
+    monkeypatch.setattr(engine, "workflow_execution_counter", fake_counter)
+    monkeypatch.setattr(engine, "workflow_execution_duration", fake_duration)
 
     async def workflow(context):
         return {"ok": True}
@@ -70,12 +106,97 @@ async def test_workflow_execution_emits_success_span(monkeypatch):
     assert span.attributes["bifrost.workflow.function"] == "workflow"
     assert span.attributes["bifrost.execution.organization_id"] == "org-1"
     assert span.attributes["bifrost.execution.status"] == ExecutionStatus.SUCCESS.value
+    assert fake_counter.calls == [
+        (
+            1,
+            {
+                "bifrost.workflow.name": "status_snapshot",
+                "bifrost.workflow.function": "workflow",
+                "bifrost.execution.scope": "org-1",
+                "bifrost.execution.is_platform_admin": False,
+                "bifrost.execution.status": ExecutionStatus.SUCCESS.value,
+            },
+        )
+    ]
+    assert len(fake_duration.calls) == 1
+    duration, attributes = fake_duration.calls[0]
+    assert duration >= 0
+    assert attributes["bifrost.execution.status"] == ExecutionStatus.SUCCESS.value
+
+
+@pytest.mark.asyncio
+async def test_workflow_execution_metrics_use_global_scope_for_missing_scope(monkeypatch):
+    fake_tracer = _FakeTracer()
+    fake_counter = _FakeCounter()
+    fake_duration = _FakeHistogram()
+    monkeypatch.setattr(engine, "tracer", fake_tracer)
+    monkeypatch.setattr(engine, "workflow_execution_counter", fake_counter)
+    monkeypatch.setattr(engine, "workflow_execution_duration", fake_duration)
+
+    async def workflow(context):
+        return {"ok": True}
+
+    await engine._execute_workflow_with_trace(
+        workflow,
+        _global_context(),
+        {},
+        execution_id="exec-1",
+    )
+
+    assert fake_counter.calls[0][1]["bifrost.execution.scope"] == "GLOBAL"
+    assert fake_duration.calls[0][1]["bifrost.execution.scope"] == "GLOBAL"
+    assert fake_tracer.spans[0].attributes["bifrost.execution.scope"] == "GLOBAL"
+
+
+@pytest.mark.asyncio
+async def test_workflow_execution_emits_cancelled_metrics(monkeypatch):
+    fake_tracer = _FakeTracer()
+    fake_counter = _FakeCounter()
+    fake_duration = _FakeHistogram()
+    monkeypatch.setattr(engine, "tracer", fake_tracer)
+    monkeypatch.setattr(engine, "workflow_execution_counter", fake_counter)
+    monkeypatch.setattr(engine, "workflow_execution_duration", fake_duration)
+
+    async def workflow(context):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await engine._execute_workflow_with_trace(
+            workflow,
+            _context(),
+            {},
+        )
+
+    assert len(fake_tracer.spans) == 1
+    span = fake_tracer.spans[0]
+    assert span.attributes["bifrost.execution.status"] == ExecutionStatus.CANCELLED.value
+    assert span.attributes["bifrost.execution.error_type"] == "CancelledError"
+    assert fake_counter.calls == [
+        (
+            1,
+            {
+                "bifrost.workflow.name": "status_snapshot",
+                "bifrost.workflow.function": "workflow",
+                "bifrost.execution.scope": "org-1",
+                "bifrost.execution.is_platform_admin": False,
+                "bifrost.execution.status": ExecutionStatus.CANCELLED.value,
+            },
+        )
+    ]
+    assert len(fake_duration.calls) == 1
+    duration, attributes = fake_duration.calls[0]
+    assert duration >= 0
+    assert attributes["bifrost.execution.status"] == ExecutionStatus.CANCELLED.value
 
 
 @pytest.mark.asyncio
 async def test_workflow_execution_emits_failed_span(monkeypatch):
     fake_tracer = _FakeTracer()
+    fake_counter = _FakeCounter()
+    fake_duration = _FakeHistogram()
     monkeypatch.setattr(engine, "tracer", fake_tracer)
+    monkeypatch.setattr(engine, "workflow_execution_counter", fake_counter)
+    monkeypatch.setattr(engine, "workflow_execution_duration", fake_duration)
 
     async def workflow(context):
         raise RuntimeError("boom")
@@ -92,3 +213,19 @@ async def test_workflow_execution_emits_failed_span(monkeypatch):
     assert span.attributes["bifrost.execution.id"] == "exec-1"
     assert span.attributes["bifrost.execution.status"] == ExecutionStatus.FAILED.value
     assert span.attributes["bifrost.execution.error_type"] == "RuntimeError"
+    assert fake_counter.calls == [
+        (
+            1,
+            {
+                "bifrost.workflow.name": "status_snapshot",
+                "bifrost.workflow.function": "workflow",
+                "bifrost.execution.scope": "org-1",
+                "bifrost.execution.is_platform_admin": False,
+                "bifrost.execution.status": ExecutionStatus.FAILED.value,
+            },
+        )
+    ]
+    assert len(fake_duration.calls) == 1
+    duration, attributes = fake_duration.calls[0]
+    assert duration >= 0
+    assert attributes["bifrost.execution.status"] == ExecutionStatus.FAILED.value
