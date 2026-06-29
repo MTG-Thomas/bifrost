@@ -348,6 +348,10 @@ import { useAppState, Button, useNavigate } from "bifrost";
 export default function ClientsList() {
   const [, setSelected] = useAppState<any>("selectedClient", null);
   const navigate = useNavigate();
+  const clients = [
+    { id: "1", name: "Acme" },
+    { id: "2", name: "Globex" },
+  ];
   return clients.map((c) => (
     <Button key={c.id} onClick={() => { setSelected(c); navigate("/client-details"); }}>
       {c.name}

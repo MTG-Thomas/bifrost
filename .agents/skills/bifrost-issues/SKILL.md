@@ -79,13 +79,16 @@ Once the issue exists:
 git fetch origin main
 git log --oneline main..origin/main   # if non-empty, warn and offer to pull
 
+# Resolve the primary repo root from any linked worktree
+REPO_ROOT="$(dirname "$(git rev-parse --git-common-dir)")"
+WORKTREE="$REPO_ROOT/.worktrees/<issue-num>-<short-slug>"
+
 # Create the worktree (absolute path)
-git worktree add -b <issue-num>-<short-slug> \
-  /home/jack/GitHub/bifrost/.worktrees/<issue-num>-<short-slug> origin/main
+git worktree add -b <issue-num>-<short-slug> "$WORKTREE" origin/main
 
 # Node deps in the worktree (needed for vitest/tsc/lint).
 # This `cd` will leak into later Bash calls — keep using absolute paths after.
-cd /home/jack/GitHub/bifrost/.worktrees/<slug>/client && npm ci
+cd "$WORKTREE/client" && npm ci
 ```
 
 **Conventions:**
@@ -217,7 +220,7 @@ git branch -d <issue-num>-<slug>
 git push origin --delete <issue-num>-<slug>   # if --delete-branch=false was used at merge time
 ```
 
-Then `cd` back to the main checkout (`/home/jack/GitHub/bifrost`) so subsequent commands target main and not a stale worktree path.
+Then `cd` back to the main checkout (`$(dirname "$(git rev-parse --git-common-dir)")`) so subsequent commands target main and not a stale worktree path.
 
 ## Behavior: Batch Triage
 

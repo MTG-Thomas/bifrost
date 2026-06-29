@@ -47,18 +47,29 @@ def reverse_dns(name: str) -> str:
     return f"com.bifrost.{kebab(name).replace('-', '')}"
 
 
-def get_bifrost_host() -> str:
-    """Resolve the Bifrost API host the CLI is currently pointed at."""
+def _mcp_base_from_api_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme or "https"
+    if parsed.hostname:
+        host = parsed.hostname
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return f"{scheme}://{host}"
+    return url.rstrip("/")
+
+
+def get_bifrost_mcp_base() -> str:
+    """Resolve the Bifrost MCP base URL (scheme + host[:port]) from CLI config."""
     env = os.environ.get("BIFROST_API_URL")
     if env:
-        return urllib.parse.urlparse(env).hostname or env
+        return _mcp_base_from_api_url(env)
     out = subprocess.run(
         ["bifrost", "auth", "list"], check=True, capture_output=True, text=True,
     ).stdout
     for line in out.splitlines():
         if "(current" in line:
             url = line.strip().split()[0]
-            return urllib.parse.urlparse(url).hostname or url
+            return _mcp_base_from_api_url(url)
     raise RuntimeError(
         "Could not determine the current Bifrost host from `bifrost auth list`. "
         "Pass --bifrost-host explicitly or set BIFROST_API_URL."
@@ -275,8 +286,10 @@ def main() -> int:
 
     agent = get_agent(args.ref)
     app_id = args.app_id or str(uuid.uuid5(COWORK_NAMESPACE, agent["id"]))
-    host = args.bifrost_host or get_bifrost_host()
-    mcp_url = f"https://{host}/mcp/{agent['id']}"
+    if args.bifrost_host:
+        mcp_url = f"https://{args.bifrost_host}/mcp/{agent['id']}"
+    else:
+        mcp_url = f"{get_bifrost_mcp_base()}/mcp/{agent['id']}"
 
     src_cleanup: Path | None = None
     src_skill_dir: Path | None = None
