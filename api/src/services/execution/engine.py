@@ -1096,7 +1096,7 @@ async def _execute_workflow_with_trace(
             metric_attributes = {
                 "bifrost.workflow.name": context.workflow_name or func_name,
                 "bifrost.workflow.function": func_name,
-                "bifrost.execution.scope": context.scope,
+                "bifrost.execution.scope": context.scope or "GLOBAL",
                 "bifrost.execution.is_platform_admin": context.is_platform_admin,
             }
             start_time = time.perf_counter()

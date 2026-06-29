@@ -62,6 +62,20 @@ def _context() -> ExecutionContext:
     )
 
 
+def _global_context() -> ExecutionContext:
+    return ExecutionContext(
+        user_id="user-1",
+        email="user@example.com",
+        name="User One",
+        scope=None,
+        organization=None,
+        is_platform_admin=True,
+        is_function_key=False,
+        execution_id="exec-1",
+        workflow_name="status_snapshot",
+    )
+
+
 @pytest.mark.asyncio
 async def test_workflow_execution_emits_success_span(monkeypatch):
     fake_tracer = _FakeTracer()
@@ -106,6 +120,29 @@ async def test_workflow_execution_emits_success_span(monkeypatch):
     duration, attributes = fake_duration.calls[0]
     assert duration >= 0
     assert attributes["bifrost.execution.status"] == ExecutionStatus.SUCCESS.value
+
+
+@pytest.mark.asyncio
+async def test_workflow_execution_metrics_use_global_scope_for_missing_scope(monkeypatch):
+    fake_tracer = _FakeTracer()
+    fake_counter = _FakeCounter()
+    fake_duration = _FakeHistogram()
+    monkeypatch.setattr(engine, "tracer", fake_tracer)
+    monkeypatch.setattr(engine, "workflow_execution_counter", fake_counter)
+    monkeypatch.setattr(engine, "workflow_execution_duration", fake_duration)
+
+    async def workflow(context):
+        return {"ok": True}
+
+    await engine._execute_workflow_with_trace(
+        workflow,
+        _global_context(),
+        {},
+        execution_id="exec-1",
+    )
+
+    assert fake_counter.calls[0][1]["bifrost.execution.scope"] == "GLOBAL"
+    assert fake_duration.calls[0][1]["bifrost.execution.scope"] == "GLOBAL"
 
 
 @pytest.mark.asyncio
