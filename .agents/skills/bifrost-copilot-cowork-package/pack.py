@@ -55,7 +55,7 @@ def _mcp_base_from_api_url(url: str) -> str:
         if parsed.port is not None:
             host = f"{host}:{parsed.port}"
         return f"{scheme}://{host}"
-    return url.rstrip("/")
+    return f"https://{url.rstrip('/')}"
 
 
 def get_bifrost_mcp_base() -> str:
