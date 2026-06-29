@@ -3,6 +3,7 @@ Unified Execution Engine
 Single source of truth for all code execution (workflows, scripts, data providers)
 """
 
+import asyncio
 import inspect
 import json
 import logging
@@ -1085,18 +1086,19 @@ async def _execute_workflow_with_trace(
         # Set up trace function for variable capture
         sys.settrace(chained_trace_func if existing_trace else trace_func)
         try:
+            execution_scope = context.scope or "GLOBAL"
             span_attributes = {
                 "bifrost.execution.id": execution_id or context.execution_id,
                 "bifrost.workflow.name": context.workflow_name or func_name,
                 "bifrost.workflow.function": func_name,
-                "bifrost.execution.scope": context.scope,
+                "bifrost.execution.scope": execution_scope,
                 "bifrost.execution.organization_id": context.org_id or "",
                 "bifrost.execution.is_platform_admin": context.is_platform_admin,
             }
             metric_attributes = {
                 "bifrost.workflow.name": context.workflow_name or func_name,
                 "bifrost.workflow.function": func_name,
-                "bifrost.execution.scope": context.scope or "GLOBAL",
+                "bifrost.execution.scope": execution_scope,
                 "bifrost.execution.is_platform_admin": context.is_platform_admin,
             }
             start_time = time.perf_counter()
@@ -1122,6 +1124,24 @@ async def _execute_workflow_with_trace(
                             "bifrost.execution.status": ExecutionStatus.SUCCESS.value,
                         },
                     )
+                except asyncio.CancelledError:
+                    span.set_attribute("bifrost.execution.status", ExecutionStatus.CANCELLED.value)
+                    span.set_attribute("bifrost.execution.error_type", "CancelledError")
+                    workflow_execution_counter.add(
+                        1,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.CANCELLED.value,
+                        },
+                    )
+                    workflow_execution_duration.record(
+                        (time.perf_counter() - start_time) * 1000,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.CANCELLED.value,
+                        },
+                    )
+                    raise
                 except Exception as exc:
                     span.set_attribute("bifrost.execution.status", ExecutionStatus.FAILED.value)
                     span.set_attribute("bifrost.execution.error_type", type(exc).__name__)
