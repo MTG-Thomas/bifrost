@@ -20,8 +20,6 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from aiobotocore.session import get_session
-
 from src.config import Settings, get_settings
 from src.core.log_safety import log_safe
 
@@ -37,18 +35,22 @@ class AppStorageService:
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or get_settings()
-        self._bucket: str = self._settings.s3_bucket or ""
+        if self._settings.object_storage_provider == "azure_blob":
+            from src.services.file_storage.azure_blob_client import (
+                AzureBlobStorageClient,
+            )
+
+            self._storage = AzureBlobStorageClient(self._settings)
+            self._bucket = self._settings.azure_blob_container or ""
+        else:
+            from src.services.file_storage.s3_client import S3StorageClient
+
+            self._storage = S3StorageClient(self._settings)
+            self._bucket = self._settings.s3_bucket or ""
 
     @asynccontextmanager
     async def _get_client(self):
-        session = get_session()
-        async with session.create_client(
-            "s3",
-            endpoint_url=self._settings.s3_endpoint_url,
-            aws_access_key_id=self._settings.s3_access_key,
-            aws_secret_access_key=self._settings.s3_secret_key,
-            region_name=self._settings.s3_region,
-        ) as client:
+        async with self._storage.get_client() as client:
             yield client
 
     def _key(self, app_id: str, mode: AppMode, relative_path: str = "") -> str:
