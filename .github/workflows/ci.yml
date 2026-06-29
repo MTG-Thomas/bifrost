@@ -42,7 +42,7 @@ jobs:
         run: python3 api/scripts/check_mtg_ci_boundaries.py
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
 
@@ -350,7 +350,7 @@ jobs:
             ghcr.io/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
 
       - name: Attest API dev image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
@@ -381,7 +381,7 @@ jobs:
             ghcr.io/${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
 
       - name: Attest worker dev image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/${{ env.WORKER_IMAGE }}
           subject-digest: ${{ steps.build-worker.outputs.digest }}
@@ -413,7 +413,7 @@ jobs:
             ghcr.io/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
 
       - name: Attest client dev image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
@@ -717,7 +717,7 @@ jobs:
             ghcr.io/${{ env.API_IMAGE }}@${{ steps.build-api.outputs.digest }}
 
       - name: Attest API image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build-api.outputs.digest }}
@@ -822,7 +822,7 @@ jobs:
             ghcr.io/${{ env.CLIENT_IMAGE }}@${{ steps.build-client.outputs.digest }}
 
       - name: Attest client image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/${{ env.CLIENT_IMAGE }}
           subject-digest: ${{ steps.build-client.outputs.digest }}
@@ -926,7 +926,7 @@ jobs:
             ghcr.io/${{ env.WORKER_IMAGE }}@${{ steps.build-worker.outputs.digest }}
 
       - name: Attest worker image provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/${{ env.WORKER_IMAGE }}
           subject-digest: ${{ steps.build-worker.outputs.digest }}
@@ -1012,12 +1012,12 @@ jobs:
       # discoverable via `gh attestation verify`. Independent signal from the
       # cosign blob signatures above.
       - name: Generate SLSA build provenance attestation
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: ${{ steps.source_tarball.outputs.tarball }}
 
       - name: Create release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ steps.get_version.outputs.version }}
           name: Release ${{ steps.get_version.outputs.version }}
