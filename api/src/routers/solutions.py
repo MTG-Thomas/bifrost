@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
@@ -80,6 +80,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/solutions", tags=["Solutions"])
 
+# Matches CLI/deploy build timeouts; only jobs idle longer than this are treated
+# as orphaned on startup so a rolling deploy does not fail live jobs on peers.
+DEPLOY_ORPHAN_GRACE_SECONDS = 600
+
+
 async def reconcile_orphaned_deploy_jobs(
     db: AsyncSession,
     *,
@@ -87,9 +92,11 @@ async def reconcile_orphaned_deploy_jobs(
 ) -> int:
     """Fail in-process deploy jobs that cannot survive an API restart."""
     resolved_now = now or datetime.now(timezone.utc)
+    stale_before = resolved_now - timedelta(seconds=DEPLOY_ORPHAN_GRACE_SECONDS)
     result = await db.execute(
         select(SolutionDeployJob).where(
             SolutionDeployJob.status.in_(("queued", "running")),
+            SolutionDeployJob.updated_at < stale_before,
         )
     )
     jobs = list(result.scalars().all())

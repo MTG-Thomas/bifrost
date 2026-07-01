@@ -54,7 +54,7 @@ class _DeployResult:
         return self._payload
 
 
-def wait_for_deploy(e2e_client, post_resp, headers, *, timeout_s: float = 30.0):
+def wait_for_deploy(e2e_client, post_resp, headers, *, timeout_s: float = 600.0):
     """Given a deploy POST response, return a terminal-state shim.
 
     A synchronous error (non-202 — git-connected, pending-capture block,

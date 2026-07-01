@@ -45,11 +45,10 @@ async def test_reconcile_orphaned_deploy_jobs_fails_non_terminal_jobs(db_session
 
     changed = await reconcile_orphaned_deploy_jobs(db_session, now=now)
 
-    assert changed == 3
+    assert changed == 2
     assert stale_queued.status == "failed"
     assert stale_running.status == "failed"
-    assert fresh_queued.status == "failed"
+    assert fresh_queued.status == "queued"
     assert "API restarted" in (stale_queued.error or "")
     assert "API restarted" in (stale_running.error or "")
-    assert "API restarted" in (fresh_queued.error or "")
     assert succeeded.status == "succeeded"
