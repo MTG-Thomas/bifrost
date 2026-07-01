@@ -78,13 +78,24 @@ export function WorkersTab() {
         let totalForks = 0;
         let totalCapacity = 0;
         let totalBusy = 0;
+        let allCapacityKnown = true;
         for (const pool of pools) {
             const counts = getPoolCounts(pool);
             totalForks += counts.total;
-            totalCapacity += counts.capacity;
+            if (counts.capacity == null) {
+                allCapacityKnown = false;
+            } else {
+                totalCapacity += counts.capacity;
+            }
             totalBusy += counts.busy;
         }
-        return { containers: pools.length, forks: totalForks, capacity: totalCapacity, busy: totalBusy };
+        return {
+            containers: pools.length,
+            forks: totalForks,
+            capacity: totalCapacity,
+            busy: totalBusy,
+            allCapacityKnown,
+        };
     }, [pools]);
 
     return (
@@ -125,7 +136,10 @@ export function WorkersTab() {
                 <div className="flex items-center gap-3">
                     <span className="text-sm text-muted-foreground">
                         {stats.containers} container{stats.containers !== 1 ? "s" : ""}{" "}
-                        &middot; {stats.forks}/{stats.capacity} active forks
+                        &middot;{" "}
+                        {stats.allCapacityKnown
+                            ? `${stats.forks}/${stats.capacity} active forks`
+                            : `${stats.forks} active forks`}
                     </span>
                     <Button
                         variant="outline"
