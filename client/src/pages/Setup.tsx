@@ -27,6 +27,7 @@ import {
 import { Loader2, Mail, User } from "lucide-react";
 import { motion } from "framer-motion";
 import { Logo } from "@/components/branding/Logo";
+import { useApplicationName } from "@/lib/applicationName";
 import { toast } from "sonner";
 import { AuthSetupSteps } from "@/components/auth/AuthSetupSteps";
 
@@ -34,11 +35,12 @@ type SetupMode = "choose" | "auth";
 
 export function Setup() {
 	const navigate = useNavigate();
+	const applicationName = useApplicationName();
 	const {
 		needsSetup,
 		isLoading: authLoading,
 		checkAuthStatus,
-		loginWithPasskey,
+		completeLoginWithToken,
 	} = useAuth();
 
 	const [isLoading, setIsLoading] = useState(false);
@@ -59,13 +61,15 @@ export function Setup() {
 		setError(null);
 		setIsLoading(true);
 		try {
-			await setupWithPasskey(email, name);
+			const result = await setupWithPasskey(email, name);
+			completeLoginWithToken(result.access_token);
 			await checkAuthStatus();
-			await loginWithPasskey(email);
 			toast.success("Account created successfully!");
 			navigate("/");
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "Passkey setup failed");
+			setError(
+				err instanceof Error ? err.message : "Passkey setup failed",
+			);
 			setIsLoading(false);
 		}
 	};
@@ -76,9 +80,13 @@ export function Setup() {
 		try {
 			await registerUser(email, password, name);
 			await checkAuthStatus();
-			navigate("/login", { state: { message: "Account created! Please sign in." } });
+			navigate("/login", {
+				state: { message: "Account created! Please sign in." },
+			});
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "Account creation failed");
+			setError(
+				err instanceof Error ? err.message : "Account creation failed",
+			);
 			setIsLoading(false);
 		}
 	};
@@ -127,7 +135,10 @@ export function Setup() {
 				type="button"
 				className="w-full mt-2"
 				disabled={!email}
-				onClick={() => { setError(null); setMode("auth"); }}
+				onClick={() => {
+					setError(null);
+					setMode("auth");
+				}}
 			>
 				Continue
 			</Button>
@@ -153,12 +164,12 @@ export function Setup() {
 							<Logo
 								type="square"
 								className="h-16 w-16"
-								alt="Bifrost"
+								alt={applicationName}
 							/>
 						</motion.div>
 						<div className="space-y-1">
 							<CardTitle className="text-2xl font-bold tracking-tight">
-								Welcome to Bifrost
+								Welcome to {applicationName}
 							</CardTitle>
 							<CardDescription className="text-base">
 								{mode === "choose" &&

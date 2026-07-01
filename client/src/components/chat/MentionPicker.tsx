@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useState, useMemo } from "react";
-import { Bot, Check } from "lucide-react";
+import { Bot } from "lucide-react";
 import {
 	Command,
 	CommandEmpty,
@@ -21,6 +21,7 @@ import {
 	PopoverAnchor,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { term, useTerminology } from "@/lib/terminology";
 import { useAgents } from "@/hooks/useAgents";
 import type { components } from "@/lib/v1";
 
@@ -41,6 +42,7 @@ export function MentionPicker({
 	searchTerm,
 	position,
 }: MentionPickerProps) {
+	const terminology = useTerminology();
 	const { data: agents } = useAgents();
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const listRef = useRef<HTMLDivElement>(null);
@@ -90,7 +92,10 @@ export function MentionPicker({
 			} else if (e.key === "ArrowUp") {
 				e.preventDefault();
 				setSelectedIndex((prev) => (prev > 0 ? prev - 1 : prev));
-			} else if (e.key === "Enter" && filteredAgents.length > 0) {
+			} else if (
+				(e.key === "Enter" || e.key === "Tab") &&
+				filteredAgents.length > 0
+			) {
 				e.preventDefault();
 				onSelect(filteredAgents[clampedIndex]);
 			} else if (e.key === "Escape") {
@@ -123,21 +128,26 @@ export function MentionPicker({
 			>
 				<Command>
 					<CommandInput
-						placeholder="Search agents..."
+						placeholder={`Search ${term(terminology, "agent", "pluralLower")}...`}
 						value={searchTerm}
 						className="h-9"
 					/>
 					<CommandList ref={listRef}>
-						<CommandEmpty>No agents found.</CommandEmpty>
-						<CommandGroup heading="Agents">
+						<CommandEmpty>
+							No {term(terminology, "agent", "pluralLower")} found.
+						</CommandEmpty>
+						<CommandGroup
+							heading={term(terminology, "agent", "plural")}
+						>
 							{filteredAgents.map((agent, index) => (
 								<CommandItem
 									key={agent.id}
 									value={agent.name}
+									data-checked={index === clampedIndex}
 									onSelect={() => onSelect(agent)}
 									className={cn(
 										"cursor-pointer",
-										index === clampedIndex && "bg-accent",
+										index === clampedIndex && "bg-muted",
 									)}
 								>
 									<Bot className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -149,9 +159,6 @@ export function MentionPicker({
 											</span>
 										)}
 									</div>
-									{index === clampedIndex && (
-										<Check className="ml-auto h-4 w-4" />
-									)}
 								</CommandItem>
 							))}
 						</CommandGroup>

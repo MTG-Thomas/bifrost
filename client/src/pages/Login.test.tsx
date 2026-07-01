@@ -41,6 +41,10 @@ vi.mock("@/components/branding/Logo", () => ({
 	Logo: () => <div aria-label="Bifrost" />,
 }));
 
+vi.mock("@/lib/applicationName", () => ({
+	useApplicationName: () => "Bifrost",
+}));
+
 describe("Login OAuth flow", () => {
 	const originalAssign = window.location.assign;
 

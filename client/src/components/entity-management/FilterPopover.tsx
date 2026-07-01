@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
 	Filter,
 	X,
-	Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +19,6 @@ import {
 	CommandList,
 	CommandSeparator,
 } from "@/components/ui/command";
-import { cn } from "@/lib/utils";
 import type { Organization } from "./types";
 
 export interface FilterPopoverProps {
@@ -68,7 +66,8 @@ export function FilterPopover({
 
 	const accessOptions = [
 		{ value: "all", label: "All Access Levels" },
-		{ value: "authenticated", label: "Authenticated" },
+		{ value: "authenticated", label: "Everyone except external users" },
+		{ value: "everyone", label: "Everyone" },
 		{ value: "role_based", label: "Role-based" },
 	];
 
@@ -102,16 +101,9 @@ export function FilterPopover({
 								<CommandItem
 									key={option.value}
 									value={option.label}
+									data-checked={typeFilter === option.value}
 									onSelect={() => setTypeFilter(option.value)}
 								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											typeFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
 									{option.label}
 								</CommandItem>
 							))}
@@ -122,16 +114,9 @@ export function FilterPopover({
 								<CommandItem
 									key={option.value}
 									value={option.label}
+									data-checked={orgFilter === option.value}
 									onSelect={() => setOrgFilter(option.value)}
 								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											orgFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
 									{option.label}
 								</CommandItem>
 							))}
@@ -142,16 +127,9 @@ export function FilterPopover({
 								<CommandItem
 									key={option.value}
 									value={option.label}
+									data-checked={accessFilter === option.value}
 									onSelect={() => setAccessFilter(option.value)}
 								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											accessFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
 									{option.label}
 								</CommandItem>
 							))}
@@ -162,16 +140,9 @@ export function FilterPopover({
 								<CommandItem
 									key={option.value}
 									value={option.label}
+									data-checked={usageFilter === option.value}
 									onSelect={() => setUsageFilter(option.value)}
 								>
-									<Check
-										className={cn(
-											"mr-2 h-4 w-4",
-											usageFilter === option.value
-												? "opacity-100"
-												: "opacity-0",
-										)}
-									/>
 									{option.label}
 								</CommandItem>
 							))}

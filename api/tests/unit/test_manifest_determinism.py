@@ -35,6 +35,7 @@ def _mock_workflow(wf_id=WF_ID, name="det_wf"):
     wf.public_endpoint = False
     wf.category = "General"
     wf.description = None
+    wf.tool_description = None
     wf.tags = []
     wf.is_active = True
     return wf
@@ -84,6 +85,7 @@ def _mock_app(app_id=APP_ID, name="det_app"):
     app.repo_path = f"apps/{app.slug}"
     app.organization_id = None
     app.access_level = "authenticated"
+    app.app_model = "inline_v1"
     app.description = None
     app.dependencies = None
     return app
@@ -122,6 +124,7 @@ def _mock_event_source(source_id=EVENT_SOURCE_ID, name="det_source"):
     es.id = source_id
     es.name = name
     es.source_type = "schedule"
+    es.event_type = None  # schedule sources have no topic key; set so MagicMock auto-attr doesn't bleed in
     es.organization_id = None
     es.is_active = True
     return es

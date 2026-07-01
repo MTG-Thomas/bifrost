@@ -8,15 +8,13 @@ ManifestResolver class and standalone import functions.
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import yaml
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
@@ -29,8 +27,6 @@ from bifrost.manifest import (
 )
 
 logger = logging.getLogger(__name__)
-
-RoleResolution = Literal["uuid", "name"]
 
 
 # =============================================================================
@@ -48,6 +44,15 @@ def _diff_and_collect(
         - changes: list of dicts with keys action, entity_type, name, organization
         - changed_ids: set of entity IDs that differ (includes integration-cascade)
     """
+    def _diff_dump(entity: object) -> dict:
+        data = entity.model_dump(mode="json", by_alias=True)
+        if "mappings" in data and isinstance(data["mappings"], list):
+            data["mappings"] = [
+                {k: v for k, v in mapping.items() if k != "oauth_token_id"}
+                for mapping in data["mappings"]
+            ]
+        return data
+
     # Build org ID → name lookup from both manifests
     org_lookup: dict[str, str] = {}
     for org in incoming.organizations:
@@ -67,15 +72,6 @@ def _diff_and_collect(
         if not oid:
             return "Global"
         return org_lookup.get(oid, oid) or "Global"
-
-    def _diff_dump(entity: object) -> dict:
-        data = entity.model_dump(mode="json", by_alias=True)
-        if "mappings" in data and isinstance(data["mappings"], list):
-            data["mappings"] = [
-                {k: v for k, v in mapping.items() if k != "oauth_token_id"}
-                for mapping in data["mappings"]
-            ]
-        return data
 
     changes: list[dict[str, str]] = []
     changed_ids: set[str] = set()
@@ -430,19 +426,30 @@ def _filter_manifest_to_scope(
         if _form_in_scope(v)
     }
 
+    def _agent_is_standalone(agent) -> bool:
+        """Inline agents with no workflow/delegation refs are owned by the manifest."""
+        return not (getattr(agent, "tool_ids", None) or getattr(agent, "delegated_agent_ids", None))
+
     scoped_agents = {
         k: v
         for k, v in manifest.agents.items()
-        if set(getattr(v, "tool_ids", []) or []) & present_workflow_ids
+        if (
+            _agent_is_standalone(v)
+            or set(getattr(v, "tool_ids", []) or []) & present_workflow_ids
+        )
     }
     while True:
-        present_agent_ids = {v.id for v in scoped_agents.values()}
+        delegated_agent_ids = {
+            agent_id
+            for v in scoped_agents.values()
+            for agent_id in (getattr(v, "delegated_agent_ids", []) or [])
+        }
         next_agents = {
             k: v
             for k, v in manifest.agents.items()
             if (
                 k in scoped_agents
-                or set(getattr(v, "delegated_agent_ids", []) or []) & present_agent_ids
+                or v.id in delegated_agent_ids
             )
         }
         if next_agents.keys() == scoped_agents.keys():
@@ -536,49 +543,17 @@ def _agent_has_inline_content(magent) -> bool:
 
 def _form_content_from_manifest(mform) -> bytes:
     """Build the YAML bytes the FormIndexer expects from a manifest form entry."""
-    data: dict = {"id": mform.id, "name": mform.name or ""}
-    if mform.description is not None:
-        data["description"] = mform.description
-    if mform.workflow_id is not None:
-        data["workflow_id"] = mform.workflow_id
-    if mform.launch_workflow_id is not None:
-        data["launch_workflow_id"] = mform.launch_workflow_id
-    if mform.default_launch_params is not None:
-        data["default_launch_params"] = mform.default_launch_params
-    if mform.allowed_query_params is not None:
-        data["allowed_query_params"] = mform.allowed_query_params
-    if mform.form_schema is not None:
-        data["form_schema"] = mform.form_schema
+    from bifrost.manifest_codec import Destination
+
+    data = mform.to_orm_values(Destination.GIT_SYNC).indexer_content
     return (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
 
 
 def _agent_content_from_manifest(magent) -> bytes:
     """Build the YAML bytes the AgentIndexer expects from a manifest agent entry."""
-    data: dict = {"id": magent.id, "name": magent.name or ""}
-    if magent.description is not None:
-        data["description"] = magent.description
-    if magent.system_prompt is not None:
-        data["system_prompt"] = magent.system_prompt
-    if magent.channels:
-        data["channels"] = list(magent.channels)
-    if magent.tool_ids:
-        data["tool_ids"] = list(magent.tool_ids)
-    if magent.delegated_agent_ids:
-        data["delegated_agent_ids"] = list(magent.delegated_agent_ids)
-    if magent.knowledge_sources:
-        data["knowledge_sources"] = list(magent.knowledge_sources)
-    if magent.system_tools:
-        data["system_tools"] = list(magent.system_tools)
-    if getattr(magent, "mcp_connection_ids", None):
-        data["mcp_connection_ids"] = list(magent.mcp_connection_ids)
-    if magent.llm_model is not None:
-        data["llm_model"] = magent.llm_model
-    if magent.llm_max_tokens is not None:
-        data["llm_max_tokens"] = magent.llm_max_tokens
-    if magent.max_iterations is not None:
-        data["max_iterations"] = magent.max_iterations
-    if magent.max_token_budget is not None:
-        data["max_token_budget"] = magent.max_token_budget
+    from bifrost.manifest_codec import Destination
+
+    data = magent.to_orm_values(Destination.GIT_SYNC).indexer_content
     return (yaml.dump(data, default_flow_style=False, sort_keys=True).rstrip() + "\n").encode("utf-8")
 
 
@@ -626,10 +601,28 @@ async def _resolve_agent_content(
 # =============================================================================
 
 
-async def _resolve_role_names(db: AsyncSession, names: list[str]) -> list[str]:
+async def _resolve_role_names(
+    db: AsyncSession,
+    names: list[str],
+    *,
+    create_missing: bool = False,
+    created_out: set[str] | None = None,
+) -> list[str]:
     """Resolve role display names to UUID strings against the target DB.
 
-    Fails loud on any unknown name. Returned list preserves input order.
+    Returned list preserves input order.
+
+    ``create_missing`` controls the unknown-name behavior:
+
+    * ``False`` (default, e.g. git-sync): fail loud — the role must already
+      exist in the target env.
+    * ``True`` (Solution install/deploy): auto-create any missing role as a
+      GLOBAL, empty role (no permissions, no members) and use it. An empty role
+      grants nobody anything until the operator assigns members, so this can't
+      expose anything; it just removes the "create every referenced role by
+      hand first" papercut. Created names are added to ``created_out`` (when
+      provided) so the caller can surface "created N new roles" — which also
+      makes a typo'd manifest role name visible rather than silently absorbed.
     """
     from src.models.orm.users import Role
 
@@ -641,334 +634,18 @@ async def _resolve_role_names(db: AsyncSession, names: list[str]) -> list[str]:
     for name in names:
         role_id = by_name.get(name)
         if role_id is None:
-            raise ValueError(f"unknown role: {name} — create it first in the target env.")
+            if not create_missing:
+                raise ValueError(f"unknown role: {name} — create it first in the target env.")
+            # Auto-create a global, empty role (grants nothing until assigned).
+            role = Role(name=name, created_by="solution-install")
+            db.add(role)
+            await db.flush()
+            role_id = str(role.id)
+            by_name[name] = role_id  # dedupe within this call (same name twice)
+            if created_out is not None:
+                created_out.add(name)
         resolved.append(role_id)
     return resolved
-
-
-async def _apply_role_name_resolution(db: AsyncSession, manifest: "Manifest") -> "Manifest":
-    """Return a copy of the manifest with ``role_names`` → ``roles`` resolved.
-
-    Entities affected: workflows, forms, agents, apps. If an entity carries
-    both ``role_names`` (new) and ``roles`` (legacy), ``role_names`` wins
-    when ``role_resolution='name'``.  Missing names raise ``ValueError``.
-    """
-    def _copy_with_resolved(entity, resolved: list[str]):
-        return entity.model_copy(update={"roles": resolved, "role_names": None})
-
-    # Workflows
-    new_workflows: dict[str, object] = {}
-    for key, mwf in manifest.workflows.items():
-        if mwf.role_names is not None:
-            resolved = await _resolve_role_names(db, list(mwf.role_names))
-            new_workflows[key] = _copy_with_resolved(mwf, resolved)
-        else:
-            new_workflows[key] = mwf
-
-    # Forms
-    new_forms: dict[str, object] = {}
-    for key, mform in manifest.forms.items():
-        if mform.role_names is not None:
-            resolved = await _resolve_role_names(db, list(mform.role_names))
-            new_forms[key] = _copy_with_resolved(mform, resolved)
-        else:
-            new_forms[key] = mform
-
-    # Agents
-    new_agents: dict[str, object] = {}
-    for key, magent in manifest.agents.items():
-        if magent.role_names is not None:
-            resolved = await _resolve_role_names(db, list(magent.role_names))
-            new_agents[key] = _copy_with_resolved(magent, resolved)
-        else:
-            new_agents[key] = magent
-
-    # Apps
-    new_apps: dict[str, object] = {}
-    for key, mapp in manifest.apps.items():
-        if mapp.role_names is not None:
-            resolved = await _resolve_role_names(db, list(mapp.role_names))
-            new_apps[key] = _copy_with_resolved(mapp, resolved)
-        else:
-            new_apps[key] = mapp
-
-    return manifest.model_copy(update={
-        "workflows": new_workflows,
-        "forms": new_forms,
-        "agents": new_agents,
-        "apps": new_apps,
-    })
-
-
-def _rewrite_org_ids(manifest: "Manifest", target_organization_id: UUID) -> "Manifest":
-    """Return a copy of the manifest with every entity's ``organization_id``
-    rewritten to ``target_organization_id``.
-
-    Does NOT touch ``manifest.organizations`` (the bundle-level org list); the
-    caller guards against that combination and rejects before calling here.
-    """
-    target = str(target_organization_id)
-
-    def _with_org(entity):
-        return entity.model_copy(update={"organization_id": target})
-
-    new_workflows = {k: _with_org(v) for k, v in manifest.workflows.items()}
-    new_forms = {k: _with_org(v) for k, v in manifest.forms.items()}
-    new_agents = {k: _with_org(v) for k, v in manifest.agents.items()}
-    new_apps = {k: _with_org(v) for k, v in manifest.apps.items()}
-    new_configs = {k: _with_org(v) for k, v in manifest.configs.items()}
-    new_claims = {k: _with_org(v) for k, v in manifest.claims.items()}
-    new_tables = {k: _with_org(v) for k, v in manifest.tables.items()}
-    new_events = {k: _with_org(v) for k, v in manifest.events.items()}
-
-    # Integrations have per-mapping org_id; rewrite each mapping.
-    new_integrations: dict[str, object] = {}
-    for k, minteg in manifest.integrations.items():
-        new_mappings = [m.model_copy(update={"organization_id": target}) for m in minteg.mappings]
-        new_integrations[k] = minteg.model_copy(update={"mappings": new_mappings})
-
-    return manifest.model_copy(update={
-        "workflows": new_workflows,
-        "forms": new_forms,
-        "agents": new_agents,
-        "apps": new_apps,
-        "configs": new_configs,
-        "claims": new_claims,
-        "tables": new_tables,
-        "events": new_events,
-        "integrations": new_integrations,
-    })
-
-
-# =============================================================================
-# Standalone manifest import (no git, reads from S3)
-# =============================================================================
-
-@dataclass
-class ManifestImportResult:
-    """Result of importing manifest from repo."""
-    applied: bool = False
-    dry_run: bool = False
-    warnings: list[str] = field(default_factory=list)
-    manifest_files: dict[str, str] = field(default_factory=dict)
-    modified_files: dict[str, str] = field(default_factory=dict)
-    deleted_entities: list[str] = field(default_factory=list)
-    entity_changes: list[dict[str, str]] = field(default_factory=list)
-
-
-async def import_manifest_from_repo(
-    db: AsyncSession,
-    delete_removed_entities: bool = False,
-    dry_run: bool = False,
-    target_organization_id: UUID | None = None,
-    role_resolution: RoleResolution = "uuid",
-    entity_ids: set[str] | None = None,
-) -> ManifestImportResult:
-    """Import manifest from S3 _repo/.bifrost/ into DB.
-
-    Standalone function (not a method on GitHubSyncService) that:
-    1. Reads .bifrost/*.yaml from S3 via RepoStorage
-    2. Parses with parse_manifest_dir()
-    3. Validates with validate_manifest()
-    4. Resolves entities to DB using ManifestResolver.plan_import
-    5. Runs indexer side-effects for forms/agents
-    6. Regenerates manifest from DB
-    7. Returns ManifestImportResult
-
-    Cross-environment rebinding:
-    - ``target_organization_id``: when set, every entity in the bundle is
-      rewritten to belong to this organization before upsert. Applies to
-      forms, agents, workflows, apps, integrations, configs, tables, event
-      sources, and integration mappings. Does NOT apply to organizations
-      themselves — if the bundle carries an ``organizations`` section and
-      this override is set, the import is rejected with a ``ValueError``
-      surfaced as HTTP 422 at the router level.
-    - ``role_resolution``: ``"uuid"`` (default) assumes role UUIDs in the
-      bundle match the target environment. ``"name"`` reads ``role_names``
-      from each entity and resolves them to UUIDs in the target DB; missing
-      names raise ``ValueError`` before any DB writes.
-    """
-    from src.services.repo_storage import RepoStorage
-    from bifrost.manifest import (
-        MANIFEST_FILES,
-        filter_manifest_by_ids,
-        parse_manifest_dir,
-        serialize_manifest_dir,
-        validate_manifest,
-    )
-    from src.services.manifest_generator import generate_manifest
-
-    result = ManifestImportResult()
-    repo = RepoStorage()
-
-    # 1. Read .bifrost/*.yaml from S3
-    manifest_yaml_files: dict[str, str] = {}
-    for _entity_type, filename in MANIFEST_FILES.items():
-        s3_path = f".bifrost/{filename}"
-        try:
-            content = await repo.read(s3_path)
-            manifest_yaml_files[filename] = content.decode("utf-8")
-        except Exception:
-            pass  # File doesn't exist in S3, skip
-
-    if not manifest_yaml_files:
-        result.warnings.append("No .bifrost/ manifest files found in repo")
-        return result
-
-    # 2. Parse
-    try:
-        manifest = parse_manifest_dir(manifest_yaml_files)
-    except Exception as e:
-        result.warnings.append(f"Failed to parse manifest: {e}")
-        return result
-
-    # 3. Validate (warnings only — DB FK constraints are the real safety net)
-    validation_errors = validate_manifest(manifest)
-    if validation_errors:
-        result.warnings.extend(validation_errors)
-
-    # 3a. Cross-env guard: orgs section incompatible with target_organization_id
-    if target_organization_id is not None and manifest.organizations:
-        raise ValueError(
-            "cannot carry organizations section when target_organization_id is set — "
-            "drop the orgs section or remove the target."
-        )
-
-    # 3b. Pre-resolve role names when requested. Fails loud before any DB writes.
-    if role_resolution == "name":
-        manifest = await _apply_role_name_resolution(db, manifest)
-
-    # 3c. Rewrite organization_id on every entity when override is set.
-    # Does NOT touch manifest.organizations (guarded above).
-    if target_organization_id is not None:
-        manifest = _rewrite_org_ids(manifest, target_organization_id)
-
-    # 4. Compute diff against current DB state
-    db_manifest = await generate_manifest(db)
-    entity_changes, changed_ids = _diff_and_collect(manifest, db_manifest)
-
-    # 4a. Dry-run: return diff without writing
-    if dry_run:
-        result.entity_changes = entity_changes
-        result.dry_run = True
-        return result
-
-    # 4b. Caller-supplied subset filter (e.g. interactive import TUI). Restrict
-    # the write to the user's selection, and trim entity_changes to match so
-    # the response accurately reflects what was applied.
-    if entity_ids is not None:
-        changed_ids &= entity_ids
-        entity_changes = [c for c in entity_changes if c.get("id") in changed_ids]
-
-    # 4c. Short-circuit: nothing changed — no write-back needed
-    if not changed_ids:
-        result.applied = True
-        result.entity_changes = entity_changes  # empty list
-        return result
-
-    # Check if diff has any deletes (to skip _resolve_deletions later)
-    has_deletes = any(c["action"] == "delete" for c in entity_changes)
-
-    # Helper: read a file from S3, returning None on failure
-    async def _read_or_none(path: str) -> bytes | None:
-        try:
-            return await repo.read(path)
-        except Exception:
-            return None
-
-    # 5. Run entity resolution via direct S3 reads (no temp dir needed)
-    resolver = ManifestResolver(db)
-
-    try:
-        async with db.begin_nested():
-            # Delete stale entities FIRST to avoid unique constraint violations
-            # (e.g. workflow name collision when a workflow moves paths/gets new UUID)
-            deletion_changes = []
-            if delete_removed_entities and has_deletes:
-                deletion_changes = await resolver._resolve_deletions(
-                    manifest=manifest, repo=repo, dry_run=False,
-                )
-
-            await resolver.plan_import(manifest, repo=repo, dry_run=False, changed_ids=changed_ids)
-
-            # Use diff-computed entity_changes (more accurate than op-based)
-            result.entity_changes = [c for c in entity_changes if c["action"] != "delete"]
-
-            # Append deletion results after the entity_changes reset above
-            for ec in deletion_changes:
-                result.deleted_entities.append(
-                    f"{ec.entity_type}: {ec.name}"
-                )
-                result.entity_changes.append({
-                    "action": "delete" if ec.action == "removed" else ec.action,
-                    "entity_type": ec.entity_type,
-                    "name": ec.name,
-                })
-
-            # Run indexer side-effects (workflows, forms, and agents)
-            await resolver._index_workflows_from_manifest(manifest, _read_or_none, changed_ids)
-            result.modified_files.update(
-                await resolver._index_forms_from_manifest(manifest, _read_or_none, changed_ids)
-            )
-            result.modified_files.update(
-                await resolver._index_agents_from_manifest(manifest, _read_or_none, changed_ids)
-            )
-
-            result.applied = True
-
-    except IntegrityError as e:
-        detail = str(e.orig) if e.orig else str(e)
-        if "foreign key" in detail.lower():
-            result.warnings.append(
-                "Entity resolution failed: a referenced entity could not be "
-                "deleted because other entities still depend on it. "
-                "This is usually resolved by syncing again."
-            )
-        else:
-            result.warnings.append(f"Entity resolution failed (database constraint): {detail}")
-        logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)
-    except Exception as e:
-        result.warnings.append(f"Entity resolution failed: {e}")
-        logger.warning(f"Manifest import entity resolution failed: {e}", exc_info=True)
-
-    # 6b. Refresh MCP tool registry so new/changed tools appear immediately
-    if result.applied and not dry_run:
-        try:
-            from src.services.mcp_server.server import refresh_workflow_tools
-            await refresh_workflow_tools()
-        except Exception as e:
-            logger.warning(f"Failed to refresh MCP workflow tools after manifest import: {e}")
-
-    # 6c. Invalidate the config read-through cache for every config the import
-    # upserted or deleted. The import writes Config rows directly (raw ops),
-    # bypassing the PUT /api/config handler that normally invalidates — so
-    # without this, a renamed/moved/deleted config (or a changed non-secret
-    # value) keeps serving stale from ConfigRepository's cache until TTL.
-    if result.applied and not dry_run and resolver.configs_touched:
-        from src.core.cache import invalidate_config
-        from src.core.log_safety import log_safe
-
-        for cfg_org_id, cfg_key in resolver.configs_touched:
-            try:
-                await invalidate_config(cfg_org_id, cfg_key)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to invalidate config cache after import "
-                    f"(org={cfg_org_id}, key={log_safe(cfg_key)}): {e}"
-                )
-
-    # 7. Regenerate manifest from DB (partial: only changed entities).
-    # NOTE: control reaches this point only when ``changed_ids`` is truthy —
-    # the empty-changes case returns at step 4c (around line 596) before
-    # entity resolution runs. The partial filter is therefore always applied.
-    try:
-        new_manifest = await generate_manifest(db)
-        partial = filter_manifest_by_ids(new_manifest, changed_ids)
-        result.manifest_files = serialize_manifest_dir(partial)
-    except Exception as e:
-        result.warnings.append(f"Manifest regeneration failed: {e}")
-
-    return result
 
 
 # =============================================================================
@@ -1111,6 +788,33 @@ class ManifestResolver:
 
         return cache
 
+    async def _apply_ops(
+        self,
+        ops: "list[SyncOp]",
+        all_ops: "list[SyncOp]",
+        *,
+        dry_run: bool,
+        existing_ids: "set[str] | frozenset[str]",
+    ) -> None:
+        """Execute (or, in dry-run, stamp) a batch of resolved ops.
+
+        In dry-run mode each ``Upsert`` is marked ``"updated"`` when its id is
+        already present in ``existing_ids`` (the prefetched id-set for that
+        entity type) and ``"inserted"`` otherwise — entities with no cache pass
+        an empty ``existing_ids`` so everything reads as ``"inserted"``. Outside
+        dry-run the ops execute against the session. All ops are appended to
+        ``all_ops`` for the caller's change-tracking either way.
+        """
+        from src.services.sync_ops import Upsert
+
+        for op in ops:
+            if dry_run:
+                if isinstance(op, Upsert):
+                    op.action_taken = "updated" if op.id in existing_ids else "inserted"
+            else:
+                await op.execute(self.db)
+        all_ops.extend(ops)
+
     async def plan_import(self, manifest: "Manifest", work_dir: Path | None = None, progress_fn=None, repo: "RepoStorage | None" = None, dry_run: bool = False, changed_ids: set[str] | None = None) -> "list[SyncOp]":
         """Build and execute SyncOps for importing a manifest (entities only).
 
@@ -1139,7 +843,7 @@ class ManifestResolver:
         Returns the collected ops for callers that want to inspect them
         (e.g. for entity change tracking or dry-run analysis).
         """
-        from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
+        from src.services.sync_ops import SyncOp  # noqa: F401
 
         if not work_dir and not repo:
             raise ValueError("plan_import requires either work_dir or repo")
@@ -1203,13 +907,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing organization: {morg.name}")
             org_ops.extend(self._resolve_organization(morg, cache))
-        for op in org_ops:
-            if dry_run:
-                if isinstance(op, Upsert):
-                    op.action_taken = "updated" if op.id in cache.get("org_ids", set()) else "inserted"
-            else:
-                await op.execute(self.db)
-        all_ops.extend(org_ops)
+        await self._apply_ops(org_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("org_ids", set()))
 
         # 0b. Resolve roles (no deps) — execute immediately
         role_ops: list[SyncOp] = []
@@ -1218,13 +916,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing role: {mrole.name}")
             role_ops.extend(self._resolve_role(mrole, cache))
-        for op in role_ops:
-            if dry_run:
-                if isinstance(op, Upsert):
-                    op.action_taken = "updated" if op.id in cache.get("role_ids", set()) else "inserted"
-            else:
-                await op.execute(self.db)
-        all_ops.extend(role_ops)
+        await self._apply_ops(role_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("role_ids", set()))
 
         # 1. Resolve workflows — execute immediately
         # Track which workflow IDs were actually imported (file exists in repo/disk)
@@ -1234,15 +926,17 @@ class ManifestResolver:
                 imported_wf_ids.add(mwf.id)  # Still track as present for event source refs
                 continue
             if await _file_exists(mwf.path):
-                await _prog(f"Importing workflow: {mwf.name or key}")
-                wf_ops = self._resolve_workflow(mwf.name or key, mwf, cache)
-                for op in wf_ops:
-                    if dry_run:
-                        if isinstance(op, Upsert):
-                            op.action_taken = "updated" if op.id in cache.get("wf_ids", set()) else "inserted"
-                    else:
-                        await op.execute(self.db)
-                all_ops.extend(wf_ops)
+                # Execution resolves a workflow by ``function_name`` (service.py /
+                # module_loader.py both match the Python def name, not the display
+                # name), so the DB ``name`` is identity/display only. Write it the
+                # way registration does: the manifest's declared name, else the
+                # dict key, as the INITIAL value. ``_resolve_workflow`` sets it
+                # only when the DB row's name is unset — it never overwrites a
+                # UI/CLI rename (matching the indexer's source-of-truth rule).
+                resolved_name = mwf.name or key
+                await _prog(f"Importing workflow: {resolved_name}")
+                wf_ops = self._resolve_workflow(resolved_name, mwf, cache)
+                await self._apply_ops(wf_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("wf_ids", set()))
                 imported_wf_ids.add(mwf.id)
 
         # 2. Resolve integrations (with config_schema, oauth_provider, mappings)
@@ -1251,13 +945,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing integration: {minteg.name or key}")
             integ_ops = await self._resolve_integration(minteg.name or key, minteg, cache)
-            for op in integ_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in cache.get("integ_ids", set()) else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(integ_ops)
+            await self._apply_ops(integ_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("integ_ids", set()))
 
         # 3. Resolve configs
         _config_id_set = {v[0] for v in cache.get("config_by_natural", {}).values()}
@@ -1265,13 +953,7 @@ class ManifestResolver:
             if changed_ids is not None and mcfg.id not in changed_ids:
                 continue
             cfg_ops = self._resolve_config(mcfg, cache)
-            for op in cfg_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in _config_id_set else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(cfg_ops)
+            await self._apply_ops(cfg_ops, all_ops, dry_run=dry_run, existing_ids=_config_id_set)
 
         # 4. Resolve apps (before tables — tables ref application_id)
         _app_id_set = set(cache.get("app_by_slug", {}).values())
@@ -1280,13 +962,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing app: {mapp.name}")
             app_ops = self._resolve_app(mapp, cache)
-            for op in app_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in _app_id_set else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(app_ops)
+            await self._apply_ops(app_ops, all_ops, dry_run=dry_run, existing_ids=_app_id_set)
 
             # Compile source files from _repo/ into _apps/{id}/preview/
             if not dry_run:
@@ -1307,13 +983,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing table: {mtable.name or key}")
             table_ops = await self._resolve_table(mtable.name or key, mtable, cache)
-            for op in table_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in cache.get("table_ids", set()) else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(table_ops)
+            await self._apply_ops(table_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("table_ids", set()))
 
         # 6. Resolve custom claims (refs org + source table by name)
         for key, mclaim in manifest.claims.items():
@@ -1321,13 +991,7 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing custom claim: {mclaim.name or key}")
             claim_ops = await self._resolve_custom_claim(mclaim.name or key, mclaim, cache)
-            for op in claim_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "updated" if op.id in cache.get("claim_ids", set()) else "inserted"
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(claim_ops)
+            await self._apply_ops(claim_ops, all_ops, dry_run=dry_run, existing_ids=cache.get("claim_ids", set()))
 
         # 7. Resolve event sources + subscriptions
         for key, mes in manifest.events.items():
@@ -1335,13 +999,8 @@ class ManifestResolver:
                 continue
             await _prog(f"Importing event source: {mes.name or key}")
             es_ops = await self._resolve_event_source(mes.name or key, mes, imported_wf_ids)
-            for op in es_ops:
-                if dry_run:
-                    if isinstance(op, Upsert):
-                        op.action_taken = "inserted"  # no ES cache; assume new
-                else:
-                    await op.execute(self.db)
-            all_ops.extend(es_ops)
+            # No event-source cache; everything reads as "inserted".
+            await self._apply_ops(es_ops, all_ops, dry_run=dry_run, existing_ids=frozenset())
 
         # 8. Resolve forms (metadata ops only — indexer called in _import_all_entities)
         for _form_name, mform in manifest.forms.items():
@@ -1351,13 +1010,8 @@ class ManifestResolver:
             if content is not None:
                 await _prog(f"Importing form: {mform.name}")
                 form_ops = self._resolve_form(mform, content)
-                for op in form_ops:
-                    if dry_run:
-                        if isinstance(op, Upsert):
-                            op.action_taken = "inserted"  # no form cache; assume new
-                    else:
-                        await op.execute(self.db)
-                all_ops.extend(form_ops)
+                # No form cache; everything reads as "inserted".
+                await self._apply_ops(form_ops, all_ops, dry_run=dry_run, existing_ids=frozenset())
 
         # 9. Resolve agents (metadata ops only — indexer called in _import_all_entities)
         for _agent_name, magent in manifest.agents.items():
@@ -1367,13 +1021,8 @@ class ManifestResolver:
             if content is not None:
                 await _prog(f"Importing agent: {magent.name}")
                 agent_ops = self._resolve_agent(magent, content)
-                for op in agent_ops:
-                    if dry_run:
-                        if isinstance(op, Upsert):
-                            op.action_taken = "inserted"  # no agent cache; assume new
-                    else:
-                        await op.execute(self.db)
-                all_ops.extend(agent_ops)
+                # No agent cache; everything reads as "inserted".
+                await self._apply_ops(agent_ops, all_ops, dry_run=dry_run, existing_ids=frozenset())
 
         # 10. Resolve MCP servers (with nested connections + tools)
         imported_server_ids: set[str] = set()
@@ -1594,17 +1243,20 @@ class ManifestResolver:
         """
         from uuid import UUID
 
+        from bifrost.manifest_codec import Destination
+
         from src.models.orm.organizations import Organization
         from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
         org_id = UUID(morg.id)
+        fields = morg.to_orm_values(Destination.GIT_SYNC).direct
 
         # 1. Try by ID first (handles renames)
         if org_id in cache["org_ids"]:
             return [Upsert(
                 model=Organization,
                 id=org_id,
-                values={"name": morg.name, "is_active": morg.is_active},
+                values={"name": fields["name"], "is_active": fields["is_active"]},
                 match_on="id",
             )]
 
@@ -1614,7 +1266,7 @@ class ManifestResolver:
             return [Upsert(
                 model=Organization,
                 id=org_id,
-                values={"id": org_id, "name": morg.name, "is_active": morg.is_active},
+                values={"id": org_id, "name": fields["name"], "is_active": fields["is_active"]},
                 match_on="name",
             )]
 
@@ -1622,7 +1274,7 @@ class ManifestResolver:
         return [Upsert(
             model=Organization,
             id=org_id,
-            values={"name": morg.name, "is_active": morg.is_active, "created_by": "git-sync"},
+            values={"name": fields["name"], "is_active": fields["is_active"], "created_by": "git-sync"},
             match_on="id",
         )]
 
@@ -1634,17 +1286,20 @@ class ManifestResolver:
         """
         from uuid import UUID
 
+        from bifrost.manifest_codec import Destination
+
         from src.models.orm.users import Role
         from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
         role_id = UUID(mrole.id)
+        fields = mrole.to_orm_values(Destination.GIT_SYNC).direct
 
         # 1. Try by ID first (handles renames)
         if role_id in cache["role_ids"]:
             return [Upsert(
                 model=Role,
                 id=role_id,
-                values={"name": mrole.name},
+                values={"name": fields["name"]},
                 match_on="id",
             )]
 
@@ -1654,7 +1309,7 @@ class ManifestResolver:
             return [Upsert(
                 model=Role,
                 id=role_id,
-                values={"id": role_id, "name": mrole.name},
+                values={"id": role_id, "name": fields["name"]},
                 match_on="name",
             )]
 
@@ -1662,7 +1317,7 @@ class ManifestResolver:
         return [Upsert(
             model=Role,
             id=role_id,
-            values={"name": mrole.name, "created_by": "git-sync"},
+            values={"name": fields["name"], "created_by": "git-sync"},
             match_on="id",
         )]
 
@@ -1716,36 +1371,25 @@ class ManifestResolver:
         """
         from uuid import UUID
 
+        from bifrost.manifest_codec import Destination
+
         from src.models.orm.workflow_roles import WorkflowRole
         from src.models.orm.workflows import Workflow
         from src.services.sync_ops import SyncOp, SyncRoles, Upsert  # noqa: F401
 
         wf_id = UUID(mwf.id)
-        org_id = UUID(mwf.organization_id) if mwf.organization_id else None
 
         # Check prefetch cache for existing workflow
         existing_by_natural = cache["wf_by_natural"].get((mwf.path, mwf.function_name))
-        existing_by_id = wf_id if wf_id in cache["wf_ids"] else None
 
+        # Source column values from the model; fix up organization_id to UUID and
+        # name to the manifest key (resolver logic: the dict key is the canonical name).
+        direct = mwf.to_orm_values(Destination.GIT_SYNC).direct
         wf_values = {
+            **direct,
             "name": manifest_name,
-            "function_name": mwf.function_name,
-            "path": mwf.path,
-            "type": getattr(mwf, "type", "workflow"),
-            "is_active": True,
-            "organization_id": org_id,
-            "endpoint_enabled": getattr(mwf, "endpoint_enabled", False),
-            "timeout_seconds": mwf.timeout_seconds if mwf.timeout_seconds is not None else 1800,
-            "public_endpoint": getattr(mwf, "public_endpoint", False),
-            "category": getattr(mwf, "category", "General"),
-            "tags": getattr(mwf, "tags", []),
+            "organization_id": UUID(direct["organization_id"]) if direct.get("organization_id") else None,
         }
-        if mwf.access_level is not None:
-            wf_values["access_level"] = mwf.access_level
-
-        # Only include description if manifest explicitly provides it
-        if mwf.description is not None:
-            wf_values["description"] = mwf.description
 
         ops: list[SyncOp] = []
 
@@ -1757,16 +1401,9 @@ class ManifestResolver:
                 values={"id": wf_id, **wf_values},
                 match_on="id",
             ))
-        elif existing_by_id is not None:
-            # Same ID but path/function changed (rename) — update
-            ops.append(Upsert(
-                model=Workflow,
-                id=wf_id,
-                values=wf_values,
-                match_on="id",
-            ))
         else:
-            # New workflow — insert
+            # Same ID with a path/function rename, or a brand-new workflow —
+            # both upsert by id with the same values.
             ops.append(Upsert(
                 model=Workflow,
                 id=wf_id,
@@ -1774,8 +1411,10 @@ class ManifestResolver:
                 match_on="id",
             ))
 
-        # Role sync op
-        if hasattr(mwf, "roles") and mwf.roles:
+        # Role sync op. Fire whenever the manifest entry carries a `roles` key,
+        # including an explicit empty list, so authors can clear bindings without
+        # omitting the key accidentally wiping existing access grants.
+        if "roles" in getattr(mwf, "model_fields_set", set()):
             role_ids = {UUID(r) for r in mwf.roles}
             ops.append(SyncRoles(
                 junction_model=WorkflowRole,
@@ -2015,6 +1654,19 @@ class ManifestResolver:
                 return None
             return [UUID(entity_id) for entity_id in removed_entity_ids.get(entity_type, set())]
 
+        # Solution-managed rows (solution_id IS NOT NULL) have exactly one
+        # writer: the deploy / git-connected-pull path. They are intentionally
+        # excluded from the committed _repo/ manifest (manifest_generator skips
+        # them), so they never appear in present_*_uuids — without this guard the
+        # stale-entity sweep would match them all and hard-delete them via Core,
+        # bypassing the before_flush backstop and wiping every installed
+        # solution's entities on the next _repo/ git-sync. Exclude them centrally
+        # so no per-entity caller can forget. (See platform-impact audit H1.)
+        def _spare_solution_managed(model: type, q):
+            if "solution_id" in model.__table__.columns:  # type: ignore[attr-defined]
+                return q.where(model.solution_id.is_(None))  # type: ignore[attr-defined]
+            return q
+
         # Helper: query stale IDs (+ names when available) and bulk-delete
         async def _bulk_delete(
             model: type,
@@ -2031,6 +1683,7 @@ class ManifestResolver:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            q = _spare_solution_managed(model, q)
             if explicit_ids is not None:
                 q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
             elif present:
@@ -2071,6 +1724,7 @@ class ManifestResolver:
                 q = select(model.id, model.name).where(*base_filter)  # type: ignore[attr-defined]
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
+            q = _spare_solution_managed(model, q)
             if explicit_ids is not None:
                 q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
             elif present:
@@ -2157,21 +1811,17 @@ class ManifestResolver:
                 )
 
         # Tables not in manifest (data preserved — report as "keep")
-        explicit_table_ids = _explicit_ids("tables")
-        if explicit_table_ids != []:
-            table_q = select(Table.id, Table.name)
-            if explicit_table_ids is not None:
-                table_q = table_q.where(Table.id.in_(explicit_table_ids))
-            elif present_table_uuids:
-                table_q = table_q.where(Table.id.notin_(present_table_uuids))
-            table_result = await self.db.execute(table_q)
-            for row in table_result.all():
-                logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
-                entity_changes.append(EntityChange(
-                    action="keep",
-                    entity_type="tables",
-                    name=row[1] or str(row[0]),
-                ))
+        table_q = select(Table.id, Table.name)
+        if present_table_uuids:
+            table_q = table_q.where(Table.id.notin_(present_table_uuids))
+        table_result = await self.db.execute(table_q)
+        for row in table_result.all():
+            logger.info(f"Table {row[0]} ({row[1]}) not in manifest (data preserved)")
+            entity_changes.append(EntityChange(
+                action="keep",
+                entity_type="tables",
+                name=row[1] or str(row[0]),
+            ))
 
         # Delete custom claims not in manifest.
         from src.models.orm.custom_claims import CustomClaim
@@ -2203,13 +1853,7 @@ class ManifestResolver:
         await _bulk_delete(Agent, [], present_agent_uuids, "agents", _explicit_ids("agents"))
 
         # Delete apps not in manifest
-        await _bulk_delete(
-            Application,
-            [],
-            present_app_uuids,
-            "applications",
-            _explicit_ids("applications"),
-        )
+        await _bulk_delete(Application, [], present_app_uuids, "applications", _explicit_ids("applications"))
 
         # External MCP cleanup. Delete leaves first, then connections, then
         # servers — although CASCADE FKs on the schema make later deletes
@@ -2307,7 +1951,10 @@ class ManifestResolver:
         from src.models.orm.oauth import OAuthProvider
         from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
+        from bifrost.manifest_codec import Destination
+
         integ_id = UUID(minteg.id)
+        fields = minteg.to_orm_values(Destination.GIT_SYNC).direct
 
         # Check by natural key (name) — use cache if available
         if cache is not None:
@@ -2320,12 +1967,12 @@ class ManifestResolver:
 
         integ_values: dict = {
             "name": integ_name,
-            "entity_id": minteg.entity_id,
-            "entity_id_name": minteg.entity_id_name,
-            "default_entity_id": minteg.default_entity_id,
+            "entity_id": fields["entity_id"],
+            "entity_id_name": fields["entity_id_name"],
+            "default_entity_id": fields["default_entity_id"],
             "list_entities_data_provider_id": (
-                UUID(minteg.list_entities_data_provider_id)
-                if minteg.list_entities_data_provider_id else None
+                UUID(fields["list_entities_data_provider_id"])
+                if fields["list_entities_data_provider_id"] else None
             ),
             "is_deleted": False,
         }
@@ -2530,23 +2177,32 @@ class ManifestResolver:
         from src.models.orm.config import Config
         from src.services.sync_ops import SyncOp, Upsert  # noqa: F401
 
-        cfg_id = UUID(mcfg.id)
-        integ_id = UUID(mcfg.integration_id) if mcfg.integration_id else None
-        org_id = UUID(mcfg.organization_id) if mcfg.organization_id else None
+        from bifrost.manifest_codec import Destination
+
+        vals = mcfg.to_orm_values(Destination.GIT_SYNC).direct
+        cfg_id = UUID(vals["id"])
+        integ_id = UUID(vals["integration_id"]) if vals["integration_id"] else None
+        org_id = UUID(vals["organization_id"]) if vals["organization_id"] else None
 
         # Record for post-commit cache invalidation. Only non-integration
         # configs are read through ConfigRepository's cache (merged_for_sdk /
         # get_config exclude integration_id IS NOT NULL), so those are the only
         # ones whose cache can go stale on a value/key change here.
-        self._track_config_cache_touch(integ_id, org_id, mcfg.key)
+        if integ_id is None:
+            self.configs_touched.add(
+                (str(org_id) if org_id is not None else None, vals["key"])
+            )
 
         # Check prefetch cache for existing config by natural key
-        cache_hit = cache["config_by_natural"].get((mcfg.key, integ_id, org_id))
-        schema_id = self._config_schema_id(cache, integ_id, mcfg.key)
+        cache_hit = cache["config_by_natural"].get((vals["key"], integ_id, org_id))
+        schema_id = None
+        if integ_id is not None:
+            schema = cache.get("integ_cs", {}).get(integ_id, {}).get(vals["key"])
+            schema_id = schema.id if schema is not None else None
 
         # Convert string config_type to enum for proper DB storage
         from src.models.enums import ConfigType
-        ct = ConfigType(mcfg.config_type) if isinstance(mcfg.config_type, str) else mcfg.config_type
+        ct = ConfigType(vals["config_type"]) if isinstance(vals["config_type"], str) else vals["config_type"]
         is_secret = ct == ConfigType.SECRET
 
         if cache_hit is not None:
@@ -2556,11 +2212,20 @@ class ManifestResolver:
             if is_secret and existing_value is not None and schema_id is None:
                 return []
 
-            update_values = self._config_upsert_values(
-                mcfg, ct, integ_id, org_id, schema_id, include_value=not is_secret
-            )
-            if existing_id != cfg_id:
-                update_values["id"] = cfg_id
+            # Update existing row (including ID if it changed)
+            update_values: dict = {
+                "id": cfg_id,
+                "key": vals["key"],
+                "config_type": ct,
+                "description": vals["description"],
+                "integration_id": integ_id,
+                "organization_id": org_id,
+                "updated_by": "git-sync",
+            }
+            if schema_id is not None:
+                update_values["config_schema_id"] = schema_id
+            if not is_secret:
+                update_values["value"] = vals["value"] if vals["value"] is not None else {}
 
             return [Upsert(
                 model=Config,
@@ -2570,44 +2235,23 @@ class ManifestResolver:
             )]
         else:
             # New config — return Upsert op (uses ON CONFLICT)
-            insert_values = self._config_upsert_values(
-                mcfg, ct, integ_id, org_id, schema_id, include_value=True
-            )
+            insert_values: dict = {
+                "key": vals["key"],
+                "config_type": ct,
+                "description": vals["description"],
+                "integration_id": integ_id,
+                "organization_id": org_id,
+                "value": vals["value"] if vals["value"] is not None else {},
+                "updated_by": "git-sync",
+            }
+            if schema_id is not None:
+                insert_values["config_schema_id"] = schema_id
             return [Upsert(
                 model=Config,
                 id=cfg_id,
                 values=insert_values,
                 match_on="id",
             )]
-
-    def _track_config_cache_touch(self, integ_id, org_id, key: str) -> None:
-        if integ_id is None:
-            self.configs_touched.add((str(org_id) if org_id is not None else None, key))
-
-    @staticmethod
-    def _config_schema_id(cache: dict, integ_id, key: str):
-        if integ_id is None:
-            return None
-        schema = cache.get("integ_cs", {}).get(integ_id, {}).get(key)
-        return schema.id if schema is not None else None
-
-    @staticmethod
-    def _config_upsert_values(
-        mcfg, config_type, integ_id, org_id, schema_id, *, include_value: bool
-    ) -> dict:
-        values: dict = {
-            "key": mcfg.key,
-            "config_type": config_type,
-            "description": mcfg.description,
-            "integration_id": integ_id,
-            "organization_id": org_id,
-            "updated_by": "git-sync",
-        }
-        if schema_id is not None:
-            values["config_schema_id"] = schema_id
-        if include_value:
-            values["value"] = mcfg.value if mcfg.value is not None else {}
-        return values
 
     def _resolve_app(self, mapp, cache: dict) -> "list[SyncOp]":
         """Resolve an app from manifest into SyncOps (metadata only).
@@ -2638,16 +2282,19 @@ class ManifestResolver:
         # Check prefetch cache for existing app by slug
         existing_id = cache["app_by_slug"].get(slug)
 
+        from bifrost.manifest_codec import Destination
+        _direct = mapp.to_orm_values(Destination.GIT_SYNC).direct
         app_values = {
-            "name": mapp.name or "",
-            "description": mapp.description,
+            **_direct,
+            # resolver overrides: slug derived from path, repo_path defaulted,
+            # organization_id already converted to UUID above.
             "slug": slug,
             "repo_path": repo_path,
             "organization_id": org_id,
-            "dependencies": mapp.dependencies or None,
         }
         if mapp.access_level is not None:
             app_values["access_level"] = mapp.access_level
+        app_values["app_model"] = getattr(mapp, "app_model", "standalone_v2") or "standalone_v2"
 
         ops: list[SyncOp] = []
 
@@ -2666,8 +2313,8 @@ class ManifestResolver:
                 match_on="id",
             ))
 
-        # Role sync op
-        if hasattr(mapp, "roles") and mapp.roles:
+        # Role sync op — fire on present-empty too, to clear bindings (B3; see _resolve_workflow).
+        if getattr(mapp, "roles", None) is not None:
             role_ids = {UUID(r) for r in mapp.roles}
             ops.append(SyncRoles(
                 junction_model=AppRole,
@@ -2697,13 +2344,16 @@ class ManifestResolver:
         from sqlalchemy import update
         from sqlalchemy.dialects.postgresql import insert
 
+        from bifrost.manifest import ManifestTable
+        from bifrost.manifest_codec import Destination
         from shared.policies.probe import make_seed_admin_bypass
         from src.models.contracts.policies import TablePolicies
         from src.models.orm.tables import Table
         from src.services.sync_ops import SyncOp  # noqa: F401
 
-        table_id = UUID(mtable.id)
-        org_id = UUID(mtable.organization_id) if mtable.organization_id else None
+        src = ManifestTable.model_validate(mtable).to_orm_values(Destination.GIT_SYNC).direct
+        table_id = UUID(src["id"])
+        org_id = UUID(src["organization_id"]) if src["organization_id"] else None
         now = datetime.now(timezone.utc)
 
         # Manifest-carried policies → Table.access JSONB. The manifest stores
@@ -2720,8 +2370,9 @@ class ManifestResolver:
         # malformed tables.yaml fails loudly rather than landing an
         # unparseable AST in the DB. Pattern: fail loud at the writer, fail
         # closed at the reader (see _load_policies in src/routers/tables.py).
-        if mtable.policies is not None:
-            policies_list = [p.model_dump(mode="json") for p in mtable.policies]
+        policies = src["policies"]
+        if policies is not None:
+            policies_list = [p.model_dump(mode="json") for p in policies]
             access = {"policies": policies_list}
             TablePolicies(**access)  # raises ValidationError on bad AST
         else:
@@ -2749,8 +2400,8 @@ class ManifestResolver:
                 .where(Table.id == existing_by_natural)
                 .values(
                     id=table_id,
-                    description=mtable.description,
-                    schema=mtable.table_schema,
+                    description=src["description"],
+                    schema=src["schema"],
                     access=access,
                     updated_at=now,
                 )
@@ -2771,8 +2422,8 @@ class ManifestResolver:
                 .where(Table.id == table_id)
                 .values(
                     name=table_name,
-                    description=mtable.description,
-                    schema=mtable.table_schema,
+                    description=src["description"],
+                    schema=src["schema"],
                     access=access,
                     updated_at=now,
                 )
@@ -2783,9 +2434,9 @@ class ManifestResolver:
         stmt = insert(Table).values(
             id=table_id,
             name=table_name,
-            description=mtable.description,
+            description=src["description"],
             organization_id=org_id,
-            schema=mtable.table_schema,
+            schema=src["schema"],
             access=access,
             created_by="git-sync",
         ).on_conflict_do_nothing()
@@ -2808,10 +2459,13 @@ class ManifestResolver:
         from src.models.orm.custom_claims import CustomClaim
         from src.services.sync_ops import SyncOp  # noqa: F401
 
-        claim_id = UUID(mclaim.id)
-        org_id = UUID(mclaim.organization_id)
+        from bifrost.manifest_codec import Destination
+
+        fields = mclaim.to_orm_values(Destination.GIT_SYNC).direct
+        claim_id = UUID(fields["id"])
+        org_id = UUID(fields["organization_id"])
         now = datetime.now(timezone.utc)
-        query = mclaim.query.model_dump(mode="json")
+        query = fields["query"]
 
         if cache is not None:
             existing_by_natural = cache["claim_by_natural"].get((claim_name, org_id))
@@ -2834,9 +2488,9 @@ class ManifestResolver:
                 .where(CustomClaim.id == existing_by_natural)
                 .values(
                     name=claim_name,
-                    description=mclaim.description,
+                    description=fields["description"],
                     organization_id=org_id,
-                    type=mclaim.type,
+                    type=fields["type"],
                     query=query,
                     updated_at=now,
                 )
@@ -2858,9 +2512,9 @@ class ManifestResolver:
                 .where(CustomClaim.id == claim_id)
                 .values(
                     name=claim_name,
-                    description=mclaim.description,
+                    description=fields["description"],
                     organization_id=org_id,
-                    type=mclaim.type,
+                    type=fields["type"],
                     query=query,
                     updated_at=now,
                 )
@@ -2870,9 +2524,9 @@ class ManifestResolver:
         stmt = insert(CustomClaim).values(
             id=claim_id,
             name=claim_name,
-            description=mclaim.description,
+            description=fields["description"],
             organization_id=org_id,
-            type=mclaim.type,
+            type=fields["type"],
             query=query,
         ).on_conflict_do_nothing()
         await self.db.execute(stmt)
@@ -2896,23 +2550,32 @@ class ManifestResolver:
         from src.models.orm.events import EventSource, EventSubscription, ScheduleSource, WebhookSource
         from src.services.sync_ops import SyncOp  # noqa: F401
 
+        from bifrost.manifest_codec import Destination
+
         es_id = UUID(mes.id)
+
+        # Source parent field dict from the model; fix up organization_id to UUID and
+        # name to the manifest key (resolver owns the upsert logic below).
+        _direct = mes.to_orm_values(Destination.GIT_SYNC).direct
+        es_org_id = UUID(_direct["organization_id"]) if _direct.get("organization_id") else None
 
         # Upsert event source
         stmt = insert(EventSource).values(
             id=es_id,
             name=es_name,
-            source_type=mes.source_type,
-            organization_id=UUID(mes.organization_id) if mes.organization_id else None,
-            is_active=mes.is_active,
+            source_type=_direct["source_type"],
+            event_type=_direct["event_type"],
+            organization_id=es_org_id,
+            is_active=_direct["is_active"],
             created_by="git-sync",
         ).on_conflict_do_update(
             index_elements=["id"],
             set_={
                 "name": es_name,
-                "source_type": mes.source_type,
-                "organization_id": UUID(mes.organization_id) if mes.organization_id else None,
-                "is_active": mes.is_active,
+                "source_type": _direct["source_type"],
+                "event_type": _direct["event_type"],
+                "organization_id": es_org_id,
+                "is_active": _direct["is_active"],
                 "updated_at": datetime.now(timezone.utc),
             },
         )
@@ -3063,37 +2726,33 @@ class ManifestResolver:
 
         from sqlalchemy.dialects.postgresql import insert
 
+        from bifrost.manifest_codec import Destination
         from src.models.orm.external_mcp import MCPServer
 
-        server_id = UUID(mserver.id)
+        vals = mserver.to_orm_values(Destination.GIT_SYNC).direct
+        server_id = UUID(vals["id"])
+        oauth_provider_id = UUID(vals["oauth_provider_id"]) if vals["oauth_provider_id"] else None
+        organization_id = UUID(vals["organization_id"]) if vals["organization_id"] else None
 
         stmt = insert(MCPServer).values(
             id=server_id,
             name=server_name,
-            server_url=mserver.server_url,
-            oauth_provider_id=(
-                UUID(mserver.oauth_provider_id) if mserver.oauth_provider_id else None
-            ),
-            redirect_url=mserver.redirect_url,
-            discovery_metadata=mserver.discovery_metadata,
-            organization_id=(
-                UUID(mserver.organization_id) if mserver.organization_id else None
-            ),
-            is_active=mserver.is_active,
+            server_url=vals["server_url"],
+            oauth_provider_id=oauth_provider_id,
+            redirect_url=vals["redirect_url"],
+            discovery_metadata=vals["discovery_metadata"],
+            organization_id=organization_id,
+            is_active=vals["is_active"],
         ).on_conflict_do_update(
             index_elements=["id"],
             set_={
                 "name": server_name,
-                "server_url": mserver.server_url,
-                "oauth_provider_id": (
-                    UUID(mserver.oauth_provider_id) if mserver.oauth_provider_id else None
-                ),
-                "redirect_url": mserver.redirect_url,
-                "discovery_metadata": mserver.discovery_metadata,
-                "organization_id": (
-                    UUID(mserver.organization_id) if mserver.organization_id else None
-                ),
-                "is_active": mserver.is_active,
+                "server_url": vals["server_url"],
+                "oauth_provider_id": oauth_provider_id,
+                "redirect_url": vals["redirect_url"],
+                "discovery_metadata": vals["discovery_metadata"],
+                "organization_id": organization_id,
+                "is_active": vals["is_active"],
                 "updated_at": datetime.now(timezone.utc),
             },
         )
@@ -3230,8 +2889,9 @@ class ManifestResolver:
                 match_on="id",
             ))
 
-        # Role sync op (FormRole.assigned_by is NOT NULL — pass via extra_fields)
-        if hasattr(mform, "roles") and mform.roles:
+        # Role sync op (FormRole.assigned_by is NOT NULL — pass via extra_fields).
+        # Fire on present-empty too, to clear bindings (B3; see _resolve_workflow).
+        if getattr(mform, "roles", None) is not None:
             role_ids = {UUID(r) for r in mform.roles}
             ops.append(SyncRoles(
                 junction_model=FormRole,
@@ -3262,27 +2922,27 @@ class ManifestResolver:
         agent_id = UUID(magent.id)
         ops: list[SyncOp] = []
 
-        if org_id:
-            agent_values: dict = {
-                "name": data.get("name", ""),
-                "system_prompt": data.get("system_prompt", ""),
-                "is_active": True,
-                "created_by": "git-sync",
-                "organization_id": org_id,
-                "max_iterations": data.get("max_iterations"),
-                "max_token_budget": data.get("max_token_budget"),
-            }
-            if magent.access_level is not None:
-                agent_values["access_level"] = magent.access_level
-            ops.append(Upsert(
-                model=Agent,
-                id=agent_id,
-                values=agent_values,
-                match_on="id",
-            ))
+        agent_values: dict = {
+            "name": data.get("name", ""),
+            "system_prompt": data.get("system_prompt", ""),
+            "is_active": True,
+            "created_by": "git-sync",
+            "organization_id": org_id,
+            "max_iterations": data.get("max_iterations"),
+            "max_token_budget": data.get("max_token_budget"),
+        }
+        if magent.access_level is not None:
+            agent_values["access_level"] = magent.access_level
+        ops.append(Upsert(
+            model=Agent,
+            id=agent_id,
+            values=agent_values,
+            match_on="id",
+        ))
 
-        # Role sync op (AgentRole.assigned_by is NOT NULL — pass via extra_fields)
-        if hasattr(magent, "roles") and magent.roles:
+        # Role sync op (AgentRole.assigned_by is NOT NULL — pass via extra_fields).
+        # Fire on present-empty too, to clear bindings (B3; see _resolve_workflow).
+        if getattr(magent, "roles", None) is not None:
             role_ids = {UUID(r) for r in magent.roles}
             ops.append(SyncRoles(
                 junction_model=AgentRole,

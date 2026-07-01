@@ -10,6 +10,8 @@ Used for:
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,7 +44,6 @@ from bifrost.manifest import (
     ManifestConfig,
     ManifestCustomClaim,
     ManifestEventSource,
-    ManifestEventSubscription,
     ManifestForm,
     ManifestIntegration,
     ManifestIntegrationConfigSchema,
@@ -53,11 +54,9 @@ from bifrost.manifest import (
     ManifestOAuthProvider,
     ManifestOrganization,
     ManifestRole,
-    ManifestPolicy,
     ManifestTable,
     ManifestWorkflow,
 )
-from src.models.contracts.claims import ClaimQuery
 
 logger = logging.getLogger(__name__)
 
@@ -72,32 +71,17 @@ logger = logging.getLogger(__name__)
 
 def serialize_organization(org: Organization) -> ManifestOrganization:
     """Serialize an Organization ORM object to ManifestOrganization."""
-    return ManifestOrganization(id=str(org.id), name=org.name, is_active=org.is_active)
+    return ManifestOrganization.from_row(org)
 
 
 def serialize_role(role: Role) -> ManifestRole:
     """Serialize a Role ORM object to ManifestRole."""
-    return ManifestRole(id=str(role.id), name=role.name)
+    return ManifestRole.from_row(role)
 
 
 def serialize_workflow(wf: Workflow, roles: list[str] | None = None) -> ManifestWorkflow:
     """Serialize a Workflow ORM object to ManifestWorkflow."""
-    return ManifestWorkflow(
-        id=str(wf.id),
-        name=wf.name,
-        path=wf.path,
-        function_name=wf.function_name,
-        type=wf.type or "workflow",
-        description=wf.description,
-        organization_id=str(wf.organization_id) if wf.organization_id else None,
-        roles=roles or [],
-        access_level=wf.access_level or "role_based",
-        endpoint_enabled=wf.endpoint_enabled or False,
-        timeout_seconds=wf.timeout_seconds if wf.timeout_seconds is not None else 1800,
-        public_endpoint=wf.public_endpoint or False,
-        category=wf.category or "General",
-        tags=wf.tags or [],
-    )
+    return ManifestWorkflow.from_row(wf, roles=roles)
 
 
 def _form_field_to_schema_dict(field: FormField) -> dict:
@@ -122,6 +106,7 @@ def _form_field_to_schema_dict(field: FormField) -> dict:
         "max_size_mb": field.max_size_mb,
         "content": field.content,
         "allow_as_query_param": field.allow_as_query_param,
+        "auto_fill": field.auto_fill,
     }
     for key, value in optional_fields.items():
         if value is not None:
@@ -140,31 +125,15 @@ def serialize_form(
     They are inlined into ``form_schema.fields`` so the form is fully described
     by the manifest entry — no companion ``forms/{uuid}.form.yaml`` needed.
     """
-    schema: dict | None = None
-    if fields:
-        schema = {"fields": [_form_field_to_schema_dict(f) for f in fields]}
-
-    return ManifestForm(
-        id=str(form.id),
-        name=form.name,
-        organization_id=str(form.organization_id) if form.organization_id else None,
-        roles=roles or [],
-        access_level=form.access_level.value if form.access_level else "role_based",
-        description=form.description,
-        workflow_id=form.workflow_id,
-        launch_workflow_id=form.launch_workflow_id,
-        default_launch_params=form.default_launch_params,
-        allowed_query_params=form.allowed_query_params,
-        form_schema=schema,
-    )
+    return ManifestForm.from_row(form, roles=roles, fields=fields)
 
 
 def serialize_agent(
     agent: Agent,
     roles: list[str] | None = None,
-    tool_ids: list[str] | None = None,
-    delegated_agent_ids: list[str] | None = None,
-    mcp_connection_ids: list[str] | None = None,
+    tool_ids: "Sequence[str | UUID] | None" = None,
+    delegated_agent_ids: "Sequence[str | UUID] | None" = None,
+    mcp_connection_ids: "Sequence[str | UUID] | None" = None,
 ) -> ManifestAgent:
     """Serialize an Agent ORM object to ManifestAgent with inline content.
 
@@ -173,24 +142,12 @@ def serialize_agent(
     eager-loading and ordering — matching the pattern used for workflow/form
     roles.
     """
-    return ManifestAgent(
-        id=str(agent.id),
-        name=agent.name,
-        organization_id=str(agent.organization_id) if agent.organization_id else None,
-        roles=roles or [],
-        access_level=agent.access_level.value if agent.access_level else "role_based",
-        description=agent.description,
-        system_prompt=agent.system_prompt,
-        channels=list(agent.channels) if agent.channels else [],
-        tool_ids=tool_ids or [],
-        delegated_agent_ids=delegated_agent_ids or [],
-        knowledge_sources=list(agent.knowledge_sources) if agent.knowledge_sources else [],
-        system_tools=list(agent.system_tools) if agent.system_tools else [],
-        mcp_connection_ids=mcp_connection_ids or [],
-        llm_model=agent.llm_model,
-        llm_max_tokens=agent.llm_max_tokens,
-        max_iterations=agent.max_iterations,
-        max_token_budget=agent.max_token_budget,
+    return ManifestAgent.from_row(
+        agent,
+        roles=roles,
+        tool_ids=tool_ids,
+        delegated_agent_ids=delegated_agent_ids,
+        mcp_connection_ids=mcp_connection_ids,
     )
 
 
@@ -206,6 +163,7 @@ def serialize_app(app: Application, roles: list[str] | None = None) -> ManifestA
         organization_id=str(app.organization_id) if app.organization_id else None,
         roles=roles or [],
         access_level=app.access_level if app.access_level else "authenticated",
+        app_model=app.app_model or "inline_v1",
     )
 
 
@@ -271,55 +229,17 @@ def serialize_integration(
 
 def serialize_config(cfg: Config) -> ManifestConfig:
     """Serialize a Config ORM object to ManifestConfig."""
-    from src.models.enums import ConfigType
-
-    return ManifestConfig(
-        id=str(cfg.id),
-        integration_id=str(cfg.integration_id) if cfg.integration_id else None,
-        key=cfg.key,
-        config_type=cfg.config_type.value if cfg.config_type and hasattr(cfg.config_type, 'value') else (cfg.config_type or "string"),
-        description=cfg.description,
-        organization_id=str(cfg.organization_id) if cfg.organization_id else None,
-        value=None if (cfg.config_type == ConfigType.SECRET or str(cfg.config_type) == "secret") else cfg.value,
-    )
+    return ManifestConfig.from_row(cfg)
 
 
 def serialize_custom_claim(claim: CustomClaim) -> ManifestCustomClaim:
     """Serialize a CustomClaim ORM object to ManifestCustomClaim."""
-    return ManifestCustomClaim(
-        id=str(claim.id),
-        name=claim.name,
-        description=claim.description,
-        organization_id=str(claim.organization_id),
-        type=claim.type,  # type: ignore[arg-type]
-        query=ClaimQuery.model_validate(claim.query),
-    )
+    return ManifestCustomClaim.from_row(claim)
 
 
 def serialize_table(table: Table) -> ManifestTable:
-    """Serialize a Table ORM object to ManifestTable.
-
-    Unwraps the JSONB ``Table.access`` payload (shape: ``{"policies": [...]}``)
-    into a flat list of :class:`ManifestPolicy`. Tables with no access blob
-    (legacy rows from before Task 9 seeded admin_bypass on create) serialize
-    with ``policies=None``; the importer reseeds those on the next
-    round-trip.
-    """
-    access = table.access if isinstance(table.access, dict) else None
-    raw_policies = access.get("policies") if access else None
-    policies = (
-        [ManifestPolicy.model_validate(p) for p in raw_policies]
-        if raw_policies
-        else None
-    )
-    return ManifestTable(
-        id=str(table.id),
-        name=table.name,
-        description=table.description,
-        organization_id=str(table.organization_id) if table.organization_id else None,
-        policies=policies,
-        **{"schema": table.schema},  # type: ignore[arg-type]  # alias for table_schema
-    )
+    """Serialize a Table ORM object to ManifestTable."""
+    return ManifestTable.from_row(table)
 
 
 def serialize_event_source(
@@ -329,60 +249,14 @@ def serialize_event_source(
     subscriptions: list[EventSubscription] | None = None,
 ) -> ManifestEventSource:
     """Serialize an EventSource ORM object to ManifestEventSource."""
-    cron_expression = schedule.cron_expression if schedule else None
-    tz = schedule.timezone if schedule else None
-    schedule_enabled = schedule.enabled if schedule else None
-    overlap_policy = schedule.overlap_policy.value if schedule and schedule.overlap_policy else None
-
-    adapter_name = webhook.adapter_name if webhook else None
-    webhook_integration_id = str(webhook.integration_id) if webhook and webhook.integration_id else None
-    webhook_config = webhook.config if webhook and webhook.config else None
-    rate_limit_per_minute = webhook.rate_limit_per_minute if webhook else 60
-    rate_limit_window_seconds = webhook.rate_limit_window_seconds if webhook else 60
-    rate_limit_enabled = webhook.rate_limit_enabled if webhook else True
-
-    return ManifestEventSource(
-        id=str(es.id),
-        name=es.name,
-        source_type=es.source_type if isinstance(es.source_type, str) else es.source_type.value,
-        organization_id=str(es.organization_id) if es.organization_id else None,
-        is_active=es.is_active,
-        cron_expression=cron_expression,
-        timezone=tz,
-        schedule_enabled=schedule_enabled,
-        overlap_policy=overlap_policy,
-        adapter_name=adapter_name,
-        webhook_integration_id=webhook_integration_id,
-        webhook_config=webhook_config,
-        rate_limit_per_minute=rate_limit_per_minute,
-        rate_limit_window_seconds=rate_limit_window_seconds,
-        rate_limit_enabled=rate_limit_enabled,
-        subscriptions=[
-            ManifestEventSubscription(
-                id=str(sub.id),
-                target_type=sub.target_type or "workflow",
-                workflow_id=str(sub.workflow_id) if sub.workflow_id else None,
-                agent_id=str(sub.agent_id) if sub.agent_id else None,
-                event_type=sub.event_type,
-                filter_expression=sub.filter_expression,
-                input_mapping=sub.input_mapping,
-                is_active=sub.is_active,
-            )
-            for sub in (subscriptions or [])
-        ],
-    )
+    return ManifestEventSource.from_row(es, schedule=schedule, webhook=webhook, subscriptions=subscriptions)
 
 
 def serialize_mcp_connection_tool(
     tool: MCPConnectionTool,
 ) -> ManifestMCPConnectionTool:
     """Serialize an MCPConnectionTool ORM row to its manifest model."""
-    return ManifestMCPConnectionTool(
-        tool_name=tool.tool_name,
-        tool_schema=tool.tool_schema or {},
-        enabled=tool.enabled,
-        disabled_reason=tool.disabled_reason,
-    )
+    return ManifestMCPConnectionTool.from_row(tool)
 
 
 def serialize_mcp_connection(
@@ -394,19 +268,7 @@ def serialize_mcp_connection(
     ``encrypted_client_secret`` is intentionally omitted — secrets are
     gitignored, the same treatment Config secrets get today.
     """
-    return ManifestMCPConnection(
-        organization_id=str(connection.organization_id),
-        client_id=connection.client_id,
-        server_url_override=connection.server_url_override,
-        available_in_chat=connection.available_in_chat,
-        available_to_autonomous=connection.available_to_autonomous,
-        service_oauth_token_id=(
-            str(connection.service_oauth_token_id)
-            if connection.service_oauth_token_id
-            else None
-        ),
-        tools=[serialize_mcp_connection_tool(t) for t in (tools or [])],
-    )
+    return ManifestMCPConnection.from_row(connection, tools=tools)
 
 
 def serialize_mcp_server(
@@ -419,27 +281,10 @@ def serialize_mcp_server(
     Connections nested under the server keyed by connection UUID; each
     connection carries its own tool catalog inline.
     """
-    connections = connections_by_id or {}
-    tools_lookup = tools_by_connection or {}
-    return ManifestMCPServer(
-        id=str(server.id),
-        name=server.name,
-        server_url=server.server_url,
-        oauth_provider_id=(
-            str(server.oauth_provider_id) if server.oauth_provider_id else None
-        ),
-        redirect_url=server.redirect_url,
-        discovery_metadata=server.discovery_metadata,
-        organization_id=(
-            str(server.organization_id) if server.organization_id else None
-        ),
-        is_active=server.is_active,
-        connections={
-            cid: serialize_mcp_connection(
-                conn, tools_lookup.get(cid, [])
-            )
-            for cid, conn in connections.items()
-        },
+    return ManifestMCPServer.from_row(
+        server,
+        connections_by_id=connections_by_id,
+        tools_by_connection=tools_by_connection,
     )
 
 
@@ -448,33 +293,54 @@ def serialize_mcp_server(
 # =============================================================================
 
 
-async def generate_manifest(db: AsyncSession) -> Manifest:
+async def generate_manifest(
+    db: AsyncSession, solution_id: "UUID | None" = None
+) -> Manifest:
     """
     Generate a Manifest from current DB state.
 
     Queries all active entities and builds a complete manifest
     with org bindings, role assignments, and runtime config.
+
+    When ``solution_id`` is given, the solution-capable entities
+    (workflows/forms/agents/apps/tables) are restricted to that one install —
+    a per-scope Solution export must not cross-contaminate other tenants or the
+    ad-hoc ``_repo/`` workspace (success-criteria §5). With no ``solution_id``
+    the legacy full-dump behavior is unchanged.
     """
+    def _scope(stmt, model):
+        # Exporting ONE Solution → restrict to that install. Otherwise this is a
+        # WORKSPACE (_repo/) manifest regen — exclude solution-managed rows so a
+        # normal `.bifrost/` regen never serializes deploy-owned entities into the
+        # workspace git/import flow (Codex #16). All no-solution_id callers
+        # (files router, github_sync, repo_sync_writer, manifest_import) are
+        # workspace-tier and want _repo/ only.
+        if solution_id is not None:
+            return stmt.where(model.solution_id == solution_id)
+        return stmt.where(model.solution_id.is_(None))
+
     # Fetch all active workflows (sorted by name for deterministic manifest output)
     wf_result = await db.execute(
-        select(Workflow).where(Workflow.is_active == True).order_by(Workflow.name)  # noqa: E712
+        _scope(
+            select(Workflow).where(Workflow.is_active == True), Workflow  # noqa: E712
+        ).order_by(Workflow.name)
     )
     workflows_list = wf_result.scalars().all()
 
     # Fetch all active forms (sorted by name)
     form_result = await db.execute(
-        select(Form).where(Form.is_active == True).order_by(Form.name)  # noqa: E712
+        _scope(select(Form).where(Form.is_active == True), Form).order_by(Form.name)  # noqa: E712
     )
     forms_list = form_result.scalars().all()
 
     # Fetch all active agents (sorted by name)
     agent_result = await db.execute(
-        select(Agent).where(Agent.is_active == True).order_by(Agent.name)  # noqa: E712
+        _scope(select(Agent).where(Agent.is_active == True), Agent).order_by(Agent.name)  # noqa: E712
     )
     agents_list = agent_result.scalars().all()
 
     # Fetch all apps (sorted by name)
-    app_result = await db.execute(select(Application).order_by(Application.name))
+    app_result = await db.execute(_scope(select(Application), Application).order_by(Application.name))
     apps_list = app_result.scalars().all()
 
     # Fetch organizations (sorted by name)
@@ -609,7 +475,7 @@ async def generate_manifest(db: AsyncSession) -> Manifest:
     # ------------------------------------------------------------------
     # Tables
     # ------------------------------------------------------------------
-    table_result = await db.execute(select(Table).order_by(Table.name))
+    table_result = await db.execute(_scope(select(Table), Table).order_by(Table.name))
     tables_list = table_result.scalars().all()
 
     # ------------------------------------------------------------------

@@ -114,8 +114,8 @@ The platform handles the hard parts - OAuth flows, credential encryption, multi-
 
 ```bash
 # Clone the repository
-git clone https://github.com/jackmusick/bifrost-api.git
-cd bifrost-api
+git clone https://github.com/gobifrost/bifrost.git
+cd bifrost
 
 # Run setup (creates .env with secure random secrets)
 ./setup.sh

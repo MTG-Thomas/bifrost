@@ -305,6 +305,8 @@ from src.models.contracts.files import (
 # Common models
 from src.models.contracts.common import (
     BrandingSettings,
+    BrandingTerm,
+    BrandingTerminology,
     BrandingUpdateRequest,
     ErrorResponse,
     FileUploadRequest,
@@ -376,6 +378,8 @@ from src.models.contracts.github import (
     PreflightIssue,
     PreflightResult,
     RecreateFileResponse,
+    RemapWorkflowRequest,
+    RemapWorkflowResponse,
     ReplaceWorkflowRequest,
     ReplaceWorkflowResponse,
     ValidateTokenRequest,
@@ -501,7 +505,6 @@ from src.models.contracts.integrations import (
     MappingAuthorizeRequest,
     MappingAuthorizeResponse,
     OAuthConfigSummary,
-    IntegrationSDKResponse,  # For API SDK endpoint responses (no decrypted tokens)
     IntegrationTestRequest,
     IntegrationTestResponse,
 )
@@ -804,6 +807,8 @@ __all__ = [
     "CronValidationRequest",
     "CronValidationResponse",
     "BrandingSettings",
+    "BrandingTerm",
+    "BrandingTerminology",
     "BrandingUpdateRequest",
     "FileType",
     "FileMetadata",
@@ -862,6 +867,8 @@ __all__ = [
     "CompatibleReplacementsResponse",
     "ReplaceWorkflowRequest",
     "ReplaceWorkflowResponse",
+    "RemapWorkflowRequest",
+    "RemapWorkflowResponse",
     "RecreateFileResponse",
     "DeactivateWorkflowResponse",
     # Desktop-style git sync models
@@ -980,7 +987,6 @@ __all__ = [
     "MappingAuthorizeRequest",
     "MappingAuthorizeResponse",
     "IntegrationData",
-    "IntegrationSDKResponse",
     "IntegrationTestRequest",
     "IntegrationTestResponse",
     "OAuthConfigSummary",

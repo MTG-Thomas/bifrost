@@ -79,6 +79,8 @@ Start the development stack (per-worktree isolated):
 
 The default mode allocates a free local port for the client (deterministic per worktree, in 30000-39999). If `NETBIRD_SETUP_KEY` is set in `~/.config/bifrost/debug.env`, the stack boots with a Netbird sidecar instead and is reachable at `http://<bifrost-debug-WORKTREE>` over the Netbird mesh — no host ports.
 
+**Forcing port mode for browser/Playwright work:** Chrome/Playwright cannot drive netbird stacks (Vite HMR websocket hangs). If your `~/.config/bifrost/debug.env` has `NETBIRD_SETUP_KEY`, run `BIFROST_FORCE_PORT=1 ./debug.sh up` to force port mode for that boot without editing the global config. `env -u NETBIRD_SETUP_KEY ./debug.sh up` does **not** work — `debug.sh` re-sources the global `debug.env` under `set -a`, re-introducing the key.
+
 Stack contains: API (port 8000 internal), Client (port 80 internal), Scheduler, Worker, Postgres, RabbitMQ, Redis, SeaweedFS. All Bifrost services build from `api/Dockerfile.dev` / `client/Dockerfile.dev` (source build, not public images).
 
 ### Hot Reload is Automatic
@@ -174,17 +176,18 @@ The git sync system uses a **manifest** (`.bifrost/*.yaml`) to round-trip platfo
 
 ## Keeping CLI, MCP, and manifest in sync
 
-Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`), **MCP** (`api/src/services/mcp_server/tools/`), and **manifest export** (`.bifrost/*.yaml` via `bifrost sync` / `bifrost export`). All three read from the same `XxxCreate` / `XxxUpdate` Pydantic DTOs via `api/bifrost/dto_flags.py`, so drift is caught by tests rather than review discipline.
+Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`), **MCP** (`api/src/services/mcp_server/tools/`), and **manifest sync** (`.bifrost/*.yaml` via git sync and Solutions). All three read from the same `XxxCreate` / `XxxUpdate` Pydantic DTOs via `api/bifrost/dto_flags.py`, so drift is caught by tests rather than review discipline.
 
 **When a DTO changes:**
 
 1. Run the DTO-parity test: `./test.sh tests/unit/test_dto_flags.py`. If it fails, either add the new field to the appropriate CLI command / MCP tool, or add it to `DTO_EXCLUDES` in `api/bifrost/dto_flags.py` with a one-line comment explaining why (UI-managed, out-of-scope, etc.).
-2. If the field should round-trip in portable exports, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the scrub rules in `api/bifrost/portable.py`.
-3. If the field changes a command or tool that Claude should know about, update `docs/llm.txt`.
+2. If the field should round-trip through Solutions or `.bifrost/` manifests, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the relevant Solutions export/import code.
+3. If the field changes a command or tool, regenerate the skill appendices via `python api/scripts/skill-truth/generate.py` (CI enforces freshness).
+4. **Run the contract-version tripwire: `./test.sh tests/unit/test_contract_version.py`.** It fingerprints every CLI/SDK-consumed DTO (command DTOs + all `src.models.contracts.cli` SDK DTOs, pulled in programmatically). If one changed, the test fails and forces a decision: if the change is **breaking** (field removed/renamed/retyped, a response shape the CLI parses), bump `CONTRACT_VERSION` in **both** `api/shared/contract_version.py` and `api/bifrost/contract_version.py`, then refresh `EXPECTED_CONTRACT_FINGERPRINT`. If it's **cosmetic/additive**, just refresh the fingerprint. This keeps a missed bump from shipping a CLI that silently breaks against the server — the CLI's runtime gate hard-blocks on a contract mismatch. (Pure route renames aren't gated — they 404 loudly rather than corrupt; the DTO layer catches the silent breakages.)
 
 **When renaming or reassigning an entity (workflow, table, config):** grep the codebase before committing. Workflows are referenced by `path::func` in forms; tables are referenced by name in workflow SDK calls (`sdk.tables.get("...")`); configs are referenced by key. `bifrost tables update --name` warns on renames but does not block — the author is responsible for a full-workspace search (`rg -n '\b<old-name>\b' apps/ workflows/`) before pushing.
 
-**`.bifrost/` is export-only.** Watch only syncs code (`apps/`, `workflows/*.py`); it does NOT push `.bifrost/` content. Entity mutations go through the CLI (`bifrost orgs create`, `bifrost roles update`, etc.) or MCP. To share an env's state across environments, use `bifrost export --portable <dir>` (scrubs env-specific fields) and `bifrost import <dir> --org <uuid> --role-mode name` (rewrites org/role refs against the target env).
+**`.bifrost/` is export-only.** Watch only syncs code (`apps/`, `workflows/*.py`); it does NOT push `.bifrost/` content. Entity mutations go through the CLI (`bifrost orgs create`, `bifrost roles update`, etc.) or MCP. To distribute a packaged set of entities into an org, use **Solutions** (`bifrost solution deploy` / `solution install <zip>`) — the install-scoped, lifecycle-aware successor to the older `bifrost export --portable` / `bifrost import` flow. **`bifrost export` / `bifrost import` were REMOVED** (they predated Solutions and the `--portable` scrub never actually stripped org IDs). For raw `_repo/` workspace movement across environments, use git sync.
 
 **MCP vs REST routers (existing drift):** the MCP tools for `agents`, `forms`, `tables`, `apps`, `events` re-implement router logic and have diverged (different permission models, missing side effects, divergent validation). See `docs/plans/2026-04-18-mcp-router-reconciliation.md` for the catalog and reconciliation sequence. **New MCP tools must be thin HTTP wrappers that call the REST endpoints** (see `api/src/services/mcp_server/tools/roles.py` / `configs.py` / `_http_bridge.py` for the pattern) — no direct ORM access, no repository imports. A unit test (`api/tests/unit/test_mcp_thin_wrapper.py`) enforces this.
 
@@ -193,13 +196,14 @@ Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`),
 ```
 api/
 ├── src/              # FastAPI application
-│   ├── handlers/     # HTTP endpoint handlers (thin layer)
-│   ├── models/       # SQLAlchemy models
-│   ├── jobs/         # Background job workers
+│   ├── routers/      # HTTP endpoint routers (FastAPI APIRouters)
+│   ├── services/     # Business logic, algorithms, domain rules
+│   ├── repositories/ # Org-scoped data access (see repositories/README.md)
+│   ├── models/       # SQLAlchemy ORM (models/orm/) + Pydantic contracts (models/contracts/)
+│   ├── jobs/         # Background job workers + schedulers
 │   └── main.py       # FastAPI app entry point
-├── shared/           # Business logic, utilities
-│   ├── models.py     # Pydantic models (source of truth)
-│   └── ...
+├── shared/           # Cross-cutting utilities (scope_resolver, file_paths, version)
+├── bifrost/          # Distributable SDK + CLI package
 ├── alembic/          # Database migrations
 └── tests/            # Unit and E2E tests
 
@@ -223,14 +227,14 @@ Summarizer-generated `AIUsage` rows roll up into `AgentStats.total_cost_7d` (the
 
 ### Backend (Python/FastAPI)
 
--   **Models**: All Pydantic models MUST be defined in `api/shared/models.py`
--   **Routing**: Create one handler file per base route (e.g., `/discovery` → `discovery_handlers.py`)
+-   **Models**: Request/response Pydantic contracts live in `api/src/models/contracts/`; SQLAlchemy ORM models live in `api/src/models/orm/`
+-   **Routing**: Create one router file per base route under `api/src/routers/` (e.g., `/discovery` → `discovery.py`)
     -   Sub-routes and related functions live in the same file
 -   **Request/Response**: Always use Pydantic Request and Response models
--   **Business Logic**: MUST live in `api/shared/`, NOT in `api/src/handlers/`
-    -   Handlers are thin HTTP handlers only
-    -   Complex logic, algorithms, business rules go in shared modules
-    -   Example: User provisioning logic lives in `shared/user_provisioning.py`
+-   **Business Logic**: MUST live in `api/src/services/` (or `api/shared/` for cross-cutting utilities), NOT inline in routers
+    -   Routers are thin HTTP handlers only
+    -   Complex logic, algorithms, business rules go in service modules
+    -   Example: agent execution logic lives in `src/services/agent_executor.py`
 
 ### Frontend (TypeScript/React)
 
@@ -311,7 +315,7 @@ cd client && npm run lint                 # Lint TypeScript
 ### Common Workflows
 
 **After adding/modifying Pydantic models:**
-1. Make changes to `api/shared/models.py`
+1. Make changes to the relevant contract in `api/src/models/contracts/`
 2. Hot reload updates API automatically
 3. Run `cd client && npm run generate:types`
 4. TypeScript types updated in `client/src/lib/v1.d.ts`

@@ -52,9 +52,9 @@ import {
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SolutionManagedBanner } from "@/components/solutions/SolutionManagedBanner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -76,7 +76,7 @@ import type { components } from "@/lib/v1";
 type Workflow = components["schemas"]["WorkflowMetadata"];
 type RolePublic = components["schemas"]["RolePublic"];
 
-type WorkflowAccessLevel = "authenticated" | "role_based";
+type WorkflowAccessLevel = "authenticated" | "everyone" | "role_based";
 
 const ACCESS_LEVELS: {
 	value: WorkflowAccessLevel;
@@ -86,8 +86,14 @@ const ACCESS_LEVELS: {
 }[] = [
 	{
 		value: "authenticated",
-		label: "Authenticated",
-		description: "Any logged-in user can execute",
+		label: "Everyone except external users",
+		description: "Any signed-in user except external users can execute",
+		icon: <Users className="h-4 w-4" />,
+	},
+	{
+		value: "everyone",
+		label: "Everyone",
+		description: "Any signed-in user, including external users, can execute",
 		icon: <Users className="h-4 w-4" />,
 	},
 	{
@@ -120,6 +126,10 @@ export function WorkflowEditDialog({
 	const assignRoles = useAssignRolesToWorkflow();
 	const removeRole = useRemoveRoleFromWorkflow();
 
+	// Solution-managed workflows are read-only on the platform (criterion 6):
+	// show the banner and disable Save. The API rejects the mutation regardless.
+	const isSolutionManaged = workflow?.is_solution_managed ?? false;
+
 	// Access control state
 	const [organizationId, setOrganizationId] = useState<string | null | undefined>(undefined);
 	const [accessLevel, setAccessLevel] = useState<WorkflowAccessLevel>("role_based");
@@ -127,6 +137,7 @@ export function WorkflowEditDialog({
 	const [rolesOpen, setRolesOpen] = useState(false);
 
 	// General tab state
+	const [workflowName, setWorkflowName] = useState("");
 	const [displayName, setDisplayName] = useState("");
 	const [description, setDescription] = useState("");
 	const [category, setCategory] = useState("");
@@ -186,6 +197,7 @@ export function WorkflowEditDialog({
 			setAccessLevel((workflow.access_level as WorkflowAccessLevel) || "role_based");
 
 			// General
+			setWorkflowName(workflow.name ?? "");
 			setDisplayName(workflow.display_name ?? "");
 			setDescription(workflow.description ?? "");
 			setCategory(workflow.category ?? "General");
@@ -240,10 +252,14 @@ export function WorkflowEditDialog({
 
 		setIsSaving(true);
 		try {
+			const resolvedWorkflowName =
+				workflowName.trim() || workflow.function_name || workflow.name;
+
 			// Build update payload with all changed fields
 			await updateWorkflow.mutateAsync(workflow.id, {
 				organization_id: organizationId,
 				access_level: accessLevel,
+				name: resolvedWorkflowName,
 				display_name: displayName || null,
 				description: description || null,
 				category: category || "General",
@@ -383,6 +399,10 @@ export function WorkflowEditDialog({
 					</DialogDescription>
 				</DialogHeader>
 
+				{isSolutionManaged && (
+					<SolutionManagedBanner entityLabel="workflow" />
+				)}
+
 				<Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 overflow-hidden flex flex-col">
 					<TabsList className="w-full flex-shrink-0">
 						<TabsTrigger value="general" className="gap-1.5">
@@ -423,6 +443,19 @@ export function WorkflowEditDialog({
 						{/* General Tab */}
 						<TabsContent value="general" className="mt-0 space-y-4">
 							<div className="space-y-2">
+								<Label htmlFor="workflow-name">Tool Name</Label>
+								<Input
+									id="workflow-name"
+									value={workflowName}
+									onChange={(e) => setWorkflowName(e.target.value)}
+									placeholder={workflow?.function_name ?? "workflow_name"}
+								/>
+								<p className="text-xs text-muted-foreground">
+									Used when this workflow is exposed as an MCP tool. Leave empty to reset to the Python function name.
+								</p>
+							</div>
+
+							<div className="space-y-2">
 								<Label htmlFor="display-name">Display Name</Label>
 								<Input
 									id="display-name"
@@ -431,7 +464,7 @@ export function WorkflowEditDialog({
 									placeholder={workflow?.name ?? "Workflow name"}
 								/>
 								<p className="text-xs text-muted-foreground">
-									User-facing name. Leave empty to use the code name.
+									Optional UI label. Leave empty to use the tool name.
 								</p>
 							</div>
 
@@ -643,31 +676,19 @@ export function WorkflowEditDialog({
 															<CommandItem
 																key={role.id}
 																value={role.name || ""}
+																data-checked={selectedRoleIds.includes(role.id)}
 																onSelect={() => handleRoleToggle(role.id)}
 															>
-																<div className="flex items-center gap-2 flex-1">
-																	<Checkbox
-																		checked={selectedRoleIds.includes(role.id)}
-																	/>
-																	<div className="flex flex-col">
-																		<span className="font-medium">
-																			{role.name}
+																<div className="flex flex-col flex-1">
+																	<span className="font-medium">
+																		{role.name}
+																	</span>
+																	{role.description && (
+																		<span className="text-xs text-muted-foreground">
+																			{role.description}
 																		</span>
-																		{role.description && (
-																			<span className="text-xs text-muted-foreground">
-																				{role.description}
-																			</span>
-																		)}
-																	</div>
-																</div>
-																<Check
-																	className={cn(
-																		"ml-auto h-4 w-4",
-																		selectedRoleIds.includes(role.id)
-																			? "opacity-100"
-																			: "opacity-0"
 																	)}
-																/>
+																</div>
 															</CommandItem>
 														))}
 													</CommandGroup>
@@ -677,7 +698,7 @@ export function WorkflowEditDialog({
 									</Popover>
 
 									{selectedRoleIds.length > 0 && (
-										<div className="flex flex-wrap gap-2 p-2 border rounded-md bg-muted/50">
+										<div className="flex flex-wrap gap-2 rounded-md bg-muted/50 p-2 ring-1 ring-foreground/5">
 											{selectedRoleIds.map((roleId) => {
 												const role = roles?.find(
 													(r: RolePublic) => r.id === roleId
@@ -879,7 +900,7 @@ export function WorkflowEditDialog({
 									<div className="space-y-2">
 										<Label>Example Request</Label>
 										<div className="relative">
-											<pre className="p-4 bg-muted rounded-md text-xs overflow-x-auto">
+											<pre className="rounded-md bg-muted p-4 text-xs overflow-x-auto ring-1 ring-foreground/5">
 												<code>{curlExample}</code>
 											</pre>
 											<Button
@@ -906,7 +927,7 @@ export function WorkflowEditDialog({
 					<Button variant="outline" onClick={handleClose} disabled={isSaving}>
 						Cancel
 					</Button>
-					<Button onClick={handleSave} disabled={isSaving}>
+					<Button onClick={handleSave} disabled={isSaving || isSolutionManaged}>
 						{isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
 						{isSaving ? "Saving..." : "Save Changes"}
 					</Button>

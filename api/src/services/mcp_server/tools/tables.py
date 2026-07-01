@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from fastmcp.tools import ToolResult
 
 from src.services.mcp_server.tool_result import error_result, success_result
+from src.services.mcp_server.tools._org_scope import apply_mcp_org_scope
 from src.services.mcp_server.tools.db import get_tool_db
 
 logger = logging.getLogger(__name__)
@@ -32,14 +33,10 @@ async def list_tables(
         async with get_tool_db(context) as db:
             query = select(Table)
 
-            # Non-admins can only see their org's tables + global tables
-            if not context.is_platform_admin and context.org_id:
-                query = query.where(
-                    (Table.organization_id == context.org_id)
-                    | (Table.organization_id.is_(None))
-                )
+            # Org cascade: own org + global (admins unscoped).
+            query = apply_mcp_org_scope(query, Table, context)
 
-            # Apply scope filter if provided
+            # Apply scope filter if provided.
             if scope == "global":
                 query = query.where(Table.organization_id.is_(None))
             elif scope == "organization":
@@ -91,12 +88,8 @@ async def get_table(
         async with get_tool_db(context) as db:
             query = select(Table).where(Table.id == table_uuid)
 
-            # Non-admins can only see their org's tables + global
-            if not context.is_platform_admin and context.org_id:
-                query = query.where(
-                    (Table.organization_id == context.org_id)
-                    | (Table.organization_id.is_(None))
-                )
+            # Org cascade (external-aware): externals get no global tier.
+            query = apply_mcp_org_scope(query, Table, context)
 
             result = await db.execute(query)
             table = result.scalar_one_or_none()
@@ -257,12 +250,19 @@ async def create_table(
 
     try:
         async with get_tool_db(context) as db:
-            # Check for duplicate name within same scope
+            # Check for duplicate name within same scope. The global-scope
+            # branch (org_uuid is None) is only reachable by a platform admin —
+            # global table creation is admin-gated above, and an external
+            # principal can never target global scope.
             query = select(Table).where(Table.name == name)
             if org_uuid:
                 query = query.where(Table.organization_id == org_uuid)
-            else:
+            elif context.is_platform_admin:
                 query = query.where(Table.organization_id.is_(None))
+            else:
+                # Defense-in-depth: a non-admin with no resolved org cannot
+                # create/check a global table.
+                return error_result("organization_id is required")
 
             existing = await db.execute(query)
             if existing.scalar_one_or_none():
@@ -330,18 +330,26 @@ async def update_table(
         async with get_tool_db(context) as db:
             query = select(Table).where(Table.id == table_uuid)
 
-            # Non-admins can only update their org's tables
-            if not context.is_platform_admin and context.org_id:
-                query = query.where(
-                    (Table.organization_id == context.org_id)
-                    | (Table.organization_id.is_(None))
-                )
+            # Non-admins can only update their org's tables (external-aware:
+            # externals can't reach global tables to mutate them).
+            query = apply_mcp_org_scope(query, Table, context)
 
             result = await db.execute(query)
             table = result.scalar_one_or_none()
 
             if not table:
                 return error_result(f"Table not found: {table_id}")
+
+            # Solution-managed tables are read-only (criterion 6) — refuse before
+            # mutating so the caller gets the clean locked message, not a 500 from
+            # the before_flush backstop (audit M-MCP).
+            from src.services.solutions.guard import (
+                SOLUTION_MANAGED_MESSAGE,
+                is_solution_managed,
+            )
+
+            if is_solution_managed(table):
+                return error_result(SOLUTION_MANAGED_MESSAGE)
 
             updates_made = []
 
@@ -437,6 +445,17 @@ async def delete_table(
 
             if not table:
                 return error_result(f"Table not found: {table_id}")
+
+            # Solution-managed tables are read-only (criterion 6) — refuse before
+            # the delete so the caller gets the clean locked message, not a 500
+            # from the before_flush backstop (audit M-MCP).
+            from src.services.solutions.guard import (
+                SOLUTION_MANAGED_MESSAGE,
+                is_solution_managed,
+            )
+
+            if is_solution_managed(table):
+                return error_result(SOLUTION_MANAGED_MESSAGE)
 
             table_name = table.name
             await db.delete(table)
