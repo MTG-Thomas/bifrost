@@ -54,7 +54,8 @@ Before any code, before any worktree, get an issue number.
 Search for existing issues:
 
 ```bash
-gh issue list --search "<2-3 key terms>" --state all --limit 5
+SEARCH_TERMS="auth timeout"
+gh issue list --search "$SEARCH_TERMS" --state all --limit 5
 ```
 
 If a plausible match exists, surface it: "This looks related to #N — is that the same thing, or a new one?"
@@ -263,9 +264,8 @@ Do **not** add priority labels, milestones, or status labels.
 ## The `gh issue create` Pattern
 
 ```bash
-gh issue create \
-  --title "[bug]: <summary>" \
-  --body "$(cat <<'EOF'
+BODY_FILE="$(mktemp -t bifrost-issue-body.XXXXXX.md)"
+cat >"$BODY_FILE" <<'EOF'
 ## Summary
 ...
 
@@ -285,7 +285,10 @@ gh issue create \
 - File paths and line numbers where relevant
 - Proposed approach if known
 EOF
-)" \
+
+gh issue create \
+  --title "[bug]: <summary>" \
+  --body-file "$BODY_FILE" \
   --label "bug" \
   --assignee "@me"   # only if user is doing the work
 ```

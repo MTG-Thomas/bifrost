@@ -86,14 +86,14 @@ This opens a browser for authentication and saves credentials to `~/.bifrost/cre
 
 Check existing configuration:
 ```bash
-Codex mcp list
+codex mcp list
 ```
 
 **If `bifrost` exists with wrong URL:** Ask user if they want to update it.
 
 **Add/update MCP server:**
 ```bash
-Codex mcp remove bifrost 2>/dev/null; Codex mcp add --transport http bifrost {url}/mcp
+codex mcp remove bifrost 2>/dev/null; codex mcp add --transport http bifrost {url}/mcp
 ```
 
 ## Restart Required (MCP only)
@@ -120,5 +120,5 @@ If MCP was skipped (SDK-first only), tell the user:
 - Try with `--no-browser` flag and copy the URL manually
 
 ### MCP not working after restart
-- Verify with `Codex mcp list`
+- Verify with `codex mcp list`
 - Check Codex logs for MCP connection errors

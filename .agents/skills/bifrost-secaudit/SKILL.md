@@ -56,10 +56,14 @@ For each: is there an open Dependabot PR for this dep? Cross-reference by name â
 CodeQL pagination is essential. The single-page `?per_page=100` only ever returns 100; this repo currently has ~1000+ alerts.
 
 ```bash
+CODEQL_SUMMARY="$(mktemp -t codeql-summary.XXXXXX)"
+CODEQL_ERRORS="$(mktemp -t codeql-errors.XXXXXX)"
 for page in {1..15}; do
   gh api "repos/jackmusick/bifrost/code-scanning/alerts?state=open&per_page=100&page=$page" \
-    --jq '.[] | "\(.rule.severity) | \(.rule.id)"' 2>/dev/null
-done | sort | uniq -c | sort -rn > /tmp/codeql-summary.txt
+    --jq '.[] | "\(.rule.severity) | \(.rule.id)"' 2>>"$CODEQL_ERRORS"
+done | sort | uniq -c | sort -rn > "$CODEQL_SUMMARY"
+test ! -s "$CODEQL_ERRORS" || echo "CodeQL pagination diagnostics: $CODEQL_ERRORS"
+cat "$CODEQL_SUMMARY"
 ```
 
 Aggregate:
@@ -74,7 +78,7 @@ Aggregate:
 gh api "repos/jackmusick/bifrost/secret-scanning/alerts?state=open"
 ```
 
-Per-alert: secret type, where detected, masking status. Should always be 0 for a healthy repo. Surface every one.
+Per-alert: secret type, where detected, masking status, alert state, and resolution if present. Should always be 0 for a healthy repo. Surface every alert.
 
 ### 5. Scorecard
 

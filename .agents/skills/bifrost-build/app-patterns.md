@@ -110,7 +110,8 @@ export default function SaveButton({ payload }: { payload: any }) {
 `execute()` resolves with the final workflow result, not the execution ID. Both `useWorkflowMutation` and `useWorkflowQuery` expose `executionId` as reactive state; it becomes non-null after the workflow execution is created and before the final result is available. If you need to navigate to the execution page, react to `executionId` in `useEffect`.
 
 ```tsx
-import { useEffect, useState, useWorkflowMutation, useNavigate, Button, toast } from "bifrost";
+import { useEffect, useState, useWorkflowMutation, Button, toast } from "bifrost";
+import { useNavigate } from "react-router-dom";
 
 export default function StartReportButton() {
   const navigate = useNavigate();
@@ -239,9 +240,9 @@ Heavy pages (large dependencies, charts, rich text editors) should be code-split
 
 ```tsx
 // apps/my-app/_layout.tsx
-import { Outlet, Suspense, lazy } from "bifrost";
+import { Suspense, lazy } from "bifrost";
 import { Loader2 } from "lucide-react";
-import { Route, Routes } from "react-router-dom";
+import { Outlet } from "react-router-dom";
 
 // Index is eager — first paint has no extra round-trip.
 import Dashboard from "./pages/index";
@@ -271,7 +272,7 @@ Your app renders in a fixed-height box. Manage your own scrolling; do not assume
 
 ```tsx
 // apps/my-app/_layout.tsx
-import { Outlet } from "bifrost";
+import { Outlet } from "react-router-dom";
 
 export default function Layout() {
   return (
@@ -299,7 +300,8 @@ Key classes:
 ### Page-level guard (first line of the component)
 
 ```tsx
-import { useUser, Navigate } from "bifrost";
+import { useUser } from "bifrost";
+import { Navigate } from "react-router-dom";
 
 export default function AdminPage() {
   const user = useUser();
@@ -317,7 +319,8 @@ export default function AdminPage() {
 ### Declarative guard
 
 ```tsx
-import { RequireRole, Navigate } from "bifrost";
+import { RequireRole } from "bifrost";
+import { Navigate } from "react-router-dom";
 
 <RequireRole role="Admin" fallback={<Navigate to="/" />}>
   <AdminPage />
@@ -328,7 +331,8 @@ import { RequireRole, Navigate } from "bifrost";
 
 ```tsx
 // _layout.tsx
-import { Outlet, useUser, Navigate } from "bifrost";
+import { useUser } from "bifrost";
+import { Navigate, Outlet } from "react-router-dom";
 
 export default function Layout() {
   const user = useUser();
@@ -342,7 +346,8 @@ export default function Layout() {
 Like `useState` but persists across page navigations within the same app session.
 
 ```tsx
-import { useAppState, Button, useNavigate } from "bifrost";
+import { useAppState, Button } from "bifrost";
+import { useNavigate } from "react-router-dom";
 
 // List page
 export default function ClientsList() {
@@ -360,7 +365,8 @@ export default function ClientsList() {
 }
 
 // Detail page
-import { useAppState, Navigate } from "bifrost";
+import { useAppState } from "bifrost";
+import { Navigate } from "react-router-dom";
 
 export default function ClientDetails() {
   const [selected] = useAppState<any>("selectedClient", null);

@@ -121,7 +121,7 @@ For each error-severity rule with N≥3 findings, dispatch a triage subagent tha
 2. Reads 5–10 representative samples
 3. Returns a verdict: DISMISS_AS_CLASS / FIX_AS_CLASS / MIXED — never takes action
 
-```
+```text
 You are triaging CodeQL alerts for rule `<RULE_ID>` in jackmusick/bifrost.
 
 Steps:
@@ -147,6 +147,7 @@ Do NOT take action. Only report.
 After all subagents return, the controller (this skill, in the main session) aggregates:
 
 - **DISMISS_AS_CLASS verdicts:** show the user the table; on approval, run the bulk dismiss script per rule:
+
   ```bash
   RULE_ID="py/unsafe-cyclic-import"
   REASON="SQLAlchemy ORM relationship() lazy-eval — see verdict"
@@ -158,6 +159,7 @@ After all subagents return, the controller (this skill, in the main session) agg
     -f state=dismissed -f "dismissed_reason=false positive" \
     -f "dismissed_comment=$REASON"
   ```
+
   > `dismissed_reason` must be `false positive`, `won't fix`, or `used in tests` (with spaces, not underscores). `dismissed_comment` is capped at 280 chars.
 - **FIX_AS_CLASS verdicts:** dispatch an implementer subagent (separate worktree) to write the fix as its own PR. Per-rule PR, never bundled.
 - **MIXED verdicts:** dismiss the FP file:line list; file an issue per real finding cluster, link to alerts.
@@ -206,8 +208,11 @@ gh pr list --repo jackmusick/bifrost --state open \
   --json number,title,labels,statusCheckRollup --jq '.[] | {n: .number, title: .title, ci: [.statusCheckRollup[] | select(.name == "Lint & Type Check" or .name == "Unit Tests" or .name == "E2E Tests") | "\(.name): \(.conclusion // .status)"]}'
 
 # Re-run failed checks on a PR (after concluding the failure was transient)
-RUN_ID=$(gh pr view <N> --repo jackmusick/bifrost --json statusCheckRollup --jq '.statusCheckRollup[] | select(.conclusion == "FAILURE") | .detailsUrl' | grep -oE 'runs/[0-9]+' | head -1 | sed 's|runs/||')
-gh run rerun $RUN_ID --repo jackmusick/bifrost --failed
+PR_BRANCH=$(gh pr view <N> --repo jackmusick/bifrost --json headRefName --jq .headRefName)
+RUN_ID=$(gh run list --repo jackmusick/bifrost --branch "$PR_BRANCH" --json databaseId,conclusion,createdAt --limit 20 \
+  --jq '[.[] | select(.conclusion == "failure")] | sort_by(.createdAt) | reverse | .[0].databaseId')
+test -n "$RUN_ID"
+gh run rerun "$RUN_ID" --repo jackmusick/bifrost --failed
 
 # Trigger Dependabot rebase (when main has moved and PR is "branches up to date" gated)
 gh pr comment <N> --repo jackmusick/bifrost --body "@dependabot rebase"

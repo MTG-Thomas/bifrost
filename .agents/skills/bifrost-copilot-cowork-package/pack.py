@@ -227,9 +227,14 @@ def build_manifest(agent: dict, skill_name: str, app_id: str,
     name = display_name or agent["name"]
     desc_full = description or agent.get("description") or name
     short_desc = desc_full.split(".")[0][:80]
+    supported_auth = {"None", "OAuthPluginVault", "ApiKeyPluginVault"}
+    if auth_type not in supported_auth:
+        raise ValueError(f"Unsupported auth type: {auth_type}")
     auth_block: dict = {"type": auth_type}
     if auth_type != "None":
-        auth_block["referenceId"] = ref_id or f"{kebab(name)}-auth"
+        if not ref_id:
+            raise ValueError("--ref-id is required unless --auth None")
+        auth_block["referenceId"] = ref_id
 
     return {
         "$schema": "https://developer.microsoft.com/json-schemas/teams/vDevPreview/MicrosoftTeams.schema.json",
@@ -270,7 +275,7 @@ def main() -> int:
     p.add_argument("ref", help="Agent name or UUID")
     p.add_argument("--out", default=".", help="Output directory")
     p.add_argument("--auth", default="OAuthPluginVault",
-                   choices=["None", "OAuthPluginVault", "ApiKeyPluginVault", "DynamicClientRegistration"])
+                   choices=["None", "OAuthPluginVault", "ApiKeyPluginVault"])
     p.add_argument("--ref-id", default=None, help="Token vault referenceId (required unless --auth None)")
     p.add_argument("--bifrost-host", default=None,
                    help="Bifrost MCP host (default: resolved from `bifrost auth list`)")
@@ -286,6 +291,9 @@ def main() -> int:
                         "If set, its SKILL.md + companion files are used verbatim "
                         "instead of building SKILL.md from agent.system_prompt.")
     args = p.parse_args()
+
+    if args.auth != "None" and not args.ref_id:
+        p.error("--ref-id is required unless --auth None")
 
     agent = get_agent(args.ref)
     app_id = args.app_id or str(uuid.uuid5(COWORK_NAMESPACE, agent["id"]))
@@ -314,8 +322,17 @@ def main() -> int:
     out_root = Path(args.out).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     pkg_dir = out_root / f"{skill_name}-cowork"
-    # If an icon source lives inside the staging dir we're about to wipe, stash it first.
+    # If a source lives inside the staging dir we're about to wipe, copy it aside first.
     stash_dir: Path | None = None
+    if src_skill_dir and (src_skill_dir == pkg_dir or pkg_dir in src_skill_dir.parents):
+        stash_dir = Path(tempfile.mkdtemp(prefix="copilot-skill-stash-"))
+        new_skill_dir = stash_dir / src_skill_dir.name
+        shutil.copytree(
+            src_skill_dir,
+            new_skill_dir,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        src_skill_dir = new_skill_dir
     for var_name in ("icon_src", "outline_src"):
         p = locals()[var_name]
         if p and pkg_dir in p.parents:

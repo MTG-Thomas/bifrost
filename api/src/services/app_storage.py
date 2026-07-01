@@ -35,18 +35,21 @@ class AppStorageService:
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or get_settings()
-        if self._settings.object_storage_provider == "azure_blob":
+        provider = self._settings.object_storage_provider
+        if provider == "azure_blob":
             from src.services.file_storage.azure_blob_client import (
                 AzureBlobStorageClient,
             )
 
             self._storage = AzureBlobStorageClient(self._settings)
             self._bucket = self._settings.azure_blob_container or ""
-        else:
+        elif provider == "s3":
             from src.services.file_storage.s3_client import S3StorageClient
 
             self._storage = S3StorageClient(self._settings)
             self._bucket = self._settings.s3_bucket or ""
+        else:
+            raise ValueError(f"Unsupported object_storage_provider: {provider}")
 
     @asynccontextmanager
     async def _get_client(self):
