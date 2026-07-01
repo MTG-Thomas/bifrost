@@ -180,6 +180,12 @@ azurite/
 # PyCharm
 .idea/
 
+# Cursor local hook state
+.cursor/hooks/state/
+
+# Local code knowledge graph output
+graphify-out/
+
 # ==================== OS ====================
 
 # macOS
@@ -223,3 +229,5 @@ system//home/
 
 # Local UX prototypes — not part of the product, never committed
 client/preview/
+.desloppify/
+scorecard.png

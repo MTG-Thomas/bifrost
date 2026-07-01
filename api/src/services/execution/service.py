@@ -151,6 +151,9 @@ async def get_workflow_for_execution(
         - value: ROI value
         - execution_mode: sync or async
         - organization_id: Org scope (or None for global)
+        - solution_id: Solution install id if solution-managed (else None)
+        - type: Executable type (workflow, tool, or data_provider)
+        - cache_ttl_seconds: Data provider cache TTL
 
     Raises:
         WorkflowNotFoundError: If workflow doesn't exist in database
@@ -160,16 +163,23 @@ async def get_workflow_for_execution(
     from src.models import Workflow as WorkflowORM
 
     async def _fetch(session: AsyncSession) -> dict[str, Any]:
-        stmt = select(WorkflowORM).where(
-            WorkflowORM.id == workflow_id,
-            WorkflowORM.is_active == True,  # noqa: E712
+        from src.models.orm.solutions import Solution as SolutionORM
+
+        stmt = (
+            select(WorkflowORM, SolutionORM.global_repo_access)
+            .outerjoin(SolutionORM, WorkflowORM.solution_id == SolutionORM.id)
+            .where(
+                WorkflowORM.id == workflow_id,
+                WorkflowORM.is_active == True,  # noqa: E712
+            )
         )
         result = await session.execute(stmt)
-        workflow_record = result.scalar_one_or_none()
+        row = result.one_or_none()
 
-        if not workflow_record:
+        if row is None:
             raise WorkflowNotFoundError(f"Workflow with ID '{workflow_id}' not found")
 
+        workflow_record, global_repo_access = row
         logger.debug(f"Loaded workflow for execution: {workflow_id} -> {workflow_record.name}")
 
         return {
@@ -181,6 +191,10 @@ async def get_workflow_for_execution(
             "value": float(workflow_record.value) if workflow_record.value else 0.0,
             "execution_mode": workflow_record.execution_mode or "async",
             "organization_id": str(workflow_record.organization_id) if workflow_record.organization_id else None,
+            "solution_id": str(workflow_record.solution_id) if workflow_record.solution_id else None,
+            "can_access_global_repo": bool(global_repo_access),
+            "type": workflow_record.type or "workflow",
+            "cache_ttl_seconds": workflow_record.cache_ttl_seconds or 0,
         }
 
     if db is not None:
@@ -274,10 +288,17 @@ async def get_workflow_by_id(
         if not callable(obj):
             continue
 
-        # All decorators use _executable_metadata
-        if hasattr(obj, "_executable_metadata"):
+        # All decorators use _executable_metadata.
+        # Match by Python function name (the module attr name), NOT the decorator
+        # display name (meta.name) — mirroring the worker loader
+        # (module_loader.py: "Match by Python function name, not display name").
+        # The DB ``name`` is identity/display only and can legitimately differ
+        # from both the decorator name and function_name (custom @workflow(name=),
+        # CLI rename via PATCH, or a manifest-declared name). function_name is the
+        # stable source-code identity the module was loaded by.
+        if hasattr(obj, "_executable_metadata") and name == workflow_record.function_name:
             meta = getattr(obj, "_executable_metadata", None)
-            if meta and hasattr(meta, 'name') and meta.name == workflow_record.name:
+            if meta:
                 workflow_func = obj
                 # For data providers, convert to WorkflowMetadata for consistent execution
                 if hasattr(meta, 'type') and meta.type == 'data_provider':
@@ -301,7 +322,7 @@ async def get_workflow_by_id(
 
     if not workflow_func or not workflow_metadata:
         raise WorkflowLoadError(
-            f"No decorated function named '{workflow_record.name}' found in {workflow_record.path}"
+            f"No decorated function '{workflow_record.function_name}' found in {workflow_record.path}"
         )
 
     # Enrich metadata from database record
@@ -534,7 +555,13 @@ async def execute_tool(
     """
     from src.sdk.context import ExecutionContext, Organization
 
-    # Build organization if provided
+    # Build organization if provided.
+    #
+    # Only org_id is load-bearing: _enqueue_workflow_async passes org_id (not
+    # this object) to the queue, and the worker rehydrates the org — including
+    # is_provider — from org_id via OrganizationRepository.get_with_cache in the
+    # workflow_execution consumer. This object is never serialized, so omitting
+    # is_provider here is intentional, not a scope-bypass gap.
     org = None
     if org_id:
         org = Organization(

@@ -60,12 +60,35 @@ class PoolSummary(BaseModel):
 
     worker_id: str = Field(..., description="Pool identifier (container hostname)")
     hostname: str | None = None
+    runtime: str | None = Field(
+        default=None,
+        description="Operator/runtime hint for the pool, such as compose, aks, aca, or talos",
+    )
+    runtime_label: str | None = Field(
+        default=None,
+        description="Display label for the pool runtime, when provided by the worker",
+    )
     status: str | None = Field(
         default=None,
         description="Pool status: online or offline"
     )
     started_at: str | None = None
-    pool_size: int = Field(default=0, description="Total number of processes in pool")
+    pool_size: int = Field(
+        default=0,
+        description="Backward-compatible alias for active_process_count",
+    )
+    active_process_count: int = Field(
+        default=0,
+        description="Currently forked one-shot child processes",
+    )
+    configured_capacity: int | None = Field(
+        default=None,
+        description="Maximum concurrent child processes this pool may admit",
+    )
+    max_workers: int | None = Field(
+        default=None,
+        description="Configured ProcessPoolManager max_workers value",
+    )
     idle_count: int = Field(default=0, description="Number of idle processes")
     busy_count: int = Field(default=0, description="Number of busy processes")
     last_heartbeat: str | None = None
@@ -79,7 +102,8 @@ class PoolSummary(BaseModel):
     )
     memory_current_bytes: int | None = Field(
         default=None,
-        description="Current memory usage of the worker container in bytes (from cgroup)"
+        description="Working-set memory of the worker container in bytes "
+        "(cgroup anon + active_file, matches kubelet/kubectl top)"
     )
     memory_max_bytes: int | None = Field(
         default=None,
@@ -92,9 +116,25 @@ class PoolDetail(BaseModel):
 
     worker_id: str
     hostname: str | None = None
+    runtime: str | None = Field(
+        default=None,
+        description="Operator/runtime hint for the pool, such as compose, aks, aca, or talos",
+    )
+    runtime_label: str | None = Field(
+        default=None,
+        description="Display label for the pool runtime, when provided by the worker",
+    )
     status: str | None = None
     started_at: str | None = None
     last_heartbeat: str | None = None
+    configured_capacity: int | None = Field(
+        default=None,
+        description="Maximum concurrent child processes this pool may admit",
+    )
+    max_workers: int | None = Field(
+        default=None,
+        description="Configured ProcessPoolManager max_workers value",
+    )
     processes: list[ProcessInfo] = Field(default_factory=list)
 
 
@@ -110,6 +150,10 @@ class PoolStatsResponse(BaseModel):
 
     total_pools: int = Field(..., description="Number of registered pools")
     total_processes: int = Field(..., description="Total processes across all pools")
+    total_configured_capacity: int | None = Field(
+        default=None,
+        description="Total configured concurrent execution capacity across pools",
+    )
     total_idle: int = Field(..., description="Total idle processes across all pools")
     total_busy: int = Field(..., description="Total busy processes across all pools")
 
@@ -202,7 +246,10 @@ class WorkerMetricPoint(BaseModel):
 
     group: str = Field(..., description="Formatted time bucket label")
     worker_id: str = Field(..., description="Container/pool identifier")
-    memory_current: int = Field(..., description="cgroup memory.current in bytes")
+    memory_current: int = Field(
+        ...,
+        description="Working-set memory in bytes (cgroup anon + active_file)",
+    )
     memory_max: int = Field(..., description="cgroup memory.max in bytes")
     fork_count: int = Field(default=0)
     busy_count: int = Field(default=0)
@@ -214,4 +261,3 @@ class WorkerMetricsResponse(BaseModel):
 
     range: str = Field(..., description="Requested time range: 1h, 6h, 24h, 7d")
     points: list[WorkerMetricPoint] = Field(default_factory=list)
-

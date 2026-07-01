@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac as hmac_module
+import uuid
 from urllib.parse import urlparse
 
 import pytest
@@ -28,11 +29,12 @@ class TestEmbedWorkflowExecution:
     @pytest.fixture
     def embed_session(self, e2e_client, platform_admin):
         """Create an app with embed secret and get an embed token."""
+        slug = f"embed-wf-test-{uuid.uuid4().hex[:8]}"
         # Create app
         r = e2e_client.post(
             "/api/applications",
             headers=platform_admin.headers,
-            json={"name": "embed-wf-test", "slug": "embed-wf-test"},
+            json={"name": slug, "slug": slug, "app_model": "inline_v1"},
         )
         assert r.status_code == 201, r.text
         app = r.json()

@@ -72,7 +72,7 @@ def _client_with_blob_names(names, *, next_token=None):
             self._blobs = blobs
 
         def by_page(self, **kwargs):
-            del kwargs
+            assert set(kwargs) <= {"continuation_token"}
             return FakePager(self._blobs)
 
     class FakeContainer:
@@ -87,7 +87,7 @@ def _client_with_blob_names(names, *, next_token=None):
                 for name in names
                 if name.startswith(name_starts_with)
             ]
-            if results_per_page is not None:
+            if results_per_page:
                 blobs = blobs[:results_per_page]
             return FakePaged(blobs)
 

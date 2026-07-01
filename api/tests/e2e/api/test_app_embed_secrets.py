@@ -1,10 +1,12 @@
 """E2E tests for app embed secret CRUD."""
 
+import uuid
+
 import pytest
 
 
 def _create_app(client, headers, slug):
-    r = client.post("/api/applications", headers=headers, json={"name": slug, "slug": slug})
+    r = client.post("/api/applications", headers=headers, json={"name": slug, "slug": slug, "app_model": "inline_v1"})
     assert r.status_code == 201, r.text
     return r.json()
 
@@ -18,7 +20,11 @@ def _delete_app(client, headers, app_id):
 class TestAppEmbedSecrets:
     @pytest.fixture
     def test_app(self, e2e_client, platform_admin):
-        app = _create_app(e2e_client, platform_admin.headers, "embed-secret-test")
+        app = _create_app(
+            e2e_client,
+            platform_admin.headers,
+            f"embed-secret-test-{uuid.uuid4().hex[:8]}",
+        )
         yield app
         _delete_app(e2e_client, platform_admin.headers, app["id"])
 

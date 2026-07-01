@@ -1,6 +1,6 @@
 // client/src/pages/diagnostics/components/ContainerTable.tsx
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight, Cloud, Server, Boxes } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, Cloud, Server } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/tooltip";
 
 type PoolData = PoolSummary | PoolDetail;
-type RuntimeKind = "AKS" | "VM" | "ACA" | "Unknown";
+type RuntimeKind = "AKS" | "VM" | "ACA" | "Talos" | "Unknown";
 
 function formatUptime(seconds: number): string {
     if (seconds < 60) return `${Math.floor(seconds)}s`;
@@ -47,19 +47,27 @@ function formatBytes(bytes: number): string {
     return `${mb.toFixed(0)} MB`;
 }
 
-function getPoolCounts(pool: PoolData) {
+export function getPoolCounts(pool: PoolData) {
     if ("processes" in pool && Array.isArray(pool.processes)) {
         const processes = pool.processes as ProcessInfo[];
+        const detail = pool as PoolDetail;
+        const active = detail.active_process_count ?? detail.pool_size ?? processes.length;
+        const capacity =
+            detail.configured_capacity ?? detail.max_workers ?? active;
         return {
-            total: processes.length,
+            total: active,
+            capacity,
             idle: processes.filter((p) => p.state === "idle").length,
             busy: processes.filter((p) => p.state === "busy").length,
             processes,
         };
     }
     const summary = pool as PoolSummary;
+    const active = summary.active_process_count ?? summary.pool_size ?? 0;
+    const capacity = summary.configured_capacity ?? summary.max_workers ?? active;
     return {
-        total: summary.pool_size ?? 0,
+        total: active,
+        capacity,
         idle: summary.idle_count ?? 0,
         busy: summary.busy_count ?? 0,
         processes: [] as ProcessInfo[],
@@ -73,10 +81,18 @@ function getUptimeSeconds(pool: PoolData): number {
 }
 
 function getRuntimeKind(pool: PoolData): RuntimeKind {
+    const explicitRuntime = pool.runtime?.trim().toLowerCase();
+    if (explicitRuntime === "talos") {
+        return "Talos";
+    }
+
     const workerId = pool.worker_id.toLowerCase();
     const hostname = (pool.hostname ?? "").toLowerCase();
     const source = `${workerId} ${hostname}`;
 
+    if (/\btalos\b/.test(source)) {
+        return "Talos";
+    }
     if (source.includes("aks") || source.includes("k8s")) {
         return "AKS";
     }
@@ -91,15 +107,23 @@ function getRuntimeKind(pool: PoolData): RuntimeKind {
 
 function RuntimeBadge({ pool }: Readonly<{ pool: PoolData }>) {
     const runtime = getRuntimeKind(pool);
-    const Icon = runtime === "AKS" ? Boxes : runtime === "ACA" ? Cloud : Server;
+    const Icon =
+        runtime === "AKS" || runtime === "Talos"
+            ? Boxes
+            : runtime === "ACA"
+                ? Cloud
+                : Server;
     const label =
-        runtime === "AKS"
+        pool.runtime_label ??
+        (runtime === "AKS"
             ? "AKS pod"
+            : runtime === "Talos"
+                ? "Talos pod"
             : runtime === "ACA"
                 ? "ACA app"
                 : runtime === "VM"
                     ? "VM"
-                    : "Unknown";
+                    : "Unknown");
 
     return (
         <Badge variant="outline" className="gap-1 text-[10px]">
@@ -136,15 +160,15 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
     };
 
     return (
-        <div className="border rounded-lg overflow-hidden">
+        <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-foreground/5 dark:ring-foreground/10">
             <Table>
-                <TableHeader>
+                <TableHeader className="bg-muted">
                     <TableRow className="text-xs">
                         <TableHead className="w-8" />
                         <TableHead>Container</TableHead>
                         <TableHead className="w-[100px]">Runtime</TableHead>
                         <TableHead className="w-[80px]">Status</TableHead>
-                        <TableHead className="w-[100px]">Forks</TableHead>
+                        <TableHead className="w-[120px]">Forks</TableHead>
                         <TableHead className="w-[200px]">Memory</TableHead>
                         <TableHead className="w-[90px]">Uptime</TableHead>
                     </TableRow>
@@ -233,7 +257,7 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="text-sm">
-                                        {counts.total}{" "}
+                                        {counts.total}/{counts.capacity}{" "}
                                         {counts.busy > 0 && (
                                             <span className="text-xs text-muted-foreground">
                                                 ({counts.busy} busy)

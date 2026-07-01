@@ -32,7 +32,6 @@ class TestProcessState:
 
     def test_all_states_defined(self):
         """Should have all required states."""
-        assert ProcessState.IDLE.value == "idle"
         assert ProcessState.BUSY.value == "busy"
         assert ProcessState.KILLED.value == "killed"
 
@@ -112,7 +111,7 @@ class TestProcessHandle:
             id="process-1",
             process=mock_process,
             pid=12345,
-            state=ProcessState.IDLE,
+            state=ProcessState.BUSY,
             work_queue=mock_work_queue,
             result_queue=mock_result_queue,
             started_at=now,
@@ -120,7 +119,7 @@ class TestProcessHandle:
 
         assert handle.id == "process-1"
         assert handle.pid == 12345
-        assert handle.state == ProcessState.IDLE
+        assert handle.state == ProcessState.BUSY
         assert handle.current_execution is None
         assert handle.executions_completed == 0
 
@@ -133,7 +132,7 @@ class TestProcessHandle:
             id="process-1",
             process=mock_process,
             pid=12345,
-            state=ProcessState.IDLE,
+            state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
             started_at=datetime.now(timezone.utc),
@@ -151,7 +150,7 @@ class TestProcessHandle:
             id="process-1",
             process=mock_process,
             pid=12345,
-            state=ProcessState.IDLE,
+            state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
             started_at=past,
@@ -485,7 +484,7 @@ class TestProcessPoolManagerHeartbeat:
             id="process-1",
             process=idle_process,
             pid=12345,
-            state=ProcessState.IDLE,
+            state=ProcessState.KILLED,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
             started_at=datetime.now(timezone.utc),
@@ -513,6 +512,9 @@ class TestProcessPoolManagerHeartbeat:
         assert heartbeat["type"] == "worker_heartbeat"
         assert heartbeat["worker_id"] == "test-worker-123"
         assert heartbeat["pool_size"] == 2
+        assert heartbeat["active_process_count"] == 2
+        assert heartbeat["configured_capacity"] == pool.max_workers
+        assert heartbeat["max_workers"] == pool.max_workers
         # In on-demand mode every running handle is BUSY (the IDLE-marked
         # handle above is for test-shape parity with persistent-pool
         # heartbeats; idle_count is reported as 0 in this mode).
@@ -655,7 +657,7 @@ class TestProcessPoolManagerStatus:
             id="process-1",
             process=mock_process,
             pid=12345,
-            state=ProcessState.IDLE,
+            state=ProcessState.BUSY,
             work_queue=MagicMock(),
             result_queue=MagicMock(),
             started_at=datetime.now(timezone.utc),
@@ -668,9 +670,12 @@ class TestProcessPoolManagerStatus:
         assert status["shutdown"] is False
         assert status["worker_id"] == "test-worker"
         assert status["pool_size"] == 1
+        assert status["active_process_count"] == 1
+        assert status["configured_capacity"] == pool.max_workers
+        assert status["max_workers"] == pool.max_workers
         assert len(status["processes"]) == 1
         assert status["processes"][0]["process_id"] == "process-1"
-        assert status["processes"][0]["state"] == "idle"
+        assert status["processes"][0]["state"] == "busy"
 
 
 class TestProcessPoolManagerIntegration:

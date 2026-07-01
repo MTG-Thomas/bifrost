@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Literal, Union
-from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -56,6 +55,7 @@ from src.services.mcp_client.oauth_state import (
 )
 from src.services.oauth_provider import (
     OAuthProviderClient,
+    append_query_params,
     get_url_resolution_defaults,
     resolve_url_template,
 )
@@ -173,6 +173,7 @@ async def _get_connection_or_404(
         org_id=ctx.org_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_platform_admin,
+        is_external=ctx.user.is_external,
     )
     connection = await repo.get_connection(connection_id)
     if connection is None:
@@ -279,7 +280,7 @@ async def _build_authorization_url(
     if provider.audience:
         params["audience"] = provider.audience
 
-    return f"{resolved}?{urlencode(params)}"
+    return append_query_params(resolved, params)
 
 
 async def _activate_client_credentials(
@@ -495,6 +496,7 @@ async def create_mcp_connection(
         org_id=request.organization_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_platform_admin,
+        is_external=ctx.user.is_external,
     )
     server = await server_repo.get_server(request.server_id)
     if server is None:
@@ -529,6 +531,7 @@ async def create_mcp_connection(
         org_id=request.organization_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_platform_admin,
+        is_external=ctx.user.is_external,
     )
     refreshed = await conn_repo.get_connection(connection.id)
     assert refreshed is not None  # we just inserted it

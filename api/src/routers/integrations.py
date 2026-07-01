@@ -8,7 +8,6 @@ Integrations combine OAuth providers, data providers, and configuration schemas.
 import logging
 import secrets
 from datetime import datetime, timezone
-from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -36,7 +35,6 @@ from src.models import (
     IntegrationMappingResponse,
     IntegrationMappingUpdate,
     IntegrationResponse,
-    IntegrationSDKResponse,
     IntegrationTestRequest,
     IntegrationTestResponse,
     IntegrationUpdate,
@@ -47,17 +45,18 @@ from src.models import (
 from src.models.orm import Config as ConfigModel
 from src.models.orm import IntegrationConfigSchema
 from src.models.orm import OAuthToken
-from src.services.integration_config_schema import (
-    integration_to_response,
-    parse_config_schema_items,
-    validate_config_schema_type,
+from src.services.oauth_provider import (
+    append_query_params,
+    get_url_resolution_defaults,
+    resolve_url_template,
 )
-from src.services.oauth_provider import get_url_resolution_defaults, resolve_url_template
 from src.services.oauth_state import encode_state, remember_nonce
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
+
+REFRESH_FAILED_MESSAGE = "Refresh failed"
 
 
 # =============================================================================
@@ -176,7 +175,6 @@ class IntegrationsRepository:
         # Add config schema items to the normalized table
         if request.config_schema:
             for idx, item in enumerate(request.config_schema):
-                validate_config_schema_type(item.type)
                 schema_item = IntegrationConfigSchema(
                     key=item.key,
                     type=item.type,
@@ -230,7 +228,6 @@ class IntegrationsRepository:
 
             # Update existing or add new schema items
             for idx, item_data in enumerate(request.config_schema):
-                validate_config_schema_type(item_data.type)
                 if item_data.key in existing_by_key:
                     # Update existing
                     existing = existing_by_key[item_data.key]
@@ -557,15 +554,23 @@ class IntegrationsRepository:
         return raw
 
     async def get_integration_defaults(
-        self, integration_id: UUID, *, include_secrets: bool = True
+        self, integration_id: UUID, *, external: bool
     ) -> dict[str, Any]:
         """
         Get integration-level default config values.
 
         These are stored in the configs table with integration_id set
         but organization_id is NULL.
+
+        ``external`` is REQUIRED (no default — EXT-1 NEW-G/NEW-H defense in
+        depth). These defaults ARE the global (org_id=NULL) tier and may carry
+        decrypted SECRETs. An EXTERNAL portal caller passes True and gets {};
+        the superuser admin routes that use this class pass False explicitly.
+        No default so a future call site can't silently leak the global tier
+        (this is the class behind the now-deleted cross-tenant /sdk/{name}).
         """
-        from src.models.enums import ConfigType as ConfigTypeEnum
+        if external:
+            return {}
 
         config_query = select(ConfigModel).where(
             and_(
@@ -578,8 +583,6 @@ class IntegrationsRepository:
 
         config: dict[str, Any] = {}
         for entry in config_entries:
-            if entry.config_type == ConfigTypeEnum.SECRET and not include_secrets:
-                continue
             config[entry.key] = await self._extract_config_value(entry)
 
         return config
@@ -635,11 +638,7 @@ class IntegrationsRepository:
         return configs_by_org
 
     async def get_config_for_mapping(
-        self,
-        integration_id: UUID,
-        org_id: UUID,
-        *,
-        include_default_secrets: bool = False,
+        self, integration_id: UUID, org_id: UUID, *, external: bool
     ) -> dict[str, Any]:
         """
         Get merged configuration for an integration mapping.
@@ -650,14 +649,17 @@ class IntegrationsRepository:
 
         Per-org values override integration defaults.
 
-        Used by SDK endpoint where we need the fully resolved config.
+        ``external`` is REQUIRED (no default — EXT-1 NEW-G/NEW-H). An EXTERNAL
+        portal caller passes True and gets org-specific overrides ONLY (no
+        global defaults — a decrypted SECRET never crosses to a portal user);
+        the superuser admin routes pass False explicitly.
         """
-        # Start with integration-level defaults
+        # Integration-level defaults (skipped entirely for external callers).
         config = await self.get_integration_defaults(
-            integration_id, include_secrets=include_default_secrets
+            integration_id, external=external
         )
 
-        # Merge org overrides
+        # Merge org overrides (always the caller's own resolved org).
         org_overrides = await self.get_org_config_overrides(integration_id, org_id)
         config.update(org_overrides)
 
@@ -702,7 +704,7 @@ async def create_integration(
     integration = await repo.create_integration(request)
     logger.info(f"Created integration: {log_safe(integration.name)}")
 
-    return integration_to_response(integration)
+    return IntegrationResponse.model_validate(integration)
 
 
 @router.get(
@@ -719,7 +721,7 @@ async def list_integrations(
     repo = IntegrationsRepository(ctx.db)
     integrations = await repo.list_integrations()
 
-    items = [integration_to_response(i) for i in integrations]
+    items = [IntegrationResponse.model_validate(i) for i in integrations]
     return IntegrationListResponse(items=items, total=len(items))
 
 
@@ -747,18 +749,9 @@ async def get_integration(
     # Build OAuth config summary if OAuth provider exists
     oauth_config = None
     if integration.oauth_provider:
-        from src.services.oauth_provider import (
-            get_integration_level_token,
-            resolve_integration_oauth_status,
-        )
-
         provider = integration.oauth_provider
-        token = await get_integration_level_token(ctx.db, provider.id)
-        status_val, status_message = resolve_integration_oauth_status(provider, token)
-        if token and token.last_refresh_at:
-            last_refresh_at = token.last_refresh_at
-        else:
-            last_refresh_at = provider.last_token_refresh
+        # Get token data if available (for expires_at and has_refresh_token)
+        token = provider.tokens[0] if provider.tokens else None
         oauth_config = OAuthConfigSummary(
             provider_name=provider.provider_name,
             oauth_flow_type=provider.oauth_flow_type,
@@ -766,10 +759,10 @@ async def get_integration(
             authorization_url=provider.authorization_url,
             token_url=provider.token_url or "",
             scopes=provider.scopes or [],
-            status=status_val,
-            status_message=status_message,
+            status=provider.status or "not_connected",
+            status_message=provider.status_message,
             expires_at=token.expires_at if token else None,
-            last_refresh_at=last_refresh_at,
+            last_refresh_at=provider.last_token_refresh,
             has_refresh_token=token.encrypted_refresh_token is not None if token else False,
             entity_id_source=provider.entity_id_source,
         )
@@ -785,30 +778,27 @@ async def get_integration(
         )
 
     # Convert ORM config_schema items to Pydantic models
-    config_schema_items, schema_warnings = parse_config_schema_items(
-        integration.config_schema,
-        integration_name=integration.name,
-    )
+    config_schema_items = None
     if integration.config_schema:
-        config_schema_out = config_schema_items
-    else:
-        config_schema_out = None
+        config_schema_items = [
+            ConfigSchemaItem.model_validate(item)
+            for item in integration.config_schema
+        ]
 
     # Get integration-level default config values
-    config_defaults = await repo.get_integration_defaults(integration.id)
+    config_defaults = await repo.get_integration_defaults(integration.id, external=False)
 
     return IntegrationDetailResponse(
         id=integration.id,
         name=integration.name,
         list_entities_data_provider_id=integration.list_entities_data_provider_id,
-        config_schema=config_schema_out,
+        config_schema=config_schema_items,
         config_defaults=config_defaults if config_defaults else None,
         entity_id=integration.entity_id,
         entity_id_name=integration.entity_id_name,
         default_entity_id=integration.default_entity_id,
         has_oauth_config=integration.has_oauth_config,
         is_deleted=integration.is_deleted,
-        validation_warning="; ".join(schema_warnings) if schema_warnings else None,
         created_at=integration.created_at,
         updated_at=integration.updated_at,
         mappings=mapping_responses,
@@ -837,7 +827,7 @@ async def get_integration_by_name(
             detail="Integration not found",
         )
 
-    return integration_to_response(integration)
+    return IntegrationResponse.model_validate(integration)
 
 
 @router.put(
@@ -863,7 +853,7 @@ async def update_integration(
         )
 
     logger.info(f"Updated integration: {log_safe(integration.name)}")
-    return integration_to_response(integration)
+    return IntegrationResponse.model_validate(integration)
 
 
 @router.delete(
@@ -948,7 +938,7 @@ async def update_integration_config(
     logger.info(f"Updated default config for integration {log_safe(integration_id)}")
 
     # Return the saved config
-    saved_config = await repo.get_integration_defaults(integration_id)
+    saved_config = await repo.get_integration_defaults(integration_id, external=False)
     return IntegrationConfigResponse(
         integration_id=integration_id,
         config=saved_config,
@@ -977,7 +967,7 @@ async def get_integration_config(
             detail="Integration not found",
         )
 
-    config = await repo.get_integration_defaults(integration_id)
+    config = await repo.get_integration_defaults(integration_id, external=False)
     return IntegrationConfigResponse(
         integration_id=integration_id,
         config=config,
@@ -1330,7 +1320,7 @@ async def authorize_mapping(
     )
 
     return MappingAuthorizeResponse(
-        authorization_url=f"{resolved_url}?{urlencode(params)}",
+        authorization_url=append_query_params(resolved_url, params),
     )
 
 
@@ -1351,6 +1341,10 @@ async def disconnect_mapping(
     if not mapping:
         raise HTTPException(status_code=404, detail="Mapping not found")
 
+    integration = mapping.integration
+    organization = mapping.organization
+    external_account_id = mapping.entity_id
+    external_account_name = mapping.entity_name
     token_id = mapping.oauth_token_id
     mapping.oauth_token_id = None
     await ctx.db.flush()
@@ -1360,6 +1354,100 @@ async def disconnect_mapping(
         if token:
             await ctx.db.delete(token)
             await ctx.db.flush()
+
+    if token_id is not None:
+        try:
+            from src.services.events.builtins import emit_integration_disconnected
+
+            await emit_integration_disconnected(
+                integration_id=integration.id if integration else integration_id,
+                integration_name=integration.name if integration else None,
+                organization_id=mapping.organization_id,
+                organization_name=organization.name if organization else None,
+                connection_id=mapping.id,
+                external_account_id=external_account_id,
+                external_account_name=external_account_name,
+                actor_user_id=ctx.user.user_id,
+                actor_email=ctx.user.email,
+                actor_name=ctx.user.name,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to emit integration.disconnected: {e}", exc_info=True)
+
+def _apply_successful_refresh(token: OAuthToken, outcome: dict[str, Any], now: datetime) -> None:
+    token.encrypted_access_token = outcome["encrypted_access_token"]
+    token.expires_at = outcome["expires_at"]
+    if outcome.get("encrypted_refresh_token"):
+        token.encrypted_refresh_token = outcome["encrypted_refresh_token"]
+    if outcome.get("scopes"):
+        token.scopes = outcome["scopes"]
+    token.status = "completed"
+    token.status_message = None
+    token.last_refresh_at = now
+
+
+def _apply_failed_refresh(token: OAuthToken, outcome: dict[str, Any], now: datetime) -> None:
+    token.status = "failed"
+    token.status_message = (outcome.get("error", REFRESH_FAILED_MESSAGE))[:200]
+    token.last_refresh_at = now
+
+
+async def _emit_refresh_recovered(
+    integration: Integration,
+    mapping: IntegrationMapping,
+    now: datetime,
+) -> None:
+    try:
+        from src.services.events.builtins import emit_integration_refresh_recovered
+
+        await emit_integration_refresh_recovered(
+            integration_id=integration.id,
+            integration_name=integration.name,
+            organization_id=mapping.organization_id,
+            organization_name=mapping.organization.name if mapping.organization else None,
+            connection_id=mapping.id,
+            external_account_id=mapping.entity_id,
+            external_account_name=mapping.entity_name,
+            attempt=1,
+            last_success_at=now,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to emit integration.refresh_recovered: {e}",
+            exc_info=True,
+        )
+
+
+async def _emit_refresh_failed(
+    integration: Integration,
+    mapping: IntegrationMapping,
+    token: OAuthToken,
+    outcome: dict[str, Any],
+    previous_success_at: datetime | None,
+) -> None:
+    try:
+        from src.services.events.builtins import emit_integration_refresh_failed
+
+        await emit_integration_refresh_failed(
+            integration_id=integration.id,
+            integration_name=integration.name,
+            organization_id=mapping.organization_id,
+            organization_name=mapping.organization.name if mapping.organization else None,
+            connection_id=mapping.id,
+            external_account_id=mapping.entity_id,
+            external_account_name=mapping.entity_name,
+            attempt=1,
+            last_success_at=previous_success_at,
+            error_code=outcome.get("error_code"),
+            error_message=token.status_message or REFRESH_FAILED_MESSAGE,
+            retryable=False,
+            reauth_required=True,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to emit integration.refresh_failed: {e}",
+            exc_info=True,
+        )
 
 
 @router.post(
@@ -1423,27 +1511,24 @@ async def refresh_mapping_oauth(
         token=token,
         org_id=mapping.organization_id,
     )
+    was_failed = token.status == "failed"
+    previous_success_at = token.last_refresh_at if token.status == "completed" else None
     outcome = await refresh_oauth_token_http(td)
 
     now = datetime.now(timezone.utc)
     if outcome["success"]:
-        token.encrypted_access_token = outcome["encrypted_access_token"]
-        token.expires_at = outcome["expires_at"]
-        if outcome.get("encrypted_refresh_token"):
-            token.encrypted_refresh_token = outcome["encrypted_refresh_token"]
-        if outcome.get("scopes"):
-            token.scopes = outcome["scopes"]
-        token.status = "completed"
-        token.status_message = None
-        token.last_refresh_at = now
+        _apply_successful_refresh(token, outcome, now)
+        if was_failed:
+            await _emit_refresh_recovered(integration, mapping, now)
     else:
-        token.status = "failed"
-        token.status_message = (outcome.get("error", "Refresh failed"))[:200]
-        token.last_refresh_at = now
+        _apply_failed_refresh(token, outcome, now)
         await ctx.db.flush()
+        await _emit_refresh_failed(
+            integration, mapping, token, outcome, previous_success_at
+        )
         raise HTTPException(
             status_code=502,
-            detail=token.status_message or "Refresh failed",
+            detail=token.status_message or REFRESH_FAILED_MESSAGE,
         )
 
     await ctx.db.flush()
@@ -1542,7 +1627,7 @@ async def get_oauth_authorization_url(
         "redirect_uri": redirect_uri,
     }
 
-    authorization_url = f"{oauth_provider.authorization_url}?{urlencode(params)}"
+    authorization_url = append_query_params(oauth_provider.authorization_url, params)
 
     logger.info(
         f"Generated OAuth authorization URL for integration {log_safe(integration_id)}, "
@@ -1653,79 +1738,17 @@ async def clear_entity_id_source(
 
 
 # =============================================================================
-# HTTP Endpoints - SDK Data
-# =============================================================================
-
-
-@router.get(
-    "/sdk/{name}",
-    response_model=IntegrationSDKResponse,
-    summary="Get integration data for SDK",
-    description="Get integration data with resolved OAuth and merged config for SDK consumption",
-)
-async def get_integration_sdk_data(
-    name: str,
-    ctx: Context,
-    org_id: UUID = Query(..., description="Organization ID for resolving mapping"),
-) -> IntegrationSDKResponse:
-    """
-    Get integration data for SDK consumption.
-    Returns resolved OAuth provider and merged configuration.
-    Called from workflow execution contexts with organization scope.
-    """
-    repo = IntegrationsRepository(ctx.db)
-
-    # Get integration by name
-    integration = await repo.get_integration_by_name(name)
-    if not integration:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Integration '{name}' not found",
-        )
-
-    # Get mapping for this org
-    mapping = await repo.get_mapping_by_org(integration.id, org_id)
-    if not mapping:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Mapping not found for integration '{name}' in organization",
-        )
-
-    # Get merged configuration
-    config = await repo.get_config_for_mapping(
-        integration.id,
-        org_id,
-        include_default_secrets=True,
-    )
-
-    # Get OAuth provider info if present
-    oauth_client_id = None
-    oauth_token_url = None
-    oauth_scopes = None
-
-    if integration.oauth_provider:
-        oauth_client_id = integration.oauth_provider.client_id
-        oauth_token_url = integration.oauth_provider.token_url
-        oauth_scopes = (
-            " ".join(integration.oauth_provider.scopes)
-            if integration.oauth_provider.scopes
-            else None
-        )
-
-    return IntegrationSDKResponse(
-        integration_id=integration.id,
-        entity_id=mapping.entity_id,
-        entity_name=mapping.entity_name,
-        config=config if config else {},
-        oauth_client_id=oauth_client_id,
-        oauth_token_url=oauth_token_url,
-        oauth_scopes=oauth_scopes,
-    )
-
-
-# =============================================================================
 # HTTP Endpoints - Integration Testing
 # =============================================================================
+#
+# NOTE (EXT-1 NEW-H): the former GET /api/integrations/sdk/{name} endpoint was
+# DELETED. It took ``org_id`` as a free Query param with NO own-org check and
+# returned decrypted SECRET config + OAuth metadata for ANY org_id the caller
+# named — any authenticated user (incl. an external hospital portal user) could
+# read ANY tenant's integration secrets. It was orphaned (superseded by
+# POST /api/sdk/integrations/get, which goes through _resolve_sdk_org_id and the
+# external gate); no live Python/TS/app/workflow caller referenced it. Removed
+# along with its IntegrationSDKResponse contract.
 
 
 # Test code template that runs in workflow execution context

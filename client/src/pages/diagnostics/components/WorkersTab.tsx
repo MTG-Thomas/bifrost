@@ -3,11 +3,11 @@ import { RefreshCw, Loader2, WifiOff, Server } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { usePools, useQueueStatus, type ProcessInfo, type PoolSummary } from "@/services/workers";
+import { usePools, useQueueStatus, type PoolSummary } from "@/services/workers";
 import { getErrorMessage } from "@/lib/api-error";
 import { QueueBadge } from "./QueueBadge";
 import { MemoryChart } from "./MemoryChart";
-import { ContainerTable } from "./ContainerTable";
+import { ContainerTable, getPoolCounts } from "./ContainerTable";
 import { useWorkerWebSocket } from "../hooks/useWorkerWebSocket";
 
 export function WorkersTab() {
@@ -45,7 +45,24 @@ export function WorkersTab() {
     const pools = useMemo(() => {
         const byId = new Map<string, PoolSummary | typeof wsPools[number]>();
         for (const p of poolsData?.pools ?? []) byId.set(p.worker_id, p);
-        for (const p of wsPools) byId.set(p.worker_id, p);
+        for (const p of wsPools) {
+            const existing = byId.get(p.worker_id);
+            if (!existing) {
+                byId.set(p.worker_id, p);
+                continue;
+            }
+            const runtime = p.runtime ?? existing.runtime;
+            const runtimeChanged =
+                p.runtime != null && p.runtime !== existing.runtime;
+            byId.set(p.worker_id, {
+                ...existing,
+                ...p,
+                runtime,
+                runtime_label:
+                    p.runtime_label ??
+                    (runtimeChanged ? null : existing.runtime_label),
+            });
+        }
         return [...byId.values()];
     }, [poolsData, wsPools]);
     const queueItems = queueData?.items || [];
@@ -59,20 +76,15 @@ export function WorkersTab() {
     // Compute summary stats
     const stats = useMemo(() => {
         let totalForks = 0;
+        let totalCapacity = 0;
         let totalBusy = 0;
         for (const pool of pools) {
-            if ("processes" in pool && Array.isArray(pool.processes)) {
-                totalForks += pool.processes.length;
-                totalBusy += pool.processes.filter(
-                    (p: ProcessInfo) => p.state === "busy"
-                ).length;
-            } else {
-                const summary = pool as PoolSummary;
-                totalForks += summary.pool_size ?? 0;
-                totalBusy += summary.busy_count ?? 0;
-            }
+            const counts = getPoolCounts(pool);
+            totalForks += counts.total;
+            totalCapacity += counts.capacity;
+            totalBusy += counts.busy;
         }
-        return { containers: pools.length, forks: totalForks, busy: totalBusy };
+        return { containers: pools.length, forks: totalForks, capacity: totalCapacity, busy: totalBusy };
     }, [pools]);
 
     return (
@@ -113,7 +125,7 @@ export function WorkersTab() {
                 <div className="flex items-center gap-3">
                     <span className="text-sm text-muted-foreground">
                         {stats.containers} container{stats.containers !== 1 ? "s" : ""}{" "}
-                        &middot; {stats.forks} fork{stats.forks !== 1 ? "s" : ""}
+                        &middot; {stats.forks}/{stats.capacity} active forks
                     </span>
                     <Button
                         variant="outline"

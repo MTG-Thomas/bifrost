@@ -61,6 +61,7 @@ async def execute_workflow(
                 org_id=ctx_org_id,
                 user_id=ctx_user_id,
                 is_superuser=context.is_platform_admin,
+                is_external=context.is_external,
             )
             workflow = await repo.resolve(workflow_id)
 
@@ -122,6 +123,7 @@ async def list_workflows(
                 org_id=ctx_org_id,
                 user_id=ctx_user_id,
                 is_superuser=context.is_platform_admin,
+                is_external=context.is_external,
             )
             workflows = await repo.search(query=query, category=category, limit=100)
             total_count = await repo.count_active()
@@ -269,6 +271,7 @@ async def get_workflow(
                 org_id=ctx_org_id,
                 user_id=ctx_user_id,
                 is_superuser=context.is_platform_admin,
+                is_external=context.is_external,
             )
 
             if workflow_id:
@@ -371,12 +374,16 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
                     f"No @workflow/@tool/@data_provider decorated function '{function_name}' found in {path}"
                 )
 
-            # Check already registered
+            # Check already registered. Scope to _repo/ rows (solution_id IS
+            # NULL): register creates a WORKSPACE workflow, and a solution-managed
+            # workflow at the same (path, function_name) is deploy-owned in a
+            # separate uniqueness scope — it must not block registration (Codex #14).
             existing = await db.execute(
                 select(WorkflowORM).where(
                     WorkflowORM.path == path,
                     WorkflowORM.function_name == function_name,
                     WorkflowORM.is_active.is_(True),
+                    WorkflowORM.solution_id.is_(None),
                 )
             )
             if existing.scalar_one_or_none():
@@ -437,6 +444,7 @@ async def update_workflow(
     access_level: str | None = None,
     clear_roles: bool | None = None,
     role_ids: list[str] | None = None,
+    name: str | None = None,
     description: str | None = None,
     category: str | None = None,
     timeout_seconds: int | None = None,
@@ -449,7 +457,8 @@ async def update_workflow(
     ``workflow_ref`` is a UUID, workflow name, or ``path::func``.
     ``role_ids`` bulk-replaces the workflow's role assignments when supplied
     (an empty list clears them); pair with ``clear_roles=True`` only when no
-    list is provided. Fields marked as UI/code-managed in
+    list is provided. ``name`` is the MCP tool name; ``function_name`` is not
+    changed by this tool. Fields marked as UI/code-managed in
     :data:`bifrost.dto_flags.DTO_EXCLUDES` (``display_name``,
     ``tool_description``, ``time_saved``, ``value``, ``cache_ttl_seconds``,
     ``allowed_methods``, ``execution_mode``, ``disable_global_key``) are not
@@ -479,6 +488,7 @@ async def update_workflow(
             "access_level": access_level,
             "clear_roles": clear_roles,
             "role_ids": role_ids,
+            "name": name,
             "description": description,
             "category": category,
             "timeout_seconds": timeout_seconds,

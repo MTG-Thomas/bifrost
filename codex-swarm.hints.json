@@ -1,0 +1,16 @@
+{
+  "commands": [
+    {
+      "name": "platform verification",
+      "command": "./test.sh",
+      "docs": "AGENTS.md",
+      "note": "Platform work should run on the shared Linux dev environment or CI, not as host-side FastAPI/Vite/Postgres on Windows."
+    },
+    {
+      "name": "stack status",
+      "command": "./debug.sh status",
+      "docs": "AGENTS.md",
+      "note": "Assume workspace-author persona unless the task clearly changes api/, client/, migrations, MCP, or CLI platform surfaces."
+    }
+  ]
+}

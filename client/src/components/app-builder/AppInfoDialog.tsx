@@ -11,12 +11,12 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import {
 	Loader2,
-	Check,
 	ChevronsUpDown,
 	X,
 	ChevronDown,
 	ChevronRight,
 	ArrowRightLeft,
+	AppWindow,
 } from "lucide-react";
 import {
 	Dialog,
@@ -53,22 +53,36 @@ import {
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { LogoDropZone } from "@/components/LogoDropZone";
+import { bumpEntityLogo } from "@/components/entityLogoVersions";
 import { AppReplacePathDialog } from "@/components/applications/AppReplacePathDialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Combobox } from "@/components/ui/combobox";
-import { cn } from "@/lib/utils";
+import { term, useTerminology } from "@/lib/terminology";
 import { useRoles } from "@/hooks/useRoles";
 import { useAuth } from "@/contexts/AuthContext";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import {
 	useApplication,
 	useCreateApplication,
+	useDeleteApplication,
 	useUpdateApplication,
 } from "@/hooks/useApplications";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Trash2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import type { components } from "@/lib/v1";
 
 type RolePublic = components["schemas"]["RolePublic"];
@@ -81,8 +95,13 @@ const ACCESS_LEVELS = [
 	},
 	{
 		value: "authenticated",
-		label: "Authenticated Users",
-		description: "Any authenticated user can access",
+		label: "Everyone except external users",
+		description: "Any signed-in user except external users",
+	},
+	{
+		value: "everyone",
+		label: "Everyone",
+		description: "Any signed-in user, including external users",
 	},
 ];
 
@@ -101,7 +120,7 @@ const formSchema = z.object({
 		),
 	description: z.string().optional(),
 	organization_id: z.string().nullable(),
-	access_level: z.enum(["authenticated", "role_based"]),
+	access_level: z.enum(["authenticated", "everyone", "role_based"]),
 	role_ids: z.array(z.string()),
 });
 
@@ -122,6 +141,7 @@ export function AppInfoDialog({
 	onCreated,
 }: AppInfoDialogProps) {
 	const isEditing = !!appSlug;
+	const terminology = useTerminology();
 	const { isPlatformAdmin, user } = useAuth();
 
 	const { data: existingApp, isLoading: isLoadingApp } = useApplication(
@@ -131,10 +151,13 @@ export function AppInfoDialog({
 	const { data: roles, isLoading: rolesLoading } = useRoles();
 	const createApplication = useCreateApplication();
 	const updateApplication = useUpdateApplication();
+	const deleteApplication = useDeleteApplication();
+	const navigate = useNavigate();
 
 	const [rolesPopoverOpen, setRolesPopoverOpen] = useState(false);
 	const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
 	const [advancedOpen, setAdvancedOpen] = useState(false);
+	const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 	const [replacePathOpen, setReplacePathOpen] = useState(false);
 
 	// Default organization_id for org users is their org, for platform admins it's null (global)
@@ -164,7 +187,9 @@ export function AppInfoDialog({
 				slug: existingApp.slug,
 				description: existingApp.description ?? "",
 				organization_id: existingApp.organization_id ?? null,
-				access_level: (existingApp.access_level as "authenticated" | "role_based") || "authenticated",
+				access_level:
+					(existingApp.access_level as "authenticated" | "everyone" | "role_based") ||
+					"authenticated",
 				role_ids: existingApp.role_ids ?? [],
 			});
 		} else if (!isEditing && open) {
@@ -238,6 +263,7 @@ export function AppInfoDialog({
 						slug: values.slug,
 						description: values.description || null,
 						access_level: values.access_level,
+						app_model: "inline_v1",
 						role_ids: values.role_ids,
 						organization_id: values.organization_id || null,
 					},
@@ -277,14 +303,32 @@ export function AppInfoDialog({
 		<Dialog open={open} onOpenChange={handleClose}>
 			<DialogContent className="sm:max-w-[500px]">
 				<DialogHeader>
-					<DialogTitle>
-						{isEditing ? "Edit Application" : "Create Application"}
-					</DialogTitle>
-					<DialogDescription>
-						{isEditing
-							? "Update the application settings"
-							: "Configure your new application"}
-					</DialogDescription>
+					<div className="flex items-start gap-4">
+						{isEditing && existingApp ? (
+							<LogoDropZone
+								uploadUrl={`/api/applications/${existingApp.id}/logo`}
+								deleteUrl={`/api/applications/${existingApp.id}/logo`}
+								previewUrl={`/api/applications/${existingApp.id}/logo`}
+								fallback={<AppWindow className="h-6 w-6" />}
+								size={64}
+								onChange={() =>
+									bumpEntityLogo("app", existingApp.id)
+								}
+							/>
+						) : null}
+						<div className="min-w-0 flex-1">
+							<DialogTitle>
+								{isEditing
+									? "Edit Application"
+									: "Create Application"}
+							</DialogTitle>
+							<DialogDescription>
+								{isEditing
+									? "Update the application settings"
+									: "Configure your new application"}
+							</DialogDescription>
+						</div>
+					</div>
 				</DialogHeader>
 
 				{isEditing && isLoadingApp ? (
@@ -332,7 +376,7 @@ export function AppInfoDialog({
 										<FormLabel>Name</FormLabel>
 										<FormControl>
 											<Input
-												placeholder="My Application"
+												placeholder={`My ${term(terminology, "app", "formalSingular")}`}
 												{...field}
 												onChange={(e) =>
 													handleNameChange(e.target.value)
@@ -461,38 +505,23 @@ export function AppInfoDialog({
 																	<CommandItem
 																		key={role.id}
 																		value={role.name || ""}
+																		data-checked={field.value.includes(
+																			role.id,
+																		)}
 																		onSelect={() =>
 																			toggleRole(role.id)
 																		}
 																	>
-																		<div className="flex items-center gap-2 flex-1">
-																			<Checkbox
-																				checked={field.value.includes(
-																					role.id,
-																				)}
-																				onCheckedChange={() =>
-																					toggleRole(role.id)
-																				}
-																			/>
-																			<div className="flex flex-col">
-																				<span className="font-medium">
-																					{role.name}
+																		<div className="flex flex-col flex-1">
+																			<span className="font-medium">
+																				{role.name}
+																			</span>
+																			{role.description && (
+																				<span className="text-xs text-muted-foreground">
+																					{role.description}
 																				</span>
-																				{role.description && (
-																					<span className="text-xs text-muted-foreground">
-																						{role.description}
-																					</span>
-																				)}
-																			</div>
-																		</div>
-																		<Check
-																			className={cn(
-																				"ml-auto h-4 w-4",
-																				field.value.includes(role.id)
-																					? "opacity-100"
-																					: "opacity-0",
 																			)}
-																		/>
+																		</div>
 																	</CommandItem>
 																))}
 															</CommandGroup>
@@ -501,7 +530,7 @@ export function AppInfoDialog({
 												</PopoverContent>
 											</Popover>
 											{selectedRoleIds.length > 0 && (
-												<div className="flex flex-wrap gap-2 p-2 border rounded-md bg-muted/50">
+												<div className="flex flex-wrap gap-2 p-2 rounded-md bg-muted/50 ring-1 ring-foreground/5">
 													{selectedRoleIds.map((roleId) => {
 														const role = roles?.find(
 															(r: RolePublic) => r.id === roleId,
@@ -578,24 +607,40 @@ export function AppInfoDialog({
 								</Collapsible>
 							)}
 
-							<DialogFooter className="pt-4">
-								<Button
-									type="button"
-									variant="outline"
-									onClick={handleClose}
-								>
-									Cancel
-								</Button>
-								<Button type="submit" disabled={isPending}>
-									{isPending && (
-										<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-									)}
-									{isPending
-										? "Saving..."
-										: isEditing
-											? "Save Changes"
-											: "Create Application"}
-								</Button>
+							<DialogFooter className="pt-4 sm:justify-between">
+								{isEditing && existingApp ? (
+									<Button
+										type="button"
+										variant="ghost"
+										className="text-destructive hover:text-destructive hover:bg-destructive/10"
+										onClick={() => setConfirmDeleteOpen(true)}
+										disabled={deleteApplication.isPending}
+									>
+										<Trash2 className="mr-2 h-4 w-4" />
+										Delete
+									</Button>
+								) : (
+									<span />
+								)}
+								<div className="flex gap-2">
+									<Button
+										type="button"
+										variant="outline"
+										onClick={handleClose}
+									>
+										Cancel
+									</Button>
+									<Button type="submit" disabled={isPending}>
+										{isPending && (
+											<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+										)}
+										{isPending
+											? "Saving..."
+											: isEditing
+												? "Save Changes"
+												: `Create ${term(terminology, "app", "formalSingular")}`}
+									</Button>
+								</div>
 							</DialogFooter>
 						</form>
 					</Form>
@@ -607,6 +652,51 @@ export function AppInfoDialog({
 					open={replacePathOpen}
 					onClose={() => setReplacePathOpen(false)}
 				/>
+			)}
+			{isEditing && existingApp && (
+				<AlertDialog
+					open={confirmDeleteOpen}
+					onOpenChange={setConfirmDeleteOpen}
+				>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>
+								Delete {term(terminology, "app", "formalSingular")}?
+							</AlertDialogTitle>
+							<AlertDialogDescription>
+								This will permanently delete{" "}
+								<strong>{existingApp.name}</strong> and all of
+								its files. This action cannot be undone.
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel>Cancel</AlertDialogCancel>
+							<AlertDialogAction
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={async () => {
+									await deleteApplication.mutateAsync({
+										params: {
+											path: { app_id: existingApp.id },
+										},
+									});
+									setConfirmDeleteOpen(false);
+									onOpenChange(false);
+									// If the user was on the code editor for this
+									// app, drop them back to the apps list.
+									if (
+										window.location.pathname.startsWith(
+											`/apps/${existingApp.slug}`,
+										)
+									) {
+										navigate("/apps");
+									}
+								}}
+							>
+								Delete
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
 			)}
 		</Dialog>
 	);

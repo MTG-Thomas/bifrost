@@ -4,9 +4,9 @@ Platform Admin Workers Router
 API endpoints for managing process pools, viewing queue status, and handling
 stuck executions. All endpoints require platform admin privileges.
 
-The new model uses ProcessPoolManager with simple states:
-- IDLE: Process ready to accept work
-- BUSY: Process currently executing
+The on-demand model uses ProcessPoolManager with one-shot workers, which
+only ever report two states in their heartbeat:
+- BUSY: Process currently executing its single workload
 - KILLED: Process was terminated (pending removal)
 """
 
@@ -184,6 +184,8 @@ async def get_pool_stats(
 
     total_pools = len(pool_keys)
     total_processes = 0
+    total_configured_capacity = 0
+    saw_configured_capacity = False
     total_idle = 0
     total_busy = 0
 
@@ -200,7 +202,11 @@ async def get_pool_stats(
         if heartbeat_data:
             try:
                 hb = json.loads(heartbeat_data)
-                total_processes += hb.get("pool_size", 0)
+                total_processes += hb.get("active_process_count", hb.get("pool_size", 0))
+                configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
+                if configured_capacity is not None:
+                    total_configured_capacity += int(configured_capacity)
+                    saw_configured_capacity = True
                 total_idle += hb.get("idle_count", 0)
                 total_busy += hb.get("busy_count", 0)
             except json.JSONDecodeError as e:
@@ -210,6 +216,7 @@ async def get_pool_stats(
     return PoolStatsResponse(
         total_pools=total_pools,
         total_processes=total_processes,
+        total_configured_capacity=total_configured_capacity if saw_configured_capacity else None,
         total_idle=total_idle,
         total_busy=total_busy,
     )
@@ -267,6 +274,8 @@ async def list_pools(
         pool_info = PoolSummary(
             worker_id=worker_id,
             hostname=data.get("hostname"),
+            runtime=data.get("runtime"),
+            runtime_label=data.get("runtime_label"),
             status=data.get("status"),
             started_at=data.get("started_at"),
         )
@@ -275,8 +284,21 @@ async def list_pools(
             try:
                 hb = json.loads(heartbeat_data)
                 pool_info.pool_size = hb.get("pool_size", 0)
+                pool_info.active_process_count = hb.get(
+                    "active_process_count",
+                    pool_info.pool_size,
+                )
+                pool_info.configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
+                pool_info.max_workers = hb.get("max_workers", pool_info.configured_capacity)
                 pool_info.idle_count = hb.get("idle_count", 0)
                 pool_info.busy_count = hb.get("busy_count", 0)
+                if (rt := hb.get("runtime")) is not None:
+                    runtime_changed = rt != pool_info.runtime
+                    pool_info.runtime = rt
+                    if runtime_changed and hb.get("runtime_label") is None:
+                        pool_info.runtime_label = None
+                if (rtl := hb.get("runtime_label")) is not None:
+                    pool_info.runtime_label = rtl
                 pool_info.last_heartbeat = hb.get("timestamp")
                 pool_info.requirements_installed = hb.get("requirements_installed")
                 pool_info.requirements_total = hb.get("requirements_total")
@@ -327,6 +349,8 @@ async def get_pool(
     result = PoolDetail(
         worker_id=worker_id,
         hostname=data.get("hostname"),
+        runtime=data.get("runtime"),
+        runtime_label=data.get("runtime_label"),
         status=data.get("status"),
         started_at=data.get("started_at"),
     )
@@ -335,6 +359,15 @@ async def get_pool(
         try:
             hb = json.loads(heartbeat_data)
             result.last_heartbeat = hb.get("timestamp")
+            result.configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
+            result.max_workers = hb.get("max_workers", result.configured_capacity)
+            if (rt := hb.get("runtime")) is not None:
+                runtime_changed = rt != result.runtime
+                result.runtime = rt
+                if runtime_changed and hb.get("runtime_label") is None:
+                    result.runtime_label = None
+            if (rtl := hb.get("runtime_label")) is not None:
+                result.runtime_label = rtl
 
             # Parse process info from heartbeat
             for p in hb.get("processes", []):

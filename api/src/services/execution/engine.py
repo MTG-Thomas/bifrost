@@ -3,11 +3,13 @@ Unified Execution Engine
 Single source of truth for all code execution (workflows, scripts, data providers)
 """
 
+import asyncio
 import inspect
 import json
 import logging
 import os
 import sys
+import time
 from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -15,6 +17,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, get_type_hints, get_origin, get_args, Union
 
+from opentelemetry import metrics, trace
 from pydantic import BaseModel
 
 from src.sdk.context import Caller, ExecutionContext, Organization
@@ -25,6 +28,31 @@ from src.core.cache import get_cached_data_provider, cache_data_provider_result
 from src.core.secret_string import redact_secrets
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
+meter = metrics.get_meter(__name__)
+workflow_execution_counter = None
+workflow_execution_duration = None
+
+
+def _workflow_metric_instruments():
+    """Create workflow metric instruments after the process MeterProvider is configured."""
+    global workflow_execution_counter, workflow_execution_duration
+
+    if workflow_execution_counter is None:
+        workflow_execution_counter = metrics.get_meter(__name__).create_counter(
+            "bifrost.workflow.executions",
+            unit="1",
+            description="Workflow executions completed by status.",
+        )
+
+    if workflow_execution_duration is None:
+        workflow_execution_duration = metrics.get_meter(__name__).create_histogram(
+            "bifrost.workflow.execution.duration",
+            unit="ms",
+            description="Workflow execution duration in milliseconds.",
+        )
+
+    return workflow_execution_counter, workflow_execution_duration
 
 
 def _human_size(num_bytes: int) -> str:
@@ -67,10 +95,6 @@ except ImportError:
     set_write_buffer = None  # type: ignore
     clear_write_buffer = None  # type: ignore
 
-# Data provider cache is now available via import at top
-DATA_PROVIDER_CACHE_AVAILABLE = True
-
-
 @dataclass
 class ExecutionRequest:
     """Request to execute code or a function"""
@@ -109,6 +133,15 @@ class ExecutionRequest:
 
     # Real-time updates
     broadcaster: Any = None              # WebPubSubBroadcaster for streaming logs
+
+    # Event context (set when triggered by an event subscription)
+    event: Any = None                    # EventContext | None
+
+    # The install this execution belongs to, when the workflow is solution-managed
+    # (from the resolved workflow row's solution_id). Carried onto ExecutionContext
+    # so the SDK can scope name lookups (tables/configs) to the install's OWN
+    # entity — own-first, then _repo/. None for plain _repo/ executions.
+    solution_id: str | None = None
 
 
 @dataclass
@@ -287,6 +320,8 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         public_url=get_settings().public_url,
         startup=request.startup,  # Launch workflow results (from form execution)
         roi=roi,
+        event=request.event,
+        solution_id=request.solution_id,  # install scope for SDK name lookups
     )
 
     # Set bifrost SDK context if available
@@ -316,7 +351,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     try:
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             # Check Redis cache for data providers
-            if is_data_provider and not request.no_cache and DATA_PROVIDER_CACHE_AVAILABLE and get_cached_data_provider:
+            if is_data_provider and not request.no_cache:
                 org_id = request.organization.id if request.organization else None
                 cached_result = await get_cached_data_provider(
                     org_id,
@@ -349,7 +384,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
             )
 
             # Cache result to Redis if data provider
-            if is_data_provider and DATA_PROVIDER_CACHE_AVAILABLE and cache_data_provider_result:
+            if is_data_provider and request.cache_ttl_seconds > 0:
                 org_id = request.organization.id if request.organization else None
                 expires_at = await cache_data_provider_result(
                     org_id,
@@ -492,11 +527,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                         'source': 'workflow'
                     })
 
-        # Check if it's a WorkflowError
-        if isinstance(original_exc, WorkflowError):
-            status = ExecutionStatus.FAILED
-        else:
-            status = ExecutionStatus.FAILED
+        status = ExecutionStatus.FAILED
 
         # Free traceback references — already formatted above
         original_exc.__traceback__ = None
@@ -1068,8 +1099,81 @@ async def _execute_workflow_with_trace(
         # Set up trace function for variable capture
         sys.settrace(chained_trace_func if existing_trace else trace_func)
         try:
-            # Run the workflow directly - isolation is provided by subprocess
-            result = await _run_workflow_async()
+            execution_scope = context.scope or "GLOBAL"
+            span_attributes = {
+                "bifrost.execution.id": execution_id or context.execution_id,
+                "bifrost.workflow.name": context.workflow_name or func_name,
+                "bifrost.workflow.function": func_name,
+                "bifrost.execution.scope": execution_scope,
+                "bifrost.execution.organization_id": context.org_id or "",
+                "bifrost.execution.is_platform_admin": context.is_platform_admin,
+            }
+            metric_attributes = {
+                "bifrost.workflow.name": context.workflow_name or func_name,
+                "bifrost.workflow.function": func_name,
+                "bifrost.execution.scope": execution_scope,
+                "bifrost.execution.is_platform_admin": context.is_platform_admin,
+            }
+            workflow_counter, workflow_duration = _workflow_metric_instruments()
+            start_time = time.perf_counter()
+            with tracer.start_as_current_span(
+                "bifrost.workflow.execute",
+                attributes=span_attributes,
+            ) as span:
+                try:
+                    # Run the workflow directly - isolation is provided by subprocess
+                    result = await _run_workflow_async()
+                    span.set_attribute("bifrost.execution.status", ExecutionStatus.SUCCESS.value)
+                    workflow_counter.add(
+                        1,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.SUCCESS.value,
+                        },
+                    )
+                    workflow_duration.record(
+                        (time.perf_counter() - start_time) * 1000,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.SUCCESS.value,
+                        },
+                    )
+                except asyncio.CancelledError:
+                    span.set_attribute("bifrost.execution.status", ExecutionStatus.CANCELLED.value)
+                    span.set_attribute("bifrost.execution.error_type", "CancelledError")
+                    workflow_counter.add(
+                        1,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.CANCELLED.value,
+                        },
+                    )
+                    workflow_duration.record(
+                        (time.perf_counter() - start_time) * 1000,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.CANCELLED.value,
+                        },
+                    )
+                    raise
+                except Exception as exc:
+                    span.set_attribute("bifrost.execution.status", ExecutionStatus.FAILED.value)
+                    span.set_attribute("bifrost.execution.error_type", type(exc).__name__)
+                    workflow_counter.add(
+                        1,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.FAILED.value,
+                        },
+                    )
+                    workflow_duration.record(
+                        (time.perf_counter() - start_time) * 1000,
+                        attributes={
+                            **metric_attributes,
+                            "bifrost.execution.status": ExecutionStatus.FAILED.value,
+                        },
+                    )
+                    raise
         finally:
             # Clear trace function
             sys.settrace(None)

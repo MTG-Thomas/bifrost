@@ -139,7 +139,7 @@ class TestWorkersListEndpoint:
     ):
         """List workers returns empty list when no workers registered."""
         from src.routers.platform.workers import list_pools
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -161,7 +161,7 @@ class TestWorkersListEndpoint:
     ):
         """List workers returns registered worker data."""
         from src.routers.platform.workers import list_pools
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         # Register a worker in Redis
         worker_id = "test-worker-001"
@@ -184,6 +184,9 @@ class TestWorkersListEndpoint:
                 {"pid": 12346, "process_id": "process-2", "state": "busy"},
             ],
             "pool_size": 2,
+            "active_process_count": 2,
+            "configured_capacity": 4,
+            "max_workers": 4,
             "idle_count": 1,
             "busy_count": 1,
         }
@@ -207,7 +210,81 @@ class TestWorkersListEndpoint:
         assert pool.hostname == "test-host"
         assert pool.status == "online"
         assert pool.pool_size == 2
+        assert pool.active_process_count == 2
+        assert pool.configured_capacity == 4
+        assert pool.max_workers == 4
         assert pool.busy_count == 1
+
+    async def test_get_worker_stats_includes_configured_capacity(
+        self,
+        redis_client,
+        db_session: AsyncSession,
+        clean_redis_workers,
+    ):
+        """Worker stats aggregate active processes and configured capacity."""
+        from src.routers.platform.workers import get_pool_stats
+        from src.core.auth import UserPrincipal
+
+        now = datetime.now(timezone.utc).isoformat()
+        workers = [
+            (
+                "stats-worker-001",
+                {
+                    "pool_size": 2,
+                    "active_process_count": 2,
+                    "configured_capacity": 4,
+                    "max_workers": 4,
+                    "idle_count": 1,
+                    "busy_count": 1,
+                },
+            ),
+            (
+                "stats-worker-002",
+                {
+                    "pool_size": 1,
+                    "active_process_count": 1,
+                    "max_workers": 3,
+                    "idle_count": 0,
+                    "busy_count": 1,
+                },
+            ),
+        ]
+
+        for worker_id, counts in workers:
+            await redis_client.hset(
+                f"bifrost:pool:{worker_id}",
+                mapping={
+                    "hostname": f"{worker_id}-host",
+                    "status": "online",
+                    "started_at": now,
+                },
+            )
+            await redis_client.set(
+                f"bifrost:pool:{worker_id}:heartbeat",
+                json.dumps(
+                    {
+                        "type": "worker_heartbeat",
+                        "worker_id": worker_id,
+                        "timestamp": now,
+                        **counts,
+                    }
+                ),
+            )
+
+        admin = UserPrincipal(
+            user_id=uuid4(),
+            email="admin@test.com",
+            organization_id=None,
+            is_superuser=True,
+        )
+
+        result = await get_pool_stats(admin)
+
+        assert result.total_pools == 2
+        assert result.total_processes == 3
+        assert result.total_configured_capacity == 7
+        assert result.total_idle == 1
+        assert result.total_busy == 2
 
 
 @pytest.mark.e2e
@@ -223,7 +300,7 @@ class TestWorkerDetailEndpoint:
         """Get worker returns 404 for non-existent worker."""
         from fastapi import HTTPException
         from src.routers.platform.workers import get_pool
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -245,7 +322,7 @@ class TestWorkerDetailEndpoint:
     ):
         """Get worker returns detailed worker information."""
         from src.routers.platform.workers import get_pool
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         # Register a worker in Redis
         worker_id = "test-worker-002"
@@ -312,7 +389,7 @@ class TestRecycleProcessEndpoint:
         """Recycle returns 404 for non-existent worker."""
         from fastapi import HTTPException
         from src.routers.platform.workers import recycle_process
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -334,7 +411,7 @@ class TestRecycleProcessEndpoint:
     ):
         """Recycle publishes command to Redis pub/sub."""
         from src.routers.platform.workers import recycle_process
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
         from src.models.contracts.platform import RecycleProcessRequest
 
         # Register a pool in Redis (using new key pattern)
@@ -381,7 +458,7 @@ class TestQueueEndpoint:
     ):
         """Queue endpoint returns empty list when no pending executions."""
         from src.routers.platform.workers import get_queue
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -410,7 +487,7 @@ class TestStuckHistoryEndpoint:
     ):
         """Stuck history returns empty list when no stuck executions."""
         from src.routers.platform.workers import get_stuck_history
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -432,7 +509,7 @@ class TestStuckHistoryEndpoint:
     ):
         """Stuck history aggregates stuck executions by workflow."""
         from src.routers.platform.workers import get_stuck_history
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         # Create executions with stuck error messages
         now = datetime.now(timezone.utc)

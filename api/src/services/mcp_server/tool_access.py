@@ -69,6 +69,7 @@ class MCPToolAccessService:
         is_superuser: bool,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> MCPToolAccessResult:
         """
         Get all MCP tools accessible to the user.
@@ -98,6 +99,7 @@ class MCPToolAccessService:
             is_superuser=is_superuser,
             user_id=user_id,
             org_id=org_id,
+            is_external=is_external,
         )
 
         # Step 2: Collect tools from accessible agents, enforcing per-workflow
@@ -105,7 +107,8 @@ class MCPToolAccessService:
         tools: list[ToolInfo] = []
         seen_tool_ids: set[str] = set()  # Deduplicate across agents
         workflow_repo = self._build_workflow_repo(
-            user_id=user_id, org_id=org_id, is_superuser=is_superuser
+            user_id=user_id, org_id=org_id, is_superuser=is_superuser,
+            is_external=is_external,
         )
 
         for agent in accessible_agents:
@@ -163,6 +166,7 @@ class MCPToolAccessService:
         is_superuser: bool,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> AgentScopedToolResult | None:
         """
         Get MCP tools for a specific agent, verifying user access.
@@ -181,7 +185,10 @@ class MCPToolAccessService:
         Returns:
             AgentScopedToolResult if agent exists and user has access, None otherwise
         """
-        # Query the specific agent with tools and roles eagerly loaded
+        # Query the specific agent with tools and roles eagerly loaded.
+        # Org-scope IN THE DATABASE (LEAK #2): a by-id fetch must not reach an
+        # agent outside the caller's org cascade — otherwise a role_based agent
+        # in another org with a same-named role would pass _check_agent_access.
         query = (
             select(Agent)
             .options(
@@ -192,6 +199,18 @@ class MCPToolAccessService:
             .where(Agent.is_active.is_(True))
         )
         query = self._apply_agent_org_scope(query, org_id=org_id, is_superuser=is_superuser)
+
+        if not is_superuser:
+            scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
+            if scope_org is not None:
+                query = query.where(
+                    or_(
+                        Agent.organization_id == scope_org,
+                        Agent.organization_id.is_(None),
+                    )
+                )
+            else:
+                query = query.where(Agent.organization_id.is_(None))
 
         result = await self.session.execute(query)
         agent = result.scalars().unique().first()
@@ -205,7 +224,13 @@ class MCPToolAccessService:
             logger.warning(f"User denied org-scoped access to agent {agent_id}")
             return None
 
-        if not self._check_agent_access(agent, user_roles, is_superuser, user_id=user_id):
+        if not self._check_agent_access(
+            agent,
+            user_roles,
+            is_superuser,
+            user_id=user_id,
+            is_external=is_external,
+        ):
             logger.warning(f"User denied access to agent {agent_id}")
             return None
 
@@ -230,7 +255,8 @@ class MCPToolAccessService:
         # the executor). seen_tool_ids is fresh because this is an
         # agent-scoped call: no cross-agent dedup needed.
         workflow_repo = self._build_workflow_repo(
-            user_id=user_id, org_id=org_id, is_superuser=is_superuser
+            user_id=user_id, org_id=org_id, is_superuser=is_superuser,
+            is_external=is_external,
         )
         for workflow_info in await self._visible_workflows_for_agent(
             agent, workflow_repo, seen_tool_ids=set()
@@ -258,6 +284,7 @@ class MCPToolAccessService:
         user_id: UUID | str | None,
         org_id: UUID | str | None,
         is_superuser: bool,
+        is_external: bool = False,
     ):
         """Construct a WorkflowRepository pinned to the caller's identity.
 
@@ -274,6 +301,7 @@ class MCPToolAccessService:
             org_id=org_id,
             user_id=user_id,
             is_superuser=is_superuser,
+            is_external=is_external,
         )
 
     async def _visible_workflows_for_agent(
@@ -344,11 +372,12 @@ class MCPToolAccessService:
         agent: Agent,
         user_roles: list[str],
         is_superuser: bool,
+        is_external: bool = False,
         user_id: UUID | str | None = None,
     ) -> bool:
         """Check if user has access to a specific agent (same rules as _get_accessible_agents)."""
         if agent.access_level == AgentAccessLevel.AUTHENTICATED:
-            return True
+            return is_superuser or not is_external
 
         if agent.access_level == AgentAccessLevel.ROLE_BASED:
             agent_role_names = {role.name for role in agent.roles}
@@ -370,6 +399,7 @@ class MCPToolAccessService:
         is_superuser: bool,
         user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> list[Agent]:
         """
         Get agents accessible to the user based on access_level and roles.
@@ -380,8 +410,12 @@ class MCPToolAccessService:
           OR be a platform admin (superuser)
         - ROLE_BASED with no roles: Only superusers can access
         - Platform admins (superusers) bypass ROLE_BASED role checks (issue #244)
+
+        Org scoping (LEAK #2): the query is org-scoped IN THE DATABASE so a
+        role_based agent in another org with a same-named role can NEVER leak.
+        A regular user sees their org + global; a superuser sees all orgs.
         """
-        # Query all active agents with their tools and roles eagerly loaded
+        # Query active agents, scoped to the caller's org cascade.
         query = (
             select(Agent)
             .options(
@@ -391,6 +425,19 @@ class MCPToolAccessService:
             .where(Agent.is_active.is_(True))
         )
         query = self._apply_agent_org_scope(query, org_id=org_id, is_superuser=is_superuser)
+
+        if not is_superuser:
+            scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
+            if scope_org is not None:
+                query = query.where(
+                    or_(
+                        Agent.organization_id == scope_org,
+                        Agent.organization_id.is_(None),
+                    )
+                )
+            else:
+                # Non-admin with no org: global only.
+                query = query.where(Agent.organization_id.is_(None))
 
         result = await self.session.execute(query)
         all_agents = result.scalars().unique().all()
@@ -406,10 +453,16 @@ class MCPToolAccessService:
 
         for agent in all_agents:
             if agent.access_level == AgentAccessLevel.AUTHENTICATED:
-                # Any authenticated user can access
-                accessible_agents.append(agent)
+                if is_superuser or not is_external:
+                    accessible_agents.append(agent)
 
-            elif self._check_agent_access(agent, list(user_role_set), is_superuser, user_id=user_id):
+            elif self._check_agent_access(
+                agent,
+                list(user_role_set),
+                is_superuser,
+                user_id=user_id,
+                is_external=is_external,
+            ):
                 accessible_agents.append(agent)
 
             # Note: PUBLIC agents are not included for MCP access
@@ -420,9 +473,10 @@ class MCPToolAccessService:
     @staticmethod
     def _apply_agent_org_scope(query, org_id: UUID | str | None, is_superuser: bool):
         """Apply AgentRepository-style cascade scoping to MCP-visible agents."""
+        if is_superuser:
+            return query
+
         if org_id is None:
-            if is_superuser:
-                return query
             return query.where(Agent.organization_id.is_(None))
 
         return query.where(
@@ -439,6 +493,9 @@ class MCPToolAccessService:
         is_superuser: bool,
     ) -> bool:
         """Return whether an already-loaded agent is in the caller's org scope."""
+        if is_superuser:
+            return True
+
         agent_org_id = (
             getattr(agent, "organization_id", None)
             if "organization_id" in getattr(agent, "__dict__", {})

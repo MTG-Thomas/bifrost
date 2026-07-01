@@ -12,22 +12,20 @@ Applications use code-based files (TSX/TypeScript) stored in app_files table.
 File operations are handled through the app_files router.
 """
 
+import base64
 import logging
 import re
-from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.auth import Context, CurrentUser
-from src.core.app_scaffold import APP_INDEX_SOURCE, APP_LAYOUT_SOURCE
-from src.core.exceptions import AccessDeniedError
 from src.core.log_safety import log_safe
-from src.core.org_filter import OrgFilterType, resolve_org_filter
+from src.core.org_filter import resolve_org_filter
 from src.core.pubsub import publish_app_draft_update, publish_app_published
 from src.models.contracts.applications import (
     ApplicationCreate,
@@ -38,40 +36,18 @@ from src.models.contracts.applications import (
     ApplicationPublishRequest,
     ApplicationReplaceRequest,
     ApplicationRollbackRequest,
+    ApplicationSwapSlugsRequest,
     ApplicationUpdate,
 )
-from src.models.orm.app_roles import AppRole
 from src.models.orm.applications import Application
-from src.repositories.org_scoped import OrgScopedRepository
-from shared.app_authorization import (
-    require_platform_admin,
-    update_requires_platform_admin,
-)
+from src.models.orm.file_index import FileIndex
+from src.core.exceptions import AccessDeniedError
+from src.services.solutions.guard import assert_entity_id_not_solution_managed
+from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/applications", tags=["Applications"])
-
-
-def stale_app_source_error(slug: str) -> str:
-    """Return the app-create error used when an unclaimed source prefix exists."""
-    return (
-        f"Source files already exist under apps/{slug}/. "
-        "Create with a different slug, replace the app source after creation, "
-        "or remove the orphaned source explicitly before creating this app."
-    )
-
-
-async def ensure_no_stale_app_source(session: AsyncSession, slug: str) -> None:
-    """Reject app creation when files already exist for an unclaimed slug."""
-    from src.models.orm.file_index import FileIndex
-
-    prefix = f"apps/{slug}/"
-    existing = await session.execute(
-        select(FileIndex.path).where(FileIndex.path.startswith(prefix)).limit(1)
-    )
-    if existing.first() is not None:
-        raise ValueError(stale_app_source_error(slug))
 
 
 class AppValidationIssue(BaseModel):
@@ -112,497 +88,20 @@ def extract_external_deps(content: str) -> set[str]:
     return deps
 
 
-# =============================================================================
-# Repository
-# =============================================================================
-
-
-class ApplicationRepository(OrgScopedRepository[Application]):
-    """
-    Repository for application operations.
-
-    Applications use the CASCADE scoping pattern for org users:
-    - Org-specific applications + global (NULL org_id) applications
-
-    Role-based access control:
-    - Applications with access_level="role_based" require user to have a role assigned
-    - Applications with access_level="authenticated" are accessible to any authenticated user
-    """
-
-    model = Application
-    role_table = AppRole
-    role_entity_id_column = "app_id"
-
-    async def list_applications(self) -> list[Application]:
-        """
-        List applications with cascade scoping and role-based access.
-
-        Uses the base class scoping and role checking automatically.
-
-        Returns:
-            List of Application ORM objects
-        """
-        # Build base query with cascade scoping
-        query = select(self.model)
-        query = self._apply_cascade_scope(query)
-        query = query.order_by(self.model.name)
-
-        result = await self.session.execute(query)
-        entities = list(result.scalars().all())
-
-        # Filter by role access for non-superusers with role-based entities
-        if not self.is_superuser:
-            accessible = []
-            for entity in entities:
-                if await self._can_access_entity(entity):
-                    accessible.append(entity)
-            return accessible
-
-        return entities
-
-    async def list_all_in_scope(
-        self,
-        filter_type: OrgFilterType = OrgFilterType.ALL,
-    ) -> list[Application]:
-        """
-        List all applications in scope without role-based filtering.
-
-        Used by platform admins who bypass role checks.
-        Supports all filter types:
-        - ALL: No org filter, show everything
-        - GLOBAL_ONLY: Only applications with org_id IS NULL
-        - ORG_ONLY: Only applications in the specific org (no global fallback)
-        - ORG_PLUS_GLOBAL: Applications in the org + global applications
-
-        Args:
-            filter_type: How to filter by organization scope
-
-        Returns:
-            List of Application ORM objects
-        """
-        query = select(self.model)
-
-        # Apply org filtering based on filter type
-        if filter_type == OrgFilterType.ALL:
-            # No org filter - show everything
-            pass
-        elif filter_type == OrgFilterType.GLOBAL_ONLY:
-            # Only global applications (org_id IS NULL)
-            query = query.where(self.model.organization_id.is_(None))
-        elif filter_type == OrgFilterType.ORG_ONLY:
-            # Only the specific org, NO global fallback
-            if self.org_id is not None:
-                query = query.where(self.model.organization_id == self.org_id)
-            else:
-                # Edge case: ORG_ONLY with no org_id - return nothing
-                query = query.where(self.model.id.is_(None))
-        elif filter_type == OrgFilterType.ORG_PLUS_GLOBAL:
-            # Cascade scope: org + global
-            query = self._apply_cascade_scope(query)
-
-        query = query.order_by(self.model.name)
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def get_by_slug_global(self, slug: str) -> Application | None:
-        """Check if any application exists with this slug (globally unique)."""
-        query = select(self.model).where(self.model.slug == slug)
-        result = await self.session.execute(query)
-        return result.scalar_one_or_none()
-
-    async def get_role_ids(self, app_id: UUID) -> list[UUID]:
-        """Get list of role IDs assigned to an application."""
-        query = select(AppRole.role_id).where(AppRole.app_id == app_id)
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def create_application(
-        self,
-        data: ApplicationCreate,
-        created_by: str,
-    ) -> Application:
-        """Create a new application with access control settings."""
-        # Check if application already exists in this scope
-        existing = await self.get_by_slug_global(data.slug)
-        if existing:
-            raise ValueError(f"Application with slug '{data.slug}' already exists")
-
-        await ensure_no_stale_app_source(self.session, data.slug)
-
-        application = Application(
-            name=data.name,
-            slug=data.slug,
-            description=data.description,
-            icon=data.icon,
-            organization_id=self.org_id,
-            created_by=created_by,
-            access_level=data.access_level,
-            repo_path=f"apps/{data.slug}",
-        )
-        self.session.add(application)
-        await self.session.flush()
-
-        # Scaffold initial files via FileStorageService
-        await self._scaffold_code_files(application.slug)
-
-        # Add role associations if role_based access
-        if data.access_level == "role_based" and data.role_ids:
-            for role_id in data.role_ids:
-                app_role = AppRole(
-                    app_id=application.id,
-                    role_id=role_id,
-                    assigned_by=created_by,
-                )
-                self.session.add(app_role)
-            await self.session.flush()
-
-        await self.session.refresh(application)
-
-        logger.info(f"Created application '{log_safe(data.slug)}' in org {self.org_id} with access_level={log_safe(data.access_level)}")
-        return application
-
-    async def update_application(
-        self,
-        app_id: UUID,
-        data: ApplicationUpdate,
-        updated_by: str,
-        is_platform_admin: bool = False,
-    ) -> Application | None:
-        """Update application metadata and access control by ID."""
-        application = await self.get(id=app_id)
-        if not application:
-            return None
-
-        if data.name is not None:
-            application.name = data.name
-        if data.description is not None:
-            application.description = data.description
-        if data.icon is not None:
-            application.icon = data.icon
-        if data.access_level is not None:
-            application.access_level = data.access_level
-
-        # Handle slug change with uniqueness check
-        if data.slug is not None and data.slug != application.slug:
-            # Check if new slug already exists in the same scope
-            existing = await self.get_by_slug_global(data.slug)
-            if existing and existing.id != application.id:
-                raise ValueError(f"Application with slug '{data.slug}' already exists")
-            application.slug = data.slug
-
-        # Handle scope change (platform admin only)
-        if data.scope is not None and is_platform_admin:
-            if data.scope == "global":
-                application.organization_id = None
-            else:
-                try:
-                    application.organization_id = UUID(data.scope)
-                except ValueError:
-                    pass  # Invalid UUID, ignore
-
-        # Update role associations if provided
-        if data.role_ids is not None:
-            # Delete existing role associations
-            existing_roles_query = select(AppRole).where(AppRole.app_id == application.id)
-            result = await self.session.execute(existing_roles_query)
-            for existing_role in result.scalars().all():
-                await self.session.delete(existing_role)
-
-            # Add new role associations (deduplicate to avoid unique constraint violation)
-            unique_role_ids = set(data.role_ids)
-            for role_id in unique_role_ids:
-                app_role = AppRole(
-                    app_id=application.id,
-                    role_id=role_id,
-                    assigned_by=updated_by,
-                )
-                self.session.add(app_role)
-
-        await self.session.flush()
-        await self.session.refresh(application)
-
-        logger.info(f"Updated application '{log_safe(app_id)}'")
-        return application
-
-    async def replace_application(
-        self,
-        app_id: UUID,
-        new_repo_path: str,
-        *,
-        force: bool = False,
-    ) -> Application | None:
-        """Repoint an application's source directory.
-
-        Validates uniqueness, nesting, and that the new prefix has source files
-        in file_index. ``force=True`` may bypass only the source-exists check;
-        app boundary checks are always enforced. No file moves — updates DB only.
-
-        Returns the updated Application, or None if the app was not found.
-        Raises ValueError on validation failure.
-        """
-        from src.models.orm.file_index import FileIndex
-
-        app = await self.get(id=app_id)
-        if app is None:
-            return None
-
-        # Normalize: strip trailing slash, reject empty string.
-        normalized = new_repo_path.rstrip("/")
-        if not normalized:
-            raise ValueError("repo_path cannot be empty")
-
-        # No-op fast path.
-        if normalized == app.repo_path:
-            return app
-
-        # Uniqueness check (excluding the app itself).
-        existing_stmt = select(Application).where(
-            Application.repo_path == normalized,
-            Application.id != app_id,
-        )
-        conflict = (await self.session.execute(existing_stmt)).scalar_one_or_none()
-        if conflict is not None:
-            raise ValueError(
-                f"repo_path '{normalized}' already claimed by app "
-                f"{conflict.slug} ({conflict.id})."
-            )
-
-        # Nesting check: no other app's repo_path is a prefix of new (with /),
-        # and new (with /) is not a prefix of any other app's repo_path.
-        # Simple Python-side approach: fetch all other apps' repo_paths and check.
-        # This is fine because app count is small (tens, not millions).
-        new_prefix = f"{normalized}/"
-        others_stmt = select(Application).where(Application.id != app_id)
-        others = (await self.session.execute(others_stmt)).scalars().all()
-        for other in others:
-            other_prefix = f"{other.repo_path}/"
-            # new is nested inside other: new_prefix starts with other_prefix
-            if new_prefix.startswith(other_prefix):
-                raise ValueError(
-                    f"repo_path '{normalized}' is nested under app "
-                    f"{other.slug} ({other.repo_path})."
-                )
-            # other is nested inside new: other_prefix starts with new_prefix
-            if other_prefix.startswith(new_prefix):
-                raise ValueError(
-                    f"repo_path '{normalized}' would contain app "
-                    f"{other.slug} ({other.repo_path}) nested inside it."
-                )
-
-        if not force:
-            # Source-exists check: at least one file_index row starts with new_prefix.
-            file_stmt = select(FileIndex).where(
-                FileIndex.path.like(f"{new_prefix}%")
-            ).limit(1)
-            has_source = (await self.session.execute(file_stmt)).scalar_one_or_none()
-            if has_source is None:
-                raise ValueError(
-                    f"no files found under '{normalized}'. "
-                    "Push source first, or pass force=True to repoint ahead of a push."
-                )
-
-        app.repo_path = normalized
-        await self.session.flush()
-        await self.session.refresh(app)
-
-        logger.info(f"Repointed application {log_safe(app_id)} to repo_path={log_safe(normalized)!r}")
-        return app
-
-    async def delete_application(self, app_id: UUID) -> bool:
-        """Delete an application by ID (cascade deletes pages and components)."""
-        application = await self.get(id=app_id)
-        if not application:
-            return False
-
-        await self.session.delete(application)
-        await self.session.flush()
-
-        logger.info(f"Deleted application '{log_safe(app_id)}'")
-        return True
-
-    async def publish(
-        self,
-        app_id: UUID,
-        published_by: str,
-        message: str | None = None,
-    ) -> Application | None:
-        """
-        Publish draft to live.
-
-        Copies preview files to live in S3 via AppStorageService, then
-        captures a published_snapshot for backwards compatibility.
-        """
-        application = await self.get(id=app_id)
-        if not application:
-            return None
-
-        # Bundle the app's current source into preview before promoting to
-        # live. This replaces the legacy per-file compiler: the bundler is
-        # the runtime, so `preview/` must contain a fresh bundle (manifest +
-        # hashed chunks) that matches the source being published. A failed
-        # bundle MUST fail the publish — we will not promote a stale or
-        # partial preview into live.
-        from src.services.app_bundler import build_with_migrate
-        from src.services.app_storage import AppStorageService
-        app_storage = AppStorageService()
-
-        # build_with_migrate runs auto-migration first so a publish from a
-        # legacy source tree picks up the rewritten imports before bundling.
-        bundle_result, _migrated = await build_with_migrate(
-            str(app_id),
-            application.repo_prefix,
-            "preview",
-            dependencies=application.dependencies or {},
-        )
-        if not bundle_result.success:
-            first_err = (bundle_result.errors or [None])[0]
-            err_text = first_err.text if first_err else "unknown error"
-            raise ValueError(f"Bundle build failed during publish: {err_text}")
-
-        # Promote the freshly-built preview bundle to live.
-        published_count = await app_storage.publish(str(app_id))
-
-        if published_count == 0:
-            raise ValueError("No files found to publish")
-
-        # Build snapshot for backwards compat
-        preview_files = await app_storage.list_files(str(app_id), "preview")
-        snapshot = {f: "" for f in preview_files}
-
-        application.published_snapshot = snapshot
-        application.published_at = datetime.now(timezone.utc)
-
-        await self.session.flush()
-        await self.session.refresh(application)
-
-        logger.info(
-            f"Published application {log_safe(app_id)} "
-            f"({published_count} files) by user {log_safe(published_by)}"
-        )
-        return application
-
-    async def _scaffold_code_files(self, slug: str) -> None:
-        """Create initial scaffold files for a new app via FileStorageService.
-
-        Creates:
-        - _layout.tsx: Root layout wrapper
-        - pages/index.tsx: Home page
-        """
-        from src.services.file_storage import FileStorageService
-
-        file_storage = FileStorageService(self.session)
-
-        await file_storage.write_file(
-            path=f"apps/{slug}/_layout.tsx",
-            content=APP_LAYOUT_SOURCE.encode("utf-8"),
-            updated_by="system",
-        )
-
-        await file_storage.write_file(
-            path=f"apps/{slug}/pages/index.tsx",
-            content=APP_INDEX_SOURCE.encode("utf-8"),
-            updated_by="system",
-        )
-
-        logger.info(f"Scaffolded initial code files for app {slug}")
-
-    async def export_application(
-        self,
-        application: Application,
-        version_id: UUID | None = None,  # noqa: ARG002 - kept for API compat
-    ) -> dict:
-        """
-        Export application data for API response or GitHub sync.
-
-        Returns a dictionary with application metadata and files from file_index.
-        """
-        from src.models.orm.file_index import FileIndex
-
-        prefix = application.repo_prefix
-        fi_result = await self.session.execute(
-            select(FileIndex.path, FileIndex.content).where(
-                FileIndex.path.startswith(prefix),
-            ).order_by(FileIndex.path)
-        )
-
-        files_data: list[dict] = []
-        for row in fi_result.all():
-            rel_path = row.path[len(prefix):]
-            files_data.append({"path": rel_path, "source": row.content or ""})
-
-        role_ids = await self.get_role_ids(application.id)
-
-        return {
-            "id": str(application.id),
-            "name": application.name,
-            "slug": application.slug,
-            "description": application.description,
-            "icon": application.icon,
-            "organization_id": str(application.organization_id) if application.organization_id else None,
-            "published_at": application.published_at.isoformat() if application.published_at else None,
-            "created_at": application.created_at.isoformat() if application.created_at else None,
-            "updated_at": application.updated_at.isoformat() if application.updated_at else None,
-            "created_by": application.created_by,
-            "is_published": application.is_published,
-            "has_unpublished_changes": application.has_unpublished_changes,
-            "access_level": application.access_level,
-            "role_ids": [str(rid) for rid in role_ids],
-            "files": files_data,
-        }
-
-    async def update_draft_files(
-        self,
-        application: Application,
-        files_data: list[dict],
-    ) -> None:
-        """
-        Replace all files in the app with the provided files via FileStorageService.
-
-        Args:
-            application: The application to update
-            files_data: List of file dictionaries with 'path' and 'source'
-        """
-        from src.services.file_storage import FileStorageService
-
-        file_storage = FileStorageService(self.session)
-        prefix = application.repo_prefix
-
-        # Delete existing files
-        from src.models.orm.file_index import FileIndex
-        existing_result = await self.session.execute(
-            select(FileIndex.path).where(
-                FileIndex.path.startswith(prefix),
-            )
-        )
-        for (path,) in existing_result.all():
-            await file_storage.delete_file(path)
-
-        # Write new files
-        for file_dict in files_data:
-            full_path = f"{prefix}{file_dict['path']}"
-            source = file_dict.get("source", "")
-            await file_storage.write_file(
-                path=full_path,
-                content=source.encode("utf-8"),
-                updated_by="system",
-            )
-
-    async def rollback_to_version(
-        self,
-        application: Application,
-        version_id: UUID,  # noqa: ARG002
-    ) -> None:
-        """
-        Rollback is no longer supported with the unified file storage model.
-        Published snapshots are immutable point-in-time captures.
-        """
-        raise ValueError("Version rollback is not supported. Use published snapshots instead.")
+from src.repositories.applications import ApplicationRepository  # noqa: E402
 
 
 # =============================================================================
 # Helper functions
 # =============================================================================
+
+
+def _logo_data_url(data: bytes | None, content_type: str | None) -> str | None:
+    """Encode a binary logo as a data URL, or None if no logo is set."""
+    if not data:
+        return None
+    mime = content_type or "application/octet-stream"
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
 async def application_to_public(
@@ -625,8 +124,12 @@ async def application_to_public(
         is_published=application.is_published,
         has_unpublished_changes=application.has_unpublished_changes,
         access_level=application.access_level,
+        app_model=application.app_model,
         role_ids=role_ids,
         repo_path=application.repo_path,
+        logo=_logo_data_url(application.logo_data, application.logo_content_type),
+        is_solution_managed=application.solution_id is not None,
+        solution_id=application.solution_id,
     )
 
 
@@ -646,24 +149,64 @@ async def get_application_or_404(
     Raises:
         HTTPException 404 if not found or access denied
     """
+    if ctx.user.embed is True:
+        # Embed principals are HMAC-pre-authorized for exactly ONE app — the
+        # token's app_id claim. Tier/role checks don't apply (the principal
+        # is a synthetic external identity with no roles); identity binding
+        # does: only the bound app resolves, anything else is a 404. This
+        # both keeps embed rendering working under is_external=True (OPEN-D)
+        # and stops an embed token browsing other apps' metadata.
+        result = await ctx.db.execute(
+            select(Application).where(Application.slug == slug)
+        )
+        app = next(
+            (
+                a
+                for a in result.scalars().all()
+                if ctx.user.app_id == str(a.id)
+            ),
+            None,
+        )
+        if app is not None:
+            return app
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Application '{slug}' not found",
+        )
+
     repo = ApplicationRepository(
         session=ctx.db,
         org_id=ctx.org_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_platform_admin,
+        is_external=ctx.user.is_external,
     )
     try:
         if ctx.user.is_platform_admin:
-            # Slugs are globally unique — super admins can resolve across orgs
+            # A solution app slug can exist in several orgs (criterion 9). The
+            # admin resolver disambiguates by the active org (then global), so a
+            # legitimate cross-org install doesn't 500 with MultipleResultsFound.
             app = await repo.get_by_slug_global(slug)
             if not app:
                 raise AccessDeniedError(f"Application '{slug}' not found")
             return app
-        return await repo.can_access(slug=slug)
+        return await repo.can_access(slug=slug, include_solution_managed=True)
     except AccessDeniedError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Application '{slug}' not found",
+        )
+
+
+async def ensure_no_stale_app_source(db, slug: str) -> None:
+    """Reject app creation when unclaimed source already exists for the slug."""
+    prefix = f"apps/{slug}/"
+    result = await db.execute(
+        select(FileIndex.path).where(FileIndex.path.like(f"{prefix}%")).limit(1)
+    )
+    if result.first() is not None:
+        raise ValueError(
+            f"Source files already exist under '{prefix}'. Move or delete them before creating this app."
         )
 
 
@@ -683,11 +226,24 @@ async def get_application_by_id_or_404(
     Raises:
         HTTPException 404 if not found or access denied
     """
+    if ctx.user.embed is True:
+        # Embed pre-auth: bound to the token's app_id only (see the slug
+        # helper above — OPEN-D).
+        if ctx.user.app_id == str(app_id):
+            app = await ctx.db.get(Application, app_id)
+            if app is not None:
+                return app
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Application '{app_id}' not found",
+        )
+
     repo = ApplicationRepository(
         session=ctx.db,
         org_id=ctx.org_id,
         user_id=ctx.user.user_id,
         is_superuser=ctx.user.is_platform_admin,
+        is_external=ctx.user.is_external,
     )
     try:
         return await repo.can_access(id=app_id)
@@ -696,6 +252,10 @@ async def get_application_by_id_or_404(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Application '{app_id}' not found",
         )
+
+
+LOGO_ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/svg+xml"}
+LOGO_MAX_SIZE = 5 * 1024 * 1024  # 5 MB
 
 
 # =============================================================================
@@ -725,9 +285,12 @@ async def create_application(
         target_org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
+        if data.app_model == "standalone_v2":
+            await ensure_no_stale_app_source(ctx.db, data.slug)
         application = await repo.create_application(data, created_by=user.email)
         return await application_to_public(application, repo)
     except ValueError as e:
@@ -769,6 +332,7 @@ async def list_applications(
         filter_org,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
 
     # Superusers use list_all_in_scope (respects filter_type, no role checks)
@@ -803,6 +367,7 @@ async def get_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
     application = await get_application_or_404(ctx, slug)
     return await application_to_public(application, repo)
@@ -820,14 +385,20 @@ async def update_application(
     user: CurrentUser,
 ) -> ApplicationPublic:
     """Update application metadata and access control by ID."""
-    if update_requires_platform_admin(data):
-        require_platform_admin(user)
+    sensitive_fields = {"slug", "scope", "access_level", "role_ids"}
+    requested_sensitive_fields = sensitive_fields & data.model_fields_set
+    if requested_sensitive_fields and not user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform admins can update application control-plane fields",
+        )
 
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
@@ -877,11 +448,13 @@ async def delete_application(
     user: CurrentUser,
 ) -> None:
     """Delete an application by ID."""
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
     success = await repo.delete_application(app_id)
 
@@ -917,6 +490,7 @@ async def get_draft(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
     app = await get_application_by_id_or_404(ctx, app_id)
     export_data = await repo.export_application(app)
@@ -943,11 +517,13 @@ async def save_draft(
 
     Replaces all existing draft files with the provided definition.
     """
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
     app = await get_application_by_id_or_404(ctx, app_id)
 
@@ -984,14 +560,18 @@ async def publish_application(
 
     Copies all draft files to a new live version.
     """
+    # Publishing a solution-managed app is a deploy-owned action.
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
+        await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
         message = data.message if data else None
         application = await repo.publish(app_id, user.email, message)
         if not application:
@@ -1035,12 +615,12 @@ async def replace_application_endpoint(
     """Update ``repo_path`` after source files have been moved/renamed.
 
     Validates that the new path is unique, non-nested with other apps, and has
-    source files under it. ``force: true`` bypasses only the source-file check.
+    source files under it. ``force: true`` bypasses all three checks.
     """
     if not user.is_platform_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Platform admin privileges required",
+            detail="Only platform admins can repoint app source roots",
         )
 
     repo = ApplicationRepository(
@@ -1048,9 +628,11 @@ async def replace_application_endpoint(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
 
     try:
+        await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
         application = await repo.replace_application(
             app_id, data.repo_path, force=data.force
         )
@@ -1067,6 +649,51 @@ async def replace_application_endpoint(
         )
 
     return await application_to_public(application, repo)
+
+
+@router.post(
+    "/swap-slugs",
+    response_model=ApplicationListResponse,
+    summary="Atomically exchange two applications' slugs",
+)
+async def swap_application_slugs(
+    data: ApplicationSwapSlugsRequest,
+    ctx: Context,
+    user: CurrentUser,
+) -> ApplicationListResponse:
+    """Swap two apps' slugs in one transaction (v1→v2 migration cutover).
+
+    Gives the new (v2) app the live slug and parks the old (v1) app under the
+    other slug, so bookmarks/links to ``/apps/{slug}`` keep working. Holds the
+    slug advisory lock for both slugs, so it can't race a same-slug deploy or
+    leave the live slug momentarily unowned.
+    """
+    if not user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform admins can swap application slugs",
+        )
+
+    # Slug is a deploy-owned property for solution-managed apps — refuse both.
+    await assert_entity_id_not_solution_managed(ctx.db, Application, data.app_a)
+    await assert_entity_id_not_solution_managed(ctx.db, Application, data.app_b)
+    repo = ApplicationRepository(
+        ctx.db,
+        ctx.org_id,
+        user_id=user.user_id,
+        is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
+    )
+    try:
+        app_a, app_b = await repo.swap_slugs(data.app_a, data.app_b)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    apps = [
+        await application_to_public(app_a, repo),
+        await application_to_public(app_b, repo),
+    ]
+    return ApplicationListResponse(applications=apps, total=len(apps))
 
 
 # =============================================================================
@@ -1107,23 +734,28 @@ async def validate_application(
     errors: list[AppValidationIssue] = []
     warnings: list[AppValidationIssue] = []
 
-    # Check required file structure
-    layout_path = f"{prefix}_layout.tsx"
-    index_path = f"{prefix}pages/index.tsx"
+    # standalone_v2 apps own their createRoot + router; the v1 _layout.tsx /
+    # pages-routing convention (and its <Outlet /> requirement) does not apply.
+    is_v2 = app.app_model == "standalone_v2"
 
-    if layout_path not in files:
-        errors.append(AppValidationIssue(
-            severity="error",
-            file="_layout.tsx",
-            message="Missing required _layout.tsx file",
-        ))
+    # Check required file structure (v1-only — v2 has no _layout/pages convention)
+    if not is_v2:
+        layout_path = f"{prefix}_layout.tsx"
+        index_path = f"{prefix}pages/index.tsx"
 
-    if index_path not in files:
-        warnings.append(AppValidationIssue(
-            severity="warning",
-            file="pages/index.tsx",
-            message="Missing pages/index.tsx (home page)",
-        ))
+        if layout_path not in files:
+            errors.append(AppValidationIssue(
+                severity="error",
+                file="_layout.tsx",
+                message="Missing required _layout.tsx file",
+            ))
+
+        if index_path not in files:
+            warnings.append(AppValidationIssue(
+                severity="warning",
+                file="pages/index.tsx",
+                message="Missing pages/index.tsx (home page)",
+            ))
 
     # Get declared dependencies and track referenced ones
     declared_deps = app.dependencies or {}
@@ -1165,8 +797,8 @@ async def validate_application(
                         message="Missing default export. Pages and components must have a default export (e.g., export default function MyComponent() { ... })",
                     ))
 
-            # Check _layout.tsx uses <Outlet /> not {children}
-            if rel_path == "_layout.tsx":
+            # Check _layout.tsx uses <Outlet /> not {children} (v1-only convention)
+            if not is_v2 and rel_path == "_layout.tsx":
                 if "{children}" in content and "Outlet" not in content:
                     errors.append(AppValidationIssue(
                         severity="error",
@@ -1280,6 +912,7 @@ async def export_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
     application = await get_application_by_id_or_404(ctx, app_id)
     export_data = await repo.export_application(application, version_id)
@@ -1309,13 +942,17 @@ async def rollback_application(
     Sets the specified version as the new active version.
     The draft version remains unchanged.
     """
+    # Version rollback of a solution-managed app is a deploy-owned action.
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
+        is_external=getattr(user, "is_external", False),
     )
     application = await get_application_by_id_or_404(ctx, app_id)
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
 
     try:
         await repo.rollback_to_version(application, data.version_id)
@@ -1328,3 +965,101 @@ async def rollback_application(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+# =============================================================================
+# Logo Endpoints
+# =============================================================================
+
+
+@router.post(
+    "/{app_id}/logo",
+    summary="Upload application logo",
+)
+async def upload_application_logo(
+    app_id: UUID,
+    ctx: Context,
+    file: UploadFile = File(..., description="Logo image (PNG/JPEG/SVG, ≤5MB)"),
+) -> dict:
+    """Upload a square logo for an application.
+
+    Requires the same permissions as updating the application.
+    """
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
+    application = await get_application_by_id_or_404(ctx, app_id)
+
+    if file.content_type not in LOGO_ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed: {', '.join(sorted(LOGO_ALLOWED_CONTENT_TYPES))}",
+        )
+
+    content = await file.read()
+    if len(content) > LOGO_MAX_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size: {LOGO_MAX_SIZE // 1024 // 1024} MB",
+        )
+
+    if file.content_type == "image/svg+xml":
+        try:
+            content = sanitize_svg(content)
+        except SvgSanitizationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid SVG: {exc}",
+            )
+
+    application.logo_data = content
+    application.logo_content_type = file.content_type
+    await ctx.db.commit()
+    return {"ok": True}
+
+
+@router.get(
+    "/{app_id}/logo",
+    summary="Get application logo",
+    responses={
+        200: {"content": {"image/png": {}, "image/jpeg": {}, "image/svg+xml": {}}},
+        404: {"description": "No logo set"},
+    },
+)
+async def get_application_logo(
+    app_id: UUID,
+    ctx: Context,
+) -> Response:
+    # The logo is non-sensitive chrome shown in the app header. Resolve the row
+    # by id WITHOUT the consumer-access gate that get_application_by_id_or_404
+    # applies: any authenticated user who can MOUNT the app (it's served to
+    # them) must be able to see its logo — including external/portal users, for
+    # whom the role-scoped metadata lookup 404s. Only the logo bytes + type are
+    # returned, nothing else about the app.
+    application = (
+        await ctx.db.execute(select(Application).where(Application.id == app_id))
+    ).scalar_one_or_none()
+    if application is None or not application.logo_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Logo not set",
+        )
+    return Response(
+        content=application.logo_data,
+        media_type=application.logo_content_type or "application/octet-stream",
+    )
+
+
+@router.delete(
+    "/{app_id}/logo",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete application logo",
+)
+async def delete_application_logo(
+    app_id: UUID,
+    ctx: Context,
+) -> Response:
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
+    application = await get_application_by_id_or_404(ctx, app_id)
+    application.logo_data = None
+    application.logo_content_type = None
+    await ctx.db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
