@@ -225,6 +225,10 @@ class SDKIntegrationsGetRequest(BaseModel):
         description="Override OAuth scope for token request (e.g., 'https://outlook.office365.com/.default'). "
         "When provided, triggers fresh token fetch for client_credentials flows."
     )
+    solution: str | None = Field(
+        default=None,
+        description="Optional solution install id used to fail loudly for declared missing integrations.",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

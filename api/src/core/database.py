@@ -8,10 +8,8 @@ Uses async connection pooling for optimal performance.
 import ssl
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Annotated
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from fastapi import Depends
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -132,6 +130,10 @@ def get_session_factory(settings: Settings | None = None) -> async_sessionmaker[
             expire_on_commit=False,
             autoflush=False,
         )
+        # Defense-in-depth: reject any flush that would mutate/delete a
+        # solution-managed entity outside the deploy path (criterion 6).
+        from src.services.solutions.guard import install_solution_write_guard
+        install_solution_write_guard()
 
     return _async_session_factory
 
@@ -158,10 +160,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
-# Type alias for dependency injection
-DbSession = Annotated[AsyncSession, Depends(get_db)]
-
-
 async def get_optional_db() -> AsyncGenerator[AsyncSession | None, None]:
     """
     Dependency for optional database sessions.
@@ -179,10 +177,6 @@ async def get_optional_db() -> AsyncGenerator[AsyncSession | None, None]:
         except Exception:
             await session.rollback()
             raise
-
-
-# Type alias for optional database injection
-OptionalDbSession = Annotated[AsyncSession | None, Depends(get_optional_db)]
 
 
 @asynccontextmanager

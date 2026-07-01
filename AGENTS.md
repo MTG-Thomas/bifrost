@@ -1,6 +1,6 @@
 # Bifrost Agent Guide (MTG)
 
-Tool-neutral guidance for AI coding agents in `MTG-Thomas/bifrost`. This fork tracks [upstream](https://github.com/jackmusick/bifrost); `CLAUDE.md` remains the detailed **platform** playbook for Persona B work.
+Tool-neutral guidance for AI coding agents in `MTG-Thomas/bifrost`. This fork tracks [upstream](https://github.com/gobifrost/bifrost); `CLAUDE.md` remains the detailed **platform** playbook for Persona B work.
 
 **New teammates and workspace-only work:** start with MTG onboarding, not this file alone.
 
@@ -23,6 +23,7 @@ Assume **Persona A** unless the task clearly changes `api/`, `client/`, migratio
 - Keep changes narrow and reviewable. Avoid drive-by refactors, dead code, commented-out code, and unrequested fallback paths.
 - Treat `.bifrost/` as export-only. Mutate platform entities through the CLI or MCP tools — not by hand-editing manifest YAML.
 - New MCP tools must be thin HTTP wrappers around REST endpoints. Do not add direct ORM/repository access in MCP tools.
+- When merging upstream `gobifrost/bifrost` changes into this fork, do not recreate or re-enable DigitalOcean deployment CI/CD for `MTG-Thomas/bifrost`. MTG deploys from `bifrost-infra` to Azure. Keep the `.github/workflows/ci.yml` `deploy-dev` job guarded with `github.repository == 'gobifrost/bifrost'`; CI runs `api/scripts/check_mtg_ci_boundaries.py` to fail fast if that guard is removed or weakened.
 
 ## Development Environment (Persona B only)
 

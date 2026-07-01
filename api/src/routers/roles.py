@@ -14,8 +14,12 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select, delete
 
 from src.core.auth import CurrentSuperuser
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
+from src.services.solutions.guard import (
+    assert_entity_id_not_solution_managed,
+    assert_role_not_bound_to_solution_managed,
+)
 from src.services.audit import emit_audit
 from src.models import (
     Role as RoleORM,
@@ -66,19 +70,11 @@ from shared.role_cache import invalidate_role as invalidate_user_role_cache_for_
 from shared.role_cache import invalidate_user as invalidate_user_role_cache
 
 # Import cache invalidation
-try:
-    from src.core.cache import (
-        invalidate_role,
-        invalidate_role_users,
-        invalidate_role_forms,
-    )
-
-    CACHE_INVALIDATION_AVAILABLE = True
-except ImportError:
-    CACHE_INVALIDATION_AVAILABLE = False
-    invalidate_role = None  # type: ignore
-    invalidate_role_users = None  # type: ignore
-    invalidate_role_forms = None  # type: ignore
+from src.core.cache import (
+    invalidate_role,
+    invalidate_role_users,
+    invalidate_role_forms,
+)
 
 # Agent cache invalidation (optional, may not exist yet)
 try:
@@ -173,8 +169,7 @@ async def create_role(
     logger.info(f"Created role {role.id}: {log_safe(role.name)}")
 
     # Invalidate cache (roles are global, no org_id needed)
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
-        await invalidate_role(None, str(role.id))
+    await invalidate_role(None, str(role.id))
 
     await emit_audit(
         db,
@@ -247,8 +242,7 @@ async def update_role(
     logger.info(f"Updated role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
-        await invalidate_role(None, str(role_id))
+    await invalidate_role(None, str(role_id))
 
     # Per-user role cache: a rename changes role_names for every user holding
     # this role, so sweep all entries containing role_id.
@@ -306,14 +300,17 @@ async def delete_role(
             detail="Role not found",
         )
 
+    # A role assigned to a solution-managed entity has deploy-owned bindings;
+    # deleting it would cascade-strip them outside deploy (Codex R4). Refuse.
+    await assert_role_not_bound_to_solution_managed(db, role_id)
+
     deleted_name = role.name
     await db.delete(role)
     await db.flush()
     logger.info(f"Deleted role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role:
-        await invalidate_role(None, str(role_id))
+    await invalidate_role(None, str(role_id))
 
     # Per-user role cache: deleting a role means every user holding it loses
     # the membership; clear all entries containing role_id.
@@ -406,8 +403,7 @@ async def assign_users_to_role(
     logger.info(f"Assigned users to role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
-        await invalidate_role_users(None, str(role_id))
+    await invalidate_role_users(None, str(role_id))
 
     # Per-user role cache: drop entries for each newly-assigned user so the
     # next read sees the new role membership.
@@ -463,8 +459,7 @@ async def remove_user_from_role(
     logger.info(f"Removed user {log_safe(user_id)} from role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
-        await invalidate_role_users(None, str(role_id))
+    await invalidate_role_users(None, str(role_id))
 
     # Per-user role cache: drop this user's entry so the next read sees the
     # post-unassignment membership.
@@ -530,6 +525,8 @@ async def assign_forms_to_role(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Form with ID '{form_id_str}' not found",
             )
+        # Role bindings are portable + solution-owned: locked for managed forms.
+        await assert_entity_id_not_solution_managed(db, FormORM, form_uuid)
 
         # Check if already assigned
         existing = await db.execute(
@@ -553,8 +550,7 @@ async def assign_forms_to_role(
     logger.info(f"Assigned forms to role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role_forms:
-        await invalidate_role_forms(None, str(role_id))
+    await invalidate_role_forms(None, str(role_id))
 
 
 @router.delete(
@@ -570,6 +566,7 @@ async def remove_form_from_role(
     db: DbSession,
 ) -> None:
     """Remove a form from a role."""
+    await assert_entity_id_not_solution_managed(db, FormORM, form_id)
     result = await db.execute(
         delete(FormRoleORM).where(
             FormRoleORM.form_id == form_id,
@@ -586,8 +583,7 @@ async def remove_form_from_role(
     logger.info(f"Removed form {log_safe(form_id)} from role {log_safe(role_id)}")
 
     # Invalidate cache (roles are global, no org_id needed)
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role_forms:
-        await invalidate_role_forms(None, str(role_id))
+    await invalidate_role_forms(None, str(role_id))
 
 
 # =============================================================================
@@ -641,6 +637,7 @@ async def assign_agents_to_role(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Agent with ID '{agent_id_str}' not found",
             )
+        await assert_entity_id_not_solution_managed(db, AgentORM, agent_uuid)
 
         # Check if already assigned
         existing = await db.execute(
@@ -681,6 +678,7 @@ async def remove_agent_from_role(
     db: DbSession,
 ) -> None:
     """Remove an agent from a role."""
+    await assert_entity_id_not_solution_managed(db, AgentORM, agent_id)
     result = await db.execute(
         delete(AgentRoleORM).where(
             AgentRoleORM.agent_id == agent_id,
@@ -743,8 +741,7 @@ async def bulk_unassign_users(
     await db.flush()
     logger.info(f"Bulk unassigned {len(uuids)} users from role {log_safe(role_id)}")
 
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role_users:
-        await invalidate_role_users(None, str(role_id))
+    await invalidate_role_users(None, str(role_id))
     for uid_u in uuids:
         await invalidate_user_role_cache(uid_u)
 
@@ -770,6 +767,8 @@ async def bulk_unassign_forms(
 ) -> None:
     """Remove multiple forms from a role in one statement."""
     uuids = [UUID(fid) for fid in request.form_ids]
+    for fid in uuids:
+        await assert_entity_id_not_solution_managed(db, FormORM, fid)
     await db.execute(
         delete(FormRoleORM).where(
             FormRoleORM.role_id == role_id,
@@ -779,8 +778,7 @@ async def bulk_unassign_forms(
     await db.flush()
     logger.info(f"Bulk unassigned {len(uuids)} forms from role {log_safe(role_id)}")
 
-    if CACHE_INVALIDATION_AVAILABLE and invalidate_role_forms:
-        await invalidate_role_forms(None, str(role_id))
+    await invalidate_role_forms(None, str(role_id))
 
     await emit_audit(
         db,
@@ -804,6 +802,8 @@ async def bulk_unassign_agents(
 ) -> None:
     """Remove multiple agents from a role in one statement."""
     uuids = [UUID(aid) for aid in request.agent_ids]
+    for aid in uuids:
+        await assert_entity_id_not_solution_managed(db, AgentORM, aid)
     await db.execute(
         delete(AgentRoleORM).where(
             AgentRoleORM.role_id == role_id,
@@ -868,6 +868,7 @@ async def assign_apps_to_role(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Application with ID '{app_id_str}' not found",
             )
+        await assert_entity_id_not_solution_managed(db, ApplicationORM, app_uuid)
         existing = await db.execute(
             select(AppRoleORM).where(
                 AppRoleORM.app_id == app_uuid,
@@ -905,6 +906,8 @@ async def bulk_unassign_apps(
     db: DbSession,
 ) -> None:
     uuids = [UUID(aid) for aid in request.app_ids]
+    for aid in uuids:
+        await assert_entity_id_not_solution_managed(db, ApplicationORM, aid)
     await db.execute(
         delete(AppRoleORM).where(
             AppRoleORM.role_id == role_id,
@@ -967,6 +970,7 @@ async def assign_workflows_to_role(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Workflow with ID '{wf_id_str}' not found",
             )
+        await assert_entity_id_not_solution_managed(db, WorkflowORM, wf_uuid)
         existing = await db.execute(
             select(WorkflowRoleORM).where(
                 WorkflowRoleORM.workflow_id == wf_uuid,
@@ -1004,6 +1008,8 @@ async def bulk_unassign_workflows(
     db: DbSession,
 ) -> None:
     uuids = [UUID(wid) for wid in request.workflow_ids]
+    for wid in uuids:
+        await assert_entity_id_not_solution_managed(db, WorkflowORM, wid)
     await db.execute(
         delete(WorkflowRoleORM).where(
             WorkflowRoleORM.role_id == role_id,

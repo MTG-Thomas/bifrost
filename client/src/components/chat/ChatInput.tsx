@@ -205,7 +205,7 @@ export function ChatInput({
 				<div
 					ref={containerRef}
 					className={cn(
-						"relative rounded-2xl border bg-muted/50 shadow-lg",
+						"relative rounded-2xl bg-muted/50 shadow-lg ring-1 ring-foreground/5 dark:ring-foreground/10",
 						"transition-all duration-200",
 						"focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background",
 					)}
@@ -249,6 +249,7 @@ export function ChatInput({
 						)}
 						<textarea
 							ref={textareaRef}
+							aria-label="Chat input"
 							value={message}
 							onChange={handleInputChange}
 							onKeyDown={handleKeyDown}
@@ -300,6 +301,7 @@ export function ChatInput({
 								onClick={onStop}
 								size="icon"
 								variant="destructive"
+								aria-label="Stop generation"
 								className={cn(
 									"h-8 w-8 rounded-full shrink-0",
 									"transition-all duration-200",
@@ -313,6 +315,7 @@ export function ChatInput({
 								onClick={handleSend}
 								disabled={!canSend}
 								size="icon"
+								aria-label="Send message"
 								className={cn(
 									"h-8 w-8 rounded-full shrink-0",
 									"transition-all duration-200",

@@ -3,8 +3,8 @@
 Users cycle actions (Push/Pull/Delete/Skip) per item with arrow keys,
 then confirm or cancel the whole batch. Items with section="files" render
 under a "Files" header; items with section="entities" render under an
-"Entities" header. `bifrost sync/push/pull/watch` only emits file items;
-`bifrost import` emits entity items.
+"Entities" header. `bifrost sync/push/pull/watch` only emits file items; entity
+items are reserved for higher-level solution or manifest flows.
 """
 
 from __future__ import annotations

@@ -43,6 +43,10 @@ COMPOSE_PROJECT_NAME="$(compute_project_name .)"
 
 LOG_DIR="/tmp/bifrost-$COMPOSE_PROJECT_NAME"
 mkdir -p "$LOG_DIR"
+# Pre-create the fixture subdir the api container bind-mounts (install/preview-repo
+# e2e tests stage file:// git repos here). Creating it host-side first means Docker
+# binds an existing host-owned dir instead of auto-creating a root-owned mountpoint.
+mkdir -p "$LOG_DIR/solution-repo-fixtures"
 export LOG_DIR
 
 # Load .env.test for optional secrets (GitHub PAT, LLM keys, etc.)
@@ -81,6 +85,18 @@ require_stack_up() {
         echo "  ./test.sh stack up" >&2
     fi
     exit 1
+}
+
+dump_stack_startup_logs() {
+    local phase="$1"
+
+    echo "ERROR: stack startup failed during: $phase" >&2
+    echo "Compose service state:" >&2
+    docker compose -f "$COMPOSE_FILE" ps -a >&2 || true
+    echo "" >&2
+    echo "Startup logs:" >&2
+    docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps init api worker scheduler pgbouncer postgres rabbitmq redis seaweedfs >&2 || true
+    export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE" || true
 }
 
 reset_state() {
@@ -159,16 +175,37 @@ stack_up() {
     docker compose -f "$COMPOSE_FILE" up -d pgbouncer
     wait_for_service "$COMPOSE_FILE" pgbouncer pg_isready -h localhost -p 5432 -U bifrost
 
+    # CI pre-builds the dev images via docker/build-push-action with GHA cache
+    # and tags them as bifrost-test-api-dev:latest / bifrost-test-client-dev:latest
+    # before calling stack up. Setting BIFROST_SKIP_BUILD=1 tells compose to
+    # use those local images directly instead of building. Local dev leaves
+    # this unset so `--build` continues to apply (image layer cache makes the
+    # rebuilds fast after the first one).
+    local build_flag="--build"
+    if [ "${BIFROST_SKIP_BUILD:-0}" = "1" ]; then
+        build_flag="--no-build"
+        echo "BIFROST_SKIP_BUILD=1 — using pre-built images from local docker."
+    fi
+
     echo "Building template database..."
     "$SCRIPT_DIR/scripts/stack_template_init.sh"
 
     echo "Starting API + Worker + Scheduler..."
-    docker compose -f "$COMPOSE_FILE" --profile e2e up -d --build
+    if ! docker compose -f "$COMPOSE_FILE" --profile e2e up -d "$build_flag"; then
+        dump_stack_startup_logs "api-worker-scheduler compose up"
+        exit 1
+    fi
     echo "Waiting for API to be serving traffic on /health/ready..."
-    wait_for_api_ready "$COMPOSE_FILE"
+    if ! wait_for_api_ready "$COMPOSE_FILE"; then
+        dump_stack_startup_logs "api readiness"
+        exit 1
+    fi
 
     echo "Starting client..."
-    docker compose -f "$COMPOSE_FILE" --profile client up -d --build client
+    if ! docker compose -f "$COMPOSE_FILE" --profile client up -d "$build_flag" client; then
+        dump_stack_startup_logs "client compose up"
+        exit 1
+    fi
     echo "Waiting for client to be healthy..."
     for i in {1..120}; do
         cid=$(docker compose -f "$COMPOSE_FILE" ps -q client 2>/dev/null)

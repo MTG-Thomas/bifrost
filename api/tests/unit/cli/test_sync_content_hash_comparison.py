@@ -34,6 +34,7 @@ class _SyncClient:
         self.content_hash = content_hash
         self.storage_etag = storage_etag
         self.last_modified = last_modified or datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
+        self.writes: list[dict[str, Any]] = []
 
     async def post(self, endpoint: str, json: dict[str, Any]) -> _Response:
         if endpoint == "/api/files/list":
@@ -47,6 +48,7 @@ class _SyncClient:
                 item["content_hash"] = self.content_hash
             return _Response(200, {"files_metadata": [item]})
         if endpoint == "/api/files/write":
+            self.writes.append(json)
             return _Response(204)
         raise AssertionError(f"unexpected endpoint: {endpoint}")
 
@@ -72,6 +74,7 @@ async def test_sync_skips_unchanged_when_content_hash_matches(workspace: pathlib
     rc = await cli._sync_files(str(workspace), force=True, client=client)
 
     assert rc == 0
+    assert client.writes == []
 
 
 @pytest.mark.asyncio
@@ -92,3 +95,28 @@ async def test_sync_pushes_when_content_hash_differs_even_if_storage_etag_matche
     rc = await cli._sync_files(str(workspace), force=True, client=client)
 
     assert rc == 0
+    assert [write["path"] for write in client.writes] == [rel]
+
+
+@pytest.mark.asyncio
+async def test_sync_pushes_prefixed_path_when_content_hash_differs(
+    workspace: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rel = "example.py"
+    repo_rel = f"tmp/{rel}"
+    local_bytes = b"print('local v2')\n"
+    (workspace / rel).write_bytes(local_bytes)
+    stale_hash = cli._hash_for_cache(b"print('server v1')\n")
+
+    client = _SyncClient(
+        server_path=repo_rel,
+        content_hash=stale_hash,
+        storage_etag=cli._hash_for_cache(local_bytes),
+    )
+    monkeypatch.setattr(cli, "_detect_repo_prefix", lambda path: "tmp")
+
+    rc = await cli._sync_files(str(workspace), force=True, client=client)
+
+    assert rc == 0
+    assert [write["path"] for write in client.writes] == [repo_rel]
