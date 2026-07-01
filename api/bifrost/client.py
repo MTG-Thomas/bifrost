@@ -16,14 +16,14 @@ import time
 import webbrowser
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 
 from .credentials import (
     clear_credentials,
-    credentials_are_ephemeral,
     get_credentials,
+    get_ephemeral_credentials_source,
     is_token_expired,
     load_allowed_dotenv,
     save_credentials,
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Global client injection for platform mode
 _injected_client: Optional["BifrostClient"] = None
 _last_refreshed_env_credentials: dict[str, str] | None = None
+_last_refreshed_ephemeral_source: Literal["env", "cwd_dotenv"] | None = None
 
 # Retry config for transient 5xx — see workstream E of issue #171.
 # SDK is machine-to-machine, so the retry budget is more generous than
@@ -145,7 +146,7 @@ async def refresh_tokens() -> bool:
     Returns:
         True if refresh successful, False otherwise
     """
-    global _last_refreshed_env_credentials
+    global _last_refreshed_env_credentials, _last_refreshed_ephemeral_source
 
     creds = get_credentials()
     if not creds:
@@ -156,10 +157,10 @@ async def refresh_tokens() -> bool:
         "api_url"
     ].rstrip("/") == api_url.rstrip("/"):
         refresh_token = _last_refreshed_env_credentials["refresh_token"]
-        is_env_sourced = True
+        ephemeral_source = _last_refreshed_ephemeral_source or "env"
     else:
         refresh_token = creds["refresh_token"]
-        is_env_sourced = credentials_are_ephemeral(api_url)
+        ephemeral_source = get_ephemeral_credentials_source(api_url)
 
     try:
         async with httpx.AsyncClient(
@@ -186,11 +187,13 @@ async def refresh_tokens() -> bool:
                 "expires_at": expires_at.isoformat(),
             }
 
-            if is_env_sourced:
+            if ephemeral_source is not None:
                 _last_refreshed_env_credentials = refreshed
-                save_ephemeral_credentials(**refreshed)
+                _last_refreshed_ephemeral_source = ephemeral_source
+                save_ephemeral_credentials(source=ephemeral_source, **refreshed)
             else:
                 _last_refreshed_env_credentials = None
+                _last_refreshed_ephemeral_source = None
                 save_credentials(**refreshed)
 
             return True

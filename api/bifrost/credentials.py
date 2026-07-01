@@ -19,7 +19,7 @@ import platform
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 KEYRING_SERVICE = "bifrost"
 _DOTENV_ALLOWED_KEYS: frozenset[str] = frozenset({"BIFROST_API_URL"})
@@ -394,12 +394,19 @@ def _get_cwd_dotenv_credentials(api_url: str) -> Credentials | None:
 
 def credentials_are_ephemeral(api_url: str) -> bool:
     """Return True when credentials for api_url come from env vars or CWD .env only."""
+    return get_ephemeral_credentials_source(api_url) is not None
+
+
+def get_ephemeral_credentials_source(
+    api_url: str,
+) -> Literal["env", "cwd_dotenv"] | None:
+    """Return the active ephemeral credential source for api_url, if any."""
     url = api_url.rstrip("/")
     if EnvBackend().get(url) is not None:
-        return True
+        return "env"
     if _get_cwd_dotenv_credentials(url) is not None:
-        return True
-    return False
+        return "cwd_dotenv"
+    return None
 
 
 def _replace_dotenv_line(lines: list[str], key: str, value: str) -> bool:
@@ -435,21 +442,22 @@ def _upsert_cwd_dotenv_token_vars(updates: dict[str, str]) -> None:
     try:
         env_path.write_text("".join(lines))
     except OSError:
-        pass
+        # Best effort: process env was already updated, so callers can continue.
+        return
 
 
 def save_ephemeral_credentials(
     api_url: str,
     access_token: str,
     refresh_token: str,
+    source: Literal["env", "cwd_dotenv"] = "env",
     **_unused: object,
 ) -> None:
     """Persist rotated tokens for env-var or CWD .env ephemeral sessions."""
     os.environ["BIFROST_ACCESS_TOKEN"] = access_token
     os.environ["BIFROST_REFRESH_TOKEN"] = refresh_token
 
-    url = api_url.rstrip("/")
-    if _get_cwd_dotenv_credentials(url) is not None:
+    if source == "cwd_dotenv":
         _upsert_cwd_dotenv_token_vars(
             {
                 "BIFROST_ACCESS_TOKEN": access_token,
