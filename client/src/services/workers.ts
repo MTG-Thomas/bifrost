@@ -38,6 +38,8 @@ export interface ProcessInfo {
 export interface PoolSummary {
 	worker_id: string;
 	hostname: string | null;
+	runtime?: string | null;
+	runtime_label?: string | null;
 	status: string | null;
 	started_at: string | null;
 	pool_size: number;
@@ -54,6 +56,8 @@ export interface PoolSummary {
 export interface PoolDetail {
 	worker_id: string;
 	hostname: string | null;
+	runtime?: string | null;
+	runtime_label?: string | null;
 	status: string | null;
 	started_at: string | null;
 	last_heartbeat: string | null;

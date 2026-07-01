@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text, text
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, LargeBinary, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.enums import AppAccessLevel
@@ -21,6 +21,8 @@ from src.models.orm.base import Base
 
 
 
+# Execution-resolution entity — access via ApplicationRepository (OrgScopedRepository).
+# See api/src/repositories/README.md.
 class Application(Base):
     """Application entity for App Builder.
 
@@ -41,6 +43,15 @@ class Application(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"), default=None
     )
 
+    # Solution scoping - NULL means ad-hoc _repo/ entity. NOT NULL = solution-
+    # managed (read-only on platform). See solutions.py / success-criteria §3.2.
+    solution_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("solutions.id", ondelete="CASCADE"),
+        nullable=True,
+        default=None,
+        index=True,
+    )
+
     # Publish history
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
@@ -55,10 +66,19 @@ class Application(Base):
         String(20), default=AppAccessLevel.AUTHENTICATED, server_default="'authenticated'"
     )
 
+    # Render model: 'inline_v1' (legacy — app renders inline inside the platform
+    # React tree, SDK via globalThis) | 'standalone_v2' (own createRoot + router +
+    # the bifrost SDK as a real import). See the v2 app model spec.
+    app_model: Mapped[str] = mapped_column(
+        String(20), default="inline_v1", server_default="inline_v1"
+    )
+
     # Metadata
     description: Mapped[str | None] = mapped_column(Text, default=None)
     dependencies: Mapped[dict | None] = mapped_column(JSON, default=None, nullable=True)
     icon: Mapped[str | None] = mapped_column(String(50), default=None)
+    logo_data: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
+    logo_content_type: Mapped[str | None] = mapped_column(String(50), default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()")
     )
@@ -88,7 +108,17 @@ class Application(Base):
 
     @property
     def is_published(self) -> bool:
-        """Check if the application has been published at least once."""
+        """Whether the app is live/openable.
+
+        standalone_v2 apps have NO publish concept — there is no draft→live
+        editor flow; a v2 app is source-built and served, so created == published
+        (it's "published" by existing). The publish/draft model is v1-only, so
+        is_published is unconditionally True for v2 and the v1 "Not Published"
+        gate never applies to it. For inline_v1 it stays "published at least once"
+        (a published_snapshot exists).
+        """
+        if self.app_model == "standalone_v2":
+            return True
         return self.published_snapshot is not None
 
     @property
@@ -98,6 +128,9 @@ class Application(Base):
         TODO: Compare current file_index state vs published_snapshot to detect
         actual changes. For now, always return True if published (conservative).
         """
+        # v2 has no draft/publish duality → never "unpublished changes".
+        if self.app_model == "standalone_v2":
+            return False
         if self.published_snapshot is None:
             return True  # Never published, so there are "unpublished" changes
         # Conservative: assume changes exist. A more precise check would

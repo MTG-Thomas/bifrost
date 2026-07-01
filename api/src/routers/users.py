@@ -6,23 +6,35 @@ List and manage users, view user roles and forms.
 
 import logging
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
+from src.config import get_settings
 from src.core.auth import CurrentSuperuser
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.core.org_filter import resolve_org_filter, OrgFilterType
 from src.services.audit import emit_audit
+from src.services.events import emit_event
+from src.services.user_invite_service import UserInviteService
 from src.models import User as UserORM, UserRole as UserRoleORM, FormRole as FormRoleORM
 from src.models import (
+    BulkUserFailure,
+    BulkUserOperation,
+    BulkUserResponse,
     UserCreate,
     UserPublic,
     UserUpdate,
     UserRolesResponse,
     UserFormsResponse,
+)
+from src.models.contracts.user_invites import (
+    CreateInviteResponse,
+    InviteStatus,
+    SendInviteRequest,
 )
 from src.core.constants import PROVIDER_ORG_ID
 
@@ -95,7 +107,13 @@ async def list_users(
     result = await db.execute(query)
     users = result.scalars().all()
 
-    return [UserPublic.model_validate(u) for u in users]
+    invite_svc = UserInviteService(db)
+    out: list[UserPublic] = []
+    for u in users:
+        public = UserPublic.model_validate(u)
+        public.invite_status = await invite_svc.status_for(u)
+        out.append(public)
+    return out
 
 
 @router.post(
@@ -119,6 +137,7 @@ async def create_user(
         hashed_password="",  # No password for admin-created users
         is_active=request.is_active,
         is_superuser=request.is_superuser,
+        is_external=request.is_external,
         is_verified=True,  # Trusted since created by admin
         is_registered=False,  # User must complete registration to set password
         organization_id=request.organization_id,
@@ -142,7 +161,317 @@ async def create_user(
             "organization_id": str(new_user.organization_id) if new_user.organization_id else None,
         },
     )
-    return UserPublic.model_validate(new_user)
+
+    response = UserPublic.model_validate(new_user)
+    if request.invite:
+        svc = UserInviteService(db)
+        raw_token, _invite = await svc.create_or_replace(
+            user_id=new_user.id, created_by=user.user_id
+        )
+        response.invite_status = InviteStatus.PENDING
+        response.registration_url = (
+            f"{get_settings().public_url.rstrip('/')}/accept-invite?token={raw_token}"
+        )
+    else:
+        response.invite_status = InviteStatus.NEVER_INVITED
+    return response
+
+
+@router.patch(
+    "/bulk",
+    response_model=BulkUserResponse,
+    summary="Bulk user operation",
+    description=(
+        "Apply one operation (move_org, replace_roles, set_active) to a batch of users "
+        "in a single transaction. Returns per-user pass/fail."
+    ),
+)
+async def bulk_update_users(
+    request: BulkUserOperation,
+    actor: CurrentSuperuser,
+    db: DbSession,
+) -> BulkUserResponse:
+    """Apply a single bulk operation across N users in one transaction."""
+    succeeded: list[UUID] = []
+    failed: list[BulkUserFailure] = []
+
+    rows = await db.execute(
+        select(UserORM).where(UserORM.id.in_(request.user_ids))
+    )
+    users_by_id = {u.id: u for u in rows.scalars().all()}
+
+    actor_id = (
+        UUID(str(actor.user_id))
+        if not isinstance(actor.user_id, UUID)
+        else actor.user_id
+    )
+
+    for uid in request.user_ids:
+        if await _apply_bulk_user_operation(
+            db=db,
+            request=request,
+            uid=uid,
+            user=users_by_id.get(uid),
+            actor_id=actor_id,
+            failed=failed,
+        ):
+            succeeded.append(uid)
+
+    await db.flush()
+    await emit_audit(
+        db,
+        "user.bulk_update",
+        resource_type="user",
+        resource_id=None,
+        details={
+            "operation": request.operation,
+            "requested": len(request.user_ids),
+            "succeeded": len(succeeded),
+            "failed": len(failed),
+        },
+    )
+    return BulkUserResponse(succeeded=succeeded, failed=failed)
+
+
+async def _apply_bulk_user_operation(
+    *,
+    db: DbSession,
+    request: BulkUserOperation,
+    uid: UUID,
+    user: UserORM | None,
+    actor_id: UUID,
+    failed: list[BulkUserFailure],
+) -> bool:
+    if user is None:
+        failed.append(BulkUserFailure(user_id=uid, reason="User not found"))
+        return False
+    if user.is_system:
+        failed.append(BulkUserFailure(user_id=uid, reason="System user cannot be modified"))
+        return False
+    if request.operation == "move_org":
+        return _move_bulk_user(user, request.organization_id, uid, failed)
+    if request.operation == "replace_roles":
+        return await _replace_bulk_user_roles(db, request, uid, actor_id, failed, user)
+    if request.operation == "set_active":
+        return _set_bulk_user_active(user, request.is_active, uid, actor_id, failed)
+    return False
+
+
+def _move_bulk_user(
+    user: UserORM,
+    target_org_id: UUID | None,
+    uid: UUID,
+    failed: list[BulkUserFailure],
+) -> bool:
+    if user.is_superuser and target_org_id is not None and target_org_id != PROVIDER_ORG_ID:
+        failed.append(BulkUserFailure(
+            user_id=uid,
+            reason="Platform admin must be demoted before moving to a non-provider org",
+        ))
+        return False
+    user.organization_id = target_org_id
+    user.updated_at = datetime.now(timezone.utc)
+    return True
+
+
+async def _replace_bulk_user_roles(
+    db: DbSession,
+    request: BulkUserOperation,
+    uid: UUID,
+    actor_id: UUID,
+    failed: list[BulkUserFailure],
+    user: UserORM,
+) -> bool:
+    if uid == actor_id:
+        failed.append(BulkUserFailure(user_id=uid, reason="Cannot change your own roles via bulk action"))
+        return False
+    await db.execute(
+        UserRoleORM.__table__.delete().where(UserRoleORM.user_id == uid)
+    )
+    for rid in (request.role_ids or []):
+        db.add(UserRoleORM(user_id=uid, role_id=rid, assigned_by=str(actor_id)))
+    user.updated_at = datetime.now(timezone.utc)
+    return True
+
+
+def _set_bulk_user_active(
+    user: UserORM,
+    is_active: bool | None,
+    uid: UUID,
+    actor_id: UUID,
+    failed: list[BulkUserFailure],
+) -> bool:
+    if uid == actor_id:
+        failed.append(BulkUserFailure(user_id=uid, reason="Cannot change your own active state"))
+        return False
+    user.is_active = bool(is_active)
+    user.updated_at = datetime.now(timezone.utc)
+    return True
+
+
+@router.post(
+    "/{user_id}/invite/resend",
+    response_model=CreateInviteResponse,
+    summary="Resend invite",
+    description="Generate a fresh invite token and email it to the user.",
+    responses={
+        404: {"description": "User not found"},
+        409: {"description": "User is already registered"},
+    },
+)
+async def resend_invite(
+    user_id: UUID,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> CreateInviteResponse:
+    return await _generate_invite(user_id=user_id, actor=user, db=db, send=True)
+
+
+@router.post(
+    "/{user_id}/invite/send",
+    response_model=CreateInviteResponse,
+    summary="Send invite",
+    description="Emit invite automation for an existing registration link without rotating the token.",
+)
+async def send_invite(
+    user_id: UUID,
+    request: SendInviteRequest,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> CreateInviteResponse:
+    token = _extract_invite_token(request.registration_url)
+    svc = UserInviteService(db)
+    try:
+        invite, target = await svc.get_valid_invite_user(token=token)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invite is not valid") from exc
+
+    if target.id != user_id:
+        raise HTTPException(status_code=400, detail="Invite does not belong to user")
+
+    event_id = await _emit_user_invited_event(
+        actor=user,
+        invite=invite,
+        reason="sent",
+        registration_url=request.registration_url,
+        target=target,
+    )
+
+    return CreateInviteResponse(
+        user_id=user_id,
+        expires_at=invite.expires_at,
+        registration_url=request.registration_url,
+        event_emitted=True,
+        event_id=event_id,
+    )
+
+
+@router.post(
+    "/{user_id}/invite/regenerate",
+    response_model=CreateInviteResponse,
+    summary="Regenerate invite link",
+    description="Generate a fresh invite token without sending an email; returns the URL.",
+    responses={
+        404: {"description": "User not found"},
+        409: {"description": "User is already registered"},
+    },
+)
+async def regenerate_invite(
+    user_id: UUID,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> CreateInviteResponse:
+    return await _generate_invite(user_id=user_id, actor=user, db=db, send=False)
+
+
+@router.delete(
+    "/{user_id}/invite",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke invite",
+    description="Revoke any active invite for the user.",
+)
+async def revoke_invite(
+    user_id: UUID,
+    user: CurrentSuperuser,
+    db: DbSession,
+) -> None:
+    svc = UserInviteService(db)
+    await svc.revoke(user_id=user_id)
+
+
+async def _generate_invite(
+    *, user_id: UUID, actor, db, send: bool
+) -> CreateInviteResponse:
+    target = (
+        await db.execute(select(UserORM).where(UserORM.id == user_id))
+    ).scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.is_registered:
+        raise HTTPException(status_code=409, detail="User is already registered")
+
+    svc = UserInviteService(db)
+    raw_token, invite = await svc.create_or_replace(
+        user_id=user_id, created_by=actor.user_id
+    )
+    registration_url = (
+        f"{get_settings().public_url.rstrip('/')}/accept-invite?token={raw_token}"
+    )
+
+    event_id = None
+    if send:
+        event_id = await _emit_user_invited_event(
+            actor=actor,
+            invite=invite,
+            reason="resent",
+            registration_url=registration_url,
+            target=target,
+        )
+
+    return CreateInviteResponse(
+        user_id=user_id,
+        expires_at=invite.expires_at,
+        registration_url=registration_url,
+        event_emitted=send,
+        event_id=event_id,
+    )
+
+
+def _extract_invite_token(registration_url: str) -> str:
+    parsed = urlparse(registration_url)
+    token = parse_qs(parsed.query).get("token", [None])[0]
+    if not token:
+        raise HTTPException(status_code=400, detail="registration_url must include token")
+    return token
+
+
+async def _emit_user_invited_event(
+    *,
+    actor,
+    invite,
+    reason: str,
+    registration_url: str,
+    target: UserORM,
+) -> UUID:
+    event_id, _ = await emit_event(
+        "user.invited",
+        {
+            "user_id": str(target.id),
+            "email": target.email,
+            "name": target.name or "",
+            "registration_url": registration_url,
+            "expires_at": invite.expires_at.isoformat(),
+            "invited_by": {
+                "user_id": str(actor.user_id),
+                "email": actor.email,
+                "name": getattr(actor, "name", None) or "",
+            },
+            "reason": reason,
+        },
+        organization_id=target.organization_id,
+        triggered_by=str(actor.user_id),
+    )
+    return event_id
 
 
 @router.get(
@@ -224,6 +553,8 @@ async def update_user(
             db_user.organization_id = PROVIDER_ORG_ID
     if request.is_verified is not None:
         db_user.is_verified = request.is_verified
+    if request.is_external is not None:
+        db_user.is_external = request.is_external
     if request.mfa_enabled is not None:
         db_user.mfa_enabled = request.mfa_enabled
     if request.organization_id is not None:

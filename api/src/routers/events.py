@@ -14,13 +14,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from src.core.auth import Context, CurrentSuperuser
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.config import get_settings
 from src.models.contracts.events import (
     CreateDeliveryRequest,
     DynamicValuesRequest,
     DynamicValuesResponse,
+    EmitEventRequest,
+    EmitEventResponse,
     EventDeliveryListResponse,
     EventDeliveryResponse,
     EventListResponse,
@@ -36,6 +38,8 @@ from src.models.contracts.events import (
     RetryDeliveryRequest,
     RetryDeliveryResponse,
     ScheduleSourceResponse,
+    TopicRegistryEntry,
+    TopicsRegistryResponse,
     WebhookAdapterInfo,
     WebhookAdapterListResponse,
     WebhookSourceResponse,
@@ -58,6 +62,9 @@ from src.repositories.events import (
     EventSubscriptionRepository,
 )
 from src.core.cache import get_shared_redis
+from src.services.events import emit_event
+from src.services.events.registry import CURATED_TOPICS
+from src.services.events.validation import validate_topic
 from src.services.webhooks.registry import get_adapter_registry
 
 logger = logging.getLogger(__name__)
@@ -126,6 +133,7 @@ async def _build_event_source_response(
         id=source.id,
         name=source.name,
         source_type=source.source_type,
+        event_type=source.event_type,
         organization_id=source.organization_id,
         organization_name=source.organization.name if source.organization else None,
         is_active=source.is_active,
@@ -378,11 +386,35 @@ async def create_source(
     """
     now = datetime.now(timezone.utc)
 
+    # Validate topic sources
+    if request.source_type == EventSourceType.TOPIC:
+        if not request.event_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="event_type is required for topic sources",
+            )
+        try:
+            validate_topic(request.event_type)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            )
+
+    # Org targeting follows the unified --org standard: an OMITTED
+    # organization_id (HOME) defaults to the caller's org, so a bare create
+    # never silently writes a global row. Explicit null still means global.
+    if "organization_id" in request.model_fields_set:
+        target_org_id = request.organization_id
+    else:
+        target_org_id = ctx.org_id
+
     # Create base event source
     source = EventSource(
         name=request.name,
         source_type=request.source_type,
-        organization_id=request.organization_id,
+        event_type=request.event_type if request.source_type == EventSourceType.TOPIC else None,
+        organization_id=target_org_id,
         is_active=True,
         created_by=ctx.user.email,
         created_at=now,
@@ -549,6 +581,13 @@ async def update_source(
             detail="Event source not found",
         )
 
+    # Solution-managed triggers are deploy-owned and read-only on the platform
+    # (the deploy path is the only writer). Refuse with a clean 409 before
+    # mutating, rather than letting the before_flush backstop raise a 500.
+    from src.services.solutions.guard import assert_not_solution_managed
+
+    assert_not_solution_managed(source)
+
     # Update basic fields
     if request.name is not None:
         source.name = request.name
@@ -642,6 +681,13 @@ async def delete_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Event source not found",
         )
+
+    # Solution-managed triggers are deploy-owned — uninstall removes them, not
+    # this endpoint. Refuse with a clean 409 (the DELETE cascade would otherwise
+    # strip a managed source's deploy-owned rows outside deploy).
+    from src.services.solutions.guard import assert_not_solution_managed
+
+    assert_not_solution_managed(source)
 
     # Call adapter unsubscribe for webhooks
     if source.source_type == EventSourceType.WEBHOOK and source.webhook_source:
@@ -814,6 +860,11 @@ async def update_subscription(
             detail="Subscription not found",
         )
 
+    # Solution-managed subscriptions are deploy-owned, read-only here.
+    from src.services.solutions.guard import assert_not_solution_managed
+
+    assert_not_solution_managed(subscription)
+
     # Update fields - use model_fields_set to distinguish "not provided" from "set to null"
     if "event_type" in request.model_fields_set:
         subscription.event_type = request.event_type
@@ -871,6 +922,11 @@ async def delete_subscription(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Subscription not found",
         )
+
+    # Solution-managed subscriptions are deploy-owned, read-only here.
+    from src.services.solutions.guard import assert_not_solution_managed
+
+    assert_not_solution_managed(subscription)
 
     await db.delete(subscription)
     await db.flush()
@@ -988,6 +1044,66 @@ async def list_events(
         )
 
     return EventListResponse(items=items, total=total)
+
+
+@router.post(
+    "/emit",
+    response_model=EmitEventResponse,
+    summary="Emit a topic event",
+    description="Publish an event to a topic. All subscriptions on the matching topic source will be triggered.",
+)
+async def emit_topic_event(
+    request: EmitEventRequest,
+    user: CurrentSuperuser,
+) -> EmitEventResponse:
+    """Emit a topic event and return the event_id and subscriber count."""
+    try:
+        validate_topic(request.topic)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    organization_id: UUID | None = None
+    if request.scope and request.scope != "GLOBAL":
+        try:
+            organization_id = UUID(request.scope)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid scope: must be a UUID or 'GLOBAL', got '{request.scope}'",
+            )
+
+    event_id, subscribers_notified = await emit_event(
+        request.topic,
+        request.data,
+        organization_id=organization_id,
+        triggered_by=str(user.user_id),
+    )
+
+    return EmitEventResponse(
+        event_id=str(event_id),
+        subscribers_notified=subscribers_notified,
+    )
+
+
+@router.get(
+    "/topics",
+    response_model=TopicsRegistryResponse,
+    summary="List available topics",
+    description="Returns curated topic suggestions and topics currently in use.",
+)
+async def list_topics(
+    db: DbSession,
+) -> TopicsRegistryResponse:
+    """Return the curated topic registry plus topics currently in use."""
+    source_repo = EventSourceRepository(db)
+    in_use = await source_repo.get_distinct_topic_types()
+    return TopicsRegistryResponse(
+        curated=[TopicRegistryEntry(**entry) for entry in CURATED_TOPICS],
+        in_use=in_use,
+    )
 
 
 @router.get(

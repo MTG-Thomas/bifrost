@@ -45,7 +45,24 @@ export function WorkersTab() {
     const pools = useMemo(() => {
         const byId = new Map<string, PoolSummary | typeof wsPools[number]>();
         for (const p of poolsData?.pools ?? []) byId.set(p.worker_id, p);
-        for (const p of wsPools) byId.set(p.worker_id, p);
+        for (const p of wsPools) {
+            const existing = byId.get(p.worker_id);
+            if (!existing) {
+                byId.set(p.worker_id, p);
+                continue;
+            }
+            const runtime = p.runtime ?? existing.runtime;
+            const runtimeChanged =
+                p.runtime != null && p.runtime !== existing.runtime;
+            byId.set(p.worker_id, {
+                ...existing,
+                ...p,
+                runtime,
+                runtime_label:
+                    p.runtime_label ??
+                    (runtimeChanged ? null : existing.runtime_label),
+            });
+        }
         return [...byId.values()];
     }, [poolsData, wsPools]);
     const queueItems = queueData?.items || [];

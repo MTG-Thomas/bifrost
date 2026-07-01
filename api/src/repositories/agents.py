@@ -40,9 +40,13 @@ class AgentRepository(OrgScopedRepository[Agent]):
         from sqlalchemy import or_
         from src.models.enums import AgentAccessLevel
 
-        query = select(self.model).options(selectinload(self.model.tools))
+        query = select(self.model).options(
+            selectinload(self.model.tools),
+            selectinload(self.model.delegated_agents),
+            selectinload(self.model.roles),
+        )
 
-        # Build scope filter: cascade (org + global) OR user's own private agents
+        # Build scope filter: cascade (org + global) OR user's own private agents.
         cascade_conditions = []
         if self.org_id is not None:
             cascade_conditions.append(self.model.organization_id == self.org_id)
@@ -98,7 +102,11 @@ class AgentRepository(OrgScopedRepository[Agent]):
         Returns:
             List of Agent ORM objects with tools eager-loaded
         """
-        query = select(self.model).options(selectinload(self.model.tools))
+        query = select(self.model).options(
+            selectinload(self.model.tools),
+            selectinload(self.model.delegated_agents),
+            selectinload(self.model.roles),
+        )
 
         # Apply org filtering based on filter type
         if filter_type == OrgFilterType.ALL:

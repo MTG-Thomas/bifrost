@@ -63,22 +63,21 @@ router = APIRouter(prefix="/api/files", tags=["Files"])
 
 Mode = Literal["local", "cloud"]
 
-# Location is now a free string; reserved-vs-freeform validation lives in
+# Location is now a free string; managed-vs-freeform validation lives in
 # `shared.file_paths.validate_location_name` and is applied by the resolver.
+FILE_LOCATION_DESCRIPTION = (
+    "Storage location. Special values: workspace (default), temp, uploads. "
+    "Custom names like reports are accepted; internal prefixes _repo, _tmp, "
+    "and _apps are blocked."
+)
 
 
 class FileReadRequest(BaseModel):
     """Request to read a file."""
 
     path: str = Field(..., description="File path relative to location root")
-    location: str = Field(
-        default="workspace",
-        description="Storage location: reserved (workspace, temp, uploads) or freeform",
-    )
-    scope: str | None = Field(
-        default=None,
-        description="Org scope. Required for non-workspace, non-uploads locations.",
-    )
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
+    scope: str | None = Field(default=None, description="Org scope. Required for non-workspace, non-uploads locations.")
     mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
     binary: bool = Field(
         default=False, description="If true, return base64-encoded content"
@@ -90,14 +89,8 @@ class FileWriteRequest(BaseModel):
 
     path: str = Field(..., description="File path relative to location root")
     content: str = Field(..., description="File content (text or base64 for binary)")
-    location: str = Field(
-        default="workspace",
-        description="Storage location: reserved (workspace, temp, uploads) or freeform",
-    )
-    scope: str | None = Field(
-        default=None,
-        description="Org scope. Required for non-workspace, non-uploads locations.",
-    )
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
+    scope: str | None = Field(default=None, description="Org scope. Required for non-workspace, non-uploads locations.")
     mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
     binary: bool = Field(
         default=False, description="If true, content is base64-encoded"
@@ -108,31 +101,16 @@ class FileDeleteRequest(BaseModel):
     """Request to delete a file."""
 
     path: str = Field(..., description="File path relative to location root")
-    location: str = Field(
-        default="workspace",
-        description="Storage location: reserved (workspace, temp, uploads) or freeform",
-    )
-    scope: str | None = Field(
-        default=None,
-        description="Org scope. Required for non-workspace, non-uploads locations.",
-    )
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
+    scope: str | None = Field(default=None, description="Org scope. Required for non-workspace, non-uploads locations.")
     mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
 
 
 class FileListRequest(BaseModel):
     """Request to list files."""
-
-    directory: str = Field(
-        default="", description="Directory path relative to location root"
-    )
-    location: str = Field(
-        default="workspace",
-        description="Storage location: reserved (workspace, temp, uploads) or freeform",
-    )
-    scope: str | None = Field(
-        default=None,
-        description="Org scope. Required for non-workspace, non-uploads locations.",
-    )
+    directory: str = Field(default="", description="Directory path relative to location root")
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
+    scope: str | None = Field(default=None, description="Org scope. Required for non-workspace, non-uploads locations.")
     mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
     include_metadata: bool = Field(
         default=False, description="If true, return ETags + last_modified per file"
@@ -143,14 +121,8 @@ class FileExistsRequest(BaseModel):
     """Request to check file existence."""
 
     path: str = Field(..., description="File path relative to location root")
-    location: str = Field(
-        default="workspace",
-        description="Storage location: reserved (workspace, temp, uploads) or freeform",
-    )
-    scope: str | None = Field(
-        default=None,
-        description="Org scope. Required for non-workspace, non-uploads locations.",
-    )
+    location: str = Field(default="workspace", description=FILE_LOCATION_DESCRIPTION)
+    scope: str | None = Field(default=None, description="Org scope. Required for non-workspace, non-uploads locations.")
     mode: Mode = Field(default="cloud", description="Storage mode: local or cloud")
 
 
@@ -168,10 +140,6 @@ class FileListMetadataItem(BaseModel):
     etag: str
     last_modified: str  # ISO 8601
     updated_by: str | None = None
-    content_hash: str | None = Field(
-        default=None,
-        description="Normalized MD5 content hash for CLI sync comparisons",
-    )
 
 
 class FileListResponse(BaseModel):
@@ -227,32 +195,6 @@ class SignedUrlResponse(BaseModel):
     expires_in: int = Field(default=600, description="URL expiration in seconds")
 
 
-def _authorized_signed_url_scope(
-    request: SignedUrlRequest,
-    ctx: Context,
-) -> str | None:
-    """Resolve object-store scope from auth context instead of trusting input."""
-    if request.location == "workspace":
-        return None
-
-    if ctx.user.is_system_account:
-        return request.scope
-
-    if ctx.org_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Signed URL scope requires an organization context",
-        )
-
-    authorized_scope = str(ctx.org_id)
-    if request.scope and request.scope != authorized_scope:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Signed URL scope does not match the authenticated organization",
-        )
-    return authorized_scope
-
-
 # =============================================================================
 # Basic CRUD Endpoints (SDK-focused)
 # =============================================================================
@@ -265,7 +207,7 @@ async def read_file(
     user: CurrentSuperuser,
     db: AsyncSession = Depends(get_db),
 ) -> FileReadResponse:
-    """Read a file from workspace, temp, or uploads."""
+    """Read a file from a managed or custom location."""
     try:
         backend = get_backend(request.mode, db)
         content = await backend.read(
@@ -302,7 +244,7 @@ async def write_file(
     user: CurrentSuperuser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Write a file to workspace, temp, or uploads."""
+    """Write a file to a managed or custom location."""
     try:
         backend = get_backend(request.mode, db)
 
@@ -334,7 +276,7 @@ async def delete_file(
     user: CurrentSuperuser,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Delete a file from workspace, temp, or uploads."""
+    """Delete a file from a managed or custom location."""
     try:
         backend = get_backend(request.mode, db)
         await backend.delete(request.path, request.location, scope=request.scope)
@@ -382,25 +324,15 @@ async def list_files_simple(
                 if not path.startswith(".git/")
             }
 
-            # Look up updated_by and indexed text for sync-hash metadata.
-            # FileIndex.content_hash is SHA-256 (github_sync); CLI sync uses
-            # normalized MD5 via compute_sync_content_hash — compute on the fly.
+            # Look up updated_by from file_index
             from src.models.orm.file_index import FileIndex
 
             fi_result = await db.execute(
-                select(FileIndex.path, FileIndex.updated_by, FileIndex.content).where(
+                select(FileIndex.path, FileIndex.updated_by).where(
                     FileIndex.path.in_(list(s3_metadata.keys()))
                 )
             )
-            index_lookup = {
-                row.path: {
-                    "updated_by": row.updated_by,
-                    "content": row.content,
-                }
-                for row in fi_result.all()
-            }
-
-            from shared.sync_content_hash import compute_sync_content_hash
+            author_lookup = {row.path: row.updated_by for row in fi_result.all()}
 
             return FileListResponse(
                 files=sorted(s3_metadata.keys()),
@@ -409,12 +341,7 @@ async def list_files_simple(
                         path=path,
                         etag=meta.etag,
                         last_modified=meta.last_modified.isoformat(),
-                        updated_by=index_lookup.get(path, {}).get("updated_by"),
-                        content_hash=(
-                            compute_sync_content_hash(index_lookup[path]["content"].encode("utf-8"))
-                            if index_lookup.get(path, {}).get("content")
-                            else None
-                        ),
+                        updated_by=author_lookup.get(path),
                     )
                     for path, meta in sorted(s3_metadata.items())
                 ],
@@ -471,8 +398,7 @@ async def get_signed_url(
     from shared.file_paths import resolve_s3_key
 
     try:
-        scope = _authorized_signed_url_scope(request, ctx)
-        s3_path = resolve_s3_key(request.location, scope, request.path)
+        s3_path = resolve_s3_key(request.location, request.scope, request.path)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

@@ -35,13 +35,16 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchBox } from "@/components/search/SearchBox";
+import { SolutionManagedBadge } from "@/components/solutions/SolutionManagedBadge";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { useSearch } from "@/hooks/useSearch";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrganizations } from "@/hooks/useOrganizations";
 import { useTables, useDeleteTable } from "@/services/tables";
 import { TableDialog } from "@/components/tables/TableDialog";
+import { TablesClaimsTab } from "@/pages/TablesClaimsTab";
 import { ImportDialog } from "@/components/ImportDialog";
 import { exportEntities } from "@/services/exportImport";
 import { toast } from "sonner";
@@ -65,6 +68,7 @@ export function Tables() {
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [isImportOpen, setIsImportOpen] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
+	const [showOrphaned, setShowOrphaned] = useState(false);
 
 	// Convert filterOrgId to scope for API: undefined = all, null = global only, string = org UUID
 	const apiScope =
@@ -74,7 +78,7 @@ export function Tables() {
 				? "global"
 				: filterOrgId;
 
-	const { data, isLoading, refetch } = useTables(apiScope);
+	const { data, isLoading, refetch } = useTables(apiScope, showOrphaned);
 	const deleteTable = useDeleteTable();
 
 	// Fetch organizations for the org name lookup (platform admins only)
@@ -114,6 +118,18 @@ export function Tables() {
 
 	const handleConfirmDelete = async () => {
 		if (!tableToDelete) return;
+		// Defense in depth: solution-managed tables are deploy-owned and
+		// read-only on the platform (server returns 409). The Delete button is
+		// already disabled for them; this guards the bulk/stale-render path so we
+		// never round-trip to a raw 409 (audit U1).
+		if (tableToDelete.is_solution_managed) {
+			toast.error(
+				"Solution-managed entities can only be managed by deployment methods.",
+			);
+			setIsDeleteDialogOpen(false);
+			setTableToDelete(undefined);
+			return;
+		}
 		await deleteTable.mutateAsync({
 			params: {
 				path: { table_id: tableToDelete.id },
@@ -205,213 +221,285 @@ export function Tables() {
 				</div>
 			</div>
 
-			{/* Search and Filters */}
-			<div className="flex items-center gap-4">
-				<SearchBox
-					value={searchTerm}
-					onChange={setSearchTerm}
-					placeholder="Search tables by name or description..."
-					className="flex-1"
-				/>
-				{isPlatformAdmin && (
-					<div className="w-64">
-						<OrganizationSelect
-							value={filterOrgId}
-							onChange={setFilterOrgId}
-							showAll={true}
-							showGlobal={true}
-							placeholder="All organizations"
-						/>
-					</div>
-				)}
-				{isPlatformAdmin && (
-					<div className="flex items-center gap-2 ml-auto">
-						{selectedIds.size > 0 && (
-							<span className="text-sm text-muted-foreground">
-								{selectedIds.size} selected
-							</span>
-						)}
-						<Button
-							variant="outline"
-							size="sm"
-							onClick={handleExport}
-							disabled={isExporting}
-						>
-							<Download className="h-4 w-4 mr-1" />
-							{selectedIds.size > 0
-								? `Export (${selectedIds.size})`
-								: "Export All"}
-						</Button>
-						<Button
-							variant="outline"
-							size="sm"
-							onClick={() => setIsImportOpen(true)}
-						>
-							<Upload className="h-4 w-4 mr-1" />
-							Import
-						</Button>
-					</div>
-				)}
-			</div>
+			<Tabs defaultValue="tables" className="flex flex-1 min-h-0 flex-col">
+				<TabsList className="w-fit">
+					<TabsTrigger value="tables">Tables</TabsTrigger>
+					<TabsTrigger value="claims">Custom Claims</TabsTrigger>
+				</TabsList>
 
-			{/* Content */}
-			{isLoading ? (
-				<div className="space-y-2">
-					{[...Array(5)].map((_, i) => (
-						<Skeleton key={i} className="h-12 w-full" />
-					))}
-				</div>
-			) : filteredTables && filteredTables.length > 0 ? (
-				<div className="flex-1 min-h-0">
-					<DataTable className="max-h-full">
-						<DataTableHeader>
-							<DataTableRow>
-								{isPlatformAdmin && (
-									<DataTableHead className="w-10">
-										<Checkbox
-											checked={
-												filteredTables.length > 0 &&
-												selectedIds.size ===
-													filteredTables.length
-											}
-											onCheckedChange={toggleSelectAll}
-										/>
-									</DataTableHead>
-								)}
-								<DataTableHead className="w-0 whitespace-nowrap">Scope</DataTableHead>
-								<DataTableHead>Name</DataTableHead>
-								<DataTableHead>Description</DataTableHead>
-								<DataTableHead className="w-0 whitespace-nowrap">Created</DataTableHead>
-								<DataTableHead className="w-0 whitespace-nowrap text-right" />
-							</DataTableRow>
-						</DataTableHeader>
-						<DataTableBody>
-							{filteredTables.map((table) => (
-								<DataTableRow
-									key={table.id}
-									className="cursor-pointer hover:bg-muted/50"
-									onClick={() => handleViewDocuments(table)}
-								>
-									{isPlatformAdmin && (
-										<DataTableCell>
-											<Checkbox
-												checked={selectedIds.has(
-													table.id,
-												)}
-												onCheckedChange={() =>
-													toggleSelect(table.id)
-												}
-												onClick={(e) =>
-													e.stopPropagation()
-												}
-											/>
-										</DataTableCell>
-									)}
-									<DataTableCell className="w-0 whitespace-nowrap">
-										{table.organization_id ? (
-											<Badge
-												variant="outline"
-												className="gap-1"
-											>
-												<Building2 className="h-3 w-3" />
-												{isPlatformAdmin
-													? getOrgName(
-															table.organization_id,
-														)
-													: "Organization"}
-											</Badge>
-										) : (
-											<Badge
-												variant="secondary"
-												className="gap-1"
-											>
-												<Globe className="h-3 w-3" />
-												Global
-											</Badge>
-										)}
-									</DataTableCell>
-									<DataTableCell className="font-medium font-mono">
-										{table.name}
-									</DataTableCell>
-									<DataTableCell className="max-w-xs truncate text-muted-foreground">
-										{table.description || "-"}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
-										{formatDate(table.created_at)}
-									</DataTableCell>
-									<DataTableCell className="w-0 whitespace-nowrap text-right">
-										<div
-											className="flex justify-end gap-2"
-											onClick={(e) => e.stopPropagation()}
-										>
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() =>
-													handleViewDocuments(table)
-												}
-												title="View documents"
-												aria-label="View documents"
-											>
-												<FileJson2 className="h-4 w-4" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() =>
-													handleEdit(table)
-												}
-												title="Edit table"
-												aria-label="Edit table"
-											>
-												<Pencil className="h-4 w-4" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="icon"
-												onClick={() =>
-													handleDelete(table)
-												}
-												title="Delete table"
-												aria-label="Delete table"
-											>
-												<Trash2 className="h-4 w-4" />
-											</Button>
-										</div>
-									</DataTableCell>
-								</DataTableRow>
-							))}
-						</DataTableBody>
-					</DataTable>
-				</div>
-			) : (
-				// Empty State
-				<Card>
-					<CardContent className="flex flex-col items-center justify-center py-12 text-center">
-						<Database className="h-12 w-12 text-muted-foreground" />
-						<h3 className="mt-4 text-lg font-semibold">
-							{searchTerm
-								? "No tables match your search"
-								: "No tables found"}
-						</h3>
-						<p className="mt-2 text-sm text-muted-foreground">
-							{searchTerm
-								? "Try adjusting your search term or clear the filter"
-								: "Get started by creating your first data table"}
-						</p>
-						{!searchTerm && (
-							<Button
-								variant="outline"
-								onClick={handleAdd}
-								className="mt-4"
-							>
-								<Plus className="mr-2 h-4 w-4" />
-								Create your first table
-							</Button>
+				<TabsContent value="tables" className="flex flex-1 min-h-0 flex-col space-y-6">
+					{/* Search and Filters */}
+					<div className="flex items-center gap-4">
+						<SearchBox
+							value={searchTerm}
+							onChange={setSearchTerm}
+							placeholder="Search tables by name or description..."
+							className="flex-1"
+						/>
+						{isPlatformAdmin && (
+							<div className="w-64">
+								<OrganizationSelect
+									value={filterOrgId}
+									onChange={setFilterOrgId}
+									showAll={true}
+									showGlobal={true}
+									placeholder="All organizations"
+								/>
+							</div>
 						)}
-					</CardContent>
-				</Card>
-			)}
+						<label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+							<Checkbox
+								checked={showOrphaned}
+								onCheckedChange={(checked) =>
+									setShowOrphaned(checked === true)
+								}
+								aria-label="Show orphaned"
+							/>
+							Show orphaned
+						</label>
+						{isPlatformAdmin && (
+							<div className="flex items-center gap-2 ml-auto">
+								{selectedIds.size > 0 && (
+									<span className="text-sm text-muted-foreground">
+										{selectedIds.size} selected
+									</span>
+								)}
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={handleExport}
+									disabled={isExporting}
+								>
+									<Download className="h-4 w-4 mr-1" />
+									{selectedIds.size > 0
+										? `Export (${selectedIds.size})`
+										: "Export All"}
+								</Button>
+								<Button
+									variant="outline"
+									size="sm"
+									onClick={() => setIsImportOpen(true)}
+								>
+									<Upload className="h-4 w-4 mr-1" />
+									Import
+								</Button>
+							</div>
+						)}
+					</div>
+
+					{/* Content */}
+					{isLoading ? (
+						<div className="space-y-2">
+							{[...Array(5)].map((_, i) => (
+								<Skeleton key={i} className="h-12 w-full" />
+							))}
+						</div>
+					) : filteredTables && filteredTables.length > 0 ? (
+						<div className="flex-1 min-h-0">
+							<DataTable className="max-h-full">
+								<DataTableHeader>
+									<DataTableRow>
+										{isPlatformAdmin && (
+											<DataTableHead className="w-10">
+												<Checkbox
+													checked={
+														filteredTables.length >
+															0 &&
+														selectedIds.size ===
+															filteredTables.length
+													}
+													onCheckedChange={
+														toggleSelectAll
+													}
+												/>
+											</DataTableHead>
+										)}
+										<DataTableHead className="w-0 whitespace-nowrap">
+											Scope
+										</DataTableHead>
+										<DataTableHead>Name</DataTableHead>
+										<DataTableHead>
+											Description
+										</DataTableHead>
+										<DataTableHead className="w-0 whitespace-nowrap">
+											Created
+										</DataTableHead>
+										<DataTableHead className="w-0 whitespace-nowrap text-right" />
+									</DataTableRow>
+								</DataTableHeader>
+								<DataTableBody>
+									{filteredTables.map((table) => (
+										<DataTableRow
+											key={table.id}
+											className="cursor-pointer hover:bg-muted/50"
+											onClick={() =>
+												handleViewDocuments(table)
+											}
+										>
+											{isPlatformAdmin && (
+												<DataTableCell>
+													<Checkbox
+														checked={selectedIds.has(
+															table.id,
+														)}
+														onCheckedChange={() =>
+															toggleSelect(
+																table.id,
+															)
+														}
+														onClick={(e) =>
+															e.stopPropagation()
+														}
+													/>
+												</DataTableCell>
+											)}
+											<DataTableCell className="w-0 whitespace-nowrap">
+												{table.organization_id ? (
+													<Badge
+														variant="outline"
+														className="gap-1"
+													>
+														<Building2 className="h-3 w-3" />
+														{isPlatformAdmin
+															? getOrgName(
+																	table.organization_id,
+																)
+															: "Organization"}
+													</Badge>
+												) : (
+													<Badge
+														variant="secondary"
+														className="gap-1"
+													>
+														<Globe className="h-3 w-3" />
+														Global
+													</Badge>
+												)}
+											</DataTableCell>
+											<DataTableCell className="font-medium font-mono">
+												<span className="flex items-center gap-2">
+													{table.name}
+													{table.is_solution_managed && (
+														<SolutionManagedBadge
+															solutionId={table.solution_id}
+														/>
+													)}
+													{table.orphaned_at && (
+														<Badge
+															variant="outline"
+															className="font-sans text-xs font-normal text-muted-foreground"
+														>
+															Orphaned
+															{table.origin_solution_slug
+																? ` · from ${table.origin_solution_slug}`
+																: ""}
+														</Badge>
+													)}
+												</span>
+											</DataTableCell>
+											<DataTableCell className="max-w-xs truncate text-muted-foreground">
+												{table.description || "-"}
+											</DataTableCell>
+											<DataTableCell className="w-0 whitespace-nowrap text-sm text-muted-foreground">
+												{formatDate(table.created_at)}
+											</DataTableCell>
+											<DataTableCell className="w-0 whitespace-nowrap text-right">
+												<div
+													className="flex justify-end gap-2"
+													onClick={(e) =>
+														e.stopPropagation()
+													}
+												>
+													<Button
+														variant="ghost"
+														size="icon"
+														onClick={() =>
+															handleViewDocuments(
+																table,
+															)
+														}
+														title="View documents"
+														aria-label="View documents"
+													>
+														<FileJson2 className="h-4 w-4" />
+													</Button>
+													<Button
+														variant="ghost"
+														size="icon"
+														onClick={() =>
+															handleEdit(table)
+														}
+														disabled={
+															table.is_solution_managed
+														}
+														title={
+															table.is_solution_managed
+																? "Managed by a Solution — edit via deployment"
+																: "Edit table"
+														}
+														aria-label="Edit table"
+													>
+														<Pencil className="h-4 w-4" />
+													</Button>
+													<Button
+														variant="ghost"
+														size="icon"
+														onClick={() =>
+															handleDelete(table)
+														}
+														disabled={
+															table.is_solution_managed
+														}
+														title={
+															table.is_solution_managed
+																? "Managed by a Solution — delete via deployment"
+																: "Delete table"
+														}
+														aria-label="Delete table"
+													>
+														<Trash2 className="h-4 w-4" />
+													</Button>
+												</div>
+											</DataTableCell>
+										</DataTableRow>
+									))}
+								</DataTableBody>
+							</DataTable>
+						</div>
+					) : (
+						// Empty State
+						<Card>
+							<CardContent className="flex flex-col items-center justify-center py-12 text-center">
+								<Database className="h-12 w-12 text-muted-foreground" />
+								<h3 className="mt-4 text-lg font-semibold">
+									{searchTerm
+										? "No tables match your search"
+										: "No tables found"}
+								</h3>
+								<p className="mt-2 text-sm text-muted-foreground">
+									{searchTerm
+										? "Try adjusting your search term or clear the filter"
+										: "Get started by creating your first data table"}
+								</p>
+								{!searchTerm && (
+									<Button
+										variant="outline"
+										onClick={handleAdd}
+										className="mt-4"
+									>
+										<Plus className="mr-2 h-4 w-4" />
+										Create your first table
+									</Button>
+								)}
+							</CardContent>
+						</Card>
+					)}
+				</TabsContent>
+
+				<TabsContent value="claims" className="flex-1 min-h-0">
+					<TablesClaimsTab />
+				</TabsContent>
+			</Tabs>
 
 			<TableDialog
 				table={selectedTable}

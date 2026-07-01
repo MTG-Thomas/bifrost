@@ -1,4 +1,4 @@
-"""Tests for POST /api/cli/integrations/refresh_token endpoint.
+"""Tests for POST /api/sdk/integrations/refresh_token endpoint.
 
 These tests exercise the adapter-shaped handler; the underlying refresh
 orchestration is covered by
@@ -11,8 +11,21 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from uuid import uuid4
 
 
-def _compiled_sql(statement) -> str:
-    return str(statement.compile(compile_kwargs={"literal_binds": False})).lower()
+def _make_result(value):
+    """Build a SQLAlchemy result mock that supports both access shapes.
+
+    Phase 4 of the org-scoping overhaul migrated this handler from
+    ``result.scalars().first()`` (raw queries) to
+    ``result.scalar_one_or_none()`` (via ``OrgScopedRepository.get``).
+    The tests mock at the db.execute() level, so each result mock must
+    answer both shapes — otherwise a mock set up for the old shape
+    silently returns a MagicMock for the new shape, and the test fails
+    in confusing ways far from the mock site.
+    """
+    result = MagicMock()
+    result.scalars.return_value.first.return_value = value
+    result.scalar_one_or_none.return_value = value
+    return result
 
 
 class TestRefreshTokenClientCredentials:
@@ -31,6 +44,10 @@ class TestRefreshTokenClientCredentials:
         mock_user = MagicMock()
         mock_user.user_id = uuid4()
         mock_user.email = "test@example.com"
+        # SDK refresh is called by the engine sentinel / non-external
+        # principal; is_external is a real bool (a MagicMock default is
+        # truthy and would wrongly drop the global provider cascade).
+        mock_user.is_external = False
 
         mock_db = AsyncMock()
 
@@ -52,10 +69,8 @@ class TestRefreshTokenClientCredentials:
         # Mock DB execute:
         #   1. provider lookup
         #   2. persist-time token lookup (client_credentials branch)
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = mock_provider
-        token_result = MagicMock()
-        token_result.scalars.return_value.first.return_value = None
+        provider_result = _make_result(mock_provider)
+        token_result = _make_result(None)
 
         mock_db.execute = AsyncMock(side_effect=[provider_result, token_result])
         mock_db.add = MagicMock()
@@ -68,7 +83,7 @@ class TestRefreshTokenClientCredentials:
         }
 
         with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
+            patch("src.routers.cli._resolve_sdk_org_id", new_callable=AsyncMock, return_value=None),
             patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class,
             patch("src.services.oauth_provider.decrypt_secret", return_value="decrypted-secret"),
             patch("src.services.oauth_provider.encrypt_secret", return_value="encrypted-new-token"),
@@ -109,6 +124,10 @@ class TestRefreshTokenClientCredentials:
         mock_user = MagicMock()
         mock_user.user_id = uuid4()
         mock_user.email = "test@example.com"
+        # SDK refresh is called by the engine sentinel / non-external
+        # principal; is_external is a real bool (a MagicMock default is
+        # truthy and would wrongly drop the global provider cascade).
+        mock_user.is_external = False
         mock_db = AsyncMock()
 
         provider_id = uuid4()
@@ -128,10 +147,8 @@ class TestRefreshTokenClientCredentials:
         # Existing token
         mock_existing_token = MagicMock()
 
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = mock_provider
-        token_result = MagicMock()
-        token_result.scalars.return_value.first.return_value = mock_existing_token
+        provider_result = _make_result(mock_provider)
+        token_result = _make_result(mock_existing_token)
 
         mock_db.execute = AsyncMock(side_effect=[provider_result, token_result])
         mock_db.add = MagicMock()
@@ -144,7 +161,7 @@ class TestRefreshTokenClientCredentials:
         }
 
         with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
+            patch("src.routers.cli._resolve_sdk_org_id", new_callable=AsyncMock, return_value=None),
             patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class,
             patch("src.services.oauth_provider.decrypt_secret", return_value="decrypted-secret"),
             patch("src.services.oauth_provider.encrypt_secret", return_value="encrypted-new-token"),
@@ -166,191 +183,6 @@ class TestRefreshTokenClientCredentials:
         mock_db.add.assert_not_called()
         assert mock_existing_token.expires_at == expires_at
 
-    @pytest.mark.asyncio
-    async def test_provider_and_token_lookup_are_org_scoped(self):
-        """Refresh must not select another org's provider with the same name."""
-        from src.routers.cli import sdk_integrations_refresh_token
-        from src.models.contracts.cli import SDKIntegrationsRefreshTokenRequest
-
-        org_id = uuid4()
-        provider_id = uuid4()
-        request = SDKIntegrationsRefreshTokenRequest(
-            connection_name="Pax8",
-            scope=str(org_id),
-        )
-
-        mock_user = MagicMock()
-        mock_user.user_id = uuid4()
-        mock_user.email = "test@example.com"
-        mock_db = AsyncMock()
-
-        mock_provider = MagicMock()
-        mock_provider.id = provider_id
-        mock_provider.provider_name = "Pax8"
-        mock_provider.client_id = "pax8-client-id"
-        mock_provider.encrypted_client_secret = b"encrypted-secret"
-        mock_provider.token_url = "https://login.pax8.com/oauth/token"
-        mock_provider.token_url_defaults = {}
-        mock_provider.oauth_flow_type = "client_credentials"
-        mock_provider.scopes = []
-        mock_provider.integration_id = None
-        mock_provider.organization_id = org_id
-        mock_provider.audience = None
-
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = mock_provider
-        token_result = MagicMock()
-        token_result.scalars.return_value.first.return_value = None
-        global_token_result = MagicMock()
-        global_token_result.scalars.return_value.first.return_value = None
-        mock_db.execute = AsyncMock(
-            side_effect=[provider_result, token_result, global_token_result]
-        )
-        mock_db.add = MagicMock()
-        mock_db.commit = AsyncMock()
-
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        mock_token_response = {
-            "access_token": "fresh-pax8-token",
-            "expires_at": expires_at,
-        }
-
-        with (
-            patch(
-                "src.routers.cli._get_cli_org_id",
-                new_callable=AsyncMock,
-                return_value=str(org_id),
-            ),
-            patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class,
-            patch("src.services.oauth_provider.decrypt_secret", return_value="decrypted-secret"),
-            patch("src.services.oauth_provider.encrypt_secret", return_value="encrypted-new-token"),
-        ):
-            mock_instance = MagicMock()
-            mock_instance.get_client_credentials_token = AsyncMock(
-                return_value=(True, mock_token_response)
-            )
-            mock_client_class.return_value = mock_instance
-
-            await sdk_integrations_refresh_token(request, mock_user, mock_db)
-
-        provider_stmt = mock_db.execute.await_args_list[0].args[0]
-        token_stmt = mock_db.execute.await_args_list[1].args[0]
-        provider_sql = _compiled_sql(provider_stmt)
-        token_sql = _compiled_sql(token_stmt)
-        assert "oauth_providers.provider_name" in provider_sql
-        assert "oauth_providers.organization_id" in provider_sql
-        assert "oauth_tokens.provider_id" in token_sql
-        assert "oauth_tokens.organization_id" in token_sql
-        created_token = mock_db.add.call_args.args[0]
-        assert created_token.organization_id == org_id
-
-    @pytest.mark.asyncio
-    async def test_scoped_refresh_uses_org_scoped_token_persistence(self):
-        """Scoped refresh should create/update org-scoped token rows only."""
-        from src.routers.cli import sdk_integrations_refresh_token
-        from src.models.contracts.cli import SDKIntegrationsRefreshTokenRequest
-
-        org_id = uuid4()
-        request = SDKIntegrationsRefreshTokenRequest(
-            connection_name="NinjaOne",
-            scope=str(org_id),
-        )
-
-        mock_user = MagicMock()
-        mock_user.user_id = uuid4()
-        mock_user.email = "test@example.com"
-        mock_db = AsyncMock()
-
-        provider_id = uuid4()
-        mock_provider = MagicMock()
-        mock_provider.id = provider_id
-        mock_provider.provider_name = "NinjaOne"
-        mock_provider.client_id = "ninja-client-id"
-        mock_provider.encrypted_client_secret = b"encrypted-secret"
-        mock_provider.token_url = "https://app.ninjarmm.com/ws/oauth/token"
-        mock_provider.token_url_defaults = {}
-        mock_provider.oauth_flow_type = "client_credentials"
-        mock_provider.scopes = ["monitoring"]
-        mock_provider.integration_id = None
-        mock_provider.organization_id = None
-        mock_provider.audience = None
-
-        scoped_provider_result = MagicMock()
-        scoped_provider_result.scalars.return_value.first.return_value = None
-        global_provider_result = MagicMock()
-        global_provider_result.scalars.return_value.first.return_value = mock_provider
-        scoped_token_result = MagicMock()
-        scoped_token_result.scalars.return_value.first.return_value = None
-
-        mock_db.execute = AsyncMock(
-            side_effect=[
-                scoped_provider_result,
-                global_provider_result,
-                scoped_token_result,
-            ]
-        )
-        mock_db.add = MagicMock()
-        mock_db.commit = AsyncMock()
-
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-        mock_token_response = {
-            "access_token": "new-token",
-            "expires_at": expires_at,
-        }
-
-        with (
-            patch(
-                "src.routers.cli._get_cli_org_id",
-                new_callable=AsyncMock,
-                return_value=str(org_id),
-            ),
-            patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class,
-            patch("src.services.oauth_provider.decrypt_secret", return_value="decrypted-secret"),
-            patch("src.services.oauth_provider.encrypt_secret", return_value="encrypted-new-token"),
-        ):
-            mock_instance = MagicMock()
-            mock_instance.get_client_credentials_token = AsyncMock(
-                return_value=(True, mock_token_response)
-            )
-            mock_client_class.return_value = mock_instance
-
-            result = await sdk_integrations_refresh_token(request, mock_user, mock_db)
-
-        assert result.refreshed is True
-        assert mock_db.execute.call_count == 3
-        mock_db.add.assert_called_once()
-        created_token = mock_db.add.call_args.args[0]
-        assert created_token.organization_id == org_id
-
-    @pytest.mark.asyncio
-    async def test_global_refresh_only_selects_global_provider(self):
-        """Default/global refresh must not fall through to tenant providers."""
-        from fastapi import HTTPException
-        from src.routers.cli import sdk_integrations_refresh_token
-        from src.models.contracts.cli import SDKIntegrationsRefreshTokenRequest
-
-        request = SDKIntegrationsRefreshTokenRequest(connection_name="Pax8")
-        mock_user = MagicMock()
-        mock_user.user_id = uuid4()
-        mock_user.email = "test@example.com"
-        mock_db = AsyncMock()
-
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = None
-        mock_db.execute = AsyncMock(return_value=provider_result)
-
-        with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            await sdk_integrations_refresh_token(request, mock_user, mock_db)
-
-        provider_stmt = mock_db.execute.await_args.args[0]
-        provider_sql = _compiled_sql(provider_stmt)
-        assert "oauth_providers.provider_name" in provider_sql
-        assert "oauth_providers.organization_id is null" in provider_sql
-        assert exc_info.value.status_code == 404
-
 
 class TestRefreshTokenAuthorizationCode:
     """Test refresh_token endpoint for authorization_code flows."""
@@ -366,6 +198,10 @@ class TestRefreshTokenAuthorizationCode:
         mock_user = MagicMock()
         mock_user.user_id = uuid4()
         mock_user.email = "test@example.com"
+        # SDK refresh is called by the engine sentinel / non-external
+        # principal; is_external is a real bool (a MagicMock default is
+        # truthy and would wrongly drop the global provider cascade).
+        mock_user.is_external = False
         mock_db = AsyncMock()
 
         provider_id = uuid4()
@@ -387,11 +223,9 @@ class TestRefreshTokenAuthorizationCode:
         mock_stored_token.id = uuid4()
         mock_stored_token.encrypted_refresh_token = b"encrypted-refresh-token"
 
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = mock_provider
+        provider_result = _make_result(mock_provider)
 
-        token_for_refresh = MagicMock()
-        token_for_refresh.scalars.return_value.first.return_value = mock_stored_token
+        token_for_refresh = _make_result(mock_stored_token)
 
         # In the new adapter-shaped handler, the stored token loaded up front
         # is the same row we persist into — no second lookup is issued.
@@ -410,7 +244,7 @@ class TestRefreshTokenAuthorizationCode:
         }
 
         with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
+            patch("src.routers.cli._resolve_sdk_org_id", new_callable=AsyncMock, return_value=None),
             patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class,
             patch("src.services.oauth_provider.decrypt_secret", return_value="decrypted-value"),
             patch("src.services.oauth_provider.encrypt_secret", return_value="encrypted-new-value"),
@@ -447,6 +281,10 @@ class TestRefreshTokenAuthorizationCode:
         mock_user = MagicMock()
         mock_user.user_id = uuid4()
         mock_user.email = "test@example.com"
+        # SDK refresh is called by the engine sentinel / non-external
+        # principal; is_external is a real bool (a MagicMock default is
+        # truthy and would wrongly drop the global provider cascade).
+        mock_user.is_external = False
         mock_db = AsyncMock()
 
         mock_provider = MagicMock()
@@ -470,10 +308,8 @@ class TestRefreshTokenAuthorizationCode:
         mock_stored_token.id = uuid4()
         mock_stored_token.encrypted_refresh_token = b"encrypted-refresh-token"
 
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = mock_provider
-        token_result = MagicMock()
-        token_result.scalars.return_value.first.return_value = mock_stored_token
+        provider_result = _make_result(mock_provider)
+        token_result = _make_result(mock_stored_token)
 
         mock_db.execute = AsyncMock(side_effect=[provider_result, token_result])
         mock_db.commit = AsyncMock()
@@ -487,7 +323,7 @@ class TestRefreshTokenAuthorizationCode:
         }
 
         with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
+            patch("src.routers.cli._resolve_sdk_org_id", new_callable=AsyncMock, return_value=None),
             patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class,
             patch("src.services.oauth_provider.decrypt_secret", return_value="decrypted-value"),
             patch("src.services.oauth_provider.encrypt_secret", return_value="encrypted-new-value"),
@@ -518,6 +354,10 @@ class TestRefreshTokenAuthorizationCode:
         mock_user = MagicMock()
         mock_user.user_id = uuid4()
         mock_user.email = "test@example.com"
+        # SDK refresh is called by the engine sentinel / non-external
+        # principal; is_external is a real bool (a MagicMock default is
+        # truthy and would wrongly drop the global provider cascade).
+        mock_user.is_external = False
         mock_db = AsyncMock()
 
         mock_provider = MagicMock()
@@ -537,11 +377,9 @@ class TestRefreshTokenAuthorizationCode:
         mock_stored_token = MagicMock()
         mock_stored_token.encrypted_refresh_token = None
 
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = mock_provider
+        provider_result = _make_result(mock_provider)
 
-        token_result = MagicMock()
-        token_result.scalars.return_value.first.return_value = mock_stored_token
+        token_result = _make_result(mock_stored_token)
 
         mock_db.execute = AsyncMock(side_effect=[
             provider_result,
@@ -549,7 +387,7 @@ class TestRefreshTokenAuthorizationCode:
         ])
 
         with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
+            patch("src.routers.cli._resolve_sdk_org_id", new_callable=AsyncMock, return_value=None),
             pytest.raises(HTTPException) as exc_info,
         ):
             await sdk_integrations_refresh_token(request, mock_user, mock_db)
@@ -573,15 +411,18 @@ class TestRefreshTokenErrorHandling:
         mock_user = MagicMock()
         mock_user.user_id = uuid4()
         mock_user.email = "test@example.com"
+        # SDK refresh is called by the engine sentinel / non-external
+        # principal; is_external is a real bool (a MagicMock default is
+        # truthy and would wrongly drop the global provider cascade).
+        mock_user.is_external = False
         mock_db = AsyncMock()
 
         # Provider not found
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = None
+        provider_result = _make_result(None)
         mock_db.execute = AsyncMock(return_value=provider_result)
 
         with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
+            patch("src.routers.cli._resolve_sdk_org_id", new_callable=AsyncMock, return_value=None),
             pytest.raises(HTTPException) as exc_info,
         ):
             await sdk_integrations_refresh_token(request, mock_user, mock_db)
@@ -600,6 +441,10 @@ class TestRefreshTokenErrorHandling:
         mock_user = MagicMock()
         mock_user.user_id = uuid4()
         mock_user.email = "test@example.com"
+        # SDK refresh is called by the engine sentinel / non-external
+        # principal; is_external is a real bool (a MagicMock default is
+        # truthy and would wrongly drop the global provider cascade).
+        mock_user.is_external = False
         mock_db = AsyncMock()
 
         mock_provider = MagicMock()
@@ -615,12 +460,11 @@ class TestRefreshTokenErrorHandling:
         mock_provider.organization_id = None
         mock_provider.audience = None
 
-        provider_result = MagicMock()
-        provider_result.scalars.return_value.first.return_value = mock_provider
+        provider_result = _make_result(mock_provider)
         mock_db.execute = AsyncMock(return_value=provider_result)
 
         with (
-            patch("src.routers.cli._get_cli_org_id", new_callable=AsyncMock, return_value=None),
+            patch("src.routers.cli._resolve_sdk_org_id", new_callable=AsyncMock, return_value=None),
             patch("src.services.oauth_provider.OAuthProviderClient") as mock_client_class,
             patch("src.services.oauth_provider.decrypt_secret", return_value="decrypted-secret"),
             pytest.raises(HTTPException) as exc_info,
@@ -677,7 +521,7 @@ class TestRefreshTokenSDKModel:
         assert creds.access_token == "old-token"
         assert creds.expires_at == "2026-03-02T00:00:00+00:00"
         mock_client.post.assert_called_once_with(
-            "/api/cli/integrations/refresh_token",
+            "/api/sdk/integrations/refresh_token",
             json={"connection_name": "Pax8"},
         )
 

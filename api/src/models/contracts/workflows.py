@@ -5,6 +5,7 @@ Workflow metadata and validation contract models for Bifrost.
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,9 +55,14 @@ class WorkflowMetadata(BaseModel):
     id: str = Field(..., description="Workflow UUID")
 
     # Required fields
-    name: str = Field(..., min_length=1, max_length=200, description="Human-readable workflow name")
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="MCP tool name for this workflow. Defaults to the Python function name on registration.",
+    )
     function_name: str | None = Field(default=None, description="Python function name (for CodeLens registration status)")
-    display_name: str | None = Field(default=None, description="Optional display name for UI (falls back to name if not set)")
+    display_name: str | None = Field(default=None, description="Optional UI display name (falls back to the tool name if not set)")
     description: str | None = Field(default=None, description="Human-readable description")
 
     # Type discriminator - distinguishes workflow/tool/data_provider
@@ -65,8 +71,14 @@ class WorkflowMetadata(BaseModel):
     # Organization scoping - NULL means global (available to all orgs)
     organization_id: str | None = Field(default=None, description="Organization ID if org-scoped, None for global")
 
+    # Solution scoping - true when this entity is solution-managed (deployed,
+    # read-only on the platform). The UI uses this to render it read-only with a
+    # "managed by Solution" affordance. The install id itself is not exposed.
+    is_solution_managed: bool = Field(default=False, description="True if managed by a deployed Solution (read-only on platform)")
+    solution_id: UUID | None = Field(default=None, description="UUID of the owning Solution install (null if not solution-managed)")
+
     # Access control
-    access_level: str = Field(default="role_based", description="Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required)")
+    access_level: str = Field(default="role_based", description="Access level: 'authenticated' (any signed-in user except externals), 'everyone' (any signed-in user incl. externals), or 'role_based' (specific roles required)")
 
     # Optional fields with defaults
     category: str = Field(default="General", description="Category for organization")
@@ -161,7 +173,7 @@ class RegisterWorkflowRequest(BaseModel):
     organization_id: str | None = Field(default=None, description="Organization ID to scope the workflow to, or null for global scope")
     access_level: str | None = Field(
         default=None,
-        description="Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required). Omit to leave at the schema default.",
+        description="Access level: 'authenticated' (any signed-in user except externals), 'everyone' (any signed-in user incl. externals), or 'role_based' (specific roles required). Omit to leave at the schema default.",
     )
     role_ids: list[str] | None = Field(
         default=None,
@@ -175,7 +187,7 @@ class RegisterWorkflowRequest(BaseModel):
 class RegisterWorkflowResponse(BaseModel):
     """Response model for workflow registration."""
     id: str = Field(..., description="Workflow UUID")
-    name: str = Field(..., description="Workflow name (from decorator or function name)")
+    name: str = Field(..., description="MCP tool name, defaulted from function_name on registration")
     function_name: str = Field(..., description="Python function name")
     path: str = Field(..., description="File path")
     type: str = Field(..., description="Executable type: workflow, tool, or data_provider")
@@ -281,7 +293,7 @@ class WorkflowUpdateRequest(BaseModel):
     )
     access_level: str | None = Field(
         default=None,
-        description="Access level: 'authenticated' (any logged-in user) or 'role_based' (specific roles required)"
+        description="Access level: 'authenticated' (any signed-in user except externals), 'everyone' (any signed-in user incl. externals), or 'role_based' (specific roles required)"
     )
     clear_roles: bool = Field(
         default=False,
@@ -297,10 +309,16 @@ class WorkflowUpdateRequest(BaseModel):
     )
 
     # New fields for UI management
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="MCP tool name for this workflow. Defaults to the Python function name on registration."
+    )
     display_name: str | None = Field(
         default=None,
         max_length=200,
-        description="User-facing display name (defaults to code name if not set)"
+        description="Optional UI display name (falls back to the tool name if not set)"
     )
     description: str | None = Field(
         default=None,

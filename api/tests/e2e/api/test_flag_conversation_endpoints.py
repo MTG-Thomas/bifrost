@@ -15,12 +15,13 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.agent_run_flag_conversations import AgentRunFlagConversation
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
+from src.models.orm.users import User
 
 
 logger = logging.getLogger(__name__)
@@ -55,12 +56,17 @@ async def flag_conv_agent(e2e_client, platform_admin) -> AsyncGenerator[dict, No
 
 
 async def _create_run(
-    db_session: AsyncSession, agent_id: UUID, *, status: str = "completed"
+    db_session: AsyncSession,
+    agent_id: UUID,
+    *,
+    org_id: UUID | None,
+    status: str = "completed",
 ) -> AgentRun:
     now = datetime.now(timezone.utc)
     run = AgentRun(
         id=uuid4(),
         agent_id=agent_id,
+        org_id=org_id,
         trigger_type="test",
         status=status,
         iterations_used=1,
@@ -78,9 +84,18 @@ async def _create_run(
 
 @pytest_asyncio.fixture
 async def flagged_run(
-    flag_conv_agent, db_session: AsyncSession
+    flag_conv_agent, db_session: AsyncSession, platform_admin
 ) -> AsyncGenerator[AgentRun, None]:
-    run = await _create_run(db_session, UUID(flag_conv_agent["id"]))
+    org_id = (
+        await db_session.execute(
+            select(User.organization_id).where(User.id == platform_admin.user_id)
+        )
+    ).scalar_one()
+    run = await _create_run(
+        db_session,
+        UUID(flag_conv_agent["id"]),
+        org_id=org_id,
+    )
     yield run
     await db_session.execute(
         delete(AgentRunFlagConversation).where(
@@ -94,9 +109,19 @@ async def flagged_run(
 
 @pytest_asyncio.fixture
 async def queued_run(
-    flag_conv_agent, db_session: AsyncSession
+    flag_conv_agent, db_session: AsyncSession, platform_admin
 ) -> AsyncGenerator[AgentRun, None]:
-    run = await _create_run(db_session, UUID(flag_conv_agent["id"]), status="queued")
+    org_id = (
+        await db_session.execute(
+            select(User.organization_id).where(User.id == platform_admin.user_id)
+        )
+    ).scalar_one()
+    run = await _create_run(
+        db_session,
+        UUID(flag_conv_agent["id"]),
+        org_id=org_id,
+        status="queued",
+    )
     yield run
     await db_session.execute(delete(AgentRun).where(AgentRun.id == run.id))
     await db_session.commit()

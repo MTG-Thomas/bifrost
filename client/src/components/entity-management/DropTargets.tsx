@@ -57,7 +57,7 @@ export function OrgDropTarget({ organization, onDrop }: OrgDropTargetProps) {
 		<div
 			ref={ref}
 			className={cn(
-				"flex items-center gap-2 px-4 py-4 rounded-lg border-2 border-dashed transition-all",
+				"flex items-center gap-2 px-4 py-4 rounded-2xl border-2 border-dashed transition-all",
 				isDraggedOver
 					? "border-primary bg-primary/10"
 					: "border-muted-foreground/25 hover:border-muted-foreground/50",
@@ -92,7 +92,7 @@ export function RoleDropTarget({ role, onDrop }: RoleDropTargetProps) {
 	const isAuthenticated = role === "authenticated";
 	const isClearRoles = role === "clear-roles";
 	const name = isAuthenticated
-		? "Authenticated"
+		? "Everyone except external users"
 		: isClearRoles
 			? "Clear Roles"
 			: role.name;
@@ -136,7 +136,7 @@ export function RoleDropTarget({ role, onDrop }: RoleDropTargetProps) {
 		<div
 			ref={ref}
 			className={cn(
-				"flex items-center gap-2 px-4 py-4 rounded-lg border-2 border-dashed transition-all",
+				"flex items-center gap-2 px-4 py-4 rounded-2xl border-2 border-dashed transition-all",
 				isDraggedOver
 					? "border-primary bg-primary/10"
 					: isClearRoles

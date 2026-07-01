@@ -132,13 +132,31 @@ SIGNATURE_PARITY_SPECS: list[dict] = [
     {
         "model_path": "src.models.contracts.config:ConfigCreate",
         "tool_path": "src.services.mcp_server.tools.configs:create_config",
-        "extra_args": set(),
+        # ``organization_id`` is excluded from the DTO flags (CLI targets org via
+        # the unified --org/--global standard), but the MCP create_config tool
+        # exposes it as a tool-side REF input (a UUID/name string resolved via
+        # RefResolver), not the raw DTO field — so it's an extra_arg here.
+        "extra_args": {"organization_id"},
         "field_renames": {},
     },
     {
         "model_path": "src.models.contracts.config:ConfigUpdate",
         "tool_path": "src.services.mcp_server.tools.configs:update_config",
         "extra_args": {"config_ref"},
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.claims:CustomClaimCreate",
+        "tool_path": "src.services.mcp_server.tools.claims:create_claim",
+        # `scope` is an org-targeting query param, not a DTO field — mirrors
+        # the same convention used by other org-scoped router endpoints.
+        "extra_args": {"scope"},
+        "field_renames": {},
+    },
+    {
+        "model_path": "src.models.contracts.claims:CustomClaimUpdate",
+        "tool_path": "src.services.mcp_server.tools.claims:update_claim",
+        "extra_args": {"name", "scope"},
         "field_renames": {},
     },
     {

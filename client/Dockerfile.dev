@@ -2,31 +2,16 @@
 # Installs dependencies only - all code comes from volume mounts
 # Prevents stale code and build cache issues
 
-# node:26-slim
-FROM node:26-slim@sha256:424cafd2a035ed2b2d74acc3142b68b426fb62a47742c80a75e7117db02d6b30
+# node:20-slim
+# NOSONAR - dev image runs Vite against mounted source volumes; production image is separate.
+FROM node:26-slim@sha256:1e738cb88890a15c71880323fbc35a739b7bbc703d72e8bfd1613128f8182f78
 
 WORKDIR /app
-
-# Keep Debian package versions floating in the dev image so CI and local test
-# stacks receive base-image security updates without routine pin churn.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        g++ \
-        libcap2-bin \
-        libsecret-1-dev \
-        make \
-        pkg-config \
-        python3 \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy package files and install dependencies
 COPY package*.json ./
 RUN npm ci
-
-RUN setcap 'cap_net_bind_service=+ep' "$(command -v node)" && \
-    mkdir -p /app/node_modules/.vite && \
-    chown node:node /app /app/node_modules/.vite
-
+RUN chown -R node:node /app
 USER node
 
 # Don't copy source code - it comes from volume mounts in docker-compose.dev.yml
