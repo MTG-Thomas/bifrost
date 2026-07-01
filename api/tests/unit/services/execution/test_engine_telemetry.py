@@ -50,6 +50,22 @@ class _FakeHistogram:
         self.calls.append((value, dict(attributes)))
 
 
+class _FakeMeter:
+    def __init__(self):
+        self.counter = _FakeCounter()
+        self.histogram = _FakeHistogram()
+        self.counter_names: list[str] = []
+        self.histogram_names: list[str] = []
+
+    def create_counter(self, name: str, **_kwargs):
+        self.counter_names.append(name)
+        return self.counter
+
+    def create_histogram(self, name: str, **_kwargs):
+        self.histogram_names.append(name)
+        return self.histogram
+
+
 def _context() -> ExecutionContext:
     return ExecutionContext(
         user_id="user-1",
@@ -122,6 +138,31 @@ async def test_workflow_execution_emits_success_span(monkeypatch):
     duration, attributes = fake_duration.calls[0]
     assert duration >= 0
     assert attributes["bifrost.execution.status"] == ExecutionStatus.SUCCESS.value
+
+
+@pytest.mark.asyncio
+async def test_workflow_execution_metrics_are_created_lazily(monkeypatch):
+    fake_tracer = _FakeTracer()
+    fake_meter = _FakeMeter()
+    monkeypatch.setattr(engine, "tracer", fake_tracer)
+    monkeypatch.setattr(engine, "workflow_execution_counter", None)
+    monkeypatch.setattr(engine, "workflow_execution_duration", None)
+    monkeypatch.setattr(engine.metrics, "get_meter", lambda _name: fake_meter)
+
+    async def workflow(context):
+        return {"ok": True}
+
+    await engine._execute_workflow_with_trace(
+        workflow,
+        _context(),
+        {},
+        execution_id="exec-1",
+    )
+
+    assert fake_meter.counter_names == ["bifrost.workflow.executions"]
+    assert fake_meter.histogram_names == ["bifrost.workflow.execution.duration"]
+    assert fake_meter.counter.calls[0][1]["bifrost.execution.status"] == ExecutionStatus.SUCCESS.value
+    assert fake_meter.histogram.calls[0][1]["bifrost.execution.status"] == ExecutionStatus.SUCCESS.value
 
 
 @pytest.mark.asyncio

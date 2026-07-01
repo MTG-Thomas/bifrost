@@ -30,16 +30,29 @@ from src.core.secret_string import redact_secrets
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 meter = metrics.get_meter(__name__)
-workflow_execution_counter = meter.create_counter(
-    "bifrost.workflow.executions",
-    unit="1",
-    description="Workflow executions completed by status.",
-)
-workflow_execution_duration = meter.create_histogram(
-    "bifrost.workflow.execution.duration",
-    unit="ms",
-    description="Workflow execution duration in milliseconds.",
-)
+workflow_execution_counter = None
+workflow_execution_duration = None
+
+
+def _workflow_metric_instruments():
+    """Create workflow metric instruments after the process MeterProvider is configured."""
+    global workflow_execution_counter, workflow_execution_duration
+
+    if workflow_execution_counter is None:
+        workflow_execution_counter = metrics.get_meter(__name__).create_counter(
+            "bifrost.workflow.executions",
+            unit="1",
+            description="Workflow executions completed by status.",
+        )
+
+    if workflow_execution_duration is None:
+        workflow_execution_duration = metrics.get_meter(__name__).create_histogram(
+            "bifrost.workflow.execution.duration",
+            unit="ms",
+            description="Workflow execution duration in milliseconds.",
+        )
+
+    return workflow_execution_counter, workflow_execution_duration
 
 
 def _human_size(num_bytes: int) -> str:
@@ -1101,6 +1114,7 @@ async def _execute_workflow_with_trace(
                 "bifrost.execution.scope": execution_scope,
                 "bifrost.execution.is_platform_admin": context.is_platform_admin,
             }
+            workflow_counter, workflow_duration = _workflow_metric_instruments()
             start_time = time.perf_counter()
             with tracer.start_as_current_span(
                 "bifrost.workflow.execute",
@@ -1110,14 +1124,14 @@ async def _execute_workflow_with_trace(
                     # Run the workflow directly - isolation is provided by subprocess
                     result = await _run_workflow_async()
                     span.set_attribute("bifrost.execution.status", ExecutionStatus.SUCCESS.value)
-                    workflow_execution_counter.add(
+                    workflow_counter.add(
                         1,
                         attributes={
                             **metric_attributes,
                             "bifrost.execution.status": ExecutionStatus.SUCCESS.value,
                         },
                     )
-                    workflow_execution_duration.record(
+                    workflow_duration.record(
                         (time.perf_counter() - start_time) * 1000,
                         attributes={
                             **metric_attributes,
@@ -1127,14 +1141,14 @@ async def _execute_workflow_with_trace(
                 except asyncio.CancelledError:
                     span.set_attribute("bifrost.execution.status", ExecutionStatus.CANCELLED.value)
                     span.set_attribute("bifrost.execution.error_type", "CancelledError")
-                    workflow_execution_counter.add(
+                    workflow_counter.add(
                         1,
                         attributes={
                             **metric_attributes,
                             "bifrost.execution.status": ExecutionStatus.CANCELLED.value,
                         },
                     )
-                    workflow_execution_duration.record(
+                    workflow_duration.record(
                         (time.perf_counter() - start_time) * 1000,
                         attributes={
                             **metric_attributes,
@@ -1145,14 +1159,14 @@ async def _execute_workflow_with_trace(
                 except Exception as exc:
                     span.set_attribute("bifrost.execution.status", ExecutionStatus.FAILED.value)
                     span.set_attribute("bifrost.execution.error_type", type(exc).__name__)
-                    workflow_execution_counter.add(
+                    workflow_counter.add(
                         1,
                         attributes={
                             **metric_attributes,
                             "bifrost.execution.status": ExecutionStatus.FAILED.value,
                         },
                     )
-                    workflow_execution_duration.record(
+                    workflow_duration.record(
                         (time.perf_counter() - start_time) * 1000,
                         attributes={
                             **metric_attributes,
