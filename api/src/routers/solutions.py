@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import os
@@ -1023,8 +1022,7 @@ async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployR
     finally:
         heartbeat_stop.set()
         heartbeat_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat_task
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
 
 
 @router.post(
