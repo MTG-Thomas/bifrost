@@ -407,10 +407,11 @@ async def _generate_invite(
     ).scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if target.is_registered:
-        raise HTTPException(status_code=409, detail="User is already registered")
 
     svc = UserInviteService(db)
+    if await svc.status_for(target) == InviteStatus.ACTIVE:
+        raise HTTPException(status_code=409, detail="User is already registered")
+
     raw_token, invite = await svc.create_or_replace(
         user_id=user_id, created_by=actor.user_id
     )

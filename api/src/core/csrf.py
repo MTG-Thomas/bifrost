@@ -40,6 +40,8 @@ CSRF_EXEMPT_PATHS = {
     "/auth/setup/passkey/options",  # First-time passkey setup (no auth)
     "/auth/setup/passkey/verify",  # First-time passkey setup (no auth)
     "/auth/register-from-invite",  # Invite-based registration (token-gated, no cookies yet)
+    "/auth/register-from-invite/passkey/options",  # Invite passkey setup (token-gated)
+    "/auth/register-from-invite/passkey/verify",  # Invite passkey setup (token-gated)
     "/auth/device/code",  # Device flow: request code (no auth)
     "/auth/device/token",  # Device flow: exchange code for token (no auth)
     "/auth/cli/start",  # Native CLI OAuth: start localhost callback flow (no auth)
