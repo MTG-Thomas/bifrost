@@ -85,7 +85,12 @@ class BrandingRepository:
             if primary_color is not None:
                 existing.primary_color = primary_color
             if terminology is not None:
-                existing.terminology = terminology
+                merged_terminology = dict(existing.terminology or {})
+                for noun, terms in terminology.items():
+                    noun_terms = dict(merged_terminology.get(noun, {}))
+                    noun_terms.update(terms)
+                    merged_terminology[noun] = noun_terms
+                existing.terminology = merged_terminology
             if application_name is not _UNSET:
                 existing.application_name = application_name
 
