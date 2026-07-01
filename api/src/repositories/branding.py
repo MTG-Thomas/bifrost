@@ -98,22 +98,21 @@ class BrandingRepository:
             await self.session.refresh(existing)
             logger.info("Global branding updated")
             return existing
-        else:
-            # Create new
-            branding = GlobalBranding(
-                square_logo_data=square_logo_data,
-                square_logo_content_type=square_logo_content_type,
-                rectangle_logo_data=rectangle_logo_data,
-                rectangle_logo_content_type=rectangle_logo_content_type,
-                primary_color=primary_color,
-                terminology=terminology,
-                application_name=None if application_name is _UNSET else application_name,
-            )
-            self.session.add(branding)
-            await self.session.flush()
-            await self.session.refresh(branding)
-            logger.info("Global branding created")
-            return branding
+        # Create new
+        branding = GlobalBranding(
+            square_logo_data=square_logo_data,
+            square_logo_content_type=square_logo_content_type,
+            rectangle_logo_data=rectangle_logo_data,
+            rectangle_logo_content_type=rectangle_logo_content_type,
+            primary_color=primary_color,
+            terminology=terminology,
+            application_name=None if application_name is _UNSET else application_name,
+        )
+        self.session.add(branding)
+        await self.session.flush()
+        await self.session.refresh(branding)
+        logger.info("Global branding created")
+        return branding
 
     async def delete_branding(self) -> bool:
         """
