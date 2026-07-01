@@ -907,11 +907,18 @@ async def _deploy_job_heartbeat_loop(job_id: UUID, stop: asyncio.Event) -> None:
             await asyncio.wait_for(stop.wait(), timeout=DEPLOY_JOB_HEARTBEAT_SECONDS)
             return
         except asyncio.TimeoutError:
-            async with get_db_context() as db:
-                job = await db.get(SolutionDeployJob, job_id)
-                if job is None or job.status != "running":
-                    return
-                job.updated_at = datetime.now(timezone.utc)
+            try:
+                async with get_db_context() as db:
+                    job = await db.get(SolutionDeployJob, job_id)
+                    if job is None or job.status != "running":
+                        return
+                    job.updated_at = datetime.now(timezone.utc)
+            except Exception:
+                logger.warning(
+                    "Deploy job heartbeat failed for %s; will retry",
+                    job_id,
+                    exc_info=True,
+                )
 
 
 async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployRequest) -> None:
