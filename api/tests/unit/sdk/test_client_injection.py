@@ -6,6 +6,7 @@ Tests the client injection pattern used for platform mode workflow execution.
 
 from unittest.mock import patch
 
+import os
 import pytest
 
 
@@ -168,10 +169,11 @@ class TestClientInjection:
 
 class TestEnvCredentialRefresh:
     @pytest.mark.asyncio
-    async def test_401_refresh_updates_env_sourced_client_without_persisting(self, monkeypatch):
-        """Env-backed sessions refresh the active client without writing keychain/JSON."""
+    async def test_401_refresh_persists_env_sourced_credentials(self, monkeypatch, tmp_path):
+        """Env-backed sessions persist rotated tokens to the process environment."""
         from bifrost import client as client_mod
 
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("BIFROST_API_URL", "http://localhost:38421")
         monkeypatch.setenv("BIFROST_ACCESS_TOKEN", "old_access")
         monkeypatch.setenv("BIFROST_REFRESH_TOKEN", "old_refresh")
@@ -211,3 +213,5 @@ class TestEnvCredentialRefresh:
         assert saved == []
         assert client._access_token == "new_access"
         assert client._sync_http.headers["Authorization"] == "Bearer new_access"
+        assert os.environ["BIFROST_ACCESS_TOKEN"] == "new_access"
+        assert os.environ["BIFROST_REFRESH_TOKEN"] == "new_refresh"
