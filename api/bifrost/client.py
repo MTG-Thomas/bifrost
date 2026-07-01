@@ -40,7 +40,9 @@ _last_refreshed_env_credentials: dict[str, str] | None = None
 # SDK is machine-to-machine, so the retry budget is more generous than
 # the user-facing client.
 TRANSIENT_5XX_STATUS_CODES: frozenset[int] = frozenset({502, 503, 504})
-IDEMPOTENT_METHODS: frozenset[str] = frozenset({"GET", "PUT", "DELETE", "HEAD", "OPTIONS"})
+IDEMPOTENT_METHODS: frozenset[str] = frozenset(
+    {"GET", "PUT", "DELETE", "HEAD", "OPTIONS"}
+)
 SDK_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (0.5, 1.5, 4.0, 10.0, 20.0)
 
 
@@ -122,6 +124,7 @@ def raise_for_status_with_detail(response: httpx.Response) -> None:
 
     response.raise_for_status()
 
+
 # Thread-local storage for per-thread singleton instances
 # This is needed because thread workers create new event loops via asyncio.run(),
 # and httpx.AsyncClient is bound to the event loop that created it.
@@ -149,10 +152,9 @@ async def refresh_tokens() -> bool:
         return False
 
     api_url = creds["api_url"]
-    if (
-        _last_refreshed_env_credentials
-        and _last_refreshed_env_credentials["api_url"].rstrip("/") == api_url.rstrip("/")
-    ):
+    if _last_refreshed_env_credentials and _last_refreshed_env_credentials[
+        "api_url"
+    ].rstrip("/") == api_url.rstrip("/"):
         refresh_token = _last_refreshed_env_credentials["refresh_token"]
         is_env_sourced = True
     else:
@@ -164,8 +166,7 @@ async def refresh_tokens() -> bool:
             base_url=api_url, timeout=30.0, trust_env=False
         ) as client:
             response = await client.post(
-                "/auth/refresh",
-                json={"refresh_token": refresh_token}
+                "/auth/refresh", json={"refresh_token": refresh_token}
             )
 
             if response.status_code != 200:
@@ -174,7 +175,9 @@ async def refresh_tokens() -> bool:
             data = response.json()
 
             # Calculate expiry time (30 minutes from now)
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 1800))
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=data.get("expires_in", 1800)
+            )
 
             refreshed = {
                 "api_url": api_url,
@@ -220,6 +223,7 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
 
     # Surface keyring fallback here — login is the user's chance to fix it.
     from bifrost.credentials import warn_if_keyring_fallback
+
     warn_if_keyring_fallback()
 
     try:
@@ -229,7 +233,10 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
             # Step 1: Request device code
             response = await client.post("/auth/device/code")
             if response.status_code != 200:
-                print(f"Error requesting device code: {response.status_code}", file=sys.stderr)
+                print(
+                    f"Error requesting device code: {response.status_code}",
+                    file=sys.stderr,
+                )
                 return False
 
             data = response.json()
@@ -261,12 +268,14 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
                 attempts += 1
 
                 poll_response = await client.post(
-                    "/auth/device/token",
-                    json={"device_code": device_code}
+                    "/auth/device/token", json={"device_code": device_code}
                 )
 
                 if poll_response.status_code != 200:
-                    print(f"\nError polling for token: {poll_response.status_code}", file=sys.stderr)
+                    print(
+                        f"\nError polling for token: {poll_response.status_code}",
+                        file=sys.stderr,
+                    )
                     return False
 
                 poll_data = poll_response.json()
@@ -277,7 +286,9 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
                     if error == "authorization_pending":
                         continue  # Keep polling
                     elif error == "expired_token":
-                        print("\nDevice code expired. Please try again.", file=sys.stderr)
+                        print(
+                            "\nDevice code expired. Please try again.", file=sys.stderr
+                        )
                         return False
                     elif error == "access_denied":
                         print("\nAuthorization denied.", file=sys.stderr)
@@ -291,7 +302,9 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
                     print(" OK")
 
                     # Calculate expiry time
-                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=poll_data.get("expires_in", 1800))
+                    expires_at = datetime.now(timezone.utc) + timedelta(
+                        seconds=poll_data.get("expires_in", 1800)
+                    )
 
                     # Step 5: Save credentials
                     save_credentials(
@@ -305,7 +318,9 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
                     try:
                         user_response = await client.get(
                             "/auth/me",
-                            headers={"Authorization": f"Bearer {poll_data['access_token']}"}
+                            headers={
+                                "Authorization": f"Bearer {poll_data['access_token']}"
+                            },
                         )
                         if user_response.status_code == 200:
                             user_data = user_response.json()
@@ -386,7 +401,9 @@ class BifrostClient:
             current_loop = None
 
         # Check if we need a new client (no client, or different event loop)
-        if self._http is None or (current_loop is not None and self._http_loop != current_loop):
+        if self._http is None or (
+            current_loop is not None and self._http_loop != current_loop
+        ):
             # Old client (if any) will be garbage-collected; httpx handles
             # transport cleanup at GC time. Can't await aclose() from a sync
             # method, so this is the best we can do.
@@ -426,7 +443,7 @@ class BifrostClient:
         """
         # Use thread-local storage instead of class-level singleton
         # This ensures each thread gets its own client with httpx bound to its event loop
-        instance = getattr(_thread_local, 'bifrost_client', None)
+        instance = getattr(_thread_local, "bifrost_client", None)
 
         if instance is None:
             # Try credentials file from CLI login
@@ -471,9 +488,7 @@ class BifrostClient:
                             return instance
 
             # No auth available
-            raise RuntimeError(
-                "Not logged in. Run 'bifrost login' to authenticate."
-            )
+            raise RuntimeError("Not logged in. Run 'bifrost login' to authenticate.")
 
         return instance
 
@@ -520,7 +535,8 @@ class BifrostClient:
             creds = (
                 _last_refreshed_env_credentials
                 if _last_refreshed_env_credentials
-                and _last_refreshed_env_credentials["api_url"].rstrip("/") == self.api_url
+                and _last_refreshed_env_credentials["api_url"].rstrip("/")
+                == self.api_url
                 else get_credentials()
             )
             if creds:
@@ -528,11 +544,15 @@ class BifrostClient:
                 # Force new async client on next request (with new token)
                 self._http = None
                 # Update sync client headers too
-                self._sync_http.headers["Authorization"] = f"Bearer {self._access_token}"
+                self._sync_http.headers["Authorization"] = (
+                    f"Bearer {self._access_token}"
+                )
                 return True
         return False
 
-    async def _request_with_refresh(self, method: str, path: str, **kwargs) -> httpx.Response:
+    async def _request_with_refresh(
+        self, method: str, path: str, **kwargs
+    ) -> httpx.Response:
         """Make an HTTP request, refreshing token on 401 and retrying once.
 
         Wrapped with :func:`_send_with_5xx_retry` so idempotent methods retry
@@ -540,6 +560,7 @@ class BifrostClient:
         fires inside each attempt, so a refresh-then-5xx still benefits from
         the outer retry.
         """
+
         async def _send() -> httpx.Response:
             http = self._get_async_client()
             response = await getattr(http, method)(path, **kwargs)
@@ -584,6 +605,7 @@ class BifrostClient:
         Wrapped with :func:`_send_with_5xx_retry` so idempotent methods retry
         transient 502/503/504 during rolling API deploys.
         """
+
         async def _send() -> httpx.Response:
             http = self._get_async_client()
             response = await http.request(method.upper(), path, **kwargs)
@@ -612,7 +634,9 @@ class BifrostClient:
         Wrapped with :func:`_send_sync_with_5xx_retry` so transient 502/503/504
         from rolling API deploys are retried.
         """
-        return _send_sync_with_5xx_retry("GET", lambda: self._sync_http.get(path, **kwargs))
+        return _send_sync_with_5xx_retry(
+            "GET", lambda: self._sync_http.get(path, **kwargs)
+        )
 
     def post_sync(self, path: str, **kwargs) -> httpx.Response:
         """Make synchronous POST request."""

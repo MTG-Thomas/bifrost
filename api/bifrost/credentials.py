@@ -29,6 +29,7 @@ _DOTENV_ALLOWED_KEYS: frozenset[str] = frozenset({"BIFROST_API_URL"})
 # Public dataclass
 # --------------------------------------------------------------------------- #
 
+
 @dataclass(frozen=True)
 class Credentials:
     """A single set of CLI credentials for one Bifrost API URL."""
@@ -54,6 +55,7 @@ class Credentials:
 # --------------------------------------------------------------------------- #
 # Path helpers (unchanged)
 # --------------------------------------------------------------------------- #
+
 
 def get_config_dir() -> Path:
     if platform.system() == "Windows":
@@ -99,6 +101,7 @@ def load_allowed_dotenv(
 # --------------------------------------------------------------------------- #
 # Backend protocol + implementations
 # --------------------------------------------------------------------------- #
+
 
 class Backend(Protocol):
     """Storage backend for per-URL credentials (env / keychain / JSON)."""
@@ -150,7 +153,11 @@ class EnvBackend:
 
     def list_urls(self) -> list[str]:
         env_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
-        if env_url and os.environ.get("BIFROST_ACCESS_TOKEN") and os.environ.get("BIFROST_REFRESH_TOKEN"):
+        if (
+            env_url
+            and os.environ.get("BIFROST_ACCESS_TOKEN")
+            and os.environ.get("BIFROST_REFRESH_TOKEN")
+        ):
             return [env_url]
         return []
 
@@ -237,7 +244,9 @@ class KeyringBackend:
             return set()
 
     def _save_index(self, index: set[str]) -> None:
-        self._kr.set_password(KEYRING_SERVICE, self.INDEX_USERNAME, json.dumps(sorted(index)))
+        self._kr.set_password(
+            KEYRING_SERVICE, self.INDEX_USERNAME, json.dumps(sorted(index))
+        )
 
     def get(self, api_url: str) -> Credentials | None:
         api_url = api_url.rstrip("/")
@@ -349,6 +358,7 @@ def _reset_persistent_backend_for_tests() -> None:
 # Public functions
 # --------------------------------------------------------------------------- #
 
+
 def _read_cwd_dotenv_values() -> dict[str, str | None]:
     try:
         from dotenv import dotenv_values
@@ -392,6 +402,21 @@ def credentials_are_ephemeral(api_url: str) -> bool:
     return False
 
 
+def _replace_dotenv_line(lines: list[str], key: str, value: str) -> bool:
+    prefixes = (f"{key}=", f"export {key}=")
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(prefixes):
+            lines[i] = f"{key}={value}\n"
+            return True
+    return False
+
+
+def _append_dotenv_line(lines: list[str], key: str, value: str) -> None:
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] = lines[-1] + "\n"
+    lines.append(f"{key}={value}\n")
+
+
 def _upsert_cwd_dotenv_token_vars(updates: dict[str, str]) -> None:
     """Write or update BIFROST_* token lines in CWD's .env."""
     env_path = Path.cwd() / ".env"
@@ -404,18 +429,8 @@ def _upsert_cwd_dotenv_token_vars(updates: dict[str, str]) -> None:
         lines = []
 
     for key, value in updates.items():
-        new_line = f"{key}={value}\n"
-        found = False
-        for i, line in enumerate(lines):
-            stripped = line.lstrip()
-            if stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}="):
-                lines[i] = new_line
-                found = True
-                break
-        if not found:
-            if lines and not lines[-1].endswith("\n"):
-                lines[-1] = lines[-1] + "\n"
-            lines.append(new_line)
+        if not _replace_dotenv_line(lines, key, value):
+            _append_dotenv_line(lines, key, value)
 
     try:
         env_path.write_text("".join(lines))
@@ -427,7 +442,7 @@ def save_ephemeral_credentials(
     api_url: str,
     access_token: str,
     refresh_token: str,
-    expires_at: str,
+    **_unused: object,
 ) -> None:
     """Persist rotated tokens for env-var or CWD .env ephemeral sessions."""
     os.environ["BIFROST_ACCESS_TOKEN"] = access_token
@@ -443,7 +458,9 @@ def save_ephemeral_credentials(
         )
 
 
-def _resolve_url(api_url: str | None, *, include_cwd_dotenv: bool = False) -> str | None:
+def _resolve_url(
+    api_url: str | None, *, include_cwd_dotenv: bool = False
+) -> str | None:
     """
     Resolve which URL the no-arg credentials calls should target.
 
