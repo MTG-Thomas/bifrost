@@ -19,7 +19,7 @@ import platform
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 KEYRING_SERVICE = "bifrost"
 _DOTENV_ALLOWED_KEYS: frozenset[str] = frozenset({"BIFROST_API_URL"})
@@ -28,6 +28,7 @@ _DOTENV_ALLOWED_KEYS: frozenset[str] = frozenset({"BIFROST_API_URL"})
 # --------------------------------------------------------------------------- #
 # Public dataclass
 # --------------------------------------------------------------------------- #
+
 
 @dataclass(frozen=True)
 class Credentials:
@@ -54,6 +55,7 @@ class Credentials:
 # --------------------------------------------------------------------------- #
 # Path helpers (unchanged)
 # --------------------------------------------------------------------------- #
+
 
 def get_config_dir() -> Path:
     if platform.system() == "Windows":
@@ -99,6 +101,7 @@ def load_allowed_dotenv(
 # --------------------------------------------------------------------------- #
 # Backend protocol + implementations
 # --------------------------------------------------------------------------- #
+
 
 class Backend(Protocol):
     """Storage backend for per-URL credentials (env / keychain / JSON)."""
@@ -150,7 +153,11 @@ class EnvBackend:
 
     def list_urls(self) -> list[str]:
         env_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
-        if env_url and os.environ.get("BIFROST_ACCESS_TOKEN") and os.environ.get("BIFROST_REFRESH_TOKEN"):
+        if (
+            env_url
+            and os.environ.get("BIFROST_ACCESS_TOKEN")
+            and os.environ.get("BIFROST_REFRESH_TOKEN")
+        ):
             return [env_url]
         return []
 
@@ -237,7 +244,9 @@ class KeyringBackend:
             return set()
 
     def _save_index(self, index: set[str]) -> None:
-        self._kr.set_password(KEYRING_SERVICE, self.INDEX_USERNAME, json.dumps(sorted(index)))
+        self._kr.set_password(
+            KEYRING_SERVICE, self.INDEX_USERNAME, json.dumps(sorted(index))
+        )
 
     def get(self, api_url: str) -> Credentials | None:
         api_url = api_url.rstrip("/")
@@ -349,6 +358,7 @@ def _reset_persistent_backend_for_tests() -> None:
 # Public functions
 # --------------------------------------------------------------------------- #
 
+
 def _read_cwd_dotenv_values() -> dict[str, str | None]:
     try:
         from dotenv import dotenv_values
@@ -384,15 +394,81 @@ def _get_cwd_dotenv_credentials(api_url: str) -> Credentials | None:
 
 def credentials_are_ephemeral(api_url: str) -> bool:
     """Return True when credentials for api_url come from env vars or CWD .env only."""
+    return get_ephemeral_credentials_source(api_url) is not None
+
+
+def get_ephemeral_credentials_source(
+    api_url: str,
+) -> Literal["env", "cwd_dotenv"] | None:
+    """Return the active ephemeral credential source for api_url, if any."""
     url = api_url.rstrip("/")
     if EnvBackend().get(url) is not None:
-        return True
+        return "env"
     if _get_cwd_dotenv_credentials(url) is not None:
-        return True
+        return "cwd_dotenv"
+    return None
+
+
+def _replace_dotenv_line(lines: list[str], key: str, value: str) -> bool:
+    prefixes = (f"{key}=", f"export {key}=")
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(prefixes):
+            lines[i] = f"{key}={value}\n"
+            return True
     return False
 
 
-def _resolve_url(api_url: str | None, *, include_cwd_dotenv: bool = False) -> str | None:
+def _append_dotenv_line(lines: list[str], key: str, value: str) -> None:
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] = lines[-1] + "\n"
+    lines.append(f"{key}={value}\n")
+
+
+def _upsert_cwd_dotenv_token_vars(updates: dict[str, str]) -> None:
+    """Write or update BIFROST_* token lines in CWD's .env."""
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        try:
+            lines = env_path.read_text().splitlines(keepends=True)
+        except OSError:
+            return
+    else:
+        lines = []
+
+    for key, value in updates.items():
+        if not _replace_dotenv_line(lines, key, value):
+            _append_dotenv_line(lines, key, value)
+
+    try:
+        env_path.write_text("".join(lines))
+    except OSError:
+        # Best effort: process env was already updated, so callers can continue.
+        return
+
+
+def save_ephemeral_credentials(
+    api_url: str,
+    access_token: str,
+    refresh_token: str,
+    source: Literal["env", "cwd_dotenv"] = "env",
+    **_unused: object,
+) -> None:
+    """Persist rotated tokens for env-var or CWD .env ephemeral sessions."""
+    os.environ["BIFROST_ACCESS_TOKEN"] = access_token
+    os.environ["BIFROST_REFRESH_TOKEN"] = refresh_token
+
+    if source == "cwd_dotenv":
+        _upsert_cwd_dotenv_token_vars(
+            {
+                "BIFROST_ACCESS_TOKEN": access_token,
+                "BIFROST_REFRESH_TOKEN": refresh_token,
+            }
+        )
+
+
+def _resolve_url(
+    api_url: str | None, *, include_cwd_dotenv: bool = False
+) -> str | None:
     """
     Resolve which URL the no-arg credentials calls should target.
 
