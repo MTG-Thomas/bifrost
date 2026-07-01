@@ -1180,10 +1180,10 @@ class TestIntegrationConfigSecrets:
                 headers=platform_admin.headers,
             )
 
-    def test_sdk_get_mapping_includes_default_secrets_for_internal_users(
+    def test_sdk_get_mapping_omits_default_secrets_for_internal_users(
         self, e2e_client, platform_admin, integration_with_secret_schema, org1
     ):
-        """Internal mapping reads include integration-level default secrets."""
+        """Internal mapping reads do not disclose integration-level default secrets."""
         integration = integration_with_secret_schema
         default_secret = f"global-default-{uuid4().hex}"
 
@@ -1221,7 +1221,7 @@ class TestIntegrationConfigSecrets:
 
             assert data["id"] == mapping["id"]
             assert data["config"]["base_url"] == "https://api.default.com"
-            assert data["config"]["api_key"] == default_secret
+            assert "api_key" not in data["config"]
 
             response = e2e_client.post(
                 "/api/sdk/integrations/list_mappings",
@@ -1235,7 +1235,7 @@ class TestIntegrationConfigSecrets:
             ]
             assert len(listed) == 1
             assert listed[0]["config"]["base_url"] == "https://api.default.com"
-            assert listed[0]["config"]["api_key"] == default_secret
+            assert "api_key" not in listed[0]["config"]
         finally:
             e2e_client.delete(
                 f"/api/integrations/{integration['id']}/mappings/{mapping['id']}",
