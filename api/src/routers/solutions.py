@@ -10,6 +10,7 @@ what end users see (the Solution is invisible to them — criterion 16).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -80,9 +81,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/solutions", tags=["Solutions"])
 
-# Matches CLI/deploy build timeouts; only jobs idle longer than this are treated
-# as orphaned on startup so a rolling deploy does not fail live jobs on peers.
-DEPLOY_ORPHAN_GRACE_SECONDS = 600
+# Running deploy jobs heartbeat ``updated_at`` on this interval so long deploys
+# stay live across rolling restarts. Orphans are detected when ``updated_at`` is
+# older than ``DEPLOY_ORPHAN_STALE_SECONDS`` (~1.5x heartbeat).
+DEPLOY_JOB_HEARTBEAT_SECONDS = 60
+DEPLOY_ORPHAN_STALE_SECONDS = 90
+
+_DEPLOY_ORPHAN_ERROR = (
+    "Deploy did not finish because the API restarted before its in-process "
+    "background task completed. Re-run the deploy; it is idempotent."
+)
+
+
+def _is_stale_deploy_job(job: SolutionDeployJob, now: datetime) -> bool:
+    if job.status not in ("queued", "running"):
+        return False
+    stale_before = now - timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS)
+    return job.updated_at < stale_before
 
 
 async def reconcile_orphaned_deploy_jobs(
@@ -92,7 +107,7 @@ async def reconcile_orphaned_deploy_jobs(
 ) -> int:
     """Fail in-process deploy jobs that cannot survive an API restart."""
     resolved_now = now or datetime.now(timezone.utc)
-    stale_before = resolved_now - timedelta(seconds=DEPLOY_ORPHAN_GRACE_SECONDS)
+    stale_before = resolved_now - timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS)
     result = await db.execute(
         select(SolutionDeployJob).where(
             SolutionDeployJob.status.in_(("queued", "running")),
@@ -100,13 +115,9 @@ async def reconcile_orphaned_deploy_jobs(
         )
     )
     jobs = list(result.scalars().all())
-    error = (
-        "Deploy did not finish because the API restarted before its in-process "
-        "background task completed. Re-run the deploy; it is idempotent."
-    )
     for job in jobs:
         job.status = "failed"
-        job.error = error
+        job.error = _DEPLOY_ORPHAN_ERROR
         job.updated_at = resolved_now
     return len(jobs)
 
@@ -887,6 +898,22 @@ async def delete_solution(
     return summary
 
 
+async def _deploy_job_heartbeat_loop(job_id: UUID, stop: asyncio.Event) -> None:
+    """Keep ``updated_at`` fresh while a deploy is actively running."""
+    from src.core.database import get_db_context
+
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=DEPLOY_JOB_HEARTBEAT_SECONDS)
+            return
+        except asyncio.TimeoutError:
+            async with get_db_context() as db:
+                job = await db.get(SolutionDeployJob, job_id)
+                if job is None or job.status != "running":
+                    return
+                job.updated_at = datetime.now(timezone.utc)
+
+
 async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployRequest) -> None:
     """Execute the deploy under a fresh session (background task).
 
@@ -917,6 +944,8 @@ async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployR
             job.result = result
 
     await _set_status("running")
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task = asyncio.create_task(_deploy_job_heartbeat_loop(job_id, heartbeat_stop))
     deploy_result: dict | None = None
     try:
         async with get_db_context() as db:
@@ -992,6 +1021,13 @@ async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployR
         await _set_status("failed", "Deploy failed unexpectedly; see server logs.")
     else:
         await _set_status("succeeded", result=deploy_result)
+    finally:
+        heartbeat_stop.set()
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 @router.post(
@@ -1082,6 +1118,12 @@ async def get_deploy_job(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Deploy job not found"
         )
+    now = datetime.now(timezone.utc)
+    if _is_stale_deploy_job(job, now):
+        job.status = "failed"
+        job.error = _DEPLOY_ORPHAN_ERROR
+        job.updated_at = now
+        await ctx.db.commit()
     return SolutionDeployJobStatus.model_validate(job)
 
 

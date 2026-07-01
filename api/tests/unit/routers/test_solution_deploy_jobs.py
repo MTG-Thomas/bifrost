@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 
 from src.models.orm.solution_deploy_jobs import SolutionDeployJob
 from src.models.orm.solutions import Solution
-from src.routers.solutions import reconcile_orphaned_deploy_jobs
+from src.routers.solutions import (
+    DEPLOY_ORPHAN_STALE_SECONDS,
+    _is_stale_deploy_job,
+    reconcile_orphaned_deploy_jobs,
+)
 
 
 @pytest.mark.asyncio
@@ -52,3 +57,21 @@ async def test_reconcile_orphaned_deploy_jobs_fails_non_terminal_jobs(db_session
     assert "API restarted" in (stale_queued.error or "")
     assert "API restarted" in (stale_running.error or "")
     assert succeeded.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_is_stale_deploy_job_uses_heartbeat_stale_threshold():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fresh_running = SolutionDeployJob(
+        install_id=UUID("00000000-0000-0000-0000-000000000001"),
+        status="running",
+        updated_at=now - timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS - 1),
+    )
+    stale_running = SolutionDeployJob(
+        install_id=UUID("00000000-0000-0000-0000-000000000001"),
+        status="running",
+        updated_at=now - timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS + 1),
+    )
+
+    assert not _is_stale_deploy_job(fresh_running, now)
+    assert _is_stale_deploy_job(stale_running, now)
