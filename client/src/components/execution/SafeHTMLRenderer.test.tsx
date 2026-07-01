@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment jsdom
+ *
  * Component tests for SafeHTMLRenderer.
  *
  * Critical behaviours: HTML content ends up in the DOM; DOMPurify strips

@@ -26,6 +26,9 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlunparse
+
+from opentelemetry import trace
 
 # Install virtual import hook IMMEDIATELY at module load time.
 # This must happen before any workspace imports (e.g., from shared import ...)
@@ -35,6 +38,11 @@ from src.services.execution.virtual_import import install_virtual_import_hook
 install_virtual_import_hook()
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
+
+
+def _default_internal_api_url() -> str:
+    return urlunparse(("http", "api:8000", "", "", "", ""))
 
 
 @dataclass
@@ -89,6 +97,32 @@ def _capture_metrics(start_rss: int, start_utime: float, start_stime: float) -> 
     )
 
 
+def _annotate_worker_span(span: Any, result: dict[str, Any]) -> None:
+    """Attach terminal worker execution facts to the active span."""
+    span.set_attribute("bifrost.worker.status", str(result.get("status") or ""))
+    span.set_attribute("bifrost.worker.duration_ms", int(result.get("duration_ms") or 0))
+    if result.get("error_type"):
+        span.set_attribute("bifrost.worker.error_type", str(result["error_type"]))
+
+    metrics = result.get("metrics") or {}
+    if metrics:
+        span.set_attribute("bifrost.worker.peak_memory_bytes", int(metrics.get("peak_memory_bytes") or 0))
+        span.set_attribute("bifrost.worker.cpu_total_seconds", float(metrics.get("cpu_total_seconds") or 0.0))
+
+
+def _queue_wait_ms(created_at: str | None, now: datetime | None = None) -> int | None:
+    if not created_at:
+        return None
+    try:
+        enqueued_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if enqueued_at.tzinfo is None:
+        enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
+    observed_at = now or datetime.now(timezone.utc)
+    return max(0, int((observed_at - enqueued_at).total_seconds() * 1000))
+
+
 def _setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
     def handle_sigterm(signum, frame):
@@ -124,19 +158,61 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     from src.sdk.context import Caller, Organization
     from src.services.execution.engine import ExecutionRequest, execute
     from src.models.enums import ExecutionStatus
-    from src.core.security import authenticate_engine
-    from bifrost.credentials import is_token_expired
+    from bifrost.credentials import is_token_expired, save_credentials
 
-    # Only refresh engine credentials when token is expired or close to expiry.
-    # This avoids a file-write race when multiple worker processes all call
-    # authenticate_engine() simultaneously with identical content.
-    if is_token_expired(buffer_seconds=3600):
+    # Engine credentials: prefer the pre-minted token handed down from the
+    # consumer via context_data["engine_token"].  This keeps SECRET_KEY out of
+    # the child process entirely.
+    # Fall back to authenticate_engine() only for callers (e.g. direct engine
+    # tests) that bypass the consumer and do not supply a pre-minted token.
+    engine_token = context_data.get("engine_token")
+    if engine_token:
+        import os
+        api_url = os.getenv("BIFROST_API_URL", _default_internal_api_url())
+        expires_at = context_data.get("engine_token_expires_at", "")
+        save_credentials(
+            api_url=api_url,
+            access_token=engine_token,
+            refresh_token=engine_token,  # Not used but required by schema
+            expires_at=expires_at,
+        )
+    elif is_token_expired(buffer_seconds=3600):
+        from src.core.security import authenticate_engine
         authenticate_engine()
 
     start_time = datetime.now(timezone.utc)
 
     # Capture starting resource usage
     start_rss, start_utime, start_stime = _get_resource_usage()
+
+    # Activate the per-execution Solution import root BEFORE any workspace code
+    # loads. With no solution_id this is a no-op (plain _repo/ behavior). The
+    # finally below always clears it so a forked worker reused for the next
+    # execution never inherits a stale root. See module_cache_sync.
+    from src.core.module_cache_sync import clear_solution_context, set_solution_context
+
+    _exec_solution_id = context_data.get("solution_id")
+    if _exec_solution_id:
+        set_solution_context(
+            _exec_solution_id,
+            global_repo_access=bool(context_data.get("solution_global_repo_access", False)),
+        )
+
+    span_attributes = {
+        "bifrost.execution.id": execution_id,
+        "bifrost.workflow.name": str(context_data.get("name") or ""),
+        "bifrost.workflow.function": str(context_data.get("function_name") or ""),
+        "bifrost.execution.organization_id": str((context_data.get("organization") or {}).get("id") or ""),
+        "bifrost.worker.is_script": bool(context_data.get("code")),
+        "bifrost.worker.has_file_path": bool(context_data.get("file_path")),
+        "bifrost.worker.solution_id": str(context_data.get("solution_id") or ""),
+    }
+    queue_wait_ms = _queue_wait_ms(context_data.get("created_at"))
+    if queue_wait_ms is not None:
+        span_attributes["bifrost.queue.wait_ms"] = queue_wait_ms
+
+    span_context = tracer.start_as_current_span("bifrost.worker.execute", attributes=span_attributes)
+    span = span_context.__enter__()
 
     try:
         # Reconstruct Organization
@@ -226,7 +302,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 # Use the actual error if available, otherwise fall back to generic message
                 error_msg = load_error or f"Executable '{name}' not found"
                 error_type = "WorkflowLoadError" if load_error else "ExecutableNotFound"
-                return {
+                result = {
                     "status": ExecutionStatus.FAILED.value,
                     "error_message": error_msg,
                     "error_type": error_type,
@@ -241,6 +317,15 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                         "cpu_total_seconds": metrics.cpu_total_seconds,
                     },
                 }
+                _annotate_worker_span(span, result)
+                return result
+
+        # Reconstruct EventContext for event-triggered executions
+        event_ctx = None
+        event_dict = context_data.get("event")
+        if event_dict:
+            from bifrost._execution_context import EventContext
+            event_ctx = EventContext(**event_dict)
 
         # Build execution request
         request = ExecutionRequest(
@@ -260,6 +345,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             no_cache=context_data.get("no_cache", False),
             is_platform_admin=context_data.get("is_platform_admin", False),
             broadcaster=None,  # Logs go to Redis Stream directly
+            event=event_ctx,
+            solution_id=context_data.get("solution_id"),  # install scope for SDK
         )
 
         # Execute
@@ -269,7 +356,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         metrics = _capture_metrics(start_rss, start_utime, start_stime)
 
         # Convert result to dict for serialization
-        return {
+        result = {
             "status": exec_result.status.value,
             "result": exec_result.result,
             "duration_ms": exec_result.duration_ms,
@@ -289,6 +376,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 "cpu_total_seconds": metrics.cpu_total_seconds,
             },
         }
+        _annotate_worker_span(span, result)
+        return result
 
     except Exception as e:
         import traceback
@@ -298,7 +387,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         # Still capture metrics even on failure
         metrics = _capture_metrics(start_rss, start_utime, start_stime)
 
-        return {
+        result = {
             "status": ExecutionStatus.FAILED.value,
             "error_message": str(e),
             "error_type": type(e).__name__,
@@ -314,6 +403,14 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 "cpu_total_seconds": metrics.cpu_total_seconds,
             },
         }
+        _annotate_worker_span(span, result)
+        return result
+
+    finally:
+        # Always clear the solution import root — a forked worker is reused for
+        # later executions and must not inherit this one's root.
+        clear_solution_context()
+        span_context.__exit__(*sys.exc_info())
 
 
 async def worker_main(execution_id: str):
@@ -401,6 +498,10 @@ def run_in_worker(execution_id: str):
         level=logging.INFO,
         format=f"[Worker:{execution_id[:8]}] %(levelname)s - %(message)s"
     )
+
+    from src.core.telemetry import configure_opentelemetry
+
+    configure_opentelemetry("bifrost-worker", span_processor="simple")
 
     # Run the async worker
     asyncio.run(worker_main(execution_id))

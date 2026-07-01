@@ -80,6 +80,40 @@ class TestBranding:
         )
         assert response.status_code in [200, 201], f"Update branding failed: {response.text}"
 
+    def test_update_branding_terminology_superuser(self, e2e_client, platform_admin):
+        """Superuser can update fixed product terminology as part of branding."""
+        response = e2e_client.put(
+            "/api/branding",
+            headers=platform_admin.headers,
+            json={
+                "primary_color": "#1a73e8",
+                "terminology": {
+                    "app": {"singular": "Game", "plural": "Games"},
+                    "agent": {"singular": "Character", "plural": "Characters"},
+                    "form": {"singular": "Quest", "plural": "Quests"},
+                },
+            },
+        )
+
+        assert response.status_code in [200, 201], f"Update branding failed: {response.text}"
+        data = response.json()
+        assert data["terminology"]["app"] == {
+            "singular": "Game",
+            "plural": "Games",
+        }
+        assert data["terminology"]["agent"] == {
+            "singular": "Character",
+            "plural": "Characters",
+        }
+        assert data["terminology"]["form"] == {
+            "singular": "Quest",
+            "plural": "Quests",
+        }
+
+        public_response = e2e_client.get("/api/branding")
+        assert public_response.status_code == 200
+        assert public_response.json()["terminology"]["form"]["plural"] == "Quests"
+
     def test_update_branding_org_user_denied(self, e2e_client, org1_user):
         """Org user cannot update branding (403)."""
         response = e2e_client.put(
@@ -91,6 +125,58 @@ class TestBranding:
         )
         assert response.status_code == 403, (
             f"Org user should not update branding: {response.status_code}"
+        )
+
+    def test_update_and_clear_application_name(self, e2e_client, platform_admin):
+        """Superuser can set the application name, read it back, and clear it."""
+        # Set a custom application name
+        response = e2e_client.put(
+            "/api/branding",
+            headers=platform_admin.headers,
+            json={"application_name": "Acme Portal"},
+        )
+        assert response.status_code in [200, 201], f"Update failed: {response.text}"
+        assert response.json()["application_name"] == "Acme Portal"
+
+        # Public GET reflects it (login screen reads this pre-auth)
+        public = e2e_client.get("/api/branding")
+        assert public.status_code == 200
+        assert public.json()["application_name"] == "Acme Portal"
+
+        # A color-only update must NOT clear the application name
+        color_only = e2e_client.put(
+            "/api/branding",
+            headers=platform_admin.headers,
+            json={"primary_color": "#123456"},
+        )
+        assert color_only.status_code in [200, 201], color_only.text
+        assert color_only.json()["application_name"] == "Acme Portal"
+
+        # Clearing via the dedicated endpoint reverts to null (default)
+        cleared = e2e_client.delete(
+            "/api/branding/application-name",
+            headers=platform_admin.headers,
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["application_name"] is None
+
+    def test_application_name_rejects_overlong(self, e2e_client, platform_admin):
+        """Application name longer than 40 chars is rejected (422)."""
+        response = e2e_client.put(
+            "/api/branding",
+            headers=platform_admin.headers,
+            json={"application_name": "x" * 41},
+        )
+        assert response.status_code == 422, f"Expected 422: {response.text}"
+
+    def test_application_name_org_user_denied(self, e2e_client, org1_user):
+        """Org user cannot clear the application name (403)."""
+        response = e2e_client.delete(
+            "/api/branding/application-name",
+            headers=org1_user.headers,
+        )
+        assert response.status_code == 403, (
+            f"Org user should not reset application name: {response.status_code}"
         )
 
     def test_upload_square_logo_superuser(self, e2e_client, platform_admin):
@@ -146,6 +232,50 @@ class TestBranding:
         assert response.status_code in [200, 201], (
             f"Upload rectangle logo failed: {response.text}"
         )
+
+    def test_upload_svg_logo_strips_script(self, e2e_client, platform_admin):
+        """SVG with <script> is sanitized on upload — script removed when fetched back."""
+        payload = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><circle r="1"/></svg>'
+
+        upload_headers = {
+            k: v
+            for k, v in platform_admin.headers.items()
+            if k.lower() != "content-type"
+        }
+
+        upload = e2e_client.post(
+            "/api/branding/logo/square",
+            headers=upload_headers,
+            files={"file": ("logo.svg", payload, "image/svg+xml")},
+        )
+        assert upload.status_code in (200, 201), f"upload failed: {upload.text}"
+
+        fetched = e2e_client.get("/api/branding/logo/square")
+        assert fetched.status_code == 200
+        assert b"script" not in fetched.content.lower(), (
+            f"script tag was not stripped: {fetched.content!r}"
+        )
+
+    def test_upload_svg_logo_rejects_xxe(self, e2e_client, platform_admin):
+        """SVG with XXE entity declaration is rejected (HTTP 400)."""
+        payload = (
+            b'<?xml version="1.0"?>'
+            b'<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            b'<svg xmlns="http://www.w3.org/2000/svg"><text>&xxe;</text></svg>'
+        )
+
+        upload_headers = {
+            k: v
+            for k, v in platform_admin.headers.items()
+            if k.lower() != "content-type"
+        }
+
+        resp = e2e_client.post(
+            "/api/branding/logo/square",
+            headers=upload_headers,
+            files={"file": ("xxe.svg", payload, "image/svg+xml")},
+        )
+        assert resp.status_code == 400, f"expected 400, got {resp.status_code}: {resp.text}"
 
     def test_get_square_logo_public(self, e2e_client):
         """Get square logo without authentication after upload."""

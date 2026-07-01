@@ -1,6 +1,9 @@
-"""Tests for ``bifrost.cli._check_cli_version``.
+"""Tests for ``bifrost.cli._check_cli_version`` — URL resolution and transport.
 
-The check must:
+The *behavioral* contract of the gate (contract-version hard gate, build-drift
+soft notice, old-server fallback, un-reachable warning) lives in
+``test_cli_contract_gate.py``. This file keeps the still-valid cross-cutting
+concerns the gate must honor regardless of which gate fires:
 
 * Skip silently for source/dev installs (``__version__`` of ``"unknown"`` or
   ``"0.0.0+source"``).
@@ -186,8 +189,8 @@ class TestVersionComparison:
         ):
             cli._check_cli_version()  # no SystemExit
 
-    def test_exits_on_stale_cli(self, monkeypatch, capsys):
-        """Mismatch → exit 1 with upgrade message on stderr."""
+    def test_warns_on_stale_cli_from_old_server(self, monkeypatch, capsys):
+        """Old servers without contract_version warn instead of blocking."""
         _patch_version(monkeypatch, "1.2.3")
         from bifrost import cli
 
@@ -198,23 +201,13 @@ class TestVersionComparison:
             "httpx.get",
             return_value=_make_url_response({"version": "1.3.0"}),
         ):
-            with pytest.raises(SystemExit) as excinfo:
-                cli._check_cli_version()
-            assert excinfo.value.code == 1
+            cli._check_cli_version()
 
         err = capsys.readouterr().err
-        assert "1.2.3" in err
-        assert "1.3.0" in err
-        # Upgrade instructions reference the resolved api_url.
-        assert "https://server.example/api/cli/download" in err
+        assert "contract version" in err
 
-    def test_exits_when_server_is_older_too(self, monkeypatch):
-        """Policy is ``!=``, not ordering — even a 'newer' CLI exits.
-
-        This is intentional: every CLI is expected to track the deployed server
-        exactly. If a user is on a fresher dev build than prod, they should
-        downgrade (or pin BIFROST_API_URL to the right server) before running.
-        """
+    def test_warns_when_old_server_is_older_too(self, monkeypatch, capsys):
+        """Old servers without contract_version cannot prove incompatibility."""
         _patch_version(monkeypatch, "2.0.0")
         from bifrost import cli
 
@@ -225,9 +218,8 @@ class TestVersionComparison:
             "httpx.get",
             return_value=_make_url_response({"version": "1.9.9"}),
         ):
-            with pytest.raises(SystemExit) as excinfo:
-                cli._check_cli_version()
-            assert excinfo.value.code == 1
+            cli._check_cli_version()
+        assert "contract version" in capsys.readouterr().err
 
     def test_passes_with_semver_dev_format(self, monkeypatch):
         """Regression: the new CI dev-version format `0.8.1-dev.47` must
@@ -247,9 +239,8 @@ class TestVersionComparison:
         ):
             cli._check_cli_version()  # no SystemExit
 
-    def test_exits_on_dev_count_mismatch(self, monkeypatch):
-        """Regression: two dev builds with different commit counts must
-        be treated as different versions, even though they share a base."""
+    def test_warns_on_old_server_dev_count_mismatch(self, monkeypatch, capsys):
+        """Old servers without contract_version only produce a warning."""
         _patch_version(monkeypatch, "0.8.1-dev.47")
         from bifrost import cli
 
@@ -260,9 +251,8 @@ class TestVersionComparison:
             "httpx.get",
             return_value=_make_url_response({"version": "0.8.1-dev.48"}),
         ):
-            with pytest.raises(SystemExit) as excinfo:
-                cli._check_cli_version()
-            assert excinfo.value.code == 1
+            cli._check_cli_version()
+        assert "contract version" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #

@@ -1,7 +1,5 @@
-# Lightweight visibility for documentation-only PRs.
-#
-# This workflow intentionally does not reuse CI's required check names.
-# Branch protection must be satisfied by the real jobs in ci.yml.
+# Docs-only PR notice. These jobs intentionally do not share required CI
+# status-check names; real CI runs for every pull request.
 
 name: Docs-only CI Notice
 
@@ -18,8 +16,11 @@ on:
       - "**/*.svg"
       - "**/*.webp"
       - "**/*.ico"
+      - ".agents/**"
       - ".claude/**"
       - ".claude-plugin/**"
+      - ".codex/**"
+      - ".codex-plugin/**"
       - "docs/**"
       - "LICENSE"
       - ".github/CODEOWNERS"
@@ -41,4 +42,4 @@ jobs:
     runs-on: ubuntu-latest
     name: Docs-only CI notice
     steps:
-      - run: echo "Real required checks run from ci.yml on every pull request."
+      - run: echo "Docs-only change — real CI runs from ci.yml when code changes."

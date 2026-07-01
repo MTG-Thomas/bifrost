@@ -20,6 +20,7 @@ Enums:
 from src.models.orm import (
     Base,
     Organization,
+    Solution,
     User,
     Role,
     UserRole,
@@ -54,7 +55,6 @@ from src.models.orm import (
     PlatformMetricsSnapshot,
     WorkflowROIDaily,
     FileIndex,
-    DeveloperContext,
     # Applications (App Builder)
     Application,
     AppRole,
@@ -83,6 +83,7 @@ __all__ = [
     "Base",
     # ORM models
     "Organization",
+    "Solution",
     "User",
     "Role",
     "UserRole",
@@ -117,7 +118,6 @@ __all__ = [
     "PlatformMetricsSnapshot",
     "WorkflowROIDaily",
     "FileIndex",
-    "DeveloperContext",
     # Applications (App Builder)
     "Application",
     "AppRole",

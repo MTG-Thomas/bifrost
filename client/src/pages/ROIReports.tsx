@@ -820,7 +820,7 @@ export function ROIReports() {
 							<DataTableHeader>
 								<DataTableRow>
 									<DataTableHead
-										className="cursor-pointer select-none hover:bg-muted/50"
+										className="cursor-pointer select-none transition-colors hover:bg-muted/50"
 										onClick={() =>
 											toggleWorkflowSort("name")
 										}
@@ -836,7 +836,7 @@ export function ROIReports() {
 										</div>
 									</DataTableHead>
 									<DataTableHead
-										className="text-right cursor-pointer select-none hover:bg-muted/50"
+										className="text-right cursor-pointer select-none transition-colors hover:bg-muted/50"
 										onClick={() =>
 											toggleWorkflowSort("executions")
 										}
@@ -852,7 +852,7 @@ export function ROIReports() {
 										</div>
 									</DataTableHead>
 									<DataTableHead
-										className="text-right cursor-pointer select-none hover:bg-muted/50"
+										className="text-right cursor-pointer select-none transition-colors hover:bg-muted/50"
 										onClick={() =>
 											toggleWorkflowSort("time")
 										}
@@ -868,7 +868,7 @@ export function ROIReports() {
 										</div>
 									</DataTableHead>
 									<DataTableHead
-										className="text-right cursor-pointer select-none hover:bg-muted/50"
+										className="text-right cursor-pointer select-none transition-colors hover:bg-muted/50"
 										onClick={() =>
 											toggleWorkflowSort("value")
 										}
@@ -957,7 +957,7 @@ export function ROIReports() {
 								<DataTableHeader>
 									<DataTableRow>
 										<DataTableHead
-											className="cursor-pointer select-none hover:bg-muted/50"
+											className="cursor-pointer select-none transition-colors hover:bg-muted/50"
 											onClick={() =>
 												toggleOrgSort("name")
 											}
@@ -973,7 +973,7 @@ export function ROIReports() {
 											</div>
 										</DataTableHead>
 										<DataTableHead
-											className="text-right cursor-pointer select-none hover:bg-muted/50"
+											className="text-right cursor-pointer select-none transition-colors hover:bg-muted/50"
 											onClick={() =>
 												toggleOrgSort("executions")
 											}
@@ -989,7 +989,7 @@ export function ROIReports() {
 											</div>
 										</DataTableHead>
 										<DataTableHead
-											className="text-right cursor-pointer select-none hover:bg-muted/50"
+											className="text-right cursor-pointer select-none transition-colors hover:bg-muted/50"
 											onClick={() =>
 												toggleOrgSort("time")
 											}
@@ -1005,7 +1005,7 @@ export function ROIReports() {
 											</div>
 										</DataTableHead>
 										<DataTableHead
-											className="text-right cursor-pointer select-none hover:bg-muted/50"
+											className="text-right cursor-pointer select-none transition-colors hover:bg-muted/50"
 											onClick={() =>
 												toggleOrgSort("value")
 											}

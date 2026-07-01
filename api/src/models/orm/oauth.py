@@ -17,6 +17,8 @@ from src.models.orm.base import Base
 
 
 
+# Execution-resolution entity — access via OAuthProviderRepository
+# (OrgScopedRepository). See api/src/repositories/README.md.
 class OAuthProvider(Base):
     """OAuth provider configuration."""
 
@@ -83,6 +85,10 @@ class OAuthProvider(Base):
     )
 
 
+# Execution-resolution entity — access via OAuthTokenRepository
+# (OrgScopedRepository). MUST filter by organization_id — the lack of this
+# filter caused the cross-tenant token leak fixed in the 2026-05 overhaul.
+# See api/src/repositories/README.md.
 class OAuthToken(Base):
     """OAuth tokens for integration connections."""
 

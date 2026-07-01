@@ -29,6 +29,8 @@ export interface BrandingState {
 	squareLogoUrl: string | null;
 	/** URL for rectangle logo (header) */
 	rectangleLogoUrl: string | null;
+	/** Custom product name, or null when unset (falls back to the default) */
+	applicationName: string | null;
 	/** Refresh branding data (e.g., after upload) */
 	refreshBranding: () => void;
 }
@@ -159,14 +161,17 @@ export async function resetColor(): Promise<BrandingSettings_API> {
 }
 
 /**
- * Reset all branding to defaults (superuser only)
+ * Reset application name to default (superuser only)
  */
-export async function resetAllBranding(): Promise<BrandingSettings_API> {
-	const { data, error } = await apiClient.DELETE("/api/branding", {});
+export async function resetApplicationName(): Promise<BrandingSettings_API> {
+	const { data, error } = await apiClient.DELETE(
+		"/api/branding/application-name",
+		{},
+	);
 
 	if (error) {
 		throw new Error(
-			`Failed to reset branding: ${
+			`Failed to reset application name: ${
 				typeof error === "object" &&
 				error !== null &&
 				"message" in error
@@ -174,6 +179,25 @@ export async function resetAllBranding(): Promise<BrandingSettings_API> {
 					: "Unknown error"
 			}`,
 		);
+	}
+
+	return data;
+}
+
+/**
+ * Reset all branding to defaults (superuser only)
+ */
+export async function resetAllBranding(): Promise<BrandingSettings_API> {
+	const { data, error } = await apiClient.DELETE("/api/branding", {});
+
+	if (error) {
+		// `error` is already narrowed to truthy here, so a typeof-object check is
+		// enough (no redundant `!== null`, no object-vs-null comparison).
+		const message =
+			typeof error === "object" && "message" in error
+				? (error as { message?: string }).message
+				: "Unknown error";
+		throw new Error(`Failed to reset branding: ${message}`);
 	}
 
 	return data;
@@ -265,6 +289,7 @@ export function useBranding(): BrandingState {
 		logoLoaded,
 		squareLogoUrl,
 		rectangleLogoUrl,
+		applicationName: branding?.application_name || null,
 		refreshBranding,
 	};
 }

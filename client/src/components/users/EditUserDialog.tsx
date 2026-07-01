@@ -27,7 +27,7 @@ import {
 	CommandItem,
 	CommandList,
 } from "@/components/ui/command";
-import { Shield, AlertCircle, Loader2, AlertTriangle, Check, ChevronsUpDown, X } from "lucide-react";
+import { Shield, AlertCircle, Loader2, AlertTriangle, ChevronsUpDown, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUpdateUser, useUserRoles } from "@/hooks/useUsers";
@@ -62,6 +62,7 @@ function EditUserDialogContent({
 	const [isPlatformAdmin, setIsPlatformAdmin] = useState(
 		user.is_superuser,
 	);
+	const [isExternal, setIsExternal] = useState(user.is_external);
 	const [orgId, setOrgId] = useState<string>(user.organization_id || "");
 	const [validationError, setValidationError] = useState<string | null>(null);
 	const [rolesPopoverOpen, setRolesPopoverOpen] = useState(false);
@@ -171,6 +172,10 @@ function EditUserDialogContent({
 				!isEditingSelf && effectiveOrgId !== (user.organization_id || "")
 					? effectiveOrgId || null
 					: null,
+			is_external:
+				!isEditingSelf && isExternal !== user.is_external
+					? isExternal
+					: null,
 		};
 
 		// Compute role changes
@@ -184,6 +189,7 @@ function EditUserDialogContent({
 			body.is_active === null &&
 			body.is_superuser === null &&
 			body.organization_id === null &&
+			body.is_external === null &&
 			!hasRoleChanges
 		) {
 			toast.info("No changes to save");
@@ -197,7 +203,8 @@ function EditUserDialogContent({
 				body.name !== null ||
 				body.is_active !== null ||
 				body.is_superuser !== null ||
-				body.organization_id !== null
+				body.organization_id !== null ||
+				body.is_external !== null
 			) {
 				await updateMutation.mutateAsync({
 					params: { path: { user_id: user.id } },
@@ -297,7 +304,7 @@ function EditUserDialogContent({
 					/>
 				</div>
 
-				<div className="flex items-center justify-between rounded-lg border p-4">
+				<div className="flex items-center justify-between rounded-lg bg-muted/50 p-4 ring-1 ring-foreground/5">
 					<div className="space-y-0.5">
 						<Label htmlFor="active">Account Status</Label>
 						<p className="text-xs text-muted-foreground">
@@ -376,6 +383,25 @@ function EditUserDialogContent({
 					</p>
 				</div>
 
+				{!isPlatformAdmin && (
+					<div className="flex items-center justify-between rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<Label htmlFor="external">External user</Label>
+							<p className="text-xs text-muted-foreground">
+								Sees only what the Everyone tier or an explicit
+								role grant allows — excluded from
+								&ldquo;Everyone except external users&rdquo; content
+							</p>
+						</div>
+						<Switch
+							id="external"
+							checked={isExternal}
+							onCheckedChange={setIsExternal}
+							disabled={isEditingSelf}
+						/>
+					</div>
+				)}
+
 				{/* Roles multi-select */}
 				{!isPlatformAdmin && !isEditingSelf && (
 					<div className="space-y-2">
@@ -410,6 +436,7 @@ function EditUserDialogContent({
 													key={role.id}
 													value={role.id}
 													keywords={[role.name]}
+													data-checked={selectedRoleIds.has(role.id)}
 													onSelect={() => toggleRole(role.id)}
 												>
 													<div className="flex flex-col flex-1">
@@ -420,14 +447,6 @@ function EditUserDialogContent({
 															</span>
 														)}
 													</div>
-													<Check
-														className={cn(
-															"ml-auto h-4 w-4",
-															selectedRoleIds.has(role.id)
-																? "opacity-100"
-																: "opacity-0",
-														)}
-													/>
 												</CommandItem>
 											))}
 										</CommandGroup>

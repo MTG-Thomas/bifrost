@@ -22,6 +22,8 @@ import asyncio
 import logging
 import pathlib
 import sys
+import uuid
+from typing import Any
 
 import pytest
 
@@ -30,6 +32,65 @@ logger = logging.getLogger(__name__)
 # Standalone bifrost package import — mirrors the shim that used to live at
 # the top of every ``test_cli_*.py``. ``parents[3]`` resolves to ``api/``.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
+
+
+class _DeployResult:
+    """httpx-Response-like shim for the now-async solution deploy.
+
+    Deploy is enqueued (202 + ``deploy_job_id``) and observed by polling
+    ``GET /api/solutions/deploy-jobs/{id}``. This shim lets the many existing
+    e2e call sites keep their ``deploy.status_code`` / ``deploy.json()`` shape:
+    on a succeeded job ``status_code`` is 200 and ``json()`` returns the deploy
+    result counts; on a failed job ``status_code`` is 422 and ``json()`` carries
+    a ``detail`` (mirroring the old synchronous error response).
+    """
+
+    def __init__(self, status_code: int, payload: dict, text: str) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def wait_for_deploy(e2e_client, post_resp, headers, *, timeout_s: float = 30.0):
+    """Given a deploy POST response, return a terminal-state shim.
+
+    A synchronous error (non-202 — git-connected, pending-capture block,
+    downgrade gate) is returned unchanged. A 202 is polled to a terminal job
+    status, then mapped onto the old response shape via :class:`_DeployResult`.
+    """
+    import time as _time
+
+    if post_resp.status_code != 202:
+        return post_resp
+    job_id = post_resp.json()["deploy_job_id"]
+    deadline = _time.monotonic() + timeout_s
+    body: dict = {}
+    while _time.monotonic() < deadline:
+        st = e2e_client.get(f"/api/solutions/deploy-jobs/{job_id}", headers=headers)
+        assert st.status_code == 200, f"status fetch failed: {st.status_code} {st.text}"
+        body = st.json()
+        if body["status"] == "succeeded":
+            result = body.get("result") or {}
+            return _DeployResult(200, result, post_resp.text)
+        if body["status"] == "failed":
+            detail = body.get("error") or "deploy failed"
+            return _DeployResult(422, {"detail": detail}, detail)
+        _time.sleep(0.25)
+    raise AssertionError(f"deploy job {job_id} did not finish in {timeout_s}s: {body}")
+
+
+def deploy_solution(e2e_client, solution_id, headers, body):
+    """POST a deploy bundle and block until the async job is terminal.
+
+    Drop-in for ``e2e_client.post(f"/api/solutions/{id}/deploy", ...)`` that
+    returns a terminal-state shim (see :func:`wait_for_deploy`)."""
+    resp = e2e_client.post(
+        f"/api/solutions/{solution_id}/deploy", headers=headers, json=body
+    )
+    return wait_for_deploy(e2e_client, resp, headers)
 
 
 @pytest.fixture
@@ -104,3 +165,72 @@ def isolate_s3_sync() -> None:
     async ``isolate_s3`` fixture from tests/conftest.py.
     """
     _clear_s3_bifrost_sync()
+
+
+@pytest.fixture
+def make_solution_with_required_config(e2e_client, platform_admin, db_session):
+    """Factory: create a Solution via REST then insert a SolutionConfigSchema
+    declaration row directly into the DB.  Returns a coroutine that accepts
+    ``key``, ``required`` and ``set_value`` kwargs and returns the solution dict.
+
+    When ``set_value`` is False (default) no Config value is created, so the
+    declaration reads as unset (is_set=False).  When True, a matching Config
+    row is inserted in the install's org scope so the declaration reads as set.
+    """
+    from src.models.orm.config import Config
+    from src.models.orm.solution_config_schema import SolutionConfigSchema
+
+    async def _make(
+        key: str = "api_key", required: bool = True, set_value: bool = False
+    ) -> dict[str, Any]:
+        headers = platform_admin.headers
+        slug = f"setup-status-{uuid.uuid4().hex[:8]}"
+        r = e2e_client.post("/api/solutions", headers=headers, json={
+            "slug": slug, "name": slug.upper(), "scope": "org",
+        })
+        assert r.status_code in (200, 201), r.text
+        sol = r.json()
+        sol_id = uuid.UUID(sol["id"])
+        org_id = uuid.UUID(sol["organization_id"]) if sol.get("organization_id") else None
+
+        decl = SolutionConfigSchema(
+            solution_id=sol_id,
+            key=key,
+            type="string",
+            required=required,
+            description="Required config for setup-status test",
+            default="a-default",
+        )
+        db_session.add(decl)
+        if set_value:
+            db_session.add(Config(
+                key=key,
+                value="a-value",
+                organization_id=org_id,
+                updated_by="setup-status-test",
+            ))
+        await db_session.commit()
+
+        return sol
+
+    return _make
+
+
+@pytest.fixture
+def make_solution_without_configs(e2e_client, platform_admin):
+    """Factory: create a Solution via REST with NO config declarations at all.
+
+    Used to assert the vacuous-true guard: setup_complete must be True when
+    there are no required configs to satisfy.
+    """
+
+    async def _make() -> dict[str, Any]:
+        headers = platform_admin.headers
+        slug = f"setup-empty-{uuid.uuid4().hex[:8]}"
+        r = e2e_client.post("/api/solutions", headers=headers, json={
+            "slug": slug, "name": slug.upper(), "scope": "org",
+        })
+        assert r.status_code in (200, 201), r.text
+        return r.json()
+
+    return _make

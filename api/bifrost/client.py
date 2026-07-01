@@ -22,6 +22,7 @@ import httpx
 
 from .credentials import (
     clear_credentials,
+    credentials_are_ephemeral,
     get_credentials,
     is_token_expired,
     load_allowed_dotenv,
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Global client injection for platform mode
 _injected_client: Optional["BifrostClient"] = None
+_last_refreshed_env_credentials: dict[str, str] | None = None
 
 # Retry config for transient 5xx — see workstream E of issue #171.
 # SDK is machine-to-machine, so the retry budget is more generous than
@@ -139,12 +141,22 @@ async def refresh_tokens() -> bool:
     Returns:
         True if refresh successful, False otherwise
     """
+    global _last_refreshed_env_credentials
+
     creds = get_credentials()
     if not creds:
         return False
 
     api_url = creds["api_url"]
-    refresh_token = creds["refresh_token"]
+    if (
+        _last_refreshed_env_credentials
+        and _last_refreshed_env_credentials["api_url"].rstrip("/") == api_url.rstrip("/")
+    ):
+        refresh_token = _last_refreshed_env_credentials["refresh_token"]
+        is_env_sourced = True
+    else:
+        refresh_token = creds["refresh_token"]
+        is_env_sourced = credentials_are_ephemeral(api_url)
 
     try:
         async with httpx.AsyncClient(
@@ -163,13 +175,18 @@ async def refresh_tokens() -> bool:
             # Calculate expiry time (30 minutes from now)
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 1800))
 
-            # Save new credentials
-            save_credentials(
-                api_url=api_url,
-                access_token=data["access_token"],
-                refresh_token=data["refresh_token"],
-                expires_at=expires_at.isoformat(),
-            )
+            refreshed = {
+                "api_url": api_url,
+                "access_token": data["access_token"],
+                "refresh_token": data["refresh_token"],
+                "expires_at": expires_at.isoformat(),
+            }
+
+            if is_env_sourced:
+                _last_refreshed_env_credentials = refreshed
+            else:
+                _last_refreshed_env_credentials = None
+                save_credentials(**refreshed)
 
             return True
     except Exception:
@@ -198,6 +215,10 @@ async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool
         api_url = os.getenv("BIFROST_API_URL", "http://localhost:8000")
 
     api_url = api_url.rstrip("/")
+
+    # Surface keyring fallback here — login is the user's chance to fix it.
+    from bifrost.credentials import warn_if_keyring_fallback
+    warn_if_keyring_fallback()
 
     try:
         async with httpx.AsyncClient(
@@ -457,7 +478,7 @@ class BifrostClient:
     def _fetch_context_sync(self) -> dict[str, Any]:
         """Fetch development context synchronously."""
         if self._context is None:
-            response = self._sync_http.get("/api/cli/context")
+            response = self._sync_http.get("/api/sdk/context")
             raise_for_status_with_detail(response)
             self._context = response.json()
         return self._context or {}
@@ -466,7 +487,7 @@ class BifrostClient:
         """Fetch development context."""
         if self._context is None:
             http = self._get_async_client()
-            response = await http.get("/api/cli/context")
+            response = await http.get("/api/sdk/context")
             raise_for_status_with_detail(response)
             self._context = response.json()
         return self._context or {}
@@ -494,7 +515,12 @@ class BifrostClient:
     async def _refresh_and_update(self) -> bool:
         """Refresh tokens and update this client's auth headers."""
         if await refresh_tokens():
-            creds = get_credentials()
+            creds = (
+                _last_refreshed_env_credentials
+                if _last_refreshed_env_credentials
+                and _last_refreshed_env_credentials["api_url"].rstrip("/") == self.api_url
+                else get_credentials()
+            )
             if creds:
                 self._access_token = creds["access_token"]
                 # Force new async client on next request (with new token)

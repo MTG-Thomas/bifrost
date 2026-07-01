@@ -8,20 +8,28 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.enums import AgentAccessLevel
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
+from src.models.orm.users import User
 
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture
-async def seeded_runs(db_session: AsyncSession) -> AsyncGenerator[dict, None]:
+async def seeded_runs(
+    db_session: AsyncSession, platform_admin
+) -> AsyncGenerator[dict, None]:
     """Seed an agent + multiple runs with known asked/did/metadata/verdict."""
+    admin_org_id = (
+        await db_session.execute(
+            select(User.organization_id).where(User.id == platform_admin.user_id)
+        )
+    ).scalar_one()
     agent = Agent(
         id=uuid4(),
         name=f"Search Test Agent {uuid4().hex[:8]}",
@@ -29,7 +37,7 @@ async def seeded_runs(db_session: AsyncSession) -> AsyncGenerator[dict, None]:
         system_prompt="test",
         channels=["chat"],
         access_level=AgentAccessLevel.AUTHENTICATED,
-        organization_id=None,
+        organization_id=admin_org_id,
         is_active=True,
         knowledge_sources=[],
         system_tools=[],
@@ -69,6 +77,7 @@ async def seeded_runs(db_session: AsyncSession) -> AsyncGenerator[dict, None]:
         r = AgentRun(
             id=uuid4(),
             agent_id=agent.id,
+            org_id=admin_org_id,
             trigger_type="test",
             status="completed",
             iterations_used=1,

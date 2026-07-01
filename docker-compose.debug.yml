@@ -52,6 +52,15 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    # Run as the rabbitmq user (uid 100) from the start. Docker >= 24 creates
+    # the named volume mount point as 0755 root:root, so the root entrypoint
+    # writes .erlang.cookie root-owned 0400 and the server (uid 100) then
+    # fails to read it: "Error when reading /var/lib/rabbitmq/.erlang.cookie:
+    # eacces". Starting as uid 100 means the cookie is created owned by
+    # rabbitmq, readable by both the server and the diagnostics healthcheck.
+    # This is the one fix that holds on Linux AND Docker Desktop/WSL2, where
+    # tmpfs uid/gid/mode options are NOT honoured under `docker compose`.
+    user: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: bifrost
       RABBITMQ_DEFAULT_PASS: bifrost_debug
@@ -62,6 +71,9 @@ services:
       interval: 10s
       timeout: 10s
       retries: 5
+      # RabbitMQ can take 90s+ to boot on a resource-constrained Windows VM;
+      # without a start_period, dependent services give up before it is ready.
+      start_period: 120s
 
   redis:
     image: redis:7-alpine
@@ -99,6 +111,8 @@ services:
       - ./api/src:/app/src:ro
       - /app/src/services/app_compiler/node_modules
       - /app/src/services/app_bundler/node_modules
+      - /app/src/services/sdk_package/node_modules
+      - /app/src/services/sdk_package/sdk_src
       - ./api/shared:/app/shared:ro
       - ./api/scripts:/app/scripts:ro
       - ./api/alembic:/app/alembic:ro
@@ -139,6 +153,8 @@ services:
       - ./api/src:/app/src:ro
       - /app/src/services/app_compiler/node_modules
       - /app/src/services/app_bundler/node_modules
+      - /app/src/services/sdk_package/node_modules
+      - /app/src/services/sdk_package/sdk_src
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
       - ./api/alembic:/app/alembic:ro
@@ -187,6 +203,8 @@ services:
       - ./api/src:/app/src:ro
       - /app/src/services/app_compiler/node_modules
       - /app/src/services/app_bundler/node_modules
+      - /app/src/services/sdk_package/node_modules
+      - /app/src/services/sdk_package/sdk_src
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
     depends_on:
@@ -221,13 +239,18 @@ services:
       BIFROST_S3_ACCESS_KEY: bifrost
       BIFROST_S3_SECRET_KEY: ${SEAWEEDFS_SECRET_KEY}
       BIFROST_S3_REGION: us-east-1
-      BIFROST_USE_THREAD_WORKERS: "true"
       BIFROST_DATABASE_POOL_SIZE: "1"
       BIFROST_DATABASE_MAX_OVERFLOW: "2"
+      # C1.5: pip cache parity with k8s (C1.3).
+      PIP_NO_CACHE_DIR: "1"
+      # C1.5: Explicit HOME so pip user-site and engine credentials file resolve correctly.
+      HOME: /home/bifrost
     volumes:
       - ./api/src:/app/src:ro
       - /app/src/services/app_compiler/node_modules
       - /app/src/services/app_bundler/node_modules
+      - /app/src/services/sdk_package/node_modules
+      - /app/src/services/sdk_package/sdk_src
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
     depends_on:
@@ -239,7 +262,14 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
-    user: root
+    # C1.5: Capability parity with k8s (C1.4).
+    # user: "1000:1000" bypasses the entrypoint.sh gosu switch. The gosu switch
+    # requires CAP_SETUID/CAP_SETGID which are dropped by cap_drop: ALL, so we
+    # must set user: explicitly. Source mounts are :ro so bifrost uid reads them fine.
+    # read_only: is NOT set — hot-reload writes /tmp, __pycache__, coverage files.
+    user: "1000:1000"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     command: >
       watchmedo auto-restart --directory=/app/src --directory=/app/shared
       --pattern="*.py" --recursive -- python -m src.worker.main

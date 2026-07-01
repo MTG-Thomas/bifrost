@@ -393,8 +393,21 @@ async def cleanup_test_data(db_session: AsyncSession):
     )
 
     # Clean up orgs and roles last (entities FK into these)
+    from src.models.orm.executions import Execution
     from src.models.orm.organizations import Organization
     from src.models.orm.users import Role
+
+    # Executions FK into organizations (RESTRICT): other suites legitimately
+    # create executions inside their created_by="test" orgs (e.g. the form
+    # anchor tests stamp the execution with the FORM's org), and a single
+    # surviving row makes this org sweep raise ForeignKeyViolationError —
+    # which cascades as a teardown error into EVERY later test in this file.
+    cohort_orgs = select(Organization.id).where(
+        Organization.created_by.in_(["git-sync", "test"])
+    )
+    await db_session.execute(
+        delete(Execution).where(Execution.organization_id.in_(cohort_orgs))
+    )
     await db_session.execute(delete(Organization).where(Organization.created_by.in_(["git-sync", "test"])))
     await db_session.execute(delete(Role).where(Role.created_by == "git-sync"))
     await db_session.commit()
@@ -1979,6 +1992,125 @@ class TestSplitManifestFormat:
         assert cfg.config_type == "string"
         assert cfg.value == "https://api.example.com"
 
+    async def test_pull_integration_config_links_config_schema_id(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Integration configs imported from split manifests must link to
+        their IntegrationConfigSchema rows and keep that link after export.
+        """
+        from uuid import UUID as UUIDType
+
+        from src.models.orm.config import Config
+        from src.models.orm.integrations import Integration, IntegrationConfigSchema
+
+        work_dir = Path(working_clone.working_dir)
+        integ_id = str(uuid4())
+        config_id = str(uuid4())
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        (bifrost_dir / "integrations.yaml").write_text(yaml.dump({
+            "integrations": {
+                "TestIntegConfigSchemaLink": {
+                    "id": integ_id,
+                    "config_schema": [
+                        {
+                            "key": "EXAMPLE_TOKEN",
+                            "type": "secret",
+                            "required": True,
+                            "position": 0,
+                        },
+                    ],
+                },
+            },
+        }, default_flow_style=False))
+        (bifrost_dir / "configs.yaml").write_text(yaml.dump({
+            "configs": {
+                "EXAMPLE_TOKEN": {
+                    "id": config_id,
+                    "integration_id": integ_id,
+                    "key": "EXAMPLE_TOKEN",
+                    "config_type": "secret",
+                    "value": {"value": ""},
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([
+            ".bifrost/integrations.yaml",
+            ".bifrost/configs.yaml",
+        ])
+        working_clone.index.commit("add integration config with schema")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+
+        schema = (
+            await db_session.execute(
+                select(IntegrationConfigSchema).where(
+                    IntegrationConfigSchema.integration_id == UUIDType(integ_id),
+                    IntegrationConfigSchema.key == "EXAMPLE_TOKEN",
+                )
+            )
+        ).scalar_one()
+        cfg = await db_session.get(Config, UUIDType(config_id))
+
+        assert cfg is not None
+        assert cfg.config_schema_id == schema.id
+
+        # Existing secret configs keep their value during import, but sync
+        # must still repair a missing schema link.
+        cfg.config_schema_id = None
+        await db_session.commit()
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+        await db_session.refresh(cfg)
+        assert cfg.value == {"value": ""}
+        assert cfg.config_schema_id == schema.id
+
+        # Export should preserve the portable shape: schema lives under the
+        # integration and the config references that integration by UUID.
+        commit_result = await sync_service.desktop_commit("round trip integration config")
+        assert commit_result.success is True
+        exported = read_manifest_from_dir(sync_service._persistent_dir / ".bifrost")
+        exported_integ = exported.integrations[integ_id]
+        assert [cs.key for cs in exported_integ.config_schema] == ["EXAMPLE_TOKEN"]
+        exported_cfg = exported.configs[config_id]
+        assert exported_cfg.integration_id == integ_id
+        assert exported_cfg.key == "EXAMPLE_TOKEN"
+
+        # Re-import the exported manifest into an empty DB state; the schema
+        # linkage must be restored from integration_id + key.
+        await db_session.execute(delete(Config).where(Config.id == UUIDType(config_id)))
+        await db_session.execute(
+            delete(IntegrationConfigSchema).where(
+                IntegrationConfigSchema.integration_id == UUIDType(integ_id)
+            )
+        )
+        await db_session.execute(
+            delete(Integration).where(Integration.id == UUIDType(integ_id))
+        )
+        await db_session.commit()
+
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+
+        roundtrip_schema = (
+            await db_session.execute(
+                select(IntegrationConfigSchema).where(
+                    IntegrationConfigSchema.integration_id == UUIDType(integ_id),
+                    IntegrationConfigSchema.key == "EXAMPLE_TOKEN",
+                )
+            )
+        ).scalar_one()
+        roundtrip_cfg = await db_session.get(Config, UUIDType(config_id))
+        assert roundtrip_cfg is not None
+        assert roundtrip_cfg.config_schema_id == roundtrip_schema.id
+
     async def test_pull_table_from_manifest(
         self,
         db_session: AsyncSession,
@@ -2023,6 +2155,56 @@ class TestSplitManifestFormat:
         assert table.description == "Cached tickets"
         assert table.schema is not None
         assert len(table.schema["columns"]) == 2
+
+    async def test_pull_custom_claim_from_manifest(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull manifest with custom claim → creates CustomClaim in DB."""
+        from uuid import UUID as UUIDType
+
+        from src.models.orm.custom_claims import CustomClaim
+
+        work_dir = Path(working_clone.working_dir)
+        org_id = str(uuid4())
+        claim_id = str(uuid4())
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+        (bifrost_dir / "organizations.yaml").write_text(yaml.dump({
+            "organizations": [{"id": org_id, "name": "ClaimsImportOrg"}],
+        }, default_flow_style=False))
+        (bifrost_dir / "claims.yaml").write_text(yaml.dump({
+            "claims": {
+                claim_id: {
+                    "id": claim_id,
+                    "name": "allowed_campus_ids",
+                    "description": "Campuses this user can read",
+                    "organization_id": org_id,
+                    "type": "list",
+                    "query": {
+                        "table": "user_campus_access",
+                        "where": {"eq": [{"row": "user_id"}, {"user": "user_id"}]},
+                        "select": "campus_id",
+                    },
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add([".bifrost/organizations.yaml", ".bifrost/claims.yaml"])
+        working_clone.index.commit("add custom claim")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+
+        claim = await db_session.get(CustomClaim, UUIDType(claim_id))
+        assert claim is not None
+        assert claim.name == "allowed_campus_ids"
+        assert claim.organization_id == UUIDType(org_id)
+        assert claim.query["select"] == "campus_id"
 
     async def test_pull_table_with_policies_round_trip(
         self,
@@ -2275,6 +2457,78 @@ class TestSplitManifestFormat:
         assert sub is not None
         assert str(sub.workflow_id) == wf_id
         assert sub.event_type == "scheduled"
+
+    async def test_pull_topic_event_source_round_trips_event_type(
+        self,
+        db_session: AsyncSession,
+        sync_service,
+        working_clone,
+    ):
+        """Pull manifest with a topic event source → the source's event_type (its
+        topic routing key) survives import so get_by_topic() can find it.
+
+        Regression for B1: ManifestEventSource carried no parent event_type, so
+        topic sources imported with event_type=NULL and their triggers never fired.
+        """
+        from src.models.orm.events import EventSource
+        from src.repositories.events import EventSourceRepository
+
+        work_dir = Path(working_clone.working_dir)
+        es_id = str(uuid4())
+        sub_id = str(uuid4())
+        wf_id = str(uuid4())
+
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+
+        wf_dir = work_dir / "workflows"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "on_ticket.py").write_text(SAMPLE_WORKFLOW_CLEAN)
+
+        (bifrost_dir / "workflows.yaml").write_text(yaml.dump({
+            "workflows": {
+                "on_ticket": {
+                    "id": wf_id,
+                    "path": "workflows/on_ticket.py",
+                    "function_name": "clean_wf",
+                },
+            },
+        }, default_flow_style=False))
+
+        (bifrost_dir / "events.yaml").write_text(yaml.dump({
+            "events": {
+                "Ticket Created": {
+                    "id": es_id,
+                    "source_type": "topic",
+                    "event_type": "ticket.created",
+                    "subscriptions": [
+                        {
+                            "id": sub_id,
+                            "workflow_id": wf_id,
+                            "event_type": "ticket.created",
+                        },
+                    ],
+                },
+            },
+        }, default_flow_style=False))
+
+        working_clone.index.add(["workflows/on_ticket.py", ".bifrost/workflows.yaml", ".bifrost/events.yaml"])
+        working_clone.index.commit("add topic event source")
+        working_clone.remotes.origin.push()
+
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success is True
+
+        from uuid import UUID as UUIDType
+        es = await db_session.get(EventSource, UUIDType(es_id))
+        assert es is not None
+        # The parent event_type (topic routing key) must round-trip.
+        assert es.event_type == "ticket.created"
+
+        # The repository lookup the dispatcher uses must now resolve the source.
+        found = await EventSourceRepository(db_session).get_by_topic("ticket.created")
+        assert found is not None
+        assert str(found.id) == es_id
 
     async def test_pull_event_source_updates_organization_id(
         self,
@@ -4059,6 +4313,77 @@ class TestRoleAssignmentSync:
         assigned = {row[0] for row in rows}
         assert role_a in assigned
         assert role_b not in assigned
+
+    async def test_workflow_all_roles_removed_when_manifest_roles_empty(
+        self, db_session: AsyncSession, sync_service, working_clone,
+    ):
+        """Existing roles A,B; manifest workflow has roles:[] → BOTH removed.
+
+        Regression for B3: the git-sync resolver gated SyncRoles on a truthy
+        roles list, so emptying a manifest entry's roles silently left the old
+        bindings in place — diverging from install deploy, which full-syncs roles
+        (empty list clears them). git-sync always serializes `roles` (the model
+        default is []), so a present-and-empty list reliably means "no roles".
+        """
+        from src.models.orm.users import Role
+        from src.models.orm.workflow_roles import WorkflowRole
+
+        role_a = uuid4()
+        role_b = uuid4()
+        wf_id = uuid4()
+
+        db_session.add(Role(id=role_a, name="EmptyClearRA", created_by="git-sync"))
+        db_session.add(Role(id=role_b, name="EmptyClearRB", created_by="git-sync"))
+        db_session.add(Workflow(
+            id=wf_id, name="role_empty_wf", function_name="git_sync_test",
+            path="workflows/role_empty.py", is_active=True,
+        ))
+        await db_session.flush()
+        db_session.add(WorkflowRole(workflow_id=wf_id, role_id=role_a, assigned_by="test"))
+        db_session.add(WorkflowRole(workflow_id=wf_id, role_id=role_b, assigned_by="test"))
+        await db_session.commit()
+
+        work_dir = Path(working_clone.working_dir)
+        bifrost_dir = work_dir / ".bifrost"
+        bifrost_dir.mkdir(exist_ok=True)
+
+        wf_path = work_dir / "workflows" / "role_empty.py"
+        wf_path.parent.mkdir(parents=True, exist_ok=True)
+        wf_path.write_text(SAMPLE_WORKFLOW_PY)
+
+        (bifrost_dir / "roles.yaml").write_text(yaml.dump({
+            "roles": [
+                {"id": str(role_a), "name": "EmptyClearRA"},
+                {"id": str(role_b), "name": "EmptyClearRB"},
+            ]
+        }, default_flow_style=False))
+        (bifrost_dir / "workflows.yaml").write_text(yaml.dump({
+            "workflows": {
+                "role_empty_wf": {
+                    "id": str(wf_id),
+                    "path": "workflows/role_empty.py",
+                    "function_name": "git_sync_test",
+                    "type": "workflow",
+                    "roles": [],  # all roles removed
+                }
+            }
+        }, default_flow_style=False))
+
+        working_clone.index.add([
+            "workflows/role_empty.py",
+            ".bifrost/roles.yaml",
+            ".bifrost/workflows.yaml",
+        ])
+        working_clone.index.commit("Empty workflow roles")
+        working_clone.remotes.origin.push("main")
+
+        result = await sync_service.desktop_sync(confirm_deletes=True)
+        assert result.success
+
+        rows = (await db_session.execute(
+            select(WorkflowRole.role_id).where(WorkflowRole.workflow_id == wf_id)
+        )).all()
+        assert {row[0] for row in rows} == set(), "empty manifest roles must clear all bindings"
 
     async def test_form_role_assignment_synced(
         self, db_session: AsyncSession, sync_service, working_clone,

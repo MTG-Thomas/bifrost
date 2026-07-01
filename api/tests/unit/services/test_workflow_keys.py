@@ -1,9 +1,8 @@
 """Tests for workflow key generation utilities."""
 
-import hashlib
 import re
 
-from src.services.workflow_keys import generate_workflow_key
+from src.services.workflow_keys import generate_workflow_key, verify_workflow_key
 
 
 class TestGenerateWorkflowKey:
@@ -20,17 +19,13 @@ class TestGenerateWorkflowKey:
             f"Raw key contains non-URL-safe characters: {raw_key}"
         )
 
-    def test_hashed_key_is_valid_hex_64_chars(self):
+    def test_hashed_key_is_bcrypt_hash(self):
         _, hashed_key = generate_workflow_key()
-        assert len(hashed_key) == 64
-        assert re.fullmatch(r"[0-9a-f]{64}", hashed_key), (
-            f"Hashed key is not valid lowercase hex: {hashed_key}"
-        )
+        assert hashed_key.startswith("$2")
 
-    def test_hash_matches_sha256_of_raw_key(self):
+    def test_hash_verifies_raw_key(self):
         raw_key, hashed_key = generate_workflow_key()
-        expected = hashlib.sha256(raw_key.encode()).hexdigest()
-        assert hashed_key == expected
+        assert verify_workflow_key(raw_key, hashed_key)
 
     def test_two_calls_return_different_keys(self):
         raw1, hashed1 = generate_workflow_key()

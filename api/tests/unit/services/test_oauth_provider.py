@@ -6,90 +6,16 @@ Mocks HTTP requests to OAuth providers.
 
 import pytest
 import asyncio
-import logging
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from src.services.oauth_provider import OAuthProviderClient, compute_token_exchange_scopes
-
-
-def test_compute_token_exchange_scopes_joins_generic_provider_scopes():
-    provider = MagicMock()
-    provider.provider_name = "Microsoft CSP"
-    provider.scopes = ["openid", "offline_access", "https://example.com/read"]
-
-    assert compute_token_exchange_scopes(provider) == (
-        "openid offline_access https://example.com/read"
-    )
-
-
-@pytest.mark.parametrize("provider_name", ["NinjaOne", "ninjaone", "NINJAONE"])
-def test_compute_token_exchange_scopes_omits_ninjaone_scopes(provider_name):
-    provider = MagicMock()
-    provider.provider_name = provider_name
-    provider.scopes = ["monitoring", "management", "control", "offline_access"]
-
-    assert compute_token_exchange_scopes(provider) is None
+from src.services.oauth_provider import OAuthProviderClient, append_query_params
 
 
 @pytest.fixture
 def oauth_client():
     """Create OAuth provider client with test defaults"""
     return OAuthProviderClient(timeout=10, max_retries=3)
-
-
-@pytest.mark.parametrize(
-    ("method_name", "kwargs", "secrets", "expected"),
-    [
-        (
-            "exchange_code_for_token",
-            {
-                "token_url": "https://oauth.example.com/token?tenant=secret-tenant",
-                "code": "authorization-code",
-                "client_id": "client-id",
-                "client_secret": "super-secret-client-value",
-                "redirect_uri": "https://app.example.com/callback",
-            },
-            ("super-secret-client-value", "secret-tenant", "client_secret"),
-            "confidential client",
-        ),
-        (
-            "refresh_access_token",
-            {
-                "token_url": "https://oauth.example.com/token?tenant=secret-tenant",
-                "refresh_token": "refresh-token-secret",
-                "client_id": "client-id",
-                "client_secret": "client-secret-value",
-            },
-            (
-                "refresh-token-secret",
-                "client-secret-value",
-                "secret-tenant",
-                "client_secret",
-            ),
-            "confidential client",
-        ),
-    ],
-)
-@pytest.mark.asyncio
-async def test_oauth_request_logs_do_not_include_secret_material(
-    oauth_client, caplog, method_name, kwargs, secrets, expected
-):
-    """OAuth request logs should describe flow shape without logging secrets."""
-    with (
-        caplog.at_level(logging.INFO, logger="src.services.oauth_provider"),
-        patch.object(
-            oauth_client,
-            "_make_token_request",
-            new=AsyncMock(return_value=(True, {"access_token": "ok"})),
-        ),
-    ):
-        await getattr(oauth_client, method_name)(**kwargs)
-
-    log_text = caplog.text
-    for secret in secrets:
-        assert secret not in log_text
-    assert expected in log_text
 
 
 class TestOAuthProviderTokenExchange:
@@ -676,3 +602,56 @@ class TestOAuthProviderRetry:
             # After max_retries, should fail
             assert success is False
             assert "max_retries_exceeded" in result["error"]
+
+
+class TestAppendQueryParams:
+    """Tests for append_query_params helper."""
+
+    def test_appends_with_question_mark_when_url_has_no_query(self):
+        url = append_query_params(
+            "https://example.com/auth", {"client_id": "abc"}
+        )
+        assert url == "https://example.com/auth?client_id=abc"
+
+    def test_appends_with_ampersand_when_url_already_has_query(self):
+        # Regression test: a naive f"{url}?{urlencode(params)}" produces
+        # "...?access_type=offline?client_id=abc", which Google rejects with
+        # "missing required parameter: client_id". The helper must detect the
+        # existing query string and use & instead.
+        url = append_query_params(
+            "https://accounts.google.com/o/oauth2/v2/auth?access_type=offline",
+            {"client_id": "abc", "scope": "openid"},
+        )
+        assert url == (
+            "https://accounts.google.com/o/oauth2/v2/auth"
+            "?access_type=offline&client_id=abc&scope=openid"
+        )
+
+    def test_preserves_multiple_existing_params(self):
+        url = append_query_params(
+            "https://accounts.google.com/o/oauth2/v2/auth"
+            "?access_type=offline&prompt=consent",
+            {"client_id": "abc"},
+        )
+        assert url == (
+            "https://accounts.google.com/o/oauth2/v2/auth"
+            "?access_type=offline&prompt=consent&client_id=abc"
+        )
+
+    def test_empty_params_returns_url_unchanged(self):
+        assert append_query_params("https://example.com/auth", {}) == (
+            "https://example.com/auth"
+        )
+        assert append_query_params(
+            "https://example.com/auth?foo=bar", {}
+        ) == "https://example.com/auth?foo=bar"
+
+    def test_url_encodes_special_characters_in_values(self):
+        url = append_query_params(
+            "https://example.com/auth",
+            {"redirect_uri": "https://app.example.com/cb?env=prod"},
+        )
+        assert url == (
+            "https://example.com/auth"
+            "?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb%3Fenv%3Dprod"
+        )

@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from shared.models import CodexGatewayResponsesRequest
 
 from src.core.auth import CurrentActiveUser
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.models.contracts.codex_gateway import (
     CodexGatewayKeyCreateRequest,
     CodexGatewayKeyCreateResponse,

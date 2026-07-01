@@ -17,7 +17,8 @@ from sqlalchemy.orm import selectinload
 from src.core.auth import CurrentActiveUser
 from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.cache.redis_client import get_redis
-from src.core.database import DbSession, get_session_factory
+from src.core.database import get_session_factory
+from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.services.agent_run_access import (
     apply_agent_run_access,
@@ -858,10 +859,7 @@ async def regenerate_summary(
     user: CurrentActiveUser,
 ) -> dict:
     """Reset summary state and re-enqueue a summarization job. Admin-only."""
-    is_admin = user.is_superuser or any(
-        role in ["Platform Admin", "Platform Owner"] for role in user.roles
-    )
-    if not is_admin:
+    if not _is_platform_admin(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only platform administrators can regenerate run summaries",
@@ -988,9 +986,7 @@ _BACKFILL_FALLBACK_PER_RUN_COST = Decimal("0.002")
 
 
 def _is_platform_admin(user) -> bool:  # type: ignore[no-untyped-def]
-    return bool(user.is_superuser) or any(
-        role in ["Platform Admin", "Platform Owner"] for role in user.roles
-    )
+    return user.has_platform_admin_grant()
 
 
 async def _estimate_per_run_cost(db) -> tuple[Decimal, str]:  # type: ignore[no-untyped-def]

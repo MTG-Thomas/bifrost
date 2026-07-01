@@ -25,6 +25,7 @@ def _mock_workflow(name="test_wf", org_id=None):
     wf.public_endpoint = False
     wf.category = "General"
     wf.description = None
+    wf.tool_description = None
     wf.tags = []
     wf.is_active = True
     wf.workflow_roles = []
@@ -75,6 +76,7 @@ def _mock_app(name="test_app", slug=None, org_id=None, access_level="authenticat
     app.slug = slug or name.lower().replace(" ", "-")
     app.organization_id = org_id
     app.access_level = access_level
+    app.app_model = "inline_v1"
     app.description = None
     app.dependencies = None
     app.repo_path = f"apps/{app.slug}"

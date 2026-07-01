@@ -133,11 +133,9 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
     consumer = make_consumer()
     execution_id = str(uuid4())
     consumer._pool = AsyncMock()
-    consumer._pool.reserve_execution_slot = AsyncMock(
+    consumer._pool.route_execution = AsyncMock(
         side_effect=ProcessPoolAdmissionRejected("limit reached")
     )
-    consumer._pool.commit_reserved_execution = AsyncMock()
-    consumer._pool.release_reserved_execution = AsyncMock()
     consumer._redis_client.get_pending_execution.return_value = pending_context()
     consumer._redis_client.delete_pending_execution = AsyncMock()
 
@@ -167,24 +165,20 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
             )
 
     consumer._redis_client.delete_pending_execution.assert_not_called()
-    create_execution.assert_not_awaited()
+    create_execution.assert_awaited_once()
     update_execution.assert_not_awaited()
-    consumer._pool.commit_reserved_execution.assert_not_awaited()
-    consumer._pool.release_reserved_execution.assert_not_awaited()
+    consumer._pool.route_execution.assert_awaited_once()
     publish_execution_update.assert_awaited_once()
     assert publish_execution_update.await_args is not None
-    assert publish_execution_update.await_args.args[:2] == (execution_id, "Pending")
+    assert publish_execution_update.await_args.args[:2] == (execution_id, "Running")
 
 
 @pytest.mark.asyncio
 async def test_process_message_acknowledges_recorded_setup_failure_as_domain_handled() -> None:
     consumer = make_consumer()
     execution_id = str(uuid4())
-    reservation = object()
     consumer._pool = AsyncMock()
-    consumer._pool.reserve_execution_slot = AsyncMock(return_value=reservation)
-    consumer._pool.commit_reserved_execution = AsyncMock(side_effect=ValueError("bad setup"))
-    consumer._pool.release_reserved_execution = AsyncMock()
+    consumer._pool.route_execution = AsyncMock(side_effect=ValueError("bad setup"))
     consumer._redis_client.get_pending_execution.return_value = pending_context()
     consumer._redis_client.delete_pending_execution = AsyncMock()
     consumer._redis_client.push_result = AsyncMock()
@@ -216,7 +210,7 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
             )
 
     update_execution.assert_awaited_once()
-    consumer._pool.release_reserved_execution.assert_awaited_once_with(reservation)
+    consumer._pool.route_execution.assert_awaited_once()
     consumer._redis_client.delete_pending_execution.assert_awaited_once_with(execution_id)
     consumer._redis_client.push_result.assert_awaited_once_with(
         execution_id=execution_id,

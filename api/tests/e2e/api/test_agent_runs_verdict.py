@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
+from src.models.orm.users import User
 
 
 logger = logging.getLogger(__name__)
@@ -21,12 +22,17 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _create_completed_run(
-    db_session: AsyncSession, agent_id: UUID, *, status: str = "completed"
+    db_session: AsyncSession,
+    agent_id: UUID,
+    *,
+    org_id: UUID | None,
+    status: str = "completed",
 ) -> AgentRun:
     """Insert an AgentRun row with the given status, owned by ``agent_id``."""
     run = AgentRun(
         id=uuid4(),
         agent_id=agent_id,
+        org_id=org_id,
         trigger_type="api",
         status=status,
         iterations_used=1,
@@ -66,10 +72,19 @@ async def verdict_test_agent(e2e_client, platform_admin) -> AsyncGenerator[dict,
 
 @pytest_asyncio.fixture
 async def completed_agent_run(
-    verdict_test_agent, db_session: AsyncSession
+    verdict_test_agent, db_session: AsyncSession, platform_admin
 ) -> AsyncGenerator[AgentRun, None]:
     """Insert a completed AgentRun owned by ``verdict_test_agent``."""
-    run = await _create_completed_run(db_session, UUID(verdict_test_agent["id"]))
+    org_id = (
+        await db_session.execute(
+            select(User.organization_id).where(User.id == platform_admin.user_id)
+        )
+    ).scalar_one()
+    run = await _create_completed_run(
+        db_session,
+        UUID(verdict_test_agent["id"]),
+        org_id=org_id,
+    )
     yield run
     # Cleanup (also clears history rows via FK cascade)
     await db_session.execute(delete(AgentRun).where(AgentRun.id == run.id))
@@ -78,11 +93,19 @@ async def completed_agent_run(
 
 @pytest_asyncio.fixture
 async def queued_agent_run(
-    verdict_test_agent, db_session: AsyncSession
+    verdict_test_agent, db_session: AsyncSession, platform_admin
 ) -> AsyncGenerator[AgentRun, None]:
     """Insert a queued AgentRun owned by ``verdict_test_agent``."""
+    org_id = (
+        await db_session.execute(
+            select(User.organization_id).where(User.id == platform_admin.user_id)
+        )
+    ).scalar_one()
     run = await _create_completed_run(
-        db_session, UUID(verdict_test_agent["id"]), status="queued"
+        db_session,
+        UUID(verdict_test_agent["id"]),
+        org_id=org_id,
+        status="queued",
     )
     yield run
     await db_session.execute(delete(AgentRun).where(AgentRun.id == run.id))
