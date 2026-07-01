@@ -11,7 +11,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import {
 	Loader2,
-	Check,
 	ChevronsUpDown,
 	X,
 	ChevronDown,
@@ -61,9 +60,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Combobox } from "@/components/ui/combobox";
-import { cn } from "@/lib/utils";
+import { term, useTerminology } from "@/lib/terminology";
 import { useRoles } from "@/hooks/useRoles";
 import { useAuth } from "@/contexts/AuthContext";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
@@ -97,8 +95,13 @@ const ACCESS_LEVELS = [
 	},
 	{
 		value: "authenticated",
-		label: "Authenticated Users",
-		description: "Any authenticated user can access",
+		label: "Everyone except external users",
+		description: "Any signed-in user except external users",
+	},
+	{
+		value: "everyone",
+		label: "Everyone",
+		description: "Any signed-in user, including external users",
 	},
 ];
 
@@ -117,7 +120,7 @@ const formSchema = z.object({
 		),
 	description: z.string().optional(),
 	organization_id: z.string().nullable(),
-	access_level: z.enum(["authenticated", "role_based"]),
+	access_level: z.enum(["authenticated", "everyone", "role_based"]),
 	role_ids: z.array(z.string()),
 });
 
@@ -138,6 +141,7 @@ export function AppInfoDialog({
 	onCreated,
 }: AppInfoDialogProps) {
 	const isEditing = !!appSlug;
+	const terminology = useTerminology();
 	const { isPlatformAdmin, user } = useAuth();
 
 	const { data: existingApp, isLoading: isLoadingApp } = useApplication(
@@ -183,7 +187,9 @@ export function AppInfoDialog({
 				slug: existingApp.slug,
 				description: existingApp.description ?? "",
 				organization_id: existingApp.organization_id ?? null,
-				access_level: (existingApp.access_level as "authenticated" | "role_based") || "authenticated",
+				access_level:
+					(existingApp.access_level as "authenticated" | "everyone" | "role_based") ||
+					"authenticated",
 				role_ids: existingApp.role_ids ?? [],
 			});
 		} else if (!isEditing && open) {
@@ -257,6 +263,7 @@ export function AppInfoDialog({
 						slug: values.slug,
 						description: values.description || null,
 						access_level: values.access_level,
+						app_model: "inline_v1",
 						role_ids: values.role_ids,
 						organization_id: values.organization_id || null,
 					},
@@ -369,7 +376,7 @@ export function AppInfoDialog({
 										<FormLabel>Name</FormLabel>
 										<FormControl>
 											<Input
-												placeholder="My Application"
+												placeholder={`My ${term(terminology, "app", "formalSingular")}`}
 												{...field}
 												onChange={(e) =>
 													handleNameChange(e.target.value)
@@ -498,38 +505,23 @@ export function AppInfoDialog({
 																	<CommandItem
 																		key={role.id}
 																		value={role.name || ""}
+																		data-checked={field.value.includes(
+																			role.id,
+																		)}
 																		onSelect={() =>
 																			toggleRole(role.id)
 																		}
 																	>
-																		<div className="flex items-center gap-2 flex-1">
-																			<Checkbox
-																				checked={field.value.includes(
-																					role.id,
-																				)}
-																				onCheckedChange={() =>
-																					toggleRole(role.id)
-																				}
-																			/>
-																			<div className="flex flex-col">
-																				<span className="font-medium">
-																					{role.name}
+																		<div className="flex flex-col flex-1">
+																			<span className="font-medium">
+																				{role.name}
+																			</span>
+																			{role.description && (
+																				<span className="text-xs text-muted-foreground">
+																					{role.description}
 																				</span>
-																				{role.description && (
-																					<span className="text-xs text-muted-foreground">
-																						{role.description}
-																					</span>
-																				)}
-																			</div>
-																		</div>
-																		<Check
-																			className={cn(
-																				"ml-auto h-4 w-4",
-																				field.value.includes(role.id)
-																					? "opacity-100"
-																					: "opacity-0",
 																			)}
-																		/>
+																		</div>
 																	</CommandItem>
 																))}
 															</CommandGroup>
@@ -538,7 +530,7 @@ export function AppInfoDialog({
 												</PopoverContent>
 											</Popover>
 											{selectedRoleIds.length > 0 && (
-												<div className="flex flex-wrap gap-2 p-2 border rounded-md bg-muted/50">
+												<div className="flex flex-wrap gap-2 p-2 rounded-md bg-muted/50 ring-1 ring-foreground/5">
 													{selectedRoleIds.map((roleId) => {
 														const role = roles?.find(
 															(r: RolePublic) => r.id === roleId,
@@ -646,7 +638,7 @@ export function AppInfoDialog({
 											? "Saving..."
 											: isEditing
 												? "Save Changes"
-												: "Create Application"}
+												: `Create ${term(terminology, "app", "formalSingular")}`}
 									</Button>
 								</div>
 							</DialogFooter>
@@ -668,7 +660,9 @@ export function AppInfoDialog({
 				>
 					<AlertDialogContent>
 						<AlertDialogHeader>
-							<AlertDialogTitle>Delete Application?</AlertDialogTitle>
+							<AlertDialogTitle>
+								Delete {term(terminology, "app", "formalSingular")}?
+							</AlertDialogTitle>
 							<AlertDialogDescription>
 								This will permanently delete{" "}
 								<strong>{existingApp.name}</strong> and all of

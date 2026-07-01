@@ -10,17 +10,48 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Loader2, Upload, Palette, RotateCcw } from "lucide-react";
+import { Loader2, Upload, Palette, RotateCcw, Type } from "lucide-react";
 import {
 	updateBranding,
 	uploadLogo,
 	resetLogo,
 	resetColor,
+	resetApplicationName,
 	getBranding,
 } from "@/hooks/useBranding";
 import { applyBrandingTheme, type BrandingSettings } from "@/lib/branding";
+import {
+	DEFAULT_TERMINOLOGY,
+	mergeTerminology,
+	serializeTerminology,
+	type BrandingTerminologyInput,
+	type ProductTermKey,
+	type Terminology,
+} from "@/lib/terminology";
 import { useOrgScope } from "@/contexts/OrgScopeContext";
 import type { components } from "@/lib/v1";
+
+const TERMINOLOGY_ROWS: Array<{
+	key: ProductTermKey;
+	label: string;
+	description: string;
+}> = [
+	{
+		key: "app",
+		label: "Apps / Applications",
+		description: "Main built experiences, e.g. Games",
+	},
+	{
+		key: "agent",
+		label: "Agents",
+		description: "AI workers or personas, e.g. Characters",
+	},
+	{
+		key: "form",
+		label: "Forms",
+		description: "Guided workflow launch interfaces",
+	},
+];
 
 export function Branding() {
 	const { refreshBranding } = useOrgScope();
@@ -29,13 +60,18 @@ export function Branding() {
 	>(null);
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
+	const [savingTerminology, setSavingTerminology] = useState(false);
+	const [savingApplicationName, setSavingApplicationName] = useState(false);
 	const [uploading, setUploading] = useState<"square" | "rectangle" | null>(
 		null,
 	);
 	const [resetting, setResetting] = useState<
-		"square" | "rectangle" | "color" | null
+		"square" | "rectangle" | "color" | "application-name" | null
 	>(null);
 	const [primaryColor, setPrimaryColor] = useState("#0066CC");
+	const [applicationName, setApplicationName] = useState("");
+	const [terminology, setTerminology] =
+		useState<Terminology>(DEFAULT_TERMINOLOGY);
 
 	// Drag states
 	const [dragActiveSquare, setDragActiveSquare] = useState(false);
@@ -51,6 +87,12 @@ export function Branding() {
 					if (data.primary_color) {
 						setPrimaryColor(data.primary_color);
 					}
+					setApplicationName(data.application_name ?? "");
+					setTerminology(
+						mergeTerminology(
+							data.terminology as BrandingTerminologyInput,
+						),
+					);
 				}
 			} catch {
 				toast.error("Failed to load branding settings");
@@ -68,6 +110,7 @@ export function Branding() {
 		try {
 			const updated = await updateBranding({
 				primary_color: primaryColor,
+				terminology: serializeTerminology(terminology),
 			});
 			setBranding(updated);
 			applyBrandingTheme(updated as BrandingSettings);
@@ -86,6 +129,118 @@ export function Branding() {
 		} finally {
 			setSaving(false);
 		}
+	};
+
+	const handleTerminologyUpdate = async () => {
+		setSavingTerminology(true);
+		try {
+			const updated = await updateBranding({
+				primary_color: primaryColor,
+				terminology: serializeTerminology(terminology),
+			});
+			setBranding(updated);
+			setTerminology(
+				mergeTerminology(updated.terminology as BrandingTerminologyInput),
+			);
+			applyBrandingTheme(updated as BrandingSettings);
+			refreshBranding();
+
+			toast.success("Terminology updated", {
+				description: "Product labels have been updated successfully",
+			});
+		} catch (err) {
+			toast.error("Error", {
+				description:
+					err instanceof Error
+						? err.message
+						: "Failed to update terminology",
+			});
+		} finally {
+			setSavingTerminology(false);
+		}
+	};
+
+	const handleApplicationNameUpdate = async () => {
+		const trimmed = applicationName.trim();
+		setSavingApplicationName(true);
+		try {
+			// Empty input clears the custom name back to the default.
+			const updated = trimmed
+				? await updateBranding({ application_name: trimmed })
+				: await resetApplicationName();
+			setBranding(updated);
+			setApplicationName(updated.application_name ?? "");
+			refreshBranding();
+
+			toast.success("Application name updated", {
+				description: trimmed
+					? `Now showing "${trimmed}"`
+					: "Reverted to the default name",
+			});
+		} catch (err) {
+			toast.error("Error", {
+				description:
+					err instanceof Error
+						? err.message
+						: "Failed to update application name",
+			});
+		} finally {
+			setSavingApplicationName(false);
+		}
+	};
+
+	const handleResetApplicationName = async () => {
+		setResetting("application-name");
+		try {
+			const updated = await resetApplicationName();
+			setBranding(updated);
+			setApplicationName(updated.application_name ?? "");
+			refreshBranding();
+
+			toast.success("Application name reset", {
+				description: "Reverted to the default name",
+			});
+		} catch (err) {
+			toast.error("Error", {
+				description:
+					err instanceof Error
+						? err.message
+						: "Failed to reset application name",
+			});
+		} finally {
+			setResetting(null);
+		}
+	};
+
+	const updateTerm = (
+		key: ProductTermKey,
+		field: "singular" | "plural",
+		value: string,
+	) => {
+		setTerminology((current) =>
+			mergeTerminology({
+				app: {
+					singular: current.app.singular,
+					plural: current.app.plural,
+				},
+				agent: {
+					singular: current.agent.singular,
+					plural: current.agent.plural,
+				},
+				form: {
+					singular: current.form.singular,
+					plural: current.form.plural,
+				},
+				[key]: {
+					singular:
+						field === "singular"
+							? value
+							: current[key].singular,
+					plural:
+						field === "plural" ? value : current[key].plural,
+				},
+			}),
+		);
 	};
 
 	// Handle file upload
@@ -245,6 +400,67 @@ export function Branding() {
 
 	return (
 		<div className="space-y-6">
+			{/* Application Name */}
+			<Card>
+				<CardHeader>
+					<CardTitle className="flex items-center gap-2">
+						<Type className="h-5 w-5" />
+						Application Name
+					</CardTitle>
+					<CardDescription>
+						Shown on the login screen, browser tab, and header.
+						Leave blank to use the default.
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-4">
+					<div>
+						<Label htmlFor="applicationName">Name</Label>
+						<Input
+							id="applicationName"
+							type="text"
+							value={applicationName}
+							onChange={(e) =>
+								setApplicationName(e.target.value)
+							}
+							placeholder="Bifrost"
+							maxLength={40}
+							className="max-w-sm"
+						/>
+					</div>
+					<div className="flex gap-2">
+						<Button
+							onClick={handleApplicationNameUpdate}
+							disabled={
+								savingApplicationName ||
+								resetting === "application-name"
+							}
+							variant="default"
+						>
+							{savingApplicationName ? (
+								<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+							) : null}
+							Update Name
+						</Button>
+						<Button
+							onClick={handleResetApplicationName}
+							disabled={
+								savingApplicationName ||
+								resetting === "application-name"
+							}
+							variant="outline"
+							size="icon"
+							title="Reset to default name"
+						>
+							{resetting === "application-name" ? (
+								<Loader2 className="h-4 w-4 animate-spin" />
+							) : (
+								<RotateCcw className="h-4 w-4" />
+							)}
+						</Button>
+					</div>
+				</CardContent>
+			</Card>
+
 			{/* Primary Color */}
 			<Card>
 				<CardHeader>
@@ -274,7 +490,7 @@ export function Branding() {
 						<div>
 							<Label>Preview</Label>
 							<div
-								className="h-10 w-20 rounded border"
+								className="h-10 w-20 rounded-md ring-1 ring-foreground/10"
 								style={{ backgroundColor: primaryColor }}
 							/>
 						</div>
@@ -302,6 +518,75 @@ export function Branding() {
 							) : (
 								<RotateCcw className="h-4 w-4" />
 							)}
+						</Button>
+					</div>
+				</CardContent>
+			</Card>
+
+			<Card>
+				<CardHeader>
+					<CardTitle>Product Terminology</CardTitle>
+					<CardDescription>
+						Rename fixed platform nouns before the UI renders
+					</CardDescription>
+				</CardHeader>
+				<CardContent className="space-y-5">
+					<div className="space-y-4">
+						{TERMINOLOGY_ROWS.map((row) => (
+							<div
+								key={row.key}
+								className="grid gap-3 md:grid-cols-[minmax(0,1fr)_160px_160px]"
+							>
+								<div>
+									<Label>{row.label}</Label>
+									<p className="text-sm text-muted-foreground">
+										{row.description}
+									</p>
+								</div>
+								<div>
+									<Label htmlFor={`${row.key}-singular`}>
+										Singular
+									</Label>
+									<Input
+										id={`${row.key}-singular`}
+										value={terminology[row.key].singular}
+										onChange={(e) =>
+											updateTerm(
+												row.key,
+												"singular",
+												e.target.value,
+											)
+										}
+									/>
+								</div>
+								<div>
+									<Label htmlFor={`${row.key}-plural`}>
+										Plural
+									</Label>
+									<Input
+										id={`${row.key}-plural`}
+										value={terminology[row.key].plural}
+										onChange={(e) =>
+											updateTerm(
+												row.key,
+												"plural",
+												e.target.value,
+											)
+										}
+									/>
+								</div>
+							</div>
+						))}
+					</div>
+					<div className="flex gap-2">
+						<Button
+							onClick={handleTerminologyUpdate}
+							disabled={savingTerminology}
+						>
+							{savingTerminology ? (
+								<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+							) : null}
+							Update Terminology
 						</Button>
 					</div>
 				</CardContent>
@@ -346,6 +631,9 @@ export function Branding() {
 									</Button>
 								)}
 							</div>
+							<p className="text-xs text-muted-foreground">
+								Recommended: 512×512 px
+							</p>
 							<div
 								className={`relative border-2 border-dashed rounded-lg p-6 transition-colors h-48 flex items-center justify-center ${
 									dragActiveSquare
@@ -406,10 +694,10 @@ export function Branding() {
 							</div>
 						</div>
 
-						{/* Rectangle Logo */}
+						{/* Horizontal Logo */}
 						<div className="space-y-3">
 							<div className="flex items-center justify-between">
-								<Label>Rectangle Logo (16:9 ratio)</Label>
+								<Label>Horizontal Logo (~4:1 ratio)</Label>
 								{branding?.rectangle_logo_url && (
 									<Button
 										size="sm"
@@ -431,6 +719,9 @@ export function Branding() {
 									</Button>
 								)}
 							</div>
+							<p className="text-xs text-muted-foreground">
+								Recommended: 800×200 px
+							</p>
 							<div
 								className={`relative border-2 border-dashed rounded-lg p-6 transition-colors h-48 flex items-center justify-center ${
 									dragActiveRectangle

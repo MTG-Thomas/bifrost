@@ -7,8 +7,6 @@ Uses OrgScopedRepository for standardized org scoping.
 """
 
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -24,14 +22,7 @@ from src.core.auth import Context, CurrentSuperuser
 from src.core.org_filter import resolve_org_filter
 from src.repositories.config import ConfigRepository
 
-# Import cache functions
-try:
-    from src.core.cache import invalidate_config, upsert_config
-    CACHE_AVAILABLE = True
-except ImportError:
-    CACHE_AVAILABLE = False
-    invalidate_config = None  # type: ignore
-    upsert_config = None  # type: ignore
+from src.core.cache import invalidate_config, upsert_config
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +48,10 @@ async def get_config(
         description="Filter scope: omit for all (superusers), 'global' for global only, "
         "or org UUID for specific org."
     ),
+    include_orphaned: bool = Query(
+        default=False,
+        description="Include orphaned configs (former-install data left by an uninstalled Solution).",
+    ),
 ) -> list[ConfigResponse]:
     """Get configuration for current scope.
 
@@ -74,7 +69,7 @@ async def get_config(
     # Use repository for all filtering
     # Config endpoints are superuser-only, so is_superuser=True (no role checks)
     repo = ConfigRepository(ctx.db, org_id=filter_org, is_superuser=True)
-    return await repo.list_configs(filter_type)
+    return await repo.list_configs(filter_type, include_orphaned=include_orphaned)
 
 
 @router.post(
@@ -107,12 +102,11 @@ async def set_config(
         result = await repo.set_config(request, updated_by=user.email)
 
         # Upsert to cache after successful write (dual-write pattern)
-        if CACHE_AVAILABLE and upsert_config:
-            org_id_str = str(target_org_id) if target_org_id else None
-            config_type_str = request.type.value if request.type else "string"
-            # Note: For secrets, stored_value is already encrypted by the repository
-            stored_value = result.value
-            await upsert_config(org_id_str, request.key, stored_value, config_type_str)
+        org_id_str = str(target_org_id) if target_org_id else None
+        config_type_str = request.type.value if request.type else "string"
+        # Note: For secrets, stored_value is already encrypted by the repository
+        stored_value = result.value
+        await upsert_config(org_id_str, request.key, stored_value, config_type_str)
 
         return result
     except Exception as e:
@@ -155,43 +149,35 @@ async def update_config(
 
     result, old_org_id, old_key = update
 
-    if CACHE_AVAILABLE and upsert_config and invalidate_config:
-        await _refresh_config_cache_after_update(
-            result, old_org_id, old_key, invalidate_config, upsert_config
-        )
-
-    return result
-
-
-async def _refresh_config_cache_after_update(
-    result: ConfigResponse,
-    old_org_id: UUID | None,
-    old_key: str,
-    invalidate_cache: Callable[[str | None, str], Awaitable[Any]],
-    upsert_cache: Callable[[str | None, str, Any, str], Awaitable[Any]],
-) -> None:
     new_org_id_str = str(result.org_id) if result.org_id else None
     old_org_id_str = str(old_org_id) if old_org_id else None
 
+    # If the row's identity changed (rename or org-move), the old
+    # cache entry would otherwise survive until TTL with stale —
+    # possibly secret — data. Drop the old (old_org, old_key)
+    # entry before writing the new one. ``invalidate_config`` also
+    # bumps CONFIG_GLOBAL_VERSION_KEY when ``old_org`` was global,
+    # so org-merged caches re-fetch.
     if old_org_id_str != new_org_id_str or old_key != result.key:
-        await invalidate_cache(old_org_id_str, old_key)
+        await invalidate_config(old_org_id_str, old_key)
 
+    # If this update crosses the global↔org boundary, bump the
+    # global version so org caches that merged the old global
+    # value re-fetch even though the new write is org-scoped.
     if (old_org_id is None) != (result.org_id is None):
-        await _bump_global_config_version_on_transition()
+        from src.core.cache import get_shared_redis
+        from src.core.cache.keys import CONFIG_GLOBAL_VERSION_KEY
+        try:
+            r = await get_shared_redis()
+            await r.incr(CONFIG_GLOBAL_VERSION_KEY)
+        except Exception as e:
+            logger.warning(f"Failed to bump global config version on transition: {e}")
 
     config_type_str = result.type.value if result.type else "string"
-    await upsert_cache(new_org_id_str, result.key, result.value, config_type_str)
+    stored_value = result.value
+    await upsert_config(new_org_id_str, result.key, stored_value, config_type_str)
 
-
-async def _bump_global_config_version_on_transition() -> None:
-    from src.core.cache import get_shared_redis
-    from src.core.cache.keys import CONFIG_GLOBAL_VERSION_KEY
-
-    try:
-        r = await get_shared_redis()
-        await r.incr(CONFIG_GLOBAL_VERSION_KEY)
-    except Exception:
-        logger.exception("Failed to bump global config version on transition")
+    return result
 
 
 @router.delete(
@@ -217,6 +203,5 @@ async def delete_config(
         )
 
     # Invalidate cache after successful delete
-    if CACHE_AVAILABLE and invalidate_config:
-        org_id_str = str(deleted.organization_id) if deleted.organization_id else None
-        await invalidate_config(org_id_str, deleted.key)
+    org_id_str = str(deleted.organization_id) if deleted.organization_id else None
+    await invalidate_config(org_id_str, deleted.key)

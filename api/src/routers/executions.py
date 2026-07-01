@@ -33,7 +33,8 @@ from src.models.contracts.executions import (
 from src.models.orm.ai_usage import AIUsage
 
 from bifrost._logging import read_logs_from_stream
-from src.core.auth import Context, UserPrincipal
+from src.core.auth import Context, RequirePlatformAdmin
+from src.core.principal import UserPrincipal
 from src.core.log_safety import log_safe
 from src.core.org_filter import resolve_org_filter, OrgFilterType
 from src.core.pubsub import publish_execution_update, publish_history_update
@@ -89,7 +90,12 @@ class ExecutionRepository:
             query = query.where(ExecutionModel.workflow_name == workflow_name)
 
         if status_filter:
-            query = query.where(ExecutionModel.status == status_filter)
+            # Comma-separated values match any of the listed statuses, so the
+            # UI's Failed tab can ask for the whole failure group
+            # (Failed,Timeout,Stuck,CompletedWithErrors) in one server-side
+            # filter. A single value behaves exactly as before.
+            statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+            query = query.where(ExecutionModel.status.in_(statuses))
 
         if start_date:
             try:
@@ -546,7 +552,7 @@ async def list_executions(
     ),
     workflowName: str | None = Query(None, description="Filter by workflow name"),
     workflowId: str | None = Query(None, description="Filter by workflow UUID"),
-    status_filter: str | None = Query(None, alias="status", description="Filter by execution status"),
+    status_filter: str | None = Query(None, alias="status", description="Filter by execution status (comma-separated values match any)"),
     startDate: str | None = Query(None, description="Filter by start date (ISO format)"),
     endDate: str | None = Query(None, description="Filter by end date (ISO format)"),
     excludeLocal: bool = Query(True, description="Exclude local runner executions"),
@@ -614,6 +620,7 @@ async def list_executions(
     response_model=LogsListResponse,
     summary="List execution logs (admin only)",
     description="List logs across all executions with filtering and pagination. Admin only.",
+    dependencies=[RequirePlatformAdmin],
 )
 async def list_logs(
     ctx: Context,
@@ -627,10 +634,6 @@ async def list_logs(
     continuation_token: str | None = Query(None, description="Pagination token"),
 ) -> LogsListResponse:
     """List logs across all executions (admin only)."""
-    # Admin only
-    if not ctx.user.is_superuser:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     # Parse continuation token as offset
     offset = 0
     if continuation_token:
@@ -871,17 +874,13 @@ async def cancel_execution(
     response_model=StuckExecutionsResponse,
     summary="Get stuck executions",
     description="Get executions that have been running, pending, or cancelling too long (Platform admin only)",
+    dependencies=[RequirePlatformAdmin],
 )
 async def get_stuck_executions(
     ctx: Context,
     hours: int = Query(24, description="Hours since start to consider stuck"),
 ) -> StuckExecutionsResponse:
     """Get stuck executions that may need cleanup."""
-    if not ctx.user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Platform admin privileges required",
-        )
 
     # Find executions that have been pending/running/cancelling for too long
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -917,18 +916,13 @@ async def get_stuck_executions(
     response_model=CleanupTriggeredResponse,
     summary="Trigger execution cleanup",
     description="Clean up stuck executions by marking them as timed out or cancelled (Platform admin only)",
+    dependencies=[RequirePlatformAdmin],
 )
 async def trigger_cleanup(
     ctx: Context,
     hours: int = Query(24, description="Hours since start to consider stuck"),
 ) -> CleanupTriggeredResponse:
     """Trigger cleanup of stuck executions."""
-    if not ctx.user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Platform admin privileges required",
-        )
-
     # Find stuck executions
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
@@ -1008,6 +1002,7 @@ async def trigger_cleanup(
     "/cleanup/redis-orphans",
     summary="Cleanup orphaned Redis pending executions",
     description="Clean up Redis pending executions that are too old (Platform admin only)",
+    dependencies=[RequirePlatformAdmin],
 )
 async def cleanup_redis_orphans(
     ctx: Context,
@@ -1026,12 +1021,6 @@ async def cleanup_redis_orphans(
     3. If not in PostgreSQL, creates a FAILED record
     4. Deletes the Redis pending entry
     """
-    if not ctx.user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Platform admin privileges required",
-        )
-
     # For now, Redis pending entries have 1 hour TTL and will auto-expire
     # This endpoint is a placeholder for more sophisticated cleanup
     # A full implementation would:

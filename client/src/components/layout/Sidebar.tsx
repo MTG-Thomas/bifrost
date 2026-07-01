@@ -23,14 +23,21 @@ import {
 	Network,
 	BookOpen,
 	ServerCog,
+	Boxes,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { Logo } from "@/components/branding/Logo";
 import { Button } from "@/components/ui/button";
+import {
+	term,
+	useTerminology,
+	type ProductTermKey,
+} from "@/lib/terminology";
 
 interface NavItem {
 	title: string;
+	termKey?: ProductTermKey;
 	href: string;
 	icon: React.ElementType;
 	requiresPlatformAdmin?: boolean;
@@ -66,11 +73,13 @@ const navSections: NavSection[] = [
 			},
 			{
 				title: "Apps",
+				termKey: "app",
 				href: "/apps",
 				icon: AppWindow,
 			},
 			{
 				title: "Forms",
+				termKey: "form",
 				href: "/forms",
 				icon: FileCode,
 			},
@@ -86,6 +95,7 @@ const navSections: NavSection[] = [
 		items: [
 			{
 				title: "Agents",
+				termKey: "agent",
 				href: "/agents",
 				icon: Bot,
 			},
@@ -168,6 +178,12 @@ const navSections: NavSection[] = [
 				requiresPlatformAdmin: true,
 			},
 			{
+				title: "Solutions",
+				href: "/solutions",
+				icon: Boxes,
+				requiresPlatformAdmin: true,
+			},
+			{
 				title: "Settings",
 				href: "/settings",
 				icon: SettingsIcon,
@@ -225,6 +241,7 @@ export function Sidebar({
 	isCollapsed,
 }: SidebarProps) {
 	const { isPlatformAdmin } = useAuth();
+	const terminology = useTerminology();
 
 	// Filter sections and items based on user permissions
 	const visibleSections = navSections
@@ -242,7 +259,7 @@ export function Sidebar({
 			{/* Desktop Sidebar */}
 			<aside
 				className={cn(
-					"hidden md:flex flex-col h-screen border-r bg-background transition-all duration-300",
+					"hidden md:flex flex-col h-dvh border-r bg-background transition-all duration-300",
 					isCollapsed ? "w-16" : "w-64",
 				)}
 			>
@@ -278,6 +295,9 @@ export function Sidebar({
 							)}
 							{section.items.map((item) => {
 								const Icon = item.icon;
+								const itemTitle = item.termKey
+									? term(terminology, item.termKey, "plural")
+									: item.title;
 								return (
 									<div key={item.href}>
 										{item.dividerBefore && !isCollapsed && (
@@ -290,7 +310,7 @@ export function Sidebar({
 											to={item.href}
 											title={
 												isCollapsed
-													? item.title
+													? itemTitle
 													: undefined
 											}
 											className={({ isActive }) =>
@@ -313,7 +333,7 @@ export function Sidebar({
 														: "h-4 w-4",
 												)}
 											/>
-											{!isCollapsed && item.title}
+											{!isCollapsed && itemTitle}
 										</NavLink>
 									</div>
 								);
@@ -330,7 +350,7 @@ export function Sidebar({
 					onClick={() => setIsMobileMenuOpen(false)}
 				>
 					<aside
-						className="fixed left-0 top-0 h-screen w-64 border-r bg-background flex flex-col"
+						className="fixed left-0 top-0 h-dvh w-64 border-r bg-background flex flex-col"
 						onClick={(e) => e.stopPropagation()}
 					>
 						{/* Logo Section with Close Button */}
@@ -354,6 +374,13 @@ export function Sidebar({
 									</h3>
 									{section.items.map((item) => {
 										const Icon = item.icon;
+										const itemTitle = item.termKey
+											? term(
+													terminology,
+													item.termKey,
+													"plural",
+												)
+											: item.title;
 										return (
 											<div key={item.href}>
 												{item.dividerBefore && (
@@ -377,7 +404,7 @@ export function Sidebar({
 													}
 												>
 													<Icon className="h-4 w-4" />
-													{item.title}
+													{itemTitle}
 												</NavLink>
 											</div>
 										);

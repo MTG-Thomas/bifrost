@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
 from src.config import get_settings
 from src.core.sentry import configure_sentry
+from src.core.telemetry import configure_opentelemetry
 from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
@@ -72,6 +73,7 @@ from src.routers import (
     hooks_router,
     tables_router,
     claims_router,
+    solutions_router,
     knowledge_sources_router,
     app_embed_secrets_router,
     applications_router,
@@ -90,6 +92,7 @@ from src.routers import (
     mcp_connections_router,
     mcp_me_connections_router,
     mcp_oauth_callback_router,
+    sdk_modules_router,
 )
 
 # Configure logging
@@ -123,6 +126,7 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info("Starting Bifrost API...")
     settings = get_settings()
+    configure_opentelemetry("bifrost-api")
 
     # Initialize database
     logger.info("Initializing database connection...")
@@ -141,9 +145,24 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.default_user_email and settings.default_user_password:
         await create_default_user()
 
+    from src.core.database import get_session_factory
+    from src.routers.solutions import reconcile_orphaned_deploy_jobs
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            count = await reconcile_orphaned_deploy_jobs(db)
+            if count:
+                await db.commit()
+                logger.warning(
+                    "Marked %d orphaned solution deploy job(s) as failed after API startup",
+                    count,
+                )
+    except Exception as e:
+        logger.warning(f"Solution deploy job reconciliation failed: {e}")
+
     # Reconcile file_index with S3 _repo/ in background
     from src.services.file_index_reconciler import reconcile_file_index
-    from src.core.database import get_session_factory
 
     async def _run_reconciler():
         try:
@@ -569,6 +588,7 @@ def create_app() -> FastAPI:
     app.include_router(hooks_router)
     app.include_router(tables_router)
     app.include_router(claims_router)
+    app.include_router(solutions_router)
     app.include_router(knowledge_sources_router)
     app.include_router(app_embed_secrets_router)
     app.include_router(applications_router)
@@ -586,6 +606,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_connections_router)
     app.include_router(mcp_me_connections_router)
     app.include_router(mcp_oauth_callback_router)
+    app.include_router(sdk_modules_router)
 
     # Mount MCP OAuth routes at root level (required by RFC 8414/9728)
     # These must be registered BEFORE the FastMCP ASGI mount

@@ -559,6 +559,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
             content_hash: str | None = None  # Content hash pinned at dispatch time
             workflow_type = "workflow"
             cache_ttl_seconds = 300
+            solution_id: str | None = None  # Install id if solution-managed
+            solution_global_repo_access = False  # Whether solution code may import _repo/
 
             if not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
@@ -578,6 +580,19 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     # Initialize ROI from workflow defaults
                     roi_time_saved = workflow_data["time_saved"]
                     roi_value = workflow_data["value"]
+
+                    # Solution scoping: if the workflow is solution-managed, its
+                    # code + imports must resolve under _solutions/{id}/ (with
+                    # _repo/ fallback only when the install allows it). Look up
+                    # the install's global_repo_access here so the worker can set
+                    # the per-execution import root. See module_cache_sync.
+                    solution_id = workflow_data.get("solution_id")
+                    # global_repo_access now rides on workflow_data from the same
+                    # DB grab as the metadata (get_workflow_for_execution). The
+                    # engine subprocess has no DB; this is the last enrichment.
+                    solution_global_repo_access = workflow_data.get(
+                        "can_access_global_repo", False
+                    )
 
                     # Scope resolution: org-scoped workflows use workflow's org,
                     # global workflows use caller's org
@@ -690,6 +705,12 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         "is_provider": org.is_provider,
                     }
 
+            # Mint engine token parent-side (consumer holds SECRET_KEY legitimately).
+            # The child receives the token via context_data and writes it to the
+            # credentials file directly — no SECRET_KEY needed in the child.
+            from src.core.security import mint_engine_token
+            engine_token, engine_token_expires_at = mint_engine_token()
+
             # Build context for worker process
             context_data = {
                 "execution_id": execution_id,
@@ -717,6 +738,12 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "file_path": file_path,  # Path for __file__ injection and fallback loading
                 "content_hash": content_hash,  # Pinned hash at dispatch time
                 "event": event_data,  # EventContext dict (None if not event-triggered)
+                "solution_id": solution_id,  # Install id if solution-managed (else None)
+                "solution_global_repo_access": solution_global_repo_access,
+                # Pre-minted engine token: child writes directly to credentials file,
+                # no SECRET_KEY required in child env.
+                "engine_token": engine_token,
+                "engine_token_expires_at": engine_token_expires_at,
             }
 
             # Route to process pool

@@ -139,7 +139,7 @@ class TestWorkersListEndpoint:
     ):
         """List workers returns empty list when no workers registered."""
         from src.routers.platform.workers import list_pools
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -161,7 +161,7 @@ class TestWorkersListEndpoint:
     ):
         """List workers returns registered worker data."""
         from src.routers.platform.workers import list_pools
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         # Register a worker in Redis
         worker_id = "test-worker-001"
@@ -300,7 +300,7 @@ class TestWorkerDetailEndpoint:
         """Get worker returns 404 for non-existent worker."""
         from fastapi import HTTPException
         from src.routers.platform.workers import get_pool
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -322,7 +322,7 @@ class TestWorkerDetailEndpoint:
     ):
         """Get worker returns detailed worker information."""
         from src.routers.platform.workers import get_pool
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         # Register a worker in Redis
         worker_id = "test-worker-002"
@@ -389,7 +389,7 @@ class TestRecycleProcessEndpoint:
         """Recycle returns 404 for non-existent worker."""
         from fastapi import HTTPException
         from src.routers.platform.workers import recycle_process
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -411,7 +411,7 @@ class TestRecycleProcessEndpoint:
     ):
         """Recycle publishes command to Redis pub/sub."""
         from src.routers.platform.workers import recycle_process
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
         from src.models.contracts.platform import RecycleProcessRequest
 
         # Register a pool in Redis (using new key pattern)
@@ -458,7 +458,7 @@ class TestQueueEndpoint:
     ):
         """Queue endpoint returns empty list when no pending executions."""
         from src.routers.platform.workers import get_queue
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -487,7 +487,7 @@ class TestStuckHistoryEndpoint:
     ):
         """Stuck history returns empty list when no stuck executions."""
         from src.routers.platform.workers import get_stuck_history
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         admin = UserPrincipal(
             user_id=uuid4(),
@@ -509,7 +509,7 @@ class TestStuckHistoryEndpoint:
     ):
         """Stuck history aggregates stuck executions by workflow."""
         from src.routers.platform.workers import get_stuck_history
-        from src.core.auth import UserPrincipal
+        from src.core.principal import UserPrincipal
 
         # Create executions with stuck error messages
         now = datetime.now(timezone.utc)

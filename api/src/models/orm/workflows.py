@@ -5,18 +5,15 @@ Represents all executable user code (workflows, tools, data providers)
 discovered from Python files. Data providers were consolidated into this
 table in migration 20260103_000000.
 """
-# ruff: noqa: F821
-# pyright: reportUndefinedVariable=false
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
-
 
 
 # Execution-resolution entity — access via WorkflowRepository (OrgScopedRepository).
@@ -39,9 +36,9 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(255), index=True)  # Code-defined name (from decorator)
+    name: Mapped[str] = mapped_column(String(255), index=True)  # MCP tool name, defaulted from function_name
     function_name: Mapped[str] = mapped_column(String(255))  # Actual Python function name
-    display_name: Mapped[str | None] = mapped_column(String(255), default=None)  # User-editable display name (defaults to name if NULL)
+    display_name: Mapped[str | None] = mapped_column(String(255), default=None)  # UI display name; falls back to name
     description: Mapped[str | None] = mapped_column(Text, default=None)
     category: Mapped[str] = mapped_column(String(100), default="General")
 
@@ -51,6 +48,16 @@ class Workflow(Base):
     # Organization scoping - NULL means global (available to all orgs)
     organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        default=None,
+        index=True,
+    )
+
+    # Solution scoping - NULL means ad-hoc _repo/ entity (unchanged behavior).
+    # NOT NULL means solution-managed: read-only on the platform, one writer per
+    # install (deploy or git auto-pull). See solutions.py / success-criteria §3.2.
+    solution_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("solutions.id", ondelete="CASCADE"),
         nullable=True,
         default=None,
         index=True,
@@ -114,20 +121,20 @@ class Workflow(Base):
     )
 
     # Relationships
-    organization: Mapped["Organization | None"] = relationship(
+    organization: Mapped["Organization | None"] = relationship(  # type: ignore[name-defined]  # noqa: F821
         back_populates="workflows",
         foreign_keys=[organization_id],
     )
-    agents: Mapped[list["Agent"]] = relationship(
+    agents: Mapped[list["Agent"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         secondary="agent_tools",
         back_populates="tools",
     )
     # Roles via junction table
-    workflow_roles: Mapped[list["WorkflowRole"]] = relationship(
+    workflow_roles: Mapped[list["WorkflowRole"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         back_populates="workflow",
         cascade="all, delete-orphan",
     )
-    roles: Mapped[list["Role"]] = relationship(
+    roles: Mapped[list["Role"]] = relationship(  # type: ignore[name-defined]  # noqa: F821
         secondary="workflow_roles",
         viewonly=True,
     )
@@ -139,8 +146,25 @@ class Workflow(Base):
             postgresql_where=text("api_key_hash IS NOT NULL"),
         ),
         # Type index is created as a regular index via mapped_column(index=True)
-        # Unique constraint on (path, function_name) for ON CONFLICT upserts
-        UniqueConstraint("path", "function_name", name="workflows_path_function_key"),
+        # Uniqueness of (path, function_name) is scoped per source so a solution
+        # can reuse the same relative path as _repo/ or another install
+        # (self-contained worlds, criterion 2 / §3.5). Two partial unique indexes:
+        #  - _repo/ rows (solution_id IS NULL): unique on (path, function_name),
+        #    preserving the original invariant.
+        #  - solution rows: unique on (path, function_name, solution_id).
+        Index(
+            "uq_workflows_path_function_repo",
+            "path",
+            "function_name",
+            unique=True,
+            postgresql_where=text("solution_id IS NULL"),
+        ),
+        Index(
+            "uq_workflows_path_function_solution",
+            "path",
+            "function_name",
+            "solution_id",
+            unique=True,
+            postgresql_where=text("solution_id IS NOT NULL"),
+        ),
     )
-
-

@@ -8,6 +8,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { hashOAuthState } from "@/services/auth";
 import { Loader2, AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,15 @@ export function AuthCallback() {
 			}
 
 			try {
+				const expectedStateHash = sessionStorage.getItem("oauth_state");
+				if (expectedStateHash) {
+					sessionStorage.removeItem("oauth_state");
+					if ((await hashOAuthState(state)) !== expectedStateHash) {
+						setError("Invalid OAuth state");
+						return;
+					}
+				}
+
 				// Exchange code for tokens (server handles PKCE verification)
 				await loginWithOAuth(provider, code, state);
 

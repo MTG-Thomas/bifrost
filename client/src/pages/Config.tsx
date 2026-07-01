@@ -69,6 +69,7 @@ export function Config() {
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [isImportOpen, setIsImportOpen] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
+	const [showOrphaned, setShowOrphaned] = useState(false);
 
 	// Pass filterOrgId to backend for filtering (undefined = all, null = global only)
 	// For platform admins, undefined means show all. For non-admins, backend handles filtering.
@@ -76,7 +77,7 @@ export function Config() {
 		data: configs,
 		isFetching,
 		refetch,
-	} = useConfigs(isPlatformAdmin ? filterOrgId : undefined);
+	} = useConfigs(isPlatformAdmin ? filterOrgId : undefined, showOrphaned);
 	const deleteConfig = useDeleteConfig();
 
 	// Fetch organizations for the org name lookup (platform admins only)
@@ -202,36 +203,18 @@ export function Config() {
 
 	return (
 		<div className="h-full flex flex-col space-y-6">
-			<div className="flex items-center justify-between">
+			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<div className="flex items-center gap-3">
-						<h1 className="text-4xl font-extrabold tracking-tight">
-							Configuration
-						</h1>
-						<Badge
-							variant={isGlobalScope ? "default" : "outline"}
-							className="text-sm"
-						>
-							{isGlobalScope ? (
-								<>
-									<Globe className="mr-1 h-3 w-3" />
-									Global
-								</>
-							) : (
-								<>
-									<Building2 className="mr-1 h-3 w-3" />
-									{scope.orgName}
-								</>
-							)}
-						</Badge>
-					</div>
+					<h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+						Configuration
+					</h1>
 					<p className="mt-2 text-muted-foreground">
 						{isGlobalScope
 							? "Platform-wide configuration values"
 							: `Configuration for ${scope.orgName || "this organization"}`}
 					</p>
 				</div>
-				<div className="flex gap-2">
+				<div className="flex flex-wrap gap-2">
 					<Button
 						variant="outline"
 						size="icon"
@@ -256,7 +239,7 @@ export function Config() {
 			</div>
 
 			{/* Search and Filters */}
-			<div className="flex items-center gap-4">
+			<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
 				<SearchBox
 					value={searchTerm}
 					onChange={setSearchTerm}
@@ -264,7 +247,7 @@ export function Config() {
 					className="flex-1"
 				/>
 				{isPlatformAdmin && (
-					<div className="w-64">
+					<div className="w-full sm:w-64">
 						<OrganizationSelect
 							value={filterOrgId}
 							onChange={setFilterOrgId}
@@ -274,8 +257,18 @@ export function Config() {
 						/>
 					</div>
 				)}
+				<label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+					<Checkbox
+						checked={showOrphaned}
+						onCheckedChange={(checked) =>
+							setShowOrphaned(checked === true)
+						}
+						aria-label="Show orphaned"
+					/>
+					Show orphaned
+				</label>
 				{isPlatformAdmin && (
-					<div className="flex items-center gap-2 ml-auto">
+					<div className="flex flex-wrap items-center gap-2 sm:ml-auto">
 						{selectedIds.size > 0 && (
 							<span className="text-sm text-muted-foreground">
 								{selectedIds.size} selected
@@ -387,7 +380,20 @@ export function Config() {
 										)}
 									</DataTableCell>
 									<DataTableCell className="font-mono">
-										{config.key}
+										<span className="flex items-center gap-2">
+											{config.key}
+											{config.orphaned_at && (
+												<Badge
+													variant="outline"
+													className="font-sans text-xs font-normal text-muted-foreground"
+												>
+													Orphaned
+													{config.origin_solution_slug
+														? ` · from ${config.origin_solution_slug}`
+														: ""}
+												</Badge>
+											)}
+										</span>
 									</DataTableCell>
 									<DataTableCell className="w-0 whitespace-nowrap max-w-xs truncate">
 										{maskValue(config.value, config.type)}
@@ -484,17 +490,17 @@ export function Config() {
 								</strong>
 								?
 							</p>
-							<div className="bg-muted p-3 rounded-md border border-border">
+							<div className="bg-muted/50 p-3 rounded-md ring-1 ring-foreground/5">
 								<p className="text-sm font-medium text-foreground mb-2">
 									Before deleting:
 								</p>
 								<p className="text-sm">
 									We recommend searching for{" "}
-									<code className="bg-background px-1.5 py-0.5 rounded text-xs">
+									<code className="bg-muted px-1.5 py-0.5 rounded text-xs">
 										get_config('{configToDelete?.key}')
 									</code>{" "}
 									in your{" "}
-									<code className="bg-background px-1.5 py-0.5 rounded text-xs">
+									<code className="bg-muted px-1.5 py-0.5 rounded text-xs">
 										@workflows/workspace/
 									</code>{" "}
 									repo to confirm it isn't being used.

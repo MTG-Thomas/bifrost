@@ -37,6 +37,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchBox } from "@/components/search/SearchBox";
+import { SolutionManagedBadge } from "@/components/solutions/SolutionManagedBadge";
 import { OrganizationSelect } from "@/components/forms/OrganizationSelect";
 import { useSearch } from "@/hooks/useSearch";
 import { useAuth } from "@/contexts/AuthContext";
@@ -67,6 +68,7 @@ export function Tables() {
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [isImportOpen, setIsImportOpen] = useState(false);
 	const [isExporting, setIsExporting] = useState(false);
+	const [showOrphaned, setShowOrphaned] = useState(false);
 
 	// Convert filterOrgId to scope for API: undefined = all, null = global only, string = org UUID
 	const apiScope =
@@ -76,7 +78,7 @@ export function Tables() {
 				? "global"
 				: filterOrgId;
 
-	const { data, isLoading, refetch } = useTables(apiScope);
+	const { data, isLoading, refetch } = useTables(apiScope, showOrphaned);
 	const deleteTable = useDeleteTable();
 
 	// Fetch organizations for the org name lookup (platform admins only)
@@ -116,6 +118,18 @@ export function Tables() {
 
 	const handleConfirmDelete = async () => {
 		if (!tableToDelete) return;
+		// Defense in depth: solution-managed tables are deploy-owned and
+		// read-only on the platform (server returns 409). The Delete button is
+		// already disabled for them; this guards the bulk/stale-render path so we
+		// never round-trip to a raw 409 (audit U1).
+		if (tableToDelete.is_solution_managed) {
+			toast.error(
+				"Solution-managed entities can only be managed by deployment methods.",
+			);
+			setIsDeleteDialogOpen(false);
+			setTableToDelete(undefined);
+			return;
+		}
 		await deleteTable.mutateAsync({
 			params: {
 				path: { table_id: tableToDelete.id },
@@ -233,6 +247,16 @@ export function Tables() {
 								/>
 							</div>
 						)}
+						<label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+							<Checkbox
+								checked={showOrphaned}
+								onCheckedChange={(checked) =>
+									setShowOrphaned(checked === true)
+								}
+								aria-label="Show orphaned"
+							/>
+							Show orphaned
+						</label>
 						{isPlatformAdmin && (
 							<div className="flex items-center gap-2 ml-auto">
 								{selectedIds.size > 0 && (
@@ -353,7 +377,25 @@ export function Tables() {
 												)}
 											</DataTableCell>
 											<DataTableCell className="font-medium font-mono">
-												{table.name}
+												<span className="flex items-center gap-2">
+													{table.name}
+													{table.is_solution_managed && (
+														<SolutionManagedBadge
+															solutionId={table.solution_id}
+														/>
+													)}
+													{table.orphaned_at && (
+														<Badge
+															variant="outline"
+															className="font-sans text-xs font-normal text-muted-foreground"
+														>
+															Orphaned
+															{table.origin_solution_slug
+																? ` · from ${table.origin_solution_slug}`
+																: ""}
+														</Badge>
+													)}
+												</span>
 											</DataTableCell>
 											<DataTableCell className="max-w-xs truncate text-muted-foreground">
 												{table.description || "-"}
@@ -387,7 +429,14 @@ export function Tables() {
 														onClick={() =>
 															handleEdit(table)
 														}
-														title="Edit table"
+														disabled={
+															table.is_solution_managed
+														}
+														title={
+															table.is_solution_managed
+																? "Managed by a Solution — edit via deployment"
+																: "Edit table"
+														}
 														aria-label="Edit table"
 													>
 														<Pencil className="h-4 w-4" />
@@ -398,7 +447,14 @@ export function Tables() {
 														onClick={() =>
 															handleDelete(table)
 														}
-														title="Delete table"
+														disabled={
+															table.is_solution_managed
+														}
+														title={
+															table.is_solution_managed
+																? "Managed by a Solution — delete via deployment"
+																: "Delete table"
+														}
 														aria-label="Delete table"
 													>
 														<Trash2 className="h-4 w-4" />

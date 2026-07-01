@@ -1,6 +1,6 @@
 ---
 name: bifrost:release
-description: Build and release Bifrost. Use when pushing commits to main, cutting a versioned release, or deploying to K8s. Handles dev push (CI builds :dev image) and full release (version tag → GitHub Release + :latest).
+description: Build and release Bifrost. Use when pushing commits to main, cutting a versioned release, or deploying to K8s. Handles dev push (CI builds :dev image), pre-release (vX.Y.Z-rc.N tag → pre-release GitHub Release), and full release (version tag → GitHub Release + :latest).
 ---
 
 # Bifrost Release
@@ -13,7 +13,15 @@ MTG tags only — CI does not fetch upstream release tags.
 
 ## Step 1: Ask which workflow
 
-> "Are you doing a **dev push** (push commits → CI builds `:dev`) or a **full release** (version tag → GitHub Release + `:latest`)?"
+> "Which release rung?
+> - **dev push** — commits to main → CI builds `:dev` (every merge; you + community track bleeding edge)
+> - **pre-release** — tag `vX.Y.Z-rc.N` → versioned images + a GitHub Release marked *pre-release* (newer than the last final, not yet blessed)
+> - **full release** — tag `vX.Y.Z` → versioned images + `:latest` + a final GitHub Release"
+
+The ladder is **dev → pre-release (`-rc.N`) → full release (`:latest`)**. SemVer orders pre-releases
+below the final (`v0.9.3-rc.1 < v0.9.3-rc.2 < v0.9.3`), and CI's `create-release` job auto-detects a
+pre-release from the `-` in the tag — so an `-rc` tag never gets `:latest` and never becomes the
+`git describe` baseline that dev versions count from.
 
 ---
 

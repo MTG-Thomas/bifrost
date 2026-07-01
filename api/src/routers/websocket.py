@@ -19,7 +19,8 @@ from sqlalchemy.orm import selectinload
 from shared.policies.probe import is_subscribe_authorized
 from shared.policies.subscription import decide_visibility_change
 from shared.role_cache import get_user_roles
-from src.core.auth import UserPrincipal, get_current_user_ws
+from src.core.auth import get_current_user_ws
+from src.core.principal import UserPrincipal
 from src.core.database import get_db_context
 from src.core.log_safety import log_safe
 from src.core.pubsub import manager
@@ -91,13 +92,19 @@ async def _resolve_table_id(name_or_id: str, user: UserPrincipal) -> str | None:
         except ValueError:
             stmt = select(TableOrm.id, TableOrm.organization_id).where(
                 TableOrm.name == name_or_id,
+                # By-name resolution is the live _repo/ namespace — mirror
+                # OrgScopedRepository.get(): solution-managed rows resolve by
+                # id (or ?solution=), orphaned rows don't resolve by name.
+                TableOrm.solution_id.is_(None),
+                TableOrm.orphaned_at.is_(None),
             )
             # Non-superusers' name lookups are restricted to their own org
             # (cascade with global) — superusers see all orgs.
             if not user.is_superuser:
+                # Cascade (org + global).
                 stmt = stmt.where(
                     (TableOrm.organization_id == user.organization_id)
-                    | (TableOrm.organization_id.is_(None))
+                    | TableOrm.organization_id.is_(None)
                 )
         result = await db.execute(stmt)
         row = result.one_or_none()
@@ -168,7 +175,14 @@ async def _load_policies_for_table(table_id: str) -> TablePolicies | None:
         if is_uuid:
             stmt = select(TableOrm.access).where(TableOrm.id == UUID(table_id))
         else:
-            stmt = select(TableOrm.access).where(TableOrm.name == table_id)
+            stmt = select(TableOrm.access).where(
+                TableOrm.name == table_id,
+                # By-name resolution is the live _repo/ namespace — mirror
+                # OrgScopedRepository.get(): solution-managed rows resolve by
+                # id (or ?solution=), orphaned rows don't resolve by name.
+                TableOrm.solution_id.is_(None),
+                TableOrm.orphaned_at.is_(None),
+            )
         result = await db.execute(stmt)
         row = result.one_or_none()
 
@@ -1163,6 +1177,7 @@ async def _process_chat_message(
                     org_id=user.organization_id,
                     user_id=user.user_id,
                     is_superuser=user.is_superuser,
+                    is_external=user.is_external,
                 )
                 accessible_agent = await repo.get_agent_with_access_check(conversation.agent_id)
             if accessible_agent is None:
