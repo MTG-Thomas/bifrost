@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-
 from src.models.orm.solution_deploy_jobs import SolutionDeployJob
 from src.models.orm.solutions import Solution
 from src.routers.solutions import (
@@ -16,7 +15,7 @@ from src.routers.solutions import (
 
 @pytest.mark.asyncio
 async def test_reconcile_orphaned_deploy_jobs_fails_non_terminal_jobs(db_session):
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
     sol = Solution(slug="demo", name="Demo")
     db_session.add(sol)
     await db_session.flush()
@@ -61,7 +60,7 @@ async def test_reconcile_orphaned_deploy_jobs_fails_non_terminal_jobs(db_session
 
 @pytest.mark.asyncio
 async def test_is_stale_deploy_job_uses_heartbeat_stale_threshold():
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
     fresh_running = SolutionDeployJob(
         install_id=UUID("00000000-0000-0000-0000-000000000001"),
         status="running",

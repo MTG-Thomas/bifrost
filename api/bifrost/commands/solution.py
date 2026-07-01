@@ -682,6 +682,18 @@ def _bifrost_manifest(workspace: pathlib.Path, name: str) -> pathlib.Path | None
     return pathlib.Path(target)
 
 
+def _workspace_child_file(workspace: pathlib.Path, rel_path: str, label: str) -> pathlib.Path:
+    """Resolve a descriptor-controlled file path without leaving the workspace."""
+    root = os.path.realpath(workspace)
+    target = os.path.realpath(os.path.join(root, rel_path))
+    if not target.startswith(root + os.sep):
+        raise click.ClickException(f"{label} path {rel_path!r} escapes the workspace")
+    path = pathlib.Path(target)
+    if not path.is_file():
+        raise click.ClickException(f"{label} file not found at {path}")
+    return path
+
+
 def _app_source_dirs(workspace: pathlib.Path) -> set[str]:
     """Relative (POSIX) app source dirs from .bifrost/apps.yaml, to exclude from
     the Python-source sweep (apps are bundled by _collect_apps)."""
@@ -1401,9 +1413,7 @@ def deploy_cmd(
     if descriptor.logo:
         import base64
 
-        logo_file = workspace / descriptor.logo
-        if not logo_file.is_file():
-            raise click.ClickException(f"solution logo file not found at {logo_file}")
+        logo_file = _workspace_child_file(workspace, descriptor.logo, "solution logo")
         solution_logo_b64 = base64.b64encode(logo_file.read_bytes()).decode("ascii")
         solution_logo_content_type = _LOGO_CONTENT_TYPES.get(logo_file.suffix.lower())
 

@@ -236,15 +236,7 @@ def _warn_build_drift_once(api_url: str, installed: str, server_version: str) ->
 
 
 def _check_cli_version() -> None:
-    """Hard-block the command if the installed CLI doesn't match the deployed server.
-
-    Mirrors the policy in ``client/src/hooks/useVersionCheck.ts``: compare the
-    baked-in build version against ``data.version`` from ``GET /api/version``
-    via string equality, treat ``"unknown"`` / ``"0.0.0+source"`` as dev installs
-    and skip. The CLI diverges from the SPA only by ``sys.exit(1)``-ing on
-    mismatch instead of showing a banner — the user must upgrade before any
-    command runs.
-    """
+    """Hard-block only when the CLI contract is incompatible with the server."""
     try:
         import httpx
 
@@ -265,11 +257,8 @@ def _check_cli_version() -> None:
         if not api_url:
             return
 
-        # Use httpx (already a hard dep via BifrostClient), not urllib.
-        # CDNs/WAFs in front of prod Bifrost instances (Cloudflare on
-        # bifrost.gocovi.com being the live case) 403 the default
-        # `Python-urllib/X.Y` User-Agent. httpx's default UA gets through
-        # and matches what every other SDK request already sends.
+        # Use httpx (already a hard dep via BifrostClient), not urllib. CDNs/WAFs
+        # in front of prod Bifrost instances 403 the default Python-urllib UA.
         resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()
@@ -811,6 +800,8 @@ def main(args: list[str] | None = None) -> int:
     if args is None:
         args = sys.argv[1:]
 
+    _ensure_utf8_stdio()
+
     # No args - show help
     if not args:
         print_help()
@@ -854,14 +845,6 @@ def main(args: list[str] | None = None) -> int:
 
         if command == "pull":
             return handle_pull(args[1:])
-
-        if command == "import":
-            from bifrost.commands.import_cmd import handle_import
-            return handle_import(args[1:])
-
-        if command == "export":
-            from bifrost.commands.export import handle_export
-            return handle_export(args[1:])
 
         if command == "watch":
             return handle_watch(args[1:])
@@ -1326,6 +1309,7 @@ def _run_direct(
     params: dict[str, Any],
     verbose: bool = False,
     organization_id: str | None = None,
+    solution_root: "pathlib.Path | None" = None,
 ) -> int:
     """
     Run a workflow directly in standalone mode.
@@ -1386,6 +1370,21 @@ def _run_direct(
             ) if org_info else None
             scope = org_info["id"] if org_info else "GLOBAL"
 
+            # When the workflow lives in a Solution workspace, resolve this
+            # install's id so its SDK data-plane calls (tables/configs) carry
+            # ?solution= and resolve the install's OWN entities own-first —
+            # mirroring the server engine's solution_id propagation (F1). Falls
+            # back to None (the _repo/ cascade) when not resolvable.
+            solution_id: str | None = None
+            if solution_root is not None:
+                from bifrost.commands.solution import (
+                    resolve_install_id_for_workspace,
+                )
+
+                solution_id = resolve_install_id_for_workspace(client, solution_root)
+                if verbose and solution_id:
+                    print(f"Resolved Solution install id: {solution_id}")
+
             ctx = ExecutionContext(
                 user_id=user_info.get("id", "cli-user"),
                 email=user_info.get("email", ""),
@@ -1396,6 +1395,7 @@ def _run_direct(
                 is_function_key=False,
                 execution_id=f"standalone-{uuid.uuid4()}",
                 workflow_name=selected_workflow,
+                solution_id=solution_id,
             )
             set_execution_context(ctx)
         except Exception:
@@ -1503,6 +1503,7 @@ def handle_run(args: list[str]) -> int:
     # Add current working directory to sys.path for workspace imports
     # This allows workflows to import from their workspace (e.g., `from features.x import y`)
     cwd = os.getcwd()
+    solution_root = None
     try:
         from bifrost.solution_descriptor import find_solution_root
 
@@ -1516,6 +1517,10 @@ def handle_run(args: list[str]) -> int:
 
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
+
+    if solution_root is not None:
+        if verbose:
+            print(f"Detected Solution workspace root: {solution_root}")
 
     # In non-verbose direct mode, suppress decorator warnings before loading the module
     if not interactive and not verbose:
@@ -1564,7 +1569,11 @@ def handle_run(args: list[str]) -> int:
             return 1
 
         params = inline_params if inline_params is not None else {}
-        return _run_direct(selected_workflow, workflows, params, verbose=verbose, organization_id=organization_id)
+        return _run_direct(
+            selected_workflow, workflows, params,
+            verbose=verbose, organization_id=organization_id,
+            solution_root=solution_root,
+        )
 
     # Interactive mode (--interactive) — browser-based session
     # Ensure user is authenticated (only needed for API-based flow)
@@ -1747,7 +1756,7 @@ async def _post_result(
             },
         )
         print(f"\nExecution completed ({status})")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort result post; the local run already finished, so a failed callback only loses server-side bookkeeping and must not crash the CLI.
         print(f"\nWarning: Failed to post result: {e}", file=sys.stderr)
 
 
@@ -1921,7 +1930,7 @@ def _parse_push_watch_args(args: list[str]) -> _PushWatchArgs | None:
             result.validate = True
         elif arg in ("--force", "--yes", "-y"):
             result.force = True
-        elif arg.startswith("--"):
+        elif arg.startswith("-"):
             print(f"Unknown option: {arg}", file=sys.stderr)
             return None
         elif result.local_path == ".":
@@ -1968,6 +1977,9 @@ Options:
   --validate            Validate after push (for apps)
   --force, --yes, -y    Skip confirmation prompts (non-interactive)
   --help, -h            Show this help message
+
+Non-interactive: pass --yes/-y, set BIFROST_NONINTERACTIVE=1, or run without a
+TTY (e.g. in CI) to skip the selection TUI and apply default actions.
 
 Use 'bifrost watch' for continuous file watching.
 
@@ -2057,6 +2069,9 @@ Options:
   --validate            Validate after sync (for apps)
   --force, --yes, -y    Skip confirmation prompts (use default actions)
   --help, -h            Show this help message
+
+Non-interactive: pass --yes/-y, set BIFROST_NONINTERACTIVE=1, or run without a
+TTY (e.g. in CI) to skip the selection TUI and apply default actions.
 
 Examples:
   bifrost sync
@@ -2310,7 +2325,10 @@ def _detect_repo_prefix(path: pathlib.Path) -> str:
         relative = path.resolve().relative_to(cwd)
     except (OSError, ValueError):
         return ""
-    prefix = str(relative)
+    # Repo keys are always POSIX ("/"). On Windows str(WindowsPath) uses "\",
+    # which would produce backslash repo prefixes and break path matching and
+    # the known-hash cache (causing the same file to re-upload every tick).
+    prefix = relative.as_posix()
     return "" if prefix == "." else prefix
 
 async def _push_with_precheck(
@@ -2421,9 +2439,9 @@ class _WatchChangeHandler:
     """Watchdog event handler that tracks file changes for push.
 
     Watch is exclusion-based: it watches the workspace root and skips
-    .gitignore-derived paths plus .bifrost/. The `.bifrost/` directory is an
-    export artifact written by `bifrost export --portable` and consumed by
-    `bifrost import`; sync/watch/push/pull never read or mutate it.
+    .gitignore-derived paths plus .bifrost/. The `.bifrost/` directory is a
+    generated manifest artifact (produced by `bifrost sync`); sync/watch/push/
+    pull never read or mutate it.
     """
 
     def __init__(self, state: _WatchState):
@@ -2432,11 +2450,13 @@ class _WatchChangeHandler:
 
     def _should_skip(self, file_path: str) -> bool:
         p = pathlib.Path(file_path)
-        rel = str(p.relative_to(self.state.base_path))
+        # POSIX separators: these strings feed pathspec globs and repo keys,
+        # which are always "/"-based. str(WindowsPath) would use "\".
+        rel = p.relative_to(self.state.base_path).as_posix()
         repo_rel: str | None = None
         workspace_root = _workspace_root_for(self.state.base_path)
         if p.is_relative_to(workspace_root):
-            repo_rel = str(p.relative_to(workspace_root))
+            repo_rel = p.relative_to(workspace_root).as_posix()
         return _should_skip_path(rel, self._spec, repo_rel)
 
     def dispatch(self, event: Any) -> None:
@@ -2498,21 +2518,23 @@ async def _process_watch_deletes(
     for abs_path_str in deletes:
         abs_p = pathlib.Path(abs_path_str)
         if not abs_p.exists():
-            rel = abs_p.relative_to(base_path)
-            repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
+            # POSIX separators: repo keys are always "/". str(WindowsPath)
+            # would use "\", desyncing the key from the server's path.
+            rel = abs_p.relative_to(base_path).as_posix()
+            repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
             try:
                 resp = await client.post("/api/files/delete", json={
                     "path": repo_path, "location": "workspace", "mode": "cloud",
                 }, headers=extra_headers)
                 if resp.status_code == 204:
                     deleted_count += 1
-                    deleted_rels.append(str(rel))
+                    deleted_rels.append(rel)
                     state.forget_known_hash(repo_path)
             except Exception as del_err:
                 status_code = getattr(getattr(del_err, "response", None), "status_code", None)
                 if status_code == 404:
                     deleted_count += 1
-                    deleted_rels.append(str(rel))
+                    deleted_rels.append(rel)
                     state.forget_known_hash(repo_path)
                 else:
                     ts = datetime.now().strftime('%H:%M:%S')
@@ -2635,7 +2657,7 @@ async def _process_watch_batch(
                 parts.append(f"{watch_created} written")
             if deleted_count:
                 parts.append(f"{deleted_count} deleted")
-            print(f"  [{ts}] \u2713 Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
+            print(f"  [{ts}] ✓ Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
 
         # Log errors as separate rows (with detail sub-rows in TUI)
         if watch_errors:
@@ -2700,7 +2722,7 @@ async def _auto_validate_app(
                     watch_app.log_success(msg)
                 else:
                     ts = datetime.now().strftime('%H:%M:%S')
-                    print(f"  [{ts}] \u2713 {msg}", flush=True)
+                    print(f"  [{ts}] ✓ {msg}", flush=True)
             else:
                 if errors:
                     msg = f"App '{slug}' validation: {len(errors)} error(s)"
@@ -2939,7 +2961,7 @@ async def _watch_loop(
                     if watch_app:
                         watch_app.log_success("File watcher restarted")
                     else:
-                        print("  \u2713 File watcher restarted", flush=True)
+                        print("  ✓ File watcher restarted", flush=True)
                 except Exception as e:
                     if watch_app:
                         watch_app.log_error(f"Could not restart file watcher: {e}")
@@ -3169,7 +3191,8 @@ def _collect_push_files(
         if file_path.is_dir():
             continue
         rel = file_path.relative_to(path)
-        rel_str = str(rel)
+        # POSIX separators: repo keys and pathspec globs are always "/"-based.
+        rel_str = rel.as_posix()
         repo_path = f"{repo_prefix}/{rel_str}" if repo_prefix else rel_str
         if _should_skip_path(rel_str, spec, repo_path):
             continue
@@ -3547,7 +3570,7 @@ async def _sync_files(
                 errors.append(f"{name}: {e}")
                 print(f"  Error: {name}: {e}", file=sys.stderr)
         summary = await _post_sync(errors)
-        print(f"  \u2713 {summary}")
+        _print_sync_summary(summary)
 
     _cols = shutil.get_terminal_size((80, 24)).columns
     if errors:

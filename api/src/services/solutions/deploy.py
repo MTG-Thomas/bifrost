@@ -577,6 +577,8 @@ class SolutionDeployer:
                 for fld in ("workflow_id", "agent_id"):
                     if msub.get(fld) is not None:
                         msub[fld] = _remap_ref(msub[fld], id_map)
+                if msub.get("id") is not None:
+                    msub["id"] = str(solution_entity_id(sid, UUID(str(msub["id"]))))
 
         return SolutionBundle(
             solution=bundle.solution,
@@ -623,7 +625,7 @@ class SolutionDeployer:
         from src.services.manifest_import import _resolve_role_names
 
         role_names = entry.get("role_names")
-        if role_names:
+        if role_names is not None:
             return [
                 UUID(r)
                 for r in await _resolve_role_names(
@@ -786,6 +788,7 @@ class SolutionDeployer:
                 # Full-replace deploy-owned metadata so a redeploy that changes
                 # (or clears) these is reflected, not left stale (criteria 10/14).
                 "description": mwf.get("description"),
+                "tool_description": mwf.get("tool_description"),
                 "endpoint_enabled": mwf.get("endpoint_enabled", False),
                 "public_endpoint": mwf.get("public_endpoint", False),
                 "timeout_seconds": mwf.get("timeout_seconds", 1800),
@@ -1299,7 +1302,12 @@ class SolutionDeployer:
             await self._guard_owner(Agent, agent_id, sid)
             ma = ManifestAgent.model_validate({**magent, "id": str(agent_id)})
             content = _agent_content_from_manifest(ma)
-            await indexer.index_agent(f"agents/{agent_id}.agent.yaml", content)
+            try:
+                await indexer.index_agent(f"agents/{agent_id}.agent.yaml", content)
+            except ValueError as exc:
+                raise SolutionDeployConflict(
+                    f"agent {agent_id}: {exc}"
+                ) from exc
             # access_level is deploy-owned (manifest-declared); apply it here —
             # the indexer preserves it and the entity is read-only outside deploy
             # (Codex #14). org/solution scope is stamped alongside.
@@ -1322,6 +1330,8 @@ class SolutionDeployer:
                 agent_values["max_iterations"] = magent["max_iterations"]
             if magent.get("max_token_budget") is not None:
                 agent_values["max_token_budget"] = magent["max_token_budget"]
+            if magent.get("max_run_timeout") is not None:
+                agent_values["max_run_timeout"] = magent["max_run_timeout"]
             await self.db.execute(
                 update(Agent).where(Agent.id == agent_id).values(**agent_values)
             )
@@ -1335,9 +1345,9 @@ class SolutionDeployer:
             # writer — full-replace from the manifest so a redeploy reflects both
             # adds and removes. connection_ids reference env-scoped MCPConnection
             # rows (NOT solution entities), so they are NOT id-remapped.
-            await self._sync_agent_mcp_connections(
-                agent_id, self._parse_uuids(magent.get("mcp_connection_ids"))
-            )
+            if "mcp_connection_ids" in magent:
+                mcp_ids = self._parse_uuids(magent.get("mcp_connection_ids") or [])
+                await self._sync_agent_mcp_connections(agent_id, mcp_ids)
 
     async def _upsert_config_schemas(
         self, solution: Solution, config_schemas: list[dict[str, Any]]
@@ -1583,14 +1593,16 @@ class SolutionDeployer:
                 )
 
             # Child config: schedule OR webhook, by source_type.
-            if mevent.get("source_type") == "schedule" and mevent.get("cron_expression"):
-                overlap = mevent.get("overlap_policy")
+            schedule = mevent.get("schedule") or {}
+            cron_expression = mevent.get("cron_expression") or schedule.get("cron")
+            if mevent.get("source_type") == "schedule" and cron_expression:
+                overlap = mevent.get("overlap_policy") or schedule.get("overlap_policy")
                 await self.db.execute(
                     insert(ScheduleSource).values(
                         event_source_id=source_id,
-                        cron_expression=mevent["cron_expression"],
-                        timezone=mevent.get("timezone") or "UTC",
-                        enabled=mevent.get("schedule_enabled", True),
+                        cron_expression=cron_expression,
+                        timezone=mevent.get("timezone") or schedule.get("timezone") or "UTC",
+                        enabled=mevent.get("schedule_enabled", schedule.get("enabled", True)),
                         overlap_policy=(
                             ScheduleOverlapPolicy(overlap)
                             if overlap

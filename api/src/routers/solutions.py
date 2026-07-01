@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
@@ -29,7 +30,8 @@ from sqlalchemy.orm import noload
 
 from src.core.auth import Context, CurrentSuperuser
 from src.models.contracts.solutions import (
-    Solution as SolutionDTO,
+    PullAckRequest,
+    PullAckResponse,
     SolutionCaptureCandidates,
     SolutionCaptureRequest,
     SolutionCaptureResponse,
@@ -45,8 +47,6 @@ from src.models.contracts.solutions import (
     SolutionEntitySummary,
     SolutionExistingInstall,
     SolutionInstallPreview,
-    PullAckRequest,
-    PullAckResponse,
     SolutionReadme,
     SolutionReadmeUpdate,
     SolutionRepoPreviewRequest,
@@ -54,6 +54,9 @@ from src.models.contracts.solutions import (
     SolutionsList,
     SolutionUpdate,
     SolutionUpgradeDiff,
+)
+from src.models.contracts.solutions import (
+    Solution as SolutionDTO,
 )
 from src.models.orm.agents import Agent
 from src.models.orm.applications import Application
@@ -67,8 +70,8 @@ from src.models.orm.tables import Table
 from src.models.orm.workflows import Workflow
 from src.services.solutions.deploy import (
     SolutionBundle,
-    SolutionDeployer,
     SolutionDeployConflict,
+    SolutionDeployer,
     SolutionDowngradeBlocked,
     SolutionFinalizeIncomplete,
     SolutionWorkflowNameMismatch,
@@ -106,7 +109,7 @@ async def reconcile_orphaned_deploy_jobs(
     now: datetime | None = None,
 ) -> int:
     """Fail in-process deploy jobs that cannot survive an API restart."""
-    resolved_now = now or datetime.now(timezone.utc)
+    resolved_now = now or datetime.now(UTC)
     stale_before = resolved_now - timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS)
     result = await db.execute(
         select(SolutionDeployJob).where(
@@ -122,7 +125,12 @@ async def reconcile_orphaned_deploy_jobs(
     return len(jobs)
 
 
-@router.post("", response_model=SolutionDTO, status_code=status.HTTP_201_CREATED, summary="Create a Solution install (admin only)")
+@router.post(
+    "",
+    response_model=SolutionDTO,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a Solution install (admin only)",
+)
 async def create_solution(body: SolutionCreate, ctx: Context, user: CurrentSuperuser) -> SolutionDTO:
     # Install kind is DERIVED from organization_id (unified --org standard) —
     # there is no `scope` input. HOME (organization_id absent) => the caller's
@@ -181,9 +189,7 @@ async def get_solution(solution_id: UUID, ctx: Context, user: CurrentSuperuser) 
         404: {"description": "No icon set"},
     },
 )
-async def get_solution_logo(
-    solution_id: UUID, ctx: Context, user: CurrentSuperuser
-) -> Response:
+async def get_solution_logo(solution_id: UUID, ctx: Context, user: CurrentSuperuser) -> Response:
     """The solution-level icon (bifrost.solution.yaml ``logo:``), shown on the
     /solutions catalog cards. Bytes only — mirrors the application logo
     endpoint."""
@@ -201,9 +207,7 @@ async def get_solution_logo(
     response_model=SolutionReadme,
     summary="Get an install's README markdown (admin only)",
 )
-async def get_solution_readme(
-    solution_id: UUID, ctx: Context, user: CurrentSuperuser
-) -> SolutionReadme:
+async def get_solution_readme(solution_id: UUID, ctx: Context, user: CurrentSuperuser) -> SolutionReadme:
     """The install's long-form README markdown (repo-sourced on deploy, or
     edited directly via PUT). ``null`` when none is set."""
     row = await ctx.db.get(SolutionORM, solution_id)
@@ -252,9 +256,7 @@ async def put_solution_readme(
     response_model=SolutionSetupStatus,
     summary="Required-config setup status (admin only)",
 )
-async def solution_setup(
-    solution_id: UUID, ctx: Context, user: CurrentSuperuser
-) -> SolutionSetupStatus:
+async def solution_setup(solution_id: UUID, ctx: Context, user: CurrentSuperuser) -> SolutionSetupStatus:
     """Return all config declarations for the install paired with whether each
     has a matching Config value in the install's org scope.  ``setup_complete``
     is True only when every required declaration is satisfied."""
@@ -338,9 +340,7 @@ async def export_solution(
     response_model=SolutionEntities,
     summary="Get an install + everything it owns (admin only)",
 )
-async def get_solution_entities(
-    solution_id: UUID, ctx: Context, user: CurrentSuperuser
-) -> SolutionEntities:
+async def get_solution_entities(solution_id: UUID, ctx: Context, user: CurrentSuperuser) -> SolutionEntities:
     """One call for the detail UI: the install, all owned entities, and each
     config declaration paired with whether a value is set in the install's scope
     (plus the derived required-but-unset key list)."""
@@ -356,12 +356,16 @@ async def get_solution_entities(
     tables = await _table_summaries(ctx, Table.solution_id == solution_id)
 
     decls = (
-        await ctx.db.execute(
-            select(SolutionConfigSchema)
-            .where(SolutionConfigSchema.solution_id == solution_id)
-            .order_by(SolutionConfigSchema.position)
+        (
+            await ctx.db.execute(
+                select(SolutionConfigSchema)
+                .where(SolutionConfigSchema.solution_id == solution_id)
+                .order_by(SolutionConfigSchema.position)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     # A declaration is "satisfied" when an instance Config row exists for the
     # install's org scope (NULL org for a global install) with the same key.
@@ -534,29 +538,39 @@ async def get_solution_capture_candidates(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
 
     config_rows = (
-        await ctx.db.execute(
-            select(Config).where(
-                _same_scope(Config, sol.organization_id),
-                Config.integration_id.is_(None),
-                Config.config_schema_id.is_(None),
-            ).order_by(Config.key)
-        )
-    ).scalars().all()
-
-    existing_config_keys = set(
         (
             await ctx.db.execute(
-                select(SolutionConfigSchema.key).where(SolutionConfigSchema.solution_id == solution_id)
+                select(Config)
+                .where(
+                    _same_scope(Config, sol.organization_id),
+                    Config.integration_id.is_(None),
+                    Config.config_schema_id.is_(None),
+                )
+                .order_by(Config.key)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
+    )
+
+    existing_config_keys = set(
+        (await ctx.db.execute(select(SolutionConfigSchema.key).where(SolutionConfigSchema.solution_id == solution_id)))
+        .scalars()
+        .all()
     )
 
     return SolutionCaptureCandidates(
-        workflows=await _workflow_summaries(ctx, Workflow.solution_id.is_(None), _same_scope(Workflow, sol.organization_id)),
-        apps=await _app_summaries(ctx, Application.solution_id.is_(None), _same_scope(Application, sol.organization_id)),
+        workflows=await _workflow_summaries(
+            ctx, Workflow.solution_id.is_(None), _same_scope(Workflow, sol.organization_id)
+        ),
+        apps=await _app_summaries(
+            ctx, Application.solution_id.is_(None), _same_scope(Application, sol.organization_id)
+        ),
         forms=await _form_summaries(ctx, Form.solution_id.is_(None), _same_scope(Form, sol.organization_id)),
         agents=await _agent_summaries(ctx, Agent.solution_id.is_(None), _same_scope(Agent, sol.organization_id)),
-        claims=await _claim_summaries(ctx, CustomClaim.solution_id.is_(None), _same_scope(CustomClaim, sol.organization_id)),
+        claims=await _claim_summaries(
+            ctx, CustomClaim.solution_id.is_(None), _same_scope(CustomClaim, sol.organization_id)
+        ),
         tables=await _table_summaries(ctx, Table.solution_id.is_(None), _same_scope(Table, sol.organization_id)),
         configs=[
             SolutionConfigStatus(
@@ -616,9 +630,7 @@ async def preview_solution_capture(
     response_model=SolutionDTO,
     summary="Update an install's local fields (admin only)",
 )
-async def update_solution(
-    solution_id: UUID, body: SolutionUpdate, ctx: Context, user: CurrentSuperuser
-) -> SolutionDTO:
+async def update_solution(solution_id: UUID, body: SolutionUpdate, ctx: Context, user: CurrentSuperuser) -> SolutionDTO:
     """Edit INSTALL-LOCAL fields only (name/scope/global_repo_access/git fields).
 
     Portable content (workflows/apps/forms/agents/tables/config declarations) is
@@ -651,10 +663,7 @@ async def update_solution(
 
     try:
         async with solution_write_lock(solution_id):
-            scope_changing = (
-                "organization_id" in fields
-                and fields["organization_id"] != sol.organization_id
-            )
+            scope_changing = "organization_id" in fields and fields["organization_id"] != sol.organization_id
             new_org = fields.get("organization_id", sol.organization_id)
             for key, value in fields.items():
                 setattr(sol, key, value)
@@ -662,9 +671,7 @@ async def update_solution(
                 # Owned entities inherit the install's org → re-stamp them all.
                 for model in (Workflow, Application, Form, Agent, CustomClaim, Table):
                     await ctx.db.execute(
-                        update(model)
-                        .where(model.solution_id == solution_id)
-                        .values(organization_id=new_org)
+                        update(model).where(model.solution_id == solution_id).values(organization_id=new_org)
                     )
             await ctx.db.commit()
     except SolutionWriteLockHeld as exc:
@@ -681,9 +688,7 @@ async def update_solution(
     response_model=SolutionDeleteSummary,
     summary="Delete an install and everything it owns (admin only)",
 )
-async def delete_solution(
-    solution_id: UUID, ctx: Context, user: CurrentSuperuser
-) -> SolutionDeleteSummary:
+async def delete_solution(solution_id: UUID, ctx: Context, user: CurrentSuperuser) -> SolutionDeleteSummary:
     """Delete an install non-destructively for customer data.
 
     Pure-code entities (workflows/apps/forms/agents) and the install's config
@@ -713,9 +718,7 @@ async def delete_solution(
     # dropped declaration); ``noload`` on this query is the whole fix.
     sol = (
         await ctx.db.execute(
-            select(SolutionORM)
-            .where(SolutionORM.id == solution_id)
-            .options(noload(SolutionORM.connection_schema))
+            select(SolutionORM).where(SolutionORM.id == solution_id).options(noload(SolutionORM.connection_schema))
         )
     ).scalar_one_or_none()
     if sol is None:
@@ -736,31 +739,19 @@ async def delete_solution(
             # and the S3 app-dist sweep (the rows are gone after the delete).
             async def _count(model: type) -> int:
                 return len(
-                    (
-                        await ctx.db.execute(
-                            select(model.id).where(model.solution_id == solution_id)
-                        )
-                    ).scalars().all()
+                    (await ctx.db.execute(select(model.id).where(model.solution_id == solution_id))).scalars().all()
                 )
 
             app_ids = set(
-                (
-                    await ctx.db.execute(
-                        select(Application.id).where(
-                            Application.solution_id == solution_id
-                        )
-                    )
-                ).scalars().all()
+                (await ctx.db.execute(select(Application.id).where(Application.solution_id == solution_id)))
+                .scalars()
+                .all()
             )
 
             # Owned table ids (for the orphan count) — captured BEFORE we detach
             # them, since the detach update clears ``solution_id``.
             table_ids = set(
-                (
-                    await ctx.db.execute(
-                        select(Table.id).where(Table.solution_id == solution_id)
-                    )
-                ).scalars().all()
+                (await ctx.db.execute(select(Table.id).where(Table.solution_id == solution_id))).scalars().all()
             )
 
             # The install's config DECLARATION keys — used both to count the
@@ -768,14 +759,14 @@ async def delete_solution(
             decl_keys = set(
                 (
                     await ctx.db.execute(
-                        select(SolutionConfigSchema.key).where(
-                            SolutionConfigSchema.solution_id == solution_id
-                        )
+                        select(SolutionConfigSchema.key).where(SolutionConfigSchema.solution_id == solution_id)
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             # DETACH TABLES (before the Solution delete so the FK cascade can't
             # reach them). They survive as ordinary org tables; documents are
@@ -828,7 +819,9 @@ async def delete_solution(
                                 org_match,
                             )
                         )
-                    ).scalars().all()
+                    )
+                    .scalars()
+                    .all()
                 )
 
             keys_to_orphan = decl_keys - still_declared_keys
@@ -879,9 +872,7 @@ async def delete_solution(
             if config_values_orphaned:
                 from src.core.cache import invalidate_all_config
 
-                await invalidate_all_config(
-                    str(sol_org_id) if sol_org_id is not None else None
-                )
+                await invalidate_all_config(str(sol_org_id) if sol_org_id is not None else None)
 
             # S3 sweep only after the DB is durable (mirrors deploy's DB-then-S3).
             storage = SolutionStorage(solution_id)
@@ -906,13 +897,13 @@ async def _deploy_job_heartbeat_loop(job_id: UUID, stop: asyncio.Event) -> None:
         try:
             await asyncio.wait_for(stop.wait(), timeout=DEPLOY_JOB_HEARTBEAT_SECONDS)
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 async with get_db_context() as db:
                     job = await db.get(SolutionDeployJob, job_id)
                     if job is None or job.status != "running":
                         return
-                    job.updated_at = datetime.now(timezone.utc)
+                    job.updated_at = datetime.now(UTC)
             except Exception:
                 logger.warning(
                     "Deploy job heartbeat failed for %s; will retry",
@@ -955,53 +946,52 @@ async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployR
     heartbeat_task = asyncio.create_task(_deploy_job_heartbeat_loop(job_id, heartbeat_stop))
     deploy_result: dict | None = None
     try:
-        async with get_db_context() as db:
-            async with solution_write_lock(solution_id):
-                solution = await db.get(SolutionORM, solution_id)
-                if solution is None:
-                    raise SolutionDeployConflict("Solution not found")
-                deployer = SolutionDeployer(db)
-                result = await deployer.deploy(
-                    SolutionBundle(
-                        solution=solution,
-                        python_files=body.python_files,
-                        workflows=body.workflows,
-                        tables=body.tables,
-                        apps=body.apps,
-                        forms=body.forms,
-                        agents=body.agents,
-                        claims=body.claims,
-                        config_schemas=body.config_schemas,
-                        connection_schemas=body.connection_schemas,
-                        events=body.events,
-                        version=body.version,
-                        logo_b64=body.logo_b64,
-                        logo_content_type=body.logo_content_type,
-                        readme=body.readme,
-                    ),
-                    force=body.force,
-                )
-                await db.commit()
-                # S3 only after the DB is durable — a failed commit changes no running
-                # code (P1-c). Still inside the lock so finalize can't race another deploy.
-                await result.finalize_s3()
-                deploy_result = {
-                    "solution_id": str(solution_id),
-                    "workflows_upserted": result.workflows_upserted,
-                    "workflows_deleted": result.workflows_deleted,
-                    "tables_upserted": result.tables_upserted,
-                    "tables_deleted": result.tables_deleted,
-                    "apps_upserted": result.apps_upserted,
-                    "apps_deleted": result.apps_deleted,
-                    "forms_upserted": result.forms_upserted,
-                    "forms_deleted": result.forms_deleted,
-                    "agents_upserted": result.agents_upserted,
-                    "agents_deleted": result.agents_deleted,
-                    "claims_upserted": result.claims_upserted,
-                    "claims_deleted": result.claims_deleted,
-                    "integrations_shell_created": result.integrations_shell_created,
-                    "roles_created": list(result.roles_created),
-                }
+        async with get_db_context() as db, solution_write_lock(solution_id):
+            solution = await db.get(SolutionORM, solution_id)
+            if solution is None:
+                raise SolutionDeployConflict("Solution not found")
+            deployer = SolutionDeployer(db)
+            result = await deployer.deploy(
+                SolutionBundle(
+                    solution=solution,
+                    python_files=body.python_files,
+                    workflows=body.workflows,
+                    tables=body.tables,
+                    apps=body.apps,
+                    forms=body.forms,
+                    agents=body.agents,
+                    claims=body.claims,
+                    config_schemas=body.config_schemas,
+                    connection_schemas=body.connection_schemas,
+                    events=body.events,
+                    version=body.version,
+                    logo_b64=body.logo_b64,
+                    logo_content_type=body.logo_content_type,
+                    readme=body.readme,
+                ),
+                force=body.force,
+            )
+            await db.commit()
+            # S3 only after the DB is durable — a failed commit changes no running
+            # code (P1-c). Still inside the lock so finalize can't race another deploy.
+            await result.finalize_s3()
+            deploy_result = {
+                "solution_id": str(solution_id),
+                "workflows_upserted": result.workflows_upserted,
+                "workflows_deleted": result.workflows_deleted,
+                "tables_upserted": result.tables_upserted,
+                "tables_deleted": result.tables_deleted,
+                "apps_upserted": result.apps_upserted,
+                "apps_deleted": result.apps_deleted,
+                "forms_upserted": result.forms_upserted,
+                "forms_deleted": result.forms_deleted,
+                "agents_upserted": result.agents_upserted,
+                "agents_deleted": result.agents_deleted,
+                "claims_upserted": result.claims_upserted,
+                "claims_deleted": result.claims_deleted,
+                "integrations_shell_created": result.integrations_shell_created,
+                "roles_created": list(result.roles_created),
+            }
     except SolutionWriteLockHeld:
         await _set_status(
             "failed",
@@ -1023,7 +1013,7 @@ async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployR
         # Caller errors (downgrade without force, invalid bundle, workflow-name
         # mismatch). Surfaced as the job error string for the poller to read.
         await _set_status("failed", str(exc))
-    except Exception:  # noqa: BLE001 — capture any deploy failure onto the job
+    except Exception:
         logger.exception("Solution deploy job %s failed", job_id)
         await _set_status("failed", "Deploy failed unexpectedly; see server logs.")
     else:
@@ -1031,10 +1021,8 @@ async def _run_deploy_job(job_id: UUID, solution_id: UUID, body: SolutionDeployR
     finally:
         heartbeat_stop.set()
         heartbeat_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
-        except asyncio.CancelledError:
-            pass
 
 
 @router.post(
@@ -1117,15 +1105,11 @@ async def deploy_solution(
     response_model=SolutionDeployJobStatus,
     summary="Poll the status of an async deploy job (admin only)",
 )
-async def get_deploy_job(
-    job_id: UUID, ctx: Context, user: CurrentSuperuser
-) -> SolutionDeployJobStatus:
+async def get_deploy_job(job_id: UUID, ctx: Context, user: CurrentSuperuser) -> SolutionDeployJobStatus:
     job = await ctx.db.get(SolutionDeployJob, job_id)
     if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Deploy job not found"
-        )
-    now = datetime.now(timezone.utc)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deploy job not found")
+    now = datetime.now(UTC)
     if _is_stale_deploy_job(job, now):
         job.status = "failed"
         job.error = _DEPLOY_ORPHAN_ERROR
@@ -1277,15 +1261,11 @@ async def sync_solution(solution_id: UUID, ctx: Context, user: CurrentSuperuser)
             solution.update_available_version = None
             await ctx.db.commit()
     except NotASolutionWorkspace as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return {"solution_id": str(solution_id), "status": "synced"}
 
 
-async def _preview_to_dto(
-    ctx: Context, result: "PreviewResult", org_id: UUID | None
-) -> SolutionInstallPreview:
+async def _preview_to_dto(ctx: Context, result: PreviewResult, org_id: UUID | None) -> SolutionInstallPreview:
     """Assemble the install-plan DTO from a parsed workspace: detect an existing
     install for upgrade routing, then return the SolutionInstallPreview. Shared
     by the zip-upload and git-repo preview endpoints (no DB write)."""
@@ -1293,11 +1273,7 @@ async def _preview_to_dto(
 
     existing_install: SolutionExistingInstall | None = None
     diff: SolutionUpgradeDiff | None = None
-    existing = (
-        await find_install(ctx.db, slug=result.slug, organization_id=org_id)
-        if result.slug
-        else None
-    )
+    existing = await find_install(ctx.db, slug=result.slug, organization_id=org_id) if result.slug else None
     if existing is not None:
         # Read-only lookups of the install's current solution-owned rows — the
         # preview never writes (no flush/commit anywhere on this path).
@@ -1310,11 +1286,7 @@ async def _preview_to_dto(
             ("claims", CustomClaim),
             ("apps", Application),
         ):
-            rows = (
-                await ctx.db.execute(
-                    select(model.id, model.name).where(model.solution_id == existing.id)
-                )
-            ).all()
+            rows = (await ctx.db.execute(select(model.id, model.name).where(model.solution_id == existing.id))).all()
             installed[etype] = [(row_id, name) for row_id, name in rows]
         decls = (
             await ctx.db.execute(
@@ -1325,9 +1297,7 @@ async def _preview_to_dto(
                 ).where(SolutionConfigSchema.solution_id == existing.id)
             )
         ).all()
-        existing_install = SolutionExistingInstall(
-            id=existing.id, name=existing.name, version=existing.version
-        )
+        existing_install = SolutionExistingInstall(id=existing.id, name=existing.name, version=existing.version)
         diff = compute_upgrade_diff(
             result,
             install_id=existing.id,
@@ -1432,16 +1402,13 @@ async def install_preview_repo(
         try:
             root = resolve_repo_subpath(work, body.repo_subpath)
         except NotASolutionWorkspace as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         _r = os.path.realpath(root)
         _marker = os.path.realpath(os.path.join(_r, "bifrost.solution.yaml"))
         if not _marker.startswith(_r + os.sep) or not os.path.isfile(_marker):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"No bifrost.solution.yaml at "
-                f"{body.repo_subpath or '<repo root>'} in {body.repo_url}",
+                detail=f"No bifrost.solution.yaml at {body.repo_subpath or '<repo root>'} in {body.repo_url}",
             )
         result = _parse_workspace(root)
     return await _preview_to_dto(ctx, result, None)
@@ -1453,9 +1420,7 @@ async def install_preview_repo(
     status_code=status.HTTP_201_CREATED,
     summary="Install a Solution from a git repo (git-connected, admin only)",
 )
-async def install_from_repo(
-    body: SolutionRepoPreviewRequest, ctx: Context, user: CurrentSuperuser
-) -> SolutionDTO:
+async def install_from_repo(body: SolutionRepoPreviewRequest, ctx: Context, user: CurrentSuperuser) -> SolutionDTO:
     """Create a git-connected install from a repo (+ optional subpath/ref) and
     deploy it. git-connected from birth: deploy is refused, auto-pull is the
     only writer. 409 if an install of the same (slug, scope) already exists."""
@@ -1490,16 +1455,13 @@ async def install_from_repo(
         try:
             root = resolve_repo_subpath(work, body.repo_subpath)
         except NotASolutionWorkspace as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         _r = os.path.realpath(root)
         _marker = os.path.realpath(os.path.join(_r, "bifrost.solution.yaml"))
         if not _marker.startswith(_r + os.sep) or not os.path.isfile(_marker):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"No bifrost.solution.yaml at "
-                f"{body.repo_subpath or '<repo root>'} in {body.repo_url}",
+                detail=f"No bifrost.solution.yaml at {body.repo_subpath or '<repo root>'} in {body.repo_url}",
             )
         parsed = _parse_workspace(root)
         if not parsed.slug:
@@ -1528,8 +1490,7 @@ async def install_from_repo(
         if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"An install of '{parsed.slug}' already exists for this scope; "
-                f"reconnect or update it instead.",
+                detail=f"An install of '{parsed.slug}' already exists for this scope; reconnect or update it instead.",
             )
 
         solution = SolutionORM(
@@ -1691,9 +1652,7 @@ async def install_solution(
     except SolutionDeployConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except SolutionWorkflowNameMismatch as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except SolutionFinalizeIncomplete as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

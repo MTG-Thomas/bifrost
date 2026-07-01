@@ -2693,26 +2693,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/files/manifest/import": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Import Manifest
-         * @description Import .bifrost/ manifest files from S3 into DB.
-         */
-        post: operations["import_manifest_api_files_manifest_import_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/files/watch": {
         parameters: {
             query?: never;
@@ -17206,78 +17186,6 @@ export interface components {
             last_reindex?: string | null;
         };
         /**
-         * ManifestImportRequest
-         * @description Request body for manifest import.
-         */
-        ManifestImportRequest: {
-            /**
-             * Delete Removed Entities
-             * @default false
-             */
-            delete_removed_entities: boolean;
-            /**
-             * Files
-             * @description Map of .bifrost/ path to base64-encoded content
-             */
-            files?: {
-                [key: string]: string;
-            };
-            /**
-             * Dry Run
-             * @default false
-             */
-            dry_run: boolean;
-            /**
-             * Target Organization Id
-             * @description When set, every entity in the bundle has its organization_id rewritten to this value before upsert. Incompatible with a manifest that carries an organizations section.
-             */
-            target_organization_id?: string | null;
-            /**
-             * Role Resolution
-             * @description How to interpret role references in the bundle. 'uuid' (default) assumes role UUIDs match the target env. 'name' reads role_names and resolves to UUIDs in the target; missing names fail with 422.
-             * @default uuid
-             * @enum {string}
-             */
-            role_resolution: "uuid" | "name";
-            /**
-             * Entity Ids
-             * @description Optional subset of entity UUIDs to apply. When set, only entities whose id is in this set are written; all other diff entries are skipped. Use for interactive cherry-pick import where the user approves a subset of a dry-run diff.
-             */
-            entity_ids?: string[] | null;
-        };
-        /**
-         * ManifestImportResponse
-         * @description Response for manifest import from S3 into DB.
-         */
-        ManifestImportResponse: {
-            /**
-             * Applied
-             * @default false
-             */
-            applied: boolean;
-            /**
-             * Dry Run
-             * @default false
-             */
-            dry_run: boolean;
-            /** Warnings */
-            warnings?: string[];
-            /** Manifest Files */
-            manifest_files?: {
-                [key: string]: string;
-            };
-            /** Modified Files */
-            modified_files?: {
-                [key: string]: string;
-            };
-            /** Deleted Entities */
-            deleted_entities?: string[];
-            /** Entity Changes */
-            entity_changes?: {
-                [key: string]: string;
-            }[];
-        };
-        /**
          * MappingAuthorizeRequest
          * @description Request to begin OAuth authorize flow for a specific mapping.
          */
@@ -27964,39 +27872,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
-                };
-            };
-        };
-    };
-    import_manifest_api_files_manifest_import_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["ManifestImportRequest"] | null;
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ManifestImportResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

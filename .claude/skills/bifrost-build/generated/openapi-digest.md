@@ -57,6 +57,7 @@
 | POST | `/api/agents/{agent_id}/tuning-session/dry-run` |
 | GET | `/api/applications` |
 | POST | `/api/applications` |
+| POST | `/api/applications/swap-slugs` |
 | DELETE | `/api/applications/{app_id}` |
 | PATCH | `/api/applications/{app_id}` |
 | GET | `/api/applications/{app_id}/bundle-asset/{filename}` |
@@ -361,6 +362,7 @@
 | POST | `/api/sdk/config/list` |
 | POST | `/api/sdk/config/set` |
 | GET | `/api/sdk/context` |
+| GET | `/api/sdk/download` |
 | POST | `/api/sdk/integrations/delete_mapping` |
 | POST | `/api/sdk/integrations/get` |
 | POST | `/api/sdk/integrations/get_mapping` |
