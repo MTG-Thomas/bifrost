@@ -6,6 +6,7 @@ Tests the client injection pattern used for platform mode workflow execution.
 
 from unittest.mock import patch
 
+import os
 import pytest
 
 
@@ -43,8 +44,7 @@ class TestClientInjection:
         """Test that injected client is returned by get_client()."""
         # Create a test client
         test_client = self.BifrostClient(
-            api_url="http://test:8000",
-            access_token="test_token_12345"
+            api_url="http://test:8000", access_token="test_token_12345"
         )
 
         try:
@@ -64,8 +64,7 @@ class TestClientInjection:
         """Test that _clear_client() removes the injected client."""
         # Create and inject a client
         test_client = self.BifrostClient(
-            api_url="http://test:8000",
-            access_token="test_token_12345"
+            api_url="http://test:8000", access_token="test_token_12345"
         )
         self._set_client(test_client)
 
@@ -84,8 +83,7 @@ class TestClientInjection:
         """Test that injected client takes precedence over credentials file."""
         # Create and inject a client
         test_client = self.BifrostClient(
-            api_url="http://injected:8000",
-            access_token="injected_token"
+            api_url="http://injected:8000", access_token="injected_token"
         )
 
         try:
@@ -110,8 +108,7 @@ class TestClientInjection:
     def test_bifrost_client_initialization(self):
         """Test BifrostClient constructor properly sets up HTTP clients."""
         client = self.BifrostClient(
-            api_url="http://example.com:8000/",
-            access_token="token_abc123"
+            api_url="http://example.com:8000/", access_token="token_abc123"
         )
 
         try:
@@ -140,19 +137,18 @@ class TestClientInjection:
     async def test_http_methods_exist(self):
         """Test that all required HTTP methods are available."""
         client = self.BifrostClient(
-            api_url="http://test:8000",
-            access_token="test_token"
+            api_url="http://test:8000", access_token="test_token"
         )
 
         try:
             # Verify all required async methods exist
-            assert hasattr(client, 'get')
-            assert hasattr(client, 'post')
-            assert hasattr(client, 'put')
-            assert hasattr(client, 'patch')
-            assert hasattr(client, 'delete')
-            assert hasattr(client, 'stream')
-            assert hasattr(client, 'close')
+            assert hasattr(client, "get")
+            assert hasattr(client, "post")
+            assert hasattr(client, "put")
+            assert hasattr(client, "patch")
+            assert hasattr(client, "delete")
+            assert hasattr(client, "stream")
+            assert hasattr(client, "close")
 
             # Verify they're async
             assert callable(client.get)
@@ -165,13 +161,25 @@ class TestClientInjection:
             await client.close()
 
 
-
 class TestEnvCredentialRefresh:
     @pytest.mark.asyncio
-    async def test_401_refresh_updates_env_sourced_client_without_persisting(self, monkeypatch):
-        """Env-backed sessions refresh the active client without writing keychain/JSON."""
+    async def test_401_refresh_persists_env_sourced_credentials(
+        self, monkeypatch, tmp_path
+    ):
+        """Env-backed sessions do not rewrite a matching CWD .env file."""
         from bifrost import client as client_mod
 
+        dotenv_contents = "\n".join(
+            [
+                "BIFROST_API_URL=http://localhost:38421",
+                "BIFROST_ACCESS_TOKEN=dotenv_access",
+                "BIFROST_REFRESH_TOKEN=dotenv_refresh",
+                "",
+            ]
+        )
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text(dotenv_contents)
+        monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("BIFROST_API_URL", "http://localhost:38421")
         monkeypatch.setenv("BIFROST_ACCESS_TOKEN", "old_access")
         monkeypatch.setenv("BIFROST_REFRESH_TOKEN", "old_refresh")
@@ -204,10 +212,15 @@ class TestEnvCredentialRefresh:
                 return StubResponse()
 
         monkeypatch.setattr(client_mod.httpx, "AsyncClient", StubAsyncClient)
-        monkeypatch.setattr(client_mod, "save_credentials", lambda **kwargs: saved.append(kwargs))
+        monkeypatch.setattr(
+            client_mod, "save_credentials", lambda **kwargs: saved.append(kwargs)
+        )
 
         client = client_mod.BifrostClient("http://localhost:38421", "old_access")
         assert await client._refresh_and_update()
         assert saved == []
         assert client._access_token == "new_access"
         assert client._sync_http.headers["Authorization"] == "Bearer new_access"
+        assert os.environ["BIFROST_ACCESS_TOKEN"] == "new_access"
+        assert os.environ["BIFROST_REFRESH_TOKEN"] == "new_refresh"
+        assert dotenv_path.read_text() == dotenv_contents
