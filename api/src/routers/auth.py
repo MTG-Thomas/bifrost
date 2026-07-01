@@ -19,24 +19,45 @@ import hashlib
 import json
 import logging
 import secrets
-from datetime import datetime, timezone
-from typing import Annotated
-from uuid import UUID
+from datetime import UTC, datetime
+from typing import Annotated, Awaitable, cast
 from urllib.parse import quote, urlencode, urlparse
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
+from shared.external_access import resolve_external_claim
 
+from src.config import get_settings
+from src.core.auth import (
+    CurrentActiveUser,
+    CurrentSuperuser,
+    UserPrincipal,
+    get_current_user_optional,
+)
 from src.core.cache import get_shared_redis
 from src.core.cache.keys import (
+    TTL_DEVICE_CODE,
+    TTL_REFRESH_TOKEN,
     device_code_key,
     device_user_code_index_key,
     refresh_token_jti_key,
     user_refresh_tokens_pattern,
-    TTL_DEVICE_CODE,
-    TTL_REFRESH_TOKEN,
+)
+from src.core.db_deps import DbSession
+from src.core.log_safety import log_safe
+from src.core.rate_limit import auth_limiter, get_client_ip, mfa_limiter
+from src.core.security import (
+    create_access_token,
+    create_mfa_token,
+    create_refresh_token,
+    decode_mfa_token,
+    decode_token,
+    generate_csrf_token,
+    get_password_hash,
+    verify_password,
 )
 from src.models import (
     AuthStatusResponse,
@@ -59,26 +80,10 @@ from src.models.contracts.passkeys import (
     SetupPasskeyVerifyRequest,
     SetupPasskeyVerifyResponse,
 )
-from src.config import get_settings
-from src.core.auth import CurrentActiveUser, CurrentSuperuser, UserPrincipal, get_current_user_optional
-from src.core.db_deps import DbSession
-from src.core.log_safety import log_safe
-from src.core.rate_limit import auth_limiter, mfa_limiter, get_client_ip
+from src.repositories.users import UserRepository
 from src.services.audit import emit_audit
 from src.services.audit_context import ActorContext, current_actor
-from src.core.security import (
-    create_access_token,
-    create_mfa_token,
-    create_refresh_token,
-    decode_mfa_token,
-    decode_token,
-    generate_csrf_token,
-    get_password_hash,
-    verify_password,
-)
-from src.repositories.users import UserRepository
 from src.services.user_provisioning import ensure_user_provisioned, get_user_roles
-from shared.external_access import resolve_external_claim
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +95,7 @@ TTL_CLI_NATIVE_AUTH = 300
 # =============================================================================
 # Cookie Configuration
 # =============================================================================
+
 
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str):
     """
@@ -213,8 +219,10 @@ async def revoke_all_user_refresh_tokens(user_id: str) -> int:
 # Request/Response Models
 # =============================================================================
 
+
 class Token(BaseModel):
     """Token response model."""
+
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
@@ -222,6 +230,7 @@ class Token(BaseModel):
 
 class MFARequiredResponse(BaseModel):
     """Response when MFA verification is required."""
+
     mfa_required: bool = True
     mfa_token: str
     available_methods: list[str]
@@ -230,6 +239,7 @@ class MFARequiredResponse(BaseModel):
 
 class MFASetupRequiredResponse(BaseModel):
     """Response when MFA enrollment is required."""
+
     mfa_setup_required: bool = True
     mfa_token: str
     expires_in: int = 300  # 5 minutes
@@ -237,6 +247,7 @@ class MFASetupRequiredResponse(BaseModel):
 
 class MFAVerifyRequest(BaseModel):
     """Request to verify MFA code during login."""
+
     mfa_token: str
     code: str
     trust_device: bool = False
@@ -245,6 +256,7 @@ class MFAVerifyRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     """Unified login response that can be Token or MFA response."""
+
     # Token fields (when MFA not required or after MFA verification)
     access_token: str | None = None
     refresh_token: str | None = None
@@ -259,11 +271,13 @@ class LoginResponse(BaseModel):
 
 class TokenRefresh(BaseModel):
     """Token refresh request model."""
+
     refresh_token: str
 
 
 class UserResponse(BaseModel):
     """User response model."""
+
     id: str
     email: str
     name: str
@@ -276,6 +290,7 @@ class UserResponse(BaseModel):
 
 class UserCreate(BaseModel):
     """User creation request model."""
+
     email: EmailStr
     password: str
     name: str | None = None
@@ -285,10 +300,11 @@ class UserCreate(BaseModel):
 # Endpoints
 # =============================================================================
 
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     response: Response,
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    form_data: OAuth2PasswordRequestForm = Depends(),  # noqa: B008
     request: Request = None,
     db: DbSession = None,
 ) -> LoginResponse:
@@ -400,7 +416,7 @@ async def login(
 
         logger.info(
             f"MFA setup required for user: {user.email}",
-            extra={"user_id": str(user.id)}
+            extra={"user_id": str(user.id)},
         )
 
         return LoginResponse(
@@ -419,7 +435,7 @@ async def login(
             # Trusted device - skip MFA verification
             logger.info(
                 f"Trusted device login for user: {user.email}",
-                extra={"user_id": str(user.id)}
+                extra={"user_id": str(user.id)},
             )
             return await _generate_login_tokens(user, db, response)
 
@@ -428,7 +444,7 @@ async def login(
 
     logger.info(
         f"MFA verification required for user: {user.email}",
-        extra={"user_id": str(user.id)}
+        extra={"user_id": str(user.id)},
     )
 
     return LoginResponse(
@@ -441,11 +457,13 @@ async def login(
 
 class MFASetupTokenRequest(BaseModel):
     """Request with MFA token for initial setup."""
+
     mfa_token: str
 
 
 class MFASetupResponse(BaseModel):
     """MFA setup response with secret."""
+
     secret: str
     qr_code_uri: str
     provisioning_uri: str
@@ -456,17 +474,20 @@ class MFASetupResponse(BaseModel):
 
 class MFAEnrollVerifyRequest(BaseModel):
     """Request to verify MFA during initial enrollment."""
+
     mfa_token: str
     code: str
 
 
 class MFASetupRequest(BaseModel):
     """Optional request body for MFA setup."""
+
     force_new: bool = False
 
 
 class MFAEnrollVerifyResponse(BaseModel):
     """Response after completing MFA enrollment."""
+
     success: bool
     recovery_codes: list[str]
     access_token: str
@@ -536,7 +557,7 @@ async def mfa_initial_setup(
 
     logger.info(
         f"MFA setup initiated for user: {user.email} (force_new={force_new})",
-        extra={"user_id": str(user.id)}
+        extra={"user_id": str(user.id)},
     )
 
     return MFASetupResponse(**setup_data)
@@ -571,7 +592,9 @@ async def mfa_initial_verify(
 
     # Get mfa_token from Authorization header
     auth_header = request.headers.get("Authorization", "")
-    logger.info(f"Auth header present: {bool(auth_header)}, starts with Bearer: {auth_header.startswith('Bearer ')}")
+    logger.info(
+        f"Auth header present: {bool(auth_header)}, starts with Bearer: {auth_header.startswith('Bearer ')}"
+    )
 
     if not auth_header.startswith("Bearer "):
         logger.warning("Missing or invalid Authorization header")
@@ -624,11 +647,11 @@ async def mfa_initial_verify(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
 
     logger.info(
         f"MFA enrollment completed for user: {user.email}",
-        extra={"user_id": str(user.id)}
+        extra={"user_id": str(user.id)},
     )
 
     # Generate tokens for auto-login after MFA enrollment
@@ -723,7 +746,9 @@ async def verify_mfa_login(
     if is_recovery:
         # Verify recovery code
         client_ip = request.client.host if request and request.client else None
-        if not await mfa_service.verify_recovery_code(user.id, mfa_request.code, client_ip):
+        if not await mfa_service.verify_recovery_code(
+            user.id, mfa_request.code, client_ip
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid recovery code",
@@ -753,13 +778,15 @@ async def verify_mfa_login(
 
     logger.info(
         f"MFA verification successful for user: {user.email}",
-        extra={"user_id": str(user.id)}
+        extra={"user_id": str(user.id)},
     )
 
     return await _generate_login_tokens(user, db, response)
 
 
-async def _generate_login_tokens(user, db, response: Response | None = None) -> LoginResponse:
+async def _generate_login_tokens(
+    user, db, response: Response | None = None
+) -> LoginResponse:
     """
     Generate login response with access and refresh tokens.
 
@@ -775,7 +802,7 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
         LoginResponse with tokens
     """
     # Update last login (use naive datetime for DB compatibility)
-    user.last_login = datetime.now(timezone.utc)
+    user.last_login = datetime.now(UTC)
     await db.commit()
 
     # Get user roles from database
@@ -808,9 +835,9 @@ async def _generate_login_tokens(user, db, response: Response | None = None) -> 
         f"User logged in: {user.email}",
         extra={
             "user_id": str(user.id),
-                "is_superuser": user.is_superuser,
+            "is_superuser": user.is_superuser,
             "org_id": str(user.organization_id) if user.organization_id else None,
-        }
+        },
     )
 
     # Emit with an actor_override built from the freshly-authenticated user,
@@ -923,7 +950,9 @@ async def refresh_token(
     jti_valid = await validate_and_revoke_refresh_token_jti(user_id, jti)
     if not jti_valid:
         # JTI not found - token was already used or revoked
-        logger.warning(f"Refresh token reuse attempt for user {log_safe(user_id)}, JTI {log_safe(jti)}")
+        logger.warning(
+            f"Refresh token reuse attempt for user {log_safe(user_id)}, JTI {log_safe(jti)}"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token has been revoked or already used",
@@ -994,24 +1023,29 @@ async def get_current_user_info(
         is_active=current_user.is_active,
         is_superuser=current_user.is_superuser,
         is_verified=current_user.is_verified,
-        organization_id=str(current_user.organization_id) if current_user.organization_id else None,
+        organization_id=str(current_user.organization_id)
+        if current_user.organization_id
+        else None,
         roles=current_user.roles,
     )
 
 
 class LogoutResponse(BaseModel):
     """Logout response model."""
+
     message: str = "Logged out successfully"
 
 
 class RevokeAllResponse(BaseModel):
     """Revoke all sessions response model."""
+
     message: str
     sessions_revoked: int
 
 
 class LogoutRequest(BaseModel):
     """Logout request with optional refresh token."""
+
     refresh_token: str | None = None
 
 
@@ -1044,17 +1078,17 @@ async def logout(
     """
     # Get refresh token from body (API clients) or cookie (browser clients)
     refresh_token = None
-    if body and body.refresh_token:
-        refresh_token = body.refresh_token
-    else:
-        refresh_token = request.cookies.get("refresh_token")
+    refresh_token = (
+        body.refresh_token
+        if body and body.refresh_token
+        else request.cookies.get("refresh_token")
+    )
 
     if refresh_token:
         payload = decode_token(refresh_token, expected_type="refresh")
         if payload and payload.get("jti"):
             await validate_and_revoke_refresh_token_jti(
-                str(current_user.user_id),
-                payload["jti"]
+                str(current_user.user_id), payload["jti"]
             )
 
     # Clear cookies
@@ -1102,7 +1136,7 @@ async def revoke_all_sessions(
 
     logger.info(
         f"User revoked all sessions: {current_user.email}",
-        extra={"sessions_revoked": count}
+        extra={"sessions_revoked": count},
     )
 
     return RevokeAllResponse(
@@ -1113,6 +1147,7 @@ async def revoke_all_sessions(
 
 class AdminRevokeRequest(BaseModel):
     """Admin revocation request."""
+
     user_id: str
 
 
@@ -1160,7 +1195,7 @@ async def admin_revoke_user_sessions(
             "target_user": log_safe(target_user.email),
             "target_user_id": log_safe(revoke_data.user_id),
             "sessions_revoked": count,
-        }
+        },
     )
 
     return RevokeAllResponse(
@@ -1169,7 +1204,9 @@ async def admin_revoke_user_sessions(
     )
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
+)
 async def register_user(
     request: Request,
     user_data: UserCreate,
@@ -1236,7 +1273,7 @@ async def register_user(
                 extra={
                     "user_id": str(existing_user.id),
                     "is_superuser": existing_user.is_superuser,
-                }
+                },
             )
 
             return UserResponse(
@@ -1246,15 +1283,16 @@ async def register_user(
                 is_active=existing_user.is_active,
                 is_superuser=existing_user.is_superuser,
                 is_verified=existing_user.is_verified,
-                organization_id=str(existing_user.organization_id) if existing_user.organization_id else None,
+                organization_id=str(existing_user.organization_id)
+                if existing_user.organization_id
+                else None,
                 roles=["authenticated"],
             )
-        else:
-            # Already registered user
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered",
-            )
+        # Already registered user
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
 
     # New user - use provisioning logic to determine user type and org assignment
     try:
@@ -1267,7 +1305,7 @@ async def register_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
 
     # Set password and mark as registered
     user = result.user
@@ -1281,7 +1319,7 @@ async def register_user(
             "user_id": str(user.id),
             "is_superuser": user.is_superuser,
             "was_created": result.was_created,
-        }
+        },
     )
 
     return UserResponse(
@@ -1336,7 +1374,9 @@ async def get_auth_status(db: DbSession = None) -> AuthStatusResponse:
     oauth_providers = [
         OAuthProviderInfo(
             name=name,
-            display_name=provider_info_map.get(name, {}).get("display_name", name.title()),
+            display_name=provider_info_map.get(name, {}).get(
+                "display_name", name.title()
+            ),
             icon=provider_info_map.get(name, {}).get("icon"),
         )
         for name in available_providers
@@ -1371,8 +1411,18 @@ def _generate_user_code() -> str:
     import string
 
     # Remove ambiguous characters
-    chars = string.ascii_uppercase.replace("O", "").replace("I", "").replace("S", "").replace("Z", "")
-    chars += string.digits.replace("0", "").replace("1", "").replace("5", "").replace("2", "")
+    chars = (
+        string.ascii_uppercase.replace("O", "")
+        .replace("I", "")
+        .replace("S", "")
+        .replace("Z", "")
+    )
+    chars += (
+        string.digits.replace("0", "")
+        .replace("1", "")
+        .replace("5", "")
+        .replace("2", "")
+    )
 
     # Generate 8 character code
     code_chars = [random.choice(chars) for _ in range(8)]
@@ -1383,6 +1433,53 @@ def _generate_user_code() -> str:
 
 def _cli_native_auth_key(transaction_id: str) -> str:
     return f"bifrost:auth:cli-native:{transaction_id}"
+
+
+_CLI_NATIVE_AUTHORIZE_IF_PENDING = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return nil
+end
+local data = cjson.decode(raw)
+if data['status'] ~= 'pending' then
+  return 'not_pending'
+end
+data['status'] = 'authorized'
+data['user_id'] = ARGV[1]
+data['code_hash'] = ARGV[2]
+local ttl = redis.call('TTL', KEYS[1])
+if ttl <= 0 then
+  ttl = tonumber(ARGV[3])
+end
+redis.call('SETEX', KEYS[1], ttl, cjson.encode(data))
+return cjson.encode({redirect_uri=data['redirect_uri'], state=data['state']})
+"""
+
+_CLI_NATIVE_EXCHANGE_IF_VALID = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return nil
+end
+local data = cjson.decode(raw)
+if data['status'] ~= 'authorized' then
+  return 'not_authorized'
+end
+if data['state'] ~= ARGV[1] then
+  return 'invalid_state'
+end
+if data['code_hash'] ~= ARGV[2] then
+  return 'invalid_code'
+end
+if data['code_challenge'] ~= ARGV[3] then
+  return 'invalid_verifier'
+end
+local user_id = data['user_id']
+if not user_id then
+  return 'missing_user'
+end
+redis.call('DEL', KEYS[1])
+return cjson.encode({user_id=user_id})
+"""
 
 
 def _sha256_urlsafe(value: str) -> str:
@@ -1414,7 +1511,9 @@ def _cli_redirect_with_params(redirect_uri: str, params: str) -> RedirectRespons
     separator = "&" if "?" in redirect_uri else "?"
     # The stored redirect URI is revalidated immediately above and may only target localhost.
     # lgtm[py/url-redirection]
-    return RedirectResponse(url=f"{redirect_uri}{separator}{params}")  # codeql[py/url-redirection]
+    return RedirectResponse(
+        url=f"{redirect_uri}{separator}{params}"
+    )  # codeql[py/url-redirection]
 
 
 @router.post("/cli/start", response_model=CliNativeAuthStartResponse)
@@ -1422,7 +1521,14 @@ async def start_cli_native_auth(
     request: Request,
     start_request: CliNativeAuthStartRequest,
 ) -> CliNativeAuthStartResponse:
-    """Start first-party native CLI OAuth login."""
+    """
+    Start first-party native CLI OAuth login.
+
+    The CLI starts a localhost callback listener, sends the callback URI plus
+    PKCE challenge here, then opens the returned authorization URL in the
+    user's browser. Browser login and MFA remain handled by normal Bifrost
+    session cookies.
+    """
     client_ip = get_client_ip(request)
     await auth_limiter.check("cli_native_start", client_ip)
 
@@ -1451,7 +1557,9 @@ async def start_cli_native_auth(
         json.dumps(cli_auth_data),
     )
 
-    authorization_url = "/auth/cli/authorize?" + urlencode({"transaction_id": transaction_id})
+    authorization_url = "/auth/cli/authorize?" + urlencode(
+        {"transaction_id": transaction_id}
+    )
     logger.info(
         "CLI native OAuth started",
         extra={"transaction_id": log_safe(transaction_id[:8]) + "..."},
@@ -1471,27 +1579,17 @@ async def authorize_cli_native_auth(
     current_user: Annotated[UserPrincipal | None, Depends(get_current_user_optional)],
     db: DbSession,
 ) -> RedirectResponse:
-    """Authorize native CLI OAuth using the current browser session."""
+    """
+    Authorize native CLI OAuth using the current browser session.
+
+    Unauthenticated browser users are sent through the normal login page and
+    returned here after password/MFA/passkey auth completes.
+    """
     if current_user is None:
         return_to = request.url.path
         if request.url.query:
             return_to = f"{return_to}?{request.url.query}"
         return RedirectResponse(url=f"/login?returnTo={quote(return_to, safe='')}")
-
-    r = await get_shared_redis()
-    cli_auth_data_json = await r.get(_cli_native_auth_key(transaction_id))
-    if not cli_auth_data_json:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invalid or expired CLI authorization request",
-        )
-
-    cli_auth_data = json.loads(cli_auth_data_json)
-    if cli_auth_data.get("status") != "pending":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="CLI authorization request is no longer pending",
-        )
 
     user_repo = UserRepository(db)
     user = await user_repo.get_by_id(current_user.user_id)
@@ -1502,22 +1600,35 @@ async def authorize_cli_native_auth(
         )
 
     code = secrets.token_urlsafe(32)
-    cli_auth_data["status"] = "authorized"
-    cli_auth_data["user_id"] = str(current_user.user_id)
-    cli_auth_data["code_hash"] = _sha256_urlsafe(code)
-
-    ttl = await r.ttl(_cli_native_auth_key(transaction_id))
-    await r.setex(
-        _cli_native_auth_key(transaction_id),
-        ttl if ttl > 0 else TTL_CLI_NATIVE_AUTH,
-        json.dumps(cli_auth_data),
+    r = await get_shared_redis()
+    authorize_result = await cast(
+        Awaitable[str | bytes | None],
+        r.eval(
+            _CLI_NATIVE_AUTHORIZE_IF_PENDING,
+            1,
+            _cli_native_auth_key(transaction_id),
+            str(current_user.user_id),
+            _sha256_urlsafe(code),
+            str(TTL_CLI_NATIVE_AUTH),
+        ),
     )
+    if authorize_result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid or expired CLI authorization request",
+        )
+    if authorize_result == b"not_pending" or authorize_result == "not_pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CLI authorization request is no longer pending",
+        )
 
-    redirect_uri = cli_auth_data["redirect_uri"]
+    auth_result = json.loads(authorize_result)
+    redirect_uri = auth_result["redirect_uri"]
     params = urlencode(
         {
             "code": code,
-            "state": cli_auth_data["state"],
+            "state": auth_result["state"],
             "transaction_id": transaction_id,
         }
     )
@@ -1544,35 +1655,46 @@ async def exchange_cli_native_auth_token(
 
     r = await get_shared_redis()
     cli_auth_key = _cli_native_auth_key(token_request.transaction_id)
-    cli_auth_data_json = await r.execute_command("GETDEL", cli_auth_key)
-    if not cli_auth_data_json:
+    exchange_result = await cast(
+        Awaitable[str | bytes | None],
+        r.eval(
+            _CLI_NATIVE_EXCHANGE_IF_VALID,
+            1,
+            cli_auth_key,
+            token_request.state,
+            _sha256_urlsafe(token_request.code),
+            _sha256_urlsafe(token_request.code_verifier),
+        ),
+    )
+    if exchange_result is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired CLI authorization request",
         )
-
-    cli_auth_data = json.loads(cli_auth_data_json)
-    if cli_auth_data.get("status") != "authorized":
+    if exchange_result == b"not_authorized" or exchange_result == "not_authorized":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CLI authorization has not completed",
         )
-    if not secrets.compare_digest(token_request.state, cli_auth_data.get("state") or ""):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state")
-    if not secrets.compare_digest(_sha256_urlsafe(token_request.code), cli_auth_data.get("code_hash") or ""):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code")
-    if not secrets.compare_digest(
-        _sha256_urlsafe(token_request.code_verifier),
-        cli_auth_data.get("code_challenge") or "",
-    ):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid PKCE verifier")
-
-    user_id = cli_auth_data.get("user_id")
-    if not user_id:
+    if exchange_result == b"invalid_state" or exchange_result == "invalid_state":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state"
+        )
+    if exchange_result == b"invalid_code" or exchange_result == "invalid_code":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code"
+        )
+    if exchange_result == b"invalid_verifier" or exchange_result == "invalid_verifier":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid PKCE verifier"
+        )
+    if exchange_result == b"missing_user" or exchange_result == "missing_user":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CLI authorization is missing user",
         )
+
+    user_id = json.loads(exchange_result)["user_id"]
 
     user_repo = UserRepository(db)
     user = await user_repo.get_by_id(UUID(user_id))
@@ -1644,21 +1766,15 @@ async def request_device_code(
     }
 
     await r.setex(
-        device_code_key(device_code),
-        TTL_DEVICE_CODE,
-        json.dumps(device_data)
+        device_code_key(device_code), TTL_DEVICE_CODE, json.dumps(device_data)
     )
 
     # Create reverse index from user_code to device_code for authorization lookup
-    await r.setex(
-        device_user_code_index_key(user_code),
-        TTL_DEVICE_CODE,
-        device_code
-    )
+    await r.setex(device_user_code_index_key(user_code), TTL_DEVICE_CODE, device_code)
 
     logger.info(
         f"Device authorization code requested: {user_code}",
-        extra={"device_code": device_code, "user_code": user_code}
+        extra={"device_code": device_code, "user_code": user_code},
     )
 
     # Build verification URL
@@ -1714,7 +1830,7 @@ async def exchange_device_token(
     if not device_data_json:
         logger.warning(
             "Device token request with expired/invalid device_code",
-            extra={"device_code": log_safe(token_request.device_code[:8]) + "..."}
+            extra={"device_code": log_safe(token_request.device_code[:8]) + "..."},
         )
         return DeviceTokenErrorResponse(error="expired_token")
 
@@ -1731,7 +1847,10 @@ async def exchange_device_token(
 
         logger.info(
             "Device authorization denied",
-            extra={"device_code": log_safe(token_request.device_code[:8]) + "...", "user_code": log_safe(device_data["user_code"])}
+            extra={
+                "device_code": log_safe(token_request.device_code[:8]) + "...",
+                "user_code": log_safe(device_data["user_code"]),
+            },
         )
         return DeviceTokenErrorResponse(error="access_denied")
 
@@ -1741,7 +1860,7 @@ async def exchange_device_token(
         if not user_id:
             logger.error(
                 "Device code authorized but missing user_id",
-                extra={"device_code": log_safe(token_request.device_code[:8]) + "..."}
+                extra={"device_code": log_safe(token_request.device_code[:8]) + "..."},
             )
             return DeviceTokenErrorResponse(error="expired_token")
 
@@ -1752,7 +1871,7 @@ async def exchange_device_token(
         if not user or not user.is_active:
             logger.warning(
                 "Device token request for inactive/deleted user",
-                extra={"user_id": user_id}
+                extra={"user_id": user_id},
             )
             return DeviceTokenErrorResponse(error="access_denied")
 
@@ -1769,7 +1888,7 @@ async def exchange_device_token(
                 "user_id": str(user.id),
                 "device_code": log_safe(token_request.device_code[:8]) + "...",
                 "user_code": log_safe(device_data["user_code"]),
-            }
+            },
         )
 
         return DeviceTokenResponse(
@@ -1782,13 +1901,14 @@ async def exchange_device_token(
     # Unknown status
     logger.error(
         f"Unknown device code status: {log_safe(status)}",
-        extra={"device_code": log_safe(token_request.device_code[:8]) + "..."}
+        extra={"device_code": log_safe(token_request.device_code[:8]) + "..."},
     )
     return DeviceTokenErrorResponse(error="expired_token")
 
 
 class DeviceAuthorizeResponse(BaseModel):
     """Response for device authorization."""
+
     success: bool
 
 
@@ -1837,7 +1957,10 @@ async def setup_passkey_options(
     passkey_service = PasskeyService(db)
 
     try:
-        registration_token, options = await passkey_service.generate_setup_registration_options(
+        (
+            registration_token,
+            options,
+        ) = await passkey_service.generate_setup_registration_options(
             email=setup_request.email,
             name=setup_request.name,
         )
@@ -1845,7 +1968,7 @@ async def setup_passkey_options(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
 
     logger.info(
         f"Passkey setup initiated for first-time registration: {log_safe(setup_request.email)}",
@@ -1906,7 +2029,7 @@ async def setup_passkey_verify(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
 
     logger.info(
         f"Passkey setup completed for first-time registration: {user.email}",
@@ -1978,14 +2101,16 @@ async def authorize_device(
     if not device_code:
         logger.warning(
             f"Device authorization attempt with invalid user_code: {log_safe(authorize_request.user_code)}",
-            extra={"user_id": str(current_user.user_id)}
+            extra={"user_id": str(current_user.user_id)},
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired user code",
         )
 
-    device_code_str = device_code.decode() if isinstance(device_code, bytes) else device_code
+    device_code_str = (
+        device_code.decode() if isinstance(device_code, bytes) else device_code
+    )
 
     # Get device data
     device_data_json = await r.get(device_code_key(device_code_str))
@@ -1993,7 +2118,7 @@ async def authorize_device(
     if not device_data_json:
         logger.warning(
             f"Device code missing for user_code: {log_safe(authorize_request.user_code)}",
-            extra={"user_id": str(current_user.user_id)}
+            extra={"user_id": str(current_user.user_id)},
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2008,17 +2133,11 @@ async def authorize_device(
     # Get remaining TTL and preserve it
     ttl = await r.ttl(device_code_key(device_code_str))
     if ttl > 0:
-        await r.setex(
-            device_code_key(device_code_str),
-            ttl,
-            json.dumps(device_data)
-        )
+        await r.setex(device_code_key(device_code_str), ttl, json.dumps(device_data))
     else:
         # Fallback if TTL query fails
         await r.setex(
-            device_code_key(device_code_str),
-            TTL_DEVICE_CODE,
-            json.dumps(device_data)
+            device_code_key(device_code_str), TTL_DEVICE_CODE, json.dumps(device_data)
         )
 
     logger.info(
@@ -2027,7 +2146,7 @@ async def authorize_device(
             "user_id": str(current_user.user_id),
             "user_code": log_safe(authorize_request.user_code),
             "device_code": log_safe(device_code_str[:8]) + "...",
-        }
+        },
     )
 
     return DeviceAuthorizeResponse(success=True)
@@ -2060,7 +2179,7 @@ async def register_from_invite(
     try:
         registered = await svc.consume(token=request.token, password=request.password)
     except InviteConsumeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     if request.name and not registered.name:
         registered.name = request.name
@@ -2071,7 +2190,9 @@ async def register_from_invite(
     return public
 
 
-@router.post("/register-from-invite/passkey/options", response_model=SetupPasskeyOptionsResponse)
+@router.post(
+    "/register-from-invite/passkey/options", response_model=SetupPasskeyOptionsResponse
+)
 async def register_from_invite_passkey_options(
     request: InvitePasskeyOptionsRequest,
     db: DbSession,
@@ -2082,9 +2203,11 @@ async def register_from_invite_passkey_options(
     invite_svc = UserInviteService(db)
     try:
         _, invited_user = await invite_svc.get_valid_invite_user(token=request.token)
-        options = await PasskeyService(db).generate_registration_options(invited_user.id)
+        options = await PasskeyService(db).generate_registration_options(
+            invited_user.id
+        )
     except (InviteConsumeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     return SetupPasskeyOptionsResponse(
         registration_token=request.token,
@@ -2093,7 +2216,9 @@ async def register_from_invite_passkey_options(
     )
 
 
-@router.post("/register-from-invite/passkey/verify", response_model=SetupPasskeyVerifyResponse)
+@router.post(
+    "/register-from-invite/passkey/verify", response_model=SetupPasskeyVerifyResponse
+)
 async def register_from_invite_passkey_verify(
     request: InvitePasskeyVerifyRequest,
     response: Response,
@@ -2116,7 +2241,7 @@ async def register_from_invite_passkey_verify(
         registered = await invite_svc.consume(token=request.token)
         await db.commit()
     except (InviteConsumeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     login = await _generate_login_tokens(registered, db, response)
     return SetupPasskeyVerifyResponse(
