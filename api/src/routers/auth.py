@@ -1384,6 +1384,52 @@ def _generate_user_code() -> str:
 def _cli_native_auth_key(transaction_id: str) -> str:
     return f"bifrost:auth:cli-native:{transaction_id}"
 
+_CLI_NATIVE_AUTHORIZE_IF_PENDING = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return nil
+end
+local data = cjson.decode(raw)
+if data['status'] ~= 'pending' then
+  return 'not_pending'
+end
+data['status'] = 'authorized'
+data['user_id'] = ARGV[1]
+data['code_hash'] = ARGV[2]
+local ttl = redis.call('TTL', KEYS[1])
+if ttl <= 0 then
+  ttl = tonumber(ARGV[3])
+end
+redis.call('SETEX', KEYS[1], ttl, cjson.encode(data))
+return cjson.encode({redirect_uri=data['redirect_uri'], state=data['state']})
+"""
+
+_CLI_NATIVE_EXCHANGE_IF_VALID = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return nil
+end
+local data = cjson.decode(raw)
+if data['status'] ~= 'authorized' then
+  return 'not_authorized'
+end
+if data['state'] ~= ARGV[1] then
+  return 'invalid_state'
+end
+if data['code_hash'] ~= ARGV[2] then
+  return 'invalid_code'
+end
+if data['code_challenge'] ~= ARGV[3] then
+  return 'invalid_verifier'
+end
+local user_id = data['user_id']
+if not user_id then
+  return 'missing_user'
+end
+redis.call('DEL', KEYS[1])
+return cjson.encode({user_id=user_id})
+"""
+
 
 def _sha256_urlsafe(value: str) -> str:
     digest = hashlib.sha256(value.encode("utf-8")).digest()
@@ -1491,21 +1537,6 @@ async def authorize_cli_native_auth(
             return_to = f"{return_to}?{request.url.query}"
         return RedirectResponse(url=f"/login?returnTo={quote(return_to, safe='')}")
 
-    r = await get_shared_redis()
-    cli_auth_data_json = await r.get(_cli_native_auth_key(transaction_id))
-    if not cli_auth_data_json:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invalid or expired CLI authorization request",
-        )
-
-    cli_auth_data = json.loads(cli_auth_data_json)
-    if cli_auth_data.get("status") != "pending":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="CLI authorization request is no longer pending",
-        )
-
     user_repo = UserRepository(db)
     user = await user_repo.get_by_id(current_user.user_id)
     if not user or not user.is_active:
@@ -1515,22 +1546,32 @@ async def authorize_cli_native_auth(
         )
 
     code = secrets.token_urlsafe(32)
-    cli_auth_data["status"] = "authorized"
-    cli_auth_data["user_id"] = str(current_user.user_id)
-    cli_auth_data["code_hash"] = _sha256_urlsafe(code)
-
-    ttl = await r.ttl(_cli_native_auth_key(transaction_id))
-    await r.setex(
+    r = await get_shared_redis()
+    authorize_result = await r.eval(
+        _CLI_NATIVE_AUTHORIZE_IF_PENDING,
+        1,
         _cli_native_auth_key(transaction_id),
-        ttl if ttl > 0 else TTL_CLI_NATIVE_AUTH,
-        json.dumps(cli_auth_data),
+        str(current_user.user_id),
+        _sha256_urlsafe(code),
+        str(TTL_CLI_NATIVE_AUTH),
     )
+    if authorize_result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid or expired CLI authorization request",
+        )
+    if authorize_result == b"not_pending" or authorize_result == "not_pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CLI authorization request is no longer pending",
+        )
 
-    redirect_uri = cli_auth_data["redirect_uri"]
+    auth_result = json.loads(authorize_result)
+    redirect_uri = auth_result["redirect_uri"]
     params = urlencode(
         {
             "code": code,
-            "state": cli_auth_data["state"],
+            "state": auth_result["state"],
             "transaction_id": transaction_id,
         }
     )
@@ -1557,35 +1598,37 @@ async def exchange_cli_native_auth_token(
 
     r = await get_shared_redis()
     cli_auth_key = _cli_native_auth_key(token_request.transaction_id)
-    cli_auth_data_json = await r.execute_command("GETDEL", cli_auth_key)
-    if not cli_auth_data_json:
+    exchange_result = await r.eval(
+        _CLI_NATIVE_EXCHANGE_IF_VALID,
+        1,
+        cli_auth_key,
+        token_request.state,
+        _sha256_urlsafe(token_request.code),
+        _sha256_urlsafe(token_request.code_verifier),
+    )
+    if exchange_result is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired CLI authorization request",
         )
-
-    cli_auth_data = json.loads(cli_auth_data_json)
-    if cli_auth_data.get("status") != "authorized":
+    if exchange_result == b"not_authorized" or exchange_result == "not_authorized":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CLI authorization has not completed",
         )
-    if not secrets.compare_digest(token_request.state, cli_auth_data.get("state") or ""):
+    if exchange_result == b"invalid_state" or exchange_result == "invalid_state":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state")
-    if not secrets.compare_digest(_sha256_urlsafe(token_request.code), cli_auth_data.get("code_hash") or ""):
+    if exchange_result == b"invalid_code" or exchange_result == "invalid_code":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code")
-    if not secrets.compare_digest(
-        _sha256_urlsafe(token_request.code_verifier),
-        cli_auth_data.get("code_challenge") or "",
-    ):
+    if exchange_result == b"invalid_verifier" or exchange_result == "invalid_verifier":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid PKCE verifier")
-
-    user_id = cli_auth_data.get("user_id")
-    if not user_id:
+    if exchange_result == b"missing_user" or exchange_result == "missing_user":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CLI authorization is missing user",
         )
+
+    user_id = json.loads(exchange_result)["user_id"]
 
     user_repo = UserRepository(db)
     user = await user_repo.get_by_id(UUID(user_id))

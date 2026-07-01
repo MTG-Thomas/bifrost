@@ -338,6 +338,19 @@ def _open_cli_callback_server(expected_state: str):
                     )
                 return
 
+            if not payload.get("code") or not payload.get("transaction_id"):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(
+                    b"Missing Bifrost CLI authorization response. You can close this tab."
+                )
+                if not callback_future.done():
+                    loop.call_soon_threadsafe(
+                        callback_future.set_exception,
+                        RuntimeError("Missing code or transaction_id in callback"),
+                    )
+                return
+
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
