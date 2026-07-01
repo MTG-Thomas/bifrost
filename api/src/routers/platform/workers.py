@@ -185,7 +185,8 @@ async def get_pool_stats(
     total_pools = len(pool_keys)
     total_processes = 0
     total_configured_capacity = 0
-    saw_configured_capacity = False
+    workers_with_heartbeat = 0
+    workers_reporting_capacity = 0
     total_idle = 0
     total_busy = 0
 
@@ -203,20 +204,32 @@ async def get_pool_stats(
             try:
                 hb = json.loads(heartbeat_data)
                 total_processes += hb.get("active_process_count", hb.get("pool_size", 0))
+                workers_with_heartbeat += 1
                 configured_capacity = hb.get("configured_capacity", hb.get("max_workers"))
                 if configured_capacity is not None:
-                    total_configured_capacity += int(configured_capacity)
-                    saw_configured_capacity = True
+                    try:
+                        total_configured_capacity += int(configured_capacity)
+                        workers_reporting_capacity += 1
+                    except (TypeError, ValueError):
+                        logger.debug(
+                            f"invalid configured_capacity for worker {log_safe(worker_id)}: "
+                            f"{log_safe(configured_capacity)}"
+                        )
                 total_idle += hb.get("idle_count", 0)
                 total_busy += hb.get("busy_count", 0)
             except json.JSONDecodeError as e:
                 # Corrupted heartbeat JSON for this worker — skip its contribution
                 logger.debug(f"invalid heartbeat JSON for worker {log_safe(worker_id)}: {log_safe(e)}")
 
+    fleet_capacity_known = (
+        workers_with_heartbeat > 0
+        and workers_reporting_capacity == workers_with_heartbeat
+    )
+
     return PoolStatsResponse(
         total_pools=total_pools,
         total_processes=total_processes,
-        total_configured_capacity=total_configured_capacity if saw_configured_capacity else None,
+        total_configured_capacity=total_configured_capacity if fleet_capacity_known else None,
         total_idle=total_idle,
         total_busy=total_busy,
     )
