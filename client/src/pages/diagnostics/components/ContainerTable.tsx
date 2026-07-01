@@ -53,7 +53,7 @@ export function getPoolCounts(pool: PoolData) {
         const detail = pool as PoolDetail;
         const active = detail.active_process_count ?? detail.pool_size ?? processes.length;
         const capacity =
-            detail.configured_capacity ?? detail.max_workers ?? active;
+            detail.configured_capacity ?? detail.max_workers ?? null;
         return {
             total: active,
             capacity,
@@ -64,7 +64,7 @@ export function getPoolCounts(pool: PoolData) {
     }
     const summary = pool as PoolSummary;
     const active = summary.active_process_count ?? summary.pool_size ?? 0;
-    const capacity = summary.configured_capacity ?? summary.max_workers ?? active;
+    const capacity = summary.configured_capacity ?? summary.max_workers ?? null;
     return {
         total: active,
         capacity,
@@ -257,7 +257,9 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="text-sm">
-                                        {counts.total}/{counts.capacity}{" "}
+                                        {counts.capacity != null
+                                            ? `${counts.total}/${counts.capacity}`
+                                            : counts.total}{" "}
                                         {counts.busy > 0 && (
                                             <span className="text-xs text-muted-foreground">
                                                 ({counts.busy} busy)
