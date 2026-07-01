@@ -27,6 +27,7 @@ from .credentials import (
     is_token_expired,
     load_allowed_dotenv,
     save_credentials,
+    save_ephemeral_credentials,
 )
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,7 @@ async def refresh_tokens() -> bool:
 
             if is_env_sourced:
                 _last_refreshed_env_credentials = refreshed
+                save_ephemeral_credentials(**refreshed)
             else:
                 _last_refreshed_env_credentials = None
                 save_credentials(**refreshed)

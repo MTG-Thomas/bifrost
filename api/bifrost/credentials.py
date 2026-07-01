@@ -370,6 +370,57 @@ def credentials_are_ephemeral(api_url: str) -> bool:
     return False
 
 
+def _upsert_cwd_dotenv_token_vars(updates: dict[str, str]) -> None:
+    """Write or update BIFROST_* token lines in CWD's .env."""
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        try:
+            lines = env_path.read_text().splitlines(keepends=True)
+        except OSError:
+            return
+    else:
+        lines = []
+
+    for key, value in updates.items():
+        new_line = f"{key}={value}\n"
+        found = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}="):
+                lines[i] = new_line
+                found = True
+                break
+        if not found:
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] = lines[-1] + "\n"
+            lines.append(new_line)
+
+    try:
+        env_path.write_text("".join(lines))
+    except OSError:
+        pass
+
+
+def save_ephemeral_credentials(
+    api_url: str,
+    access_token: str,
+    refresh_token: str,
+    expires_at: str,
+) -> None:
+    """Persist rotated tokens for env-var or CWD .env ephemeral sessions."""
+    os.environ["BIFROST_ACCESS_TOKEN"] = access_token
+    os.environ["BIFROST_REFRESH_TOKEN"] = refresh_token
+
+    url = api_url.rstrip("/")
+    if _get_cwd_dotenv_credentials(url) is not None:
+        _upsert_cwd_dotenv_token_vars(
+            {
+                "BIFROST_ACCESS_TOKEN": access_token,
+                "BIFROST_REFRESH_TOKEN": refresh_token,
+            }
+        )
+
+
 def _resolve_url(api_url: str | None, *, include_cwd_dotenv: bool = False) -> str | None:
     """
     Resolve which URL the no-arg credentials calls should target.
