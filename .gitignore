@@ -180,6 +180,12 @@ azurite/
 # PyCharm
 .idea/
 
+# Cursor local hook state
+.cursor/hooks/state/
+
+# Local code knowledge graph output
+graphify-out/
+
 # ==================== OS ====================
 
 # macOS
