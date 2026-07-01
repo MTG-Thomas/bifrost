@@ -12,7 +12,6 @@ CODEQL_UNSAFE_CYCLIC_IMPORT_MODULES = [
     "applications.py",
     "cli.py",
     "config.py",
-    "developer.py",
     "executions.py",
     "forms.py",
     "integrations.py",
@@ -21,7 +20,6 @@ CODEQL_UNSAFE_CYCLIC_IMPORT_MODULES = [
     "oauth.py",
     "organizations.py",
     "tables.py",
-    "users.py",
     "workflow_roles.py",
     "workflows.py",
 ]

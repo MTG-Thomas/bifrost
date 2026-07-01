@@ -41,6 +41,7 @@ from bifrost.dto_flags import (
     assemble_body,
     build_cli_flags,
 )
+from bifrost.org_target import org_option, resolve_org_target
 from bifrost.refs import RefResolver
 from bifrost.contracts import AgentCreate, AgentUpdate
 
@@ -79,6 +80,43 @@ async def _resolve_ref_list(
     for value in values:
         resolved.append(await resolver.resolve(kind, str(value)))  # type: ignore[arg-type]
     return resolved
+
+
+def _normalize_id_set(values: list[Any] | None) -> set[str]:
+    """Normalize ID values from request/response bodies for set comparison."""
+    return {str(value) for value in values or []}
+
+
+async def _verify_tool_ids_persisted(
+    *,
+    client: BifrostClient,
+    agent_uuid: str,
+    requested_tool_ids: list[str],
+) -> dict[str, Any]:
+    """Read back agent tools after an update and fail loudly on drift."""
+    response = await client.get(f"/api/agents/{agent_uuid}")
+    response.raise_for_status()
+    agent = response.json()
+    persisted_tool_ids = agent.get("tool_ids")
+    if not isinstance(persisted_tool_ids, list):
+        click.echo(
+            "Agent update response did not include a tool_ids list after read-back.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    requested = _normalize_id_set(requested_tool_ids)
+    persisted = _normalize_id_set(persisted_tool_ids)
+    if requested != persisted:
+        click.echo(
+            "Agent tool_ids did not persist after update.\n"
+            f"requested: {sorted(requested)}\n"
+            f"persisted: {sorted(persisted)}",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    return agent
 
 
 _CREATE_FLAGS = build_cli_flags(
@@ -131,11 +169,14 @@ async def get_agent(
 
 @agents_group.command("create")
 @_apply_flags(_CREATE_FLAGS)
+@org_option
 @click.pass_context
 @pass_resolver
 @run_async
 async def create_agent(
     ctx: click.Context,
+    org: str | None,
+    is_global: bool,
     *,
     client: BifrostClient,
     resolver: RefResolver,
@@ -146,12 +187,20 @@ async def create_agent(
     ``--system-prompt @file.md`` loads the prompt from disk. ``--tool-ids``
     and ``--delegated-agent-ids`` resolve each entry via the ref resolver
     before the body is sent.
+
+    Org targeting follows the unified ``--org`` standard: HOME (omit) scopes the
+    agent to the caller's org, ``--global`` makes it global, ``--org
+    <id|name>`` scopes it to that org. (Non-admins may only create private
+    agents in their own org regardless.)
     """
     # Load @file prompt before DTO assembly so validation sees the real text.
     if "system_prompt" in fields:
         fields["system_prompt"] = _load_str_file(fields.get("system_prompt"))
 
     body = await assemble_body(AgentCreate, fields, resolver=resolver)
+    target = await resolve_org_target(org, is_global, resolver)
+    if target.is_set:
+        body["organization_id"] = target.organization_id
 
     tool_ids = body.get("tool_ids")
     if isinstance(tool_ids, list):
@@ -171,12 +220,15 @@ async def create_agent(
 @agents_group.command("update")
 @click.argument("ref")
 @_apply_flags(_UPDATE_FLAGS)
+@org_option
 @click.pass_context
 @pass_resolver
 @run_async
 async def update_agent(
     ctx: click.Context,
     ref: str,
+    org: str | None,
+    is_global: bool,
     *,
     client: BifrostClient,
     resolver: RefResolver,
@@ -187,6 +239,9 @@ async def update_agent(
     ``REF`` is a UUID or agent name. Names are resolved via
     :class:`RefResolver`; ambiguous names fail loudly with the candidate
     list. The verb is **PUT** per the cli-mutation-surface audit correction.
+
+    Passing ``--org``/``--global`` re-scopes the agent (HOME leaves the scope
+    unchanged, since omitting org sends no ``organization_id``).
     """
     agent_uuid = await resolver.resolve("agent", ref)
 
@@ -194,6 +249,9 @@ async def update_agent(
         fields["system_prompt"] = _load_str_file(fields.get("system_prompt"))
 
     body = await assemble_body(AgentUpdate, fields, resolver=resolver)
+    target = await resolve_org_target(org, is_global, resolver)
+    if target.is_set:
+        body["organization_id"] = target.organization_id
 
     tool_ids = body.get("tool_ids")
     if isinstance(tool_ids, list):
@@ -207,7 +265,14 @@ async def update_agent(
 
     response = await client.put(f"/api/agents/{agent_uuid}", json=body)
     response.raise_for_status()
-    output_result(response.json(), ctx=ctx)
+    result = response.json()
+    if isinstance(body.get("tool_ids"), list):
+        result = await _verify_tool_ids_persisted(
+            client=client,
+            agent_uuid=agent_uuid,
+            requested_tool_ids=body["tool_ids"],
+        )
+    output_result(result, ctx=ctx)
 
 
 @agents_group.command("delete")

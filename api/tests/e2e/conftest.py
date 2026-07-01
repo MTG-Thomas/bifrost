@@ -86,10 +86,22 @@ def e2e_client():
         yield client
 
 
+_UNSET = object()
+
+
+_UNSET = object()
+
+
 def write_and_register(
-    e2e_client, headers, path: str, content: str, function_name: str
+    e2e_client, headers, path: str, content: str, function_name: str,
+    *, organization_id=_UNSET,
 ) -> dict:
     """Write a Python file and register its decorated function.
+
+    By default ``organization_id`` is OMITTED from the register request, so the
+    workflow HOME-defaults to the caller's own org (unified --org standard). Pass
+    ``organization_id=None`` to register a GLOBAL workflow, or a UUID string to
+    target a specific org.
 
     Returns the RegisterWorkflowResponse dict with keys: id, name, function_name, path, type, description.
     """
@@ -104,10 +116,13 @@ def write_and_register(
     )
 
     # Register the decorated function
+    register_body = {"path": path, "function_name": function_name}
+    if organization_id is not _UNSET:
+        register_body["organization_id"] = organization_id
     resp = e2e_client.post(
         "/api/workflows/register",
         headers=headers,
-        json={"path": path, "function_name": function_name},
+        json=register_body,
     )
     if resp.status_code == 409:
         # Already registered from a previous test run — look up and return existing
@@ -139,6 +154,7 @@ def execute_workflow_sync(
     max_wait: float = 30.0,
     request_sync: bool = False,
     request_timeout: float | None = None,
+    org_id: str | None = None,
 ) -> dict:
     """Execute a workflow and poll until completion.
 
@@ -161,14 +177,17 @@ def execute_workflow_sync(
     Raises:
         AssertionError: If execution fails or times out
     """
+    payload: dict = {
+        "workflow_id": workflow_id,
+        "input_data": input_data or {},
+        "sync": request_sync,
+    }
+    if org_id is not None:
+        payload["org_id"] = org_id
     response = e2e_client.post(
         "/api/workflows/execute",
         headers=headers,
-        json={
-            "workflow_id": workflow_id,
-            "input_data": input_data or {},
-            "sync": request_sync,
-        },
+        json=payload,
         timeout=request_timeout,
     )
     assert response.status_code == 200, f"Execute failed: {response.text}"

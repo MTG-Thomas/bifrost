@@ -19,9 +19,10 @@ import { renderWithProviders, screen, waitFor } from "@/test-utils";
 
 const mockCreateMutate = vi.fn();
 const mockAssignMutate = vi.fn();
+const mockSendInviteMutate = vi.fn();
 const mockOrganizations = vi.fn();
 const mockRoles = vi.fn();
-const mockAuth = vi.fn();
+const mockEventSources = vi.fn();
 
 vi.mock("@/hooks/useUsers", () => ({
 	useCreateUser: () => ({
@@ -42,8 +43,15 @@ vi.mock("@/hooks/useOrganizations", () => ({
 	useOrganizations: () => mockOrganizations(),
 }));
 
-vi.mock("@/contexts/AuthContext", () => ({
-	useAuth: () => mockAuth(),
+vi.mock("@/services/events", () => ({
+	useEventSources: () => mockEventSources(),
+}));
+
+vi.mock("@/hooks/useUserInvites", () => ({
+	useSendInvite: () => ({
+		mutateAsync: mockSendInviteMutate,
+		isPending: false,
+	}),
 }));
 
 // Stub the Combobox to a native select so userEvent can drive it.
@@ -79,9 +87,14 @@ import { CreateUserDialog } from "./CreateUserDialog";
 
 beforeEach(() => {
 	mockCreateMutate.mockReset();
-	mockCreateMutate.mockResolvedValue({ id: "new-user-1" });
+	mockCreateMutate.mockResolvedValue({
+		id: "new-user-1",
+		registration_url: "https://example.test/accept-invite?token=abc",
+	});
 	mockAssignMutate.mockReset();
 	mockAssignMutate.mockResolvedValue({});
+	mockSendInviteMutate.mockReset();
+	mockSendInviteMutate.mockResolvedValue({});
 	mockOrganizations.mockReturnValue({
 		data: [
 			{
@@ -100,12 +113,17 @@ beforeEach(() => {
 		isLoading: false,
 	});
 	mockRoles.mockReturnValue({ data: [] });
-	mockAuth.mockReturnValue({
-		user: {
-			id: "admin-user",
-			email: "admin@example.com",
-			isSuperuser: true,
-			organizationId: "org-provider",
+	mockEventSources.mockReturnValue({
+		data: {
+			items: [
+				{
+					id: "source-1",
+					source_type: "topic",
+					event_type: "user.invited",
+					is_active: true,
+					subscription_count: 1,
+				},
+			],
 		},
 	});
 });
@@ -137,7 +155,29 @@ describe("CreateUserDialog — validation", () => {
 });
 
 describe("CreateUserDialog — happy path", () => {
-	it("submits createUser with trimmed email + name and org id", async () => {
+	it("sends is_external when the External user switch is on", async () => {
+		const { user } = renderWithProviders(
+			<CreateUserDialog open={true} onOpenChange={vi.fn()} />,
+		);
+
+		await user.type(
+			screen.getByLabelText(/email address/i),
+			"guest@example.com",
+		);
+		await user.type(screen.getByLabelText(/display name/i), "Guest");
+		const orgSelect = screen.getByLabelText(
+			/organization/i,
+		) as HTMLSelectElement;
+		await user.selectOptions(orgSelect, "org-1");
+
+		await user.click(screen.getByRole("switch", { name: /external user/i }));
+		await user.click(screen.getByRole("button", { name: /create user/i }));
+
+		await waitFor(() => expect(mockCreateMutate).toHaveBeenCalled());
+		expect(mockCreateMutate.mock.calls[0]![0].body.is_external).toBe(true);
+	});
+
+	it("always creates a registration link without triggering invite automation", async () => {
 		const onOpenChange = vi.fn();
 		const { user } = renderWithProviders(
 			<CreateUserDialog open={true} onOpenChange={onOpenChange} />,
@@ -164,103 +204,85 @@ describe("CreateUserDialog — happy path", () => {
 				name: "Alice",
 				is_active: true,
 				is_superuser: false,
+				is_external: false,
 				organization_id: "org-1",
+				invite: true,
+				trigger_automation: false,
 			},
 		});
 		expect(onOpenChange).toHaveBeenCalledWith(false);
+		expect(
+			await screen.findByRole("heading", { name: /user created/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("https://example.test/accept-invite?token=abc"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /send registration email/i }),
+		).toBeEnabled();
+		expect(
+			screen.getByRole("button", { name: /copy registration link/i }),
+		).toBeInTheDocument();
 	});
 
-	it("auto-selects the provider organization for platform admins after orgs load", async () => {
-		const onOpenChange = vi.fn();
-		let orgsLoaded = false;
-		mockOrganizations.mockImplementation(() => ({
-			data: orgsLoaded
-				? [
-						{
-							id: "org-1",
-							name: "Acme",
-							domain: "acme.com",
-							is_provider: false,
-						},
-						{
-							id: "org-provider",
-							name: "Provider",
-							domain: null,
-							is_provider: true,
-						},
-					]
-				: undefined,
-			isLoading: !orgsLoaded,
-		}));
-
-		const { user, rerender } = renderWithProviders(
-			<CreateUserDialog open={true} onOpenChange={onOpenChange} />,
-		);
-
-		await user.type(
-			screen.getByLabelText(/email address/i),
-			"admin@example.com",
-		);
-		await user.type(screen.getByLabelText(/display name/i), "Admin User");
-		await user.selectOptions(screen.getByLabelText(/userType/i), "platform");
-
-		orgsLoaded = true;
-		rerender(<CreateUserDialog open={true} onOpenChange={onOpenChange} />);
-
-		await user.click(screen.getByRole("button", { name: /create user/i }));
-
-		await waitFor(() => expect(mockCreateMutate).toHaveBeenCalled());
-		expect(mockCreateMutate.mock.calls[0]![0]).toEqual({
-			body: {
-				email: "admin@example.com",
-				name: "Admin User",
-				is_active: true,
-				is_superuser: true,
-				organization_id: "org-provider",
-			},
-		});
-		expect(screen.queryByText(/select an organization/i)).not.toBeInTheDocument();
-	});
-
-	it("falls back to the current platform admin organization when provider org is absent from the list", async () => {
-		const onOpenChange = vi.fn();
-		mockOrganizations.mockReturnValue({
-			data: [
-				{
-					id: "org-1",
-					name: "Acme",
-					domain: "acme.com",
-					is_provider: false,
-				},
-			],
-			isLoading: false,
-		});
-		mockAuth.mockReturnValue({
-			user: {
-				id: "admin-user",
-				email: "admin@example.com",
-				isSuperuser: true,
-				organizationId: "provider-from-auth",
-			},
-		});
-
+	it("disables sending registration email when no user.invited automation is configured", async () => {
+		mockEventSources.mockReturnValue({ data: { items: [] } });
 		const { user } = renderWithProviders(
-			<CreateUserDialog open={true} onOpenChange={onOpenChange} />,
+			<CreateUserDialog open={true} onOpenChange={vi.fn()} />,
 		);
 
 		await user.type(
 			screen.getByLabelText(/email address/i),
-			"admin@example.com",
+			"alice@example.com",
 		);
-		await user.type(screen.getByLabelText(/display name/i), "Admin User");
-		await user.selectOptions(screen.getByLabelText(/userType/i), "platform");
+		await user.type(screen.getByLabelText(/display name/i), "Alice");
+		await user.selectOptions(
+			screen.getByLabelText(/organization/i),
+			"org-1",
+		);
 		await user.click(screen.getByRole("button", { name: /create user/i }));
 
 		await waitFor(() => expect(mockCreateMutate).toHaveBeenCalled());
-		expect(mockCreateMutate.mock.calls[0]![0].body).toMatchObject({
-			is_superuser: true,
-			organization_id: "provider-from-auth",
+		expect(
+			await screen.findByRole("button", {
+				name: /send registration email/i,
+			}),
+		).toBeDisabled();
+		expect(
+			screen.queryByLabelText(/create invite link/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByLabelText(/trigger invite automation/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("sends the registration email from the success dialog", async () => {
+		const { user } = renderWithProviders(
+			<CreateUserDialog open={true} onOpenChange={vi.fn()} />,
+		);
+
+		await user.type(
+			screen.getByLabelText(/email address/i),
+			"alice@example.com",
+		);
+		await user.type(screen.getByLabelText(/display name/i), "Alice");
+		await user.selectOptions(
+			screen.getByLabelText(/organization/i),
+			"org-1",
+		);
+		await user.click(screen.getByRole("button", { name: /create user/i }));
+
+		await user.click(
+			await screen.findByRole("button", {
+				name: /send registration email/i,
+			}),
+		);
+
+		await waitFor(() => {
+			expect(mockSendInviteMutate).toHaveBeenCalledWith({
+				userId: "new-user-1",
+				registrationUrl: "https://example.test/accept-invite?token=abc",
+			});
 		});
-		expect(screen.queryByText(/select an organization/i)).not.toBeInTheDocument();
 	});
 });

@@ -133,14 +133,15 @@ class ProcessState(Enum):
     State of a worker process in the pool.
 
     Workers are one-shot — they only ever exist in BUSY (running their
-    single execution) or KILLED (terminating). IDLE is kept as a
-    no-longer-used value purely for any external consumer that may parse
-    the heartbeat shape; nothing in this module emits it.
+    single execution) or KILLED (terminating).
     """
 
-    IDLE = "idle"  # deprecated; unused since on-demand-only refactor
     BUSY = "busy"
     KILLED = "killed"
+
+
+class ProcessPoolAdmissionRejected(RuntimeError):
+    """Raised when local process-pool capacity cannot admit an execution."""
 
 
 @dataclass
@@ -258,10 +259,6 @@ class _PidWrapper:
 ResultCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
-class ProcessPoolAdmissionRejected(RuntimeError):
-    """Raised when local process-pool capacity cannot admit an execution."""
-
-
 def _get_private_dirty_kb(pid: int) -> int:
     """
     Read Private_Dirty from /proc/{pid}/smaps_rollup.
@@ -377,38 +374,6 @@ class ProcessPoolManager:
         # installs don't race — the second call waits for the first to
         # finish rather than trying to fork while the template is down.
         self._restart_lock = asyncio.Lock()
-
-    def _record_admission_success(self, wait_seconds: float) -> None:
-        self._admission_successes += 1
-        self._admission_wait_seconds_total += wait_seconds
-        self._admission_wait_seconds_max = max(
-            self._admission_wait_seconds_max,
-            wait_seconds,
-        )
-
-    def _record_admission_rejection(
-        self,
-        reason: str,
-        wait_seconds: float,
-        execution_id: str,
-    ) -> None:
-        self._admission_rejections[reason] = self._admission_rejections.get(reason, 0) + 1
-        self._admission_wait_seconds_total += wait_seconds
-        self._admission_wait_seconds_max = max(
-            self._admission_wait_seconds_max,
-            wait_seconds,
-        )
-        logger.warning(
-            "process_pool_admission_rejected",
-            extra={
-                "execution_id": execution_id,
-                "reason": reason,
-                "wait_seconds": wait_seconds,
-                "active_processes": len(self.processes),
-                "max_workers": self.max_workers,
-                "available_slots": max(0, self.max_workers - len(self.processes)),
-            },
-        )
 
     async def _get_redis(self) -> redis.Redis:  # type: ignore[type-arg]
         """Get or create Redis connection."""
@@ -707,18 +672,17 @@ class ProcessPoolManager:
             except asyncio.TimeoutError:
                 return False
 
-    async def reserve_execution_slot(
+    async def route_execution(
         self,
         execution_id: str,
         context: dict[str, Any],
-    ) -> ProcessHandle:
+    ) -> None:
         """
-        Reserve local process capacity for an execution without starting it.
+        Fork a one-shot worker for this execution.
 
         Waits for a free slot under the `max_workers` cap if the pool is
-        saturated. The context is written to Redis, and a forked child is
-        created and marked BUSY, but the execution_id is not sent to the child
-        until commit_reserved_execution() is called.
+        saturated. The context is written to Redis, and the execution_id
+        is sent to the forked child via the work queue.
 
         Args:
             execution_id: Unique identifier for the execution
@@ -742,10 +706,12 @@ class ProcessPoolManager:
             # Clean up the context we just wrote
             r = await self._get_redis()
             await r.delete(f"bifrost:exec:{execution_id}:context")
-            self._record_admission_rejection(
-                reason="memory_pressure",
-                wait_seconds=time.monotonic() - admission_started,
-                execution_id=execution_id,
+            wait_seconds = time.monotonic() - admission_started
+            self._admission_rejections["memory_pressure"] += 1
+            self._admission_wait_seconds_total += wait_seconds
+            self._admission_wait_seconds_max = max(
+                self._admission_wait_seconds_max,
+                wait_seconds,
             )
             raise MemoryError(
                 f"Cannot route execution {execution_id[:8]}: memory pressure "
@@ -756,12 +722,12 @@ class ProcessPoolManager:
         # _slot_condition, so this wakes immediately once a slot frees.
         if len(self.processes) >= self.max_workers:
             if not await self._wait_for_slot():
-                r = await self._get_redis()
-                await r.delete(f"bifrost:exec:{execution_id}:context")
-                self._record_admission_rejection(
-                    reason="slot_timeout",
-                    wait_seconds=time.monotonic() - admission_started,
-                    execution_id=execution_id,
+                wait_seconds = time.monotonic() - admission_started
+                self._admission_rejections["slot_timeout"] += 1
+                self._admission_wait_seconds_total += wait_seconds
+                self._admission_wait_seconds_max = max(
+                    self._admission_wait_seconds_max,
+                    wait_seconds,
                 )
                 raise ProcessPoolAdmissionRejected("No worker slot available after timeout")
 
@@ -777,52 +743,21 @@ class ProcessPoolManager:
             timeout_seconds=timeout,
         )
         handle.result_reported = False
-        self._record_admission_success(time.monotonic() - admission_started)
-
-        return handle
-
-    async def commit_reserved_execution(self, handle: ProcessHandle) -> None:
-        """Start an execution whose process slot has already been reserved."""
-        if handle.current_execution is None:
-            raise RuntimeError("Cannot commit reserved execution without execution info")
 
         # Send execution_id to the child
-        handle.work_queue.put_nowait(handle.current_execution.execution_id)
+        handle.work_queue.put_nowait(execution_id)
+        wait_seconds = time.monotonic() - admission_started
+        self._admission_successes += 1
+        self._admission_wait_seconds_total += wait_seconds
+        self._admission_wait_seconds_max = max(
+            self._admission_wait_seconds_max,
+            wait_seconds,
+        )
 
         logger.info(
-            f"Routed {handle.current_execution.execution_id[:8]}... to {handle.id} "
-            f"(timeout={handle.current_execution.timeout_seconds}s)"
+            f"Routed {execution_id[:8]}... to {handle.id} "
+            f"(timeout={timeout}s)"
         )
-
-    async def release_reserved_execution(self, handle: ProcessHandle) -> None:
-        """Release a reserved process slot before the execution is committed."""
-        execution_id = (
-            handle.current_execution.execution_id
-            if handle.current_execution is not None
-            else None
-        )
-        if execution_id:
-            r = await self._get_redis()
-            await r.delete(f"bifrost:exec:{execution_id}:context")
-
-        removed = self.processes.pop(handle.id, None)
-        if removed is not None:
-            await self._terminate_process(removed)
-            await self._notify_slot_free()
-
-    async def route_execution(
-        self,
-        execution_id: str,
-        context: dict[str, Any],
-    ) -> None:
-        """
-        Reserve local capacity and route an execution to a one-shot worker.
-
-        Prefer reserve_execution_slot() + commit_reserved_execution() when the
-        caller needs to persist "Running" only after capacity is reserved.
-        """
-        handle = await self.reserve_execution_slot(execution_id, context)
-        await self.commit_reserved_execution(handle)
 
     async def _write_context_to_redis(
         self,
@@ -1582,10 +1517,10 @@ class ProcessPoolManager:
         # Keep `idle_count` in the heartbeat shape for back-compat (always 0).
         idle_count = 0
         busy_count = len([p for p in self.processes.values() if p.state == ProcessState.BUSY])
+        max_workers = getattr(self, "max_workers", len(self.processes))
+        available_slots = max(0, max_workers - busy_count)
 
         memory_current, memory_max = get_cgroup_memory()
-        max_workers = getattr(self, "max_workers", len(self.processes))
-        available_slots = max(0, max_workers - len(self.processes))
 
         return {
             "type": "worker_heartbeat",
@@ -1599,20 +1534,24 @@ class ProcessPoolManager:
             "configured_capacity": max_workers,
             "max_workers": max_workers,
             "pool_size": len(self.processes),
-            "available_slots": available_slots,
             "idle_count": idle_count,
             "busy_count": busy_count,
-            "admission": {
-                "attempts": getattr(self, "_admission_attempts", 0),
-                "successes": getattr(self, "_admission_successes", 0),
-                "rejections": dict(getattr(self, "_admission_rejections", {})),
-                "wait_seconds_total": getattr(self, "_admission_wait_seconds_total", 0.0),
-                "wait_seconds_max": getattr(self, "_admission_wait_seconds_max", 0.0),
-            },
+            "available_slots": available_slots,
             "requirements_installed": self._requirements_installed,
             "requirements_total": self._requirements_total,
             "memory_current_bytes": memory_current,
             "memory_max_bytes": memory_max,
+            "admission": {
+                "attempts": getattr(self, "_admission_attempts", 0),
+                "successes": getattr(self, "_admission_successes", 0),
+                "rejections": dict(getattr(self, "_admission_rejections", {})),
+                "wait_seconds_total": getattr(
+                    self, "_admission_wait_seconds_total", 0.0
+                ),
+                "wait_seconds_max": getattr(
+                    self, "_admission_wait_seconds_max", 0.0
+                ),
+            },
         }
 
     def _get_process_memory(self, pid: int | None) -> float:
@@ -1674,6 +1613,13 @@ class ProcessPoolManager:
                 }
                 for p in self.processes.values()
             ],
+            "admission": {
+                "attempts": self._admission_attempts,
+                "successes": self._admission_successes,
+                "rejections": dict(self._admission_rejections),
+                "wait_seconds_total": self._admission_wait_seconds_total,
+                "wait_seconds_max": self._admission_wait_seconds_max,
+            },
         }
 
 

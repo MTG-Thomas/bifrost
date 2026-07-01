@@ -114,6 +114,40 @@ class OAuthLoginRequest(BaseModel):
     provider: str
 
 
+# ==================== CLI NATIVE OAUTH FLOW MODELS ====================
+
+
+class CliNativeAuthStartRequest(BaseModel):
+    """Request to start native CLI OAuth login."""
+    redirect_uri: str
+    state: str
+    code_challenge: str
+    code_challenge_method: str = "S256"
+
+
+class CliNativeAuthStartResponse(BaseModel):
+    """Response for native CLI OAuth login start."""
+    transaction_id: str
+    authorization_url: str
+    expires_in: int = 300
+
+
+class CliNativeAuthTokenRequest(BaseModel):
+    """Request to exchange a native CLI OAuth callback code for tokens."""
+    transaction_id: str
+    code: str
+    state: str
+    code_verifier: str
+
+
+class CliNativeAuthTokenResponse(BaseModel):
+    """Token response for native CLI OAuth login."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = 1800
+
+
 # ==================== DEVICE AUTHORIZATION FLOW MODELS ====================
 
 

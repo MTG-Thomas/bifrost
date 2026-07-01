@@ -13,9 +13,8 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fastapi import HTTPException
-
 from src.config import Settings
+from src.core.log_safety import log_safe
 from src.models import Workflow
 from src.models.orm.file_index import FileIndex
 from src.core.module_cache import set_module, invalidate_module
@@ -155,13 +154,6 @@ class FileOperationsService:
         Raises:
             ValueError: If path is excluded (system files, caches, etc.)
         """
-        # .bifrost/ files are generated artifacts, not user-editable
-        if path.startswith(".bifrost/") or path == ".bifrost":
-            raise HTTPException(
-                status_code=403,
-                detail=".bifrost/ files are system-generated and cannot be edited directly",
-            )
-
         # Check if path is excluded (system files, caches, metadata, etc.)
         from src.services.editor.file_filter import is_excluded_path
         if is_excluded_path(path):
@@ -262,7 +254,7 @@ class FileOperationsService:
             try:
                 await self._diagnostics.scan_for_sdk_issues(path, final_content)
             except Exception as e:
-                logger.warning(f"Failed to scan for SDK issues in {path}: {e}")
+                logger.warning("Failed to scan for SDK issues in %s: %s", log_safe(path), e)
 
         # Create or clear system notification based on diagnostic errors
         has_errors = diagnostics and any(d.severity == "error" for d in diagnostics)
@@ -270,19 +262,20 @@ class FileOperationsService:
             try:
                 await self._diagnostics.create_diagnostic_notification(path, diagnostics)
             except Exception as e:
-                logger.warning(f"Failed to create diagnostic notification for {path}: {e}")
+                logger.warning("Failed to create diagnostic notification for %s: %s", log_safe(path), e)
         else:
             try:
                 await self._diagnostics.clear_diagnostic_notification(path)
             except Exception as e:
-                logger.warning(f"Failed to clear diagnostic notification for {path}: {e}")
+                logger.warning("Failed to clear diagnostic notification for %s: %s", log_safe(path), e)
 
         # App files: rebuild bundle + fire pubsub for real-time preview
         app = await self._find_app_by_path(path)
         if not app and path.startswith("apps/"):
             logger.info(
-                f"No Application matched path {path!r} — preview refresh skipped. "
-                f"Check Application.repo_path."
+                "No Application matched path %r - preview refresh skipped. "
+                "Check Application.repo_path.",
+                log_safe(path),
             )
         if app:
             await self._rebuild_app_bundle(app, path, content_str, updated_by)
@@ -308,9 +301,9 @@ class FileOperationsService:
                 session_id=get_request_session_id(),
             )
         except Exception as e:
-            logger.warning(f"Failed to publish file_push for {path}: {e}")
+            logger.warning("Failed to publish file_push for %s: %s", log_safe(path), e)
 
-        logger.info(f"File written: {path} ({size_bytes} bytes) by {updated_by}")
+        logger.info("File written: %s (%s bytes) by %s", log_safe(path), size_bytes, log_safe(updated_by))
         return WriteResult(
             file_record=None,
             final_content=final_content,
@@ -326,12 +319,6 @@ class FileOperationsService:
 
         Pattern: S3 first (source of truth), then conditional side effects.
         """
-        if path.startswith(".bifrost/") or path == ".bifrost":
-            raise HTTPException(
-                status_code=403,
-                detail=".bifrost/ files are system-generated and cannot be edited directly",
-            )
-
         # === S3: Source of truth (must succeed) ===
         await self._delete_from_s3(path)
 
@@ -345,7 +332,7 @@ class FileOperationsService:
             try:
                 await op(path)
             except Exception as e:
-                logger.warning(f"Delete side effect failed for {path}: {e}")
+                logger.warning("Delete side effect failed for %s: %s", log_safe(path), e)
 
         # Broadcast file_delete event for watch mode sync
         try:
@@ -360,9 +347,9 @@ class FileOperationsService:
                 session_id=get_request_session_id(),
             )
         except Exception as e:
-            logger.warning(f"Failed to publish file_delete for {path}: {e}")
+            logger.warning("Failed to publish file_delete for %s: %s", log_safe(path), e)
 
-        logger.info(f"File deleted: {path}")
+        logger.info("File deleted: %s", log_safe(path))
 
     async def _delete_from_s3(self, path: str) -> None:
         """Delete from S3 _repo/ — source-of-truth operation."""
@@ -516,10 +503,13 @@ class FileOperationsService:
             try:
                 await self._diagnostics.clear_diagnostic_notification(path)
             except Exception as e:
-                logger.warning(f"Failed to clear bundler diagnostic for {path}: {e}")
+                logger.warning("Failed to clear bundler diagnostic for %s: %s", log_safe(path), e)
             logger.info(
-                f"App bundle rebuilt: app={app_id} path={relative_path} "
-                f"entry={m.entry} duration_ms={m.duration_ms}"
+                "App bundle rebuilt: app=%s path=%s entry=%s duration_ms=%s",
+                log_safe(app_id),
+                log_safe(relative_path),
+                log_safe(m.entry),
+                m.duration_ms,
             )
         else:
             errors = result.errors or []
@@ -556,19 +546,22 @@ class FileOperationsService:
                     target_path, diagnostics
                 )
             except Exception as e:
-                logger.warning(f"Failed to create bundler diagnostic for {path}: {e}")
+                logger.warning("Failed to create bundler diagnostic for %s: %s", log_safe(path), e)
             first = errors[0] if errors else None
             first_file = first.file if first else None
             first_line = first.line if first else None
             first_col = first.column if first else None
             first_msg = first.text if first else ""
             logger.warning(
-                f"App bundle BUILD FAILED: app={app_id} path={relative_path} "
-                f"errors={len(errors)} "
-                f"first_file={first_file!r} "
-                f"first_line={first_line} "
-                f"first_col={first_col} "
-                f"first_msg={first_msg!r}"
+                "App bundle BUILD FAILED: app=%s path=%s errors=%s first_file=%r "
+                "first_line=%s first_col=%s first_msg=%r",
+                log_safe(app_id),
+                log_safe(relative_path),
+                len(errors),
+                log_safe(first_file),
+                first_line,
+                first_col,
+                log_safe(first_msg),
             )
 
         try:
@@ -612,11 +605,16 @@ class FileOperationsService:
         if fi_result2.scalar_one_or_none():
             raise FileExistsError(f"File already exists: {new_path}")
 
-        # Update entity table paths for Python files
+        # Update entity table paths for Python files. Scope to _repo/ rows
+        # (solution_id IS NULL): renaming a WORKSPACE file must never rewrite the
+        # path of a solution-managed workflow at the same path — deploy owns those
+        # rows and their paths are install-relative, not workspace-relative
+        # (Codex #14).
         if old_path.endswith(".py"):
-            # Update any workflows that reference this path
+            # Update any _repo/ workflows that reference this path
             stmt = update(Workflow).where(
-                Workflow.path == old_path
+                Workflow.path == old_path,
+                Workflow.solution_id.is_(None),
             ).values(
                 path=new_path,
                 updated_at=now,

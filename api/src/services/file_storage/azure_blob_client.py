@@ -135,7 +135,6 @@ class AzureBlobStorageClient:
         list_kwargs: dict[str, Any] = {"name_starts_with": Prefix}
         if MaxKeys is not None:
             list_kwargs["results_per_page"] = MaxKeys
-
         pager = self._container_client.list_blobs(**list_kwargs).by_page(
             continuation_token=ContinuationToken,
         )

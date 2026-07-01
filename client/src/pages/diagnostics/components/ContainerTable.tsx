@@ -1,6 +1,6 @@
 // client/src/pages/diagnostics/components/ContainerTable.tsx
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight, Cloud, Server, Boxes } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, Cloud, Server } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/tooltip";
 
 type PoolData = PoolSummary | PoolDetail;
-type RuntimeKind = "AKS" | "VM" | "ACA" | "Unknown";
+type RuntimeKind = "AKS" | "VM" | "ACA" | "Talos" | "Unknown";
 
 function formatUptime(seconds: number): string {
     if (seconds < 60) return `${Math.floor(seconds)}s`;
@@ -81,10 +81,18 @@ function getUptimeSeconds(pool: PoolData): number {
 }
 
 function getRuntimeKind(pool: PoolData): RuntimeKind {
+    const explicitRuntime = pool.runtime?.trim().toLowerCase();
+    if (explicitRuntime === "talos") {
+        return "Talos";
+    }
+
     const workerId = pool.worker_id.toLowerCase();
     const hostname = (pool.hostname ?? "").toLowerCase();
     const source = `${workerId} ${hostname}`;
 
+    if (/\btalos\b/.test(source)) {
+        return "Talos";
+    }
     if (source.includes("aks") || source.includes("k8s")) {
         return "AKS";
     }
@@ -99,15 +107,23 @@ function getRuntimeKind(pool: PoolData): RuntimeKind {
 
 function RuntimeBadge({ pool }: Readonly<{ pool: PoolData }>) {
     const runtime = getRuntimeKind(pool);
-    const Icon = runtime === "AKS" ? Boxes : runtime === "ACA" ? Cloud : Server;
+    const Icon =
+        runtime === "AKS" || runtime === "Talos"
+            ? Boxes
+            : runtime === "ACA"
+                ? Cloud
+                : Server;
     const label =
-        runtime === "AKS"
+        pool.runtime_label ??
+        (runtime === "AKS"
             ? "AKS pod"
+            : runtime === "Talos"
+                ? "Talos pod"
             : runtime === "ACA"
                 ? "ACA app"
                 : runtime === "VM"
                     ? "VM"
-                    : "Unknown";
+                    : "Unknown");
 
     return (
         <Badge variant="outline" className="gap-1 text-[10px]">
@@ -144,9 +160,9 @@ export function ContainerTable({ pools, workerIds }: ContainerTableProps) {
     };
 
     return (
-        <div className="border rounded-lg overflow-hidden">
+        <div className="overflow-hidden rounded-2xl bg-card shadow-sm ring-1 ring-foreground/5 dark:ring-foreground/10">
             <Table>
-                <TableHeader>
+                <TableHeader className="bg-muted">
                     <TableRow className="text-xs">
                         <TableHead className="w-8" />
                         <TableHead>Container</TableHead>

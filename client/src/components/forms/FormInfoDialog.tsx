@@ -39,8 +39,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Check, ChevronsUpDown, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { ChevronsUpDown, X } from "lucide-react";
 import { useWorkflowsMetadata } from "@/hooks/useWorkflows";
 import { useRoles } from "@/hooks/useRoles";
 import { useAuth } from "@/contexts/AuthContext";
@@ -59,7 +58,7 @@ const formInfoSchema = z.object({
 	workflow_id: z.string().min(1, "Linked workflow is required"),
 	launch_workflow_id: z.string(),
 	default_launch_params: z.record(z.string(), z.unknown()),
-	access_level: z.enum(["authenticated", "role_based"]),
+	access_level: z.enum(["authenticated", "everyone", "role_based"]),
 	role_ids: z.array(z.string()),
 	organization_id: z.string().nullable(),
 });
@@ -134,7 +133,8 @@ export function FormInfoDialog({
 					default_launch_params:
 						(initialData.default_launch_params as Record<string, unknown>) || {},
 					access_level:
-						(initialData.access_level as "authenticated" | "role_based") || "role_based",
+						(initialData.access_level as "authenticated" | "everyone" | "role_based") ||
+						"role_based",
 					role_ids: initialRoleIds || [],
 					organization_id: initialData.organization_id ?? defaultOrgId,
 				});
@@ -542,9 +542,15 @@ export function FormInfoDialog({
 												},
 												{
 													value: "authenticated",
-													label: "Authenticated Users",
+													label: "Everyone except external users",
 													description:
-														"Any authenticated user can access",
+														"Any signed-in user except external users",
+												},
+												{
+													value: "everyone",
+													label: "Everyone",
+													description:
+														"Any signed-in user, including external users",
 												},
 											]}
 											placeholder="Select access level"
@@ -605,44 +611,25 @@ export function FormInfoDialog({
 																<CommandItem
 																	key={role.id}
 																	value={role.name || ""}
+																	data-checked={selectedRoleIds.includes(
+																		role.id,
+																	)}
 																	onSelect={() =>
 																		toggleRole(role.id)
 																	}
 																>
-																	<div className="flex items-center gap-2 flex-1">
-																		<Checkbox
-																			checked={selectedRoleIds.includes(
-																				role.id,
-																			)}
-																			onCheckedChange={() =>
-																				toggleRole(
-																					role.id,
-																				)
-																			}
-																		/>
-																		<div className="flex flex-col">
-																			<span className="font-medium">
-																				{role.name}
+																	<div className="flex flex-col flex-1">
+																		<span className="font-medium">
+																			{role.name}
+																		</span>
+																		{role.description && (
+																			<span className="text-xs text-muted-foreground">
+																				{
+																					role.description
+																				}
 																			</span>
-																			{role.description && (
-																				<span className="text-xs text-muted-foreground">
-																					{
-																						role.description
-																					}
-																				</span>
-																			)}
-																		</div>
-																	</div>
-																	<Check
-																		className={cn(
-																			"ml-auto h-4 w-4",
-																			selectedRoleIds.includes(
-																				role.id,
-																			)
-																				? "opacity-100"
-																				: "opacity-0",
 																		)}
-																	/>
+																	</div>
 																</CommandItem>
 															))}
 														</CommandGroup>
@@ -651,7 +638,7 @@ export function FormInfoDialog({
 											</PopoverContent>
 										</Popover>
 										{selectedRoleIds.length > 0 && (
-											<div className="flex flex-wrap gap-2 p-2 border rounded-md bg-muted/50">
+											<div className="flex flex-wrap gap-2 rounded-md bg-muted/50 p-2 ring-1 ring-foreground/5">
 												{selectedRoleIds.map((roleId) => {
 													const role = roles?.find(
 														(r: Role) => r.id === roleId,
@@ -738,7 +725,7 @@ export function FormInfoDialog({
 						{launchWorkflowId &&
 							launchWorkflowId !== "__none__" &&
 							launchWorkflowParams.length > 0 && (
-								<div className="space-y-3 rounded-lg border p-4 bg-muted/50">
+								<div className="space-y-3 rounded-lg bg-muted/50 p-4 ring-1 ring-foreground/5">
 									<div>
 										<Label className="text-sm font-medium">
 											Default Launch Parameters

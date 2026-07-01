@@ -3,7 +3,7 @@ import pathlib
 import threading
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -292,6 +292,34 @@ def test_watch_handler_respects_gitignore(tmp_path):
     assert str(real_path) in state.pending_changes
 
 
+def test_watch_handler_respects_root_gitignore_for_subdirectory_watch(tmp_path):
+    """Root .gitignore patterns should apply when watching a subdirectory."""
+    (tmp_path / ".gitignore").write_text("/apps/my-app/generated/\n*.local\n")
+    app_dir = tmp_path / "apps" / "my-app"
+    app_dir.mkdir(parents=True)
+    state = _WatchState(app_dir)
+    with patch("pathlib.Path.cwd", return_value=tmp_path):
+        handler = _WatchChangeHandler(state)
+
+        generated = app_dir / "generated" / "out.py"
+        generated.parent.mkdir()
+        generated.write_text("print('generated')\n")
+
+        local_config = app_dir / "settings.local"
+        local_config.write_text("secret\n")
+
+        real_path = app_dir / "workflow.py"
+        real_path.write_text("def run(): pass\n")
+
+        handler.dispatch(_fake_event("modified", str(generated)))
+        handler.dispatch(_fake_event("modified", str(local_config)))
+        handler.dispatch(_fake_event("modified", str(real_path)))
+
+    assert str(generated) not in state.pending_changes
+    assert str(local_config) not in state.pending_changes
+    assert str(real_path) in state.pending_changes
+
+
 def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     """Events under .bifrost/ should produce zero queued work, so a subsequent
     drain → push pipeline would issue zero REST calls."""
@@ -307,6 +335,10 @@ def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     changes, deletes = state.drain()
     assert changes == set()
     assert deletes == set()
+
+    # The batch push layer only posts drained work; empty sets mean zero calls.
+    assert not changes
+    assert not deletes
 
     # If a caller naively iterated drained sets and posted per file, no posts
     # would happen because both sets are empty. This documents the contract.
@@ -328,3 +360,42 @@ def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
         pass
 
     assert posted == []
+
+
+def test_watch_refuses_in_solution_workspace(tmp_path, capsys):
+    """`bifrost watch` must refuse inside a Solution workspace (D1): watch only
+    syncs to the global _repo/, so running it where a bifrost.solution.yaml is
+    present would silently push the developer's apps/ and workflows/ to the
+    wrong place. It must hard-fail (SystemExit) before doing any work via the
+    unified solution-workspace guard."""
+    import pytest
+
+    from bifrost.cli import handle_watch
+
+    # A directory that IS a Solution workspace (descriptor present).
+    (tmp_path / "bifrost.solution.yaml").write_text("slug: demo\nname: Demo\n")
+
+    with pytest.raises(SystemExit):
+        handle_watch([str(tmp_path)])
+
+    err = capsys.readouterr().err
+    assert "Solution workspace" in err
+    assert "solution deploy" in err
+
+
+def test_watch_allowed_in_plain_repo_workspace(tmp_path):
+    """A plain (non-Solution) workspace must NOT be refused by the solution
+    guard — watch proceeds past the check (it fails later on auth/lock in this
+    unit context, but NOT with the solution-workspace refusal)."""
+    from bifrost.cli import handle_watch
+
+    # No bifrost.solution.yaml here. Watch should pass the solution guard and
+    # fail later (no auth) — we only assert it is NOT the solution refusal.
+    with patch("bifrost.cli.WorkspaceLock") as mock_lock:
+        mock_lock.return_value.__enter__ = MagicMock(
+            side_effect=RuntimeError("stop-after-guard")
+        )
+        try:
+            handle_watch([str(tmp_path)])
+        except RuntimeError as e:
+            assert str(e) == "stop-after-guard"

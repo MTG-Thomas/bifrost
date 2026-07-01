@@ -39,6 +39,7 @@ from src.models.orm.agent_run_flag_conversations import AgentRunFlagConversation
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
+from src.models.orm.users import User
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ async def lifecycle_agent(
 
 @pytest_asyncio.fixture
 async def lifecycle_run(
-    lifecycle_agent, db_session: AsyncSession
+    lifecycle_agent, db_session: AsyncSession, platform_admin
 ) -> AsyncGenerator[AgentRun, None]:
     """Insert a completed AgentRun owned by ``lifecycle_agent``.
 
@@ -95,9 +96,15 @@ async def lifecycle_run(
     stack has no LLM provider, so a real run would never complete.
     """
     now = datetime.now(timezone.utc)
+    org_id = (
+        await db_session.execute(
+            select(User.organization_id).where(User.id == platform_admin.user_id)
+        )
+    ).scalar_one()
     run = AgentRun(
         id=uuid4(),
         agent_id=UUID(lifecycle_agent["id"]),
+        org_id=org_id,
         trigger_type="test",
         status="completed",
         iterations_used=2,

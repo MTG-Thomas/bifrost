@@ -18,14 +18,17 @@ import logging
 import uuid
 from typing import Any
 
-from src.core.constants import PROVIDER_ORG_ID, SYSTEM_USER_ID, SYSTEM_USER_EMAIL
+from opentelemetry import trace
+
+from src.core.constants import SYSTEM_USER_ID, SYSTEM_USER_EMAIL
 from src.core.log_safety import log_safe
 from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import publish_message
-from src.sdk.context import ExecutionContext
+from src.sdk.context import EventContext, ExecutionContext
 from src.services.execution.queue_tracker import add_to_queue
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 QUEUE_NAME = "workflow-executions"
 
@@ -44,6 +47,7 @@ async def _publish_pending(
     sync: bool,
     is_platform_admin: bool,
     file_path: str | None,
+    event: dict[str, Any] | None = None,
 ) -> None:
     """
     Write a pending-execution blob to Redis, register with the queue tracker,
@@ -53,40 +57,61 @@ async def _publish_pending(
     execution promoter. Callers are responsible for generating execution_id
     before calling this helper.
     """
-    redis_client = get_redis_client()
-
-    # Store pending execution in Redis (worker needs this for execution context)
-    await redis_client.set_pending_execution(
-        execution_id=execution_id,
-        workflow_id=workflow_id,
-        parameters=parameters,
-        org_id=org_id,
-        user_id=user_id,
-        user_name=user_name,
-        user_email=user_email,
-        form_id=form_id,
-        startup=startup,
-        api_key_id=api_key_id,
-        sync=sync,
-        is_platform_admin=is_platform_admin,
-    )
-
-    # Add to queue tracking (publishes position updates to all queued executions)
-    await add_to_queue(execution_id)
-
-    # Prepare queue message (minimal - worker reads full context from Redis)
-    message: dict[str, Any] = {
-        "execution_id": execution_id,
-        "workflow_id": workflow_id,
-        "sync": sync,
+    span_attributes = {
+        "bifrost.execution.id": execution_id,
+        "bifrost.workflow.id": workflow_id or "",
+        "bifrost.execution.organization_id": org_id or "",
+        "bifrost.execution.sync": sync,
+        "bifrost.execution.is_platform_admin": is_platform_admin,
+        "bifrost.execution.has_file_path": bool(file_path),
+        "messaging.system": "rabbitmq",
+        "messaging.destination.name": QUEUE_NAME,
     }
+    if event:
+        span_attributes["bifrost.execution.event.source"] = str(event.get("source") or "")
 
-    # Include file_path for fast direct loading (avoids filesystem scan)
-    if file_path:
-        message["file_path"] = file_path
+    with tracer.start_as_current_span("bifrost.workflow.enqueue", attributes=span_attributes) as span:
+        try:
+            redis_client = get_redis_client()
 
-    # Enqueue message via RabbitMQ
-    await publish_message(QUEUE_NAME, message)
+            # Store pending execution in Redis (worker needs this for execution context)
+            await redis_client.set_pending_execution(
+                execution_id=execution_id,
+                workflow_id=workflow_id,
+                parameters=parameters,
+                org_id=org_id,
+                user_id=user_id,
+                user_name=user_name,
+                user_email=user_email,
+                form_id=form_id,
+                startup=startup,
+                api_key_id=api_key_id,
+                sync=sync,
+                is_platform_admin=is_platform_admin,
+                event=event,
+            )
+
+            # Add to queue tracking (publishes position updates to all queued executions)
+            await add_to_queue(execution_id)
+
+            # Prepare queue message (minimal - worker reads full context from Redis)
+            message: dict[str, Any] = {
+                "execution_id": execution_id,
+                "workflow_id": workflow_id,
+                "sync": sync,
+            }
+
+            # Include file_path for fast direct loading (avoids filesystem scan)
+            if file_path:
+                message["file_path"] = file_path
+
+            # Enqueue message via RabbitMQ
+            await publish_message(QUEUE_NAME, message)
+            span.set_attribute("bifrost.execution.enqueue.status", "queued")
+        except Exception as exc:
+            span.set_attribute("bifrost.execution.enqueue.status", "failed")
+            span.set_attribute("bifrost.execution.error_type", type(exc).__name__)
+            raise
 
 
 async def enqueue_workflow_execution(
@@ -115,7 +140,6 @@ async def enqueue_workflow_execution(
         sync: If True, worker will push result to Redis for caller to BLPOP
         api_key_id: Optional workflow ID whose API key triggered this execution
         file_path: Optional file path (for fast direct loading, avoids filesystem scan)
-        org_id_override: Optional org scope for queueing when context.organization is unset
 
     Returns:
         execution_id: UUID of the queued execution
@@ -124,17 +148,19 @@ async def enqueue_workflow_execution(
     if execution_id is None:
         execution_id = str(uuid.uuid4())
 
-    effective_org_id = (
-        org_id_override
-        if org_id_override is not None
-        else context.org_id
-    )
+    # Serialize event context for cross-process transit. EventContext is a
+    # dataclass with primitive fields, so dict serialization is lossless and
+    # JSON-safe for Redis storage.
+    event_payload: dict[str, Any] | None = None
+    if context.event is not None:
+        import dataclasses
+        event_payload = dataclasses.asdict(context.event)
 
     await _publish_pending(
         execution_id=execution_id,
         workflow_id=workflow_id,
         parameters=parameters,
-        org_id=effective_org_id,
+        org_id=org_id_override or context.org_id,
         user_id=context.user_id,
         user_name=context.name,
         user_email=context.email,
@@ -144,6 +170,7 @@ async def enqueue_workflow_execution(
         sync=sync,
         is_platform_admin=context.is_platform_admin,
         file_path=file_path,
+        event=event_payload,
     )
 
     logger.info(
@@ -151,7 +178,7 @@ async def enqueue_workflow_execution(
         extra={
             "execution_id": execution_id,
             "workflow_id": workflow_id,
-            "org_id": effective_org_id
+            "org_id": context.org_id
         }
     )
 
@@ -233,19 +260,21 @@ async def enqueue_system_workflow_execution(
     parameters: dict[str, Any],
     source: str,
     org_id: str | None = None,
+    event: EventContext | None = None,
 ) -> str:
     """
     Enqueue a system-triggered workflow execution.
 
     Handles execution_id generation internally - callers don't need to pre-generate.
     Uses the system user for executions not triggered by a real user
-    (webhooks, schedules, internal events).
+    (webhooks, schedules, topic events).
 
     Args:
         workflow_id: UUID of workflow to execute
         parameters: Workflow parameters
         source: Display name for what triggered this (e.g., "Event System", "Scheduled Execution")
         org_id: Optional organization scope (UUID string, not "ORG:" prefixed)
+        event: Optional EventContext populated for event-triggered executions
 
     Returns:
         execution_id: UUID string of the queued execution
@@ -255,22 +284,18 @@ async def enqueue_system_workflow_execution(
 
     from src.config import get_settings
 
-    # System-triggered runs default to the provider org so MSP-wide integrations
-    # and cross-scope SDK calls work without requiring every schedule/webhook to
-    # restate the provider org explicitly.
-    effective_org_id = org_id or str(PROVIDER_ORG_ID)
-
     context = ExecutionContext(
         user_id=SYSTEM_USER_ID,
         email=SYSTEM_USER_EMAIL,
         name=source,
-        scope=f"ORG:{effective_org_id}",
+        scope=f"ORG:{org_id}" if org_id else "GLOBAL",
         organization=None,
         is_platform_admin=True,
         is_function_key=False,
         execution_id=execution_id,
         workflow_name="",  # Will be set by worker when loading workflow
         public_url=get_settings().public_url,
+        event=event,
     )
 
     return await enqueue_workflow_execution(
@@ -278,5 +303,5 @@ async def enqueue_system_workflow_execution(
         workflow_id=workflow_id,
         parameters=parameters,
         execution_id=execution_id,  # Pass explicitly to avoid double generation
-        org_id_override=effective_org_id,
+        org_id_override=org_id or "00000000-0000-0000-0000-000000000002",
     )

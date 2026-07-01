@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException, status
 from starlette.middleware.cors import CORSMiddleware
 
 from src.core.auth import CurrentActiveUser
-from src.core.database import DbSession
+from src.core.db_deps import DbSession
 from src.models.contracts.mcp import (
     MCPConfigRequest,
     MCPConfigResponse,
@@ -90,6 +90,7 @@ async def mcp_status(
         is_superuser=current_user.is_superuser,
         user_id=current_user.user_id,
         org_id=current_user.organization_id,
+        is_external=current_user.is_external,
     )
 
     return {
@@ -363,6 +364,7 @@ async def list_mcp_tools(
         is_superuser=current_user.is_superuser,
         user_id=current_user.user_id,
         org_id=current_user.organization_id,
+        is_external=current_user.is_external,
     )
 
     # Convert ToolInfo to MCPToolInfo for response

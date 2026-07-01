@@ -60,13 +60,13 @@ class TestWorkflowRepository:
         assert result == mock_workflow
         mock_get.assert_called_once_with(id=mock_workflow.id)
 
-    async def test_resolve_bare_name_returns_none(self, repository):
-        """resolve() does not support bare names — only UUID and path::function_name."""
-        with patch.object(repository, 'get') as mock_get:
+    async def test_resolve_bare_name_uses_active_repo_cascade(self, repository, mock_workflow):
+        """Bare names resolve through the active non-solution org/global cascade."""
+        with patch.object(repository, 'get', return_value=mock_workflow) as mock_get:
             result = await repository.resolve("my_workflow")
 
-        assert result is None
-        mock_get.assert_not_called()
+        assert result == mock_workflow
+        mock_get.assert_called_once_with(name="my_workflow", is_active=True)
 
     async def test_resolve_uuid_not_found(self, repository):
         """Test resolve() returns None when UUID not found."""
@@ -82,7 +82,9 @@ class TestWorkflowRepository:
             result = await repository.resolve("workflows/customers.py::list_customers")
 
         assert result == mock_workflow
-        mock_resolve.assert_called_once_with("workflows/customers.py::list_customers")
+        mock_resolve.assert_called_once_with(
+            "workflows/customers.py::list_customers", solution_scope=None
+        )
 
     async def test_resolve_by_path_ref_with_feature_prefix(self, repository, mock_workflow):
         """Test resolve() with feature-prefixed path::function_name format."""
@@ -91,7 +93,7 @@ class TestWorkflowRepository:
             result = await repository.resolve(ref)
 
         assert result == mock_workflow
-        mock_resolve.assert_called_once_with(ref)
+        mock_resolve.assert_called_once_with(ref, solution_scope=None)
 
     async def test_resolve_by_path_ref_not_found(self, repository, mock_session):
         """Test resolve() returns None when path::function_name not found."""
@@ -102,6 +104,38 @@ class TestWorkflowRepository:
         result = await repository.resolve("workflows/missing.py::nonexistent")
 
         assert result is None
+
+    async def test_resolve_path_ref_unscoped_ambiguous_solution_rows_refused(
+        self, repository, mock_session
+    ):
+        """An UNSCOPED caller resolving a path that matches 2+ solution rows and
+        NO _repo/ row must get None — never an arbitrary install's workflow."""
+        row_a = MagicMock()
+        row_a.solution_id = uuid4()
+        row_b = MagicMock()
+        row_b.solution_id = uuid4()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [row_a, row_b]
+        mock_session.execute.return_value = mock_result
+
+        result = await repository.resolve("workflows/main.py::main")
+
+        assert result is None
+
+    async def test_resolve_path_ref_unscoped_single_solution_row_resolves(
+        self, repository, mock_session
+    ):
+        """Regression guard: exactly ONE visible solution row (no _repo/ row)
+        still resolves for an unscoped caller — nothing ambiguous about it."""
+        row = MagicMock()
+        row.solution_id = uuid4()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [row]
+        mock_session.execute.return_value = mock_result
+
+        result = await repository.resolve("workflows/main.py::main")
+
+        assert result == row
 
     async def test_resolve_path_ref_prefers_over_name_lookup(self, repository, mock_workflow):
         """Test that :: in identifier triggers path ref lookup, not name lookup."""

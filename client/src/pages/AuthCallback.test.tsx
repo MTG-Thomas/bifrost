@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 
 import { AuthCallback } from "./AuthCallback";
 
@@ -26,13 +26,13 @@ vi.mock("@/contexts/AuthContext", () => ({
 
 describe("AuthCallback", () => {
 	beforeEach(() => {
+		loginWithOAuth.mockReset();
 		loginWithOAuth.mockResolvedValue(undefined);
 		navigate.mockReset();
 		sessionStorage.clear();
-		sessionStorage.setItem("oauth_state", "stale-client-state");
 	});
 
-	it("lets the server validate OAuth state instead of reading browser storage", async () => {
+	it("lets the server validate OAuth state when no browser state is stored", async () => {
 		const getItem = vi.spyOn(Storage.prototype, "getItem");
 		const removeItem = vi.spyOn(Storage.prototype, "removeItem");
 
@@ -59,8 +59,32 @@ describe("AuthCallback", () => {
 			);
 		});
 		expect(navigate).toHaveBeenCalledWith("/", { replace: true });
-		expect(getItem).not.toHaveBeenCalledWith("oauth_state");
+		expect(getItem).toHaveBeenCalledWith("oauth_state");
 		expect(removeItem).not.toHaveBeenCalledWith("oauth_state");
 		expect(removeItem).not.toHaveBeenCalledWith("oauth_provider");
+	});
+
+	it("rejects and clears a mismatched stored OAuth state", async () => {
+		const removeItem = vi.spyOn(Storage.prototype, "removeItem");
+		sessionStorage.setItem("oauth_state", "stale-client-state");
+
+		render(
+			<MemoryRouter
+				initialEntries={[
+					"/auth/callback/microsoft?code=auth-code&state=server-state",
+				]}
+			>
+				<Routes>
+					<Route
+						path="/auth/callback/:provider"
+						element={<AuthCallback />}
+					/>
+				</Routes>
+			</MemoryRouter>,
+		);
+
+		expect(await screen.findByText("Invalid OAuth state")).toBeTruthy();
+		expect(loginWithOAuth).not.toHaveBeenCalled();
+		expect(removeItem).toHaveBeenCalledWith("oauth_state");
 	});
 });

@@ -70,6 +70,7 @@ class ToolFilterMiddleware(Middleware):
 
         user_roles = token.claims.get("roles", [])
         is_superuser = token.claims.get("is_superuser", False)
+        is_external = token.claims.get("is_external", False)
         user_id = token.claims.get("user_id")
         org_id = token.claims.get("org_id")
 
@@ -85,6 +86,7 @@ class ToolFilterMiddleware(Middleware):
                     is_superuser=is_superuser,
                     user_id=user_id,
                     org_id=org_id,
+                    is_external=is_external,
                 )
 
             if agent_result and agent_result.system_prompt:
@@ -124,6 +126,7 @@ class ToolFilterMiddleware(Middleware):
 
         user_roles = token.claims.get("roles", [])
         is_superuser = token.claims.get("is_superuser", False)
+        is_external = token.claims.get("is_external", False)
         user_email = token.claims.get("email", "unknown")
         user_id = token.claims.get("user_id")
         org_id = token.claims.get("org_id")
@@ -140,34 +143,52 @@ class ToolFilterMiddleware(Middleware):
             from src.core.database import get_db_context
             from src.services.mcp_server.tool_access import MCPToolAccessService
 
-            async with get_db_context() as db:
-                service = MCPToolAccessService(db)
+            async def load_accessible_ids() -> set[str]:
+                async with get_db_context() as db:
+                    service = MCPToolAccessService(db)
 
-                if agent_id is not None:
-                    # Agent-scoped: only tools from this specific agent
-                    agent_result = await service.get_tools_for_agent(
-                        agent_id=agent_id,
-                        user_roles=user_roles,
-                        is_superuser=is_superuser,
-                        user_id=user_id,
-                        org_id=org_id,
-                    )
-                    if agent_result is None:
-                        logger.warning(
-                            f"MCP tools/list: Agent {agent_id} not found or access denied "
-                            f"for user {user_email}"
+                    if agent_id is not None:
+                        # Agent-scoped: only tools from this specific agent
+                        agent_result = await service.get_tools_for_agent(
+                            agent_id=agent_id,
+                            user_roles=user_roles,
+                            is_superuser=is_superuser,
+                            user_id=user_id,
+                            org_id=org_id,
                         )
-                        return []
-                    accessible_ids = {t.id for t in agent_result.tools}
-                else:
+                        if agent_result is None:
+                            logger.warning(
+                                f"MCP tools/list: Agent {agent_id} not found or access denied "
+                                f"for user {user_email}"
+                            )
+                            return set()
+                        return {t.id for t in agent_result.tools}
+
                     # All-agents mode (existing behavior)
                     result = await service.get_accessible_tools(
                         user_roles=user_roles,
                         is_superuser=is_superuser,
                         user_id=user_id,
                         org_id=org_id,
+                        is_external=is_external,
                     )
-                    accessible_ids = {t.id for t in result.tools}
+                    return {t.id for t in result.tools}
+
+            accessible_ids = await load_accessible_ids()
+            if agent_id is not None and not accessible_ids:
+                return []
+
+            all_tool_names = {tool.name for tool in all_tools}
+            if accessible_ids - all_tool_names:
+                # Workflow tools can be created or edited after the FastMCP
+                # ASGI app starts. If the access service can see a tool that
+                # FastMCP has not registered yet, refresh before filtering so
+                # tools/list does not incorrectly return an empty list.
+                from src.services.mcp_server.server import refresh_workflow_tools
+
+                await refresh_workflow_tools()
+                all_tools = await call_next(context)
+                accessible_ids = await load_accessible_ids()
 
             # Filter to only accessible tools
             filtered_tools = [
@@ -215,6 +236,7 @@ class ToolFilterMiddleware(Middleware):
 
         user_roles = token.claims.get("roles", [])
         is_superuser = token.claims.get("is_superuser", False)
+        is_external = token.claims.get("is_external", False)
         user_email = token.claims.get("email", "unknown")
         user_id = token.claims.get("user_id")
         org_id = token.claims.get("org_id")
@@ -237,6 +259,7 @@ class ToolFilterMiddleware(Middleware):
                         is_superuser=is_superuser,
                         user_id=user_id,
                         org_id=org_id,
+                        is_external=is_external,
                     )
                     if agent_result is None:
                         raise ToolError(
@@ -250,6 +273,7 @@ class ToolFilterMiddleware(Middleware):
                         is_superuser=is_superuser,
                         user_id=user_id,
                         org_id=org_id,
+                        is_external=is_external,
                     )
                     accessible_ids = {t.id for t in result.tools}
 

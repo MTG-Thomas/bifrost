@@ -207,3 +207,4 @@ class TestBroadcastConsumerHasDrain:
         assert isinstance(consumer._inflight, set)
         assert consumer._consumer_tag is None
         assert consumer._draining is False
+        assert consumer.queue_name == "test-fanout (broadcast)"

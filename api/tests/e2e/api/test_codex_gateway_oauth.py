@@ -1,12 +1,14 @@
 """E2E coverage for Codex Gateway upstream OAuth onboarding."""
 
 import pytest
+import httpx
 
 
 @pytest.mark.e2e
 class TestCodexGatewayOAuth:
     def test_requires_authenticated_user(self, e2e_client):
-        response = e2e_client.get("/api/codex-gateway/oauth/status")
+        with httpx.Client(base_url=e2e_client.base_url, timeout=30.0) as fresh_client:
+            response = fresh_client.get("/api/codex-gateway/oauth/status")
 
         assert response.status_code == 401
 

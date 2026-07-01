@@ -99,7 +99,6 @@ def get_requirements_sync() -> str | None:
         if not content:
             return None
 
-        # Re-cache to Redis for next time
         try:
             content_hash = hashlib.sha256(content.encode()).hexdigest()
             cached_data = CachedRequirements(content=content, hash=content_hash)

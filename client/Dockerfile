@@ -5,8 +5,8 @@
 # Stage 1: Base with dependencies
 # Uses BUILDPLATFORM to run on native architecture (no QEMU emulation)
 # =============================================================================
-# node:26-slim
-FROM --platform=$BUILDPLATFORM node:26-slim@sha256:424cafd2a035ed2b2d74acc3142b68b426fb62a47742c80a75e7117db02d6b30 AS base
+# node:20-slim
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:95a34da32a840bd9b3b09a5b773591c16923e350174b1c50e1200c75bf15eaa9 AS base
 
 WORKDIR /app
 
@@ -35,16 +35,8 @@ RUN npm run build
 # Stage 3: Production with nginx
 # =============================================================================
 # nginx:alpine
-FROM nginx:alpine@sha256:dc48b7a872a79fb541ba5081d320b11b549231bc63ba465a7495afaa7d2ebcb8 AS production
-
-RUN if command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache libcap; \
-    else \
-        apt-get update && \
-        apt-get install -y --no-install-recommends libcap2-bin && \
-        rm -rf /var/lib/apt/lists/*; \
-    fi && \
-    setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx
+# NOSONAR - nginx master starts as root to bind port 80, then serves workers as configured by the base image.
+FROM nginx:alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a AS production
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -52,8 +44,9 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-RUN touch /var/run/nginx.pid && \
-    chown -R nginx:nginx /var/run/nginx.pid /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /usr/share/nginx/html
+RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx /etc/nginx/conf.d \
+    && touch /var/run/nginx.pid \
+    && chown nginx:nginx /var/run/nginx.pid
 
 USER nginx
 

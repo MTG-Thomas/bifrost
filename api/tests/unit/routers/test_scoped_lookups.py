@@ -78,7 +78,7 @@ class TestTableRepositoryScopedLookup:
         self, mock_session, org_id
     ):
         """When same name exists in org AND global, return org-specific."""
-        from src.routers.tables import TableRepository
+        from src.repositories.tables import TableRepository
 
         org_table = make_table("shared_table", org_id)
 
@@ -98,7 +98,7 @@ class TestTableRepositoryScopedLookup:
 
     async def test_name_only_in_global_returns_global(self, mock_session, org_id):
         """When name only exists in global scope, return global."""
-        from src.routers.tables import TableRepository
+        from src.repositories.tables import TableRepository
 
         global_table = make_table("shared_table", None)
 
@@ -123,7 +123,7 @@ class TestTableRepositoryScopedLookup:
 
     async def test_name_only_in_org_returns_org_specific(self, mock_session, org_id):
         """When name only exists in org scope, return org-specific."""
-        from src.routers.tables import TableRepository
+        from src.repositories.tables import TableRepository
 
         org_table = make_table("shared_table", org_id)
 
@@ -143,7 +143,7 @@ class TestTableRepositoryScopedLookup:
 
     async def test_no_org_id_only_checks_global(self, mock_session):
         """When no org_id, only check global scope."""
-        from src.routers.tables import TableRepository
+        from src.repositories.tables import TableRepository
 
         global_table = make_table("shared_table", None)
 
@@ -162,7 +162,7 @@ class TestTableRepositoryScopedLookup:
 
     async def test_name_not_found_returns_none(self, mock_session, org_id):
         """When name doesn't exist anywhere, return None."""
-        from src.routers.tables import TableRepository
+        from src.repositories.tables import TableRepository
 
         # Both queries return None
         mock_result = MagicMock()
@@ -194,7 +194,7 @@ class TestConfigRepositoryScopedLookup:
         self, mock_session, org_id
     ):
         """When same key exists in org AND global, return org-specific."""
-        from src.routers.config import ConfigRepository
+        from src.repositories.config import ConfigRepository
 
         org_config = make_config("shared_key", org_id, "org_value")
 
@@ -214,7 +214,7 @@ class TestConfigRepositoryScopedLookup:
 
     async def test_key_only_in_global_returns_global(self, mock_session, org_id):
         """When key only exists in global scope, return global."""
-        from src.routers.config import ConfigRepository
+        from src.repositories.config import ConfigRepository
 
         global_config = make_config("shared_key", None, "global_value")
 
@@ -239,7 +239,7 @@ class TestConfigRepositoryScopedLookup:
 
     async def test_key_only_in_org_returns_org_specific(self, mock_session, org_id):
         """When key only exists in org scope, return org-specific."""
-        from src.routers.config import ConfigRepository
+        from src.repositories.config import ConfigRepository
 
         org_config = make_config("shared_key", org_id, "org_value")
 
@@ -1155,8 +1155,10 @@ class TestApplicationCrossOrgSlugLookup:
         """get_by_slug_global finds app regardless of which org it belongs to."""
         from src.routers.applications import ApplicationRepository
 
+        # get_by_slug_global fetches all slug matches (scalars().all()) and
+        # disambiguates in Python — slug uniqueness is per-install now.
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = org_b_app
+        mock_result.scalars.return_value.all.return_value = [org_b_app]
         mock_session.execute.return_value = mock_result
 
         # Repo is scoped to org A, but get_by_slug_global has no org filter
@@ -1176,7 +1178,7 @@ class TestApplicationCrossOrgSlugLookup:
         from src.routers.applications import ApplicationRepository
 
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
+        mock_result.scalars.return_value.all.return_value = []
         mock_session.execute.return_value = mock_result
 
         repo = ApplicationRepository(
@@ -1283,5 +1285,9 @@ class TestGetApplicationOr404SuperuserSlug:
             )
 
         assert result is org_b_app
-        repo_instance.can_access.assert_called_once_with(slug="org-b-app")
+        # include_solution_managed=True so a deployed (solution-managed) app is
+        # openable by slug for regular users (criterion 16).
+        repo_instance.can_access.assert_called_once_with(
+            slug="org-b-app", include_solution_managed=True
+        )
         repo_instance.get_by_slug_global.assert_not_called()

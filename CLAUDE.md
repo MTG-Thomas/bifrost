@@ -2,9 +2,57 @@
 
 MSP automation platform built with FastAPI and React.
 
-## Agent Guidance
+## Worktree rule (CRITICAL)
 
-Start with [`AGENTS.md`](./AGENTS.md) for the tool-neutral agent contract. This file is the detailed Bifrost/Claude playbook and remains authoritative for repo-specific commands, invariants, and verification details.
+All changes — features, fixes, refactors, doc edits — must be made in a git worktree, never directly on `main` (or any shared branch) in the primary checkout. If a task is about to modify files and the current working directory is the primary `bifrost` checkout, stop and create or enter a worktree first. Use `EnterWorktree` (or `git worktree add .claude/worktrees/<name>`). The only edits permitted on `main` are ones the user explicitly requests be made there.
+
+## Org scoping (CRITICAL)
+
+If you are touching code that reads or writes anything with an `organization_id` column, **read `api/src/repositories/README.md` before you write code.** That file is the single source of truth.
+
+The short version:
+
+- Every execution-resolution entity (Config, Table, OAuth tokens, etc.) goes through `OrgScopedRepository`. There is exactly one cascade primitive and it lives in the base class. Do not write inline `WHERE organization_id == x OR organization_id IS NULL` queries in routers — the lint test catches this.
+- The scope resolver is `api/shared/scope_resolver.py::resolve_effective_scope`. Four rules: UNSET → caller's default org; explicit `None` → bypass-only (global); caller's own org → always allowed; any other UUID → bypass-only. UNSET and explicit `None` are NOT the same. **"Bypass" means `is_platform_admin OR is_provider_org`** — two independent flags, either of which grants cross-org/global scope (a platform admin in any org, OR a non-admin member of the provider org). Don't collapse it to "platform admin only." See `api/src/repositories/README.md` ("Why two independent bypass flags?") for the full table.
+- Two repository methods: `get(name=...)` returns one row with cascade-and-override; `list()` returns the cascade union (and applies role filter when the repo was constructed with a regular user). User-ness lives on the repository instance, not the method.
+- Identity entities (Organization, User, UserRole, OAuthAccount, AuditLog) do NOT go through this pattern. They belong to an org but are never resolved by name with cascade.
+- MCP authenticates as the user directly and does not follow the engine-sentinel pattern.
+
+When in doubt, read the README. When you find yourself reinventing the cascade or the resolver, stop and use the canonical version.
+
+## Spinning up the dev environment and connecting
+
+Use this whenever you need a running Bifrost instance to exercise — clicking around, screenshots, browser testing, or driving the API directly via the CLI. Always do this from the worktree, not the primary checkout.
+
+1. **Boot the stack** from the worktree root:
+   ```bash
+   ./debug.sh up
+   ./debug.sh status
+   ```
+   Capture the URL from `./debug.sh status`. Under netbird mode (default when `NETBIRD_SETUP_KEY` is set), the host-reachable URL is the full `http://bifrost-debug-<name>-<n>-<n>.netbird.cloud` form — the short `http://bifrost-debug-<name>` form is only resolvable from inside the mesh. Under port mode, the URL is `http://localhost:<port>`.
+
+2. **Connect via the CLI** from an isolated scratch directory outside the repo (not the worktree, not `~`). This keeps `.env`/credentials out of the source tree and lets you install the API-matched CLI without disturbing the user's global `bifrost` install:
+   ```bash
+   mkdir -p /tmp/bifrost-cli-<name>
+   cd /tmp/bifrost-cli-<name>
+   python3 -m venv .venv
+   .venv/bin/pip install --quiet --upgrade pip
+   .venv/bin/pip install --quiet "<API_URL>/api/cli/download"
+   ```
+   The download endpoint serves the build matching the running API; installing this version avoids the version-mismatch warning that otherwise short-circuits subcommand output.
+
+3. **Log in** inside the scratch directory using password-grant. This writes `.env` (with `BIFROST_API_URL`, `BIFROST_ACCESS_TOKEN`, `BIFROST_REFRESH_TOKEN`) so subsequent commands in this directory pick the tokens up automatically:
+   ```bash
+   ./.venv/bin/bifrost login --url <API_URL> --email dev@gobifrost.com --password password
+   ```
+   Default credentials are `dev@gobifrost.com` / `password` (MFA off) — password-grant works only because the dev stack has MFA disabled.
+
+4. **Drive the API** with `./.venv/bin/bifrost <entity> <command> ...`. Use `--help` on any subcommand. Browser testing goes against the URL from step 1.
+
+Tips:
+- If a CLI command appears to succeed silently, run the matching `list` to verify — version-mismatch warnings can otherwise mask failures (do not pipe to `/dev/null` blindly).
+- The netbird sidecar can transiently drop the peer; if connections start failing, re-check `./debug.sh status` and re-fetch the URL.
+- For seeding entities to exercise a UI change (e.g. enough apps/agents to make a page overflow), use `bifrost apps create`, `bifrost agents create`, etc., from this same scratch venv.
 
 ## Technologies
 
@@ -30,6 +78,8 @@ Start the development stack (per-worktree isolated):
 `./debug.sh` derives its Compose project name from the worktree path, so multiple worktrees can run debug stacks in parallel. URL and login are printed at the end of `up` (default: `dev@gobifrost.com` / `password`, MFA off).
 
 The default mode allocates a free local port for the client (deterministic per worktree, in 30000-39999). If `NETBIRD_SETUP_KEY` is set in `~/.config/bifrost/debug.env`, the stack boots with a Netbird sidecar instead and is reachable at `http://<bifrost-debug-WORKTREE>` over the Netbird mesh — no host ports.
+
+**Forcing port mode for browser/Playwright work:** Chrome/Playwright cannot drive netbird stacks (Vite HMR websocket hangs). If your `~/.config/bifrost/debug.env` has `NETBIRD_SETUP_KEY`, run `BIFROST_FORCE_PORT=1 ./debug.sh up` to force port mode for that boot without editing the global config. `env -u NETBIRD_SETUP_KEY ./debug.sh up` does **not** work — `debug.sh` re-sources the global `debug.env` under `set -a`, re-introducing the key.
 
 Stack contains: API (port 8000 internal), Client (port 80 internal), Scheduler, Worker, Postgres, RabbitMQ, Redis, SeaweedFS. All Bifrost services build from `api/Dockerfile.dev` / `client/Dockerfile.dev` (source build, not public images).
 
@@ -126,17 +176,18 @@ The git sync system uses a **manifest** (`.bifrost/*.yaml`) to round-trip platfo
 
 ## Keeping CLI, MCP, and manifest in sync
 
-Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`), **MCP** (`api/src/services/mcp_server/tools/`), and **manifest export** (`.bifrost/*.yaml` via `bifrost sync` / `bifrost export`). All three read from the same `XxxCreate` / `XxxUpdate` Pydantic DTOs via `api/bifrost/dto_flags.py`, so drift is caught by tests rather than review discipline.
+Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`), **MCP** (`api/src/services/mcp_server/tools/`), and **manifest sync** (`.bifrost/*.yaml` via git sync and Solutions). All three read from the same `XxxCreate` / `XxxUpdate` Pydantic DTOs via `api/bifrost/dto_flags.py`, so drift is caught by tests rather than review discipline.
 
 **When a DTO changes:**
 
 1. Run the DTO-parity test: `./test.sh tests/unit/test_dto_flags.py`. If it fails, either add the new field to the appropriate CLI command / MCP tool, or add it to `DTO_EXCLUDES` in `api/bifrost/dto_flags.py` with a one-line comment explaining why (UI-managed, out-of-scope, etc.).
-2. If the field should round-trip in portable exports, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the scrub rules in `api/bifrost/portable.py`.
-3. If the field changes a command or tool that Claude should know about, update `docs/llm.txt`.
+2. If the field should round-trip through Solutions or `.bifrost/` manifests, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the relevant Solutions export/import code.
+3. If the field changes a command or tool, regenerate the skill appendices via `python api/scripts/skill-truth/generate.py` (CI enforces freshness).
+4. **Run the contract-version tripwire: `./test.sh tests/unit/test_contract_version.py`.** It fingerprints every CLI/SDK-consumed DTO (command DTOs + all `src.models.contracts.cli` SDK DTOs, pulled in programmatically). If one changed, the test fails and forces a decision: if the change is **breaking** (field removed/renamed/retyped, a response shape the CLI parses), bump `CONTRACT_VERSION` in **both** `api/shared/contract_version.py` and `api/bifrost/contract_version.py`, then refresh `EXPECTED_CONTRACT_FINGERPRINT`. If it's **cosmetic/additive**, just refresh the fingerprint. This keeps a missed bump from shipping a CLI that silently breaks against the server — the CLI's runtime gate hard-blocks on a contract mismatch. (Pure route renames aren't gated — they 404 loudly rather than corrupt; the DTO layer catches the silent breakages.)
 
 **When renaming or reassigning an entity (workflow, table, config):** grep the codebase before committing. Workflows are referenced by `path::func` in forms; tables are referenced by name in workflow SDK calls (`sdk.tables.get("...")`); configs are referenced by key. `bifrost tables update --name` warns on renames but does not block — the author is responsible for a full-workspace search (`rg -n '\b<old-name>\b' apps/ workflows/`) before pushing.
 
-**`.bifrost/` is export-only.** Watch only syncs code (`apps/`, `workflows/*.py`); it does NOT push `.bifrost/` content. Entity mutations go through the CLI (`bifrost orgs create`, `bifrost roles update`, etc.) or MCP. To share an env's state across environments, use `bifrost export --portable <dir>` (scrubs env-specific fields) and `bifrost import <dir> --org <uuid> --role-mode name` (rewrites org/role refs against the target env).
+**`.bifrost/` is export-only.** Watch only syncs code (`apps/`, `workflows/*.py`); it does NOT push `.bifrost/` content. Entity mutations go through the CLI (`bifrost orgs create`, `bifrost roles update`, etc.) or MCP. To distribute a packaged set of entities into an org, use **Solutions** (`bifrost solution deploy` / `solution install <zip>`) — the install-scoped, lifecycle-aware successor to the older `bifrost export --portable` / `bifrost import` flow. **`bifrost export` / `bifrost import` were REMOVED** (they predated Solutions and the `--portable` scrub never actually stripped org IDs). For raw `_repo/` workspace movement across environments, use git sync.
 
 **MCP vs REST routers (existing drift):** the MCP tools for `agents`, `forms`, `tables`, `apps`, `events` re-implement router logic and have diverged (different permission models, missing side effects, divergent validation). See `docs/plans/2026-04-18-mcp-router-reconciliation.md` for the catalog and reconciliation sequence. **New MCP tools must be thin HTTP wrappers that call the REST endpoints** (see `api/src/services/mcp_server/tools/roles.py` / `configs.py` / `_http_bridge.py` for the pattern) — no direct ORM access, no repository imports. A unit test (`api/tests/unit/test_mcp_thin_wrapper.py`) enforces this.
 
@@ -145,13 +196,14 @@ Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`),
 ```
 api/
 ├── src/              # FastAPI application
-│   ├── handlers/     # HTTP endpoint handlers (thin layer)
-│   ├── models/       # SQLAlchemy models
-│   ├── jobs/         # Background job workers
+│   ├── routers/      # HTTP endpoint routers (FastAPI APIRouters)
+│   ├── services/     # Business logic, algorithms, domain rules
+│   ├── repositories/ # Org-scoped data access (see repositories/README.md)
+│   ├── models/       # SQLAlchemy ORM (models/orm/) + Pydantic contracts (models/contracts/)
+│   ├── jobs/         # Background job workers + schedulers
 │   └── main.py       # FastAPI app entry point
-├── shared/           # Business logic, utilities
-│   ├── models.py     # Pydantic models (source of truth)
-│   └── ...
+├── shared/           # Cross-cutting utilities (scope_resolver, file_paths, version)
+├── bifrost/          # Distributable SDK + CLI package
 ├── alembic/          # Database migrations
 └── tests/            # Unit and E2E tests
 
@@ -175,14 +227,14 @@ Summarizer-generated `AIUsage` rows roll up into `AgentStats.total_cost_7d` (the
 
 ### Backend (Python/FastAPI)
 
--   **Models**: All Pydantic models MUST be defined in `api/shared/models.py`
--   **Routing**: Create one handler file per base route (e.g., `/discovery` → `discovery_handlers.py`)
+-   **Models**: Request/response Pydantic contracts live in `api/src/models/contracts/`; SQLAlchemy ORM models live in `api/src/models/orm/`
+-   **Routing**: Create one router file per base route under `api/src/routers/` (e.g., `/discovery` → `discovery.py`)
     -   Sub-routes and related functions live in the same file
 -   **Request/Response**: Always use Pydantic Request and Response models
--   **Business Logic**: MUST live in `api/shared/`, NOT in `api/src/handlers/`
-    -   Handlers are thin HTTP handlers only
-    -   Complex logic, algorithms, business rules go in shared modules
-    -   Example: User provisioning logic lives in `shared/user_provisioning.py`
+-   **Business Logic**: MUST live in `api/src/services/` (or `api/shared/` for cross-cutting utilities), NOT inline in routers
+    -   Routers are thin HTTP handlers only
+    -   Complex logic, algorithms, business rules go in service modules
+    -   Example: agent execution logic lives in `src/services/agent_executor.py`
 
 ### Frontend (TypeScript/React)
 
@@ -263,7 +315,7 @@ cd client && npm run lint                 # Lint TypeScript
 ### Common Workflows
 
 **After adding/modifying Pydantic models:**
-1. Make changes to `api/shared/models.py`
+1. Make changes to the relevant contract in `api/src/models/contracts/`
 2. Hot reload updates API automatically
 3. Run `cd client && npm run generate:types`
 4. TypeScript types updated in `client/src/lib/v1.d.ts`
@@ -278,6 +330,24 @@ cd client && npm run lint                 # Lint TypeScript
 1. Add to `pyproject.toml` (root)
 2. Regenerate the lock: `docker run --rm -v "$PWD":/repo -w /repo python:3.14-slim sh -c "pip install --quiet --require-hashes -r requirements-piptools.lock && pip-compile --generate-hashes --output-file=requirements.lock pyproject.toml"`
 3. Rebuild and restart: `docker compose -f docker-compose.dev.yml up --build api`
+
+**Merging main into a long-lived branch:** Two specific gotchas:
+
+1. **`client/src/lib/v1.d.ts` always conflicts.** It's a generated file. Resolve by taking main's version, then regenerating against your running API:
+   ```bash
+   git checkout --theirs client/src/lib/v1.d.ts
+   cd client && OPENAPI_URL=<your-dev-url>/openapi.json npm run generate:types
+   cd .. && git add client/src/lib/v1.d.ts && git commit --no-edit
+   ```
+   Get the URL from `./debug.sh status`. The regen must happen *after* the merge is in place, because it reflects the merged code's schema.
+
+2. **Newly-added Python deps on main break the dev container silently.** If main introduced a new `import` (e.g. `defusedxml`) and your container was built before that dep landed in `requirements.lock`, the API will start failing with `ModuleNotFoundError` after the next restart, and `/openapi.json` will 502. Symptom: regen suddenly can't fetch the schema. Fix:
+   ```bash
+   docker logs bifrost-debug-<project>-api-1 --tail 20   # confirm ModuleNotFoundError
+   docker exec bifrost-debug-<project>-api-1 pip install <missing-pkg>
+   docker restart bifrost-debug-<project>-api-1
+   ```
+   This is a per-container quick fix. The lasting fix is `./debug.sh down` and a fresh `./debug.sh` (which rebuilds against the new lock), but the in-container `pip install` unblocks you in 10 seconds.
 
 ## Pre-Completion Verification (REQUIRED)
 

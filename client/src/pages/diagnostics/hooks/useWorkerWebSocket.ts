@@ -76,9 +76,18 @@ export function useWorkerWebSocket(): UseWorkerWebSocketReturn {
 						pending_recycle: p.pending_recycle,
 					}));
 
+					const existing = idx >= 0 ? prev[idx] : undefined;
+
+					const runtime = message.runtime ?? existing?.runtime ?? null;
+					const runtimeChanged =
+						message.runtime != null && message.runtime !== existing?.runtime;
 					const updatedPool: PoolDetail = {
 						worker_id: message.worker_id,
 						hostname: message.hostname || null,
+						runtime,
+						runtime_label:
+							message.runtime_label ??
+							(runtimeChanged ? null : existing?.runtime_label ?? null),
 						status: message.status || null,
 						started_at: message.started_at || null,
 						last_heartbeat: message.timestamp || null,
@@ -113,6 +122,8 @@ export function useWorkerWebSocket(): UseWorkerWebSocketReturn {
 						{
 							worker_id: message.worker_id,
 							hostname: message.hostname || null,
+							runtime: message.runtime ?? null,
+							runtime_label: message.runtime_label ?? null,
 							status: "online",
 							started_at: message.started_at || null,
 							last_heartbeat: null,

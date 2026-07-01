@@ -21,7 +21,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.log_safety import log_safe
@@ -64,6 +64,14 @@ class Replacement(BaseModel):
     function_name: str
     signature: str
     compatibility: Literal["exact", "compatible", "incompatible"]
+
+
+class RemapWorkflowReferencesResult(BaseModel):
+    """Result of moving references from one workflow row to another."""
+
+    source_workflow_id: str
+    target_workflow_id: str
+    updated: dict[str, int]
 
 
 # =============================================================================
@@ -266,11 +274,16 @@ class WorkflowOrphanService:
                 f"(must have a @workflow, @tool, or @data_provider decorator)"
             )
 
-        # Guard against (path, function_name) already claimed by an active row.
+        # Guard against (path, function_name) already claimed by an active _repo/
+        # row. Scope to solution_id IS NULL: an orphan repoint is a WORKSPACE op
+        # (the orphan being replaced is a _repo/ row), and a solution-managed
+        # workflow at the same (path, function_name) is deploy-owned — it lives in
+        # a different uniqueness scope and must not block the replace (Codex #14).
         stmt = select(Workflow).where(
             Workflow.path == source_path,
             Workflow.function_name == function_name,
             Workflow.is_active.is_(True),
+            Workflow.solution_id.is_(None),
         )
         result = await self.db.execute(stmt)
         conflict = result.scalar_one_or_none()
@@ -401,6 +414,127 @@ class WorkflowOrphanService:
             logger.info(f"Deactivated workflow {log_safe(workflow_id)}")
 
         return wf, ref_count
+
+    async def remap_workflow_references(
+        self,
+        source_workflow_id: UUID,
+        target_workflow_id: UUID,
+    ) -> RemapWorkflowReferencesResult:
+        """Move references from one workflow row to an existing active row.
+
+        Unlike :meth:`replace_workflow`, this does not repair or repoint the
+        source workflow. It only rewrites consumers so the source row can remain
+        historical/unreferenced.
+        """
+        if source_workflow_id == target_workflow_id:
+            raise ValueError("source and target workflows must be different")
+
+        source = await self.db.get(Workflow, source_workflow_id)
+        if source is None:
+            raise ValueError(f"Workflow {source_workflow_id} not found")
+
+        target = await self.db.get(Workflow, target_workflow_id)
+        if target is None:
+            raise ValueError(f"Workflow {target_workflow_id} not found")
+        if not target.is_active or target.is_orphaned:
+            raise ValueError(f"Target workflow {target_workflow_id} is not active")
+        if target.type != source.type:
+            raise ValueError(
+                f"Cannot remap {source.type} references to {target.type} workflow"
+            )
+
+        source_str = str(source_workflow_id)
+        target_str = str(target_workflow_id)
+
+        # Solution-managed entities are read-only outside deploy (criterion 6).
+        # remap rewrites Form.workflow_id via a Core update() — which BYPASSES the
+        # ORM before_flush backstop — so managed rows must be excluded explicitly
+        # here, in BOTH the WHERE (don't write them) and the reported count (don't
+        # over-report). A legit remap of ad-hoc _repo/ forms still proceeds.
+        forms_result = await self.db.execute(
+            update(Form)
+            .where(Form.workflow_id == source_str, Form.solution_id.is_(None))
+            .values(workflow_id=target_str)
+        )
+        launch_forms_result = await self.db.execute(
+            update(Form)
+            .where(Form.launch_workflow_id == source_str, Form.solution_id.is_(None))
+            .values(launch_workflow_id=target_str)
+        )
+        # FormField has no solution_id; its lifecycle follows its parent Form, so
+        # exclude fields belonging to a managed form.
+        managed_form_ids = select(Form.id).where(Form.solution_id.is_not(None))
+        form_fields_result = await self.db.execute(
+            update(FormField)
+            .where(
+                FormField.data_provider_id == source_workflow_id,
+                FormField.form_id.not_in(managed_form_ids),
+            )
+            .values(data_provider_id=target_workflow_id)
+        )
+
+        agents_updated = await self._remap_agent_tool_references(
+            source_workflow_id,
+            target_workflow_id,
+        )
+
+        await self.db.commit()
+
+        updated = {
+            "forms": (forms_result.rowcount or 0) + (launch_forms_result.rowcount or 0),
+            "form_fields": form_fields_result.rowcount or 0,
+            "agents": agents_updated,
+            "apps": 0,
+        }
+        logger.info(
+            "Remapped workflow references from %s to %s: %s",
+            log_safe(source_workflow_id),
+            log_safe(target_workflow_id),
+            updated,
+        )
+        return RemapWorkflowReferencesResult(
+            source_workflow_id=source_str,
+            target_workflow_id=target_str,
+            updated=updated,
+        )
+
+    async def _remap_agent_tool_references(
+        self,
+        source_workflow_id: UUID,
+        target_workflow_id: UUID,
+    ) -> int:
+        """Move agent_tools rows while avoiding duplicate composite keys.
+
+        AgentTool carries no ``solution_id``; managed-ness lives on the parent
+        Agent. Tool rows of a solution-managed agent are read-only outside deploy
+        (criterion 6), so they are excluded from the remap and from the count.
+        """
+        result = await self.db.execute(
+            select(AgentTool)
+            .join(Agent, Agent.id == AgentTool.agent_id)
+            .where(
+                AgentTool.workflow_id == source_workflow_id,
+                Agent.solution_id.is_(None),
+            )
+        )
+        source_rows = list(result.scalars().all())
+        updated = 0
+
+        for row in source_rows:
+            existing_result = await self.db.execute(
+                select(AgentTool).where(
+                    AgentTool.agent_id == row.agent_id,
+                    AgentTool.workflow_id == target_workflow_id,
+                )
+            )
+            existing = existing_result.scalar_one_or_none()
+            if existing is not None:
+                await self.db.delete(row)
+            else:
+                row.workflow_id = target_workflow_id
+            updated += 1
+
+        return updated
 
     # =========================================================================
     # Helper Methods

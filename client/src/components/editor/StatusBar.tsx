@@ -8,13 +8,11 @@ import {
 	Loader2,
 	CheckCircle,
 	AlertCircle,
-	Lock,
 	Radio,
 	X,
 } from "lucide-react";
 import { useMemo, useState, useEffect } from "react";
 import { Progress } from "@/components/ui/progress";
-import { isBifrostSystemFile } from "@/lib/file-filter";
 
 /**
  * Status bar showing file info, cursor position, and save status
@@ -120,7 +118,7 @@ export function StatusBar() {
 								<button
 									onClick={cancelUpload}
 									disabled={uploadState.isCancelling}
-									className="p-0.5 hover:bg-muted rounded shrink-0 disabled:opacity-50"
+									className="p-0.5 hover:bg-muted rounded-md shrink-0 disabled:opacity-50"
 									title="Cancel upload"
 								>
 									<X className="h-3 w-3" />
@@ -140,7 +138,7 @@ export function StatusBar() {
 								</span>
 								<button
 									onClick={resetUpload}
-									className="p-0.5 hover:bg-muted rounded shrink-0"
+									className="p-0.5 hover:bg-muted rounded-md shrink-0"
 									title="Dismiss"
 								>
 									<X className="h-3 w-3" />
@@ -157,18 +155,10 @@ export function StatusBar() {
 							</span>
 						)}
 
-						{/* Read-only badge for .bifrost/ system files */}
-						{openFile && isBifrostSystemFile(openFile.path) && (
-							<span className="flex items-center gap-1 rounded px-2 py-0.5 font-medium shrink-0 bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-								<Lock className="h-3 w-3" />
-								Read-only
-							</span>
-						)}
-
 						{/* File type badge */}
 						{openFile && openFile.path.endsWith(".py") && (
 							<span
-								className={`flex items-center gap-1 rounded px-2 py-0.5 font-medium shrink-0 ${
+								className={`flex items-center gap-1 rounded-md px-2 py-0.5 font-medium shrink-0 ${
 									isWorkflow
 										? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
 										: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400"
