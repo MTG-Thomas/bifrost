@@ -16,8 +16,6 @@ The skill draws a hard line between commands the agent runs and commands the use
 | `bifrost run <file>`, `bifrost workflows execute`, `bifrost <entity> create / update / delete / get / list`, `bifrost api GET/POST` | **Agent** | Non-interactive, idempotent, scoped to the entity at hand |
 | Writing files into `apps/` and `workflows/` | **Agent** (after confirming `bifrost watch` is running) | Watch syncs them automatically |
 | `bifrost watch`, `bifrost sync`, `bifrost push`, `bifrost pull`, `bifrost git push` | **User** | Interactive TUI, broad blast radius, controls deployment cadence |
-| `bifrost requirements install <pkg>` (ONLY on a workflow that triggered `ModuleNotFoundError`) | **Agent** | Recycles workers — see "Python workflow dependencies" |
-
 When in doubt, the agent does the small entity mutation; the user does anything that watches files, deploys, or recycles infrastructure unsolicited.
 
 ## First: Check Prerequisites

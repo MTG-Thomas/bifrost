@@ -290,7 +290,7 @@ def main() -> int:
     agent = get_agent(args.ref)
     app_id = args.app_id or str(uuid.uuid5(COWORK_NAMESPACE, agent["id"]))
     if args.bifrost_host:
-        mcp_url = f"https://{args.bifrost_host}/mcp/{agent['id']}"
+        mcp_url = f"{_mcp_base_from_api_url(args.bifrost_host)}/mcp/{agent['id']}"
     else:
         mcp_url = f"{get_bifrost_mcp_base()}/mcp/{agent['id']}"
 
