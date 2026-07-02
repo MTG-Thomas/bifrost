@@ -375,14 +375,16 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 		// never subscribe — we gate on the model the first load resolved.
 		let unsub: (() => void) | null = null;
 		const initialLoad = loadBundle();
+		let disposed = false;
 		if (isPreview) {
-			(async () => {
+			void (async () => {
 				try {
 					const model = await initialLoad;
 					if (model === "standalone_v2") return;
 					if (controller.signal.aborted) return;
 					await webSocketService.connectToAppDraft(appId);
-					unsub = webSocketService.onAppCodeFileUpdate(
+					if (disposed) return;
+					const nextUnsub = webSocketService.onAppCodeFileUpdate(
 						appId,
 						(update: AppCodeFileUpdate) => {
 							if (update.error && update.error.messages.length > 0) {
@@ -393,6 +395,11 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 							}
 						},
 					);
+					if (disposed) {
+						nextUnsub();
+						return;
+					}
+					unsub = nextUnsub;
 				} catch (e) {
 					console.warn("[Bifrost] Failed to subscribe to app updates:", e);
 				}
@@ -400,6 +407,7 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 		}
 
 		return () => {
+			disposed = true;
 			controller.abort();
 			if (unsub) unsub();
 		};

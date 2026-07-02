@@ -13,16 +13,16 @@ BifrostClient is mocked so no network/DB is touched. Deploying with --global and
 the default (vendoring-on) descriptor drives the no-shared-deps branch: the
 mocked /api/files/read returns nothing, so vendoring resolves to zero files.
 """
+
 from __future__ import annotations
 
 import pathlib
 from unittest import mock
 
 import yaml
-from click.testing import CliRunner
-
 from bifrost.commands.solution import solution_group
 from bifrost.solution_descriptor import DESCRIPTOR_FILENAME
+from click.testing import CliRunner
 
 INSTALL_ID = "33333333-3333-3333-3333-333333333333"
 
@@ -43,7 +43,7 @@ def _client():
             return _resp({"status": "succeeded", "error": None, "install_id": INSTALL_ID})
         return _resp({}, status=404)
 
-    async def post(path, json=None, **_kwargs):  # type: ignore[no-untyped-def]  # noqa: ARG001
+    async def post(path, json=None, **_kwargs):  # type: ignore[no-untyped-def]
         if path == "/api/solutions":
             return _resp({"id": INSTALL_ID}, status=201)
         if path == "/api/files/read":
@@ -80,12 +80,8 @@ def _scaffold(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def _invoke(ws: pathlib.Path):
-    with mock.patch(
-        "bifrost.client.BifrostClient.get_instance", return_value=_client()
-    ):
-        return CliRunner().invoke(
-            solution_group, ["deploy", str(ws), "--global"], catch_exceptions=False
-        )
+    with mock.patch("bifrost.client.BifrostClient.get_instance", return_value=_client()):
+        return CliRunner().invoke(solution_group, ["deploy", str(ws), "--global"], catch_exceptions=False)
 
 
 def test_deploy_prints_each_phase(tmp_path) -> None:

@@ -92,6 +92,12 @@ class TestUserInviteFlags:
         assert target["is_registered"] is False
         assert target["invite_status"] == "active"
 
+        regenerate = e2e_client.post(
+            f"/api/users/{body['id']}/invite/regenerate",
+            headers=platform_admin.headers,
+        )
+        assert regenerate.status_code == 409
+
         e2e_client.patch(
             f"/api/users/{body['id']}",
             headers=platform_admin.headers,
