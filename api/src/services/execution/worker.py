@@ -494,5 +494,12 @@ def run_in_worker(execution_id: str):
         format=f"[Worker:{execution_id[:8]}] %(levelname)s - %(message)s"
     )
 
+    from src.core import telemetry
+
+    telemetry.configure_opentelemetry("bifrost-worker", span_processor="simple")
+
     # Run the async worker
-    asyncio.run(worker_main(execution_id))
+    try:
+        asyncio.run(worker_main(execution_id))
+    finally:
+        telemetry.flush_opentelemetry()

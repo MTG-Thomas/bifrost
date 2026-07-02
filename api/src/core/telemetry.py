@@ -6,10 +6,14 @@ import os
 logger = logging.getLogger(__name__)
 
 _configured_services: set[str] = set()
+_trace_provider = None
+_meter_provider = None
 
 
 def configure_opentelemetry(service_name: str, *, span_processor: str = "batch") -> None:
     """Configure OTLP trace and metric export when an endpoint is provided."""
+    global _meter_provider, _trace_provider
+
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     if not endpoint:
         return
@@ -41,12 +45,36 @@ def configure_opentelemetry(service_name: str, *, span_processor: str = "batch")
         trace_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
 
     trace.set_tracer_provider(trace_provider)
+    _trace_provider = trace_provider
 
     metric_reader = PeriodicExportingMetricReader(
         OTLPMetricExporter(endpoint=endpoint),
         export_interval_millis=15_000,
     )
-    metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[metric_reader]))
+    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
+    _meter_provider = meter_provider
 
     _configured_services.add(service_name)
     logger.info("OpenTelemetry trace and metric export configured for %s", service_name)
+
+
+def flush_opentelemetry(*, timeout_millis: int = 5_000) -> None:
+    """Force any configured OpenTelemetry providers to export buffered data."""
+    for provider_name, provider in (
+        ("metric", _meter_provider),
+        ("trace", _trace_provider),
+    ):
+        if provider is None:
+            continue
+
+        force_flush = getattr(provider, "force_flush", None)
+        if force_flush is None:
+            continue
+
+        try:
+            force_flush(timeout_millis=timeout_millis)
+        except TypeError:
+            force_flush()
+        except Exception as exc:
+            logger.warning("OpenTelemetry %s flush failed: %s", provider_name, exc)
