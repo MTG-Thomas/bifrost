@@ -33,8 +33,7 @@ async function api(method, path, body, t = tok) {
   if (url.origin !== BASE_URL.origin)
     throw new Error(`refusing cross-origin demo request: ${url.href}`);
   const payload = body ? JSON.stringify(body) : undefined;
-  // lgtm[js/file-access-to-http] Demo setup uploads fixed local fixture files to a localhost Bifrost dev API only.
-  const r = await fetch(url, { method, headers: H(t), body: payload });
+  const r = await fetch(url, { method, headers: H(t), body: payload }); // codeql[js/file-access-to-http] Demo setup uploads fixed local fixture files to a localhost Bifrost dev API only.
   const txt = await r.text();
   let json;
   try {
