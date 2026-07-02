@@ -3,16 +3,20 @@ from __future__ import annotations
 from src.services.solutions.source_artifact import SolutionSourceArtifactStorage
 
 
-class _FakeArtifact(SolutionSourceArtifactStorage):
-    def __init__(self, data: bytes | None) -> None:
-        self._data = data
+def _artifact_with_read(
+    data: bytes | None,
+) -> SolutionSourceArtifactStorage:
+    artifact = object.__new__(SolutionSourceArtifactStorage)
 
-    async def read(self) -> bytes | None:
-        return self._data
+    async def read() -> bytes | None:
+        return data
+
+    artifact.read = read  # type: ignore[method-assign]
+    return artifact
 
 
 async def test_copy_to_path_writes_existing_artifact(tmp_path) -> None:
-    artifact = _FakeArtifact(b"source-zip")
+    artifact = _artifact_with_read(b"source-zip")
     target = tmp_path / "source.zip"
 
     copied = await artifact.copy_to_path(target)
@@ -22,7 +26,7 @@ async def test_copy_to_path_writes_existing_artifact(tmp_path) -> None:
 
 
 async def test_copy_to_path_returns_false_when_missing(tmp_path) -> None:
-    artifact = _FakeArtifact(None)
+    artifact = _artifact_with_read(None)
     target = tmp_path / "source.zip"
 
     copied = await artifact.copy_to_path(target)
