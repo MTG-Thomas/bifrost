@@ -18,17 +18,19 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
-def _create_solution(e2e_client, headers, *, slug: str, global_repo_access: bool) -> str:
-    resp = e2e_client.post(
-        "/api/solutions",
-        headers=headers,
-        json={
-            "slug": slug,
-            "name": slug.upper(),
-            "scope": "global",
-            "global_repo_access": global_repo_access,
-        },
-    )
+def _create_solution(
+    e2e_client, headers, *, slug: str, global_repo_access: bool, org_id: str | None = None
+) -> str:
+    body = {
+        "slug": slug,
+        "name": slug.upper(),
+        "global_repo_access": global_repo_access,
+    }
+    if org_id is None:
+        body["scope"] = "global"
+    else:
+        body["organization_id"] = org_id
+    resp = e2e_client.post("/api/solutions", headers=headers, json=body)
     assert resp.status_code in (200, 201), f"create solution failed: {resp.status_code} {resp.text}"
     return resp.json()["id"]
 
@@ -190,22 +192,26 @@ def _execute_with_app(e2e_client, headers, workflow_ref: str, app_id: str) -> di
     return resp.json()
 
 
-def test_two_installs_same_path_resolve_own_workflow_via_app_id(e2e_client, platform_admin):
-    """Codex #8 P1 end-to-end: two Solution installs each ship
-    workflows/main.py::main (different return values) AND an app. Executing each
-    app's workflow ref with that app's app_id resolves THAT install's own
-    workflow — deterministically, not a sibling install's that shares the path."""
-    headers = platform_admin.headers
+def _deploy_install_with_app(e2e_client, headers, marker: str, org_id: str | None = None) -> str:
+    """Deploy a Solution install shipping workflows/main.py::main (returns the
+    marker) plus a standalone_v2 app; return the app's remapped DB id."""
+    from tests.e2e.platform.conftest import deploy_solution
 
-    def _deploy_install(marker: str) -> str:
-        slug = f"twin-{marker}-{uuid.uuid4().hex[:8]}"
-        sid = _create_solution(e2e_client, headers, slug=slug, global_repo_access=False)
-        app_id = str(uuid.uuid4())
-        _deploy(
-            e2e_client,
-            headers,
-            sid,
-            python_files={
+    slug = f"twin-{marker}-{uuid.uuid4().hex[:8]}"
+    sid = _create_solution(
+        e2e_client, headers, slug=slug, global_repo_access=False, org_id=org_id
+    )
+    app_id = str(uuid.uuid4())
+    # Deploy is ASYNC (BackgroundTasks) — fire-and-forget would race the
+    # background job, so the immediately-following execute can 404 on a
+    # workflow whose row hasn't committed yet (flaky under load). Use the
+    # deploy_solution helper that blocks until the deploy job is terminal.
+    resp = deploy_solution(
+        e2e_client,
+        sid,
+        headers,
+        {
+            "python_files": {
                 "workflows/main.py": (
                     "from bifrost import workflow\n\n"
                     "@workflow\n"
@@ -213,14 +219,14 @@ def test_two_installs_same_path_resolve_own_workflow_via_app_id(e2e_client, plat
                     f"    return {{'marker': '{marker}'}}\n"
                 ),
             },
-            workflows=[{
+            "workflows": [{
                 "id": str(uuid.uuid4()),
                 "name": f"main_{slug}",
                 "function_name": "main",
                 "path": "workflows/main.py",
                 "type": "workflow",
             }],
-            apps=[{
+            "apps": [{
                 "id": app_id,
                 "slug": f"app-{slug}",
                 "name": "App",
@@ -231,14 +237,24 @@ def test_two_installs_same_path_resolve_own_workflow_via_app_id(e2e_client, plat
                     "index.html": '<!doctype html><div id="root"></div>',
                 },
             }],
-        )
-        # The app's DB id is the remapped uuid5(install, manifest_id).
-        from src.services.solutions.deploy import solution_entity_id
+        },
+    )
+    assert resp.status_code in (200, 201), f"deploy failed: {resp.status_code} {resp.text}"
+    # The app's DB id is the remapped uuid5(install, manifest_id).
+    from src.services.solutions.deploy import solution_entity_id
 
-        return str(solution_entity_id(uuid.UUID(sid), uuid.UUID(app_id)))
+    return str(solution_entity_id(uuid.UUID(sid), uuid.UUID(app_id)))
 
-    app_a = _deploy_install("aaa")
-    app_b = _deploy_install("bbb")
+
+def test_two_installs_same_path_resolve_own_workflow_via_app_id(e2e_client, platform_admin):
+    """Codex #8 P1 end-to-end: two Solution installs each ship
+    workflows/main.py::main (different return values) AND an app. Executing each
+    app's workflow ref with that app's app_id resolves THAT install's own
+    workflow — deterministically, not a sibling install's that shares the path."""
+    headers = platform_admin.headers
+
+    app_a = _deploy_install_with_app(e2e_client, headers, "aaa")
+    app_b = _deploy_install_with_app(e2e_client, headers, "bbb")
 
     # Each app's path-ref resolves to ITS OWN install's workflow.
     res_a = _execute_with_app(e2e_client, headers, "workflows/main.py::main", app_a)
@@ -247,3 +263,70 @@ def test_two_installs_same_path_resolve_own_workflow_via_app_id(e2e_client, plat
     assert res_b["status"] == "Success", res_b
     assert res_a["result"] == {"marker": "aaa"}, res_a
     assert res_b["result"] == {"marker": "bbb"}, res_b
+
+
+def test_app_header_alone_scopes_workflow_execution(e2e_client, platform_admin):
+    """The deployed-browser transport contract: X-Bifrost-App header, NO body
+    app_id. Auth derives ctx.solution_id from the header; workflow execution
+    must honor that context scope so a path::fn ref resolves the install's own
+    workflow — same as tables/files already do."""
+    headers = platform_admin.headers
+
+    app_a = _deploy_install_with_app(e2e_client, headers, "hdr-aaa")
+    app_b = _deploy_install_with_app(e2e_client, headers, "hdr-bbb")
+
+    def _execute_with_header(app_id: str) -> dict:
+        resp = e2e_client.post(
+            "/api/workflows/execute",
+            headers={**headers, "X-Bifrost-App": app_id},
+            json={"workflow_id": "workflows/main.py::main", "sync": True},
+        )
+        assert resp.status_code == 200, f"execute failed: {resp.status_code} {resp.text}"
+        return resp.json()
+
+    res_a = _execute_with_header(app_a)
+    res_b = _execute_with_header(app_b)
+    assert res_a["status"] == "Success", res_a
+    assert res_b["status"] == "Success", res_b
+    assert res_a["result"] == {"marker": "hdr-aaa"}, res_a
+    assert res_b["result"] == {"marker": "hdr-bbb"}, res_b
+
+
+def test_workflow_404_includes_scope_diagnostics(e2e_client, platform_admin):
+    """A scope-resolution miss must identify itself: the 404 detail carries the
+    ref and the derived install scope, so a dropped/wrong scope reads as
+    `derived_solution_scope: null` instead of a mystery 404 (drive lesson —
+    the unscoped courtesy fallback masked scope loss for a whole POC day)."""
+    headers = platform_admin.headers
+    app_a = _deploy_install_with_app(e2e_client, headers, "diag")
+
+    resp = e2e_client.post(
+        "/api/workflows/execute",
+        headers={**headers, "X-Bifrost-App": app_a},
+        json={"workflow_id": "workflows/nonexistent.py::nope", "sync": True},
+    )
+    assert resp.status_code == 404, resp.text
+    detail = resp.json()["detail"]
+    assert detail["workflow_ref"] == "workflows/nonexistent.py::nope"
+    assert "not found" in detail["message"]
+    # Header-scoped caller: the derived install scope is present (a UUID).
+    assert detail["derived_solution_scope"], detail
+
+
+def test_foreign_app_header_cannot_reach_other_orgs_workflow(
+    e2e_client, platform_admin, org1, org2_user
+):
+    """PINNING (expected to hold): a regular user from org2 smuggling org1's
+    X-Bifrost-App must NOT execute org1's install workflow — the resolver's
+    org gate (cascade scope) holds under ctx-first scoping."""
+    headers = platform_admin.headers
+    app_a = _deploy_install_with_app(e2e_client, headers, "xorg", org_id=org1["id"])
+
+    resp = e2e_client.post(
+        "/api/workflows/execute",
+        headers={**org2_user.headers, "X-Bifrost-App": app_a},
+        json={"workflow_id": "workflows/main.py::main", "sync": True},
+    )
+    assert resp.status_code in (403, 404), (
+        f"cross-org header execution must be refused, got {resp.status_code}: {resp.text}"
+    )
