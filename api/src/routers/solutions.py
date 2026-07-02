@@ -10,6 +10,7 @@ what end users see (the Solution is invisible to them — criterion 16).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -107,6 +108,12 @@ def _cleanup_file(path: str | Path) -> None:
         logger.warning("Failed to remove temporary file %s", path)
 
 
+def _new_temp_zip_path(*, prefix: str) -> Path:
+    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".zip")
+    os.close(fd)
+    return Path(name)
+
+
 def _safe_zip_filename(filename: str) -> str:
     stem = filename.removesuffix(".zip")
     safe_stem = _ZIP_FILENAME_SAFE_RE.sub("-", stem).strip(".-_")
@@ -114,15 +121,16 @@ def _safe_zip_filename(filename: str) -> str:
 
 
 async def _spool_upload_to_temp(file: UploadFile, *, prefix: str) -> Path:
-    tmp = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".zip", delete=False)
-    path = Path(tmp.name)
+    path = await asyncio.to_thread(_new_temp_zip_path, prefix=prefix)
+    tmp = await asyncio.to_thread(path.open, "wb")
     try:
-        with tmp:
-            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
-                tmp.write(chunk)
+        while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+            await asyncio.to_thread(tmp.write, chunk)
     except Exception:
         _cleanup_file(path)
         raise
+    finally:
+        await asyncio.to_thread(tmp.close)
     return path
 
 
@@ -408,22 +416,16 @@ async def export_solution(
 
     artifact = SolutionSourceArtifactStorage(solution_id)
     filename = _safe_zip_filename(f"{sol.slug}-{sol.version or 'unversioned'}.zip")
-    tmp = tempfile.NamedTemporaryFile(
+    out_path = await asyncio.to_thread(
+        _new_temp_zip_path,
         prefix="bifrost-solution-export-",
-        suffix=".zip",
-        delete=False,
     )
-    out_path = Path(tmp.name)
-    tmp.close()
     source_path: Path | None = None
     try:
-        stored_source_path = tempfile.NamedTemporaryFile(
+        source_path = await asyncio.to_thread(
+            _new_temp_zip_path,
             prefix="bifrost-solution-source-",
-            suffix=".zip",
-            delete=False,
         )
-        source_path = Path(stored_source_path.name)
-        stored_source_path.close()
         has_stored_source = await artifact.copy_to_path(source_path)
         if has_stored_source and mode == "shareable":
             source_path.replace(out_path)
