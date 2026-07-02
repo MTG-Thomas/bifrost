@@ -630,6 +630,15 @@ async def get_table_or_404(
     return table
 
 
+async def _resolve_solution_table_by_name(
+    ctx: Context,
+    name: str,
+    target_org_id: UUID | None,
+) -> Table | None:
+    """Compatibility wrapper for tests and older router-local callers."""
+    return await resolve_solution_table_by_name(ctx.db, ctx, name, target_org_id)
+
+
 async def _assert_solution_write_targets_owned_table(ctx: Context, table: Table) -> None:
     solution_id = await solution_context_id(ctx.db, ctx)
     if solution_id is None or table.solution_id == solution_id:

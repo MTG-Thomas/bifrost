@@ -96,7 +96,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/solutions", tags=["Solutions"])
 
-DEPLOY_JOB_ORPHAN_THRESHOLD = timedelta(minutes=15)
+# Running deploy jobs heartbeat ``updated_at`` on this interval so long deploys
+# stay live across rolling restarts. Orphans are detected when ``updated_at`` is
+# older than ``DEPLOY_ORPHAN_STALE_SECONDS`` (~1.5x heartbeat).
+DEPLOY_JOB_HEARTBEAT_SECONDS = 60
+DEPLOY_ORPHAN_STALE_SECONDS = 90
+DEPLOY_JOB_ORPHAN_THRESHOLD = timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS)
+_DEPLOY_ORPHAN_ERROR = (
+    "Deploy did not finish because the API restarted before its in-process "
+    "background task completed. Re-run the deploy; it is idempotent."
+)
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 _ZIP_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -134,6 +143,13 @@ async def _spool_upload_to_temp(file: UploadFile, *, prefix: str) -> Path:
     return path
 
 
+def _is_stale_deploy_job(job: SolutionDeployJob, now: datetime) -> bool:
+    if job.status not in ("queued", "running"):
+        return False
+    stale_before = now - timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS)
+    return job.updated_at < stale_before
+
+
 async def reconcile_orphaned_deploy_jobs(
     db: AsyncSession,
     *,
@@ -150,13 +166,9 @@ async def reconcile_orphaned_deploy_jobs(
         )
     )
     jobs = list(result.scalars().all())
-    error = (
-        "Deploy did not finish because the API restarted before its in-process "
-        "background task completed. Re-run the deploy; it is idempotent."
-    )
     for job in jobs:
         job.status = "failed"
-        job.error = error
+        job.error = _DEPLOY_ORPHAN_ERROR
         job.updated_at = resolved_now
     return len(jobs)
 
