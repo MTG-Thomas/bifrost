@@ -1,24 +1,18 @@
-"""Orphaned rows must not leak into the normal org name cascade.
+"""Solution-managed rows must not leak into the normal org name cascade.
 
-When a Solution install is uninstalled non-destructively, its owned tables are
-ORPHANED to preserve data: solution_id is NULL'd (so the row survives) and
-provenance columns (origin_solution_slug/origin_solution_id/orphaned_at) are
-stamped (orphaned_at IS NOT NULL ⇔ orphaned). An orphaned table therefore has
-solution_id IS NULL — so the existing `solution_id IS NULL` cascade filter no
-longer excludes it. Without an extra orphaned_at filter it would LEAK into the
-normal org name cascade: a regular workflow doing get(name="...") could resolve
-a former install's orphaned table and read its data (cross-context leak).
-
-These tests assert the name-cascade get() path excludes orphaned rows.
+The solution status lifecycle removed the old orphan provenance columns. A
+solution install's owned table remains solution-managed until a hard delete
+removes it via cascade, so normal name resolution still excludes it by
+``solution_id`` and fetches it explicitly by id when needed.
 """
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 
 from src.models.orm.organizations import Organization
+from src.models.orm.solutions import Solution
 from src.models.orm.tables import Table
 from src.repositories.tables import TableRepository
 
@@ -32,77 +26,74 @@ async def _make_org(db) -> uuid.UUID:
     return org.id
 
 
-def _table(name: str, *, org_id, solution_id=None, orphaned: bool = False) -> Table:
+async def _make_solution(db, *, org_id=None) -> uuid.UUID:
+    sol = Solution(
+        id=uuid.uuid4(),
+        slug=f"oc-{uuid.uuid4().hex[:8]}",
+        name="OC",
+        organization_id=org_id,
+    )
+    db.add(sol)
+    await db.flush()
+    return sol.id
+
+
+def _table(name: str, *, org_id, solution_id=None) -> Table:
     return Table(
         id=uuid.uuid4(),
         name=name,
         organization_id=org_id,
         solution_id=solution_id,
-        origin_solution_slug="x" if orphaned else None,
-        origin_solution_id=uuid.uuid4() if orphaned else None,
-        orphaned_at=datetime.now(timezone.utc) if orphaned else None,
         created_by="dev@x",
         access=None,
     )
 
 
-class TestOrphanCascadeVisibility:
-    async def test_orphaned_global_does_not_leak_into_org_cascade(self, db_session) -> None:
-        """An org-scoped normal table and a GLOBAL orphaned table share a name.
-        (Orphaned rows are excluded from the live-name unique indexes — a
-        normal+orphan pair may share a name even in the SAME scope — but the
-        cross-context case worth guarding is org-normal vs global-orphan, since
-        the global row also sits in the org's cascade fallback.)
-
-        get(name=) for the org returns the NORMAL org table; the orphan must never
-        win, and must not leak even if the org table were absent (see next test).
-        """
+class TestSolutionManagedCascadeVisibility:
+    async def test_global_solution_row_does_not_leak_into_org_cascade(self, db_session) -> None:
         db = db_session
         org = await _make_org(db)
+        solution_id = await _make_solution(db)
         name = f"customers_{uuid.uuid4().hex[:8]}"
 
         normal = _table(name, org_id=org)
-        global_orphan = _table(name, org_id=None, orphaned=True)
-        db.add_all([normal, global_orphan])
+        global_managed = _table(name, org_id=None, solution_id=solution_id)
+        db.add_all([normal, global_managed])
         await db.flush()
 
         repo = TableRepository(session=db, org_id=org, user_id=None, is_superuser=True)
         got = await repo.get(name=name)
         assert got is not None
         assert got.id == normal.id
-        assert got.orphaned_at is None, "name cascade must resolve the non-orphaned table"
+        assert got.solution_id is None, "name cascade must resolve the _repo table"
 
-    async def test_orphan_excluded_even_when_only_match(self, db_session) -> None:
-        """If the ONLY table of that name is orphaned, get(name=) returns None
-        (the orphan is invisible to the cascade), NOT the orphan.
-        """
+    async def test_solution_row_excluded_even_when_only_match(self, db_session) -> None:
         db = db_session
         org = await _make_org(db)
+        solution_id = await _make_solution(db, org_id=org)
         name = f"customers_{uuid.uuid4().hex[:8]}"
 
-        orphan = _table(name, org_id=org, orphaned=True)
-        db.add(orphan)
+        managed = _table(name, org_id=org, solution_id=solution_id)
+        db.add(managed)
         await db.flush()
 
         repo = TableRepository(session=db, org_id=org, user_id=None, is_superuser=True)
         assert await repo.get(name=name) is None
 
-    async def test_global_orphan_excluded_from_org_fallback(self, db_session) -> None:
-        """A GLOBAL orphan must not leak into an org's cascade via the global
-        fallback step when no org table of that name exists."""
+    async def test_global_solution_row_excluded_from_org_fallback(self, db_session) -> None:
         db = db_session
         org = await _make_org(db)
+        solution_id = await _make_solution(db)
         name = f"customers_{uuid.uuid4().hex[:8]}"
 
-        global_orphan = _table(name, org_id=None, orphaned=True)
-        db.add(global_orphan)
+        global_managed = _table(name, org_id=None, solution_id=solution_id)
+        db.add(global_managed)
         await db.flush()
 
         repo = TableRepository(session=db, org_id=org, user_id=None, is_superuser=True)
         assert await repo.get(name=name) is None
 
     async def test_normal_table_still_resolves(self, db_session) -> None:
-        """Regression: a genuinely non-solution table still resolves (no over-exclusion)."""
         db = db_session
         org = await _make_org(db)
         name = f"customers_{uuid.uuid4().hex[:8]}"
@@ -116,40 +107,28 @@ class TestOrphanCascadeVisibility:
         assert got is not None and got.id == normal.id
 
     async def test_solution_managed_table_still_excluded(self, db_session) -> None:
-        """Regression: a solution-MANAGED table (solution_id set) stays excluded
-        from the name cascade as before."""
-        from src.models.orm.solutions import Solution
-
         db = db_session
         org = await _make_org(db)
-        sol = Solution(
-            id=uuid.uuid4(),
-            slug=f"oc-{uuid.uuid4().hex[:8]}",
-            name="OC",
-            organization_id=None,
-        )
-        db.add(sol)
-        await db.flush()
-
+        solution_id = await _make_solution(db)
         name = f"customers_{uuid.uuid4().hex[:8]}"
-        managed = _table(name, org_id=org, solution_id=sol.id)
+
+        managed = _table(name, org_id=org, solution_id=solution_id)
         db.add(managed)
         await db.flush()
 
         repo = TableRepository(session=db, org_id=org, user_id=None, is_superuser=True)
         assert await repo.get(name=name) is None
 
-    async def test_orphan_still_fetchable_by_id(self, db_session) -> None:
-        """The id path is untouched: an orphan is still fetchable BY ID (for the
-        show-orphaned / delete path)."""
+    async def test_solution_row_still_fetchable_by_id(self, db_session) -> None:
         db = db_session
         org = await _make_org(db)
+        solution_id = await _make_solution(db, org_id=org)
         name = f"customers_{uuid.uuid4().hex[:8]}"
 
-        orphan = _table(name, org_id=org, orphaned=True)
-        db.add(orphan)
+        managed = _table(name, org_id=org, solution_id=solution_id)
+        db.add(managed)
         await db.flush()
 
         repo = TableRepository(session=db, org_id=org, user_id=None, is_superuser=True)
-        got = await repo.get(id=orphan.id)
-        assert got is not None and got.id == orphan.id
+        got = await repo.get(id=managed.id)
+        assert got is not None and got.id == managed.id

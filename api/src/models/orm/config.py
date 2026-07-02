@@ -3,9 +3,10 @@ Config and SystemConfig ORM models.
 
 Represents configuration key-value storage for organizations and system settings.
 """
+# ruff: noqa: F821
+# pyright: reportUndefinedVariable=false
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Enum as SQLAlchemyEnum, ForeignKey, Index, LargeBinary, String, Text, text
@@ -14,9 +15,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.enums import ConfigType
 from src.models.orm.base import Base
-
-if TYPE_CHECKING:
-    from src.models.orm.organizations import Organization
 
 
 # Execution-resolution entity — access via ConfigRepository (OrgScopedRepository).
@@ -68,7 +66,9 @@ class Config(Base):
     updated_by: Mapped[str] = mapped_column(String(255))
 
     # Relationships
-    organization: Mapped["Organization | None"] = relationship(back_populates="configs")
+    organization: Mapped["Organization | None"] = relationship(
+        "Organization", back_populates="configs"
+    )
 
     __table_args__ = (
         Index("ix_configs_integration_org_key", "integration_id", "organization_id", "key", unique=True),

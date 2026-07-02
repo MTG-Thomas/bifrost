@@ -1097,11 +1097,11 @@ class SolutionDeployer:
                     f"({'a _repo/ app' if other is None else f'solution {other}'}); "
                     f"two apps cannot share /apps/{slug} for any org — rename one."
                 )
-            app_model = mapp.get("app_model", "inline_v1")
+            app_model = mapp.get("app_model") or "standalone_v2"
             # Solution apps must be standalone_v2: only those are built to dist/
-            # and served from _apps/{id}/. An inline_v1 app (the legacy default
-            # when app_model is omitted) has NO working deploy path here — its
-            # source would be dropped, leaving a published-but-sourceless app that
+            # and served from _apps/{id}/. An explicit inline_v1 app has NO
+            # working deploy path here — its source would be dropped, leaving a
+            # published-but-sourceless app that
             # 404s or serves unrelated _repo/ source (Codex #11). Reject it loudly
             # BEFORE writing any row, rather than persist a broken app.
             if app_model != "standalone_v2":
@@ -1115,6 +1115,7 @@ class SolutionDeployer:
             # _collect_apps (CLI zip path) emits neither "path" nor "repo_path" — fall
             # back to f"apps/{slug}" so to_orm_values can derive repo_path from it.
             mapp_fields = {k: v for k, v in mapp.items() if k in ManifestApp.model_fields}
+            mapp_fields["app_model"] = app_model
             if "path" not in mapp_fields:
                 mapp_fields["path"] = mapp.get("repo_path") or f"apps/{slug}"
             mapp_model = ManifestApp(**mapp_fields)
