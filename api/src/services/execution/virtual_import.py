@@ -160,6 +160,8 @@ STDLIB_PREFIXES = frozenset([
     "fastapi",
     "uvicorn",
     "pytest",
+    "src",        # Platform server package; workspace imports should not shadow it.
+    "bifrost",    # Platform SDK package; workspace imports should never shadow it.
 ])
 
 

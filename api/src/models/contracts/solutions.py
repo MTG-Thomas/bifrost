@@ -76,6 +76,18 @@ class SolutionReadme(BaseModel):
     readme: str | None = None
 
 
+class SolutionEntityCounts(BaseModel):
+    """Per-install inventory counts for lightweight list/catalog views."""
+
+    workflows: int = 0
+    apps: int = 0
+    forms: int = 0
+    agents: int = 0
+    tables: int = 0
+    claims: int = 0
+    files: int = 0
+
+
 class Solution(BaseModel):
     """Read-shape returned by REST.
 
@@ -111,6 +123,10 @@ class Solution(BaseModel):
     # Recomputed by install_zip after each deploy so it reflects the install's
     # state without a separate /setup call. Defaults True (no declarations = complete).
     setup_complete: bool = True
+    # Lifecycle status. "active" = installed & live. "inactive" = uninstalled
+    # (status flip only — data frozen in place under solution_id, dormant).
+    status: str = "active"
+    entity_counts: SolutionEntityCounts = Field(default_factory=SolutionEntityCounts)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -156,6 +172,14 @@ class SolutionEntitySummary(BaseModel):
     created_at: datetime | None = None
 
 
+class SolutionFileSummary(BaseModel):
+    """Lightweight summary of one file owned by a solution install."""
+
+    location: str
+    path: str
+    size: int | None = None
+
+
 class SolutionEntities(BaseModel):
     """Everything one install owns + its config declaration/value status."""
 
@@ -166,6 +190,7 @@ class SolutionEntities(BaseModel):
     agents: list[SolutionEntitySummary] = Field(default_factory=list)
     claims: list[SolutionEntitySummary] = Field(default_factory=list)
     tables: list[SolutionEntitySummary] = Field(default_factory=list)
+    files: list[SolutionFileSummary] = Field(default_factory=list)
     configs: list[SolutionConfigStatus] = Field(default_factory=list)
     required_configs_unset: list[str] = Field(default_factory=list)
 
@@ -371,63 +396,13 @@ class SolutionInstallPreview(BaseModel):
     readme: str | None = None
 
 
-class SolutionDeployRequest(BaseModel):
-    """Full-replace deploy bundle for one install.
-
-    ``python_files`` maps relative paths (e.g. ``workflows/w.py``,
-    ``modules/x.py``) to UTF-8 source text, installed verbatim under the
-    install's ``_solutions/{id}/`` prefix. ``workflows`` are manifest-shaped
-    entity dicts to upsert (apps/forms/agents/tables join in later sub-plans).
-    Deploy is non-interactive by contract — it always applies the full bundle.
-    """
-
-    python_files: dict[str, str] = Field(default_factory=dict)
-    workflows: list[dict[str, Any]] = Field(default_factory=list)
-    tables: list[dict[str, Any]] = Field(default_factory=list)
-    # Each app: {id, slug, name, app_model, dependencies, access_level,
-    # src_files: {rel: text} | dist_files: {rel: text},
-    # bin_dist_files: {rel: base64}}. dist_files/bin_dist_files are the
-    # disconnected fast-path (skip the server build); bin_dist_files carries
-    # non-UTF-8 dist assets (images/fonts/wasm) base64-encoded so they survive
-    # the round-trip unmangled.
-    apps: list[dict[str, Any]] = Field(default_factory=list)
-    # Each form: {id, name, description?, workflow_id?, fields: [...]}.
-    forms: list[dict[str, Any]] = Field(default_factory=list)
-    # Each agent: {id, name, system_prompt, description?, channels?, llm_model?}.
-    agents: list[dict[str, Any]] = Field(default_factory=list)
-    claims: list[dict[str, Any]] = Field(default_factory=list)
-    # Each config schema: {id, key, type, required, description?, default?, position}.
-    # DECLARATIONS only — never a value (values are instance-owned Config rows).
-    config_schemas: list[dict[str, Any]] = Field(default_factory=list)
-    # Each: {integration_name, template, position}. Secret-scrubbed skeletons
-    # (no client_id/secret). Declared from integrations.get("X") refs.
-    connection_schemas: list[dict[str, Any]] = Field(default_factory=list)
-    # Each event/schedule trigger: a ManifestEventSource-shaped dict (source +
-    # schedule/webhook config + nested subscriptions). Webhook instance secrets
-    # are scrubbed; the instance re-establishes external state after install.
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    # The bundle's declared version (bifrost.solution.yaml ``version:``).
-    # Recorded on the install; an older version than installed is refused
-    # unless ``force`` is set (Task 20 downgrade gate).
-    version: str | None = None
-    # Solution-level icon declared by ``logo:`` in bifrost.solution.yaml,
-    # carried base64 by the CLI; deploy validates and stamps it on the install
-    # (absent => cleared).
-    logo_b64: str | None = None
-    logo_content_type: str | None = None
-    # Long-form README markdown sourced from the repo-root README.md (Task 6).
-    # Deploy-owned full-replace: present => set, absent => cleared.
-    readme: str | None = None
-    force: bool = False
-
-
 class SolutionDeleteSummary(BaseModel):
-    """Counts of what a DELETE did. Pure-code entities (workflows/apps/forms/
-    agents) and the install's config DECLARATIONS are deleted via DB cascade.
-    Data-bearing entities are ORPHANED, not deleted: owned tables (and their
-    documents) are detached and survive as ordinary org tables, and the
-    install's config VALUES are stamped with orphan provenance and survive.
-    The UI echoes these back to the operator."""
+    """Counts returned by a confirmed hard-delete (DELETE /{id}?confirm=<slug>).
+
+    All owned rows are removed via the existing ``solution_id ondelete=CASCADE``
+    FKs when the Solution row is deleted. The S3 ``solutions/{id}/`` prefix is
+    swept after the DB commit. No data is orphaned — this is the destructive path.
+    """
 
     solution_id: UUID
     workflows_deleted: int = 0
@@ -436,8 +411,27 @@ class SolutionDeleteSummary(BaseModel):
     agents_deleted: int = 0
     claims_deleted: int = 0
     config_declarations_deleted: int = 0
-    tables_orphaned: int = 0
-    config_values_orphaned: int = 0
+    tables_deleted: int = 0
+    files_swept: int = 0
+
+
+class SolutionDeletionSummary(BaseModel):
+    """Preview of what a hard-delete would destroy (GET /{id}/deletion-summary).
+
+    Returns counts per owned entity type so the confirmation modal can show the
+    operator what they are about to destroy before they type the slug.
+    """
+
+    solution_id: UUID
+    files: int = 0
+    tables: int = 0
+    workflows: int = 0
+    apps: int = 0
+    forms: int = 0
+    agents: int = 0
+    claims: int = 0
+    config_declarations: int = 0
+    events: int = 0
 
 
 class SolutionDeployEnqueued(BaseModel):
@@ -608,3 +602,8 @@ class SolutionSetupStatus(BaseModel):
 
     setup_complete: bool
     items: list[SolutionSetupItem]
+
+
+# ---------------------------------------------------------------------------
+# File job contracts
+# ---------------------------------------------------------------------------

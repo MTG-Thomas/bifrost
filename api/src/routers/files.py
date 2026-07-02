@@ -286,17 +286,19 @@ def _resolve_effective_scope(
       (H6: ctx.solution_id wins over requested_scope, even for superusers).
     - All other cases → ``_storage_scope(_file_org_id(ctx, location, requested_scope))``.
     """
-    if ctx.solution_id is not None:
+    solution_id = _ctx_solution_id(ctx, location)
+    if solution_id is not None:
         if location == "workspace":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="workspace is not available in solution file context",
             )
-        return str(ctx.solution_id)
+        return str(solution_id)
     try:
         return _storage_scope(_file_org_id(ctx, location, requested_scope))
     except ValueError:
-        if ctx.org_id is None and requested_scope:
+        ctx_org_id = getattr(ctx, "org_id", None)
+        if requested_scope and (ctx_org_id is None or not isinstance(ctx_org_id, UUID)):
             return requested_scope
         raise
 
@@ -305,10 +307,11 @@ def _ctx_solution_id(ctx: Context, location: str) -> UUID | None:
     """Return the install UUID from context when present. Used to forward
     solution_id to policy and metadata helpers so the solution-tier policy
     cascade (Task 3) and the C2 metadata column are both correct."""
-    if ctx.solution_id is None:
+    raw_solution_id = getattr(ctx, "solution_id", None)
+    if raw_solution_id is None:
         return None
     try:
-        return UUID(str(ctx.solution_id))
+        return UUID(str(raw_solution_id))
     except (ValueError, AttributeError, TypeError):
         return None
 
@@ -871,6 +874,8 @@ async def _build_signed_url(
 
     if request.method == "PUT":
         headers = file_storage.presigned_upload_headers(request.content_type)
+        if not isinstance(headers, dict):
+            headers = {}
         url = await file_storage.generate_presigned_upload_url(
             path=s3_path,
             content_type=request.content_type,

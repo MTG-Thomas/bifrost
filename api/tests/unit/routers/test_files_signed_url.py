@@ -244,7 +244,7 @@ class TestPresignedUrlGeneration:
         assert result.headers == {"Content-Type": "application/pdf"}
         mock_fss.presigned_upload_headers.assert_called_once_with("application/pdf")
         mock_fss.generate_presigned_upload_url.assert_awaited_once_with(
-            path=f"uploads/{ORG_A}/file.pdf",
+            path="uploads/org-a/file.pdf",
             content_type="application/pdf",
         )
 

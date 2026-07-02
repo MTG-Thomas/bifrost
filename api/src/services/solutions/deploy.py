@@ -31,6 +31,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4, uuid5
 
+from pydantic import ValidationError
 from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -151,7 +152,13 @@ class SolutionDowngradeBlocked(Exception):
 
 
 class SolutionWorkflowNameMismatch(Exception):
-    """A bundle workflow's ``function_name`` is missing from its source."""
+    """A bundle workflow's manifest name diverges from its decorated name.
+
+    The execution engine matches a workflow by ``@workflow(name=...)``; a bundle
+    whose manifest entry name differs from the decorated name in its carried
+    source would deploy a workflow that execution can't resolve. Refused before
+    any write so the operator fixes the manifest or the decorator.
+    """
 
 
 def _is_downgrade(new: str | None, current: str | None) -> bool:
@@ -290,8 +297,8 @@ class SolutionBundle:
     # Travels as password-encrypted .bifrost/secrets.enc; never in plaintext export.
     config_values: dict[str, str] = field(default_factory=dict)
     table_data: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    # Solution-owned file sidecars. Metadata-only entries are used by export;
-    # entries with content_bytes are written after deploy commit.
+    # Solution-owned file sidecars — only populated when include_data=True (full mode).
+    # Each entry carries content_bytes loaded from S3; travels encrypted in secrets.enc.
     solution_files: list[Any] = field(default_factory=list)
 
 
@@ -313,8 +320,10 @@ class SolutionDeployer:
         """Full-replace this install from ``bundle`` — DB phase + app COMPILE.
 
         ``file_mode`` controls how bundle file sidecars are written on deploy:
-        ``"replace"`` overwrites existing files; ``"skip"`` preserves them.
-        Files absent from the bundle are never deleted.
+          ``"replace"`` (default) — always overwrite; ``"skip"`` — preserve an
+          existing (e.g. user-modified) file.  Files absent from the bundle are
+          NEVER deleted regardless of ``file_mode`` (O1 no-mirror: unlike
+          entities, dropped files survive across redeployments).
 
         Everything that can fail on bad input runs BEFORE the caller's commit, so
         a failure rolls the deploy back with ZERO durable side effects:
@@ -330,6 +339,13 @@ class SolutionDeployer:
         """
         solution = bundle.solution
         sid = solution.id
+
+        # Source portability artifact: the exact workspace shape export/install
+        # consume. Build it from the author-time bundle before per-install UUID
+        # remapping, then store it only after the DB commit in finalize_s3.
+        from src.services.solutions.export import build_workspace_zip
+
+        source_artifact = build_workspace_zip(bundle)
 
         # ── Module-closure backstop — before ANY writes ──────────────────────
         # Primary gate is in zip_install (returns a clean 422). This backstop
@@ -369,36 +385,23 @@ class SolutionDeployer:
         # redeploy is stable).
         rb = await self._remapped_bundle(bundle)
 
-        # ── Workflow source preflight (before ANY writes) ───────────────────
-        # Execution resolves by module-level function_name. Populate missing
-        # inline source from python_files so bundles carrying source separately
-        # are still validated before any DB writes.
-        workflows_for_preflight = []
-        for workflow in rb.workflows:
-            enriched = dict(workflow)
-            if enriched.get("source") is None:
-                path = enriched.get("path")
-                if isinstance(path, str) and path in rb.python_files:
-                    enriched["source"] = rb.python_files[path]
-            workflows_for_preflight.append(enriched)
-        name_errors = preflight_workflows(workflows_for_preflight)
+        # ── Workflow-name preflight (before ANY writes) ─────────────────────
+        # A bundle whose manifest entry name diverges from its decorated
+        # @workflow(name=...) would deploy a Workflow.name the execution engine
+        # can't resolve. Catch it up front with actionable guidance.
+        name_errors = preflight_workflows(rb.workflows)
         if name_errors:
             raise SolutionWorkflowNameMismatch("\n".join(name_errors))
 
         # ── DB-only phase (validates + reconciles; rolls back cleanly) ───────
         await self._upsert_workflows(solution, rb.workflows)
         await self._upsert_claims(solution, rb.claims)
-        adopted_table_ids = await self._upsert_tables(solution, rb.tables)
+        await self._upsert_tables(solution, rb.tables)
         builds = await self._upsert_apps(solution, rb.apps)
         await self._upsert_forms(solution, rb.forms)
         await self._upsert_agents(solution, rb.agents)
         await self._upsert_events(solution, rb.events)
         await self._upsert_config_schemas(solution, rb.config_schemas)
-        # Un-orphan this install's config VALUES that match the re-declared keys
-        # (Task 14c) so the operator doesn't re-enter them on reinstall.
-        reattached_configs = await self._reattach_orphan_configs(
-            solution, {c["key"] for c in rb.config_schemas}
-        )
         # Pre-create an empty integration shell for each declared connection that
         # doesn't yet exist globally (never clobbering a configured one). Uses the
         # ORIGINAL bundle: connection declarations key on integration NAME, which
@@ -424,16 +427,11 @@ class SolutionDeployer:
             bundle.file_locations,
             make_error=SolutionDeployConflict,
         )
-        # Captured pre-commit: the finalize closure runs after the caller's
-        # commit, when lazy-loading off the ORM row is no longer safe.
-        install_org_id_str = (
-            str(solution.organization_id) if solution.organization_id is not None else None
-        )
         (
             wf_deleted, tbl_deleted, app_deleted, form_deleted, agent_deleted,
             claim_deleted,
             stale_app_dist,
-        ) = await self._reconcile_deletions(sid, rb, adopted_table_ids)
+        ) = await self._reconcile_deletions(sid, rb)
 
         # ── Version bookkeeping (Task 20) — part of the DB phase, so it commits
         # (or rolls back) atomically with the reconcile. A version-carrying
@@ -467,16 +465,10 @@ class SolutionDeployer:
         # install runnable. Only an outage that survives all retries raises
         # SolutionFinalizeIncomplete — and even then a later deploy/sync heals it.
         async def _finalize_s3() -> None:
-            if reattached_configs:
-                # The reattach is a Core UPDATE that never bumped the config
-                # cache (mirror of the uninstall router's invalidation).
-                # Without this, merged_for_sdk keeps serving the orphan-era
-                # cache and the reattached value stays invisible until TTL.
-                # Post-commit on purpose: invalidating pre-commit would let a
-                # concurrent reader re-cache the OLD state before we commit.
-                from src.core.cache import invalidate_all_config
-
-                await invalidate_all_config(install_org_id_str)
+            await _retry_idempotent(
+                "store source artifact", sid,
+                lambda: self._write_source_artifact(sid, source_artifact),
+            )
             await _retry_idempotent(
                 "write python source", sid,
                 lambda: self._write_python(sid, rb.python_files),
@@ -489,6 +481,12 @@ class SolutionDeployer:
                 "sweep stale dist", sid,
                 lambda: self._delete_stale_app_dist(stale_app_dist),
             )
+            # ── Bundle file sidecars (O1: no mirror-delete) ───────────────────
+            # Write each sidecar that carries content_bytes.  Files absent from
+            # the bundle are INTENTIONALLY left untouched — unlike entities there
+            # is no reconcile-delete sweep for files.  A redeploy with a file
+            # dropped from the bundle must NOT delete the previously-installed
+            # file (user may have modified it).
             if bundle.solution_files:
                 await _retry_idempotent(
                     "write bundle file sidecars", sid,
@@ -506,6 +504,8 @@ class SolutionDeployer:
             apps_deleted=app_deleted,
             forms_upserted=len(rb.forms),
             forms_deleted=form_deleted,
+            # Accurate because _upsert_agents aborts the deploy (SolutionDeployConflict)
+            # if any agent fails to index — a partial success is impossible here.
             agents_upserted=len(rb.agents),
             agents_deleted=agent_deleted,
             claims_upserted=len(rb.claims),
@@ -620,11 +620,10 @@ class SolutionDeployer:
             agents=agents,
             claims=claims,
             config_schemas=config_schemas,
-            file_locations=list(bundle.file_locations),
             events=events,
+            file_locations=list(bundle.file_locations),
             version=bundle.version,
             readme=bundle.readme,
-            solution_files=list(bundle.solution_files),
         )
 
     @staticmethod
@@ -656,6 +655,10 @@ class SolutionDeployer:
         """
         from src.services.manifest_import import _resolve_role_names
 
+        # role_names is authoritative when the key is PRESENT — including an
+        # explicit empty list, which means "no roles" and must NOT fall through to
+        # a stale `roles` UUID list (mirrors the git-sync B3 rule: present means
+        # authoritative). Only a truly ABSENT role_names defers to `roles`.
         role_names = entry.get("role_names")
         if role_names is not None:
             return [
@@ -752,6 +755,11 @@ class SolutionDeployer:
             )
 
     # ── 1. Python source → SolutionStorage (full replace + cache sync) ───────
+    async def _write_source_artifact(self, sid: UUID, source_zip: bytes) -> None:
+        from src.services.solutions.source_artifact import SolutionSourceArtifactStorage
+
+        await SolutionSourceArtifactStorage(sid).write(source_zip)
+
     async def _write_python(self, sid: UUID, python_files: dict[str, str]) -> None:
         """Full-replace this install's Python source and keep the module cache
         consistent.
@@ -788,6 +796,9 @@ class SolutionDeployer:
     async def _upsert_workflows(
         self, solution: Solution, workflows: list[dict[str, Any]]
     ) -> None:
+        from bifrost.manifest import ManifestWorkflow
+        from bifrost.manifest_codec import Destination
+
         sid = solution.id
         for mwf in workflows:
             wf_id = UUID(mwf["id"])
@@ -811,27 +822,13 @@ class SolutionDeployer:
                         f"a bundle may not reuse another owner's entity id"
                     )
 
+            mwf_model = ManifestWorkflow(**mwf)
             values = {
-                "name": mwf["name"],
-                "function_name": mwf["function_name"],
-                "path": mwf["path"],
-                "type": mwf.get("type", "workflow"),
-                "is_active": True,
-                # Full-replace deploy-owned metadata so a redeploy that changes
-                # (or clears) these is reflected, not left stale (criteria 10/14).
-                "description": mwf.get("description"),
-                "tool_description": mwf.get("tool_description"),
-                "endpoint_enabled": mwf.get("endpoint_enabled", False),
-                "public_endpoint": mwf.get("public_endpoint", False),
-                "timeout_seconds": mwf.get("timeout_seconds", 1800),
-                "category": mwf.get("category", "General"),
-                "tags": mwf.get("tags") or [],
+                **mwf_model.to_orm_values(Destination.INSTALL).direct,
                 # Scope is inherited from the install — no per-entity binding.
                 "organization_id": solution.organization_id,
                 "solution_id": sid,
             }
-            if mwf.get("access_level") is not None:
-                values["access_level"] = mwf["access_level"]
             # Safe now: the id is either absent or already this install's.
             await Upsert(
                 model=Workflow, id=wf_id, values=values, match_on="id"
@@ -842,7 +839,7 @@ class SolutionDeployer:
 
     async def _upsert_tables(
         self, solution: Solution, tables: list[dict[str, Any]]
-    ) -> set[UUID]:
+    ) -> None:
         """Upsert table SCHEMA + POLICIES only. Row data (Document records) is
         runtime state and is never written or wiped by deploy (criterion 11).
 
@@ -850,20 +847,14 @@ class SolutionDeployer:
         ``access`` JSONB column. A redeploy with a changed schema updates the
         ``schema`` JSONB in place; the table row (and its Documents via the
         FK) survives untouched.
-
-        Returns the set of ADOPTED orphan table ids (Task 14c). A reattached
-        table keeps the ORPHAN's id (its Documents reference it), which differs
-        from this deploy's remapped bundle id — so the caller must add these ids
-        to the reconcile's present-set, or the same deploy's reconcile sweep
-        (``solution_id == sid AND id NOT IN bundle_ids``) would delete the table
-        it just re-adopted.
         """
+        from bifrost.manifest import ManifestTable
+        from bifrost.manifest_codec import Destination
         from shared.policies.probe import make_seed_admin_bypass
         from src.core.pubsub import publish_policy_changed
         from src.models.contracts.policies import TablePolicies
 
         sid = solution.id
-        adopted_ids: set[UUID] = set()
 
         # Table NAME is unique per install (ix_tables_solution_name_unique). Two
         # tables in THIS bundle sharing a name would hit that index as an
@@ -882,16 +873,28 @@ class SolutionDeployer:
             seen_names.add(nm)
 
         for mtbl in tables:
+            table_label = str(mtbl.get("name") or mtbl.get("id") or "<unknown>")
+            try:
+                mtbl_model = ManifestTable(**mtbl)
+            except ValidationError as exc:
+                raise SolutionDeployConflict(
+                    f"table {table_label!r} manifest invalid: {exc}"
+                ) from exc
+            src = mtbl_model.to_orm_values(Destination.INSTALL).direct
             tbl_id = UUID(mtbl["id"])
-            name = mtbl["name"]
+            name = src["name"]
 
             # Resolve + VALIDATE policies before persisting (mirrors REST/manifest
             # paths) so a malformed AST is rejected at deploy, not at read time.
-            # Computed up front so both the reattach and the normal path use it.
             policies = mtbl.get("policies")
             if policies is not None:
                 access = {"policies": policies}
-                policy_model = TablePolicies.model_validate(access)  # raises on a bad AST
+                try:
+                    policy_model = TablePolicies.model_validate(access)
+                except ValidationError as exc:
+                    raise SolutionDeployConflict(
+                        f"table {name!r} policies invalid: {exc}"
+                    ) from exc
                 from src.routers.tables import _validate_table_policy_claim_refs
 
                 try:
@@ -903,66 +906,37 @@ class SolutionDeployer:
                     )
                 except ValueError as exc:
                     raise SolutionDeployConflict(str(exc)) from exc
+
+                # Fail closed: resolve $ref entries against real rules.  Validate
+                # on a deep copy so the PERSISTED `access` dict retains the
+                # {"$ref": "name"} form (resolving mutates in-place).
+                from shared.policy_rules import (
+                    PolicyRuleDomainMismatch,
+                    PolicyRuleNotFound,
+                    resolve_policy_refs,
+                )
+                from src.repositories.policy_rule import PolicyRuleRepository
+
+                ref_repo = PolicyRuleRepository(
+                    self.db,
+                    org_id=solution.organization_id,
+                    is_superuser=True,
+                )
+                try:
+                    await resolve_policy_refs(
+                        policy_model.model_copy(deep=True),
+                        repo=ref_repo,
+                        action_domain="table",
+                        solution_id=solution.id,
+                    )
+                except (PolicyRuleNotFound, PolicyRuleDomainMismatch) as exc:
+                    raise SolutionDeployConflict(
+                        f"table {name!r} policy ref unresolvable: {exc}"
+                    ) from exc
             else:
                 # None / absent -> seed admin_bypass, matching API-created tables
                 # and manifest import; without it RLS denies all table I/O.
                 access = make_seed_admin_bypass()
-
-            # ── Reattach (Task 14c) ─────────────────────────────────────────
-            # Before creating a fresh (empty) table, adopt a surviving orphan
-            # from a PRIOR install of THIS Solution (same slug + name + org) so
-            # the customer's documents flow back in. We KEEP the orphan's id (its
-            # Documents reference it); identity for resolution is the
-            # solution-scoped (solution_id, name) uniqueness, not the id, so a
-            # reattached table's id legitimately won't match this deploy's
-            # remapped bundle id. If multiple orphans match (repeated
-            # install/uninstall cycles), adopt the MOST RECENTLY orphaned one
-            # (max orphaned_at) and leave the rest orphaned for manual cleanup.
-            org_pred = (
-                Table.organization_id == solution.organization_id
-                if solution.organization_id is not None
-                else Table.organization_id.is_(None)
-            )
-            # Fetch id + current access only — NOT the ORM object. The reattach
-            # writes via a Core update() (below), which bypasses the unit-of-work
-            # so the read-only before_flush backstop (solutions/guard.py) doesn't
-            # fire; loading + mutating the ORM object would trip that guard the
-            # moment we stamp solution_id (it then looks solution-managed).
-            orphan_row = (
-                await self.db.execute(
-                    select(Table.id, Table.access)
-                    .where(
-                        Table.orphaned_at.is_not(None),
-                        Table.origin_solution_slug == solution.slug,
-                        Table.name == name,
-                        org_pred,
-                    )
-                    .order_by(Table.orphaned_at.desc())
-                )
-            ).first()
-            if orphan_row is not None:
-                orphan_id, prev_access = orphan_row[0], orphan_row[1]
-                await self.db.execute(
-                    update(Table)
-                    .where(Table.id == orphan_id)
-                    .values(
-                        solution_id=sid,
-                        organization_id=solution.organization_id,
-                        orphaned_at=None,
-                        origin_solution_slug=None,
-                        origin_solution_id=None,
-                        name=name,
-                        description=mtbl.get("description"),
-                        schema=mtbl.get("schema"),
-                        access=access,
-                    )
-                )
-                adopted_ids.add(orphan_id)
-                # A reattach with a changed policy must invalidate subscribers'
-                # policy cache too (mirrors the normal path's intent).
-                if prev_access != access:
-                    await publish_policy_changed(str(orphan_id))
-                continue  # adopted — skip the id-based upsert for this entry
 
             # Fetch existing (owner + current access) in one shot — used for the
             # ownership guard AND to decide whether to emit policy_changed.
@@ -985,9 +959,7 @@ class SolutionDeployer:
             # (solution-owned metadata), so removing them in the bundle clears
             # the DB value rather than leaving it stale.
             values: dict[str, Any] = {
-                "name": name,
-                "description": mtbl.get("description"),
-                "schema": mtbl.get("schema"),
+                **src,
                 "access": access,
                 "organization_id": solution.organization_id,
                 "solution_id": sid,
@@ -1002,8 +974,6 @@ class SolutionDeployer:
             # without it subscribers keep the old authorization until reconnect).
             if existed and prev_access != access:
                 await publish_policy_changed(str(tbl_id))
-
-        return adopted_ids
 
     async def _upsert_claims(
         self, solution: Solution, claims: list[dict[str, Any]]
@@ -1057,6 +1027,9 @@ class SolutionDeployer:
         Ownership guard mirrors workflows/tables: a bundle UUID must not collide
         with a row owned by ``_repo/`` (NULL) or another install.
         """
+        from bifrost.manifest import ManifestApp
+        from bifrost.manifest_codec import Destination
+
         sid = solution.id
         builds: list[dict[str, Any]] = []
         for mapp in apps:
@@ -1124,7 +1097,7 @@ class SolutionDeployer:
                     f"({'a _repo/ app' if other is None else f'solution {other}'}); "
                     f"two apps cannot share /apps/{slug} for any org — rename one."
                 )
-            app_model = mapp.get("app_model", "standalone_v2")
+            app_model = mapp.get("app_model", "inline_v1")
             # Solution apps must be standalone_v2: only those are built to dist/
             # and served from _apps/{id}/. An inline_v1 app (the legacy default
             # when app_model is omitted) has NO working deploy path here — its
@@ -1138,20 +1111,22 @@ class SolutionDeployer:
                     f"inline_v1 apps are not supported in a Solution bundle."
                 )
             now = datetime.now(timezone.utc)
+            # Build model-field dict; transport extra "repo_path" maps to model field "path".
+            # _collect_apps (CLI zip path) emits neither "path" nor "repo_path" — fall
+            # back to f"apps/{slug}" so to_orm_values can derive repo_path from it.
+            mapp_fields = {k: v for k, v in mapp.items() if k in ManifestApp.model_fields}
+            if "path" not in mapp_fields:
+                mapp_fields["path"] = mapp.get("repo_path") or f"apps/{slug}"
+            mapp_model = ManifestApp(**mapp_fields)
+            _direct = mapp_model.to_orm_values(Destination.INSTALL).direct
             values: dict[str, Any] = {
-                "name": mapp.get("name") or slug,
-                "slug": slug,
-                "repo_path": mapp.get("repo_path") or f"apps/{slug}",
-                "description": mapp.get("description"),
-                "dependencies": mapp.get("dependencies") or None,
-                "app_model": app_model,
+                **_direct,
+                # deploy overrides: org/solution/publish metadata stamped at deploy time.
                 "organization_id": solution.organization_id,
                 "solution_id": sid,
                 "published_snapshot": {"deployed_by": "solution", "app_model": app_model},
                 "published_at": now,
             }
-            if mapp.get("access_level") is not None:
-                values["access_level"] = mapp["access_level"]
             # App LOGO declared in the manifest (`logo:` path), carried by the
             # collector as base64 (the only way a solution-managed app gets a
             # logo — the upload endpoint is blocked for it). Validate + sanitize
@@ -1266,22 +1241,37 @@ class SolutionDeployer:
     async def _write_bundle_files(
         self, install_id: UUID, solution_files: list[Any], file_mode: str
     ) -> None:
-        """POST-COMMIT: write file sidecars from the bundle."""
+        """POST-COMMIT: write file sidecars from the bundle (S3 + metadata row).
+
+        Only entries with ``content_bytes`` populated are written — metadata-only
+        entries (from enumerate without a read) are skipped.
+
+        O1 no-mirror: there is NO reconcile-delete for files.  Files absent from
+        the bundle survive — a redeploy that drops a file must never delete a
+        previously-installed (potentially user-modified) file.  This is an
+        intentional divergence from entity reconcile which does sweep stale rows.
+        """
         import base64 as _b64
 
         from src.services.solution_files import write_solution_file
 
         for sf in solution_files:
+            # Support both SolutionFileEntry dataclass instances (from capture)
+            # and plain dicts (from the secrets_blob JSON tier: content_b64 key).
             if hasattr(sf, "content_bytes"):
                 content = sf.content_bytes
                 location = sf.location
                 path = sf.path
             else:
-                encoded = sf.get("content_b64") if isinstance(sf, dict) else None
-                content = _b64.b64decode(encoded) if encoded else None
-                location = sf.get("location") if isinstance(sf, dict) else None
-                path = sf.get("path") if isinstance(sf, dict) else None
-            if content is None or not location or not path:
+                # Dict form from secrets_blob: content travels as base64.
+                b64 = sf.get("content_b64")
+                if not b64:
+                    continue
+                content = _b64.b64decode(b64)
+                location = sf["location"]
+                path = sf["path"]
+
+            if content is None:
                 continue
 
             await write_solution_file(
@@ -1387,6 +1377,10 @@ class SolutionDeployer:
                 agent_values["max_iterations"] = magent["max_iterations"]
             if magent.get("max_token_budget") is not None:
                 agent_values["max_token_budget"] = magent["max_token_budget"]
+            # max_run_timeout is captured (capture.py:610) but, like the two
+            # limits above, the AgentIndexer does NOT persist it — without
+            # stamping it here a redeploy silently drops the manifest's value
+            # back to the column default. Apply when present.
             if magent.get("max_run_timeout") is not None:
                 agent_values["max_run_timeout"] = magent["max_run_timeout"]
             await self.db.execute(
@@ -1402,6 +1396,13 @@ class SolutionDeployer:
             # writer — full-replace from the manifest so a redeploy reflects both
             # adds and removes. connection_ids reference env-scoped MCPConnection
             # rows (NOT solution entities), so they are NOT id-remapped.
+            # Guard on KEY PRESENCE, not truthiness: install bundles built by
+            # capture._agent_entries OMIT mcp_connection_ids entirely — an ABSENT
+            # key must NOT trigger a full-replace-to-[] that wipes existing grants
+            # (the redeploy bug). But a PRESENT key, even `[]`, is an explicit
+            # intent ("these grants, including none") and must full-replace so an
+            # author can remove all grants. (capture never emits [], so this only
+            # reaches hand-authored / git-sync bundles.)
             if "mcp_connection_ids" in magent:
                 mcp_ids = self._parse_uuids(magent.get("mcp_connection_ids") or [])
                 await self._sync_agent_mcp_connections(agent_id, mcp_ids)
@@ -1430,18 +1431,14 @@ class SolutionDeployer:
                 )
             seen.add(k)
 
+        from bifrost.manifest import ManifestSolutionConfigSchema
+        from bifrost.manifest_codec import Destination
+
         for entry in config_schemas:
             cid = UUID(entry["id"])
             await self._guard_owner(SolutionConfigSchema, cid, sid)
-            values: dict[str, Any] = {
-                "solution_id": sid,
-                "key": entry["key"],
-                "type": entry["type"],
-                "required": bool(entry.get("required", False)),
-                "description": entry.get("description"),
-                "default": entry.get("default"),
-                "position": int(entry.get("position", 0)),
-            }
+            direct = ManifestSolutionConfigSchema(**entry).to_orm_values(Destination.INSTALL).direct
+            values: dict[str, Any] = {"solution_id": sid, **direct}
             await Upsert(
                 model=SolutionConfigSchema, id=cid, values=values, match_on="id"
             ).execute(self.db)
@@ -1600,6 +1597,9 @@ class SolutionDeployer:
         """
         from src.models.enums import ScheduleOverlapPolicy
 
+        from bifrost.manifest import ManifestEventSource
+        from bifrost.manifest_codec import Destination
+
         sid = solution.id
         for mevent in events:
             source_id = UUID(str(mevent["id"]))
@@ -1622,11 +1622,10 @@ class SolutionDeployer:
                 )
             )
 
+            # Source parent field dict from the model; install stamps org/solution/created_by.
+            _direct = ManifestEventSource.model_validate(mevent).to_orm_values(Destination.INSTALL).direct
             source_values: dict[str, Any] = {
-                "name": mevent.get("name") or "",
-                "source_type": mevent["source_type"],
-                "event_type": mevent.get("event_type"),
-                "is_active": mevent.get("is_active", True),
+                **_direct,
                 "organization_id": solution.organization_id,
                 "solution_id": sid,
                 "created_by": "solution-deploy",
@@ -1650,16 +1649,14 @@ class SolutionDeployer:
                 )
 
             # Child config: schedule OR webhook, by source_type.
-            schedule = mevent.get("schedule") or {}
-            cron_expression = mevent.get("cron_expression") or schedule.get("cron")
-            if mevent.get("source_type") == "schedule" and cron_expression:
-                overlap = mevent.get("overlap_policy") or schedule.get("overlap_policy")
+            if mevent.get("source_type") == "schedule" and mevent.get("cron_expression"):
+                overlap = mevent.get("overlap_policy")
                 await self.db.execute(
                     insert(ScheduleSource).values(
                         event_source_id=source_id,
-                        cron_expression=cron_expression,
-                        timezone=mevent.get("timezone") or schedule.get("timezone") or "UTC",
-                        enabled=mevent.get("schedule_enabled", schedule.get("enabled", True)),
+                        cron_expression=mevent["cron_expression"],
+                        timezone=mevent.get("timezone") or "UTC",
+                        enabled=mevent.get("schedule_enabled", True),
                         overlap_policy=(
                             ScheduleOverlapPolicy(overlap)
                             if overlap
@@ -1705,43 +1702,6 @@ class SolutionDeployer:
                     )
                 )
 
-    async def _reattach_orphan_configs(
-        self, solution: Solution, declared_keys: set[str]
-    ) -> int:
-        """Un-orphan config VALUES from a prior install of this Solution so the
-        operator doesn't re-enter them (Task 14c).
-
-        Config has no ``solution_id`` — values are keyed by ``(key, org)``, so
-        "reattach" is just clearing the orphan stamp on the matching live rows.
-        Scoped to this install's slug + declared keys + org. Idempotent and safe
-        even when ANOTHER live install in the same org shares one of these keys:
-        a Config value is matched by (key, org), not an FK, so two installs can
-        share a row. Clearing the stamp on an already-live value is a no-op, and
-        we only touch rows that are CURRENTLY orphaned (``orphaned_at IS NOT
-        NULL``) and tattooed with THIS slug — so we never disturb a value that a
-        different live install owns.
-        """
-        if not declared_keys:
-            return 0
-        from src.models.orm.config import Config
-
-        org_pred = (
-            Config.organization_id == solution.organization_id
-            if solution.organization_id is not None
-            else Config.organization_id.is_(None)
-        )
-        result = await self.db.execute(
-            update(Config)
-            .where(
-                org_pred,
-                Config.key.in_(declared_keys),
-                Config.origin_solution_slug == solution.slug,
-                Config.orphaned_at.is_not(None),
-            )
-            .values(orphaned_at=None, origin_solution_slug=None, origin_solution_id=None)
-        )
-        return result.rowcount or 0
-
     async def _guard_owner(self, model: type, entity_id: UUID, sid: UUID) -> None:
         """Raise SolutionDeployConflict if ``entity_id`` exists and is owned by
         _repo/ (NULL) or a different install — a bundle may not hijack it."""
@@ -1760,7 +1720,7 @@ class SolutionDeployer:
 
     # ── 3. Scoped full-replace deletion ─────────────────────────────────────
     async def _reconcile_deletions(
-        self, sid: UUID, bundle: SolutionBundle, adopted_table_ids: set[UUID]
+        self, sid: UUID, bundle: SolutionBundle
     ) -> tuple[int, int, int, int, int, int, set[UUID]]:
         """Delete this install's entities that are absent from the bundle.
 
@@ -1773,11 +1733,6 @@ class SolutionDeployer:
         DECLARATIONS (SolutionConfigSchema) are also reconciled here, though
         their deleted count is intentionally not surfaced. Returns
         (workflows, tables, apps, forms, agents, claims) deleted counts.
-
-        ``adopted_table_ids`` are orphan ids re-adopted by THIS deploy
-        (Task 14c). They carry the orphan's id, not this deploy's remapped bundle
-        id, so they must be added to the tables' present-set — otherwise this same
-        sweep would delete the table we just reattached.
         """
         wf_deleted = len(
             await self._reconcile_one(
@@ -1788,7 +1743,7 @@ class SolutionDeployer:
             await self._reconcile_one(
                 Table,
                 sid,
-                {UUID(t["id"]) for t in bundle.tables} | adopted_table_ids,
+                {UUID(t["id"]) for t in bundle.tables},
             )
         )
         # Stale app ids are kept (not just counted): their ``_apps/{id}/dist/``

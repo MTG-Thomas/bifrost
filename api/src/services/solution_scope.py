@@ -153,7 +153,13 @@ async def file_read_tiers(
     requested_scope: str | None,
 ) -> list[FileTier]:
     """Return candidate storage tiers for file read/list/exists operations."""
-    if ctx.solution_id is None:
+    raw_solution_id = getattr(ctx, "solution_id", None)
+    try:
+        solution_id = UUID(str(raw_solution_id)) if raw_solution_id is not None else None
+    except (AttributeError, TypeError, ValueError):
+        solution_id = None
+
+    if solution_id is None:
         org_id = _file_org_id(ctx, location, requested_scope)
         return [
             FileTier(
@@ -167,7 +173,6 @@ async def file_read_tiers(
     if location == "workspace":
         raise ValueError("workspace is not available in solution file context")
 
-    solution_id = UUID(str(ctx.solution_id))
     solution = await db.get(Solution, solution_id)
     if solution is None:
         return []
@@ -198,11 +203,17 @@ def _file_org_id(
     ctx: ExecutionContext,
     location: str,
     requested_scope: str | None,
-) -> UUID | None:
+) -> UUID | str | None:
     if location == "workspace":
         return None
-    return resolve_target_org(ctx.user, requested_scope, ctx.org_id)
+    try:
+        return resolve_target_org(ctx.user, requested_scope, ctx.org_id)
+    except ValueError:
+        ctx_org_id = getattr(ctx, "org_id", None)
+        if requested_scope and (ctx_org_id is None or not isinstance(ctx_org_id, UUID)):
+            return requested_scope
+        raise
 
 
-def _storage_scope(org_id: UUID | None) -> str:
+def _storage_scope(org_id: UUID | str | None) -> str:
     return str(org_id) if org_id is not None else "global"

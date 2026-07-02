@@ -20,6 +20,12 @@ from src.core.cache.redis_client import get_redis
 from src.core.database import get_session_factory
 from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
+from src.services.agent_run_access import (
+    apply_agent_run_access,
+    load_agent_by_name_for_user,
+    load_agent_for_user,
+    load_agent_run_for_user,
+)
 from src.models.contracts.agent_run_flag_conversations import (
     FlagConversationResponse,
     SendFlagMessageRequest,
@@ -47,7 +53,6 @@ from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSi
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
-from src.models.orm.agents import Agent
 from src.models.orm.solutions import Solution
 from src.models.orm.summary_backfill_job import SummaryBackfillJob
 from src.core.redis_client import get_redis_client
@@ -143,12 +148,8 @@ async def list_agent_runs(
 ) -> AgentRunListResponse:
     """List agent runs with optional filters."""
     # Build base query — exclude delegation sub-runs from top-level list
-    query = select(AgentRun).join(AgentRun.agent).where(AgentRun.parent_run_id.is_(None))
-
-    # Org filter: non-superusers see only their org's runs
-    if not user.is_superuser:
-        if user.organization_id:
-            query = query.where(AgentRun.org_id == user.organization_id)
+    query = select(AgentRun).where(AgentRun.parent_run_id.is_(None))
+    query = apply_agent_run_access(query, user)
 
     # Apply optional filters
     if agent_id is not None:
@@ -250,7 +251,7 @@ async def list_agent_runs(
 # -----------------------------------------------------------------------------
 
 
-def _enforce_agent_scope(agent_id: UUID, user) -> None:  # type: ignore[no-untyped-def]
+async def _enforce_agent_scope(agent_id: UUID, db: DbSession, user) -> None:  # type: ignore[no-untyped-def]
     """Caller must be able to see the agent to aggregate its metadata.
 
     We keep the enforcement simple: any authenticated user can ask about
@@ -260,7 +261,12 @@ def _enforce_agent_scope(agent_id: UUID, user) -> None:  # type: ignore[no-untyp
     a run the caller could have seen — so there's no separate info leak
     vector beyond what ``GET /api/agent-runs?agent_id=...`` would expose.
     """
-    _ = user  # kept in the signature for future per-agent ACL checks
+    agent = await load_agent_for_user(db, agent_id, user)
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent {agent_id} not found",
+        )
 
 
 @router.get(
@@ -278,7 +284,7 @@ async def get_metadata_keys(
     users don't have to guess which fields the summarizer actually
     extracts on this agent.
     """
-    _enforce_agent_scope(agent_id, user)
+    await _enforce_agent_scope(agent_id, db, user)
     conditions = [AgentRun.agent_id == agent_id]
     if not user.is_superuser and user.organization_id:
         conditions.append(AgentRun.org_id == user.organization_id)
@@ -312,7 +318,7 @@ async def get_metadata_values(
     Used by the filter UI when the user picks the 'eq' operator — lets
     them pick from a known-value list instead of free-typing.
     """
-    _enforce_agent_scope(agent_id, user)
+    await _enforce_agent_scope(agent_id, db, user)
     conditions = [AgentRun.agent_id == agent_id]
     if not user.is_superuser and user.organization_id:
         conditions.append(AgentRun.org_id == user.organization_id)
@@ -431,19 +437,12 @@ async def get_agent_run(
     user: CurrentActiveUser,
 ) -> AgentRunDetailResponse:
     """Get agent run detail with steps."""
-    query = (
-        select(AgentRun)
-        .options(selectinload(AgentRun.steps))
-        .where(AgentRun.id == run_id)
+    run = await load_agent_run_for_user(
+        db,
+        run_id,
+        user,
+        options=[selectinload(AgentRun.steps)],
     )
-
-    # Org filter: non-superusers see only their org's runs
-    if not user.is_superuser:
-        if user.organization_id:
-            query = query.where(AgentRun.org_id == user.organization_id)
-
-    result = await db.execute(query)
-    run = result.scalar_one_or_none()
 
     if not run:
         raise HTTPException(
@@ -603,15 +602,7 @@ async def rerun_agent_run(
     user: CurrentActiveUser,
 ) -> AgentRunRerunResponse:
     """Rerun an agent run with the same input (async, non-blocking)."""
-    query = select(AgentRun).where(AgentRun.id == run_id)
-
-    # Org filter: non-superusers see only their org's runs
-    if not user.is_superuser:
-        if user.organization_id:
-            query = query.where(AgentRun.org_id == user.organization_id)
-
-    result = await db.execute(query)
-    original = result.scalar_one_or_none()
+    original = await load_agent_run_for_user(db, run_id, user)
 
     if not original:
         raise HTTPException(
@@ -645,15 +636,7 @@ async def cancel_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Cancel a queued or running agent run."""
-    query = select(AgentRun).where(AgentRun.id == run_id)
-
-    # Org filter: non-superusers see only their org's runs
-    if not user.is_superuser:
-        if user.organization_id:
-            query = query.where(AgentRun.org_id == user.organization_id)
-
-    result = await db.execute(query)
-    agent_run = result.scalar_one_or_none()
+    agent_run = await load_agent_run_for_user(db, run_id, user)
 
     if not agent_run:
         raise HTTPException(
@@ -717,15 +700,7 @@ async def set_verdict(
     user: CurrentActiveUser,
 ) -> VerdictResponse:
     """Set a verdict on a completed run. Records an audit row."""
-    query = select(AgentRun).where(AgentRun.id == run_id)
-
-    # Org filter: non-superusers see only their org's runs
-    if not user.is_superuser:
-        if user.organization_id:
-            query = query.where(AgentRun.org_id == user.organization_id)
-
-    result = await db.execute(query)
-    run = result.scalar_one_or_none()
+    run = await load_agent_run_for_user(db, run_id, user)
 
     if not run:
         raise HTTPException(
@@ -773,15 +748,7 @@ async def clear_verdict(
     user: CurrentActiveUser,
 ) -> VerdictResponse:
     """Clear the verdict on a run. Records an audit row."""
-    query = select(AgentRun).where(AgentRun.id == run_id)
-
-    # Org filter: non-superusers see only their org's runs
-    if not user.is_superuser:
-        if user.organization_id:
-            query = query.where(AgentRun.org_id == user.organization_id)
-
-    result = await db.execute(query)
-    run = result.scalar_one_or_none()
+    run = await load_agent_run_for_user(db, run_id, user)
 
     if not run:
         raise HTTPException(
@@ -831,10 +798,7 @@ async def get_flag_conversation(
     Creates an empty conversation row if none exists yet so the UI can
     stream messages into a stable ``id``.
     """
-    query = select(AgentRun).where(AgentRun.id == run_id)
-    if not user.is_superuser and user.organization_id:
-        query = query.where(AgentRun.org_id == user.organization_id)
-    run = (await db.execute(query)).scalar_one_or_none()
+    run = await load_agent_run_for_user(db, run_id, user)
     if not run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -864,10 +828,7 @@ async def send_flag_message(
     user: CurrentActiveUser,
 ) -> FlagConversationResponse:
     """Append a user turn and synchronously get the tuning-model reply."""
-    query = select(AgentRun).where(AgentRun.id == run_id)
-    if not user.is_superuser and user.organization_id:
-        query = query.where(AgentRun.org_id == user.organization_id)
-    run = (await db.execute(query)).scalar_one_or_none()
+    run = await load_agent_run_for_user(db, run_id, user)
     if not run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -937,11 +898,7 @@ async def dry_run_agent_run(
     decision. Records an ``AIUsage`` row on the original run for cost
     tracking (``sequence=8000``).
     """
-    query = select(AgentRun).where(AgentRun.id == run_id)
-    if not user.is_superuser and user.organization_id:
-        query = query.where(AgentRun.org_id == user.organization_id)
-
-    run = (await db.execute(query)).scalar_one_or_none()
+    run = await load_agent_run_for_user(db, run_id, user)
     if not run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -979,11 +936,7 @@ async def execute_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Execute an agent synchronously via the SDK."""
-    # Look up agent by name (case-insensitive)
-    result = await db.execute(
-        select(Agent).where(Agent.name.ilike(request.agent_name))
-    )
-    agent = result.scalar_one_or_none()
+    agent = await load_agent_by_name_for_user(db, request.agent_name, user)
 
     if not agent:
         raise HTTPException(
@@ -1002,7 +955,7 @@ async def execute_agent_run(
         }
 
     # Inactive-solution gate: an agent belonging to an inactive solution must not
-    # execute (mirrors the worker-side gate in get_workflow_for_execution).
+    # execute.
     if agent.solution_id is not None:
         sol_result = await db.execute(
             select(Solution.status).where(Solution.id == agent.solution_id)
@@ -1209,6 +1162,8 @@ async def get_backfill_job(
             detail=f"Summary backfill job {job_id} not found",
         )
     return SummaryBackfillJobResponse.model_validate(job)
+
+
 @router.post(
     "/backfill-jobs/{job_id}/cancel",
     response_model=SummaryBackfillJobResponse,
