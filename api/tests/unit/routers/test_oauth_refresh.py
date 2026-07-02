@@ -231,6 +231,7 @@ class TestOAuthRefreshClientCredentials:
 
         provider = MagicMock()
         provider.provider_name = "NinjaOne"
+        provider.provider_metadata = {"omit_token_exchange_scope": True}
         provider.token_url = "https://app.ninjarmm.com/oauth/token"
         provider.client_id = "test-client-id"
         provider.encrypted_client_secret = b"encrypted-secret"
