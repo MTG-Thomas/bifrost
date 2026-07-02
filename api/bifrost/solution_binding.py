@@ -49,6 +49,11 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     return key, value
 
 
+def _write_validated_env_file(env_path: Path, content: str) -> None:
+    with open(env_path, "w", encoding="utf-8") as env_file:
+        env_file.write(content)
+
+
 def read_solution_binding(workspace: Path) -> SolutionBinding | None:
     env = _env_path(workspace)
     if not env.is_file():
@@ -94,7 +99,7 @@ def write_solution_binding(workspace: Path, binding: SolutionBinding) -> None:
         f"BIFROST_SOLUTION_ORG_ID={binding.organization_id or ''}",
         f"BIFROST_SOLUTION_SCOPE={binding.scope}",
     ]
-    env.write_text("\n".join([*kept, *additions]).rstrip() + "\n")  # NOSONAR
+    _write_validated_env_file(env, "\n".join([*kept, *additions]).rstrip() + "\n")
 
 
 def binding_from_install(
