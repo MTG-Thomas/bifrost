@@ -403,6 +403,10 @@ class OAuthConfigSummary(BaseModel):
     authorization_url: str | None = Field(default=None, description="Authorization URL")
     token_url: str = Field(..., description="Token URL")
     scopes: list[str] = Field(default_factory=list, description="OAuth scopes")
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific OAuth behavior flags and metadata",
+    )
 
     # Connection status
     status: str = Field(default="not_connected", description="Connection status")

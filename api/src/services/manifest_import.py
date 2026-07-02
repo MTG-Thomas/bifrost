@@ -2100,6 +2100,7 @@ class ManifestResolver:
                 token_url=op_data.token_url,
                 token_url_defaults=op_data.token_url_defaults or {},
                 scopes=op_data.scopes or [],
+                provider_metadata=op_data.provider_metadata or {},
                 redirect_uri=op_data.redirect_uri,
                 integration_id=integ_id,
             ).on_conflict_do_update(
@@ -2116,6 +2117,7 @@ class ManifestResolver:
                     "token_url": op_data.token_url,
                     "token_url_defaults": op_data.token_url_defaults or {},
                     "scopes": op_data.scopes or [],
+                    "provider_metadata": op_data.provider_metadata or {},
                     "redirect_uri": op_data.redirect_uri,
                     "updated_at": datetime.now(timezone.utc),
                 },

@@ -24,23 +24,37 @@ def oauth_client():
 
 
 class TestTokenExchangeScopePolicy:
-    """Test provider-specific scope replay behavior for token exchange."""
+    """Test provider-configured scope replay behavior for token exchange."""
 
     def test_generic_provider_replays_authorized_scopes(self):
         """Generic OAuth providers should send configured scopes to token exchange."""
-        provider = SimpleNamespace(provider_name="Generic OAuth", scopes=["read", "write"])
+        provider = SimpleNamespace(
+            provider_metadata={},
+            provider_name="Generic OAuth",
+            scopes=["read", "write"],
+        )
 
         assert compute_token_exchange_scopes(provider) == "read write"
 
-    @pytest.mark.parametrize(
-        "provider_name",
-        ["NinjaOne", "ninjaone", "GoToConnect", "gotoconnect"],
-    )
-    def test_scope_sensitive_providers_omit_token_exchange_scopes(self, provider_name):
-        """Providers that reject scope replay should omit scope from token exchange."""
-        provider = SimpleNamespace(provider_name=provider_name, scopes=["read", "write"])
+    def test_provider_metadata_can_omit_token_exchange_scope(self):
+        """Providers that reject scope replay should opt out via metadata."""
+        provider = SimpleNamespace(
+            provider_metadata={"omit_token_exchange_scope": True},
+            provider_name="ScopeSensitiveProvider",
+            scopes=["read", "write"],
+        )
 
         assert compute_token_exchange_scopes(provider) is None
+
+    def test_provider_name_does_not_control_token_exchange_scope_policy(self):
+        """Provider-specific behavior should be data-driven, not name-driven."""
+        provider = SimpleNamespace(
+            provider_metadata={},
+            provider_name="NinjaOne",
+            scopes=["read", "write"],
+        )
+
+        assert compute_token_exchange_scopes(provider) == "read write"
 
 
 class TestOAuthProviderTokenExchange:

@@ -281,6 +281,17 @@ class TestOrganizationNameSerialization:
         data = json.loads(item.model_dump_json())
         assert data["organization_name"] == "Contoso"
 
+    def test_oauth_provider_includes_provider_metadata(self):
+        """OAuth provider export item carries provider behavior metadata."""
+        item = OAuthProviderExportItem(
+            provider_name="scope-sensitive",
+            client_id="c1",
+            encrypted_client_secret="secret",
+            provider_metadata={"omit_token_exchange_scope": True},
+        )
+        data = json.loads(item.model_dump_json())
+        assert data["provider_metadata"] == {"omit_token_exchange_scope": True}
+
     def test_knowledge_roundtrip_with_org_name(self):
         """Knowledge export with org_name survives serialization roundtrip."""
         export = KnowledgeExportFile(

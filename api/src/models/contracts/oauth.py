@@ -71,6 +71,10 @@ class CreateOAuthConnectionRequest(BaseModel):
         max_length=500,
         description="OAuth audience parameter - identifies the target API/resource for the token request (e.g., required by Pax8, Auth0)"
     )
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific OAuth behavior flags and metadata",
+    )
     redirect_uri: str | None = Field(
         None,
         description="OAuth redirect URI (defaults to /oauth/callback/{connection_name})"
@@ -125,6 +129,10 @@ class UpdateOAuthConnectionRequest(BaseModel):
         default=None,
         max_length=500,
         description="OAuth audience parameter"
+    )
+    provider_metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Provider-specific OAuth behavior flags and metadata",
     )
 
     @field_validator('scopes', mode='before')
@@ -200,6 +208,10 @@ class OAuthConnectionDetail(BaseModel):
         default=None,
         description="OAuth audience parameter for token requests"
     )
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific OAuth behavior flags and metadata",
+    )
 
     # Status information
     status: OAuthStatus
@@ -266,6 +278,10 @@ class OAuthConnection(BaseModel):
         description="Default values for token_url placeholders (e.g., {'entity_id': 'common'})"
     )
     scopes: str = ""
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific OAuth behavior flags and metadata",
+    )
     redirect_uri: str = Field(
         ...,
         description="Callback URL: /api/oauth/callback/{connection_name}"
@@ -346,6 +362,7 @@ class OAuthConnection(BaseModel):
             authorization_url=self.authorization_url,
             token_url=self.token_url,
             scopes=self.scopes,
+            provider_metadata=self.provider_metadata,
             status=self.status,
             status_message=self.status_message,
             integration_id=self.integration_id,
