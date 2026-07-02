@@ -23,13 +23,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-PROVIDER_NINJAONE = "NinjaOne"
+PROVIDERS_OMIT_TOKEN_EXCHANGE_SCOPE = frozenset(
+    {
+        "gotoconnect",
+        "ninjaone",
+    }
+)
 
 
 def compute_token_exchange_scopes(provider: "OAuthProvider") -> str | None:
     """Return scopes to send during authorization-code token exchange."""
     provider_name = provider.provider_name or ""
-    if provider_name.casefold() == PROVIDER_NINJAONE.casefold():
+    if provider_name.casefold() in PROVIDERS_OMIT_TOKEN_EXCHANGE_SCOPE:
         return None
 
     return " ".join(provider.scopes) if provider.scopes else None

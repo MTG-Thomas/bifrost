@@ -7,15 +7,40 @@ Mocks HTTP requests to OAuth providers.
 import pytest
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from src.services.oauth_provider import OAuthProviderClient, append_query_params
+from src.services.oauth_provider import (
+    OAuthProviderClient,
+    append_query_params,
+    compute_token_exchange_scopes,
+)
 
 
 @pytest.fixture
 def oauth_client():
     """Create OAuth provider client with test defaults"""
     return OAuthProviderClient(timeout=10, max_retries=3)
+
+
+class TestTokenExchangeScopePolicy:
+    """Test provider-specific scope replay behavior for token exchange."""
+
+    def test_generic_provider_replays_authorized_scopes(self):
+        """Generic OAuth providers should send configured scopes to token exchange."""
+        provider = SimpleNamespace(provider_name="Generic OAuth", scopes=["read", "write"])
+
+        assert compute_token_exchange_scopes(provider) == "read write"
+
+    @pytest.mark.parametrize(
+        "provider_name",
+        ["NinjaOne", "ninjaone", "GoToConnect", "gotoconnect"],
+    )
+    def test_scope_sensitive_providers_omit_token_exchange_scopes(self, provider_name):
+        """Providers that reject scope replay should omit scope from token exchange."""
+        provider = SimpleNamespace(provider_name=provider_name, scopes=["read", "write"])
+
+        assert compute_token_exchange_scopes(provider) is None
 
 
 class TestOAuthProviderTokenExchange:
