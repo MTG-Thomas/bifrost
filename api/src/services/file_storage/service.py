@@ -7,7 +7,9 @@ as the original monolithic FileStorageService.
 
 import ast
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +34,32 @@ from .reindex import WorkspaceReindexService
 from .indexers import WorkflowIndexer
 
 logger = logging.getLogger(__name__)
+
+# Sentinel — returned by _scope_to_org_id to signal "no metadata to write".
+_SCOPE_SKIP = object()
+
+
+def _scope_to_org_id(location: str, scope: str | None) -> "UUID | None | object":
+    """Coerce a storage-scope string to the org UUID for FileMetadata writes.
+
+    Returns:
+        ``None``       — global (org IS NULL)
+        ``UUID(scope)`` — org-scoped write
+        ``_SCOPE_SKIP`` — caller should skip metadata write (missing scope)
+
+    This is the NON-solution path.  Solution writes use their own path so
+    the install UUID never ends up in organization_id (C2).
+    """
+    if location == "workspace":
+        return None
+    if scope is None:
+        return _SCOPE_SKIP
+    if scope == "global":
+        return None
+    try:
+        return UUID(scope)
+    except ValueError:
+        return _SCOPE_SKIP
 
 
 class FileStorageService:
@@ -223,9 +251,117 @@ class FileStorageService:
             expires_in=expires_in,
         )
 
+    async def record_signed_upload_metadata(
+        self,
+        *,
+        location: str,
+        scope: str | None,
+        path: str,
+        s3_path: str,
+        content_type: str,
+        size_bytes: int | None = None,
+        sha256: str | None = None,
+        updated_by: str,
+        user_id: str,
+        solution_id: UUID | None = None,
+        org_id: UUID | None = None,
+    ) -> None:
+        """Record metadata after a presigned PUT has completed.
+
+        `solution_id` + `org_id` are provided when the write is solution-scoped
+        (C2 fix): `solution_id` lands in `FileMetadata.solution_id`, `org_id`
+        in `organization_id`.  Without them, `scope` is coerced to an org UUID
+        (existing behaviour for non-solution writes).
+        """
+        if location == "workspace":
+            await self._file_ops.record_signed_upload_metadata(
+                path,
+                updated_by=updated_by,
+            )
+
+        from src.services.file_policy_service import FilePolicyService
+
+        # C2: when a solution_id is present, use the install's org, not the
+        # install UUID, for organization_id.
+        if solution_id is not None:
+            organization_id = org_id
+        else:
+            organization_id = _scope_to_org_id(location, scope)
+            if organization_id is _SCOPE_SKIP:
+                return
+
+        service = FilePolicyService(self.db)
+        await service.upsert_metadata(
+            organization_id=organization_id,
+            location=location,
+            path=path,
+            content_type=content_type,
+            s3_key=s3_path,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            updated_by=user_id,
+            created_by=user_id,
+            solution_id=solution_id,
+        )
+
+    async def record_file_write_metadata(
+        self,
+        *,
+        location: str,
+        scope: str | None,
+        path: str,
+        s3_path: str,
+        content_type: str,
+        size_bytes: int,
+        sha256: str,
+        updated_by: str,
+        user_id: str,
+        solution_id: UUID | None = None,
+        org_id: UUID | None = None,
+    ) -> None:
+        """Record file metadata for policy predicates after a normal write.
+
+        `solution_id` + `org_id` are provided when the write is solution-scoped
+        (C2 fix): `solution_id` lands in `FileMetadata.solution_id`, `org_id`
+        in `organization_id`.  Without them, `scope` is coerced to an org UUID.
+        """
+        from src.services.file_policy_service import FilePolicyService
+
+        # C2: when a solution_id is present, use the install's org, not the
+        # install UUID, for organization_id.
+        if solution_id is not None:
+            organization_id = org_id
+        else:
+            organization_id = _scope_to_org_id(location, scope)
+            if organization_id is _SCOPE_SKIP:
+                return
+
+        service = FilePolicyService(self.db)
+        await service.upsert_metadata(
+            organization_id=organization_id,
+            location=location,
+            path=path,
+            s3_key=s3_path,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            created_by=user_id,
+            updated_by=user_id,
+            solution_id=solution_id,
+        )
+
     async def read_uploaded_file(self, path: str) -> bytes:
         """Read a file from S3 (for uploaded files)."""
         return await self._s3_storage.read_uploaded_file(path)
+
+    def iter_raw_s3_chunks(
+        self,
+        path: str,
+        *,
+        chunk_size: int = 8 * 1024 * 1024,
+    ) -> AsyncIterator[bytes]:
+        """Yield raw S3 object bytes without loading the whole object."""
+        return self._s3_storage.iter_object_chunks(path, chunk_size=chunk_size)
 
     async def write_raw_to_s3(self, path: str, content: bytes) -> None:
         """Write content directly to S3 without workspace indexing."""
@@ -236,6 +372,20 @@ class FileStorageService:
                 Body=content,
                 ContentType=S3StorageClient.guess_content_type(path),
             )
+
+    async def write_raw_chunks_to_s3(
+        self,
+        path: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        content_type: str | None = None,
+    ) -> tuple[str, int]:
+        """Write raw chunks directly to S3 and return ``(sha256, size)``."""
+        return await self._s3_storage.put_object_from_chunks(
+            path,
+            chunks,
+            content_type=content_type,
+        )
 
     async def delete_raw_from_s3(self, path: str) -> None:
         """Delete a file directly from S3 without workspace indexing."""

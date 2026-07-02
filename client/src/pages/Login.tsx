@@ -7,7 +7,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { getOAuthProviders, initOAuth } from "@/services/auth";
+import { getOAuthProviders, hashOAuthState, initOAuth } from "@/services/auth";
 import { supportsPasskeys } from "@/services/passkeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -256,15 +256,22 @@ export function Login() {
 		setIsLoading(true);
 
 		try {
-			if (!oauthProviders.some((known) => known.name === provider)) {
-				throw new Error("OAuth provider is not available");
-			}
+			// Store redirect info for callback
+			// Note: PKCE (code_verifier) is now handled server-side
+			sessionStorage.setItem("oauth_redirect_from", from);
 
 			// Build callback URL
 			const callbackUrl = `${window.location.origin}/auth/callback/${provider}`;
 
 			// Get authorization URL (server generates and stores PKCE verifier)
-			const { authorization_url } = await initOAuth(provider, callbackUrl);
+			const { authorization_url, state } = await initOAuth(
+				provider,
+				callbackUrl,
+			);
+
+			// Store only a digest of the state for the callback CSRF check —
+			// never the raw token (see hashOAuthState).
+			sessionStorage.setItem("oauth_state", await hashOAuthState(state));
 
 			// Redirect to OAuth provider
 			setFinalizing("Redirecting to sign-in…");

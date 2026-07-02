@@ -16,7 +16,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
 from pydantic import ValidationError
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
 
@@ -32,6 +32,7 @@ from src.core.constants import SYSTEM_USER_UUID
 from src.core.log_safety import log_safe
 from src.core.org_filter import resolve_org_filter, resolve_target_org
 from src.models.contracts.policies import (
+    PolicyRuleRef,
     PolicyValidationError,
     PolicyValidationResponse,
     TablePolicies,
@@ -54,9 +55,13 @@ from src.models.contracts.tables import (
     TableUpdate,
 )
 from src.models.orm.custom_claims import CustomClaim as CustomClaimORM
-from src.models.orm.applications import Application
 from src.models.orm.tables import Document, Table
 from src.services.solutions.guard import assert_entity_id_not_solution_managed
+from src.services.solution_scope import (
+    resolve_solution_table_by_name,
+    solution_context_id,
+)
+from src.services.table_policy_loader import load_resolved_table_policies
 from src.repositories.tables import TableRepository
 from src.core.pubsub import publish_document_change, publish_policy_changed
 from src.services.audit import emit_audit
@@ -65,26 +70,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tables", tags=["Tables"])
 
-
-def _load_policies(table: Table) -> TablePolicies:
-    """Load TablePolicies from the table's `access` JSONB column.
-
-    Empty if null. Fails closed (empty → default deny) on validation error,
-    with a warning log so corrupt data is visible to operators. Without this,
-    one bad JSONB blob would take the whole table offline (HTTP 500); now
-    users get a predictable deny instead.
-    """
-    if not table.access:
-        return TablePolicies()
-    try:
-        return TablePolicies.model_validate(table.access)
-    except ValidationError as e:
-        logger.warning(
-            "malformed policies on table %s; defaulting to empty (deny). "
-            "Validation error: %s",
-            table.id, e,
-        )
-        return TablePolicies()
 
 
 def _resolve_attribution(
@@ -160,7 +145,7 @@ async def _check_action_or_403(
     of the deny. All current call sites either run this before any
     mutation or only after read-only operations.
     """
-    policies = _load_policies(table)
+    policies = await load_resolved_table_policies(table, db)
     await preresolve_for_policies(
         user,
         policies,
@@ -571,6 +556,8 @@ async def _validate_table_policy_claim_refs(
         return
     known = await _known_claim_names_for_org(db, organization_id, solution_id)
     for policy in policies.policies:
+        if isinstance(policy, PolicyRuleRef):
+            continue
         _validate_policy_claim_refs(policy.when, known)
 
 
@@ -588,8 +575,8 @@ async def get_table_or_404(
 
     Install-scoped name resolution (a Solution app via ``X-Bifrost-App`` OR a
     solution workflow via ``ctx.solution_id``) is handled in
-    ``_resolve_solution_table_by_name`` below — own-first, then the org/_repo/
-    cascade. Gated by the org check.
+    ``resolve_solution_table_by_name`` — own-first, then the org/_repo/ cascade.
+    Gated by the org check.
     """
     target_org_id = _resolve_target_org_safe(ctx, scope)
     repo = TableRepository(
@@ -611,6 +598,9 @@ async def get_table_or_404(
             f"table identifier {log_safe(name_or_id)!r} is not a UUID, "
             "falling back to name lookup"
         )
+    solution_id = await solution_context_id(ctx.db, ctx)
+    if table is not None and solution_id is not None and table.solution_id != solution_id:
+        table = None
 
     # Fall back to name lookup (cascade scoping: org-specific then global).
     if not table:
@@ -621,10 +611,15 @@ async def get_table_or_404(
         # The lookup is GATED to the caller's org scope (Codex #16): the
         # X-Bifrost-App header is client-supplied, so it must NOT let a caller
         # reach a table in an org they can't see by passing a foreign app id.
-        install_table = await _resolve_solution_table_by_name(
-            ctx, name_or_id, target_org_id
+        install_table = await resolve_solution_table_by_name(
+            ctx.db, ctx, name_or_id, target_org_id
         )
-        table = install_table or await repo.get_by_name(name_or_id)
+        if install_table is not None:
+            table = install_table
+        elif solution_id is not None:
+            table = None
+        else:
+            table = await repo.get_by_name(name_or_id)
 
     if not table:
         raise HTTPException(
@@ -635,58 +630,14 @@ async def get_table_or_404(
     return table
 
 
-async def _resolve_solution_table_by_name(
-    ctx: Context, name: str, target_org_id: UUID | None
-) -> Table | None:
-    """Resolve a table by name within a calling INSTALL (solution_id), preferring
-    it over a _repo/ table. The install scope comes from EITHER source on ``ctx``:
-
-    - A Solution **app** — ``ctx.app_id`` (``X-Bifrost-App``) → ``Application.solution_id``.
-    - A Solution **workflow** — ``ctx.solution_id`` (the SDK appends ``?solution=``
-      from the ExecutionContext when a solution workflow is executing).
-
-    One own-first resolver, two callers. GATED to the caller's org scope: both are
-    client-supplied, so a caller naming a FOREIGN org's install must not reach
-    that org's table (Codex #16) — a non-superuser only resolves a table whose org
-    is its own (``target_org_id``) or global (NULL); a superuser is unrestricted
-    (mirrors the OrgScopedRepository ID-lookup gate). Returns None for non-install
-    callers or when no in-scope install table matches.
-    """
-    solution_id: UUID | None = None
-    if ctx.solution_id:
-        # A solution workflow: the install id is on the execution context (the SDK
-        # appended ?solution=); no app lookup needed.
-        try:
-            solution_id = UUID(ctx.solution_id)
-        except ValueError:
-            return None
-    elif ctx.app_id:
-        try:
-            app_uuid = UUID(ctx.app_id)
-        except ValueError:
-            return None
-        solution_id = (
-            await ctx.db.execute(
-                select(Application.solution_id).where(Application.id == app_uuid)
-            )
-        ).scalar_one_or_none()
-    if solution_id is None:
-        return None
-    stmt = select(Table).where(
-        Table.name == name,
-        Table.solution_id == solution_id,
+async def _assert_solution_write_targets_owned_table(ctx: Context, table: Table) -> None:
+    solution_id = await solution_context_id(ctx.db, ctx)
+    if solution_id is None or table.solution_id == solution_id:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Table '{table.name}' not found",
     )
-    # Org gate: non-superusers see only their-org-or-global tables. (A solution's
-    # entities inherit the install's org, so gating the Table's org is sufficient
-    # and matches how repo.get(id=...) gates a UUID lookup.)
-    if not ctx.user.is_superuser:
-        stmt = stmt.where(
-            or_(
-                Table.organization_id == target_org_id,
-                Table.organization_id.is_(None),
-            )
-        )
-    return (await ctx.db.execute(stmt)).scalar_one_or_none()
 
 
 # =============================================================================
@@ -710,6 +661,12 @@ async def create_table(
     ),
 ) -> TablePublic:
     """Create a new table for storing documents (platform admin only)."""
+    if ctx.solution_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tables must be declared by the solution manifest",
+        )
+
     # Prefer organization_id from request body; fall back to scope query param (legacy)
     if "organization_id" in (data.model_fields_set or set()):
         target_org_id = data.organization_id
@@ -748,10 +705,6 @@ async def list_tables(
         default=None,
         description="Filter scope: 'global' for global only, org UUID for specific org.",
     ),
-    include_orphaned: bool = Query(
-        default=False,
-        description="Include orphaned tables (former-install data left by an uninstalled Solution).",
-    ),
 ) -> TableListResponse:
     """List all tables in the current scope (platform admin only)."""
     try:
@@ -763,7 +716,7 @@ async def list_tables(
         )
 
     repo = TableRepository(ctx.db, filter_org, is_superuser=True)
-    tables = await repo.list_tables(filter_type, include_orphaned=include_orphaned)
+    tables = await repo.list_tables(filter_type)
 
     return TableListResponse(
         tables=[TablePublic.model_validate(t) for t in tables],
@@ -824,6 +777,7 @@ def _split_value_error_msg(msg: str) -> tuple[str, bool, str]:
     ),
 )
 async def validate_policies(
+    ctx: Context,
     user: CurrentSuperuser,
     body: Any = Body(...),
 ) -> PolicyValidationResponse:
@@ -860,12 +814,54 @@ async def validate_policies(
         )
 
     try:
-        TablePolicies.model_validate(body)
+        parsed = TablePolicies.model_validate(body)
+        # Validate $ref entries resolve to real rules before reporting ok=True.
+        from shared.policy_rules import PolicyRuleDomainMismatch, PolicyRuleNotFound, resolve_policy_refs
+        from src.repositories.policy_rule import PolicyRuleRepository
+        ref_repo = PolicyRuleRepository(ctx.db, org_id=None, is_superuser=True)
+        try:
+            await resolve_policy_refs(parsed.model_copy(deep=True), repo=ref_repo, action_domain="table")
+        except (PolicyRuleNotFound, PolicyRuleDomainMismatch) as ref_exc:
+            return PolicyValidationResponse(
+                ok=False,
+                errors=[PolicyValidationError(path="$.policies", message=str(ref_exc))],
+            )
         return PolicyValidationResponse(ok=True)
     except ValidationError as e:
+        raw_errors = e.errors()
+        # When the policies list union (Policy | PolicyRuleRef) fails, Pydantic
+        # v2 emits errors from BOTH arms.  The arm name appears as a string
+        # segment in loc immediately after the list index, e.g.
+        # ('policies', 0, 'Policy', 'when') vs ('policies', 0, 'PolicyRuleRef', '$ref').
+        # We want to surface only the inline-model arm (Policy) errors when
+        # both arms fail for the same element, so the caller sees exactly the
+        # meaningful failures instead of ref-arm noise.
+        # These string literals are the Pydantic v2 union-arm discriminators — the
+        # class __name__s of Policy and PolicyRuleRef.  If either class is renamed,
+        # update these constants to match or the dedup logic silently stops working.
+        inline_arm = "Policy"
+        ref_arm = "PolicyRuleRef"
+        # Collect the element indices that have an inline-arm error.
+        inline_arm_indices: set[int] = set()
+        for err in raw_errors:
+            loc = err.get("loc", ())
+            if len(loc) >= 3 and isinstance(loc[1], int) and loc[2] == inline_arm:
+                inline_arm_indices.add(loc[1])
         errors: list[PolicyValidationError] = []
-        for err in e.errors():
-            path = _loc_to_path(err.get("loc", ()))
+        for err in raw_errors:
+            loc = err.get("loc", ())
+            # Skip ref-arm errors for items that also have an inline-arm error.
+            if (
+                len(loc) >= 3
+                and isinstance(loc[1], int)
+                and loc[2] == ref_arm
+                and loc[1] in inline_arm_indices
+            ):
+                continue
+            # Strip the union arm type-name segment from loc before path conversion.
+            if len(loc) >= 3 and isinstance(loc[1], int) and loc[2] in (inline_arm, ref_arm):
+                loc = (loc[0], loc[1]) + loc[3:]
+            path = _loc_to_path(loc)
             msg = err.get("msg", "validation error")
             # ``Expr``'s recursive ``_validate_operand`` raises ``ValueError``
             # with messages already prefixed by their AST path
@@ -1025,6 +1021,7 @@ async def insert_document(
 ) -> DocumentPublic:
     """Insert a new document into the table."""
     table = await get_table_or_404(ctx, table_id, scope=scope)
+    await _assert_solution_write_targets_owned_table(ctx, table)
     repo = DocumentRepository(ctx.db, table)
     created_by, updated_by = _resolve_attribution(
         ctx.user, body.created_by, body.updated_by
@@ -1097,6 +1094,7 @@ async def upsert_document(
     binds ``doc_id="upsert"`` and the endpoint becomes unreachable.
     """
     table = await get_table_or_404(ctx, table_id, scope=scope)
+    await _assert_solution_write_targets_owned_table(ctx, table)
     repo = DocumentRepository(ctx.db, table)
     created_by, updated_by = _resolve_attribution(
         ctx.user, body.created_by, body.updated_by
@@ -1152,7 +1150,7 @@ async def count_documents(
     """
     table = await get_table_or_404(ctx, table_id, scope=scope)
 
-    policies = _load_policies(table)
+    policies = await load_resolved_table_policies(table, ctx.db)
     await preresolve_for_policies(
         ctx.user,
         policies,
@@ -1211,6 +1209,7 @@ async def update_document(
 ) -> DocumentPublic:
     """Update a document (partial update, merges with existing)."""
     table = await get_table_or_404(ctx, table_id, scope=scope)
+    await _assert_solution_write_targets_owned_table(ctx, table)
     repo = DocumentRepository(ctx.db, table)
     _, updated_by = _resolve_attribution(ctx.user, None, body.updated_by)
     existing = await repo.get(doc_id)
@@ -1248,6 +1247,7 @@ async def delete_document(
 ) -> None:
     """Delete a document."""
     table = await get_table_or_404(ctx, table_id, scope=scope)
+    await _assert_solution_write_targets_owned_table(ctx, table)
     repo = DocumentRepository(ctx.db, table)
     existing = await repo.get(doc_id)
     if existing is None:
@@ -1285,7 +1285,7 @@ async def query_documents(
     """
     table = await get_table_or_404(ctx, table_id, scope=scope)
 
-    policies = _load_policies(table)
+    policies = await load_resolved_table_policies(table, ctx.db)
     await preresolve_for_policies(
         ctx.user,
         policies,
@@ -1339,8 +1339,9 @@ async def batch_documents(
     with a 403 listing every denied index.
     """
     table = await get_table_or_404(ctx, table_id, scope=scope)
+    await _assert_solution_write_targets_owned_table(ctx, table)
     repo = DocumentRepository(ctx.db, table)
-    policies = _load_policies(table)
+    policies = await load_resolved_table_policies(table, ctx.db)
     await preresolve_for_policies(
         ctx.user,
         policies,
@@ -1452,8 +1453,9 @@ async def batch_delete_documents(
     denied row aborts the whole batch with a 403 listing every denied index.
     """
     table = await get_table_or_404(ctx, table_id, scope=scope)
+    await _assert_solution_write_targets_owned_table(ctx, table)
     repo = DocumentRepository(ctx.db, table)
-    policies = _load_policies(table)
+    policies = await load_resolved_table_policies(table, ctx.db)
     await preresolve_for_policies(
         ctx.user,
         policies,

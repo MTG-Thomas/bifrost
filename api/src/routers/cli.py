@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any, Awaitable, cast
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -2696,6 +2696,16 @@ def _to_pep440(version: str) -> str:
     if dirty:
         v = v[: -len("-dirty")]
 
+    # Bifrost release tags use a semver-ish dev release shape
+    # (e.g. "1.0.8-dev.11"). Preserve the actual release instead of treating it
+    # as a no-tag git hash fallback, which makes package tools report
+    # "0.0.0+g1.0.8.dev.11".
+    m = _re.match(r"^(\d+(?:\.\d+)*)-dev\.(\d+)$", v)
+    if m:
+        base, n = m.group(1), m.group(2)
+        pep = f"{base}.dev{n}"
+        return f"{pep}+dirty" if dirty else pep
+
     # Shape: <tag>-<N>-g<sha>
     m = _re.match(r"^(.+)-(\d+)-(g[0-9a-f]+)$", v)
     if m:
@@ -2856,11 +2866,36 @@ async def download_sdk() -> Response:
 )
 async def cli_create_table(
     request: SDKTableCreateRequest,
+    raw_request: Request,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> SDKTableInfo:
     """Create a new table via SDK."""
+    from src.models.orm.applications import Application
     from src.models.orm.tables import Table
+
+    if raw_request.query_params.get("solution") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tables must be declared by the solution manifest",
+        )
+    app_header = raw_request.headers.get("X-Bifrost-App")
+    if app_header is not None:
+        try:
+            app_uuid = UUID(app_header)
+        except ValueError:
+            app_uuid = None
+        if app_uuid is not None:
+            app_solution_id = (
+                await db.execute(
+                    select(Application.solution_id).where(Application.id == app_uuid)
+                )
+            ).scalar_one_or_none()
+            if app_solution_id is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Tables must be declared by the solution manifest",
+                )
 
     org_id = await _resolve_sdk_org_id(current_user, request.scope, db)
     org_uuid = UUID(org_id) if org_id else None
@@ -2871,6 +2906,7 @@ async def cli_create_table(
     stmt = select(Table).where(
         Table.name == request.name,
         Table.organization_id == org_uuid,
+        Table.solution_id.is_(None),
     )
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()

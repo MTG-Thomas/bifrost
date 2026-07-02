@@ -158,7 +158,7 @@ function referencedKnowledgeNamespaces(
 			for (const n of ns) if (typeof n === "string" && n) out.add(n);
 		}
 	}
-	return Array.from(out).sort((left, right) => left.localeCompare(right));
+	return Array.from(out).sort();
 }
 
 /**
@@ -357,11 +357,7 @@ export function UpgradeDiffView({ diff }: { diff: SolutionUpgradeDiff }) {
 
 /** Random 6-char suffix for suggested repository names. */
 function repoSuffix(): string {
-	const values = new Uint8Array(4);
-	crypto.getRandomValues(values);
-	return Array.from(values, (value) => value.toString(36).padStart(2, "0"))
-		.join("")
-		.slice(0, 6);
+	return Math.random().toString(36).slice(2, 8);
 }
 
 /**

@@ -146,13 +146,13 @@ export function SolutionCaptureDialog({
 	// imports toggle. The preview is the deselectable guard (capture-design §3.3).
 	const previewRequest = useMemo(
 		() => ({
-			workflows: Array.from(selection.workflows).sort((left, right) => left.localeCompare(right)),
-			apps: Array.from(selection.apps).sort((left, right) => left.localeCompare(right)),
-			forms: Array.from(selection.forms).sort((left, right) => left.localeCompare(right)),
-			agents: Array.from(selection.agents).sort((left, right) => left.localeCompare(right)),
-			tables: Array.from(selection.tables).sort((left, right) => left.localeCompare(right)),
-			claims: Array.from(selection.claims).sort((left, right) => left.localeCompare(right)),
-			configs: Array.from(selection.configs).sort((left, right) => left.localeCompare(right)),
+			workflows: Array.from(selection.workflows).sort(),
+			apps: Array.from(selection.apps).sort(),
+			forms: Array.from(selection.forms).sort(),
+			agents: Array.from(selection.agents).sort(),
+			tables: Array.from(selection.tables).sort(),
+			claims: Array.from(selection.claims).sort(),
+			configs: Array.from(selection.configs).sort(),
 			include_imports: includeImports,
 		}),
 		[selection, includeImports],

@@ -27,7 +27,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderWithProviders, screen, fireEvent } from "@/test-utils";
+import { renderWithProviders, screen, fireEvent, waitFor } from "@/test-utils";
 import type { ReactNode } from "react";
 
 vi.mock("@monaco-editor/react", () => ({
@@ -55,11 +55,15 @@ vi.mock("@/contexts/ThemeContext", () => ({
 // Radix Select uses pointer events that jsdom doesn't fully implement; swap
 // for a native <select> wired through a context so SelectItem children can
 // register their values into the parent's <option> list.
+// The LabelCtx lets SelectTrigger forward its aria-label to the parent
+// Select's <select> element, so multiple Select instances in the same
+// component get distinct labels.
 vi.mock("@/components/ui/select", async () => {
 	const React = await import("react");
 	type Item = { value: string; label: string };
 	const Ctx = React.createContext<{
 		register: (it: Item) => void;
+		setLabel: (label: string) => void;
 	} | null>(null);
 
 	function Select({
@@ -72,19 +76,20 @@ vi.mock("@/components/ui/select", async () => {
 		children: ReactNode;
 	}) {
 		const [items, setItems] = React.useState<Item[]>([]);
+		const [label, setLabel] = React.useState("Select");
 		const register = React.useCallback((it: Item) => {
 			setItems((prev) =>
 				prev.some((p) => p.value === it.value) ? prev : [...prev, it],
 			);
 		}, []);
 		return (
-			<Ctx.Provider value={{ register }}>
+			<Ctx.Provider value={{ register, setLabel }}>
 				<select
-					aria-label="Insert template"
+					aria-label={label}
 					value={value ?? ""}
 					onChange={(e) => onValueChange?.(e.target.value)}
 				>
-					<option value="">Insert template...</option>
+					<option value="">{label}...</option>
 					{items.map((it) => (
 						<option key={it.value} value={it.value}>
 							{it.label}
@@ -97,6 +102,20 @@ vi.mock("@/components/ui/select", async () => {
 		);
 	}
 	const Pass = ({ children }: { children: ReactNode }) => <>{children}</>;
+	function SelectTrigger({
+		children,
+		"aria-label": ariaLabel,
+	}: {
+		children?: ReactNode;
+		"aria-label"?: string;
+		[key: string]: unknown;
+	}) {
+		const ctx = React.useContext(Ctx);
+		React.useEffect(() => {
+			if (ariaLabel) ctx?.setLabel(ariaLabel);
+		}, [ctx, ariaLabel]);
+		return <>{children}</>;
+	}
 	function SelectItem({
 		value,
 		children,
@@ -119,7 +138,7 @@ vi.mock("@/components/ui/select", async () => {
 		SelectScrollDownButton: () => null,
 		SelectScrollUpButton: () => null,
 		SelectSeparator: () => null,
-		SelectTrigger: Pass,
+		SelectTrigger,
 		SelectValue: () => null,
 	};
 });
@@ -132,12 +151,18 @@ vi.mock("@/services/tables", () => ({
 	validatePolicies: vi.fn(async () => ({ ok: true, errors: [] })),
 }));
 
+vi.mock("@/services/policyRules", () => ({
+	listPolicyRules: vi.fn(async () => []),
+}));
+
 import { useState } from "react";
 import { PolicyEditor } from "./PolicyEditor";
 import { validatePolicies } from "@/services/tables";
+import { listPolicyRules } from "@/services/policyRules";
 import type { components } from "@/lib/v1";
 
 const mockValidate = validatePolicies as unknown as ReturnType<typeof vi.fn>;
+const mockListRules = listPolicyRules as unknown as ReturnType<typeof vi.fn>;
 
 type TablePolicies = components["schemas"]["TablePolicies"];
 
@@ -151,6 +176,8 @@ beforeEach(() => {
 	// Default per-test impl: clean validation. Individual tests override
 	// to drive the error path.
 	mockValidate.mockImplementation(async () => ({ ok: true, errors: [] }));
+	mockListRules.mockReset();
+	mockListRules.mockResolvedValue([]);
 });
 
 function lastEmitted(): TablePolicies | null {
@@ -208,7 +235,11 @@ describe("PolicyEditor — templates", () => {
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const emitted = lastEmitted();
 		expect(emitted!.policies).toHaveLength(1);
-		const inserted = emitted!.policies![0]!;
+		const inserted = emitted!.policies![0] as {
+			name: string;
+			actions: string[];
+			when: unknown;
+		};
 		expect(inserted.name).toBe("own_row");
 		expect(inserted.actions).toEqual(["read", "update", "delete"]);
 		expect(inserted.when).toEqual({
@@ -269,7 +300,8 @@ describe("PolicyEditor — JSON tab", () => {
 		const emitted = lastEmitted();
 		expect(emitted).not.toBeNull();
 		expect(emitted!.policies).toHaveLength(1);
-		expect(emitted!.policies![0]!.name).toBe("p1");
+		const p0 = emitted!.policies![0] as { name: string; when: unknown };
+		expect(p0.name).toBe("p1");
 	});
 
 	it("clearing the JSON buffer collapses to null", () => {
@@ -382,8 +414,9 @@ describe("PolicyEditor — YAML tab", () => {
 		const emitted = lastEmitted();
 		expect(emitted).not.toBeNull();
 		expect(emitted!.policies).toHaveLength(1);
-		expect(emitted!.policies![0]!.name).toBe("p1");
-		expect(emitted!.policies![0]!.when).toBeNull();
+		const p0yaml = emitted!.policies![0] as { name: string; when: unknown };
+		expect(p0yaml.name).toBe("p1");
+		expect(p0yaml.when).toBeNull();
 	});
 
 	it("clearing the YAML buffer collapses to null", async () => {
@@ -683,5 +716,63 @@ describe("PolicyEditor — server-side validation", () => {
 		// to validate, so no round trip.
 		await vi.advanceTimersByTimeAsync(VALIDATE_DEBOUNCE_MS_TEST + 50);
 		expect(mockValidate).not.toHaveBeenCalled();
+	});
+});
+
+const TABLE_RULE = {
+	id: "00000000-0000-0000-0000-000000000002",
+	organization_id: null,
+	name: "admin_bypass",
+	domain: "table" as const,
+	description: null,
+	body: {},
+	read_only: true,
+	created_at: "2024-01-01T00:00:00Z",
+	updated_at: "2024-01-01T00:00:00Z",
+};
+
+describe("PolicyEditor — reference mode", () => {
+	it("does not render Insert reference when no rules are available", () => {
+		mockListRules.mockResolvedValue([]);
+		renderWithProviders(<PolicyEditor value={null} onChange={onChange} />);
+		expect(
+			screen.queryByLabelText(/insert reference/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("renders Insert reference dropdown when rules are returned", async () => {
+		mockListRules.mockResolvedValue([TABLE_RULE]);
+		renderWithProviders(<PolicyEditor value={null} onChange={onChange} />);
+		await waitFor(() =>
+			expect(screen.getByLabelText(/insert reference/i)).toBeInTheDocument(),
+		);
+	});
+
+	it("renders Manage rules as a non-submit button for table dialog forms", () => {
+		mockListRules.mockResolvedValue([]);
+		renderWithProviders(<PolicyEditor value={null} onChange={onChange} />);
+		expect(screen.getByTestId("manage-rules-btn")).toHaveAttribute(
+			"type",
+			"button",
+		);
+	});
+
+	it("inserts a {$ref} entry when a rule is picked from the dropdown", async () => {
+		mockListRules.mockResolvedValue([TABLE_RULE]);
+		renderWithProviders(<PolicyEditor value={null} onChange={onChange} />);
+		const refSelect = await screen.findByLabelText(/insert reference/i);
+		fireEvent.change(refSelect, { target: { value: "admin_bypass" } });
+		const emitted = lastEmitted();
+		expect(emitted).not.toBeNull();
+		expect(emitted!.policies).toHaveLength(1);
+		expect(emitted!.policies![0]).toEqual({ $ref: "admin_bypass" });
+	});
+
+	it("listPolicyRules is called with 'table' domain", async () => {
+		mockListRules.mockResolvedValue([]);
+		renderWithProviders(<PolicyEditor value={null} onChange={onChange} />);
+		await waitFor(() =>
+			expect(mockListRules).toHaveBeenCalledWith("table"),
+		);
 	});
 });

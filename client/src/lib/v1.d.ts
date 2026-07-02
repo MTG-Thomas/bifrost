@@ -2526,6 +2526,96 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List File Policies
+         * @description List file policies for a location and optional org scope.
+         */
+        get: operations["list_file_policies_api_files_policies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/policies/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test File Policy Access
+         * @description Evaluate effective access for a path using the real file policy service.
+         */
+        post: operations["test_file_policy_access_api_files_policies_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/structure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * List File Structure
+         * @description Admin-only STRUCTURAL listing (not policy-gated): what physically exists
+         *     in a scope, so the explorer tree never orphans a file. Excludes reserved
+         *     workspace/temp; flags uploads read-only. Omit `location` to discover shares.
+         */
+        post: operations["list_file_structure_api_files_structure_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/policies/{policy_path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get File Policy
+         * @description Get the exact file policy for a location/path prefix.
+         */
+        get: operations["get_file_policy_api_files_policies__policy_path__get"];
+        /**
+         * Set File Policy
+         * @description Create or replace the file policy for a location/path prefix.
+         */
+        put: operations["set_file_policy_api_files_policies__policy_path__put"];
+        post?: never;
+        /**
+         * Delete File Policy
+         * @description Delete the exact file policy for a location/path prefix.
+         */
+        delete: operations["delete_file_policy_api_files_policies__policy_path__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/read": {
         parameters: {
             query?: never;
@@ -2644,6 +2734,46 @@ export interface paths {
          *     `(location, scope, path)`.
          */
         post: operations["get_signed_url_api_files_signed_url_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/complete-upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete Signed Upload
+         * @description Finalize a successful direct browser upload.
+         */
+        post: operations["complete_signed_upload_api_files_complete_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/signed-urls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get Signed Urls
+         * @description Generate presigned URLs with per-path allow/deny results.
+         */
+        post: operations["get_signed_urls_api_files_signed_urls_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3725,22 +3855,22 @@ export interface paths {
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        get: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        get: operations["execute_endpoint_api_endpoints_workflow_id_get"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        put: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        put: operations["execute_endpoint_api_endpoints_workflow_id_put"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        post: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        post: operations["execute_endpoint_api_endpoints_workflow_id_post"];
         /**
          * Execute workflow via API key
          * @description Execute an endpoint-enabled workflow using an API key for authentication
          */
-        delete: operations["execute_endpoint_api_endpoints__workflow_id__get"];
+        delete: operations["execute_endpoint_api_endpoints_workflow_id_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -7123,24 +7253,19 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Delete an install and everything it owns (admin only)
-         * @description Delete an install non-destructively for customer data.
+         * Hard-delete an install and ALL owned data — irreversible (admin only)
+         * @description Confirmed hard-delete: drops the Solution row and ALL owned entities.
          *
-         *     Pure-code entities (workflows/apps/forms/agents) and the install's config
-         *     DECLARATIONS cascade away via the ``solution_id`` FK ``ondelete=CASCADE``.
-         *     Data-bearing entities are ORPHANED instead of cascaded:
+         *     **This is irreversible.** Every owned row (tables, workflows, forms, agents,
+         *     apps, claims, config declarations, events) is removed via the existing
+         *     ``solution_id ondelete=CASCADE`` FKs when the Solution row is deleted.
+         *     The ``solutions/{id}/`` S3 prefix is swept after the DB commit.
          *
-         *     - Owned tables are DETACHED before the Solution delete (``solution_id`` set
-         *       to NULL so the cascade can't reach them) and survive as ordinary org
-         *       tables. Their documents are untouched — they hang off the surviving table.
-         *     - The install's config VALUES (Config rows in the install's org scope whose
-         *       key matches a declaration) are stamped with orphan provenance and survive
-         *       (Config has no ``solution_id`` FK, so they were never cascade-tied).
+         *     Requires ``?confirm=<slug>`` equal to the install's slug. A mismatch returns
+         *     422 immediately — nothing is touched.
          *
-         *     Both carry ``origin_solution_slug``/``origin_solution_id``/``orphaned_at`` so
-         *     a reinstall can reattach them. The install's S3 artifacts are swept. The git
-         *     repo is NEVER touched — a git-connected install is deletable; only the install
-         *     and its local artifacts go, the upstream repo is left alone.
+         *     To uninstall non-destructively (freeze data, flip status only), use:
+         *     ``POST /{id}/uninstall``.
          */
         delete: operations["delete_solution_api_solutions__solution_id__delete"];
         options?: never;
@@ -7256,16 +7381,71 @@ export interface paths {
          *
          *     This is a POST (not GET) specifically so the full-backup ``password`` rides
          *     in the request BODY rather than the URL query string — a query-string secret
-         *     leaks into access logs, proxies, and browser history. ``mode`` and
-         *     ``include_data`` stay in the query (they are not sensitive).
+         *     leaks into access logs, proxies, and browser history. ``mode`` and the
+         *     backup-content flags stay in the query (they are not sensitive).
          *
-         *     ``mode=shareable`` (default): portable export, no sensitive values.
-         *     ``mode=full``: includes an encrypted ``.bifrost/secrets.enc`` blob carrying
-         *     the config values set for this install; requires ``password`` (in the body).
-         *     ``include_data=true``: include table row data in the encrypted blob.
-         *     Requires ``mode=full`` (data must be encrypted).
+         *     ``mode=shareable`` (default): portable export, no runtime values.
+         *     ``mode=full``: backup export. ``include_values`` controls config/secret
+         *     values, ``include_files`` controls Solution-owned file payloads, and
+         *     ``include_data`` controls table row data. A password is required whenever a
+         *     backup payload is requested.
          */
         post: operations["export_solution_api_solutions__solution_id__export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/export-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List durable Solution backup export jobs (admin only) */
+        get: operations["get_solution_export_jobs_api_solutions__solution_id__export_jobs_get"];
+        put?: never;
+        /**
+         * Queue a durable Solution backup export job (admin only)
+         * @description Create a scheduler-owned backup export job without building the zip.
+         */
+        post: operations["create_solution_export_job_api_solutions__solution_id__export_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/export-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a durable Solution backup export job (admin only) */
+        get: operations["get_solution_export_job_api_solutions_export_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/export-jobs/{job_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download a completed durable Solution backup export artifact (admin only) */
+        get: operations["download_solution_export_job_api_solutions_export_jobs__job_id__download_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -7331,6 +7511,59 @@ export interface paths {
          *     is static, so computed/dynamic refs are invisible — the UI says so.
          */
         post: operations["preview_solution_capture_api_solutions__solution_id__capture_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/uninstall": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Uninstall: flip status to inactive, data frozen in place (admin only)
+         * @description Flip the install's lifecycle status to ``inactive``.
+         *
+         *     This is the NON-DESTRUCTIVE uninstall path. Owned entities (tables/workflows/
+         *     forms/agents/apps) stay exactly where they are, still owned by this install
+         *     (``solution_id`` is NOT cleared). No S3 ops. No data mutation of any kind.
+         *
+         *     An already-inactive install returns 200 unchanged (idempotent).
+         *
+         *     To permanently destroy an install and all of its owned data, use the hard-delete
+         *     path: ``DELETE /{id}?confirm=<slug>``.
+         */
+        post: operations["uninstall_solution_api_solutions__solution_id__uninstall_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solutions/{solution_id}/deletion-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview counts of what a hard-delete would destroy (admin only)
+         * @description Return per-entity counts of what ``DELETE /{id}?confirm=<slug>`` would destroy.
+         *
+         *     Intended for the confirmation modal: the UI fetches this, shows "you are about
+         *     to delete N tables, M workflows, …", then requires the operator to type the
+         *     install slug before issuing the hard-delete.
+         */
+        get: operations["get_solution_deletion_summary_api_solutions__solution_id__deletion_summary_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -9054,6 +9287,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/policy-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List policy rules
+         * @description List policy rules visible to the caller's scope.
+         */
+        get: operations["list_policy_rules_api_policy_rules_get"];
+        put?: never;
+        /**
+         * Create a named policy rule
+         * @description Create a new (name, domain) policy rule in the caller's org (or global when no org).
+         */
+        post: operations["create_policy_rule_api_policy_rules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/policy-rules/{domain}/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update a named policy rule
+         * @description Update an existing policy rule.
+         */
+        put: operations["update_policy_rule_api_policy_rules__domain___name__put"];
+        post?: never;
+        /**
+         * Delete a named policy rule
+         * @description Delete a policy rule. Fails with 409 if the rule is in use or read-only.
+         */
+        delete: operations["delete_policy_rule_api_policy_rules__domain___name__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/policy-rules/{domain}/{name}/usages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get usages of a named policy rule
+         * @description Return all file-policies and tables that reference this rule.
+         */
+        get: operations["get_policy_rule_usages_api_policy_rules__domain___name__usages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -10689,6 +10990,14 @@ export interface components {
              */
             cost_basis: "history" | "fallback";
         };
+        /** Body_deploy_solution_api_solutions__solution_id__deploy_post */
+        Body_deploy_solution_api_solutions__solution_id__deploy_post: {
+            /**
+             * File
+             * @description Solution workspace zip
+             */
+            file: string;
+        };
         /** Body_export_solution_api_solutions__solution_id__export_post */
         Body_export_solution_api_solutions__solution_id__export_post: {
             /** Password */
@@ -11799,16 +12108,6 @@ export interface components {
             updated_at?: string | null;
             /** Updated By */
             updated_by?: string | null;
-            /**
-             * Orphaned At
-             * @description When this config was orphaned by a Solution uninstall (null if not orphaned)
-             */
-            orphaned_at?: string | null;
-            /**
-             * Origin Solution Slug
-             * @description Slug of the Solution this config was orphaned from (null if not orphaned)
-             */
-            origin_solution_slug?: string | null;
         };
         /**
          * ConfigSchemaItem
@@ -14342,6 +14641,19 @@ export interface components {
             exists: boolean;
         };
         /**
+         * FileExpr
+         * @description File policy expression AST.
+         *
+         *     Reuses the same operator/function/user/claims validation as table
+         *     policies, with one additional reference namespace: ``{file: ...}``.
+         *     Unknown file fields are accepted here and resolve to null at evaluation
+         *     time, which makes persisted policy JSON fail closed instead of widening
+         *     access.
+         */
+        FileExpr: {
+            [key: string]: unknown;
+        };
+        /**
          * FileListMetadataItem
          * @description File metadata item with path, etag, and last_modified.
          */
@@ -14461,6 +14773,84 @@ export interface components {
          * @enum {string}
          */
         FileMode: "draft" | "live";
+        /** FilePolicies */
+        FilePolicies: {
+            /** Policies */
+            policies?: (components["schemas"]["FilePolicyRule"] | components["schemas"]["PolicyRuleRef"])[];
+        };
+        /** FilePolicyAccessTestRequest */
+        FilePolicyAccessTestRequest: {
+            /** Path */
+            path: string;
+            /**
+             * Location
+             * @default workspace
+             */
+            location: string;
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "read" | "write" | "delete" | "list";
+            /** Scope */
+            scope?: string | null;
+            /** User Id */
+            user_id?: string | null;
+        };
+        /** FilePolicyAccessTestResponse */
+        FilePolicyAccessTestResponse: {
+            /** Allowed */
+            allowed: boolean;
+            /** Path */
+            path: string;
+            /** Location */
+            location: string;
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "read" | "write" | "delete" | "list";
+            /** Matched Policy */
+            matched_policy?: string | null;
+            /** Matched Rule */
+            matched_rule?: string | null;
+            /** Denial Reason */
+            denial_reason?: string | null;
+        };
+        /** FilePolicyListResponse */
+        FilePolicyListResponse: {
+            /** Policies */
+            policies?: components["schemas"]["FilePolicyPublic"][];
+        };
+        /** FilePolicyPublic */
+        FilePolicyPublic: {
+            /** Id */
+            id: string;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Location */
+            location: string;
+            /** Path */
+            path: string;
+            policies: components["schemas"]["FilePolicies"];
+        };
+        /** FilePolicyRule */
+        FilePolicyRule: {
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /** Actions */
+            actions: ("read" | "write" | "delete" | "list")[];
+            when?: components["schemas"]["FileExpr"] | null;
+        };
+        /** FilePolicySetRequest */
+        FilePolicySetRequest: {
+            /** Policies */
+            policies: components["schemas"]["FilePolicies"] | {
+                [key: string]: unknown;
+            }[];
+        };
         /**
          * FilePullRequest
          * @description Request to pull files from server.
@@ -14555,6 +14945,42 @@ export interface components {
              * @default false
              */
             binary: boolean;
+        };
+        /**
+         * FileStructureRequest
+         * @description Request for the admin-only structural listing endpoint.
+         */
+        FileStructureRequest: {
+            /**
+             * Location
+             * @description Location to list; omit to discover shares
+             */
+            location?: string | null;
+            /**
+             * Prefix
+             * @description Prefix under the location
+             * @default
+             */
+            prefix: string;
+            /**
+             * Scope
+             * @description Org scope: None/'global' or a UUID
+             */
+            scope?: string | null;
+        };
+        /**
+         * FileStructureResponse
+         * @description Structural listing result. `shares` for discover mode, `entries` for a prefix.
+         */
+        FileStructureResponse: {
+            /** Shares */
+            shares?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Entries */
+            entries?: {
+                [key: string]: unknown;
+            }[] | null;
         };
         /**
          * FileType
@@ -16415,14 +16841,14 @@ export interface components {
             provider: "openai" | "anthropic";
             /**
              * Model
-             * @description Optional model identifier. Connection tests list provider models without probing a guessed default.
+             * @description Model identifier
              */
-            model?: string | null;
+            model: string;
             /**
              * Api Key
-             * @description API key to test. Omit to test current form settings with the saved key.
+             * @description API key to test
              */
-            api_key?: string | null;
+            api_key: string;
             /**
              * Endpoint
              * @description Custom API endpoint URL
@@ -18547,6 +18973,101 @@ export interface components {
             actions: ("read" | "create" | "update" | "delete")[];
             when?: components["schemas"]["Expr"] | null;
         };
+        /** PolicyRuleCreate */
+        PolicyRuleCreate: {
+            /** Name */
+            name: string;
+            /**
+             * Domain
+             * @enum {string}
+             */
+            domain: "file" | "table";
+            /** Description */
+            description?: string | null;
+            /** Body */
+            body: {
+                [key: string]: unknown;
+            };
+            /** Organization Id */
+            organization_id?: string | null;
+        };
+        /** PolicyRulePublic */
+        PolicyRulePublic: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Organization Id */
+            organization_id: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Domain
+             * @enum {string}
+             */
+            domain: "file" | "table";
+            /** Description */
+            description: string | null;
+            /** Body */
+            body: {
+                [key: string]: unknown;
+            };
+            /** Is Builtin */
+            is_builtin: boolean;
+            /** Created At */
+            created_at: string | null;
+            /** Updated At */
+            updated_at: string | null;
+        };
+        /**
+         * PolicyRuleRef
+         * @description A reference to a named PolicyRule, spliced inline at resolution time.
+         */
+        PolicyRuleRef: {
+            /** $Ref */
+            $ref: string;
+        };
+        /** PolicyRuleUpdate */
+        PolicyRuleUpdate: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Body */
+            body?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** PolicyRuleUsagesFilePolicyItem */
+        PolicyRuleUsagesFilePolicyItem: {
+            /** Id */
+            id: string;
+            /** Location */
+            location: string;
+            /** Path */
+            path: string;
+            /** Organization Id */
+            organization_id: string | null;
+        };
+        /** PolicyRuleUsagesPublic */
+        PolicyRuleUsagesPublic: {
+            /** File Policies */
+            file_policies: components["schemas"]["PolicyRuleUsagesFilePolicyItem"][];
+            /** Tables */
+            tables: components["schemas"]["PolicyRuleUsagesTableItem"][];
+            /** Total */
+            total: number;
+        };
+        /** PolicyRuleUsagesTableItem */
+        PolicyRuleUsagesTableItem: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Organization Id */
+            organization_id: string | null;
+        };
         /**
          * PolicyValidationError
          * @description Single structured validation error for a policy document.
@@ -20421,6 +20942,89 @@ export interface components {
             token_type: string;
         };
         /**
+         * SignedUploadCompleteRequest
+         * @description Request to finalize metadata after a successful browser presigned PUT.
+         */
+        SignedUploadCompleteRequest: {
+            /**
+             * Path
+             * @description File path relative to location root
+             */
+            path: string;
+            /**
+             * Content Type
+             * @description Uploaded MIME type
+             * @default application/octet-stream
+             */
+            content_type: string;
+            /** Size Bytes */
+            size_bytes?: number | null;
+            /** Sha256 */
+            sha256?: string | null;
+            /**
+             * Location
+             * @description Storage location. Special values: workspace (default), temp, uploads. Custom names like reports are accepted; internal prefixes _repo, _tmp, and _apps are blocked.
+             * @default uploads
+             */
+            location: string;
+            /**
+             * Scope
+             * @description Org scope. Required for non-workspace, non-uploads locations.
+             */
+            scope?: string | null;
+        };
+        /**
+         * SignedUrlBatchRequest
+         * @description Request to generate several presigned URLs.
+         */
+        SignedUrlBatchRequest: {
+            /** Requests */
+            requests: components["schemas"]["SignedUrlRequest"][];
+        };
+        /**
+         * SignedUrlBatchResponse
+         * @description Batch presigned URL response.
+         */
+        SignedUrlBatchResponse: {
+            /** Results */
+            results: components["schemas"]["SignedUrlBatchResult"][];
+        };
+        /**
+         * SignedUrlBatchResult
+         * @description Per-path presigned URL result.
+         */
+        SignedUrlBatchResult: {
+            /**
+             * Path
+             * @description Original request path
+             */
+            path: string;
+            /**
+             * Resolved Path
+             * @description Resolved S3 path
+             */
+            resolved_path?: string | null;
+            /**
+             * Method
+             * @enum {string}
+             */
+            method: "PUT" | "GET";
+            /** Url */
+            url?: string | null;
+            /**
+             * Expires In
+             * @default 600
+             */
+            expires_in: number;
+            /** Error */
+            error?: string | null;
+            /**
+             * Status Code
+             * @default 200
+             */
+            status_code: number;
+        };
+        /**
          * SignedUrlRequest
          * @description Request to generate a presigned S3 URL.
          */
@@ -20554,6 +21158,12 @@ export interface components {
              * @default true
              */
             setup_complete: boolean;
+            /**
+             * Status
+             * @default active
+             */
+            status: string;
+            entity_counts?: components["schemas"]["SolutionEntityCounts"];
             /**
              * Scope
              * @enum {string}
@@ -20750,12 +21360,11 @@ export interface components {
         };
         /**
          * SolutionDeleteSummary
-         * @description Counts of what a DELETE did. Pure-code entities (workflows/apps/forms/
-         *     agents) and the install's config DECLARATIONS are deleted via DB cascade.
-         *     Data-bearing entities are ORPHANED, not deleted: owned tables (and their
-         *     documents) are detached and survive as ordinary org tables, and the
-         *     install's config VALUES are stamped with orphan provenance and survive.
-         *     The UI echoes these back to the operator.
+         * @description Counts returned by a confirmed hard-delete (DELETE /{id}?confirm=<slug>).
+         *
+         *     All owned rows are removed via the existing ``solution_id ondelete=CASCADE``
+         *     FKs when the Solution row is deleted. The S3 ``solutions/{id}/`` prefix is
+         *     swept after the DB commit. No data is orphaned — this is the destructive path.
          */
         SolutionDeleteSummary: {
             /**
@@ -20794,15 +21403,74 @@ export interface components {
              */
             config_declarations_deleted: number;
             /**
-             * Tables Orphaned
+             * Tables Deleted
              * @default 0
              */
-            tables_orphaned: number;
+            tables_deleted: number;
             /**
-             * Config Values Orphaned
+             * Files Swept
              * @default 0
              */
-            config_values_orphaned: number;
+            files_swept: number;
+        };
+        /**
+         * SolutionDeletionSummary
+         * @description Preview of what a hard-delete would destroy (GET /{id}/deletion-summary).
+         *
+         *     Returns counts per owned entity type so the confirmation modal can show the
+         *     operator what they are about to destroy before they type the slug.
+         */
+        SolutionDeletionSummary: {
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /**
+             * Files
+             * @default 0
+             */
+            files: number;
+            /**
+             * Tables
+             * @default 0
+             */
+            tables: number;
+            /**
+             * Workflows
+             * @default 0
+             */
+            workflows: number;
+            /**
+             * Apps
+             * @default 0
+             */
+            apps: number;
+            /**
+             * Forms
+             * @default 0
+             */
+            forms: number;
+            /**
+             * Agents
+             * @default 0
+             */
+            agents: number;
+            /**
+             * Claims
+             * @default 0
+             */
+            claims: number;
+            /**
+             * Config Declarations
+             * @default 0
+             */
+            config_declarations: number;
+            /**
+             * Events
+             * @default 0
+             */
+            events: number;
         };
         /**
          * SolutionDependencyPreview
@@ -20900,71 +21568,6 @@ export interface components {
             updated_at: string;
         };
         /**
-         * SolutionDeployRequest
-         * @description Full-replace deploy bundle for one install.
-         *
-         *     ``python_files`` maps relative paths (e.g. ``workflows/w.py``,
-         *     ``modules/x.py``) to UTF-8 source text, installed verbatim under the
-         *     install's ``_solutions/{id}/`` prefix. ``workflows`` are manifest-shaped
-         *     entity dicts to upsert (apps/forms/agents/tables join in later sub-plans).
-         *     Deploy is non-interactive by contract — it always applies the full bundle.
-         */
-        SolutionDeployRequest: {
-            /** Python Files */
-            python_files?: {
-                [key: string]: string;
-            };
-            /** Workflows */
-            workflows?: {
-                [key: string]: unknown;
-            }[];
-            /** Tables */
-            tables?: {
-                [key: string]: unknown;
-            }[];
-            /** Apps */
-            apps?: {
-                [key: string]: unknown;
-            }[];
-            /** Forms */
-            forms?: {
-                [key: string]: unknown;
-            }[];
-            /** Agents */
-            agents?: {
-                [key: string]: unknown;
-            }[];
-            /** Claims */
-            claims?: {
-                [key: string]: unknown;
-            }[];
-            /** Config Schemas */
-            config_schemas?: {
-                [key: string]: unknown;
-            }[];
-            /** Connection Schemas */
-            connection_schemas?: {
-                [key: string]: unknown;
-            }[];
-            /** Events */
-            events?: {
-                [key: string]: unknown;
-            }[];
-            /** Version */
-            version?: string | null;
-            /** Logo B64 */
-            logo_b64?: string | null;
-            /** Logo Content Type */
-            logo_content_type?: string | null;
-            /** Readme */
-            readme?: string | null;
-            /**
-             * Force
-             * @default false
-             */
-            force: boolean;
-        };
-        /**
          * SolutionEntities
          * @description Everything one install owns + its config declaration/value status.
          */
@@ -20982,10 +21585,53 @@ export interface components {
             claims?: components["schemas"]["SolutionEntitySummary"][];
             /** Tables */
             tables?: components["schemas"]["SolutionEntitySummary"][];
+            /** Files */
+            files?: components["schemas"]["SolutionFileSummary"][];
             /** Configs */
             configs?: components["schemas"]["SolutionConfigStatus"][];
             /** Required Configs Unset */
             required_configs_unset?: string[];
+        };
+        /**
+         * SolutionEntityCounts
+         * @description Per-install inventory counts for lightweight list/catalog views.
+         */
+        SolutionEntityCounts: {
+            /**
+             * Workflows
+             * @default 0
+             */
+            workflows: number;
+            /**
+             * Apps
+             * @default 0
+             */
+            apps: number;
+            /**
+             * Forms
+             * @default 0
+             */
+            forms: number;
+            /**
+             * Agents
+             * @default 0
+             */
+            agents: number;
+            /**
+             * Tables
+             * @default 0
+             */
+            tables: number;
+            /**
+             * Claims
+             * @default 0
+             */
+            claims: number;
+            /**
+             * Files
+             * @default 0
+             */
+            files: number;
         };
         /**
          * SolutionEntityDiff
@@ -21055,6 +21701,115 @@ export interface components {
             name: string;
             /** Version */
             version?: string | null;
+        };
+        /**
+         * SolutionExportJobCreate
+         * @description Request body for enqueueing a solution backup export job.
+         */
+        SolutionExportJobCreate: {
+            options: components["schemas"]["SolutionExportOptions"];
+        };
+        /**
+         * SolutionExportJobPublic
+         * @description Public state for a durable async solution backup export job.
+         */
+        SolutionExportJobPublic: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Requested By Id */
+            requested_by_id?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "completed" | "failed" | "expired";
+            /**
+             * Progress Percent
+             * @default 0
+             */
+            progress_percent: number;
+            /** Message */
+            message?: string | null;
+            /** Failure Message */
+            failure_message?: string | null;
+            /** Artifact Size Bytes */
+            artifact_size_bytes?: number | null;
+            /** Artifact Sha256 */
+            artifact_sha256?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Download Url */
+            download_url?: string | null;
+        };
+        /**
+         * SolutionExportJobsList
+         * @description Recent durable async backup export jobs for one Solution.
+         */
+        SolutionExportJobsList: {
+            /** Jobs */
+            jobs?: components["schemas"]["SolutionExportJobPublic"][];
+        };
+        /**
+         * SolutionExportOptions
+         * @description Options for a durable async backup export of a solution install.
+         */
+        SolutionExportOptions: {
+            /**
+             * Include Configs
+             * @default true
+             */
+            include_configs: boolean;
+            /**
+             * Include Secrets
+             * @default false
+             */
+            include_secrets: boolean;
+            /**
+             * Include Tables
+             * @default false
+             */
+            include_tables: boolean;
+            /**
+             * Include Files
+             * @default false
+             */
+            include_files: boolean;
+            /** Password */
+            password?: string | null;
+        };
+        /**
+         * SolutionFileSummary
+         * @description Lightweight summary of one file owned by a solution install.
+         */
+        SolutionFileSummary: {
+            /** Location */
+            location: string;
+            /** Path */
+            path: string;
+            /** Size */
+            size?: number | null;
         };
         /**
          * SolutionInstallPreview
@@ -21401,7 +22156,7 @@ export interface components {
         /** TablePolicies */
         TablePolicies: {
             /** Policies */
-            policies?: components["schemas"]["Policy"][];
+            policies?: (components["schemas"]["Policy"] | components["schemas"]["PolicyRuleRef"])[];
         };
         /**
          * TablePublic
@@ -21450,16 +22205,6 @@ export interface components {
              * @description UUID of the owning Solution install (null if not solution-managed)
              */
             solution_id?: string | null;
-            /**
-             * Orphaned At
-             * @description When this table was orphaned by a Solution uninstall (null if not orphaned)
-             */
-            orphaned_at?: string | null;
-            /**
-             * Origin Solution Slug
-             * @description Slug of the Solution this table was orphaned from (null if not orphaned)
-             */
-            origin_solution_slug?: string | null;
         };
         /**
          * TableUpdate
@@ -27281,8 +28026,6 @@ export interface operations {
             query?: {
                 /** @description Filter scope: omit for all (superusers), 'global' for global only, or org UUID for specific org. */
                 scope?: string | null;
-                /** @description Include orphaned configs (former-install data left by an uninstalled Solution). */
-                include_orphaned?: boolean;
             };
             header?: never;
             path?: never;
@@ -27627,6 +28370,209 @@ export interface operations {
             };
         };
     };
+    list_file_policies_api_files_policies_get: {
+        parameters: {
+            query?: {
+                location?: string | null;
+                scope?: string | null;
+                organization_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePolicyListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_file_policy_access_api_files_policies_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FilePolicyAccessTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePolicyAccessTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_file_structure_api_files_structure_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileStructureRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileStructureResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_file_policy_api_files_policies__policy_path__get: {
+        parameters: {
+            query?: {
+                location?: string;
+                scope?: string | null;
+            };
+            header?: never;
+            path: {
+                policy_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePolicyPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_file_policy_api_files_policies__policy_path__put: {
+        parameters: {
+            query?: {
+                location?: string;
+                scope?: string | null;
+            };
+            header?: never;
+            path: {
+                policy_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FilePolicySetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FilePolicyPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_file_policy_api_files_policies__policy_path__delete: {
+        parameters: {
+            query?: {
+                location?: string;
+                scope?: string | null;
+            };
+            header?: never;
+            path: {
+                policy_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_file_api_files_read_post: {
         parameters: {
             query?: never;
@@ -27808,6 +28754,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignedUrlResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_signed_upload_api_files_complete_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignedUploadCompleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_signed_urls_api_files_signed_urls_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignedUrlBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignedUrlBatchResponse"];
                 };
             };
             /** @description Validation Error */
@@ -29517,7 +30527,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints_workflow_id_get: {
         parameters: {
             query?: never;
             header: {
@@ -29550,7 +30560,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints_workflow_id_put: {
         parameters: {
             query?: never;
             header: {
@@ -29583,7 +30593,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints_workflow_id_post: {
         parameters: {
             query?: never;
             header: {
@@ -29616,7 +30626,7 @@ export interface operations {
             };
         };
     };
-    execute_endpoint_api_endpoints__workflow_id__get: {
+    execute_endpoint_api_endpoints_workflow_id_delete: {
         parameters: {
             query?: never;
             header: {
@@ -34975,8 +35985,6 @@ export interface operations {
             query?: {
                 /** @description Filter scope: 'global' for global only, org UUID for specific org. */
                 scope?: string | null;
-                /** @description Include orphaned tables (former-install data left by an uninstalled Solution). */
-                include_orphaned?: boolean;
             };
             header?: never;
             path?: never;
@@ -35757,7 +36765,9 @@ export interface operations {
     };
     delete_solution_api_solutions__solution_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                confirm?: string;
+            };
             header?: never;
             path: {
                 solution_id: string;
@@ -35963,6 +36973,8 @@ export interface operations {
         parameters: {
             query?: {
                 mode?: string;
+                include_values?: boolean | null;
+                include_files?: boolean | null;
                 include_data?: boolean;
             };
             header?: never;
@@ -35989,6 +37001,149 @@ export interface operations {
             };
             /** @description Install not found, or it predates export support */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_export_jobs_api_solutions__solution_id__export_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionExportJobsList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_solution_export_job_api_solutions__solution_id__export_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SolutionExportJobCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionExportJobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_export_job_api_solutions_export_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionExportJobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_solution_export_job_api_solutions_export_jobs__job_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/zip": unknown;
+                };
+            };
+            /** @description Export job not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Export job is not downloadable */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -36102,7 +37257,7 @@ export interface operations {
             };
         };
     };
-    deploy_solution_api_solutions__solution_id__deploy_post: {
+    uninstall_solution_api_solutions__solution_id__uninstall_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -36111,9 +37266,73 @@ export interface operations {
             };
             cookie?: never;
         };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Solution"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_deletion_summary_api_solutions__solution_id__deletion_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionDeletionSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deploy_solution_api_solutions__solution_id__deploy_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SolutionDeployRequest"];
+                "multipart/form-data": components["schemas"]["Body_deploy_solution_api_solutions__solution_id__deploy_post"];
             };
         };
         responses: {
@@ -36374,6 +37593,7 @@ export interface operations {
         parameters: {
             query?: {
                 force?: boolean;
+                reactivate?: boolean;
             };
             header?: never;
             path?: never;
@@ -39240,6 +40460,177 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    list_policy_rules_api_policy_rules_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by domain ('file' or 'table') */
+                domain?: string | null;
+                /** @description Org scope; omit for all. */
+                organization_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRulePublic"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_policy_rule_api_policy_rules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyRuleCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRulePublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_policy_rule_api_policy_rules__domain___name__put: {
+        parameters: {
+            query?: {
+                organization_id?: string | null;
+            };
+            header?: never;
+            path: {
+                domain: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyRuleUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRulePublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_policy_rule_api_policy_rules__domain___name__delete: {
+        parameters: {
+            query?: {
+                organization_id?: string | null;
+            };
+            header?: never;
+            path: {
+                domain: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_policy_rule_usages_api_policy_rules__domain___name__usages_get: {
+        parameters: {
+            query?: {
+                organization_id?: string | null;
+            };
+            header?: never;
+            path: {
+                domain: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyRuleUsagesPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

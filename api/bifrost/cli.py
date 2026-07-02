@@ -4,7 +4,7 @@ Bifrost CLI
 Command-line interface for the Bifrost SDK.
 
 Commands:
-  bifrost login   - Authenticate with native browser OAuth
+  bifrost login   - Authenticate with device authorization flow
   bifrost logout  - Clear stored credentials
 
 Note: This module is standalone and doesn't import the main bifrost package
@@ -19,28 +19,18 @@ import json
 import logging
 import os
 import pathlib
-import secrets
 import shutil
 import sys
-import tempfile
 import textwrap
-import threading
 import time
 import webbrowser
-import zlib
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import PurePosixPath
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlparse
 
 if TYPE_CHECKING:
     import pathspec
-
     from bifrost.tui.watch import WatchApp
-import contextlib
 from uuid import uuid4
 
 import httpx
@@ -49,8 +39,9 @@ import httpx
 import bifrost.credentials as credentials
 from bifrost._workspace_lock import WorkspaceLock, WorkspaceLockError
 from bifrost.client import BifrostClient
-from bifrost.contract_version import CONTRACT_VERSION
-
+from bifrost.ignore_patterns import (
+    DEFAULT_IGNORE_PATTERNS as _CANONICAL_IGNORE_PATTERNS,
+)
 # Canonical platform export list. Shared with api/src/services/app_bundler.
 # A drift test (tests/unit/test_platform_names_match_runtime.py) keeps this
 # in step with the client's runtime `$` registry so new platform exports
@@ -59,64 +50,44 @@ from bifrost.platform_names import PLATFORM_EXPORT_NAMES as _PLATFORM_EXPORT_NAM
 
 logger = logging.getLogger(__name__)
 
-GITIGNORE_FILENAME = ".gitignore"
-
-# Default ignore patterns applied even without a .gitignore file.
-# .bifrost/ is import/export-only and is never part of push/pull/sync/watch.
-_DEFAULT_IGNORE_PATTERNS = [
-    ".git/",
-    "__pycache__/",
-    ".ruff_cache/",
-    ".mypy_cache/",
-    ".pytest_cache/",
-    ".pyright/",
-    "node_modules/",
-    ".bifrost/",
-    ".venv/",
-    "venv/",
-    ".tox/",
-    "build/",
-    "dist/",
-    "coverage/",
-    ".coverage",
-    ".env",
-    ".env.*",
-    ".DS_Store",
-    "*.pyc",
-    # Editor atomic-write turds (e.g. foo.tsx.tmp.12345.1776000000000).
-    # Without this, watchdog sees these files and pushes them to S3; the
-    # editor then renames them to the real file and watchdog emits a 'moved'
-    # event that deliberately does NOT delete the source. Result: every save
-    # leaves a turd in S3 forever.
-    "*.tmp.*",
-    "*.swp",
-    "*.swo",
-    "*~",
-    ".#*",
-]
-
-
-def _safe_workspace_relative_path(value: str) -> str:
-    normalized = value.replace("\\", "/")
-    rel = PurePosixPath(normalized)
-    if rel.is_absolute() or pathlib.Path(normalized).drive:
-        raise ValueError(f"unsafe server path: {value}")
-    if not rel.parts or any(part in ("", ".", "..") for part in rel.parts):
-        raise ValueError(f"unsafe server path: {value}")
-    return rel.as_posix()
+# Canonical gitignore-style skip patterns applied even without a .gitignore file
+# (build output, caches, editor turds, .env secrets). Shared with server-side
+# Solution capture/export so both surfaces skip the same files. The matcher is
+# built from this list at _build_file_filter.
+_DEFAULT_IGNORE_PATTERNS = _CANONICAL_IGNORE_PATTERNS
 
 
 def _ensure_utf8_stdio() -> None:
-    """Make stdout/stderr tolerate non-ASCII output on Windows."""
+    """Make stdout/stderr tolerate non-ASCII output on Windows.
+
+    Windows consoles default to cp1252, so printing the status glyphs and
+    em-dashes the CLI uses (✓, ✗, ⚠, ←, —) raises UnicodeEncodeError and
+    aborts the command mid-run. Reconfiguring the streams to UTF-8 fixes the
+    whole class at once; on a terminal that is already UTF-8 (Linux/macOS,
+    Windows Terminal) this is a no-op. ``errors="backslashreplace"`` keeps a
+    legacy console from crashing even if a glyph can't be rendered.
+    """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue
-        with contextlib.suppress(ValueError, OSError):
+        try:
             reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):
+            # Stream doesn't support reconfigure (e.g. already-wrapped or a
+            # non-text buffer in tests). Output safety still holds for the
+            # tested summary path via _check_glyph(); nothing to do here.
+            pass
 
 
 def _stdout_can_encode(text: str) -> bool:
+    """True if the current stdout encoding can represent ``text``.
+
+    Windows consoles default to cp1252, which cannot encode the glyphs we
+    like to use on UTF-8 terminals (✓, ✗, —). Printing them there raises
+    UnicodeEncodeError mid-command. Callers use this to pick an ASCII
+    fallback instead of crashing.
+    """
     enc = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
         text.encode(enc)
@@ -126,6 +97,14 @@ def _stdout_can_encode(text: str) -> bool:
 
 
 def _check_glyph() -> str:
+    """Status glyph for plain-stdout (non-TUI) output.
+
+    On UTF-8 terminals it renders as ✓; on cp1252 Windows consoles it
+    degrades to "OK" so the CLI never crashes printing a result. Evaluated
+    per call (not cached) so it honours the actual stdout at print time.
+    The Textual TUI renders to its own buffer and is unaffected, so it keeps
+    using the Unicode glyphs directly.
+    """
     return "✓" if _stdout_can_encode("✓") else "OK"
 
 
@@ -164,10 +143,7 @@ def _hash_for_cache(raw_bytes: bytes) -> str:
     and S3's ETag is md5 of those. Any hash we compare against a server ETag
     must be computed on the same normalized bytes.
     """
-    return hashlib.md5(
-        _normalize_line_endings(raw_bytes),
-        usedforsecurity=False,
-    ).hexdigest()
+    return hashlib.md5(_normalize_line_endings(raw_bytes)).hexdigest()
 
 
 def _is_bifrost_path(path: str) -> bool:
@@ -198,11 +174,11 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     lines = list(_DEFAULT_IGNORE_PATTERNS)
 
     workspace_root = _workspace_root_for(local_root)
-    workspace_gitignore = workspace_root / GITIGNORE_FILENAME
+    workspace_gitignore = workspace_root / ".gitignore"
     if workspace_gitignore.is_file():
         lines.extend(workspace_gitignore.read_text(encoding="utf-8").splitlines())
 
-    gitignore_path = local_root / GITIGNORE_FILENAME
+    gitignore_path = local_root / ".gitignore"
     if gitignore_path != workspace_gitignore and gitignore_path.is_file():
         lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
 
@@ -213,276 +189,126 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
 WATCH_HEARTBEAT_SECONDS = 60
 
 
-def _warn_cli_version(message: str) -> None:
+def _warn(message: str) -> None:
+    """Emit a one-line yellow warning to stderr (never blocks)."""
     print(f"\033[33m{message}\033[0m", file=sys.stderr)
 
 
-def _version_notice_marker(api_url: str, server_version: str) -> pathlib.Path:
-    key = f"{zlib.crc32(f'{api_url}|{server_version}'.encode()):08x}"
-    return pathlib.Path(tempfile.gettempdir()) / f"bifrost-cli-version-notice-{key}"
-
-
-def _warn_build_drift_once(api_url: str, installed: str, server_version: str) -> None:
-    marker = _version_notice_marker(api_url, server_version)
-    if marker.exists():
-        return
-    with contextlib.suppress(OSError):
-        marker.write_text("1", encoding="utf-8")
-    _warn_cli_version(
-        f"Your CLI ({installed}) differs from server build {server_version}. "
-        f"Run: pipx install --force {api_url}/api/cli/download"
-    )
-
-
 def _check_cli_version() -> None:
-    """Hard-block only when the CLI contract is incompatible with the server."""
+    """Gate the command against the deployed server. Two independent gates:
+
+    1. **Contract (HARD).** The server reports ``contract_version`` at
+       ``GET /api/version``. If it differs from the CLI's baked
+       ``CONTRACT_VERSION``, the CLI is contract-incompatible → ``sys.exit(1)``
+       with the upgrade message, for every command. ``CONTRACT_VERSION`` is
+       bumped only on breaking changes to the contract surface the CLI consumes
+       (enforced by ``tests/unit/test_contract_version.py``), so an unrelated
+       server release no longer force-reinstalls every CLI.
+
+    2. **Build drift (SOFT).** ``contract_version`` matches but the build
+       ``version`` differs → a one-line stderr notice, deduped per (url,
+       version). Never blocks.
+
+    **Old server** (response lacks ``contract_version``): we can't verify the
+    contract. Rather than hard-block on build-version equality — a rollout
+    footgun, since a fresh CLI almost always differs from a not-yet-upgraded
+    server — we emit a soft warning and continue.
+
+    **Un-reachable verdict** (network/parse error, missing ``version``): emit a
+    visible warning instead of silently skipping, so a stale CLI proceeding
+    against an incompatible server is never invisible. Never blocks.
+    """
+    import httpx
+
+    from bifrost import __version__
+    from bifrost.contract_version import CONTRACT_VERSION
+
+    installed = __version__.lstrip("v")
+    if installed in ("unknown", "0.0.0+source"):
+        return  # dev/source install — nothing to compare against
+
+    # Re-load dotenv so a CWD-local .env's BIFROST_API_URL is honored even
+    # if bifrost.client's import-time load happened against a different cwd.
     try:
-        import httpx
+        from dotenv import find_dotenv, load_dotenv
+        load_dotenv(find_dotenv(usecwd=True), override=False)
+    except ImportError:
+        pass  # python-dotenv is optional; without it, only os.environ is consulted
 
-        from bifrost import __version__
-
-        installed = __version__.lstrip("v")
-        if installed in ("unknown", "0.0.0+source"):
-            return  # dev/source install — nothing to compare against
-
-        # Re-load only the safe CWD-local .env allowlist so BIFROST_API_URL is
-        # honored even if bifrost.client imported against a different cwd.
-        credentials.load_allowed_dotenv()
-
-        # Use credentials._resolve_url (not get_credentials) because the version
-        # check only needs the URL — get_credentials returns None unless full
-        # tokens are present too, which would skip the check on a logged-out CLI.
+    # Use credentials._resolve_url (not get_credentials) because the version
+    # check only needs the URL — get_credentials returns None unless full
+    # tokens are present too, which would skip the check on a logged-out CLI.
+    try:
         api_url = credentials._resolve_url(None)
-        if not api_url:
-            return
+    except Exception as e:
+        logger.debug(f"CLI version check skipped (no URL): {e}")
+        return
+    if not api_url:
+        return
 
-        # Use httpx (already a hard dep via BifrostClient), not urllib. CDNs/WAFs
-        # in front of prod Bifrost instances 403 the default Python-urllib UA.
-        resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
+    # Fetch the server's version document. A failure here is an UN-REACHABLE
+    # verdict — warn (Q2), never block. Use httpx (already a hard dep), not
+    # urllib: CDNs/WAFs in front of prod Bifrost (Cloudflare on
+    # bifrost.gocovi.com) 403 the default `Python-urllib/X.Y` UA; httpx's UA
+    # gets through and matches every other SDK request.
+    try:
+        resp = httpx.get(f"{api_url}/api/version", timeout=3)
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
-            _warn_cli_version("Could not verify Bifrost CLI/server compatibility: version response was not an object.")
-            return
+            # Valid JSON but not an object (e.g. a proxy returning an error
+            # array/string) — treat as an unreadable verdict, not a crash.
+            raise ValueError(f"unexpected response shape: {type(data).__name__}")
+    except Exception as e:
+        _warn(
+            f"Could not verify CLI compatibility with {api_url} ({e}). "
+            f"Continuing — run a command again once the server is reachable."
+        )
+        return
 
-        server_version = (data.get("version") or "").lstrip("v")
-        server_contract_version = data.get("contract_version")
-        if server_contract_version is None:
-            if server_version and server_version == installed:
-                return
-            _warn_cli_version(
-                "Could not verify Bifrost CLI/server compatibility: server did not report a contract version."
-            )
-            return
+    server_version = (data.get("version") or "").lstrip("v")
+    server_contract = data.get("contract_version")
 
-        if server_contract_version != CONTRACT_VERSION:
-            print(
-                f"\033[33mYour CLI contract ({CONTRACT_VERSION}) is incompatible "
-                f"with server contract {server_contract_version}.\nRun:\n"
-                f"  pipx install --force {api_url}/api/cli/download\n\033[0m",
-                file=sys.stderr,
+    # Gate 1 — contract (HARD). Only when the server actually reports one.
+    if server_contract is not None:
+        if server_contract != CONTRACT_VERSION:
+            _warn(
+                f"Your CLI is incompatible with this server "
+                f"(CLI contract v{CONTRACT_VERSION}, server contract "
+                f"v{server_contract}). You must upgrade:\n"
+                f"  pipx install --force {api_url}/api/cli/download"
             )
             sys.exit(1)
+        # Gate 2 — build drift (SOFT, deduped). Contract is fine; just nudge.
+        if server_version and server_version != installed:
+            from bifrost import _version_notice
 
-        if not server_version:
-            _warn_cli_version("Could not verify Bifrost CLI/server build: server did not report a version.")
-            return
+            if _version_notice.should_notify(api_url, server_version):
+                _warn(
+                    f"A newer Bifrost CLI is available "
+                    f"({installed} → {server_version}); your current CLI is still "
+                    f"compatible. Update when convenient:\n"
+                    f"  pipx install --force {api_url}/api/cli/download"
+                )
+                _version_notice.mark_notified(api_url, server_version)
+        return
 
-        if server_version != installed:
-            _warn_build_drift_once(api_url, installed, server_version)
-    except SystemExit:
-        raise
-    except Exception as e:
-        _warn_cli_version(f"Could not verify Bifrost CLI/server compatibility: {e}")
-        logger.debug(f"CLI version check skipped: {e}")
-
-
-def _resolve_login_api_url(api_url: str | None) -> str | None:
-    """Resolve the API URL for production login without localhost fallbacks."""
-    resolved = (api_url or os.environ.get("BIFROST_API_URL") or "").rstrip("/")
-    return resolved or None
-
-
-def _pkce_s256(value: str) -> str:
-    digest = hashlib.sha256(value.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-
-
-def _open_cli_callback_server(expected_state: str):
-    loop = asyncio.get_running_loop()
-    callback_future: asyncio.Future[dict[str, str]] = loop.create_future()
-
-    class CallbackHandler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:
-            return
-
-        def do_GET(self) -> None:
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            payload = {key: values[0] for key, values in params.items() if values}
-
-            if parsed.path != "/callback":
-                self.send_response(404)
-                self.end_headers()
-                return
-
-            if payload.get("state") != expected_state:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Invalid Bifrost CLI login state. You can close this tab.")
-                if not callback_future.done():
-                    loop.call_soon_threadsafe(
-                        callback_future.set_exception,
-                        RuntimeError("Invalid OAuth state returned to callback"),
-                    )
-                return
-
-            if not payload.get("code") or not payload.get("transaction_id"):
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Missing Bifrost CLI authorization response. You can close this tab.")
-                if not callback_future.done():
-                    loop.call_soon_threadsafe(
-                        callback_future.set_exception,
-                        RuntimeError("Missing code or transaction_id in callback"),
-                    )
-                return
-
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h1>Bifrost CLI login complete</h1>"
-                b"<p>You can close this tab and return to your terminal.</p></body></html>"
-            )
-            if not callback_future.done():
-                loop.call_soon_threadsafe(callback_future.set_result, payload)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    redirect_uri = f"http://127.0.0.1:{server.server_port}/callback"
-    return server, callback_future, redirect_uri
-
-
-async def native_login_flow(api_url: str, auto_open: bool = True) -> bool:
-    """
-    Native browser OAuth login with localhost callback.
-
-    The default production login path is implemented by the API's native CLI
-    OAuth endpoints. Device-code login remains available through
-    `bifrost login --device-code`.
-    """
-    api_url = api_url.rstrip("/")
-
-    # Surface keyring fallback here — login is the user's chance to fix it.
-    from bifrost.credentials import warn_if_keyring_fallback
-
-    warn_if_keyring_fallback()
-
-    state = secrets.token_urlsafe(32)
-    code_verifier = secrets.token_urlsafe(64)
-    code_challenge = _pkce_s256(code_verifier)
-
-    try:
-        server, callback_future, redirect_uri = _open_cli_callback_server(state)
-    except OSError as e:
-        print(
-            f"Could not start localhost callback listener: {e}\n"
-            "Try 'bifrost login --device-code' for the legacy browser flow.",
-            file=sys.stderr,
+    # Old server: no contract_version to compare against.
+    if not server_version:
+        _warn(
+            f"Could not verify CLI compatibility with {api_url} "
+            f"(server reported no version). Continuing."
         )
-        return False
-
-    try:
-        async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
-            start_response = await client.post(
-                "/auth/cli/start",
-                json={
-                    "redirect_uri": redirect_uri,
-                    "state": state,
-                    "code_challenge": code_challenge,
-                    "code_challenge_method": "S256",
-                },
-            )
-            if start_response.status_code != 200:
-                print(
-                    f"Error starting native OAuth login: {start_response.status_code}",
-                    file=sys.stderr,
-                )
-                return False
-
-            start_data = start_response.json()
-            authorization_url = f"{api_url}{start_data['authorization_url']}"
-            print(f"\nOpening browser to {authorization_url}\n")
-
-            if auto_open:
-                with contextlib.suppress(Exception):
-                    webbrowser.open(authorization_url)
-            else:
-                print(f"Open this URL to continue: {authorization_url}\n")
-
-            print("Waiting for browser authorization...", flush=True)
-            callback_data = await asyncio.wait_for(
-                callback_future,
-                timeout=float(start_data.get("expires_in", 300)),
-            )
-
-            token_response = await client.post(
-                "/auth/cli/token",
-                json={
-                    "transaction_id": callback_data["transaction_id"],
-                    "code": callback_data["code"],
-                    "state": callback_data["state"],
-                    "code_verifier": code_verifier,
-                },
-            )
-            if token_response.status_code != 200:
-                print(
-                    f"Error exchanging native OAuth token: {token_response.status_code}",
-                    file=sys.stderr,
-                )
-                return False
-
-            token_data = token_response.json()
-            expires_at = datetime.now(UTC) + timedelta(seconds=token_data.get("expires_in", 1800))
-            credentials.save_credentials(
-                api_url=api_url,
-                access_token=token_data["access_token"],
-                refresh_token=token_data["refresh_token"],
-                expires_at=expires_at.isoformat(),
-            )
-
-            try:
-                user_response = await client.get(
-                    "/auth/me",
-                    headers={"Authorization": f"Bearer {token_data['access_token']}"},
-                )
-                if user_response.status_code == 200:
-                    user_data = user_response.json()
-                    print(f"Logged in as {user_data.get('email', 'unknown')}\n")
-                else:
-                    print("Logged in successfully\n")
-            except Exception:
-                print("Logged in successfully\n")
-
-            return True
-    except TimeoutError:
-        print(
-            "\nTimed out waiting for browser authorization. "
-            "Try 'bifrost login --device-code' if this environment cannot open a browser.",
-            file=sys.stderr,
+        return
+    if server_version != installed:
+        _warn(
+            f"Could not verify contract compatibility — {api_url} predates "
+            f"contract versioning (CLI {installed}, server {server_version}). "
+            f"Continuing; consider upgrading the server."
         )
-        return False
-    except Exception as e:
-        print(f"\nNative OAuth login failed: {e}", file=sys.stderr)
-        return False
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
-async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
+async def login_flow(api_url: str | None = None, auto_open: bool = True) -> bool:
     """
     Interactive device authorization flow.
 
@@ -493,17 +319,20 @@ async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
     5. Save credentials when authorized
 
     Args:
-        api_url: Bifrost API URL
+        api_url: Bifrost API URL (uses BIFROST_DEV_URL env var if not provided)
         auto_open: Whether to automatically open browser (default: True)
 
     Returns:
         True if login successful, False otherwise
     """
+    # Get API URL
+    if not api_url:
+        api_url = os.getenv("BIFROST_DEV_URL", "http://localhost:8000")
+
     api_url = api_url.rstrip("/")
 
     # Surface keyring fallback here — login is the user's chance to fix it.
     from bifrost.credentials import warn_if_keyring_fallback
-
     warn_if_keyring_fallback()
 
     try:
@@ -511,10 +340,7 @@ async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
             # Step 1: Request device code
             response = await client.post("/auth/device/code")
             if response.status_code != 200:
-                print(
-                    f"Error requesting device code: {response.status_code}",
-                    file=sys.stderr,
-                )
+                print(f"Error requesting device code: {response.status_code}", file=sys.stderr)
                 return False
 
             data = response.json()
@@ -530,8 +356,10 @@ async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
 
             # Step 3: Open browser
             if auto_open:
-                with contextlib.suppress(Exception):
+                try:
                     webbrowser.open(full_url)
+                except Exception:
+                    pass  # Ignore browser open failures
 
             # Step 4: Poll for authorization
             print("Waiting for authorization", end="", flush=True)
@@ -543,13 +371,13 @@ async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
                 print(".", end="", flush=True)
                 attempts += 1
 
-                poll_response = await client.post("/auth/device/token", json={"device_code": device_code})
+                poll_response = await client.post(
+                    "/auth/device/token",
+                    json={"device_code": device_code}
+                )
 
                 if poll_response.status_code != 200:
-                    print(
-                        f"\nError polling for token: {poll_response.status_code}",
-                        file=sys.stderr,
-                    )
+                    print(f"\nError polling for token: {poll_response.status_code}", file=sys.stderr)
                     return False
 
                 poll_data = poll_response.json()
@@ -559,21 +387,22 @@ async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
                     error = poll_data["error"]
                     if error == "authorization_pending":
                         continue  # Keep polling
-                    if error == "expired_token":
+                    elif error == "expired_token":
                         print("\nDevice code expired. Please try again.", file=sys.stderr)
                         return False
-                    if error == "access_denied":
+                    elif error == "access_denied":
                         print("\nAuthorization denied.", file=sys.stderr)
                         return False
-                    print(f"\nUnknown error: {error}", file=sys.stderr)
-                    return False
+                    else:
+                        print(f"\nUnknown error: {error}", file=sys.stderr)
+                        return False
 
                 # Success - we have tokens
                 if "access_token" in poll_data:
                     print(" OK")
 
                     # Calculate expiry time
-                    expires_at = datetime.now(UTC) + timedelta(seconds=poll_data.get("expires_in", 1800))
+                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=poll_data.get("expires_in", 1800))
 
                     # Step 5: Save credentials
                     credentials.save_credentials(
@@ -587,7 +416,7 @@ async def device_login_flow(api_url: str, auto_open: bool = True) -> bool:
                     try:
                         user_response = await client.get(
                             "/auth/me",
-                            headers={"Authorization": f"Bearer {poll_data['access_token']}"},
+                            headers={"Authorization": f"Bearer {poll_data['access_token']}"}
                         )
                         if user_response.status_code == 200:
                             user_data = user_response.json()
@@ -633,10 +462,7 @@ async def password_login_flow(api_url: str, email: str, password: str) -> tuple[
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             if response.status_code != 200:
-                print(
-                    f"Error: /auth/login returned HTTP {response.status_code}",
-                    file=sys.stderr,
-                )
+                print(f"Error: /auth/login returned HTTP {response.status_code}", file=sys.stderr)
                 return 1, None
             data = response.json()
 
@@ -651,10 +477,7 @@ async def password_login_flow(api_url: str, email: str, password: str) -> tuple[
             return 2, None
 
         if "access_token" not in data or "refresh_token" not in data:
-            print(
-                "Error: /auth/login response missing access_token/refresh_token",
-                file=sys.stderr,
-            )
+            print("Error: /auth/login response missing access_token/refresh_token", file=sys.stderr)
             return 1, None
 
         return 0, data
@@ -677,7 +500,7 @@ def logout_flow(api_url: str | None = None) -> tuple[bool, str | None]:
     """
     creds = credentials.get_credentials(api_url)
     if creds:
-        target_url = (creds.get("api_url") or api_url or "").rstrip("/")
+        target_url = creds.get("api_url") or api_url
         credentials.clear_credentials(target_url)
         print(f"Logged out from {target_url}.")
         return True, target_url
@@ -735,11 +558,14 @@ def _write_env_url(api_url: str) -> None:
     print(f"Updated {env_path} with BIFROST_API_URL={api_url}")
 
     # gitignore .env if we're in a git repo and it isn't already ignored
-    gitignore = cwd / GITIGNORE_FILENAME
+    gitignore = cwd / ".gitignore"
     if gitignore.exists():
         try:
             existing = gitignore.read_text()
-            already_ignored = any(stripped.strip().rstrip("/") == ".env" for stripped in existing.splitlines())
+            already_ignored = any(
+                stripped.strip().rstrip("/") == ".env"
+                for stripped in existing.splitlines()
+            )
             if not already_ignored:
                 with open(gitignore, "a") as f:
                     if not existing.endswith("\n"):
@@ -753,18 +579,26 @@ def _write_env_url(api_url: str) -> None:
             pass
 
 
-def _rewrite_env_file(should_remove_line: Callable[[str], bool]) -> bool:
-    """Remove matching lines from CWD's .env. Returns True if any line was removed."""
+def _remove_env_url_line(api_url: str) -> bool:
+    """
+    Remove a `BIFROST_API_URL=<api_url>` line from CWD's .env, if present.
+
+    Returns True if a line was removed.
+    """
     env_path = pathlib.Path.cwd() / ".env"
     lines = _read_env_file(env_path)
     if not lines:
         return False
+    target = api_url.rstrip("/")
     kept: list[str] = []
     removed = False
     for line in lines:
-        if should_remove_line(line):
-            removed = True
-            continue
+        stripped = line.lstrip()
+        if stripped.startswith("BIFROST_API_URL=") or stripped.startswith("export BIFROST_API_URL="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/")
+            if value == target:
+                removed = True
+                continue
         kept.append(line)
     if not removed:
         return False
@@ -773,34 +607,6 @@ def _rewrite_env_file(should_remove_line: Callable[[str], bool]) -> bool:
     else:
         env_path.write_text("".join(kept))
     return True
-
-
-def _remove_env_url_line(api_url: str) -> bool:
-    """
-    Remove a `BIFROST_API_URL=<api_url>` line from CWD's .env, if present.
-
-    Returns True if a line was removed.
-    """
-    target = api_url.rstrip("/")
-
-    def should_remove(line: str) -> bool:
-        stripped = line.lstrip()
-        if stripped.startswith("BIFROST_API_URL=") or stripped.startswith("export BIFROST_API_URL="):
-            value = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/")
-            return value == target
-        return False
-
-    return _rewrite_env_file(should_remove)
-
-
-def _remove_env_keys(keys: set[str]) -> bool:
-    """Remove KEY= or export KEY= lines from CWD's .env."""
-
-    def should_remove(line: str) -> bool:
-        stripped = line.lstrip()
-        return any(stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}=") for key in keys)
-
-    return _rewrite_env_file(should_remove)
 
 
 def main(args: list[str] | None = None) -> int:
@@ -826,18 +632,19 @@ def main(args: list[str] | None = None) -> int:
     # Handle --version / -V before lowercasing (they're flags, not commands)
     if args[0] in ("--version", "-V"):
         from bifrost import __version__
-
         print(f"bifrost {__version__}")
         return 0
 
-    _check_cli_version()
+    help_requested = any(a in ("-h", "--help") for a in args)
+    if args[0].lower() == "help" or args[0] in ("-h", "--help"):
+        print_help()
+        return 0
+
+    if not help_requested:
+        _check_cli_version()
 
     try:
         command = args[0].lower()
-
-        if command in ("help", "-h", "--help"):
-            print_help()
-            return 0
 
         if command == "login":
             return handle_login(args[1:])
@@ -874,17 +681,14 @@ def main(args: list[str] | None = None) -> int:
 
         if command == "skill":
             from bifrost.skill import handle_skill
-
             return handle_skill(args[1:])
 
         if command == "solution":
             from bifrost.commands.solution import handle_solution
-
             return handle_solution(args[1:])
 
         if command == "deploy":
             from bifrost.commands.solution import handle_deploy
-
             return handle_deploy(args[1:])
 
         # Entity mutation subgroups (bifrost orgs ..., bifrost roles ..., etc.).
@@ -904,8 +708,7 @@ def main(args: list[str] | None = None) -> int:
 
 def print_help() -> None:
     """Print CLI help message."""
-    print(
-        """
+    print("""
 Bifrost CLI - Command-line interface for Bifrost SDK
 
 Usage:
@@ -917,9 +720,7 @@ Commands:
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
-  export      Export a workspace bundle (optionally portable/scrubbed)
-  import      Apply a bundle to the current environment
-  solution    Manage Solution installs (init, scaffold-app, start, deploy, install)
+  solution    Manage Solution installs (create, bind, scaffold-app, start, deploy, install)
   deploy      Deploy the current Solution workspace (alias for 'solution deploy')
   watch       Watch for file changes and auto-push
   api         Generic authenticated API request
@@ -940,11 +741,40 @@ Entity mutation commands (see 'bifrost <entity> --help'):
   forms        Manage forms
   agents       Manage AI agents
   apps         Manage applications and dependencies
+  claims       Manage custom claims
   integrations Manage integrations, config schemas, and mappings
   configs      Manage config values
   tables       Manage tables
+  files        Read/write _repo files, Solution runtime files, and file policies
   events       Manage event sources and subscriptions
+  policy-rule  Manage reusable table/file policy rules
   requirements Manage workspace Python requirements.txt (install/list/remove)
+
+Workspace/file targets:
+  _repo source files:
+    bifrost push|pull|sync|watch [path]          # local directory <-> global _repo
+    bifrost files list [path]                    # direct API access to global _repo files
+    bifrost files write <path> --content ...     # one direct API write, no local tree sync
+
+  Solution source files:
+    bifrost solution create --slug <slug>
+    bifrost solution bind --solution <id-or-slug>
+    bifrost solution pull                        # pull captured entity manifests
+    bifrost solution deploy                      # deploy local Solution source
+
+  Solution runtime files:
+    bifrost files list --solution <id-or-slug>   # installed app/workflow file data
+    bifrost files read <path> --solution <id-or-slug>
+
+Push vs files write:
+  bifrost push [path] walks a local file or directory, applies sync ignore rules,
+  compares server state, and uploads source files to global _repo. Use it when
+  local disk is the source of truth. A pushed file lands at the same relative
+  path under _repo, based on the directory where you run the command. To place a
+  file at _repo/workflows/foo.py, run from the workspace root and push
+  workflows/foo.py. `bifrost files write` writes exactly one path through the
+  Files API. Use it for one-off writes, scripts, arbitrary local-to-remote path
+  copies with --from-file, or Solution runtime file data with --solution.
 
 Examples:
   bifrost run workflow.py -w greet
@@ -964,9 +794,10 @@ Examples:
   bifrost pull apps/my-app
   bifrost watch
   bifrost watch apps/my-app
-  bifrost solution init --slug my-solution
+  bifrost solution create --slug my-solution
+  bifrost solution bind --solution <id-or-slug>
   bifrost solution scaffold-app dashboard
-  bifrost solution start
+  bifrost solution start                 # local dev: app + local workflows, one origin
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate
   bifrost migrate-imports apps/my-app --dry-run
@@ -976,8 +807,7 @@ Examples:
   bifrost logout
 
 For more information, visit: https://docs.gobifrost.com
-""".strip()
-    )
+""".strip())
 
 
 def handle_login(args: list[str]) -> int:
@@ -986,7 +816,6 @@ def handle_login(args: list[str]) -> int:
     auto_open = True
     email: str | None = None
     password: str | None = None
-    device_code = False
 
     i = 0
     while i < len(args):
@@ -1001,9 +830,6 @@ def handle_login(args: list[str]) -> int:
         elif arg in ("--no-browser", "-n"):
             auto_open = False
             i += 1
-        elif arg == "--device-code":
-            device_code = True
-            i += 1
         elif arg == "--email":
             if i + 1 >= len(args):
                 print("Error: --email requires a value", file=sys.stderr)
@@ -1017,29 +843,26 @@ def handle_login(args: list[str]) -> int:
             password = args[i + 1]
             i += 2
         elif arg in ("--help", "-h"):
-            print(
-                """
+            print("""
 Usage: bifrost login [options]
 
-Authenticate with Bifrost. Three modes:
+Authenticate with Bifrost. Two modes:
 
-Browser (default): Native OAuth flow using your browser session and a local
-                   callback. Tokens are stored in OS keychain (with JSON
+Browser (default): Device-code flow; tokens stored in OS keychain (with JSON
                    fallback on headless Linux). Multiple URLs can coexist.
                    On success, writes BIFROST_API_URL=<url> to .env in the
                    current directory so subsequent CLI commands target this
                    instance.
-Device code: Pass --device-code for the legacy browser device-code flow.
 Password: When --email and --password are passed, performs an ephemeral
-          password-grant login that skips the persistent credential backend.
-          It writes BIFROST_ACCESS_TOKEN and BIFROST_REFRESH_TOKEN into the
-          current directory's .env; otherwise only BIFROST_API_URL is written.
-          For isolated dev stacks only — refuses if MFA is enabled.
+          password-grant login and writes BIFROST_API_URL +
+          BIFROST_ACCESS_TOKEN + BIFROST_REFRESH_TOKEN to .env in the
+          current directory. Subsequent CLI commands from this directory
+          pick the tokens up automatically. For isolated dev stacks only
+          — refuses if MFA is enabled on the instance.
 
 Options:
-  --url, -u URL         API URL (default: BIFROST_API_URL; required otherwise)
-  --no-browser, -n      Don't automatically open browser (browser modes only)
-  --device-code         Use the legacy device-code browser flow
+  --url, -u URL         API URL (default: BIFROST_API_URL or http://localhost:8000)
+  --no-browser, -n      Don't automatically open browser (browser mode only)
   --email EMAIL         Email for ephemeral password-grant login
   --password PASSWORD   Password for ephemeral password-grant login
   --help, -h            Show this help message
@@ -1049,8 +872,7 @@ Examples:
   bifrost login --url https://app.gobifrost.com
   bifrost login --url http://localhost:38421 \\
                 --email dev@gobifrost.com --password password
-""".strip()
-            )
+""".strip())
             return 0
         else:
             print(f"Unknown option: {arg}", file=sys.stderr)
@@ -1062,16 +884,11 @@ Examples:
         return 1
 
     is_password_grant = email is not None and password is not None
-    if device_code and is_password_grant:
-        print(
-            "Error: --device-code cannot be used with --email/--password",
-            file=sys.stderr,
-        )
-        return 1
 
     if is_password_grant:
         # Resolve URL: --url > BIFROST_API_URL env var > error. No default.
-        api_url = _resolve_login_api_url(api_url)
+        if not api_url:
+            api_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
         if not api_url:
             print(
                 "Error: password-grant login requires --url or BIFROST_API_URL env var "
@@ -1107,26 +924,20 @@ Examples:
                 print(f"BIFROST_REFRESH_TOKEN={data['refresh_token']}")
         return rc
 
-    resolved_url = _resolve_login_api_url(api_url)
-    if not resolved_url:
-        print(
-            "Error: login requires --url or BIFROST_API_URL env var "
-            "(no fallback default to avoid logging into the wrong stack)",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Browser flow (persistent → keychain or JSON fallback).
-    login_coro = device_login_flow if device_code else native_login_flow
-    success = asyncio.run(login_coro(api_url=resolved_url, auto_open=auto_open))
+    # Browser device-code flow (persistent → keychain or JSON fallback).
+    success = asyncio.run(login_flow(api_url=api_url, auto_open=auto_open))
     if not success:
         return 1
 
     # Wire up the CWD .env so subsequent commands in this folder target this URL.
     # The token lives in the keychain keyed by URL; .env just carries the URL.
+    resolved_url = (api_url or os.environ.get("BIFROST_API_URL") or "").rstrip("/")
+    if not resolved_url:
+        # login_flow's default — match what login_flow used so the .env line agrees
+        # with where the token landed.
+        resolved_url = "http://localhost:8000"
     try:
         _write_env_url(resolved_url)
-        _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"})
     except OSError as e:
         print(f"Warning: could not update .env in current directory: {e}", file=sys.stderr)
     return 0
@@ -1154,8 +965,7 @@ def handle_logout(args: list[str]) -> int:
             no_prompt = True
             i += 1
         elif arg in ("--help", "-h"):
-            print(
-                """
+            print("""
 Usage: bifrost logout [options]
 
 Clear stored credentials for one Bifrost URL.
@@ -1175,8 +985,7 @@ Options:
 Examples:
   bifrost logout
   bifrost logout --url https://app.gobifrost.com
-""".strip()
-            )
+""".strip())
             return 0
         else:
             print(f"Unknown option: {arg}", file=sys.stderr)
@@ -1210,30 +1019,64 @@ Examples:
     if confirm in ("y", "yes"):
         if _remove_env_url_line(target_url):
             print(f"Removed BIFROST_API_URL line from {env_path}")
-        if _remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"}):
-            print(f"Removed BIFROST token lines from {env_path}")
     return 0
 
 
 def handle_auth(args: list[str]) -> int:
     """Handle 'bifrost auth' subcommands."""
     if not args or args[0] in ("--help", "-h", "help"):
-        print(
-            """
+        print("""
 Usage: bifrost auth <subcommand>
 
 Subcommands:
   list, ls    List all Bifrost URLs with stored credentials
-  token       Print the resolved API URL and access token as JSON
+  token       Print resolved {api_url, access_token} as JSON (for dev tooling)
 
 Examples:
   bifrost auth list
   bifrost auth token
-""".strip()
-        )
+  bifrost auth token --url http://localhost:38421
+""".strip())
         return 0 if args else 1
 
     sub = args[0].lower()
+    if sub == "token":
+        # Emit the resolved url + access token as JSON so a scaffolded Solution
+        # vite dev config can read the credential store — device-code login
+        # stores the token in keyring/JSON, not a nearby .env, so env/.env alone
+        # leave `npm run dev` tokenless (R7-P2-f). Only url + access token are
+        # printed (never the refresh token); the vite config injects it for
+        # `serve` only, so the production bundle stays tokenless (R6-P1-c).
+        url_override = None
+        rest = args[1:]
+        if rest and rest[0] == "--url" and len(rest) > 1:
+            url_override = rest[1]
+        creds = credentials.get_credentials(url_override)
+        if not creds or not creds.get("access_token"):
+            print("Not authenticated. Run `bifrost login` first.", file=sys.stderr)
+            return 1
+        # The token feeds a long-running `npm run dev` session; if it's expired
+        # (or near it), refresh first so the dev server isn't handed a stale token
+        # that 401s with no recovery. Best-effort: if refresh fails, warn but still
+        # emit what we have so the dev gets a clear "re-login" signal, not silence.
+        if credentials.is_token_expired(api_url=url_override):
+            from bifrost.client import refresh_tokens
+            try:
+                if asyncio.run(refresh_tokens()):
+                    creds = credentials.get_credentials(url_override) or creds
+            except Exception:  # noqa: BLE001 - refresh is best-effort here
+                pass
+            if credentials.is_token_expired(api_url=url_override):
+                print(
+                    "Warning: access token is expired and refresh failed; run "
+                    "`bifrost login` to re-authenticate.",
+                    file=sys.stderr,
+                )
+        print(json.dumps({
+            "api_url": creds.get("api_url"),
+            "access_token": creds["access_token"],
+        }))
+        return 0
     if sub in ("list", "ls"):
         urls = credentials.list_credentials()
         if not urls:
@@ -1250,58 +1093,6 @@ Examples:
             print(f"  {url}{marker}")
         return 0
 
-    if sub == "token":
-        api_url = None
-        idx = 1
-        while idx < len(args):
-            arg = args[idx]
-            if arg in ("--url", "--api-url"):
-                if idx + 1 >= len(args):
-                    print(f"{arg} requires a value", file=sys.stderr)
-                    return 1
-                api_url = args[idx + 1]
-                idx += 2
-                continue
-            if arg in ("--help", "-h"):
-                print(
-                    """
-Usage: bifrost auth token [--url <api-url>]
-
-Print the resolved API URL and access token as JSON.
-""".strip()
-                )
-                return 0
-            print(f"Unknown option for auth token: {arg}", file=sys.stderr)
-            return 1
-
-        resolved = credentials.get_credentials(api_url)
-        if not resolved:
-            print("Not authenticated. Run `bifrost login` first.", file=sys.stderr)
-            return 1
-
-        if credentials.is_token_expired(api_url):
-            try:
-                from bifrost.client import refresh_tokens
-
-                refreshed = asyncio.run(refresh_tokens())
-            except Exception as exc:
-                refreshed = False
-                print(f"Warning: token expired and refresh failed: {exc}", file=sys.stderr)
-            if refreshed:
-                resolved = credentials.get_credentials(api_url) or resolved
-            else:
-                print("Warning: token is expired; emitting stored token.", file=sys.stderr)
-
-        print(
-            json.dumps(
-                {
-                    "api_url": resolved["api_url"],
-                    "access_token": resolved["access_token"],
-                }
-            )
-        )
-        return 0
-
     print(f"Unknown auth subcommand: {sub}", file=sys.stderr)
     return 1
 
@@ -1313,10 +1104,7 @@ def _extract_workflow_parameters(func: Any) -> list[dict[str, Any]]:
 
     for name, param in sig.parameters.items():
         # Skip *args and **kwargs
-        if param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
             continue
 
         param_info: dict[str, Any] = {
@@ -1382,16 +1170,10 @@ def _run_direct(
                     print("Error: --org requires superuser privileges", file=sys.stderr)
                     return 1
                 if response.status_code == 404:
-                    print(
-                        f"Error: Organization {organization_id} not found or inactive",
-                        file=sys.stderr,
-                    )
+                    print(f"Error: Organization {organization_id} not found or inactive", file=sys.stderr)
                     return 1
                 if response.status_code >= 400:
-                    print(
-                        f"Error fetching org context: HTTP {response.status_code}",
-                        file=sys.stderr,
-                    )
+                    print(f"Error fetching org context: HTTP {response.status_code}", file=sys.stderr)
                     return 1
                 ctx_data = response.json()
                 # Override the client's cached context
@@ -1408,16 +1190,12 @@ def _run_direct(
             user_info = client.user
             org_info = client.organization
 
-            org = (
-                Organization(
-                    id=org_info["id"],
-                    name=org_info.get("name", ""),
-                    is_active=org_info.get("is_active", True),
-                    is_provider=org_info.get("is_provider", False),
-                )
-                if org_info
-                else None
-            )
+            org = Organization(
+                id=org_info["id"],
+                name=org_info.get("name", ""),
+                is_active=org_info.get("is_active", True),
+                is_provider=org_info.get("is_provider", False),
+            ) if org_info else None
             scope = org_info["id"] if org_info else "GLOBAL"
 
             # When the workflow lives in a Solution workspace, resolve this
@@ -1453,10 +1231,7 @@ def _run_direct(
 
     except (RuntimeError, Exception):
         if organization_id:
-            print(
-                "Error: --org requires authentication. Run 'bifrost login' first.",
-                file=sys.stderr,
-            )
+            print("Error: --org requires authentication. Run 'bifrost login' first.", file=sys.stderr)
             return 1
         # Standalone mode works without auth — fall through to local workflow execution.
 
@@ -1556,23 +1331,23 @@ def handle_run(args: list[str]) -> int:
     # Add current working directory to sys.path for workspace imports
     # This allows workflows to import from their workspace (e.g., `from features.x import y`)
     cwd = os.getcwd()
-    solution_root = None
-    try:
-        from bifrost.solution_descriptor import find_solution_root
-
-        solution_root = find_solution_root(pathlib.Path(abs_file_path).parent)
-        if solution_root is not None:
-            solution_root_str = str(solution_root)
-            if solution_root_str not in sys.path:
-                sys.path.insert(0, solution_root_str)
-    except Exception:
-        pass
-
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
 
-    if solution_root is not None and verbose:
-        print(f"Detected Solution workspace root: {solution_root}")
+    # If the workflow lives inside a Solution workspace (a bifrost.solution.yaml
+    # somewhere above it), put the solution ROOT on sys.path so solution-local
+    # imports (`from modules.x import y`) resolve against the solution root even
+    # when `bifrost run` is invoked from a subdirectory — local execution with a
+    # live data-plane is criterion 15 (offline dev loop).
+    from bifrost.solution_descriptor import find_solution_root
+
+    solution_root = find_solution_root(abs_file_path)
+    if solution_root is not None:
+        root_str = str(solution_root)
+        if root_str not in sys.path:
+            sys.path.insert(0, root_str)
+        if verbose:
+            print(f"Detected Solution workspace root: {root_str}")
 
     # In non-verbose direct mode, suppress decorator warnings before loading the module
     if not interactive and not verbose:
@@ -1622,11 +1397,8 @@ def handle_run(args: list[str]) -> int:
 
         params = inline_params if inline_params is not None else {}
         return _run_direct(
-            selected_workflow,
-            workflows,
-            params,
-            verbose=verbose,
-            organization_id=organization_id,
+            selected_workflow, workflows, params,
+            verbose=verbose, organization_id=organization_id,
             solution_root=solution_root,
         )
 
@@ -1646,29 +1418,25 @@ def handle_run(args: list[str]) -> int:
         if metadata is not None:
             # WorkflowMetadata is a dataclass, access attributes directly
             description = getattr(metadata, "description", "") or ""
-        workflow_infos.append(
-            {
-                "name": name,
-                "description": description,
-                "parameters": _extract_workflow_parameters(func),
-            }
-        )
+        workflow_infos.append({
+            "name": name,
+            "description": description,
+            "parameters": _extract_workflow_parameters(func),
+        })
 
     # Generate session ID
     session_id = str(uuid4())
 
     # Run the session flow
-    return asyncio.run(
-        _run_session_flow(
-            client=client,
-            session_id=session_id,
-            file_path=abs_file_path,
-            workflow_infos=workflow_infos,
-            workflows=workflows,
-            selected_workflow=selected_workflow,
-            no_browser=no_browser,
-        )
-    )
+    return asyncio.run(_run_session_flow(
+        client=client,
+        session_id=session_id,
+        file_path=abs_file_path,
+        workflow_infos=workflow_infos,
+        workflows=workflows,
+        selected_workflow=selected_workflow,
+        no_browser=no_browser,
+    ))
 
 
 async def _run_session_flow(
@@ -1704,10 +1472,7 @@ async def _run_session_flow(
             },
         )
         if response.status_code not in (200, 201):
-            print(
-                f"Error registering session: {response.status_code} - {response.text}",
-                file=sys.stderr,
-            )
+            print(f"Error registering session: {response.status_code} - {response.text}", file=sys.stderr)
             return 1
     except Exception as e:
         print(f"Error registering session: {e}", file=sys.stderr)
@@ -1719,8 +1484,10 @@ async def _run_session_flow(
     print("Select a workflow and enter parameters in the browser, then click 'Continue'.\n")
 
     if not no_browser:
-        with contextlib.suppress(Exception):
+        try:
             webbrowser.open(session_url)
+        except Exception:
+            pass  # Ignore browser open failures
 
     # Step 3: Poll for pending execution
     print("Waiting for execution", end="", flush=True)
@@ -1747,7 +1514,7 @@ async def _run_session_flow(
             if response.status_code == 204:
                 # No pending execution yet
                 continue
-            if response.status_code == 200:
+            elif response.status_code == 200:
                 # Execution is pending!
                 pending_data = response.json()
                 execution_id = pending_data["execution_id"]
@@ -1755,11 +1522,12 @@ async def _run_session_flow(
                 params = pending_data["params"]
                 print(f" OK\n\nExecuting workflow: {workflow_name}")
                 break
-            if response.status_code == 404:
+            elif response.status_code == 404:
                 print("\n\nSession expired or deleted.", file=sys.stderr)
                 return 1
-            print(f"\n\nError polling: {response.status_code}", file=sys.stderr)
-            return 1
+            else:
+                print(f"\n\nError polling: {response.status_code}", file=sys.stderr)
+                return 1
         except Exception as e:
             print(f"\n\nError polling: {e}", file=sys.stderr)
             return 1
@@ -1815,7 +1583,7 @@ async def _post_result(
             },
         )
         print(f"\nExecution completed ({status})")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — best-effort result post; the local run already finished, so a failed callback only loses server-side bookkeeping and must not crash the CLI.
         print(f"\nWarning: Failed to post result: {e}", file=sys.stderr)
 
 
@@ -1892,16 +1660,14 @@ def handle_git(args: list[str]) -> int:
             parts = arg.split("=", 1)
             if len(parts) != 2 or parts[1] not in RESOLUTION_MAP:
                 print(
-                    f"Error: invalid resolution '{arg}'. Use path=keep_local or path=keep_remote",
+                    f"Error: invalid resolution '{arg}'. "
+                    "Use path=keep_local or path=keep_remote",
                     file=sys.stderr,
                 )
                 return EXIT_ERROR
             resolutions[parts[0]] = parts[1]
         if not resolutions:
-            print(
-                "Error: resolve requires at least one path=strategy argument",
-                file=sys.stderr,
-            )
+            print("Error: resolve requires at least one path=strategy argument", file=sys.stderr)
             return EXIT_ERROR
         return run_git_resolve(client, resolutions)
 
@@ -1924,8 +1690,7 @@ def handle_git(args: list[str]) -> int:
 
 def _print_git_help() -> None:
     """Print git subcommand help."""
-    print(
-        """
+    print("""
 Usage: bifrost git <subcommand> [options]
 
 Git source control operations for Bifrost platform.
@@ -1952,8 +1717,7 @@ Examples:
   bifrost git resolve workflows/billing.py=keep_remote
   bifrost git diff .bifrost/workflows.yaml
   bifrost git discard workflows/old.py
-""".strip()
-    )
+""".strip())
 
 
 def _warn_if_git_workspace(target_path: str) -> None:
@@ -1972,10 +1736,28 @@ def _warn_if_git_workspace(target_path: str) -> None:
             return
 
 
+def _sync_use_tui(force: bool, is_tty: bool) -> bool:
+    """Single source of truth for whether sync may use any interactive TUI.
+
+    Returns False (headless) when --yes/-y (``force``) is set, when
+    ``BIFROST_NONINTERACTIVE=1`` is in the environment, or when stdin/stdout
+    is not a TTY. Gating BOTH the selection TUI and the progress TUI on this
+    keeps the headless contract whole: the progress TUI blocks on "press Enter"
+    when a file errors, so honoring noninteractivity only for the selection TUI
+    would still hang an unattended run (criterion 17).
+    """
+    if not is_tty:
+        return False
+    if force:
+        return False
+    if os.environ.get("BIFROST_NONINTERACTIVE") == "1":
+        return False
+    return True
+
+
 @dataclass
 class _PushWatchArgs:
     """Parsed arguments for push/watch commands."""
-
     local_path: str = "."
     mirror: bool = False
     validate: bool = False
@@ -1993,6 +1775,10 @@ def _parse_push_watch_args(args: list[str]) -> _PushWatchArgs | None:
         elif arg == "--validate":
             result.validate = True
         elif arg in ("--force", "--yes", "-y"):
+            # --yes/-y are the intent-revealing aliases for headless runs:
+            # take the default per-file action for every change (the
+            # full-replace contract) instead of opening the interactive TUI.
+            # They share --force's mechanism — see _sync_files's guard.
             result.force = True
         elif arg.startswith("-"):
             print(f"Unknown option: {arg}", file=sys.stderr)
@@ -2004,13 +1790,6 @@ def _parse_push_watch_args(args: list[str]) -> _PushWatchArgs | None:
             return None
         i += 1
     return result
-
-
-def _sync_use_tui(*, force: bool, is_tty: bool) -> bool:
-    """Return whether sync should use the interactive TUI."""
-    if os.environ.get("BIFROST_NONINTERACTIVE") or os.environ.get("BIFROST_SYNC_NO_TUI"):
-        return False
-    return is_tty and not force
 
 
 def handle_push(args: list[str]) -> int:
@@ -2028,8 +1807,7 @@ def handle_push(args: list[str]) -> int:
       --validate: Validate after push (for apps)
     """
     if args and args[0] in ("--help", "-h"):
-        print(
-            """
+        print("""
 Usage: bifrost push [path] [options]
 
 Push local files to Bifrost platform.
@@ -2040,21 +1818,28 @@ Arguments:
 Options:
   --mirror              Make target match source exactly (delete files not present locally)
   --validate            Validate after push (for apps)
-  --force, --yes, -y    Skip confirmation prompts (non-interactive)
+  --force               Skip confirmation prompts
+  --yes, -y             Non-interactive: take default actions, no TUI (alias of --force)
   --help, -h            Show this help message
 
 Non-interactive: pass --yes/-y, set BIFROST_NONINTERACTIVE=1, or run without a
 TTY (e.g. in CI) to skip the selection TUI and apply default actions.
 
 Use 'bifrost watch' for continuous file watching.
+A pushed file lands at the same relative path under _repo, based on the
+directory where you run the command. To place a file at _repo/workflows/foo.py,
+run from the workspace root and push workflows/foo.py.
+Use 'bifrost files write <path> --content ...' for a single direct API write
+without walking a local tree or applying sync ignore/diff behavior. To copy a
+local file to an arbitrary remote path, use
+'bifrost files write <remote-path> --from-file <local-file>'.
 
 Examples:
   bifrost push apps/my-app
   bifrost push apps/my-app --mirror
   bifrost push workflows/my_workflow.py
   bifrost push .
-""".strip()
-        )
+""".strip())
         return 0
 
     # --watch migration guard before shared parsing
@@ -2074,14 +1859,10 @@ Examples:
     elif resolved.is_dir():
         lock_target = resolved
     else:
-        print(
-            f"Error: {parsed.local_path} is not a valid file or directory",
-            file=sys.stderr,
-        )
+        print(f"Error: {parsed.local_path} is not a valid file or directory", file=sys.stderr)
         return 1
 
     from bifrost._solution_workspace import assert_not_solution_workspace
-
     assert_not_solution_workspace(parsed.local_path, "push")
 
     # Block push if a watch (or another sync/push) is already running in
@@ -2104,17 +1885,10 @@ Examples:
         _warn_if_git_workspace(parsed.local_path)
 
         try:
-            return asyncio.run(
-                _sync_files(
-                    parsed.local_path,
-                    mirror=parsed.mirror,
-                    validate=parsed.validate,
-                    force=parsed.force,
-                    client=client,
-                    single_file=single_file,
-                    one_way=not parsed.mirror,
-                )
-            )
+            return asyncio.run(_sync_files(
+                parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, force=parsed.force,
+                client=client, single_file=single_file, one_way=not parsed.mirror,
+            ))
         except KeyboardInterrupt:
             return 130
     finally:
@@ -2131,8 +1905,7 @@ def handle_sync(args: list[str]) -> int:
       bifrost sync [path] [--mirror] [--validate] [--force]
     """
     if args and args[0] in ("--help", "-h"):
-        print(
-            """
+        print("""
 Usage: bifrost sync [path] [options]
 
 Bidirectional sync between local files and Bifrost platform.
@@ -2145,7 +1918,8 @@ Arguments:
 Options:
   --mirror              Include server-only files (for pull or delete)
   --validate            Validate after sync (for apps)
-  --force, --yes, -y    Skip confirmation prompts (use default actions)
+  --force               Skip confirmation prompts (use default actions)
+  --yes, -y             Non-interactive: take default actions, no TUI (alias of --force)
   --help, -h            Show this help message
 
 Non-interactive: pass --yes/-y, set BIFROST_NONINTERACTIVE=1, or run without a
@@ -2156,8 +1930,7 @@ Examples:
   bifrost sync apps/my-app
   bifrost sync --mirror
   bifrost sync --yes
-""".strip()
-        )
+""".strip())
         return 0
 
     parsed = _parse_push_watch_args(args)
@@ -2170,7 +1943,6 @@ Examples:
         return 1
 
     from bifrost._solution_workspace import assert_not_solution_workspace
-
     assert_not_solution_workspace(parsed.local_path, "sync")
 
     # Block sync if a watch (or another sync) is already running in this
@@ -2193,15 +1965,10 @@ Examples:
         _warn_if_git_workspace(parsed.local_path)
 
         try:
-            return asyncio.run(
-                _sync_files(
-                    parsed.local_path,
-                    mirror=parsed.mirror,
-                    validate=parsed.validate,
-                    force=parsed.force,
-                    client=client,
-                )
-            )
+            return asyncio.run(_sync_files(
+                parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, force=parsed.force,
+                client=client,
+            ))
         except KeyboardInterrupt:
             return 130
     finally:
@@ -2218,8 +1985,7 @@ def handle_watch(args: list[str]) -> int:
       bifrost watch [path] [--mirror] [--validate] [--force]
     """
     if args and args[0] in ("--help", "-h"):
-        print(
-            """
+        print("""
 Usage: bifrost watch [path] [options]
 
 Watch for file changes and auto-push to Bifrost platform.
@@ -2237,8 +2003,7 @@ Examples:
   bifrost watch
   bifrost watch apps/my-app
   bifrost watch --mirror
-""".strip()
-        )
+""".strip())
         return 0
 
     parsed = _parse_push_watch_args(args)
@@ -2255,7 +2020,6 @@ Examples:
     # silently push their apps/ and workflows/ to `_repo/` instead of the
     # install, with no error — actively misleading.
     from bifrost._solution_workspace import assert_not_solution_workspace
-
     assert_not_solution_workspace(parsed.local_path, "watch")
 
     # Acquire the per-workspace lock. Held for the lifetime of the watch
@@ -2279,26 +2043,16 @@ Examples:
 
         repo_prefix = _detect_repo_prefix(resolved)
         try:
-            return asyncio.run(
-                _push_with_precheck(
-                    parsed.local_path,
-                    mirror=parsed.mirror,
-                    validate=parsed.validate,
-                    watch=True,
-                    force=parsed.force,
-                    client=client,
-                )
-            )
+            return asyncio.run(_push_with_precheck(
+                parsed.local_path, mirror=parsed.mirror, validate=parsed.validate, watch=True, force=parsed.force,
+                client=client,
+            ))
         except KeyboardInterrupt:
             print("\nStopping watch...", flush=True)
             try:
-                client.post_sync(
-                    "/api/files/watch",
-                    json={
-                        "action": "stop",
-                        "prefix": repo_prefix,
-                    },
-                )
+                client.post_sync("/api/files/watch", json={
+                    "action": "stop", "prefix": repo_prefix,
+                })
             except Exception as e:
                 # Server may already be unreachable — session expires server-side via TTL
                 logger.debug(f"could not notify server of watch stop: {e}")
@@ -2324,8 +2078,7 @@ def handle_pull(args: list[str]) -> int:
       --force: Skip overwrite confirmation prompts
     """
     if args and args[0] in ("--help", "-h"):
-        print(
-            """
+        print("""
 Usage: bifrost pull [path] [options]
 
 Pull files from Bifrost platform to local directory.
@@ -2351,8 +2104,7 @@ Examples:
   bifrost pull
   bifrost pull apps/my-app
   bifrost pull --force
-""".strip()
-        )
+""".strip())
         return 0
 
     # Parse args
@@ -2379,7 +2131,6 @@ Examples:
         return 1
 
     from bifrost._solution_workspace import assert_not_solution_workspace
-
     assert_not_solution_workspace(local_path, "pull")
 
     # Block pull if a watch (or another sync/push/pull) is already running
@@ -2399,19 +2150,15 @@ Examples:
             return 1
 
         try:
-            return asyncio.run(
-                _sync_files(
-                    local_path,
-                    mirror=mirror,
-                    force=force,
-                    client=client,
-                )
-            )
+            return asyncio.run(_sync_files(
+                local_path, mirror=mirror, force=force, client=client,
+            ))
         except KeyboardInterrupt:
             print("\nPull cancelled.")
             return 130
     finally:
         lock.__exit__()
+
 
 
 def _detect_repo_prefix(path: pathlib.Path) -> str:
@@ -2436,7 +2183,6 @@ def _detect_repo_prefix(path: pathlib.Path) -> str:
     prefix = relative.as_posix()
     return "" if prefix == "." else prefix
 
-
 async def _push_with_precheck(
     local_path: str,
     mirror: bool = False,
@@ -2460,21 +2206,9 @@ async def _push_with_precheck(
         repo_prefix = _detect_repo_prefix(path)
 
     if watch:
-        return await _watch_and_push(
-            local_path,
-            repo_prefix=repo_prefix,
-            mirror=mirror,
-            validate=validate,
-            client=client,
-        )
-    return await _sync_files(
-        local_path,
-        repo_prefix=repo_prefix,
-        mirror=mirror,
-        validate=validate,
-        force=force,
-        client=client,
-    )
+        return await _watch_and_push(local_path, repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client)
+    else:
+        return await _sync_files(local_path, repo_prefix=repo_prefix, mirror=mirror, validate=validate, force=force, client=client)
 
 
 class _WatchState:
@@ -2482,7 +2216,6 @@ class _WatchState:
 
     def __init__(self, base_path: pathlib.Path):
         import threading
-
         self.base_path = base_path
         self.pending_changes: set[str] = set()
         self.pending_deletes: set[str] = set()
@@ -2490,8 +2223,8 @@ class _WatchState:
         # Unique session ID for filtering own changes from WebSocket events
         self.session_id: str = str(uuid4())
         # Incoming changes from other sessions (populated by WebSocket listener)
-        self.incoming_files: list[tuple[list[str], str]] = []  # (paths, user_name)
-        self.incoming_deletes: list[tuple[list[str], str]] = []  # (paths, user_name)
+        self.incoming_files: list[tuple[list[str], str]] = []      # (paths, user_name)
+        self.incoming_deletes: list[tuple[list[str], str]] = []     # (paths, user_name)
         # repo_path -> md5 of bytes currently on the server (as best as this
         # session knows). Populated by: successful pushes, incoming pull
         # writes, and the /api/files/list seed at startup. Consulted by the
@@ -2525,9 +2258,7 @@ class _WatchState:
         with self.lock:
             self.incoming_deletes.append((paths, user_name))
 
-    def drain_incoming(
-        self,
-    ) -> tuple[
+    def drain_incoming(self) -> tuple[
         list[tuple[list[str], str]],
         list[tuple[list[str], str]],
     ]:
@@ -2644,15 +2375,9 @@ async def _process_watch_deletes(
             rel = abs_p.relative_to(base_path).as_posix()
             repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
             try:
-                resp = await client.post(
-                    "/api/files/delete",
-                    json={
-                        "path": repo_path,
-                        "location": "workspace",
-                        "mode": "cloud",
-                    },
-                    headers=extra_headers,
-                )
+                resp = await client.post("/api/files/delete", json={
+                    "path": repo_path, "location": "workspace", "mode": "cloud",
+                }, headers=extra_headers)
                 if resp.status_code == 204:
                     deleted_count += 1
                     deleted_rels.append(rel)
@@ -2664,7 +2389,7 @@ async def _process_watch_deletes(
                     deleted_rels.append(rel)
                     state.forget_known_hash(repo_path)
                 else:
-                    ts = datetime.now().strftime("%H:%M:%S")
+                    ts = datetime.now().strftime('%H:%M:%S')
                     print(f"  [{ts}] Delete error for {rel}: {del_err}", flush=True)
 
     return deleted_count, deleted_rels
@@ -2681,11 +2406,7 @@ async def _process_watch_batch(
 ) -> None:
     """Process a batch of file changes and deletions."""
     deleted_count, deleted_rels = await _process_watch_deletes(
-        client,
-        deletes,
-        base_path,
-        repo_prefix,
-        state,
+        client, deletes, base_path, repo_prefix, state,
     )
 
     # Build files dict from changed paths. Observer events fire for our own
@@ -2699,9 +2420,13 @@ async def _process_watch_batch(
             try:
                 raw_bytes = abs_p.read_bytes()
                 raw = _normalize_line_endings(raw_bytes)
-                rel = abs_p.relative_to(base_path)
-                repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
-                file_hash = hashlib.md5(raw, usedforsecurity=False).hexdigest()
+                # POSIX separators so the repo_path (and thus the known-hash
+                # cache key) matches the server. With str(WindowsPath) the "\"
+                # key never matches the server's "/" key, so the no-op-push
+                # guard below never fires and every file re-uploads each tick.
+                rel = abs_p.relative_to(base_path).as_posix()
+                repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
+                file_hash = hashlib.md5(raw).hexdigest()
                 if state.get_known_hash(repo_path) == file_hash:
                     # No-op push: the server already has this content (common
                     # case: observer fired on our own pull write).
@@ -2711,7 +2436,7 @@ async def _process_watch_batch(
             except OSError:
                 continue
 
-    ts = datetime.now().strftime("%H:%M:%S")
+    ts = datetime.now().strftime('%H:%M:%S')
     if not watch_app:
         for repo_path in sorted(push_files):
             print(f"  [{ts}] File changed: {repo_path}", flush=True)
@@ -2744,20 +2469,16 @@ async def _process_watch_batch(
         watch_errors: list[str] = []
         for rp, c in push_files.items():
             try:
-                resp = await client.post(
-                    "/api/files/write",
-                    json={
-                        "path": rp,
-                        "content": c,
-                        "mode": "cloud",
-                        "location": "workspace",
-                        "binary": True,
-                    },
-                    headers={
-                        "X-Bifrost-Watch": "true",
-                        "X-Bifrost-Watch-Session": state.session_id,
-                    },
-                )
+                resp = await client.post("/api/files/write", json={
+                    "path": rp,
+                    "content": c,
+                    "mode": "cloud",
+                    "location": "workspace",
+                    "binary": True,
+                }, headers={
+                    "X-Bifrost-Watch": "true",
+                    "X-Bifrost-Watch-Session": state.session_id,
+                })
                 if resp.status_code == 204:
                     watch_created += 1
                     state.set_known_hash(rp, push_hashes[rp])
@@ -2786,16 +2507,13 @@ async def _process_watch_batch(
             watch_app._update_status()
 
         if not watch_app:
-            ts = datetime.now().strftime("%H:%M:%S")
+            ts = datetime.now().strftime('%H:%M:%S')
             parts = []
             if watch_created:
                 parts.append(f"{watch_created} written")
             if deleted_count:
                 parts.append(f"{deleted_count} deleted")
-            print(
-                f"  [{ts}] ✓ Pushed {', '.join(parts) if parts else 'no changes'}",
-                flush=True,
-            )
+            print(f"  [{ts}] ✓ Pushed {', '.join(parts) if parts else 'no changes'}", flush=True)
 
         # Log errors as separate rows (with detail sub-rows in TUI)
         if watch_errors:
@@ -2808,15 +2526,7 @@ async def _process_watch_batch(
                         watch_app.log_error(error)
                 else:
                     _cols = shutil.get_terminal_size((80, 24)).columns
-                    print(
-                        textwrap.fill(
-                            f"Error: {error}",
-                            width=_cols,
-                            initial_indent="    ",
-                            subsequent_indent="      ",
-                        ),
-                        flush=True,
-                    )
+                    print(textwrap.fill(f"Error: {error}", width=_cols, initial_indent="    ", subsequent_indent="      "), flush=True)
 
         # Auto-validate app directories after push (non-blocking)
         await _auto_validate_app(client, push_files, repo_prefix, watch_app=watch_app)
@@ -2837,7 +2547,7 @@ async def _auto_validate_app(
             # Extract slug: apps/{slug}/... or {prefix}apps/{slug}/...
             stripped = rp
             if repo_prefix and stripped.startswith(repo_prefix):
-                stripped = stripped[len(repo_prefix) :]
+                stripped = stripped[len(repo_prefix):]
             parts = stripped.split("/")
             if len(parts) >= 2 and parts[0] == "apps":
                 app_slugs.add(parts[1])
@@ -2867,7 +2577,7 @@ async def _auto_validate_app(
                 if watch_app:
                     watch_app.log_success(msg)
                 else:
-                    ts = datetime.now().strftime("%H:%M:%S")
+                    ts = datetime.now().strftime('%H:%M:%S')
                     print(f"  [{ts}] ✓ {msg}", flush=True)
             else:
                 if errors:
@@ -2875,7 +2585,7 @@ async def _auto_validate_app(
                     if watch_app:
                         watch_app.log_error(msg)
                     else:
-                        ts = datetime.now().strftime("%H:%M:%S")
+                        ts = datetime.now().strftime('%H:%M:%S')
                         print(f"  [{ts}] \u2717 {msg}", flush=True)
                     for err in errors:
                         err_msg = f"  {err.get('file', '?')}: {err.get('message', str(err))}"
@@ -2888,7 +2598,7 @@ async def _auto_validate_app(
                     if watch_app:
                         watch_app.log_info(msg)
                     else:
-                        ts = datetime.now().strftime("%H:%M:%S")
+                        ts = datetime.now().strftime('%H:%M:%S')
                         print(f"  [{ts}] \u26a0 {msg}", flush=True)
                     for warn in warnings:
                         warn_msg = f"  {warn.get('file', '?')}: {warn.get('message', str(warn))}"
@@ -2901,7 +2611,7 @@ async def _auto_validate_app(
             if watch_app:
                 watch_app.log_error(f"Auto-validate '{slug}' failed: {e}")
             else:
-                ts = datetime.now().strftime("%H:%M:%S")
+                ts = datetime.now().strftime('%H:%M:%S')
                 print(f"  [{ts}] \u26a0 Auto-validate '{slug}' failed: {e}", flush=True)
 
 
@@ -2927,10 +2637,7 @@ async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
             ) as ws:
                 backoff = 1.0  # Reset on successful connect
                 if not connected_once:
-                    print(
-                        "  WebSocket connected — listening for remote changes",
-                        flush=True,
-                    )
+                    print("  WebSocket connected — listening for remote changes", flush=True)
                     connected_once = True
                 async for msg in ws:
                     try:
@@ -2963,11 +2670,9 @@ async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
                     print("  WebSocket token refreshed — reconnecting", flush=True)
                     backoff = 1.0
                     continue
-                print(
-                    "  WebSocket token expired and refresh failed — re-authenticate with `bifrost auth`",
-                    flush=True,
-                )
-                return
+                else:
+                    print("  WebSocket token expired and refresh failed — re-authenticate with `bifrost auth`", flush=True)
+                    return
             print(f"  WebSocket error: {e} — reconnecting in {backoff:.0f}s", flush=True)
             await asyncio.sleep(min(backoff, 30))
             backoff *= 2
@@ -2990,33 +2695,29 @@ async def _process_incoming(
     writing so the subsequent observer event sees a matching cache entry
     and drops the no-op push.
     """
-    ts = datetime.now().strftime("%H:%M:%S")
+    ts = datetime.now().strftime('%H:%M:%S')
 
     # Process incoming file changes
     for paths, user_name in files:
         for repo_path in paths:
             try:
-                resp = await client.post(
-                    "/api/files/read",
-                    json={
-                        "path": repo_path,
-                        "mode": "cloud",
-                        "location": "workspace",
-                        "binary": True,
-                    },
-                )
+                resp = await client.post("/api/files/read", json={
+                    "path": repo_path,
+                    "mode": "cloud",
+                    "location": "workspace",
+                    "binary": True,
+                })
                 if resp.status_code == 200:
                     data = resp.json()
                     content = base64.b64decode(data["content"])
                     content_hash = _hash_for_cache(content)
                     # Convert repo_path to local path
                     if repo_prefix and repo_path.startswith(repo_prefix + "/"):
-                        rel = repo_path[len(repo_prefix) + 1 :]
+                        rel = repo_path[len(repo_prefix) + 1:]
                     elif repo_prefix and repo_path.startswith(repo_prefix):
-                        rel = repo_path[len(repo_prefix) :]
+                        rel = repo_path[len(repo_prefix):]
                     else:
                         rel = repo_path
-                    rel = _safe_workspace_relative_path(rel)
                     local_file = base_path / rel
                     local_file.parent.mkdir(parents=True, exist_ok=True)
                     # Skip if we already know the server has this content and
@@ -3058,9 +2759,9 @@ async def _process_incoming(
     for paths, user_name in deletes:
         for repo_path in paths:
             if repo_prefix and repo_path.startswith(repo_prefix + "/"):
-                rel = repo_path[len(repo_prefix) + 1 :]
+                rel = repo_path[len(repo_prefix) + 1:]
             elif repo_prefix and repo_path.startswith(repo_prefix):
-                rel = repo_path[len(repo_prefix) :]
+                rel = repo_path[len(repo_prefix):]
             else:
                 rel = repo_path
             local_file = base_path / rel
@@ -3109,7 +2810,6 @@ async def _watch_loop(
                     print("  \u26a0 File watcher died, attempting restart...", flush=True)
                 try:
                     from watchdog.observers import Observer
-
                     observer = Observer()
                     observer.schedule(handler, str(path), recursive=True)
                     observer.start()
@@ -3121,25 +2821,13 @@ async def _watch_loop(
                     if watch_app:
                         watch_app.log_error(f"Could not restart file watcher: {e}")
                     else:
-                        print(
-                            f"  \u2717 Could not restart file watcher: {e}",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                        print(f"  \u2717 Could not restart file watcher: {e}", file=sys.stderr, flush=True)
                     break
 
             changes, deletes = state.drain()
             if changes or deletes:
                 try:
-                    await _process_watch_batch(
-                        client,
-                        changes,
-                        deletes,
-                        path,
-                        repo_prefix,
-                        state,
-                        watch_app=watch_app,
-                    )
+                    await _process_watch_batch(client, changes, deletes, path, repo_prefix, state, watch_app=watch_app)
                     consecutive_errors = 0
                 except KeyboardInterrupt:
                     raise
@@ -3148,18 +2836,15 @@ async def _watch_loop(
                     if watch_app:
                         watch_app.log_error(f"Push error: {batch_err}")
                     else:
-                        ts = datetime.now().strftime("%H:%M:%S")
+                        ts = datetime.now().strftime('%H:%M:%S')
                         print(f"  [{ts}] Push error: {batch_err}", flush=True)
                     state.requeue(changes, deletes)
                     if consecutive_errors >= 10:
                         if watch_app:
                             watch_app.log_error(f"{consecutive_errors} consecutive errors, backing off to 5s")
                         else:
-                            ts = datetime.now().strftime("%H:%M:%S")
-                            print(
-                                f"  [{ts}] \u26a0 {consecutive_errors} consecutive errors, backing off to 5s",
-                                flush=True,
-                            )
+                            ts = datetime.now().strftime('%H:%M:%S')
+                            print(f"  [{ts}] \u26a0 {consecutive_errors} consecutive errors, backing off to 5s", flush=True)
                         await asyncio.sleep(5)
 
             # Process incoming file changes from other sessions. Writes land
@@ -3168,27 +2853,17 @@ async def _watch_loop(
             inc_files, inc_deletes = state.drain_incoming()
             if inc_files or inc_deletes:
                 await _process_incoming(
-                    client,
-                    inc_files,
-                    inc_deletes,
-                    path,
-                    repo_prefix,
-                    state,
-                    watch_app=watch_app,
+                    client, inc_files, inc_deletes, path, repo_prefix,
+                    state, watch_app=watch_app,
                 )
 
             # Heartbeat
             now = asyncio.get_event_loop().time()
             if now - last_heartbeat > heartbeat_interval:
                 try:
-                    await client.post(
-                        "/api/files/watch",
-                        json={
-                            "action": "heartbeat",
-                            "prefix": repo_prefix,
-                            "session_id": state.session_id,
-                        },
-                    )
+                    await client.post("/api/files/watch", json={
+                        "action": "heartbeat", "prefix": repo_prefix, "session_id": state.session_id,
+                    })
                 except Exception as e:
                     # Heartbeat is best-effort — server-side TTL keeps things consistent
                     logger.debug(f"watch heartbeat failed: {e}")
@@ -3204,7 +2879,7 @@ async def _watch_loop(
                 await ws_task
             except asyncio.CancelledError:
                 # Expected — we just cancelled the websocket task
-                raise
+                pass
             except Exception as e:
                 # Unexpected close error during cancel — log but continue cleanup
                 logger.debug(f"websocket task cleanup raised: {e}")
@@ -3232,28 +2907,25 @@ async def _watch_and_push(
 
     # Notify server with session_id
     try:
-        await client.post(
-            "/api/files/watch",
-            json={
-                "action": "start",
-                "prefix": repo_prefix,
-                "session_id": state.session_id,
-            },
-        )
+        await client.post("/api/files/watch", json={
+            "action": "start", "prefix": repo_prefix, "session_id": state.session_id,
+        })
     except Exception as e:
         # Best-effort start notification — server tolerates clients that didn't announce
         logger.debug(f"watch start notification failed: {e}")
 
-    # Initial full sync
+    # Initial full sync. If it aborts (e.g. the server file listing failed —
+    # auth/permission error, server down), do NOT fall through to start the
+    # observer: a half-initialized watch with no server view would push every
+    # subsequent local edit blindly, which is the exact mass-push the abort is
+    # meant to prevent (just deferred to per-file events).
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print(f"Initial sync of {path}...", flush=True)
-    await _sync_files(
-        str(path),
-        repo_prefix=repo_prefix,
-        mirror=mirror,
-        validate=validate,
-        client=client,
+    initial_rc = await _sync_files(
+        str(path), repo_prefix=repo_prefix, mirror=mirror, validate=validate, client=client
     )
+    if initial_rc != 0:
+        return initial_rc
 
     # Seed the known-server-hash cache from the server's file listing before
     # the observer starts. Without this, the very first observer event for
@@ -3261,23 +2933,18 @@ async def _watch_and_push(
     # Best-effort — failure just means cold start pushes until the first
     # pull/push per path populates the cache.
     try:
-        seed_resp = await client.post(
-            "/api/files/list",
-            json={
-                "include_metadata": True,
-                "mode": "cloud",
-                "location": "workspace",
-            },
-        )
+        seed_resp = await client.post("/api/files/list", json={
+            "include_metadata": True,
+            "mode": "cloud",
+            "location": "workspace",
+        })
         if seed_resp.status_code == 200:
             seed_data = seed_resp.json()
-            state.seed_known_hashes(
-                {
-                    item["path"]: item["etag"]
-                    for item in seed_data.get("files_metadata", [])
-                    if item.get("path") and item.get("etag")
-                }
-            )
+            state.seed_known_hashes({
+                item["path"]: item["etag"]
+                for item in seed_data.get("files_metadata", [])
+                if item.get("path") and item.get("etag")
+            })
     except Exception as e:
         # Hash cache seeding is an optimization — cold start just falls back to byte-compare
         logger.debug(f"could not seed known-hash cache from server: {e}")
@@ -3290,24 +2957,18 @@ async def _watch_and_push(
 
     # Start WebSocket listener for incoming changes from other sessions
     ws_task: asyncio.Task[None] | None = None
-    with contextlib.suppress(Exception):
-        ws_task = asyncio.create_task(_ws_listener(state, client))
+    try:
+        ws_task = asyncio.create_task(
+            _ws_listener(state, client)
+        )
+    except Exception:
+        pass  # WebSocket listener is best-effort
 
     if sys.stdin.isatty() and sys.stdout.isatty():
         from bifrost.tui.watch import WatchApp
-
         app = WatchApp(str(path), state.session_id)
         app.set_work(
-            _watch_loop(
-                path,
-                repo_prefix,
-                client,
-                state,
-                observer,
-                handler,
-                ws_task,
-                watch_app=app,
-            )
+            _watch_loop(path, repo_prefix, client, state, observer, handler, ws_task, watch_app=app)
         )
         await app.run_async()
     else:
@@ -3322,7 +2983,7 @@ def _format_file_time(file_path: pathlib.Path) -> str:
     """Format a file's modification time for display (short format)."""
     try:
         mtime = file_path.stat().st_mtime
-        dt = datetime.fromtimestamp(mtime, tz=UTC)
+        dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
         return dt.strftime("%b %d %H:%M")
     except OSError:
         return "unknown"
@@ -3340,9 +3001,9 @@ def _format_server_time(iso_str: str) -> str:
 def _strip_repo_prefix(repo_path: str, repo_prefix: str) -> str:
     """Strip the repo prefix from a repo path to get the local relative path."""
     if repo_prefix and repo_path.startswith(repo_prefix + "/"):
-        return repo_path[len(repo_prefix) + 1 :]
+        return repo_path[len(repo_prefix) + 1:]
     if repo_prefix and repo_path.startswith(repo_prefix):
-        return repo_path[len(repo_prefix) :]
+        return repo_path[len(repo_prefix):]
     return repo_path
 
 
@@ -3435,9 +3096,13 @@ async def _sync_files(
     at the file itself — the containing directory is used as the sync root.
     """
     push_only = single_file is not None or one_way
-    # Single-file push anchors the sync root at the file's containing directory
-    # so prefix detection and repo keys stay correct.
-    path = pathlib.Path(single_file).resolve().parent if single_file is not None else pathlib.Path(local_path).resolve()
+    if single_file is not None:
+        # Single-file push: anchor the sync root at the file's containing
+        # directory so prefix detection and repo keys stay correct whether
+        # local_path was the file or its directory.
+        path = pathlib.Path(single_file).resolve().parent
+    else:
+        path = pathlib.Path(local_path).resolve()
 
     if not path.exists():
         print(f"Error: path does not exist: {local_path}", file=sys.stderr)
@@ -3463,31 +3128,63 @@ async def _sync_files(
     regular_files = {k: v for k, v in files.items() if not _is_bifrost_path(k)}
 
     # ── 2. Fetch server file metadata ────────────────────────────────────
+    # A failed listing is FATAL, not a "push everything" fallback. If we can't
+    # read server state (auth/permission failure, server error, network drop),
+    # every local file would look "new locally" and we'd mass-push the entire
+    # workspace over whatever is on the server — silently, with no way for the
+    # user to catch it. A genuinely empty workspace returns HTTP 200 with an
+    # empty list, so we can still distinguish "nothing on server" (safe to
+    # push) from "couldn't see the server" (abort). Bail loudly on anything
+    # else.
     server_metadata: dict[str, dict[str, str]] = {}
     try:
-        resp = await client.post(
-            "/api/files/list",
-            json={
-                "include_metadata": True,
-                "mode": "cloud",
-                "location": "workspace",
-            },
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            for item in data.get("files_metadata", []):
-                server_metadata[item["path"]] = {
-                    "etag": item["etag"],
-                    "content_hash": item.get("content_hash") or "",
-                    "last_modified": item["last_modified"],
-                    "updated_by": item.get("updated_by", ""),
-                }
+        resp = await client.post("/api/files/list", json={
+            "include_metadata": True,
+            "mode": "cloud",
+            "location": "workspace",
+        })
     except Exception as e:
-        # Without metadata we'll push everything — slower but still correct
-        logger.debug(f"could not fetch server file metadata, will push without diff: {e}")
+        print(
+            f"Error: could not reach the server to list files ({e}).\n"
+            "Aborting to avoid pushing every local file as new.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.json().get("detail", "")
+        except Exception:  # noqa: BLE001 - body may not be JSON; detail stays ""
+            detail = (resp.text or "")[:200]
+        hint = ""
+        if resp.status_code in (401, 403):
+            hint = (
+                "\nThis looks like an authentication/permission problem — "
+                "re-run `bifrost login` and confirm your account can access "
+                "the workspace."
+            )
+        print(
+            f"Error: server returned HTTP {resp.status_code} listing files"
+            f"{f' ({detail})' if detail else ''}.\n"
+            "Aborting to avoid pushing every local file as new."
+            f"{hint}",
+            file=sys.stderr,
+        )
+        return 1
+
+    data = resp.json()
+    for item in data.get("files_metadata", []):
+        server_metadata[item["path"]] = {
+            "etag": item["etag"],
+            "last_modified": item["last_modified"],
+            "updated_by": item.get("updated_by", ""),
+        }
 
     # Filter .git/ objects from server listing
-    server_metadata = {p: m for p, m in server_metadata.items() if not p.startswith(".git/")}
+    server_metadata = {
+        p: m for p, m in server_metadata.items() if not p.startswith(".git/")
+    }
 
     # ── 3. Compare files (local vs server) ───────────────────────────────
     spec = _build_file_filter(path)
@@ -3498,60 +3195,48 @@ async def _sync_files(
 
     for repo_path, content in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_md5 = hashlib.md5(
-            base64.b64decode(content),
-            usedforsecurity=False,
-        ).hexdigest()
+        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:
             # New locally — not on server
-            sync_items.append(
-                {
-                    "name": rel,
-                    "why": "new locally",
-                    "modified": _format_file_time(path / rel),
-                    "author": "",
-                    "default_action": "push",
-                    "valid_actions": ["push", "delete", "skip"],
-                    "section": "files",
-                    "repo_path": repo_path,
-                    "rel": rel,
-                    "_content": content,
-                }
-            )
-            continue
-        server_hash = server_info.get("content_hash") or server_info["etag"]
-        if server_hash == local_md5:
-            # Unchanged
+            sync_items.append({
+                "name": rel,
+                "why": "new locally",
+                "modified": _format_file_time(path / rel),
+                "author": "",
+                "default_action": "push",
+                "valid_actions": ["push", "delete", "skip"],
+                "section": "files",
+                "repo_path": repo_path,
+                "rel": rel,
+                "_content": content,
+            })
+        elif server_info["etag"] != local_md5:
             matched_server_paths.add(repo_path)
-            continue
+            # Content differs — check timestamps
+            local_file = path / rel
+            try:
+                local_mtime = local_file.stat().st_mtime
+                local_dt = datetime.fromtimestamp(local_mtime, tz=timezone.utc)
+            except OSError:
+                local_dt = datetime.min.replace(tzinfo=timezone.utc)
 
-        matched_server_paths.add(repo_path)
-        # Content differs — check timestamps
-        local_file = path / rel
-        try:
-            local_mtime = local_file.stat().st_mtime
-            local_dt = datetime.fromtimestamp(local_mtime, tz=UTC)
-        except OSError:
-            local_dt = datetime.min.replace(tzinfo=UTC)
+            try:
+                server_dt = datetime.fromisoformat(server_info["last_modified"])
+                if server_dt.tzinfo is None:
+                    server_dt = server_dt.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                server_dt = datetime.min.replace(tzinfo=timezone.utc)
 
-        try:
-            server_dt = datetime.fromisoformat(server_info["last_modified"])
-            if server_dt.tzinfo is None:
-                server_dt = server_dt.replace(tzinfo=UTC)
-        except (ValueError, TypeError):
-            server_dt = datetime.min.replace(tzinfo=UTC)
+            if local_dt > server_dt:
+                why = "local newer"
+                default_action = "push"
+            else:
+                why = "server newer"
+                default_action = "pull"
 
-        if local_dt > server_dt:
-            why = "local newer"
-            default_action = "push"
-        else:
-            why = "server newer"
-            default_action = "pull"
-
-        sync_items.append(
-            {
+            sync_items.append({
                 "name": rel,
                 "why": why,
                 "modified": _format_file_time(local_file),
@@ -3562,8 +3247,11 @@ async def _sync_files(
                 "repo_path": repo_path,
                 "rel": rel,
                 "_content": content,
-            }
-        )
+            })
+        else:
+            # Unchanged
+            matched_server_paths.add(repo_path)
+
     # Server-only files — always show for pull; --mirror adds delete option
     prefix_filter = repo_prefix + "/" if repo_prefix else ""
     for server_path, server_info in server_metadata.items():
@@ -3578,23 +3266,24 @@ async def _sync_files(
             continue
         if _should_skip_path(rel, spec, server_path):
             continue
-        sync_items.append(
-            {
-                "name": rel,
-                "why": "server only",
-                "modified": _format_server_time(server_info.get("last_modified", "")),
-                "author": server_info.get("updated_by", ""),
-                "default_action": "pull",
-                "valid_actions": ["pull", "delete", "skip"] if mirror else ["pull", "skip"],
-                "section": "files",
-                "repo_path": server_path,
-                "rel": rel,
-                "_content": "",
-            }
-        )
+        sync_items.append({
+            "name": rel,
+            "why": "server only",
+            "modified": _format_server_time(server_info.get("last_modified", "")),
+            "author": server_info.get("updated_by", ""),
+            "default_action": "pull",
+            "valid_actions": ["pull", "delete", "skip"] if mirror else ["pull", "skip"],
+            "section": "files",
+            "repo_path": server_path,
+            "rel": rel,
+            "_content": "",
+        })
 
     if push_only:
-        sync_items = [item for item in sync_items if item.get("default_action") == "push"]
+        sync_items = [
+            item for item in sync_items
+            if item.get("default_action") == "push"
+        ]
 
     # ── 4. Check if there's anything to sync ─────────────────────────────
     if not sync_items:
@@ -3627,7 +3316,6 @@ async def _sync_files(
     if not _use_tui:
         # Auto-accept: use default actions
         from bifrost.tui.sync_app import SyncResult
-
         result = SyncResult()
         for item in sync_items:
             action = item.get("default_action", "skip")
@@ -3636,7 +3324,7 @@ async def _sync_files(
                 bucket.append(item)
             else:
                 result.skip.append(item)
-        if not is_tty:
+        if not _use_tui:
             push_count = len(result.push)
             pull_count = len(result.pull)
             delete_count = len(result.delete)
@@ -3650,7 +3338,6 @@ async def _sync_files(
             print(f"Syncing: {', '.join(parts) if parts else 'nothing'}...")
     else:
         from bifrost.tui.sync_app import interactive_sync
-
         sync_result = await interactive_sync(
             sync_items,
             file_count=len(sync_items),
@@ -3679,35 +3366,24 @@ async def _sync_files(
 
         if action == "push_file":
             item = work_data["item"]
-            resp = await client.post(
-                "/api/files/write",
-                json={
-                    "path": item["repo_path"],
-                    "content": item["_content"],
-                    "mode": "cloud",
-                    "location": "workspace",
-                    "binary": True,
-                },
-            )
+            resp = await client.post("/api/files/write", json={
+                "path": item["repo_path"],
+                "content": item["_content"],
+                "mode": "cloud", "location": "workspace", "binary": True,
+            })
             if resp.status_code != 204:
                 raise RuntimeError(f"HTTP {resp.status_code}")
 
         elif action == "pull_file":
             item = work_data["item"]
-            rel = _safe_workspace_relative_path(item["rel"])
-            resp = await client.post(
-                "/api/files/read",
-                json={
-                    "path": item["repo_path"],
-                    "mode": "cloud",
-                    "location": "workspace",
-                    "binary": True,
-                },
-            )
+            resp = await client.post("/api/files/read", json={
+                "path": item["repo_path"],
+                "mode": "cloud", "location": "workspace", "binary": True,
+            })
             if resp.status_code == 200:
                 file_data = resp.json()
                 content_bytes = base64.b64decode(file_data["content"])
-                local_file = path / rel
+                local_file = path / item["rel"]
                 local_file.parent.mkdir(parents=True, exist_ok=True)
                 local_file.write_bytes(content_bytes)
             else:
@@ -3722,14 +3398,10 @@ async def _sync_files(
                     local_file.unlink()
             else:
                 # Delete from server
-                resp = await client.post(
-                    "/api/files/delete",
-                    json={
-                        "path": item["repo_path"],
-                        "mode": "cloud",
-                        "location": "workspace",
-                    },
-                )
+                resp = await client.post("/api/files/delete", json={
+                    "path": item["repo_path"],
+                    "mode": "cloud", "location": "workspace",
+                })
                 if resp.status_code not in (204, 404):
                     raise RuntimeError(f"HTTP {resp.status_code}")
 
@@ -3754,7 +3426,6 @@ async def _sync_files(
     errors: list[str] = []
     if progress_items and _use_tui:
         from bifrost.tui.progress import ProgressApp
-
         app = ProgressApp("Syncing", progress_items, _do_sync_work, post_fn=_post_sync)
         errors = await app.run_async() or []
     elif progress_items and line_progress:
@@ -3776,7 +3447,8 @@ async def _sync_files(
                 errors.append(f"{name}: {e}")
                 print(f"  Error: {name}: {e}", file=sys.stderr)
         print(
-            f"Done: {pushed} pushed, {unchanged} unchanged, {skipped} skipped, {failed} failed",
+            f"Done: {pushed} pushed, {unchanged} unchanged, "
+            f"{skipped} skipped, {failed} failed",
             flush=True,
         )
     elif progress_items:
@@ -3793,14 +3465,7 @@ async def _sync_files(
     if errors:
         print(f"\n  Errors ({len(errors)}):")
         for error in errors:
-            print(
-                textwrap.fill(
-                    f"- {error}",
-                    width=_cols,
-                    initial_indent="    ",
-                    subsequent_indent="      ",
-                )
-            )
+            print(textwrap.fill(f"- {error}", width=_cols, initial_indent="    ", subsequent_indent="      "))
 
     # Validate if requested
     if validate and repo_prefix:
@@ -3826,10 +3491,7 @@ async def _sync_files(
                         else:
                             print("  No issues found.")
                     else:
-                        print(
-                            f"  Validation failed: {val_result.status_code}",
-                            file=sys.stderr,
-                        )
+                        print(f"  Validation failed: {val_result.status_code}", file=sys.stderr)
             else:
                 print(f"  Could not find app '{slug}' for validation", file=sys.stderr)
         except Exception as e:
@@ -3841,8 +3503,7 @@ async def _sync_files(
 def handle_api(args: list[str]) -> int:
     """bifrost api <METHOD> <endpoint> [json-body]"""
     if not args or args[0] in ("--help", "-h"):
-        print(
-            """
+        print("""
 Usage: bifrost api <METHOD> <endpoint> [json-body]
 
 Make an authenticated API request to Bifrost.
@@ -3857,8 +3518,7 @@ Examples:
   bifrost api GET /api/github/repo-status
   bifrost api POST /api/applications/my-app/validate
   bifrost api POST /api/files/push @payload.json
-""".strip()
-        )
+""".strip())
         return 0 if args and args[0] in ("--help", "-h") else 1
 
     if len(args) < 2:
@@ -3871,7 +3531,6 @@ Examples:
 
     if len(args) > 2:
         import pathlib
-
         raw = args[2]
         # Support @filename for reading body from file
         if raw.startswith("@"):
@@ -3891,11 +3550,6 @@ Examples:
         print(f"Unsupported method: {method}", file=sys.stderr)
         return 1
 
-    endpoint_error = _validate_api_endpoint(endpoint)
-    if endpoint_error:
-        print(endpoint_error, file=sys.stderr)
-        return 1
-
     # Authenticate BEFORE entering asyncio.run() so token refresh works
     try:
         client = BifrostClient.get_instance(require_auth=True)
@@ -3904,23 +3558,6 @@ Examples:
         return 1
 
     return asyncio.run(_api_request(method, endpoint, body, client=client))
-
-
-def _validate_api_endpoint(endpoint: str) -> str | None:
-    """Validate the CLI API endpoint before attaching auth credentials.
-
-    ``httpx`` accepts absolute and scheme-relative URLs even when a client has
-    a ``base_url``. The CLI's authenticated ``api`` command is intentionally
-    scoped to the configured Bifrost API origin, so only absolute paths are
-    accepted here.
-    """
-    if endpoint.startswith("//"):
-        return "Error: endpoint must not be a scheme-relative URL."
-    if "://" in endpoint:
-        return "Error: endpoint must not include a URL scheme or host."
-    if not endpoint.startswith("/"):
-        return "Error: endpoint must be an absolute API path starting with '/'."
-    return None
 
 
 async def _api_request(method: str, endpoint: str, body: Any | None, client: "BifrostClient | None" = None) -> int:
@@ -3970,8 +3607,7 @@ def handle_migrate_imports(args: list[str]) -> int:
     suppress the diff output in scripted runs where you've already reviewed.
     """
     if args and args[0] in ("--help", "-h"):
-        print(
-            """
+        print("""
 Usage: bifrost migrate-imports [path] [options]
 
 Rewrite "bifrost" imports into user-component / lucide-react / react-router-dom imports.
@@ -3997,8 +3633,7 @@ Options:
   --yes, -y             Apply without the confirmation prompt (diff is still printed)
   --skip-diff           Suppress diff output. Only valid with --yes (scripted runs)
   --help, -h            Show this help message
-""".strip()
-        )
+""".strip())
         return 0
 
     from bifrost.migrate_imports import (
@@ -4030,16 +3665,10 @@ Options:
             return 1
 
     if skip_diff and not yes:
-        print(
-            "Error: --skip-diff requires --yes (it only makes sense for scripted runs).",
-            file=sys.stderr,
-        )
+        print("Error: --skip-diff requires --yes (it only makes sense for scripted runs).", file=sys.stderr)
         return 1
     if skip_diff and dry_run:
-        print(
-            "Error: --skip-diff is incompatible with --dry-run (dry-run exists to show the diff).",
-            file=sys.stderr,
-        )
+        print("Error: --skip-diff is incompatible with --dry-run (dry-run exists to show the diff).", file=sys.stderr)
         return 1
 
     root = pathlib.Path(path_arg).resolve() if path_arg else pathlib.Path.cwd()
@@ -4103,8 +3732,7 @@ Options:
 
 def print_run_help() -> None:
     """Print run command help."""
-    print(
-        """
+    print("""
 Usage: bifrost run <file> -w <workflow> [options]
 
 Run a workflow directly. Output is raw JSON (pipeable). Use --interactive for browser UI.
@@ -4127,8 +3755,7 @@ Examples:
   bifrost run workflow.py -w greet -v                                      # Verbose output
   bifrost run workflow.py -w greet | jq .                                  # Pipe to jq
   bifrost run workflow.py --interactive                                    # Browser-based session
-""".strip()
-    )
+""".strip())
 
 
 if __name__ == "__main__":
