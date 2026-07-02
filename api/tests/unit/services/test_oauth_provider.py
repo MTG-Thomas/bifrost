@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
+from pydantic import ValidationError
+
+from src.models.contracts.oauth import CreateOAuthConnectionRequest, UpdateOAuthConnectionRequest
 from src.services.oauth_provider import (
     OAuthProviderClient,
     append_query_params,
@@ -55,6 +58,27 @@ class TestTokenExchangeScopePolicy:
         )
 
         assert compute_token_exchange_scopes(provider) == "read write"
+
+
+class TestProviderMetadataValidation:
+    """Test request validation for provider behavior metadata."""
+
+    def test_create_request_rejects_non_boolean_omit_scope_flag(self):
+        with pytest.raises(ValidationError, match="omit_token_exchange_scope must be a boolean"):
+            CreateOAuthConnectionRequest(
+                integration_id="integration-id",
+                oauth_flow_type="authorization_code",
+                client_id="client-id",
+                authorization_url="https://auth.example.com/oauth/authorize",
+                token_url="https://auth.example.com/oauth/token",
+                provider_metadata={"omit_token_exchange_scope": "true"},
+            )
+
+    def test_update_request_rejects_non_boolean_omit_scope_flag(self):
+        with pytest.raises(ValidationError, match="omit_token_exchange_scope must be a boolean"):
+            UpdateOAuthConnectionRequest(
+                provider_metadata={"omit_token_exchange_scope": 1},
+            )
 
 
 class TestOAuthProviderTokenExchange:

@@ -16,6 +16,14 @@ if TYPE_CHECKING:
 
 OAuthFlowType = Literal["authorization_code", "client_credentials", "refresh_token"]
 OAuthStatus = Literal["not_connected", "waiting_callback", "testing", "connected", "completed", "failed"]
+PROVIDER_METADATA_DESCRIPTION = "Provider-specific OAuth behavior flags and metadata"
+
+
+def _validate_provider_metadata(v: dict[str, Any]) -> dict[str, Any]:
+    flag = v.get("omit_token_exchange_scope")
+    if flag is not None and not isinstance(flag, bool):
+        raise ValueError("provider_metadata.omit_token_exchange_scope must be a boolean")
+    return v
 
 
 # ==================== OAUTH CONNECTION MODELS ====================
@@ -73,7 +81,7 @@ class CreateOAuthConnectionRequest(BaseModel):
     )
     provider_metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="Provider-specific OAuth behavior flags and metadata",
+        description=PROVIDER_METADATA_DESCRIPTION,
     )
     redirect_uri: str | None = Field(
         None,
@@ -90,6 +98,11 @@ class CreateOAuthConnectionRequest(BaseModel):
             if data.get('authorization_url') == '':
                 data['authorization_url'] = None
         return data
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def validate_provider_metadata(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _validate_provider_metadata(v)
 
     @model_validator(mode='after')
     def validate_flow_requirements(self) -> 'CreateOAuthConnectionRequest':
@@ -132,8 +145,15 @@ class UpdateOAuthConnectionRequest(BaseModel):
     )
     provider_metadata: dict[str, Any] | None = Field(
         default=None,
-        description="Provider-specific OAuth behavior flags and metadata",
+        description=PROVIDER_METADATA_DESCRIPTION,
     )
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def validate_provider_metadata(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        if v is None:
+            return None
+        return _validate_provider_metadata(v)
 
     @field_validator('scopes', mode='before')
     @classmethod
@@ -210,7 +230,7 @@ class OAuthConnectionDetail(BaseModel):
     )
     provider_metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="Provider-specific OAuth behavior flags and metadata",
+        description=PROVIDER_METADATA_DESCRIPTION,
     )
 
     # Status information
@@ -280,7 +300,7 @@ class OAuthConnection(BaseModel):
     scopes: str = ""
     provider_metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="Provider-specific OAuth behavior flags and metadata",
+        description=PROVIDER_METADATA_DESCRIPTION,
     )
     redirect_uri: str = Field(
         ...,
