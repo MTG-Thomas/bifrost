@@ -29,23 +29,6 @@ def _sdk_get(e2e_client, headers, *, name, org_id=None):
     )
 
 
-def _sdk_get(e2e_client, headers, *, name, org_id=None):
-    """Read merged integration data via the live, org-scoped SDK endpoint.
-
-    Replaces the former GET /api/integrations/sdk/{name}?org_id= calls (that
-    endpoint was DELETED — EXT-1 NEW-H — for taking org_id as a free,
-    unchecked Query param). POST /api/sdk/integrations/get goes through
-    _resolve_sdk_org_id and returns the same merged ``config`` + ``entity_id``;
-    ``scope`` is the org UUID (a bypass platform_admin may target any org).
-    """
-    body = {"name": name}
-    if org_id is not None:
-        body["scope"] = str(org_id)
-    return e2e_client.post(
-        "/api/sdk/integrations/get", headers=headers, json=body
-    )
-
-
 @pytest.mark.e2e
 class TestIntegrationsCRUD:
     """Test Integration CRUD operations."""

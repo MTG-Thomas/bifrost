@@ -200,27 +200,7 @@ async def _load_policies_for_table(table_id: str) -> TablePolicies | None:
 
     raw: _RawTableEntry | None
     if is_uuid and table_id in _table_policy_cache:
-        return _table_policy_cache[table_id]
-
-    async with get_db_context() as db:
-        if is_uuid:
-            stmt = select(TableOrm.access).where(TableOrm.id == UUID(table_id))
-        else:
-            stmt = select(TableOrm.access).where(
-                TableOrm.name == table_id,
-                # By-name resolution is the live _repo/ namespace — mirror
-                # OrgScopedRepository.get(): solution-managed rows resolve by
-                # id (or ?solution=), orphaned rows don't resolve by name.
-                TableOrm.solution_id.is_(None),
-                TableOrm.orphaned_at.is_(None),
-            )
-        result = await db.execute(stmt)
-        row = result.one_or_none()
-
-    if row is None:
-        policies: TablePolicies | None = None
-    elif row[0] is None:
-        policies = TablePolicies()
+        raw = _table_policy_cache[table_id]
     else:
         async with get_db_context() as db:
             if is_uuid:
@@ -234,8 +214,9 @@ async def _load_policies_for_table(table_id: str) -> TablePolicies | None:
                     TableOrm.name == table_id,
                     # By-name resolution is the live _repo/ namespace — mirror
                     # OrgScopedRepository.get(): solution-managed rows resolve by
-                    # id (or ?solution=).
+                    # id (or ?solution=), orphaned rows don't resolve by name.
                     TableOrm.solution_id.is_(None),
+                    TableOrm.orphaned_at.is_(None),
                 )
             result = await db.execute(stmt)
             row = result.one_or_none()
