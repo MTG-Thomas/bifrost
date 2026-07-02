@@ -13,6 +13,7 @@ to avoid dependencies on src.* modules that only exist in the Docker environment
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import inspect
 import json
@@ -2883,10 +2884,8 @@ async def _watch_loop(
         if ws_task and not ws_task.done():
             ws_task.cancel()
             try:
-                await ws_task
-            except asyncio.CancelledError:
-                # Expected — we just cancelled the websocket task
-                pass
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ws_task
             except Exception as e:
                 # Unexpected close error during cancel — log but continue cleanup
                 logger.debug(f"websocket task cleanup raised: {e}")
