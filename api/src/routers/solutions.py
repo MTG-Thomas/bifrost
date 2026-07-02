@@ -281,6 +281,7 @@ async def export_solution(
     user: CurrentSuperuser,
     mode: str = "shareable",
     include_data: bool = False,
+    include_files: bool = False,
     password: Annotated[str | None, Body(embed=True)] = None,
 ) -> Response:
     """Rebuild the install's workspace bundle LIVE from the entities it
@@ -290,12 +291,13 @@ async def export_solution(
     This is a POST (not GET) specifically so the full-backup ``password`` rides
     in the request BODY rather than the URL query string — a query-string secret
     leaks into access logs, proxies, and browser history. ``mode`` and
-    ``include_data`` stay in the query (they are not sensitive).
+    ``include_data`` and ``include_files`` stay in the query (they are not sensitive).
 
     ``mode=shareable`` (default): portable export, no sensitive values.
     ``mode=full``: includes an encrypted ``.bifrost/secrets.enc`` blob carrying
     the config values set for this install; requires ``password`` (in the body).
     ``include_data=true``: include table row data in the encrypted blob.
+    ``include_files=true``: include solution-owned files in encrypted payload members.
     Requires ``mode=full`` (data must be encrypted).
     """
     if mode not in ("shareable", "full"):
@@ -313,6 +315,11 @@ async def export_solution(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="include_data requires mode=full (data must be encrypted)",
         )
+    if include_files and mode != "full":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="include_files requires mode=full (files must be encrypted)",
+        )
 
     from src.services.solutions.capture import SolutionCaptureService
     from src.services.solutions.export import build_workspace_zip
@@ -323,7 +330,11 @@ async def export_solution(
 
     include_values = mode == "full"
     bundle = await SolutionCaptureService(ctx.db).bundle_for(
-        sol, include_imports=True, include_values=include_values, include_data=include_data
+        sol,
+        include_imports=True,
+        include_values=include_values,
+        include_data=include_data,
+        include_files=include_files,
     )
     data = build_workspace_zip(bundle, password=password if include_values else None)
     filename = f"{sol.slug}-{sol.version or 'unversioned'}.zip"

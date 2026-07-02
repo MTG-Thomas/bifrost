@@ -271,6 +271,7 @@ class SolutionBundle:
     # Each: {integration_name, template, position}. Secret-scrubbed skeletons
     # (no client_id/secret). Declared from integrations.get("X") refs.
     connection_schemas: list[dict[str, Any]] = field(default_factory=list)
+    file_locations: list[str] = field(default_factory=list)
     # Event/schedule triggers. Each is a ManifestEventSource-shaped dict (source
     # + nested schedule/webhook config + subscriptions). Webhook instance state
     # (external_id/state/expires_at) is scrubbed; the instance re-establishes it.
@@ -289,6 +290,9 @@ class SolutionBundle:
     # Travels as password-encrypted .bifrost/secrets.enc; never in plaintext export.
     config_values: dict[str, str] = field(default_factory=dict)
     table_data: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Solution-owned file sidecars. Metadata-only entries are used by export;
+    # entries with content_bytes are written after deploy commit.
+    solution_files: list[Any] = field(default_factory=list)
 
 
 class SolutionDeployer:
@@ -300,8 +304,17 @@ class SolutionDeployer:
         # _resolve_roles). Surfaced on DeployResult.roles_created.
         self._created_roles: set[str] = set()
 
-    async def deploy(self, bundle: SolutionBundle, force: bool = False) -> DeployResult:
+    async def deploy(
+        self,
+        bundle: SolutionBundle,
+        force: bool = False,
+        file_mode: str = "replace",
+    ) -> DeployResult:
         """Full-replace this install from ``bundle`` — DB phase + app COMPILE.
+
+        ``file_mode`` controls how bundle file sidecars are written on deploy:
+        ``"replace"`` overwrites existing files; ``"skip"`` preserves them.
+        Files absent from the bundle are never deleted.
 
         Everything that can fail on bad input runs BEFORE the caller's commit, so
         a failure rolls the deploy back with ZERO durable side effects:
@@ -401,6 +414,16 @@ class SolutionDeployer:
         await self._upsert_connection_declarations(
             solution, bundle.connection_schemas
         )
+        from src.services.solutions.file_locations import (
+            reconcile_solution_file_locations,
+        )
+
+        await reconcile_solution_file_locations(
+            self.db,
+            sid,
+            bundle.file_locations,
+            make_error=SolutionDeployConflict,
+        )
         # Captured pre-commit: the finalize closure runs after the caller's
         # commit, when lazy-loading off the ORM row is no longer safe.
         install_org_id_str = (
@@ -466,6 +489,13 @@ class SolutionDeployer:
                 "sweep stale dist", sid,
                 lambda: self._delete_stale_app_dist(stale_app_dist),
             )
+            if bundle.solution_files:
+                await _retry_idempotent(
+                    "write bundle file sidecars", sid,
+                    lambda: self._write_bundle_files(
+                        sid, bundle.solution_files, file_mode
+                    ),
+                )
 
         return DeployResult(
             workflows_upserted=len(rb.workflows),
@@ -590,9 +620,11 @@ class SolutionDeployer:
             agents=agents,
             claims=claims,
             config_schemas=config_schemas,
+            file_locations=list(bundle.file_locations),
             events=events,
             version=bundle.version,
             readme=bundle.readme,
+            solution_files=list(bundle.solution_files),
         )
 
     @staticmethod
@@ -1230,6 +1262,31 @@ class SolutionDeployer:
         builder = SolutionAppBuilder()
         for app_id in app_ids:
             await builder.delete_dist(app_id)
+
+    async def _write_bundle_files(
+        self, install_id: UUID, solution_files: list[Any], file_mode: str
+    ) -> None:
+        """POST-COMMIT: write file sidecars from the bundle."""
+        import base64 as _b64
+
+        from src.services.solution_files import write_solution_file
+
+        for sf in solution_files:
+            if hasattr(sf, "content_bytes"):
+                content = sf.content_bytes
+                location = sf.location
+                path = sf.path
+            else:
+                encoded = sf.get("content_b64") if isinstance(sf, dict) else None
+                content = _b64.b64decode(encoded) if encoded else None
+                location = sf.get("location") if isinstance(sf, dict) else None
+                path = sf.get("path") if isinstance(sf, dict) else None
+            if content is None or not location or not path:
+                continue
+
+            await write_solution_file(
+                self.db, install_id, location, path, content, mode=file_mode
+            )
 
     async def _upsert_forms(
         self, solution: Solution, forms: list[dict[str, Any]]

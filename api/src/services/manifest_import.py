@@ -216,6 +216,20 @@ def _collect_changed_ids(incoming: "Manifest", current: "Manifest") -> set[str]:
     return ids
 
 
+def _collect_removed_entity_ids(changes: list[dict[str, str]]) -> dict[str, set[str]]:
+    """Return entity IDs that the manifest diff explicitly removed."""
+    removed: dict[str, set[str]] = {}
+    for change in changes:
+        if change.get("action") != "delete":
+            continue
+        entity_type = change.get("entity_type")
+        entity_id = change.get("id")
+        if not entity_type or not entity_id:
+            continue
+        removed.setdefault(entity_type, set()).add(entity_id)
+    return removed
+
+
 # =============================================================================
 # Inline-content helpers
 # =============================================================================
