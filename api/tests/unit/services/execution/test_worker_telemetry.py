@@ -146,7 +146,7 @@ def test_run_in_worker_flushes_opentelemetry_after_error(monkeypatch):
     assert calls == ["configure", "run", "flush"]
 
 
-def test_simple_worker_execute_sync_flushes_opentelemetry(monkeypatch):
+def test_simple_worker_execute_sync_configures_opentelemetry(monkeypatch):
     from src.services.execution import simple_worker
 
     calls: list[Any] = []
@@ -154,10 +154,6 @@ def test_simple_worker_execute_sync_flushes_opentelemetry(monkeypatch):
     monkeypatch.setattr(
         "src.core.telemetry.configure_opentelemetry",
         lambda service_name, **kwargs: calls.append(("configure", service_name, kwargs)),
-    )
-    monkeypatch.setattr(
-        "src.core.telemetry.flush_opentelemetry",
-        lambda: calls.append(("flush", None)),
     )
     monkeypatch.setattr(
         simple_worker,
@@ -179,5 +175,16 @@ def test_simple_worker_execute_sync_flushes_opentelemetry(monkeypatch):
     }
     assert calls == [
         ("configure", "bifrost-worker", {"span_processor": "simple"}),
-        ("flush", None),
     ]
+
+
+def test_template_child_exit_flushes_opentelemetry(monkeypatch):
+    from src.services.execution import template_process
+
+    calls: list[str] = []
+
+    monkeypatch.setattr("src.core.telemetry.flush_opentelemetry", lambda: calls.append("flush"))
+
+    template_process._flush_child_telemetry()
+
+    assert calls == ["flush"]

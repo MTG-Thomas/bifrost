@@ -313,9 +313,9 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
     Returns:
         Result dict with success, result, error, duration_ms, etc.
     """
-    from src.core import telemetry
+    from src.core.telemetry import configure_opentelemetry
 
-    telemetry.configure_opentelemetry("bifrost-worker", span_processor="simple")
+    configure_opentelemetry("bifrost-worker", span_processor="simple")
 
     try:
         result = asyncio.run(_execute_async(execution_id, worker_id))
@@ -330,8 +330,6 @@ def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
             "duration_ms": 0,
             "worker_id": worker_id,
         }
-    finally:
-        telemetry.flush_opentelemetry()
 
 
 async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:

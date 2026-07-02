@@ -348,8 +348,20 @@ def _handle_fork_request(
             logger.debug(f"child: pipe.close ignored: {e}")
 
         # Run the worker function (this blocks until the child exits)
-        _run_forked_child(work_recv, result_send, worker_id, persistent)
+        try:
+            _run_forked_child(work_recv, result_send, worker_id, persistent)
+        finally:
+            _flush_child_telemetry()
         os._exit(0)
+
+
+def _flush_child_telemetry() -> None:
+    """Flush telemetry before forked children exit via os._exit."""
+    try:
+        from src.core import telemetry
+        telemetry.flush_opentelemetry()
+    except Exception as exc:
+        logger.warning("OpenTelemetry child flush failed: %s", exc)
 
 
 def _run_forked_child(
