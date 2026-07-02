@@ -357,7 +357,7 @@ export function UpgradeDiffView({ diff }: { diff: SolutionUpgradeDiff }) {
 
 /** Random 6-char suffix for suggested repository names. */
 function repoSuffix(): string {
-	return Math.random().toString(36).slice(2, 8);
+	return crypto.randomUUID().replace(/-/g, "").slice(0, 6);
 }
 
 /**

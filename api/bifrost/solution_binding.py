@@ -26,7 +26,13 @@ class SolutionBindingError(ValueError):
 
 
 def _env_path(workspace: Path) -> Path:
-    return workspace / ".env"
+    root = workspace.expanduser().resolve()
+    env = (root / ".env").resolve()
+    try:
+        env.relative_to(root)
+    except ValueError as exc:
+        raise SolutionBindingError(".env path escapes workspace") from exc
+    return env
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:

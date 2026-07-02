@@ -136,14 +136,19 @@ def _normalize_line_endings(data: bytes) -> bytes:
     return data.replace(b"\r\n", b"\n")
 
 
+def _etag_md5(data: bytes) -> str:
+    """Return the non-security MD5 digest used by S3 ETags."""
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()  # NOSONAR
+
+
 def _hash_for_cache(raw_bytes: bytes) -> str:
-    """md5 of post-normalization bytes — must match what the server stores.
+    """ETag MD5 of post-normalization bytes — must match what the server stores.
 
     Watch normalizes CRLF to LF before pushing, so S3 stores normalized bytes
     and S3's ETag is md5 of those. Any hash we compare against a server ETag
     must be computed on the same normalized bytes.
     """
-    return hashlib.md5(_normalize_line_endings(raw_bytes)).hexdigest()
+    return _etag_md5(_normalize_line_endings(raw_bytes))
 
 
 def _is_bifrost_path(path: str) -> bool:
@@ -2426,7 +2431,7 @@ async def _process_watch_batch(
                 # guard below never fires and every file re-uploads each tick.
                 rel = abs_p.relative_to(base_path).as_posix()
                 repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
-                file_hash = hashlib.md5(raw).hexdigest()
+                file_hash = _etag_md5(raw)
                 if state.get_known_hash(repo_path) == file_hash:
                     # No-op push: the server already has this content (common
                     # case: observer fired on our own pull write).
@@ -3195,7 +3200,7 @@ async def _sync_files(
 
     for repo_path, content in regular_files.items():
         rel = _strip_repo_prefix(repo_path, repo_prefix)
-        local_md5 = hashlib.md5(base64.b64decode(content)).hexdigest()
+        local_md5 = _etag_md5(base64.b64decode(content))
         server_info = server_metadata.get(repo_path)
 
         if server_info is None:
