@@ -49,6 +49,7 @@ from src.models.orm.pending_capture import PendingCaptureORM
 from src.models.orm.solution_config_schema import SolutionConfigSchema
 from src.models.orm.solution_deploy_jobs import SolutionDeployJob
 from src.models.orm.solution_connection_schema import SolutionConnectionSchema
+from src.models.orm.solution_file_location import SolutionFileLocation
 from src.models.orm.solutions import Solution
 from src.models.orm.custom_claims import CustomClaim
 from src.models.orm.tables import Document, Table
@@ -57,6 +58,8 @@ from src.models.orm.user_invites import UserInvite
 from src.models.orm.workflow_roles import WorkflowRole
 from src.models.orm.workflows import Workflow
 from src.models.orm.file_index import FileIndex
+from src.models.orm.file_metadata import FileMetadata, FilePolicy
+from src.models.orm.policy_rule import PolicyRule
 from src.models.orm.worker_metric import WorkerMetric
 
 __all__ = [
@@ -69,6 +72,7 @@ __all__ = [
     "SolutionConfigSchema",
     "SolutionConnectionSchema",
     "SolutionDeployJob",
+    "SolutionFileLocation",
     "PendingCaptureORM",
     # Applications (App Builder)
     "Application",
@@ -143,6 +147,10 @@ __all__ = [
     "WorkflowROIDaily",
     # Workspace
     "FileIndex",
+    "FileMetadata",
+    "FilePolicy",
+    # Policy Rules
+    "PolicyRule",
     # Worker Metrics
     "WorkerMetric",
     # Events

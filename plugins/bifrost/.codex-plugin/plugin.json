@@ -13,7 +13,7 @@
   "interface": {
     "displayName": "Bifrost",
     "shortDescription": "Build, set up, and package Bifrost automation artifacts",
-    "longDescription": "Use Bifrost skills to build workflows, forms, agents, and apps with the Bifrost SDK and CLI; set up local Bifrost development; and package Bifrost agents as Microsoft 365 Copilot Cowork plugins.",
+    "longDescription": "Use Bifrost skills to build workflows, forms, agents, apps, tables, and files with the Bifrost SDK and CLI; set up local Bifrost development; and package Bifrost agents as Microsoft 365 Copilot Cowork plugins.",
     "developerName": "Jack Musick",
     "category": "Engineering",
     "capabilities": [
@@ -22,12 +22,14 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Help me build a Bifrost workflow, form, agent, or app.",
+      "Help me build a Bifrost workflow, form, agent, app, table, or file-backed Solution.",
       "Set up this project for local Bifrost development.",
       "Package a Bifrost agent as a Microsoft 365 Copilot Cowork plugin."
     ],
     "websiteURL": "https://github.com/gobifrost/bifrost",
     "brandColor": "#2563EB",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
     "screenshots": []
   }
 }

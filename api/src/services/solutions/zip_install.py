@@ -1,7 +1,7 @@
 """Drag-and-drop ZIP install for Solutions (success-criteria §3, Tasks 11+12).
 
-A "zip" is a compressed Solution *workspace* — the same shape the retired
-portable export flow produced: a ``bifrost.solution.yaml`` descriptor + ``.bifrost/*.yaml`` manifests
+A "zip" is a compressed Solution *workspace* — the same shape ``bifrost export``
+produces: a ``bifrost.solution.yaml`` descriptor + ``.bifrost/*.yaml`` manifests
 + ``apps/`` and ``workflows/`` source. The server unzips it and runs the EXISTING
 deploy pipeline (:class:`SolutionDeployer`) — it does NOT reinvent deploy.
 
@@ -48,6 +48,7 @@ from src.models.enums import ConfigType
 from src.models.orm.solution_config_schema import SolutionConfigSchema
 from src.models.orm.solutions import Solution
 from src.services.solutions.deploy import (
+    DeployResult,
     SolutionBundle,
     SolutionDeployer,
     solution_entity_id,
@@ -103,6 +104,25 @@ class ContentCollision(ValueError):
         )
 
 
+class InactiveInstallExists(Exception):
+    """A zip-install targeted a slug that matches an INACTIVE (uninstalled) install.
+
+    Duplicate creation is refused while the inactive install exists — the caller
+    must either reactivate the existing install (pass ``reactivate=True``) or
+    hard-delete it first for a clean install.  Carries the install's id and slug
+    so the endpoint can surface a structured 409 prompt to the UI/CLI.
+    """
+
+    def __init__(self, solution_id: UUID, slug: str) -> None:
+        self.solution_id = solution_id
+        self.slug = slug
+        super().__init__(
+            f"An inactive install of '{slug}' already exists (id={solution_id}). "
+            "Pass reactivate=true to reactivate it, or delete the existing install first."
+        )
+
+
+
 @dataclass
 class PreviewResult:
     """What a zip would create — parse-only, nothing persisted."""
@@ -120,6 +140,7 @@ class PreviewResult:
     agents: list[dict[str, Any]] = field(default_factory=list)
     claims: list[dict[str, Any]] = field(default_factory=list)
     config_schemas: list[dict[str, Any]] = field(default_factory=list)
+    file_locations: list[str] = field(default_factory=list)
     # Connection declarations read from .bifrost/connections.yaml (Task 14b).
     # Each: {integration_name, template, position}. Install pre-creates an empty
     # integration shell and persists a SolutionConnectionSchema row from each.
@@ -151,6 +172,17 @@ def _safe_extract(data: bytes, dest: str) -> None:
         z.extractall(dest)
 
 
+def _safe_extract_path(zip_path: Path, dest: str) -> None:
+    """Extract a zip file from disk, rejecting zip-slip members."""
+    dest_real = os.path.realpath(dest)
+    with zipfile.ZipFile(zip_path) as z:
+        for member in z.namelist():
+            target = os.path.realpath(os.path.join(dest, member))
+            if not (target == dest_real or target.startswith(dest_real + os.sep)):
+                raise ValueError(f"unsafe path in zip: {member}")
+        z.extractall(dest)
+
+
 def _parse_workspace(workspace: Path) -> PreviewResult:
     """Parse a Solution workspace dir into a :class:`PreviewResult` (no DB/S3)."""
     # Imported lazily so a malformed/zip-slip zip fails before any CLI import.
@@ -161,6 +193,7 @@ def _parse_workspace(workspace: Path) -> PreviewResult:
         _collect_config_schemas,
         _collect_connection_schemas,
         _collect_events,
+        _collect_file_locations,
         _collect_forms,
         _collect_tables,
         _collect_workflows,
@@ -198,6 +231,7 @@ def _parse_workspace(workspace: Path) -> PreviewResult:
         agents=_collect_agents(workspace),
         claims=_collect_claims(workspace),
         config_schemas=_collect_config_schemas(workspace),
+        file_locations=_collect_file_locations(workspace),
         connection_schemas=_collect_connection_schemas(workspace),
         events=_collect_events(workspace),
         readme=_read_readme(workspace),
@@ -225,6 +259,13 @@ def preview_zip(data: bytes) -> PreviewResult:
     """
     with tempfile.TemporaryDirectory(prefix="bifrost-zip-preview-") as tmp:
         _safe_extract(data, tmp)
+        return _parse_workspace(Path(tmp))
+
+
+def preview_zip_path(zip_path: Path) -> PreviewResult:
+    """Parse a Solution workspace zip from disk — no DB write, no S3, no build."""
+    with tempfile.TemporaryDirectory(prefix="bifrost-zip-preview-") as tmp:
+        _safe_extract_path(zip_path, tmp)
         return _parse_workspace(Path(tmp))
 
 
@@ -324,6 +365,7 @@ def _build_bundle(solution: Solution, preview: PreviewResult, workspace: Path) -
         agents=preview.agents,
         claims=preview.claims,
         config_schemas=preview.config_schemas,
+        file_locations=preview.file_locations,
         connection_schemas=preview.connection_schemas,
         events=preview.events,
         version=preview.version,
@@ -351,7 +393,12 @@ async def find_install(
 
 
 async def _resolve_or_create_solution(
-    db: AsyncSession, *, slug: str, name: str, organization_id: UUID | None
+    db: AsyncSession,
+    *,
+    slug: str,
+    name: str,
+    organization_id: UUID | None,
+    reactivate: bool = False,
 ) -> Solution:
     """Find the install for ``(slug, organization_id)`` or create a fresh one.
 
@@ -359,9 +406,21 @@ async def _resolve_or_create_solution(
     ``_resolve_target_install``, which also guards cross-org ambiguity): each
     org's install of a slug is independent (criterion 9), so we match within the
     requested scope only and create when none exists.
+
+    Inactive-install guard: when an INACTIVE install is found and ``reactivate``
+    is False, raises ``InactiveInstallExists`` so the caller can surface a 409
+    prompt.  When ``reactivate`` is True, the existing install is flipped back to
+    ``"active"`` and returned — the normal deploy will upsert entities atop the
+    retained frozen rows (non-destructive; no new install row is created).
     """
     existing = await find_install(db, slug=slug, organization_id=organization_id)
     if existing is not None:
+        if existing.status == "inactive":
+            if not reactivate:
+                raise InactiveInstallExists(existing.id, existing.slug)
+            # Reactivate: flip status back to active and let the deploy proceed.
+            existing.status = "active"
+            await db.flush()
         return existing
 
     row = Solution(slug=slug, name=name, organization_id=organization_id)
@@ -381,6 +440,7 @@ async def install_zip(
     password: str | None = None,
     replace_secrets: bool = False,
     replace_data: bool = False,
+    reactivate: bool = False,
 ) -> Solution:
     """Atomically install a Solution zip: deploy the bundle, then apply config
     VALUES — all under the per-install write lock.
@@ -400,144 +460,273 @@ async def install_zip(
             replace flag is not set.  Caller maps this to 409.
     Re-raises the deploy exceptions for the endpoint to map.
     """
-    from src.services.solutions.write_lock import solution_write_lock
-
     with tempfile.TemporaryDirectory(prefix="bifrost-zip-install-") as tmp:
         _safe_extract(data, tmp)
-        workspace = Path(tmp)
-        preview = _parse_workspace(workspace)
-        if not preview.slug or not preview.name:
-            raise ValueError(
-                "zip is not a Solution workspace (missing bifrost.solution.yaml slug/name)"
-            )
-
-        solution = await _resolve_or_create_solution(
-            db, slug=preview.slug, name=preview.name, organization_id=organization_id
+        return await _install_workspace(
+            db,
+            Path(tmp),
+            organization_id=organization_id,
+            config_values=config_values,
+            deployer_email=deployer_email,
+            force=force,
+            password=password,
+            replace_secrets=replace_secrets,
+            replace_data=replace_data,
+            reactivate=reactivate,
         )
 
-        # One-writer invariant: a git-connected install is written ONLY by
-        # auto-pull (sync). Refuse a zip install into it, exactly as
-        # deploy_solution refuses a manual deploy — otherwise the zip would
-        # full-replace the connected install out of band.
-        if solution.git_connected:
-            raise GitConnectedInstallError(
-                "This install is git-connected; zip install is disabled "
-                "(auto-pull is the only writer)."
-            )
 
-        # Build the bundle while the temp dir still exists (it reads Python +
-        # app source fully into memory, so finalize_s3 is safe after teardown).
-        bundle = _build_bundle(solution, preview, workspace)
+async def install_zip_path(
+    db: AsyncSession,
+    zip_path: Path,
+    *,
+    organization_id: UUID | None,
+    config_values: dict[str, Any],
+    deployer_email: str,
+    force: bool = False,
+    password: str | None = None,
+    replace_secrets: bool = False,
+    replace_data: bool = False,
+    reactivate: bool = False,
+) -> Solution:
+    """Install a Solution zip from disk without buffering the upload."""
+    with tempfile.TemporaryDirectory(prefix="bifrost-zip-install-") as tmp:
+        _safe_extract_path(zip_path, tmp)
+        return await _install_workspace(
+            db,
+            Path(tmp),
+            organization_id=organization_id,
+            config_values=config_values,
+            deployer_email=deployer_email,
+            force=force,
+            password=password,
+            replace_secrets=replace_secrets,
+            replace_data=replace_data,
+            reactivate=reactivate,
+        )
 
-        # Module-closure gate: every ``modules.X`` import in the bundle must
-        # resolve to a file in the bundle. Run BEFORE the write lock / any DB or
-        # S3 write, so an unmet dependency refuses the install atomically —
-        # nothing lands (mirrors the wrong-password discipline). Otherwise a
-        # missing module is a silent runtime ModuleNotFoundError post-install.
-        from src.services.solutions.dependency_walker import check_install_needs
 
-        needs = check_install_needs(bundle.python_files)
-        if needs:
-            items = ", ".join(
-                f"{n.ref} ({n.detail})" if n.detail else n.ref for n in needs
-            )
-            raise UnmetDependency(f"Solution has unmet dependencies: {items}")
+async def _install_workspace(
+    db: AsyncSession,
+    workspace: Path,
+    *,
+    organization_id: UUID | None,
+    config_values: dict[str, Any],
+    deployer_email: str,
+    force: bool,
+    password: str | None,
+    replace_secrets: bool,
+    replace_data: bool,
+    reactivate: bool,
+) -> Solution:
+    from src.services.solutions.write_lock import solution_write_lock
 
-        async with solution_write_lock(solution.id):
-            # Decrypt + collision-check BEFORE deploy so a bad password or
-            # collision refuses the entire import atomically — nothing lands.
-            content = None
-            secrets_path = workspace / ".bifrost" / "secrets.enc"
-            if secrets_path.exists():
-                if not password:
-                    raise BadExportPassword(
-                        "this bundle carries secrets — a password is required"
-                    )
-                from cryptography.fernet import InvalidToken
+    preview = _parse_workspace(workspace)
+    if not preview.slug or not preview.name:
+        raise ValueError(
+            "zip is not a Solution workspace (missing bifrost.solution.yaml slug/name)"
+        )
 
-                from src.services.solutions.secrets_blob import decode_secrets_blob
+    solution = await _resolve_or_create_solution(
+        db,
+        slug=preview.slug,
+        name=preview.name,
+        organization_id=organization_id,
+        reactivate=reactivate,
+    )
 
-                try:
-                    content = decode_secrets_blob(
-                        secrets_path.read_text(), password=password
-                    )
-                except InvalidToken as exc:
-                    raise BadExportPassword(
-                        "wrong password for this bundle"
-                    ) from exc
+    # One-writer invariant: a git-connected install is written ONLY by
+    # auto-pull (sync). Refuse a zip install into it, exactly as
+    # deploy_solution refuses a manual deploy — otherwise the zip would
+    # full-replace the connected install out of band.
+    if solution.git_connected:
+        raise GitConnectedInstallError(
+            "This install is git-connected; zip install is disabled "
+            "(auto-pull is the only writer)."
+        )
 
-                await _assert_no_unforced_collisions(
-                    db,
-                    solution=solution,
-                    content=content,
-                    replace_secrets=replace_secrets,
-                    replace_data=replace_data,
+    # Build the bundle while the temp dir still exists (it reads Python +
+    # app source fully into memory, so finalize_s3 is safe after teardown).
+    bundle = _build_bundle(solution, preview, workspace)
+
+    # Module-closure gate: every ``modules.X`` import in the bundle must
+    # resolve to a file in the bundle. Run BEFORE the write lock / any DB or
+    # S3 write, so an unmet dependency refuses the install atomically —
+    # nothing lands (mirrors the wrong-password discipline). Otherwise a
+    # missing module is a silent runtime ModuleNotFoundError post-install.
+    from src.services.solutions.dependency_walker import check_install_needs
+
+    needs = check_install_needs(bundle.python_files)
+    if needs:
+        items = ", ".join(
+            f"{n.ref} ({n.detail})" if n.detail else n.ref for n in needs
+        )
+        raise UnmetDependency(f"Solution has unmet dependencies: {items}")
+
+    async with solution_write_lock(solution.id):
+        # Decrypt + collision-check BEFORE deploy so a bad password or
+        # collision refuses the entire import atomically — nothing lands.
+        content = None
+        secrets_path = workspace / ".bifrost" / "secrets.enc"
+        if secrets_path.exists():
+            if not password:
+                raise BadExportPassword(
+                    "this bundle carries secrets — a password is required"
                 )
+            from cryptography.fernet import InvalidToken
 
-            deployer = SolutionDeployer(db)
-            result = await deployer.deploy(bundle, force=force)
+            from src.services.solutions.secrets_blob import decode_secrets_blob
+
+            try:
+                content = decode_secrets_blob(
+                    secrets_path.read_text(), password=password
+                )
+            except InvalidToken as exc:
+                raise BadExportPassword(
+                    "wrong password for this bundle"
+                ) from exc
+
+            await _assert_no_unforced_collisions(
+                db,
+                solution=solution,
+                content=content,
+                replace_secrets=replace_secrets,
+                replace_data=replace_data,
+            )
+
+        deployer = SolutionDeployer(db)
+        result = await deployer.deploy(bundle, force=force)
+        await db.commit()
+        # S3 only after the DB is durable; still inside the lock so finalize
+        # can't race another writer.
+        await result.finalize_s3()
+
+        # STILL INSIDE THE LOCK, after finalize: apply provided config
+        # values atomically with the deploy. A missing required value does
+        # NOT block (warn-not-block) — we only set what was provided.
+        if config_values:
+            await _apply_config_values(
+                db,
+                solution=solution,
+                config_values=config_values,
+                deployer_email=deployer_email,
+            )
             await db.commit()
-            # S3 only after the DB is durable; still inside the lock so finalize
-            # can't race another writer.
-            await result.finalize_s3()
 
-            # STILL INSIDE THE LOCK, after finalize: apply provided config
-            # values atomically with the deploy. A missing required value does
-            # NOT block (warn-not-block) — we only set what was provided.
-            if config_values:
-                await _apply_config_values(
-                    db,
-                    solution=solution,
-                    config_values=config_values,
-                    deployer_email=deployer_email,
-                )
-                await db.commit()
-
-            # Apply the decrypted content from the secrets blob (config values
-            # only — table data apply is Phase 4).
-            if content is not None:
-                await _apply_content(
-                    db,
-                    solution=solution,
-                    content=content,
-                    replace_secrets=replace_secrets,
-                    replace_data=replace_data,
-                    deployer_email=deployer_email,
-                )
-                await db.commit()
-
-            # If this install applied ANY config values (form-supplied or from the
-            # decrypted blob), invalidate the Redis config cache for the install's
-            # org scope. set_config writes the DB row but does NOT touch the cache
-            # (invalidation lives in the config router / delete_solution / deploy's
-            # reattach), so without this merged_for_sdk keeps serving the OLD cached
-            # value (for a SECRET, the old ciphertext) until TTL — workflows would
-            # run against stale config right after a "successful" install. Mirrors
-            # delete_solution's invalidation (routers/solutions.py).
-            applied_config = bool(config_values) or (
-                content is not None and bool(content.config_values)
+        # Apply the decrypted content from the secrets blob (config values
+        # only — table data apply is Phase 4).
+        if content is not None:
+            await _apply_content(
+                db,
+                solution=solution,
+                content=content,
+                workspace=workspace,
+                password=password,
+                replace_secrets=replace_secrets,
+                replace_data=replace_data,
+                deployer_email=deployer_email,
             )
-            if applied_config:
-                from src.core.cache import invalidate_all_config
-
-                await invalidate_all_config(
-                    str(solution.organization_id)
-                    if solution.organization_id is not None
-                    else None
-                )
-
-            # Recompute and persist setup_complete after every install so the
-            # column reflects whether all required configs have values — even
-            # when no config_values were provided (empty install of a solution
-            # with required declarations must be marked incomplete).
-            from src.services.solutions.setup_status import compute_setup_status
-
-            status_now = await compute_setup_status(db, solution)
-            solution.setup_complete = status_now.setup_complete
             await db.commit()
+
+        # If this install applied ANY config values (form-supplied or from the
+        # decrypted blob), invalidate the Redis config cache for the install's
+        # org scope. set_config writes the DB row but does NOT touch the cache
+        # (invalidation lives in the config router / delete_solution / deploy's
+        # reattach), so without this merged_for_sdk keeps serving the OLD cached
+        # value (for a SECRET, the old ciphertext) until TTL — workflows would
+        # run against stale config right after a "successful" install. Mirrors
+        # delete_solution's invalidation (routers/solutions.py).
+        applied_config = bool(config_values) or (
+            content is not None and bool(content.config_values)
+        )
+        if applied_config:
+            from src.core.cache import invalidate_all_config
+
+            await invalidate_all_config(
+                str(solution.organization_id)
+                if solution.organization_id is not None
+                else None
+            )
+
+        # Recompute and persist setup_complete after every install so the
+        # column reflects whether all required configs have values — even
+        # when no config_values were provided (empty install of a solution
+        # with required declarations must be marked incomplete).
+        from src.services.solutions.setup_status import compute_setup_status
+
+        status_now = await compute_setup_status(db, solution)
+        solution.setup_complete = status_now.setup_complete
+        await db.commit()
 
     await db.refresh(solution)
     return solution
+
+
+async def deploy_zip_to_solution(
+    db: AsyncSession,
+    solution: Solution,
+    data: bytes,
+    *,
+    force: bool = False,
+) -> DeployResult:
+    """Deploy an existing install from a workspace zip.
+
+    This is the deploy half of ``install_zip`` without install resolution,
+    config-value application, commits, or S3 finalize. Callers own the write
+    lock, transaction commit, and ``DeployResult.finalize_s3()`` timing.
+    """
+    with tempfile.TemporaryDirectory(prefix="bifrost-zip-deploy-") as tmp:
+        _safe_extract(data, tmp)
+        return await _deploy_workspace_to_solution(
+            db,
+            solution,
+            Path(tmp),
+            force=force,
+        )
+
+
+async def deploy_zip_to_solution_path(
+    db: AsyncSession,
+    solution: Solution,
+    zip_path: Path,
+    *,
+    force: bool = False,
+) -> DeployResult:
+    """Deploy an existing install from a workspace zip on disk."""
+    with tempfile.TemporaryDirectory(prefix="bifrost-zip-deploy-") as tmp:
+        _safe_extract_path(zip_path, tmp)
+        return await _deploy_workspace_to_solution(
+            db,
+            solution,
+            Path(tmp),
+            force=force,
+        )
+
+
+async def _deploy_workspace_to_solution(
+    db: AsyncSession,
+    solution: Solution,
+    workspace: Path,
+    *,
+    force: bool,
+) -> DeployResult:
+    preview = _parse_workspace(workspace)
+    if not preview.slug or not preview.name:
+        raise ValueError(
+            "zip is not a Solution workspace (missing bifrost.solution.yaml slug/name)"
+        )
+    bundle = _build_bundle(solution, preview, workspace)
+
+    from src.services.solutions.dependency_walker import check_install_needs
+
+    needs = check_install_needs(bundle.python_files)
+    if needs:
+        items = ", ".join(
+            f"{n.ref} ({n.detail})" if n.detail else n.ref for n in needs
+        )
+        raise UnmetDependency(f"Solution has unmet dependencies: {items}")
+
+    return await SolutionDeployer(db).deploy(bundle, force=force)
 
 
 async def _assert_no_unforced_collisions(
@@ -580,9 +769,6 @@ async def _assert_no_unforced_collisions(
             # row sharing this key is a DIFFERENT row that never collides — so
             # restrict the check to the NULL partition or we 409 a valid import.
             .where(Config.integration_id.is_(None))
-            # Only consider non-orphaned rows; orphaned rows are reattached,
-            # not counted as collisions.
-            .where(Config.orphaned_at.is_(None))
         )
         existing_keys = set((await db.execute(existing_q)).scalars().all())
         colliding_keys = [k for k in content.config_values if k in existing_keys]
@@ -591,48 +777,19 @@ async def _assert_no_unforced_collisions(
 
     if content.table_data and not replace_data:
         # For each table name in the blob, find the Table row that DEPLOY will end
-        # up owning, then check whether it already has Document rows. Two cases:
-        #
-        #   1. A table already owned by this install (solution_id == solution.id).
-        #   2. An ORPHANED table from a prior install of THIS Solution that deploy's
-        #      reattach (_upsert_tables, deploy.py ~L778) will adopt by name. After
-        #      an uninstall->reinstall, the orphan has solution_id IS NULL, so a
-        #      `solution_id == solution.id` check alone MISSES it — deploy then
-        #      reattaches it (documents flow back) and _apply_table_data with
-        #      replace_data=False inserts the blob rows ON TOP, silently merging.
-        #      So we must see the same orphan deploy is about to reattach.
+        # up owning, then check whether it already has Document rows.
         org_pred_tbl = (
             Table.organization_id == solution.organization_id
             if solution.organization_id is not None
             else Table.organization_id.is_(None)
         )
         for table_name in content.table_data:
-            # (1) A table already owned by this install.
             tbl_q = select(Table.id).where(
                 Table.name == table_name,
                 Table.solution_id == solution.id,
                 org_pred_tbl,
             )
             tbl_id = (await db.execute(tbl_q)).scalar_one_or_none()
-
-            if tbl_id is None:
-                # (2) The orphan deploy WILL adopt. This predicate MUST stay in
-                # sync with the reattach query in SolutionDeployer._upsert_tables
-                # (deploy.py): orphaned_at NOT NULL + origin_solution_slug == slug
-                # + name + org scope, most-recently-orphaned first. If that query
-                # changes, change this one too or the collision check drifts from
-                # what deploy actually reattaches.
-                orphan_q = (
-                    select(Table.id)
-                    .where(
-                        Table.orphaned_at.is_not(None),
-                        Table.origin_solution_slug == solution.slug,
-                        Table.name == table_name,
-                        org_pred_tbl,
-                    )
-                    .order_by(Table.orphaned_at.desc())
-                )
-                tbl_id = (await db.execute(orphan_q)).scalars().first()
 
             if tbl_id is None:
                 # Neither owned nor reattachable (first install) — no collision.
@@ -652,6 +809,8 @@ async def _apply_content(
     *,
     solution: Solution,
     content: SolutionContent,
+    workspace: Path,
+    password: str | None,
     replace_secrets: bool,
     replace_data: bool,
     deployer_email: str,
@@ -692,6 +851,101 @@ async def _apply_content(
             replace_data=replace_data,
             deployer_email=deployer_email,
         )
+
+    if content.solution_files:
+        await _apply_solution_files(
+            db,
+            solution=solution,
+            solution_files=content.solution_files,
+            workspace=workspace,
+            password=password,
+        )
+
+
+async def _apply_solution_files(
+    db: AsyncSession,
+    *,
+    solution: Solution,
+    solution_files: list[Any],
+    workspace: Path,
+    password: str | None,
+) -> None:
+    """Restore solution-owned file sidecars from the decrypted secrets blob.
+
+    New exports carry encrypted payload member refs. Legacy exports may still
+    carry ``content_b64`` in the JSON blob; keep that import path for old zips.
+    Files are written in ``replace`` mode so a reinstall refreshes the bytes.
+    """
+    import base64 as _b64
+    import hashlib
+    from collections.abc import AsyncIterator
+
+    from src.services.solution_files import (
+        write_solution_file,
+        write_solution_file_from_chunks,
+    )
+    from src.services.solutions.file_payloads import iter_encrypted_payload_file
+
+    def _safe_payload_path(raw: str) -> Path:
+        root = os.path.realpath(workspace)
+        target = os.path.realpath(workspace / raw)
+        if not (target == root or target.startswith(root + os.sep)):
+            raise ValueError(f"unsafe solution file payload path: {raw}")
+        path = Path(target)
+        if not path.is_file():
+            raise FileNotFoundError(f"solution file payload not found: {raw}")
+        return path
+
+    async def _validated_chunks(
+        chunks: AsyncIterator[bytes],
+        *,
+        expected_sha256: str | None,
+        expected_size: int | None,
+    ) -> AsyncIterator[bytes]:
+        digest = hashlib.sha256()
+        total = 0
+        async for chunk in chunks:
+            digest.update(chunk)
+            total += len(chunk)
+            yield chunk
+        if expected_sha256 and digest.hexdigest() != expected_sha256:
+            raise ValueError("solution file payload sha256 mismatch")
+        if expected_size is not None and total != expected_size:
+            raise ValueError("solution file payload size mismatch")
+
+    for sf in solution_files:
+        location = sf["location"]
+        path = sf["path"]
+        payload = sf.get("payload")
+        if payload:
+            if not password:
+                raise BadExportPassword(
+                    "this bundle carries file payloads — a password is required"
+                )
+            chunks = iter_encrypted_payload_file(
+                _safe_payload_path(payload),
+                password=password,
+            )
+            await write_solution_file_from_chunks(
+                db,
+                solution.id,
+                location,
+                path,
+                _validated_chunks(
+                    chunks,
+                    expected_sha256=sf.get("sha256"),
+                    expected_size=sf.get("size"),
+                ),
+                mode="replace",
+            )
+            continue
+
+        b64 = sf.get("content_b64")
+        if b64:
+            content_bytes = _b64.b64decode(b64)
+            await write_solution_file(
+                db, solution.id, location, path, content_bytes, mode="replace"
+            )
 
 
 async def _apply_table_data(

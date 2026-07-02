@@ -16,11 +16,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bifrost.field_classes import FieldClass, classify
 from bifrost.manifest_codec import Destination, EntityCodec, ImportFields
@@ -55,12 +55,16 @@ MANIFEST_FILES: dict[str, str] = {
     "integrations": "integrations.yaml",
     "configs": "configs.yaml",
     "claims": "claims.yaml",
+    "policy_rules": "policy-rules.yaml",
     "tables": "tables.yaml",
+    "file_policies": "file-policies.yaml",
     "events": "events.yaml",
     "forms": "forms.yaml",
     "agents": "agents.yaml",
     "apps": "apps.yaml",
     "mcp_servers": "mcp-servers.yaml",
+    "files": "files.yaml",
+    "solution_files": "solution-files.yaml",
 }
 MANIFEST_LEGACY_FILE = "metadata.yaml"
 
@@ -650,7 +654,7 @@ class ManifestIntegrationMapping(EntityCodec, BaseModel):
             organization_id=str(im.organization_id) if im.organization_id else None,
             entity_id=im.entity_id,
             entity_name=im.entity_name,
-            oauth_token_id=str(im.oauth_token_id) if im.oauth_token_id else None,
+            oauth_token_id=None,
         )
 
     def to_orm_values(self, dest: Destination) -> ImportFields:
@@ -778,6 +782,51 @@ class ManifestConfig(EntityCodec, BaseModel):
         )
 
 
+class ManifestPolicyRule(EntityCodec, BaseModel):
+    """A named, reusable policy rule shippable in a manifest bundle.
+
+    Mirrors :class:`src.models.orm.policy_rule.PolicyRule`. Content fields
+    (name, domain, description, body) are portable across environments.
+    Environment-specific fields (organization_id, created_by, timestamps,
+    is_builtin, solution_id) are excluded — they live on the DB row only.
+    """
+
+    id: str = Field(description="PolicyRule UUID", **classify(FieldClass.IDENTITY))
+    name: str = Field(description="Rule name (unique per domain+org)", **classify(FieldClass.CONTENT, match_key=True))
+    domain: str = Field(description="Policy domain: 'file' | 'table'", **classify(FieldClass.CONTENT, match_key=True))
+    description: str | None = Field(default=None, description="Human-readable description", **classify(FieldClass.CONTENT))
+    body: dict = Field(description="Rule body ({actions, when})", **classify(FieldClass.CONTENT))
+    organization_id: str | None = Field(default=None, description="Org UUID (null = global)", **classify(FieldClass.ENVIRONMENT, match_key=True))
+
+    @classmethod
+    def from_row(cls, rule) -> "ManifestPolicyRule":
+        """Build from a PolicyRule ORM row."""
+        return cls(
+            id=str(rule.id),
+            name=rule.name,
+            domain=rule.domain,
+            description=rule.description,
+            body=rule.body,
+            organization_id=str(rule.organization_id) if rule.organization_id else None,
+        )
+
+    def to_orm_values(self, dest: Destination) -> ImportFields:
+        if dest is not Destination.GIT_SYNC:
+            raise NotImplementedError(f"ManifestPolicyRule has no install path; dest={dest}")
+        return ImportFields(
+            direct={
+                "id": self.id,
+                "name": self.name,
+                "domain": self.domain,
+                "description": self.description,
+                "body": self.body,
+                "organization_id": self.organization_id,
+            },
+            indexer_content={},
+            restamp={},
+        )
+
+
 class ManifestSolutionConfigSchema(EntityCodec, BaseModel):
     """A solution-owned config DECLARATION (portable; never a value)."""
     id: str = Field(description="Config schema UUID", **classify(FieldClass.IDENTITY))
@@ -828,6 +877,59 @@ class ManifestSolutionConfigSchema(EntityCodec, BaseModel):
             },
             indexer_content={},
             restamp={},
+        )
+
+
+class ManifestFiles(BaseModel):
+    """Solution runtime file-location declarations."""
+
+    locations: list[str] = Field(default_factory=list, **classify(FieldClass.CONTENT))
+
+    @field_validator("locations")
+    @classmethod
+    def normalize_locations(cls, value: list[str]) -> list[str]:
+        from shared.file_paths import validate_location_name
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            location = str(raw).strip()
+            if not location:
+                continue
+            try:
+                validate_location_name(location)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+            if location == "workspace":
+                raise ValueError("reserved file location cannot be declared: workspace")
+            if location in seen:
+                raise ValueError(f"duplicate file location: {location}")
+            seen.add(location)
+            normalized.append(location)
+        return normalized
+
+
+class ManifestSolutionFile(EntityCodec, BaseModel):
+    """Index entry for one solution-owned file in the encrypted export bundle.
+
+    Mirrors ManifestConfig's classify approach: location/path/sha256/size are
+    CONTENT fields (portable, environment-independent). No env fields — file
+    ownership is established at install time via the solution_id.
+
+    The content_bytes are NOT stored in the manifest entry itself; they are
+    embedded in the encrypted secrets.enc blob alongside this index. The index
+    entry lets the installer enumerate what files are present without decrypting.
+    """
+
+    location: str = Field(description="File location bucket (e.g. 'shared')", **classify(FieldClass.CONTENT, match_key=True))
+    path: str = Field(description="File path relative to location (e.g. 'docs/foo.txt')", **classify(FieldClass.CONTENT, match_key=True))
+    sha256: str = Field(description="SHA-256 hex digest of file content", **classify(FieldClass.CONTENT))
+    size: int = Field(description="File size in bytes", **classify(FieldClass.CONTENT))
+
+    def to_orm_values(self, dest: Destination) -> ImportFields:
+        raise NotImplementedError(
+            "ManifestSolutionFile has no standalone orm path; "
+            "install restores via write_solution_file from the encrypted blob."
         )
 
 
@@ -910,6 +1012,20 @@ class ManifestPolicy(BaseModel):
     )
 
 
+class ManifestPolicyRef(BaseModel):
+    """A named-rule reference within a table or file policy list.
+
+    Stored as ``{"$ref": "rule_name"}`` in manifest YAML and preserved verbatim
+    in the JSONB column (never expanded/inlined at write time). Resolution happens
+    at read time (websocket policy load) and at write-time validation (deploy,
+    manifest import) to fail closed on unresolvable refs.
+
+    Mirrors :class:`src.models.contracts.policies.PolicyRuleRef`.
+    """
+    ref: str = Field(alias="$ref", min_length=1, max_length=100, **classify(FieldClass.CONTENT))
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+
 class ManifestTable(EntityCodec, BaseModel):
     """Table entry in manifest.
 
@@ -926,9 +1042,9 @@ class ManifestTable(EntityCodec, BaseModel):
     description: str | None = Field(default=None, description="Table description", **classify(FieldClass.CONTENT))
     organization_id: str | None = Field(default=None, description="Org UUID (null = global)", **classify(FieldClass.ENVIRONMENT, match_key=True))
     table_schema: dict | None = Field(default=None, alias="schema", description="Column definitions and validation hints", **classify(FieldClass.CONTENT))
-    policies: list[ManifestPolicy] | None = Field(
+    policies: list[ManifestPolicy | ManifestPolicyRef] | None = Field(
         default=None,
-        description="Access policies (flat list). When null on import, the seed admin_bypass policy is written.",
+        description="Access policies (flat list). Entries may be inline policies or named-rule refs ({\"$ref\": name}). When null on import, the seed admin_bypass policy is written.",
         **classify(FieldClass.CONTENT),
     )
 
@@ -944,11 +1060,23 @@ class ManifestTable(EntityCodec, BaseModel):
         """
         access = table.access if isinstance(table.access, dict) else None
         raw_policies = access.get("policies") if access else None
-        policies = (
-            [ManifestPolicy.model_validate(p) for p in raw_policies]
-            if raw_policies
-            else None
-        )
+        if raw_policies:
+            entries: list[ManifestPolicy | ManifestPolicyRef] = []
+            for p in raw_policies:
+                # Accept both the canonical "$ref" alias and the legacy
+                # un-aliased "ref" key: older rows were persisted as {"ref": ...}
+                # before tables repo serialization used by_alias=True. Recover
+                # them as a ref rather than exploding ManifestPolicy validation.
+                if isinstance(p, dict) and ("$ref" in p or "ref" in p):
+                    ref_val = p.get("$ref") or p.get("ref")
+                    if not ref_val:
+                        raise ValueError(f"malformed policy ref entry (null or empty $ref): {p!r}")
+                    entries.append(ManifestPolicyRef(**{"$ref": ref_val}))
+                else:
+                    entries.append(ManifestPolicy.model_validate(p))
+            policies: list[ManifestPolicy | ManifestPolicyRef] | None = entries
+        else:
+            policies = None
         return cls(
             id=str(table.id),
             name=table.name,
@@ -988,6 +1116,70 @@ class ManifestTable(EntityCodec, BaseModel):
                 "name": self.name,
                 "description": self.description,
                 "schema": self.table_schema,
+            },
+            indexer_content={},
+            restamp={},
+        )
+
+
+class ManifestFilePolicy(EntityCodec, BaseModel):
+    """File policy entry in manifest.
+
+    File policy rows are keyed by UUID and scoped by ``(organization_id,
+    location, path)``. ``organization_id=None`` represents the global policy
+    row; an org UUID represents an org-scoped override.
+    """
+
+    id: str = Field(description="File policy UUID", **classify(FieldClass.IDENTITY))
+    organization_id: str | None = Field(
+        description="Org UUID (null = global)",
+        **classify(FieldClass.ENVIRONMENT, match_key=True),
+    )
+    location: str = Field(
+        description="File storage location, e.g. workspace or shared",
+        **classify(FieldClass.CONTENT, match_key=True),
+    )
+    path: str = Field(
+        description="Path prefix relative to the location root",
+        **classify(FieldClass.CONTENT, match_key=True),
+    )
+    policies: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="File access policy documents for this location/path",
+        **classify(FieldClass.CONTENT),
+    )
+    solution_id: str | None = Field(
+        default=None,
+        description="Solution install UUID (null = workspace-scoped row)",
+        **classify(FieldClass.ENVIRONMENT),
+    )
+
+    @classmethod
+    def from_row(cls, file_policy) -> "ManifestFilePolicy":
+        raw_policies = file_policy.policies if isinstance(file_policy.policies, dict) else {}
+        raw_solution_id = getattr(file_policy, "solution_id", None)
+        return cls(
+            id=str(file_policy.id),
+            organization_id=(
+                str(file_policy.organization_id)
+                if file_policy.organization_id
+                else None
+            ),
+            location=file_policy.location,
+            path=file_policy.path,
+            policies=raw_policies.get("policies", []),
+            solution_id=str(raw_solution_id) if raw_solution_id else None,
+        )
+
+    def to_orm_values(self, dest: Destination) -> ImportFields:
+        return ImportFields(
+            direct={
+                "id": self.id,
+                "organization_id": self.organization_id,
+                "location": self.location,
+                "path": self.path,
+                "policies": self.policies,
+                "solution_id": self.solution_id,
             },
             indexer_content={},
             restamp={},
@@ -1269,12 +1461,19 @@ class Manifest(BaseModel):
     integrations: dict[str, ManifestIntegration] = Field(default_factory=dict)
     configs: dict[str, ManifestConfig] = Field(default_factory=dict)
     claims: dict[str, ManifestCustomClaim] = Field(default_factory=dict)
+    policy_rules: dict[str, ManifestPolicyRule] = Field(default_factory=dict)
     tables: dict[str, ManifestTable] = Field(default_factory=dict)
+    file_policies: dict[str, ManifestFilePolicy] = Field(default_factory=dict)
     events: dict[str, ManifestEventSource] = Field(default_factory=dict)
     forms: dict[str, ManifestForm] = Field(default_factory=dict)
     agents: dict[str, ManifestAgent] = Field(default_factory=dict)
     apps: dict[str, ManifestApp] = Field(default_factory=dict)
     mcp_servers: dict[str, ManifestMCPServer] = Field(default_factory=dict)
+    files: ManifestFiles = Field(default_factory=ManifestFiles)
+    solution_files: list[ManifestSolutionFile] = Field(
+        default_factory=list,
+        description="Index of solution-owned files (bytes travel in encrypted secrets.enc).",
+    )
 
 
 # =============================================================================
@@ -1319,12 +1518,19 @@ def filter_manifest_by_ids(manifest: Manifest, entity_ids: set[str]) -> Manifest
         integrations={k: v for k, v in manifest.integrations.items() if k in entity_ids},
         configs={k: v for k, v in manifest.configs.items() if k in entity_ids},
         claims={k: v for k, v in manifest.claims.items() if k in entity_ids},
+        policy_rules={k: v for k, v in manifest.policy_rules.items() if k in entity_ids},
         tables={k: v for k, v in manifest.tables.items() if k in entity_ids},
+        file_policies={
+            k: v for k, v in manifest.file_policies.items() if k in entity_ids
+        },
         events={k: v for k, v in manifest.events.items() if k in entity_ids},
         forms={k: v for k, v in manifest.forms.items() if k in entity_ids},
         agents={k: v for k, v in manifest.agents.items() if k in entity_ids},
         apps={k: v for k, v in manifest.apps.items() if k in entity_ids},
         mcp_servers={k: v for k, v in manifest.mcp_servers.items() if k in entity_ids},
+        files=manifest.files,
+        # solution_files has no UUID key for filtering; carry all entries through.
+        solution_files=list(manifest.solution_files),
     )
 
 
@@ -1348,8 +1554,12 @@ def serialize_manifest_dir(manifest: Manifest) -> dict[str, str]:
         # Sort top-level entity dicts by key (UUID) for deterministic YAML output
         if isinstance(section, dict):
             section = dict(sorted(section.items()))
+        if key == "files":
+            payload = section
+        else:
+            payload = {key: section}
         files[filename] = yaml.dump(
-            {key: section},
+            payload,
             default_flow_style=False,
             sort_keys=True,
             allow_unicode=True,
@@ -1370,7 +1580,10 @@ def parse_manifest_dir(files: dict[str, str]) -> Manifest:
             continue
         data = yaml.safe_load(content)
         if data and isinstance(data, dict):
-            merged[key] = data.get(key)
+            if key == "files":
+                merged[key] = data
+            else:
+                merged[key] = data.get(key)
     return Manifest(**merged)  # type: ignore[arg-type]
 
 
@@ -1520,6 +1733,15 @@ def validate_manifest(manifest: Manifest) -> list[str]:
         if table.organization_id and table.organization_id not in org_ids:
             errors.append(f"Table '{table_label}' references unknown organization: {table.organization_id}")
 
+    # File policies: organization_id only
+    for _key, file_policy in manifest.file_policies.items():
+        policy_label = f"{file_policy.location}/{file_policy.path}".rstrip("/")
+        if file_policy.organization_id and file_policy.organization_id not in org_ids:
+            errors.append(
+                f"File policy '{policy_label}' references unknown organization: "
+                f"{file_policy.organization_id}"
+            )
+
     # MCP Servers: organization_id refs and per-connection org refs
     for _key, server in manifest.mcp_servers.items():
         server_label = server.name or server.id
@@ -1578,8 +1800,12 @@ def get_all_entity_ids(manifest: Manifest) -> set[str]:
         ids.add(cfg.id)
     for claim in manifest.claims.values():
         ids.add(claim.id)
+    for rule in manifest.policy_rules.values():
+        ids.add(rule.id)
     for table in manifest.tables.values():
         ids.add(table.id)
+    for file_policy in manifest.file_policies.values():
+        ids.add(file_policy.id)
     for evt in manifest.events.values():
         ids.add(evt.id)
         for sub in evt.subscriptions:

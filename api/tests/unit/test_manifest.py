@@ -153,6 +153,185 @@ def test_validate_manifest_missing_org(sample_manifest):
     assert any("organization" in e.lower() for e in errors)
 
 
+class TestFilePoliciesManifest:
+    """Tests for file policy manifest serialization."""
+
+    def test_file_policies_round_trip_global_and_org_scoped_rows(self):
+        """File policy rows survive parse/serialize in global and org scopes."""
+        from bifrost.manifest import (
+            Manifest,
+            ManifestFilePolicy,
+            parse_manifest_dir,
+            serialize_manifest_dir,
+        )
+
+        global_id = str(uuid4())
+        org_id = str(uuid4())
+        scoped_id = str(uuid4())
+
+        manifest = Manifest(
+            file_policies={
+                global_id: ManifestFilePolicy(
+                    id=global_id,
+                    organization_id=None,
+                    location="shared",
+                    path="finance",
+                    policies=[
+                        {
+                            "name": "platform_admins",
+                            "actions": ["read", "write", "delete"],
+                            "when": {"user": "is_platform_admin"},
+                        }
+                    ],
+                ),
+                scoped_id: ManifestFilePolicy(
+                    id=scoped_id,
+                    organization_id=org_id,
+                    location="shared",
+                    path="finance",
+                    policies=[
+                        {
+                            "name": "own_org",
+                            "actions": ["read"],
+                            "when": {
+                                "eq": [
+                                    {"user": "organization_id"},
+                                    org_id,
+                                ]
+                            },
+                        }
+                    ],
+                ),
+            }
+        )
+
+        files = serialize_manifest_dir(manifest)
+
+        assert "file-policies.yaml" in files
+        payload = yaml.safe_load(files["file-policies.yaml"])
+        assert payload["file_policies"][global_id]["organization_id"] is None
+        assert payload["file_policies"][scoped_id]["organization_id"] == org_id
+        assert payload["file_policies"][scoped_id]["location"] == "shared"
+        assert payload["file_policies"][scoped_id]["path"] == "finance"
+
+        restored = parse_manifest_dir(files)
+        assert set(restored.file_policies) == {global_id, scoped_id}
+        assert restored.file_policies[global_id].organization_id is None
+        assert restored.file_policies[scoped_id].policies[0]["name"] == "own_org"
+
+    def test_file_policy_bad_org_ref_is_caught(self):
+        """Org-scoped file policies must reference declared organizations."""
+        from bifrost.manifest import Manifest, ManifestFilePolicy, validate_manifest
+
+        policy_id = str(uuid4())
+        manifest = Manifest(
+            file_policies={
+                policy_id: ManifestFilePolicy(
+                    id=policy_id,
+                    organization_id=str(uuid4()),
+                    location="shared",
+                    path="finance",
+                    policies=[],
+                )
+            }
+        )
+
+        errors = validate_manifest(manifest)
+        assert any("file policy" in e.lower() and "organization" in e.lower() for e in errors)
+
+    def test_file_policy_from_row_unwraps_db_policy_document(self):
+        """DB rows store {policies: [...]}; manifests expose the flat list."""
+        from types import SimpleNamespace
+
+        from bifrost.manifest import ManifestFilePolicy
+
+        policy_id = uuid4()
+        org_id = uuid4()
+        row = SimpleNamespace(
+            id=policy_id,
+            organization_id=org_id,
+            location="shared",
+            path="finance",
+            policies={
+                "policies": [
+                    {
+                        "name": "readers",
+                        "actions": ["read"],
+                        "when": {"user": "is_platform_admin"},
+                    }
+                ]
+            },
+        )
+
+        manifest_policy = ManifestFilePolicy.from_row(row)
+
+        assert manifest_policy.id == str(policy_id)
+        assert manifest_policy.organization_id == str(org_id)
+        assert manifest_policy.policies == row.policies["policies"]
+
+
+class TestManifestFilesDeclaration:
+    """Solution runtime file-location declarations live in files.yaml."""
+
+    def test_split_files_yaml_serializes_top_level_locations(self, tmp_path):
+        from bifrost.manifest import (
+            Manifest,
+            ManifestFiles,
+            read_manifest_from_dir,
+            serialize_manifest_dir,
+            write_manifest_to_dir,
+        )
+
+        manifest = Manifest(files=ManifestFiles(locations=["reports", "invoices"]))
+
+        files = serialize_manifest_dir(manifest)
+
+        assert "files.yaml" in files
+        payload = yaml.safe_load(files["files.yaml"])
+        assert payload == {"locations": ["reports", "invoices"]}
+        assert "files" not in payload
+
+        write_manifest_to_dir(manifest, tmp_path / ".bifrost")
+        written = yaml.safe_load((tmp_path / ".bifrost" / "files.yaml").read_text())
+        assert written == {"locations": ["reports", "invoices"]}
+        restored = read_manifest_from_dir(tmp_path / ".bifrost")
+        assert restored.files.locations == ["reports", "invoices"]
+
+    def test_legacy_metadata_yaml_reads_nested_files_key(self):
+        from bifrost.manifest import parse_manifest
+
+        manifest = parse_manifest(
+            """
+files:
+  locations:
+    - reports
+    - invoices
+"""
+        )
+
+        assert manifest.files.locations == ["reports", "invoices"]
+
+    def test_duplicate_and_workspace_locations_are_rejected(self):
+        from pydantic import ValidationError
+
+        from bifrost.manifest import ManifestFiles
+
+        with pytest.raises(ValidationError, match="duplicate file location"):
+            ManifestFiles(locations=["reports", "reports"])
+
+        with pytest.raises(ValidationError, match="workspace"):
+            ManifestFiles(locations=["workspace"])
+
+    @pytest.mark.parametrize("location", ["Reports", "team/reports", "_repo", "my_reports"])
+    def test_invalid_runtime_location_names_are_rejected(self, location):
+        from pydantic import ValidationError
+
+        from bifrost.manifest import ManifestFiles
+
+        with pytest.raises(ValidationError, match="Invalid location"):
+            ManifestFiles(locations=[location])
+
+
 def test_validate_manifest_missing_role(sample_manifest):
     """Detect reference to non-existent role."""
     from bifrost.manifest import parse_manifest, validate_manifest

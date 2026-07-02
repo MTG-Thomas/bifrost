@@ -31,7 +31,7 @@ import enum
 import json
 from pathlib import Path
 from types import UnionType
-from typing import Any, Callable, Union, get_args, get_origin
+from typing import Any, Callable, Literal, Union, get_args, get_origin
 from uuid import UUID
 
 import click
@@ -94,6 +94,13 @@ DTO_EXCLUDES: dict[str, set[str]] = {
     # surface with validation), not through the generic create/update flow.
     "ApplicationCreate": {"icon"},
     "ApplicationUpdate": {"icon"},
+    # Policy rules: ``organization_id`` is handled by the unified --org/--global
+    # standard (org_option / resolve_org_target) in the ``create`` command, and by
+    # a plain ``--scope`` query-param option for the other verbs (get/update/delete).
+    # domain is required on create but passed as a positional argument on the
+    # update/delete/usages verbs — handled manually, not via the DTO flag generator.
+    "PolicyRuleCreate": set(_ORG_TARGET_EXCLUDE),
+    "PolicyRuleUpdate": set(),
     # Event sources: the nested ``webhook`` / ``schedule`` objects are
     # surfaced by ``bifrost events create-source`` / ``update-source`` as
     # flat flags (``--cron`` / ``--timezone`` / ``--schedule-enabled``
@@ -144,6 +151,8 @@ DTO_REF_LOOKUPS: dict[str, dict[str, str]] = {
     "EventSourceCreate": {},
     "EventSourceUpdate": {},
     "EventSubscriptionCreate": {"workflow_id": "workflow", "agent_id": "agent"},
+    "PolicyRuleCreate": {},
+    "PolicyRuleUpdate": {},
 }
 
 
@@ -176,6 +185,15 @@ def _is_enum_type(tp: Any) -> bool:
 def _enum_choices(tp: Any) -> list[str]:
     inner = _unwrap_optional(tp)
     return [str(member.value) for member in inner]  # type: ignore[union-attr]
+
+
+def _is_literal(tp: Any) -> bool:
+    """Return True when the (unwrapped) type is a ``Literal[...]``."""
+    return get_origin(_unwrap_optional(tp)) is Literal
+
+
+def _literal_choices(tp: Any) -> list[str]:
+    return [str(a) for a in get_args(_unwrap_optional(tp))]
 
 
 def _is_list_str(tp: Any) -> bool:
@@ -364,6 +382,19 @@ def build_cli_flags(
                     help=(
                         f"{name} as JSON literal or @path to a YAML/JSON file."
                     ),
+                )
+            )
+            continue
+
+        if _is_literal(annotation):
+            decorators.append(
+                click.option(
+                    f"--{_kebab(name)}",
+                    name,
+                    type=click.Choice(_literal_choices(annotation)),
+                    **scalar_default,
+                    required=required,
+                    help=name,
                 )
             )
             continue

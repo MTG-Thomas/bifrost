@@ -134,6 +134,28 @@ def test_export_full_with_password(tmp_path: pathlib.Path) -> None:
     assert body.get("password") == "s3cr3t"
 
 
+def test_export_full_include_data_flag(tmp_path: pathlib.Path) -> None:
+    """--include-data forwards include_data=true in the export query."""
+    captured: dict = {}
+    out_file = tmp_path / "out.zip"
+
+    with mock.patch("bifrost.client.BifrostClient.get_instance",
+                    return_value=_client(captured)):
+        res = CliRunner().invoke(
+            solution_group,
+            ["export", SOL_ID, "--mode", "full", "--password", "s3cr3t",
+             "--include-data", "--out", str(out_file)],
+        )
+    assert res.exit_code == 0, res.output
+    posts = captured.get("posts", [])
+    export_calls = [(p, kw) for p, kw in posts if "/export" in p]
+    assert export_calls
+    _path, kwargs = export_calls[0]
+    params = kwargs.get("params", {})
+    assert params.get("mode") == "full"
+    assert params.get("include_data") is True
+
+
 def test_install_help_shows_new_flags() -> None:
     """--help on install must list the new flags."""
     res = CliRunner().invoke(solution_group, ["install", "--help"])

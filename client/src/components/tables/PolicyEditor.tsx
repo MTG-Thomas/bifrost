@@ -24,19 +24,27 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import {
+	Dialog,
+	DialogContent,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 import { JsonYamlEditor } from "@/components/shared/JsonYamlEditor";
 import { PolicyReferencePanel } from "./PolicyReferencePanel";
+import { PolicyRulesManager } from "@/components/policy-rules/PolicyRulesManager";
 import {
 	POLICY_TEMPLATES,
 	instantiateTemplate,
-	type Policy,
 	type PolicyTemplateKey,
 } from "./policy-templates";
 import {
 	validatePolicies,
 	type PolicyValidationError,
 } from "@/services/tables";
+import { listPolicyRules, type PolicyRule } from "@/services/policyRules";
 import type { components } from "@/lib/v1";
 
 type TablePolicies = components["schemas"]["TablePolicies"];
@@ -71,9 +79,20 @@ function asTablePolicies(parsed: unknown): TablePolicies {
 
 export function PolicyEditor({ value, onChange }: PolicyEditorProps) {
 	const [templateKey, setTemplateKey] = useState<string>("");
+	const [refKey, setRefKey] = useState<string>("");
+	const [rules, setRules] = useState<PolicyRule[]>([]);
 	const [activeParseError, setActiveParseError] = useState<string | null>(
 		null,
 	);
+	const [showRulesManager, setShowRulesManager] = useState(false);
+
+	useEffect(() => {
+		listPolicyRules("table")
+			.then(setRules)
+			.catch(() => {
+				// Best-effort — if the fetch fails the dropdown is just empty.
+			});
+	}, []);
 
 	// `null` = haven't validated yet OR a parse error wiped any prior result.
 	// `[]` = the server validated and found nothing wrong.
@@ -154,10 +173,18 @@ export function PolicyEditor({ value, onChange }: PolicyEditorProps) {
 	function handleTemplate(key: string) {
 		if (!key) return;
 		const tpl = instantiateTemplate(key as PolicyTemplateKey);
-		const current: Policy[] = value?.policies ?? [];
+		const current = value?.policies ?? [];
 		emit({ policies: [...current, tpl] });
 		// Reset the trigger so the same template can be re-inserted next time.
 		setTemplateKey("");
+	}
+
+	function handleRef(name: string) {
+		if (!name) return;
+		const current = value?.policies ?? [];
+		const ref: components["schemas"]["PolicyRuleRef"] = { $ref: name };
+		emit({ policies: [...current, ref] });
+		setRefKey("");
 	}
 
 	function handleParseErrorChange(error: string | null) {
@@ -184,6 +211,7 @@ export function PolicyEditor({ value, onChange }: PolicyEditorProps) {
 		: undefined;
 
 	return (
+		<>
 		<div className="space-y-3">
 			<div className="flex justify-between items-center">
 				<h3 className="text-sm font-medium">Policies</h3>
@@ -209,6 +237,39 @@ export function PolicyEditor({ value, onChange }: PolicyEditorProps) {
 							))}
 						</SelectContent>
 					</Select>
+					{rules.length > 0 && (
+						<Select
+							value={refKey}
+							onValueChange={handleRef}
+							disabled={mutationsDisabled}
+						>
+							<SelectTrigger
+								className="w-[200px]"
+								aria-label="Insert reference"
+								disabled={mutationsDisabled}
+								title={mutationsDisabledTitle}
+							>
+								<SelectValue placeholder="Insert reference..." />
+							</SelectTrigger>
+							<SelectContent>
+								{rules.map((r) => (
+									<SelectItem key={r.name} value={r.name}>
+										{r.name}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					)}
+					<Button
+						type="button"
+						size="sm"
+						variant="ghost"
+						className="text-xs"
+						onClick={() => setShowRulesManager(true)}
+						data-testid="manage-rules-btn"
+					>
+						Manage rules…
+					</Button>
 					<PolicyReferencePanel />
 				</div>
 			</div>
@@ -258,5 +319,15 @@ export function PolicyEditor({ value, onChange }: PolicyEditorProps) {
 				)}
 
 		</div>
+
+		<Dialog open={showRulesManager} onOpenChange={setShowRulesManager}>
+			<DialogContent className="max-h-[90vh] overflow-auto sm:max-w-2xl">
+				<DialogHeader>
+					<DialogTitle>Table policy rules</DialogTitle>
+				</DialogHeader>
+				<PolicyRulesManager domain="table" />
+			</DialogContent>
+		</Dialog>
+		</>
 	);
 }

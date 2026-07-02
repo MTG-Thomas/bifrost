@@ -1,5 +1,5 @@
 ---
-name: bifrost:setup
+name: setup
 description: Set up Bifrost SDK - install CLI, authenticate, configure MCP server. Use when user needs to get started with Bifrost or has incomplete setup.
 ---
 
@@ -121,6 +121,12 @@ case "$BIFROST_PIP_CMD" in
     ;;
   *) echo "Unsupported installer command: $BIFROST_PIP_CMD" >&2; exit 1 ;;
 esac
+```
+
+On native Windows, prefer:
+
+```powershell
+py -3.11 -m pipx install --force {url}/api/cli/download
 ```
 
 On native Windows, prefer:

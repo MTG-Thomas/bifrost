@@ -8,6 +8,7 @@ Python full-replace writer from deleting it.
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import UUID
 
 from src.config import Settings, get_settings
@@ -57,6 +58,14 @@ class SolutionSourceArtifactStorage:
                 if "NoSuchKey" in str(type(exc).__name__) or "404" in str(exc):
                     return None
                 raise
+
+    async def copy_to_path(self, path: str | Path) -> bool:
+        """Copy the stored source artifact to ``path`` when it exists."""
+        data = await self.read()
+        if data is None:
+            return False
+        Path(path).write_bytes(data)
+        return True
 
     async def delete(self) -> None:
         async with self._get_client() as client:

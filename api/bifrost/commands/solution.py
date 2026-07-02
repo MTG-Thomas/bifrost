@@ -848,6 +848,20 @@ def _collect_config_schemas(workspace: pathlib.Path) -> list[dict]:
     return entries
 
 
+def _collect_file_locations(workspace: pathlib.Path) -> list[str]:
+    """Read solution runtime file-location declarations from .bifrost/files.yaml."""
+    files_file = _bifrost_manifest(workspace, "files.yaml")
+    if files_file is None or not files_file.is_file():
+        return []
+    from bifrost.manifest import ManifestFiles
+
+    data = yaml.safe_load(files_file.read_text()) or {}
+    raw = data.get("locations") or []
+    if not isinstance(raw, list):
+        raise ValueError(".bifrost/files.yaml locations must be a list")
+    return ManifestFiles(locations=raw).locations
+
+
 def _collect_connection_schemas(workspace: pathlib.Path) -> list[dict]:
     """Read connection DECLARATIONS from .bifrost/connections.yaml (keyed by name).
 
@@ -1674,7 +1688,18 @@ def install_cmd(
     default=None,
     help="Output zip path (default: <slug>-<version>.zip in the current directory).",
 )
-def export_cmd(solution_ref: str, mode: str, password: str | None, out_path: str | None) -> None:
+@click.option(
+    "--include-data",
+    is_flag=True,
+    help="Include runtime data in a full backup export.",
+)
+def export_cmd(
+    solution_ref: str,
+    mode: str,
+    password: str | None,
+    out_path: str | None,
+    include_data: bool,
+) -> None:
     """GET /api/solutions/{id}/export and write the zip to disk.
 
     SOLUTION_REF may be a solution id (UUID) or a slug.  Slugs are resolved
@@ -1716,7 +1741,9 @@ def export_cmd(solution_ref: str, mode: str, password: str | None, out_path: str
 
         # Password rides in the POST body, never the URL query (query-string
         # secrets leak into access logs / proxies / history). mode is not secret.
-        params: dict[str, str] = {"mode": mode}
+        params: dict[str, str | bool] = {"mode": mode}
+        if include_data:
+            params["include_data"] = True
         body: dict[str, str] = {}
         if password is not None:
             body["password"] = password

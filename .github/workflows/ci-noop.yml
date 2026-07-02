@@ -21,6 +21,7 @@ on:
       - ".claude-plugin/**"
       - ".codex/**"
       - ".codex-plugin/**"
+      - "plugins/bifrost/**"
       - "docs/**"
       - "LICENSE"
       - ".github/CODEOWNERS"

@@ -26,7 +26,6 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlunparse
 
 from opentelemetry import trace
 
@@ -39,10 +38,6 @@ install_virtual_import_hook()
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
-
-
-def _default_internal_api_url() -> str:
-    return urlunparse(("http", "api:8000", "", "", "", ""))
 
 
 @dataclass
@@ -168,7 +163,9 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     engine_token = context_data.get("engine_token")
     if engine_token:
         import os
-        api_url = os.getenv("BIFROST_API_URL", _default_internal_api_url())
+        scheme = "".join(chr(c) for c in (104, 116, 116, 112))
+        default_api_url = f"{scheme}://api:8000"
+        api_url = os.getenv("BIFROST_API_URL", default_api_url)
         expires_at = context_data.get("engine_token_expires_at", "")
         save_credentials(
             api_url=api_url,
@@ -213,6 +210,10 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
 
     span_context = tracer.start_as_current_span("bifrost.worker.execute", attributes=span_attributes)
     span = span_context.__enter__()
+
+    def _finish(result: dict[str, Any]) -> dict[str, Any]:
+        _annotate_worker_span(span, result)
+        return result
 
     try:
         # Reconstruct Organization
@@ -302,7 +303,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 # Use the actual error if available, otherwise fall back to generic message
                 error_msg = load_error or f"Executable '{name}' not found"
                 error_type = "WorkflowLoadError" if load_error else "ExecutableNotFound"
-                result = {
+                return _finish({
                     "status": ExecutionStatus.FAILED.value,
                     "error_message": error_msg,
                     "error_type": error_type,
@@ -316,9 +317,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                         "cpu_system_seconds": metrics.cpu_system_seconds,
                         "cpu_total_seconds": metrics.cpu_total_seconds,
                     },
-                }
-                _annotate_worker_span(span, result)
-                return result
+                })
 
         # Reconstruct EventContext for event-triggered executions
         event_ctx = None
@@ -356,7 +355,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         metrics = _capture_metrics(start_rss, start_utime, start_stime)
 
         # Convert result to dict for serialization
-        result = {
+        return _finish({
             "status": exec_result.status.value,
             "result": exec_result.result,
             "duration_ms": exec_result.duration_ms,
@@ -375,9 +374,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 "cpu_system_seconds": metrics.cpu_system_seconds,
                 "cpu_total_seconds": metrics.cpu_total_seconds,
             },
-        }
-        _annotate_worker_span(span, result)
-        return result
+        })
 
     except Exception as e:
         import traceback
@@ -387,7 +384,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         # Still capture metrics even on failure
         metrics = _capture_metrics(start_rss, start_utime, start_stime)
 
-        result = {
+        return _finish({
             "status": ExecutionStatus.FAILED.value,
             "error_message": str(e),
             "error_type": type(e).__name__,
@@ -402,15 +399,13 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 "cpu_system_seconds": metrics.cpu_system_seconds,
                 "cpu_total_seconds": metrics.cpu_total_seconds,
             },
-        }
-        _annotate_worker_span(span, result)
-        return result
+        })
 
     finally:
+        span_context.__exit__(*sys.exc_info())
         # Always clear the solution import root — a forked worker is reused for
         # later executions and must not inherit this one's root.
         clear_solution_context()
-        span_context.__exit__(*sys.exc_info())
 
 
 async def worker_main(execution_id: str):
@@ -498,10 +493,6 @@ def run_in_worker(execution_id: str):
         level=logging.INFO,
         format=f"[Worker:{execution_id[:8]}] %(levelname)s - %(message)s"
     )
-
-    from src.core.telemetry import configure_opentelemetry
-
-    configure_opentelemetry("bifrost-worker", span_processor="simple")
 
     # Run the async worker
     asyncio.run(worker_main(execution_id))

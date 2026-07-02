@@ -32,6 +32,7 @@ from src.models.orm.base import Base
 
 if TYPE_CHECKING:
     from src.models.orm.solution_connection_schema import SolutionConnectionSchema
+    from src.models.orm.solution_file_location import SolutionFileLocation
 
 
 # Identity entity — a Solution install. Managed entities reference it by
@@ -102,6 +103,17 @@ class Solution(Base):
         Boolean, default=True, server_default=text("true"), nullable=False
     )
 
+    # Lifecycle status. "active" = installed & live; "inactive" = uninstalled,
+    # data frozen in place under solution_id, dormant (browsable/exportable, not
+    # servable). Server default covers rows created before this column was added.
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active", default="active"
+    )
+
+    def __init__(self, **kw):
+        kw.setdefault("status", "active")
+        super().__init__(**kw)
+
     # Source mode (§3.9). Disconnected (default): deploy is the only writer.
     # Connected: auto-pull from git_repo_url is the only writer; deploy refused.
     git_connected: Mapped[bool] = mapped_column(
@@ -143,6 +155,13 @@ class Solution(Base):
         "SolutionConnectionSchema",
         cascade="all, delete-orphan",
         order_by="SolutionConnectionSchema.position",
+        lazy="selectin",
+    )
+
+    file_locations: Mapped[list["SolutionFileLocation"]] = relationship(
+        "SolutionFileLocation",
+        cascade="all, delete-orphan",
+        order_by="SolutionFileLocation.position",
         lazy="selectin",
     )
 

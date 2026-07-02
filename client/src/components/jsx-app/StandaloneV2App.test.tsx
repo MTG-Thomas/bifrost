@@ -101,15 +101,22 @@ describe("StandaloneV2App", () => {
 
 	it("isolates each mount's bootstrap by nonce so a fast A→B nav can't mix them (Codex #9)", async () => {
 		localStorage.setItem("bifrost_access_token", "tok-1");
-		// App A mounts; its entry import is still in flight.
-		const a = render(<StandaloneV2App {...baseProps} appId="app-A" appSlug="aaa" />);
+		const importableProps = {
+			...baseProps,
+			baseUrl: "data:text/javascript,export default 1;//",
+			entry: "entry.js",
+		};
+		// Use an importable no-op module so the test asserts bootstrap isolation
+		// without racing the happy-dom import-error cleanup path.
+		const a = render(<StandaloneV2App {...importableProps} appId="app-A" appSlug="aaa" />);
 		const rootA = a.getByTestId("solution-v2-app-root");
 		await waitFor(() => expect(rootA.dataset.bifrostEntry).toBeTruthy());
 		const nonceA = new URL(rootA.dataset.bifrostEntry!, "http://x").searchParams.get("m")!;
 
-		// Before A's import resolves, the user navigates to app B (a fresh mount).
+		// The user navigates to app B (a fresh mount) before any stale A entry can
+		// observe the legacy last-mount-wins bootstrap.
 		a.unmount();
-		const b = render(<StandaloneV2App {...baseProps} appId="app-B" appSlug="bbb" />);
+		const b = render(<StandaloneV2App {...importableProps} appId="app-B" appSlug="bbb" />);
 		const rootB = b.getByTestId("solution-v2-app-root");
 		await waitFor(() => expect(rootB.dataset.bifrostEntry).toBeTruthy());
 		const nonceB = new URL(rootB.dataset.bifrostEntry!, "http://x").searchParams.get("m")!;
