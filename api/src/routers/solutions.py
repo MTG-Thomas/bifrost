@@ -21,7 +21,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Body, File, HTTPException, Response, UploadFile, status
 from fastapi import Form as FastapiForm
@@ -87,6 +87,7 @@ from src.services.solutions.export_jobs import (
     create_export_job,
     list_export_jobs,
     public_job,
+    validate_export_options_password,
 )
 
 if TYPE_CHECKING:
@@ -511,13 +512,14 @@ async def create_solution_export_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
 
     try:
-        created = await create_export_job(ctx.db, sol, user.user_id, body.options)
+        validate_export_options_password(body.options)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
 
+    job_id = uuid4()
     try:
         notification = await get_notification_service().create_notification(
             str(user.user_id),
@@ -528,7 +530,7 @@ async def create_solution_export_job(
                 percent=0,
                 metadata={
                     "solution_id": str(solution_id),
-                    "job_id": str(created.id),
+                    "job_id": str(job_id),
                     "action": "download_solution_export",
                     "action_label": "Download",
                 },
@@ -542,17 +544,23 @@ async def create_solution_export_job(
             detail="Failed to create export notification",
         ) from exc
 
-    row = await ctx.db.get(SolutionExportJob, created.id)
-    if row is None:
-        await ctx.db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Export job was not persisted",
+    try:
+        created = await create_export_job(
+            ctx.db,
+            sol,
+            user.user_id,
+            body.options,
+            job_id=job_id,
+            notification_id=UUID(notification.id),
         )
-    row.notification_id = UUID(notification.id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
     await ctx.db.commit()
-    await ctx.db.refresh(row)
-    return public_job(row)
+    return created
 
 
 @router.get(

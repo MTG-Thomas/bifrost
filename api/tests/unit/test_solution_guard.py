@@ -36,6 +36,12 @@ def test_solution_managed_entity_rejected() -> None:
     assert exc.value.detail == SOLUTION_MANAGED_MESSAGE
 
 
+def test_solution_scoped_export_job_is_operational_not_managed() -> None:
+    from src.models.orm.solution_export_jobs import SolutionExportJob
+
+    assert_not_solution_managed(SolutionExportJob(solution_id=uuid.uuid4()))
+
+
 def test_message_is_the_locked_wording() -> None:
     # Success-criteria §3.2 — exact, stable wording the UI + tests rely on.
     assert SOLUTION_MANAGED_MESSAGE == (
@@ -168,3 +174,26 @@ class TestBeforeFlushBackstop:
         await db.flush()  # must not raise
         row = await db.get(Workflow, solution_entity_id(sol.id, uuid.UUID(wf_id)))
         assert row is not None and row.solution_id == sol.id
+
+    async def test_solution_export_job_update_is_allowed(self, db_session) -> None:
+        """Export jobs are operational queue rows, not portable deploy-owned entities."""
+        from src.models.orm.solution_export_jobs import SolutionExportJob
+        from src.models.orm.solutions import Solution
+
+        db = db_session
+        sol = Solution(
+            id=uuid.uuid4(),
+            slug=f"bfj-{uuid.uuid4().hex[:8]}",
+            name="BFJ",
+            organization_id=None,
+        )
+        db.add(sol)
+        await db.flush()
+
+        job = SolutionExportJob(solution_id=sol.id, status="pending")
+        db.add(job)
+        await db.flush()
+
+        job.status = "running"
+        job.progress_percent = 5
+        await db.flush()  # must not raise

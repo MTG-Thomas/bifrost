@@ -100,21 +100,25 @@ async def create_export_job(
     requested_by_id: UUID | None,
     options: SolutionExportOptions,
     *,
+    job_id: UUID | None = None,
     notification_id: UUID | None = None,
 ) -> SolutionExportJobPublic:
     """Create a pending scheduler-owned Solution export job without building it."""
     validate_export_options_password(options)
-    row = SolutionExportJob(
-        solution_id=solution.id,
-        organization_id=solution.organization_id,
-        requested_by_id=requested_by_id,
-        notification_id=notification_id,
-        status="pending",
-        progress_percent=0,
-        message="queued",
-        encrypted_options=encrypt_export_options(options),
-        artifact_filename=export_artifact_filename(solution),
-    )
+    values = {
+        "solution_id": solution.id,
+        "organization_id": solution.organization_id,
+        "requested_by_id": requested_by_id,
+        "notification_id": notification_id,
+        "status": "pending",
+        "progress_percent": 0,
+        "message": "queued",
+        "encrypted_options": encrypt_export_options(options),
+        "artifact_filename": export_artifact_filename(solution),
+    }
+    if job_id is not None:
+        values["id"] = job_id
+    row = SolutionExportJob(**values)
     db.add(row)
     await db.flush()
     await db.refresh(row)
