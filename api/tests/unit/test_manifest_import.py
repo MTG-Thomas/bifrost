@@ -438,6 +438,7 @@ class TestManifestIntegrationOAuthProviderImport:
             ),
         )
         await db_session.flush()
+        db_session.expire_all()
 
         provider = (
             await db_session.execute(
@@ -461,6 +462,7 @@ class TestManifestIntegrationOAuthProviderImport:
             ),
         )
         await db_session.flush()
+        db_session.expire_all()
 
         provider = (
             await db_session.execute(
