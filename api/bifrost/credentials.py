@@ -8,14 +8,16 @@ across multiple Bifrost instances simultaneously, with three backends:
 - CWD .env (read-only): password-grant ephemeral sessions for this directory
 - KeyringBackend: OS-native credential storage via the `keyring` library
 - JsonBackend: ~/.bifrost/credentials.json as a dict-of-URLs
+- User config: ~/.bifrost/config.json stores the default connection pointer
 
-Resolution order for credentials: env vars → CWD .env → persistent
-(keychain or JSON) → legacy single-record JSON.
+Resolution order: env vars → CWD .env → selected default → only stored
+connection → optional prompt → legacy single-record JSON.
 """
 
 import json
 import os
 import platform
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,6 +98,10 @@ def load_allowed_dotenv(
             continue
         if override or key not in os.environ:
             os.environ[key] = value
+
+
+def get_config_path() -> Path:
+    return get_config_dir() / "config.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -354,10 +360,73 @@ def _reset_persistent_backend_for_tests() -> None:
     _keyring_fallback_reason = None
 
 
+def _load_config() -> dict[str, str]:
+    path = get_config_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _save_config(config: dict[str, str]) -> None:
+    config_dir = get_config_dir()
+    config_dir.mkdir(parents=True, exist_ok=True)
+    if platform.system() != "Windows":
+        config_dir.chmod(0o700)
+    path = get_config_path()
+    with open(path, "w") as f:
+        json.dump(config, f, indent=2, sort_keys=True)
+    if platform.system() != "Windows":
+        path.chmod(0o600)
+
+
+def get_default_connection() -> str | None:
+    """Return the user-selected default Bifrost API URL, if any."""
+    default = _load_config().get("default_api_url", "").rstrip("/")
+    return default or None
+
+
+def set_default_connection(api_url: str) -> None:
+    """Persist the user-selected default Bifrost API URL."""
+    config = _load_config()
+    config["default_api_url"] = api_url.rstrip("/")
+    _save_config(config)
+
+
+def clear_default_connection(api_url: str | None = None) -> None:
+    """Clear the default connection, optionally only if it matches api_url."""
+    config = _load_config()
+    current = config.get("default_api_url", "").rstrip("/")
+    if not current:
+        return
+    if api_url is not None and current != api_url.rstrip("/"):
+        return
+    config.pop("default_api_url", None)
+    _save_config(config)
+
+
+def prompt_for_default_connection(urls: list[str]) -> str | None:
+    """Prompt the user to choose a default connection via the Textual TUI."""
+    if os.environ.get("BIFROST_NONINTERACTIVE") == "1":
+        return None
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    try:
+        from bifrost.tui.connection_select import select_default_connection
+    except Exception:
+        return None
+    return select_default_connection(urls)
+
+
 # --------------------------------------------------------------------------- #
 # Public functions
 # --------------------------------------------------------------------------- #
-
 
 def _read_cwd_dotenv_values() -> dict[str, str | None]:
     try:
@@ -466,34 +535,51 @@ def save_ephemeral_credentials(
         )
 
 
-def _resolve_url(
-    api_url: str | None, *, include_cwd_dotenv: bool = False
-) -> str | None:
+def resolve_current_connection(
+    api_url: str | None = None,
+    *,
+    include_cwd_dotenv: bool = True,
+    prompt_for_default: bool = False,
+) -> tuple[str | None, str | None]:
     """
     Resolve which URL the no-arg credentials calls should target.
 
     Order:
       1. The argument (if given).
       2. BIFROST_API_URL env var.
-      3. BIFROST_API_URL in CWD .env when explicitly requested
-         (password-grant ephemeral sessions).
-      4. The first URL in the persistent backend (back-compat for users
-         who only have one set; ordering is stable per backend but not
-         guaranteed across backends).
+      3. BIFROST_API_URL in CWD .env when enabled.
+      4. The user-selected default connection.
+      5. The only stored URL, when exactly one exists.
+      6. Optional interactive selection when multiple URLs exist.
     """
     if api_url:
-        return api_url.rstrip("/")
+        return api_url.rstrip("/"), "argument"
     env_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
     if env_url:
-        return env_url
+        return env_url, "BIFROST_API_URL"
     if include_cwd_dotenv:
         cwd_url = _resolve_url_from_cwd_dotenv()
         if cwd_url:
-            return cwd_url
+            return cwd_url, "cwd .env"
     urls = get_persistent_backend().list_urls()
-    if urls:
-        return urls[0]
-    return None
+    default_url = get_default_connection()
+    if default_url and default_url in {url.rstrip("/") for url in urls}:
+        return default_url, "default"
+    if len(urls) == 1:
+        return urls[0].rstrip("/"), "only stored connection"
+    if len(urls) > 1 and prompt_for_default:
+        selected = prompt_for_default_connection(urls)
+        if selected and selected.rstrip("/") in {url.rstrip("/") for url in urls}:
+            selected = selected.rstrip("/")
+            set_default_connection(selected)
+            return selected, "selected default"
+    return None, None
+
+
+def _resolve_url(api_url: str | None) -> str | None:
+    """Backward-compatible URL-only wrapper for non-interactive resolution."""
+    resolved, _source = resolve_current_connection(api_url)
+    return resolved
 
 
 def _try_migrate_legacy() -> Credentials | None:
@@ -548,7 +634,11 @@ def _try_migrate_legacy() -> Credentials | None:
     return legacy
 
 
-def get_credentials(api_url: str | None = None) -> dict | None:
+def get_credentials(
+    api_url: str | None = None,
+    *,
+    prompt_for_default: bool = False,
+) -> dict | None:
     """
     Resolve credentials for a given API URL.
 
@@ -566,7 +656,10 @@ def get_credentials(api_url: str | None = None) -> dict | None:
     or None. Returns dict (not Credentials) for back-compat with existing
     callers in client.py / cli.py.
     """
-    resolved = _resolve_url(api_url, include_cwd_dotenv=True)
+    resolved, _source = resolve_current_connection(
+        api_url,
+        prompt_for_default=prompt_for_default,
+    )
 
     if resolved is None:
         # No URL anywhere; try legacy file as last resort to learn one.
@@ -626,6 +719,7 @@ def clear_credentials(api_url: str | None = None) -> None:
     if target is None:
         return
     get_persistent_backend().clear(target)
+    clear_default_connection(target)
 
 
 def list_credentials() -> list[str]:
