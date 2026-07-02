@@ -49,8 +49,15 @@ class ConfigRepository(OrgScopedRepository[ConfigModel]):  # type: ignore[type-v
     async def list_configs(
         self,
         filter_type: OrgFilterType = OrgFilterType.ORG_PLUS_GLOBAL,
+        *,
+        include_orphaned: bool = False,
     ) -> list[ConfigResponse]:
-        """List configs with specified filter type."""
+        """List configs with specified filter type.
+
+        ``include_orphaned`` is retained for API compatibility after Solution
+        uninstall moved from orphaned config rows to the Solution status model.
+        """
+        _ = include_orphaned
         query = select(self.model, Integration.name.label("integration_name")).outerjoin(
             Integration,
             and_(

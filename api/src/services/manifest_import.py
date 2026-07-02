@@ -1508,9 +1508,11 @@ class ManifestResolver:
                 match_on="id",
             ))
 
-        # Role sync op. A plain hand-authored ManifestWorkflow has roles=[] by
-        # model default, so only emit role writes when role intent is explicit.
-        if getattr(mwf, "roles", None):
+        # Role sync op. Explicit roles: [] is authoritative and clears existing
+        # junction rows, while an omitted roles field still means no role intent
+        # for hand-authored manifests.
+        roles_supplied = "roles" in getattr(mwf, "model_fields_set", set())
+        if mwf.roles or roles_supplied:
             role_ids = {UUID(r) for r in mwf.roles}
             ops.append(SyncRoles(
                 junction_model=WorkflowRole,
