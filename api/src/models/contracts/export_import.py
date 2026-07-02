@@ -101,6 +101,7 @@ class OAuthProviderExportItem(BaseModel):
     token_url_defaults: dict = Field(default_factory=dict)
     redirect_uri: str | None = None
     scopes: list[str] = Field(default_factory=list)
+    provider_metadata: dict[str, Any] = Field(default_factory=dict)
     organization_id: str | None = None
     organization_name: str | None = None
 

@@ -211,6 +211,7 @@ def serialize_integration(
                 token_url=oauth_provider.token_url,
                 token_url_defaults=oauth_provider.token_url_defaults or None,
                 scopes=oauth_provider.scopes or [],
+                provider_metadata=oauth_provider.provider_metadata or {},
                 redirect_uri=oauth_provider.redirect_uri,
             )
             if oauth_provider else None

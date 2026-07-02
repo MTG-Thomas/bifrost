@@ -7,15 +7,78 @@ Mocks HTTP requests to OAuth providers.
 import pytest
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
-from src.services.oauth_provider import OAuthProviderClient, append_query_params
+from pydantic import ValidationError
+
+from src.models.contracts.oauth import CreateOAuthConnectionRequest, UpdateOAuthConnectionRequest
+from src.services.oauth_provider import (
+    OAuthProviderClient,
+    append_query_params,
+    compute_token_exchange_scopes,
+)
 
 
 @pytest.fixture
 def oauth_client():
     """Create OAuth provider client with test defaults"""
     return OAuthProviderClient(timeout=10, max_retries=3)
+
+
+class TestTokenExchangeScopePolicy:
+    """Test provider-configured scope replay behavior for token exchange."""
+
+    def test_generic_provider_replays_authorized_scopes(self):
+        """Generic OAuth providers should send configured scopes to token exchange."""
+        provider = SimpleNamespace(
+            provider_metadata={},
+            provider_name="Generic OAuth",
+            scopes=["read", "write"],
+        )
+
+        assert compute_token_exchange_scopes(provider) == "read write"
+
+    def test_provider_metadata_can_omit_token_exchange_scope(self):
+        """Providers that reject scope replay should opt out via metadata."""
+        provider = SimpleNamespace(
+            provider_metadata={"omit_token_exchange_scope": True},
+            provider_name="ScopeSensitiveProvider",
+            scopes=["read", "write"],
+        )
+
+        assert compute_token_exchange_scopes(provider) is None
+
+    def test_provider_name_does_not_control_token_exchange_scope_policy(self):
+        """Provider-specific behavior should be data-driven, not name-driven."""
+        provider = SimpleNamespace(
+            provider_metadata={},
+            provider_name="NinjaOne",
+            scopes=["read", "write"],
+        )
+
+        assert compute_token_exchange_scopes(provider) == "read write"
+
+
+class TestProviderMetadataValidation:
+    """Test request validation for provider behavior metadata."""
+
+    def test_create_request_rejects_non_boolean_omit_scope_flag(self):
+        with pytest.raises(ValidationError, match="omit_token_exchange_scope must be a boolean"):
+            CreateOAuthConnectionRequest(
+                integration_id="integration-id",
+                oauth_flow_type="authorization_code",
+                client_id="client-id",
+                authorization_url="https://auth.example.com/oauth/authorize",
+                token_url="https://auth.example.com/oauth/token",
+                provider_metadata={"omit_token_exchange_scope": "true"},
+            )
+
+    def test_update_request_rejects_non_boolean_omit_scope_flag(self):
+        with pytest.raises(ValidationError, match="omit_token_exchange_scope must be a boolean"):
+            UpdateOAuthConnectionRequest(
+                provider_metadata={"omit_token_exchange_scope": 1},
+            )
 
 
 class TestOAuthProviderTokenExchange:

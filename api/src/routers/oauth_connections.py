@@ -199,6 +199,7 @@ async def create_connection(
         token_url=request.token_url,
         scopes=request.scopes.split(",") if request.scopes else [],
         audience=request.audience,
+        provider_metadata=request.provider_metadata,
         status="not_connected",
         created_by=ctx.user.email,
         integration_id=integration_id,
@@ -234,7 +235,18 @@ async def update_connection(
     org_id = ctx.org_id
     repo = OAuthProviderRepository(ctx.db, org_id=org_id, is_superuser=True)
 
-    provider = await repo.update_connection(connection_name, name=request.name, oauth_flow_type=request.oauth_flow_type, client_id=request.client_id, client_secret=request.client_secret, authorization_url=request.authorization_url, token_url=request.token_url, scopes=request.scopes, audience=request.audience)
+    provider = await repo.update_connection(
+        connection_name,
+        name=request.name,
+        oauth_flow_type=request.oauth_flow_type,
+        client_id=request.client_id,
+        client_secret=request.client_secret,
+        authorization_url=request.authorization_url,
+        token_url=request.token_url,
+        scopes=request.scopes,
+        audience=request.audience,
+        provider_metadata=request.provider_metadata,
+    )
 
     if not provider:
         raise HTTPException(

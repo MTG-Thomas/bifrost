@@ -29,6 +29,7 @@
     "display_name": "RT Golden OAuth",
     "oauth_flow_type": "authorization_code",
     "provider_name": "rt-golden-oauth",
+    "provider_metadata": {},
     "redirect_uri": "https://app.example.com/callback",
     "scopes": [
       "openid",
