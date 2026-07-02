@@ -12108,6 +12108,16 @@ export interface components {
             updated_at?: string | null;
             /** Updated By */
             updated_by?: string | null;
+            /**
+             * Orphaned At
+             * @description When this config was orphaned by a Solution uninstall (null if not orphaned)
+             */
+            orphaned_at?: string | null;
+            /**
+             * Origin Solution Slug
+             * @description Slug of the Solution this config was orphaned from (null if not orphaned)
+             */
+            origin_solution_slug?: string | null;
         };
         /**
          * ConfigSchemaItem
@@ -16841,14 +16851,14 @@ export interface components {
             provider: "openai" | "anthropic";
             /**
              * Model
-             * @description Model identifier
+             * @description Optional model identifier. Connection tests list provider models without probing a guessed default.
              */
-            model: string;
+            model?: string | null;
             /**
              * Api Key
-             * @description API key to test
+             * @description API key to test. Omit to test current form settings with the saved key.
              */
-            api_key: string;
+            api_key?: string | null;
             /**
              * Endpoint
              * @description Custom API endpoint URL
@@ -22205,6 +22215,16 @@ export interface components {
              * @description UUID of the owning Solution install (null if not solution-managed)
              */
             solution_id?: string | null;
+            /**
+             * Orphaned At
+             * @description When this table was orphaned by a Solution uninstall (null if not orphaned)
+             */
+            orphaned_at?: string | null;
+            /**
+             * Origin Solution Slug
+             * @description Slug of the Solution this table was orphaned from (null if not orphaned)
+             */
+            origin_solution_slug?: string | null;
         };
         /**
          * TableUpdate
