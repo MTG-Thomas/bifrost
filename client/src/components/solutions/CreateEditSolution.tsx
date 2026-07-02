@@ -154,11 +154,11 @@ function referencedKnowledgeNamespaces(
 	const out = new Set<string>();
 	for (const agent of agents ?? []) {
 		const ns = (agent as { knowledge_sources?: unknown }).knowledge_sources;
-		if (Array.isArray(ns)) {
+	if (Array.isArray(ns)) {
 			for (const n of ns) if (typeof n === "string" && n) out.add(n);
 		}
 	}
-	return Array.from(out).sort();
+	return Array.from(out).sort((a, b) => a.localeCompare(b));
 }
 
 /**

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import logging
+import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,16 @@ def _unlink_best_effort(path: Path) -> None:
         path.unlink(missing_ok=True)
     except Exception:
         logger.warning("Failed to remove temporary export file %s", path, exc_info=True)
+
+
+def _named_temp_path(*, prefix: str, suffix: str) -> Path:
+    fd, name = tempfile.mkstemp(prefix=prefix, suffix=suffix)
+    os.close(fd)
+    return Path(name)
+
+
+def _open_binary(path: Path):
+    return open(path, "rb")
 
 
 def encrypt_export_options(options: SolutionExportOptions) -> str:
@@ -217,13 +229,11 @@ async def build_solution_backup_zip_to_path(
     """
     validate_export_options_password(options)
 
-    source_tmp = tempfile.NamedTemporaryFile(
+    source_path = await asyncio.to_thread(
+        _named_temp_path,
         prefix=f"bifrost-solution-source-{solution.id}-",
         suffix=".zip",
-        delete=False,
     )
-    source_path = Path(source_tmp.name)
-    source_tmp.close()
     try:
         artifact = SolutionSourceArtifactStorage(solution.id)
         has_stored_source = await artifact.copy_to_path(source_path)
@@ -265,21 +275,22 @@ async def build_solution_backup_zip_tempfile(
     options: SolutionExportOptions,
 ) -> Path:
     """Build a durable backup export zip in a caller-owned temporary file."""
-    tmp = tempfile.NamedTemporaryFile(
+    out_path = await asyncio.to_thread(
+        _named_temp_path,
         prefix=f"bifrost-solution-export-{solution.id}-",
         suffix=".zip",
-        delete=False,
     )
-    out_path = Path(tmp.name)
-    tmp.close()
     await build_solution_backup_zip_to_path(db, solution, options, out_path)
     return out_path
 
 
 async def _path_chunks(path: Path, chunk_size: int = 8 * 1024 * 1024) -> AsyncIterator[bytes]:
-    with path.open("rb") as f:
-        while chunk := f.read(chunk_size):
+    f = await asyncio.to_thread(_open_binary, path)
+    try:
+        while chunk := await asyncio.to_thread(f.read, chunk_size):
             yield chunk
+    finally:
+        await asyncio.to_thread(f.close)
 
 
 async def upload_solution_export_artifact(

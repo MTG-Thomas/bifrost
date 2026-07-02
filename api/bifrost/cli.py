@@ -2874,9 +2874,11 @@ async def _watch_loop(
                     logger.debug(f"watch heartbeat failed: {e}")
                 last_heartbeat = now
 
-    except (KeyboardInterrupt, asyncio.CancelledError):
+    except KeyboardInterrupt:
         # Expected on Ctrl-C / cancel — graceful exit
         pass
+    except asyncio.CancelledError:
+        raise
     finally:
         if ws_task and not ws_task.done():
             ws_task.cancel()

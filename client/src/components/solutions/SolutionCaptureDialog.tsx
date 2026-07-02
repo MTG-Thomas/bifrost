@@ -144,15 +144,19 @@ export function SolutionCaptureDialog({
 
 	// Stable key for the preview query: sorted selected ids per kind + the
 	// imports toggle. The preview is the deselectable guard (capture-design §3.3).
-	const previewRequest = useMemo(
+const previewRequest = useMemo(
 		() => ({
-			workflows: Array.from(selection.workflows).sort(),
-			apps: Array.from(selection.apps).sort(),
-			forms: Array.from(selection.forms).sort(),
-			agents: Array.from(selection.agents).sort(),
-			tables: Array.from(selection.tables).sort(),
-			claims: Array.from(selection.claims).sort(),
-			configs: Array.from(selection.configs).sort(),
+			workflows: Array.from(selection.workflows).sort((a, b) =>
+				a.localeCompare(b),
+			),
+			apps: Array.from(selection.apps).sort((a, b) => a.localeCompare(b)),
+			forms: Array.from(selection.forms).sort((a, b) => a.localeCompare(b)),
+			agents: Array.from(selection.agents).sort((a, b) => a.localeCompare(b)),
+			tables: Array.from(selection.tables).sort((a, b) => a.localeCompare(b)),
+			claims: Array.from(selection.claims).sort((a, b) => a.localeCompare(b)),
+			configs: Array.from(selection.configs).sort((a, b) =>
+				a.localeCompare(b),
+			),
 			include_imports: includeImports,
 		}),
 		[selection, includeImports],

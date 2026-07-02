@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -18,6 +19,10 @@ from src.services.solutions.secrets_blob import (
 
 _ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 _PAYLOAD_FORMAT = "bifrost.solution-file-payload.v1"
+
+
+def _open_binary(path: Path):
+    return open(path, "rb")
 
 
 async def write_encrypted_payload_member(
@@ -93,8 +98,9 @@ async def iter_encrypted_payload_file(
     """Yield decrypted chunks from a payload file created by export."""
     import base64
 
-    with path.open("rb") as f:
-        first = f.readline()
+    f = await asyncio.to_thread(_open_binary, path)
+    try:
+        first = await asyncio.to_thread(f.readline)
         if not first:
             raise ValueError(f"empty solution file payload: {path}")
         header = json.loads(first.decode())
@@ -108,7 +114,9 @@ async def iter_encrypted_payload_file(
             p=int(header["p"]),
         )
         fernet = Fernet(key)
-        while line := f.readline():
+        while line := await asyncio.to_thread(f.readline):
             token = line.strip()
             if token:
                 yield fernet.decrypt(token)
+    finally:
+        await asyncio.to_thread(f.close)

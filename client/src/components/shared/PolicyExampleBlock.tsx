@@ -41,11 +41,7 @@ export function PolicyExampleBlock({
 	function handleCopy() {
 		// Guard the clipboard call so jsdom (no navigator.clipboard) doesn't
 		// throw; the button still flips to "Copied!" for user feedback.
-		try {
-			void navigator.clipboard?.writeText(text);
-		} catch {
-			// no-op; visual state still updates
-		}
+		void navigator.clipboard?.writeText(text).catch(() => undefined);
 		setCopied(true);
 		setTimeout(() => setCopied(false), 1500);
 	}
