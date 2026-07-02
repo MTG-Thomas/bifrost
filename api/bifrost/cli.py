@@ -233,13 +233,9 @@ def _check_cli_version() -> None:
     if installed in ("unknown", "0.0.0+source"):
         return  # dev/source install — nothing to compare against
 
-    # Re-load dotenv so a CWD-local .env's BIFROST_API_URL is honored even
-    # if bifrost.client's import-time load happened against a different cwd.
-    try:
-        from dotenv import find_dotenv, load_dotenv
-        load_dotenv(find_dotenv(usecwd=True), override=False)
-    except ImportError:
-        pass  # python-dotenv is optional; without it, only os.environ is consulted
+    # Re-load only the CLI-safe allowlist so an opted-in CWD .env can set
+    # BIFROST_API_URL without importing tokens, proxy settings, or CA paths.
+    credentials.load_allowed_dotenv(override=True)
 
     # Use credentials._resolve_url (not get_credentials) because the version
     # check only needs the URL — get_credentials returns None unless full
@@ -258,7 +254,7 @@ def _check_cli_version() -> None:
     # bifrost.gocovi.com) 403 the default `Python-urllib/X.Y` UA; httpx's UA
     # gets through and matches every other SDK request.
     try:
-        resp = httpx.get(f"{api_url}/api/version", timeout=3)
+        resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
@@ -3013,6 +3009,20 @@ def _strip_repo_prefix(repo_path: str, repo_prefix: str) -> str:
     return repo_path
 
 
+def _safe_server_rel_path(repo_path: str, repo_prefix: str) -> str:
+    """Return a safe local relative path for a server repo path."""
+    rel = _strip_repo_prefix(repo_path, repo_prefix)
+    if not rel:
+        raise ValueError("empty server file path")
+    posix = pathlib.PurePosixPath(rel)
+    windows = pathlib.PureWindowsPath(rel)
+    if posix.is_absolute() or windows.is_absolute():
+        raise ValueError(f"server file path must be relative: {repo_path}")
+    if "\\" in rel or any(part in ("", ".", "..") for part in posix.parts):
+        raise ValueError(f"server file path contains unsafe components: {repo_path}")
+    return rel
+
+
 def _should_skip_path(
     rel_path: str,
     spec: "pathspec.PathSpec",
@@ -3180,11 +3190,22 @@ async def _sync_files(
         return 1
 
     data = resp.json()
+    prefix_filter = repo_prefix + "/" if repo_prefix else ""
     for item in data.get("files_metadata", []):
-        server_metadata[item["path"]] = {
+        server_path = item["path"]
+        if prefix_filter and not server_path.startswith(prefix_filter):
+            continue
+        try:
+            rel = _safe_server_rel_path(server_path, repo_prefix)
+        except ValueError as e:
+            print(f"Error: unsafe server file path {server_path!r}: {e}", file=sys.stderr)
+            return 1
+        server_metadata[server_path] = {
             "etag": item["etag"],
+            "content_hash": item.get("content_hash") or "",
             "last_modified": item["last_modified"],
             "updated_by": item.get("updated_by", ""),
+            "rel": rel,
         }
 
     # Filter .git/ objects from server listing
@@ -3218,7 +3239,7 @@ async def _sync_files(
                 "rel": rel,
                 "_content": content,
             })
-        elif server_info["etag"] != local_md5:
+        elif (server_info.get("content_hash") or server_info["etag"]) != local_md5:
             matched_server_paths.add(repo_path)
             # Content differs — check timestamps
             local_file = path / rel
@@ -3259,15 +3280,12 @@ async def _sync_files(
             matched_server_paths.add(repo_path)
 
     # Server-only files — always show for pull; --mirror adds delete option
-    prefix_filter = repo_prefix + "/" if repo_prefix else ""
     for server_path, server_info in server_metadata.items():
-        if prefix_filter and not server_path.startswith(prefix_filter):
-            continue
         if server_path in matched_server_paths:
             continue
         if server_path in files:
             continue
-        rel = _strip_repo_prefix(server_path, repo_prefix)
+        rel = server_info["rel"]
         if _is_bifrost_path(rel):
             continue
         if _should_skip_path(rel, spec, server_path):

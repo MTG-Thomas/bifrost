@@ -1,16 +1,12 @@
-"""solution status + drop orphan provenance columns
+"""solution status + drop unused file orphan provenance columns
 
 Adds Solution.status (active|inactive, server_default active).
 Drops origin_solution_slug / origin_solution_id / orphaned_at from
-tables, configs, file_metadata, file_policies.
+file_metadata and file_policies.
 
-These columns were added by:
-  - 20260606_orphan_provenance.py          (tables + configs)
-  - 20260609_orphan_tbl_ns.py              (tables namespace tweak)
-  - 20260623_file_solution_id.py           (file_metadata + file_policies)
-
-A forward DROP is cleaner than rewriting history; the test stack runs all
-migrations forward.
+The MTG fork still uses orphan provenance on tables/configs for non-destructive
+solution uninstall + reattach. Keep those columns while dropping the unused
+file-side provenance columns introduced with solution_id.
 
 Revision ID: 20260624_solution_status_drop_orphan
 Revises: 20260623_solution_file_jobs
@@ -33,14 +29,14 @@ def upgrade() -> None:
         "solutions",
         sa.Column("status", sa.String(length=16), nullable=False, server_default="active"),
     )
-    for table in ("tables", "configs", "file_metadata", "file_policies"):
+    for table in ("file_metadata", "file_policies"):
         op.drop_column(table, "origin_solution_slug")
         op.drop_column(table, "origin_solution_id")
         op.drop_column(table, "orphaned_at")
 
 
 def downgrade() -> None:
-    for table in ("tables", "configs", "file_metadata", "file_policies"):
+    for table in ("file_metadata", "file_policies"):
         op.add_column(
             table, sa.Column("orphaned_at", sa.DateTime(timezone=True), nullable=True)
         )

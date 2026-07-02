@@ -9,13 +9,12 @@ S3 key resolution is delegated to `shared.file_paths.resolve_s3_key`.
 """
 
 import asyncio
-import os
 from abc import ABC, abstractmethod
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.file_paths import resolve_s3_key
+from shared.file_paths import resolve_s3_key, validate_location_name
 from src.core.paths import TEMP_PATH, UPLOADS_PATH
 from src.services.file_storage import FileStorageService
 
@@ -71,6 +70,13 @@ class LocalBackend(FileBackend):
 
         Local mode is unscoped — used for CLI development without multi-tenancy.
         """
+        validate_location_name(location)
+        if Path(path).is_absolute() or PureWindowsPath(path).is_absolute():
+            raise ValueError(f"Invalid path: must be relative: {path}")
+        normalized = path.replace("\\", "/")
+        if ".." in normalized.split("/"):
+            raise ValueError(f"Invalid path: path traversal not allowed: {path}")
+
         if location == "temp":
             base_dir = self.temp_root
         elif location == "uploads":
@@ -81,25 +87,14 @@ class LocalBackend(FileBackend):
             # Freeform local locations are siblings of workspace_root.
             base_dir = self.workspace_root.parent / location
 
-        # Resolve + sandbox the (possibly attacker-controlled) path against
-        # base_dir. Implemented with os.path.realpath + a startswith prefix
-        # check (the barrier static analysis recognizes for path traversal);
-        # the trailing os.sep prevents sibling-prefix confusion (base
-        # "/tmp/foo" must not accept "/tmp/foo_evil/x").
+        base = base_dir.resolve()
+        resolved = (base / path).resolve()
         try:
-            base_real = os.path.realpath(base_dir)
-            resolved = os.path.realpath(os.path.join(base_real, path))
-        except Exception as e:
-            raise ValueError(f"Invalid path: {path}") from e
+            resolved.relative_to(base)
+        except ValueError as e:
+            raise ValueError(f"Invalid path: path traversal not allowed: {path}") from e
 
-        # Pure startswith barrier (the form static analysis recognizes), with a
-        # trailing os.sep on BOTH sides so it accepts base_dir itself (the
-        # empty-path/list("") case) and real descendants, but not a sibling
-        # sharing a string prefix ("/tmp/foo" must reject "/tmp/foo_evil/x").
-        if not (resolved + os.sep).startswith(base_real + os.sep):
-            raise ValueError(f"Path must be within {location} directory: {path}")
-
-        return Path(resolved)
+        return resolved
 
     async def read(self, path: str, location: Location, scope: str | None = None) -> bytes:
         """Read file from local filesystem. Scope is ignored in local mode."""
@@ -139,11 +134,8 @@ class LocalBackend(FileBackend):
 
     async def exists(self, path: str, location: Location, scope: str | None = None) -> bool:
         """Check if file exists on local filesystem. Scope is ignored in local mode."""
-        try:
-            resolved = self._resolve_path(path, location)
-            return await asyncio.to_thread(resolved.exists)
-        except ValueError:
-            return False
+        resolved = self._resolve_path(path, location)
+        return await asyncio.to_thread(resolved.exists)
 
 
 class S3Backend(FileBackend):
@@ -158,6 +150,7 @@ class S3Backend(FileBackend):
         try:
             if location == "workspace":
                 # Workspace goes through the indexed read path so file_index stays in sync.
+                resolve_s3_key(location, scope, path)
                 content, _ = await self.storage.read_file(path)
                 return content
             s3_path = resolve_s3_key(location, scope, path)
@@ -175,6 +168,7 @@ class S3Backend(FileBackend):
     async def write(self, path: str, content: bytes, location: Location, updated_by: str = "system", scope: str | None = None) -> None:
         """Write file to S3."""
         if location == "workspace":
+            resolve_s3_key(location, scope, path)
             await self.storage.write_file(path, content, updated_by)
             return
         s3_path = resolve_s3_key(location, scope, path)
@@ -183,6 +177,7 @@ class S3Backend(FileBackend):
     async def delete(self, path: str, location: Location, scope: str | None = None) -> None:
         """Delete file from S3."""
         if location == "workspace":
+            resolve_s3_key(location, scope, path)
             await self.storage.delete_file(path)
             return
         s3_path = resolve_s3_key(location, scope, path)
@@ -191,6 +186,7 @@ class S3Backend(FileBackend):
     async def list(self, directory: str, location: Location, scope: str | None = None) -> list[str]:
         """List files in S3 directory."""
         if location == "workspace":
+            resolve_s3_key(location, scope, directory)
             files = await self.storage.list_files(directory)
             return [f.path for f in files]
         clean_directory = directory.strip("/")
@@ -204,6 +200,7 @@ class S3Backend(FileBackend):
         """Check if file exists in S3."""
         if location == "workspace":
             from src.services.repo_storage import REPO_PREFIX
+            resolve_s3_key(location, scope, path)
             s3_path = f"{REPO_PREFIX}{path.lstrip('/')}"
         else:
             s3_path = resolve_s3_key(location, scope, path)

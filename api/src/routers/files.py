@@ -162,6 +162,7 @@ class SignedUrlResponse(BaseModel):
     url: str = Field(..., description="Presigned S3 URL")
     path: str = Field(..., description="Full S3 path")
     expires_in: int = Field(default=600, description="URL expiration in seconds")
+    headers: dict[str, str] = Field(default_factory=dict, description="Headers required by the presigned request")
 
 
 class SignedUrlBatchRequest(BaseModel):
@@ -292,7 +293,12 @@ def _resolve_effective_scope(
                 detail="workspace is not available in solution file context",
             )
         return str(ctx.solution_id)
-    return _storage_scope(_file_org_id(ctx, location, requested_scope))
+    try:
+        return _storage_scope(_file_org_id(ctx, location, requested_scope))
+    except ValueError:
+        if ctx.org_id is None and requested_scope:
+            return requested_scope
+        raise
 
 
 def _ctx_solution_id(ctx: Context, location: str) -> UUID | None:
@@ -864,11 +870,13 @@ async def _build_signed_url(
     file_storage = FileStorageService(db)
 
     if request.method == "PUT":
+        headers = file_storage.presigned_upload_headers(request.content_type)
         url = await file_storage.generate_presigned_upload_url(
             path=s3_path,
             content_type=request.content_type,
         )
     else:
+        headers = {}
         url = await file_storage.generate_presigned_download_url(
             path=s3_path,
         )
@@ -876,6 +884,7 @@ async def _build_signed_url(
     return SignedUrlResponse(
         url=url,
         path=s3_path,
+        headers=headers,
     )
 
 
