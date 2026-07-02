@@ -1,5 +1,6 @@
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -98,3 +99,85 @@ async def test_run_execution_emits_worker_span(monkeypatch):
     assert span.attributes["bifrost.queue.wait_ms"] >= 0
     assert span.attributes["bifrost.worker.peak_memory_bytes"] >= 0
     assert span.attributes["bifrost.worker.cpu_total_seconds"] >= 0
+
+
+def test_run_in_worker_flushes_opentelemetry(monkeypatch):
+    calls: list[Any] = []
+
+    monkeypatch.setattr(
+        "src.core.telemetry.configure_opentelemetry",
+        lambda service_name, **kwargs: calls.append(("configure", service_name, kwargs)),
+    )
+    monkeypatch.setattr(
+        "src.core.telemetry.flush_opentelemetry",
+        lambda: calls.append(("flush", None)),
+    )
+    monkeypatch.setattr(worker, "worker_main", lambda execution_id: ("worker-main", execution_id))
+    monkeypatch.setattr(worker.asyncio, "run", lambda coroutine: calls.append(("run", coroutine)))
+
+    worker.run_in_worker("exec-otel")
+
+    assert calls == [
+        ("configure", "bifrost-worker", {"span_processor": "simple"}),
+        ("run", ("worker-main", "exec-otel")),
+        ("flush", None),
+    ]
+
+
+def test_run_in_worker_flushes_opentelemetry_after_error(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "src.core.telemetry.configure_opentelemetry",
+        lambda service_name, **kwargs: calls.append("configure"),
+    )
+    monkeypatch.setattr("src.core.telemetry.flush_opentelemetry", lambda: calls.append("flush"))
+    monkeypatch.setattr(worker, "worker_main", lambda execution_id: ("worker-main", execution_id))
+
+    def _raise(_coroutine):
+        calls.append("run")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(worker.asyncio, "run", _raise)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        worker.run_in_worker("exec-otel")
+
+    assert calls == ["configure", "run", "flush"]
+
+
+def test_simple_worker_execute_sync_flushes_opentelemetry(monkeypatch):
+    from src.services.execution import simple_worker
+
+    calls: list[Any] = []
+
+    monkeypatch.setattr(
+        "src.core.telemetry.configure_opentelemetry",
+        lambda service_name, **kwargs: calls.append(("configure", service_name, kwargs)),
+    )
+    monkeypatch.setattr(
+        "src.core.telemetry.flush_opentelemetry",
+        lambda: calls.append(("flush", None)),
+    )
+    monkeypatch.setattr(
+        simple_worker,
+        "_execute_async",
+        lambda execution_id, worker_id: ("execute-async", execution_id, worker_id),
+    )
+    monkeypatch.setattr(
+        simple_worker.asyncio,
+        "run",
+        lambda coroutine: {"execution_id": "exec-otel", "success": True, "coroutine": coroutine},
+    )
+
+    result = simple_worker._execute_sync("exec-otel", "worker-otel")
+
+    assert result == {
+        "execution_id": "exec-otel",
+        "success": True,
+        "coroutine": ("execute-async", "exec-otel", "worker-otel"),
+    }
+    assert calls == [
+        ("configure", "bifrost-worker", {"span_processor": "simple"}),
+        ("flush", None),
+    ]
