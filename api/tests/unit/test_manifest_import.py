@@ -315,6 +315,7 @@ class TestManifestDestructiveScope:
 
         assert _collect_removed_entity_ids(changes) == {}
 
+
     def test_scope_filter_limits_non_file_deletes_to_declared_org_scope(self):
         from src.services.manifest_import import (
             _collect_removed_entity_ids,
@@ -404,6 +405,73 @@ class TestManifestDestructiveScope:
         assert _manifest_access_level(None, ["role-id"]) == "role_based"
         assert _manifest_access_level(None, []) is None
         assert _manifest_access_level("authenticated", ["role-id"]) == "authenticated"
+
+
+class TestManifestIntegrationOAuthProviderImport:
+    """Pin OAuth provider metadata persistence through integration import."""
+
+    @pytest.mark.asyncio
+    async def test_oauth_provider_upsert_persists_provider_metadata(self, db_session):
+        import uuid
+
+        from sqlalchemy import select
+
+        from bifrost.manifest import ManifestIntegration, ManifestOAuthProvider
+        from src.models.orm.oauth import OAuthProvider
+        from src.services.manifest_import import ManifestResolver
+
+        integration_id = str(uuid.uuid4())
+        resolver = ManifestResolver(db_session)
+
+        await resolver._resolve_integration(
+            "scope-sensitive",
+            ManifestIntegration(
+                id=integration_id,
+                name="scope-sensitive",
+                oauth_provider=ManifestOAuthProvider(
+                    provider_name="scope-sensitive",
+                    client_id="client-one",
+                    token_url="https://auth.example.com/oauth/token",
+                    scopes=["read"],
+                    provider_metadata={"omit_token_exchange_scope": True},
+                ),
+            ),
+        )
+        await db_session.flush()
+        db_session.expire_all()
+
+        provider = (
+            await db_session.execute(
+                select(OAuthProvider).where(OAuthProvider.integration_id == uuid.UUID(integration_id))
+            )
+        ).scalar_one()
+        assert provider.provider_metadata == {"omit_token_exchange_scope": True}
+
+        await resolver._resolve_integration(
+            "scope-sensitive",
+            ManifestIntegration(
+                id=integration_id,
+                name="scope-sensitive",
+                oauth_provider=ManifestOAuthProvider(
+                    provider_name="scope-sensitive",
+                    client_id="client-two",
+                    token_url="https://auth.example.com/oauth/token",
+                    scopes=["read", "write"],
+                    provider_metadata={"omit_token_exchange_scope": False},
+                ),
+            ),
+        )
+        await db_session.flush()
+        db_session.expire_all()
+
+        provider = (
+            await db_session.execute(
+                select(OAuthProvider).where(OAuthProvider.integration_id == uuid.UUID(integration_id))
+            )
+        ).scalar_one()
+        assert provider.client_id == "client-two"
+        assert provider.scopes == ["read", "write"]
+        assert provider.provider_metadata == {"omit_token_exchange_scope": False}
 
 
 class TestManifestAppPathSafety:

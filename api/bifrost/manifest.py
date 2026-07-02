@@ -607,6 +607,11 @@ class ManifestOAuthProvider(EntityCodec, BaseModel):
     token_url: str | None = Field(default=None, description="OAuth token endpoint", **classify(FieldClass.CONTENT))
     token_url_defaults: dict | None = Field(default=None, description="Default params for token request", **classify(FieldClass.CONTENT))
     scopes: list[str] = Field(default_factory=list, description="OAuth scopes", **classify(FieldClass.CONTENT))
+    provider_metadata: dict = Field(
+        default_factory=dict,
+        description="Provider-specific OAuth behavior flags and metadata",
+        **classify(FieldClass.CONTENT),
+    )
     redirect_uri: str | None = Field(default=None, description="OAuth redirect URI", **classify(FieldClass.CONTENT))
 
     @classmethod
@@ -624,6 +629,7 @@ class ManifestOAuthProvider(EntityCodec, BaseModel):
             token_url=op.token_url,
             token_url_defaults=op.token_url_defaults or None,
             scopes=op.scopes or [],
+            provider_metadata=op.provider_metadata or {},
             redirect_uri=op.redirect_uri,
         )
 

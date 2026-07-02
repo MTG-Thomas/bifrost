@@ -16,6 +16,14 @@ if TYPE_CHECKING:
 
 OAuthFlowType = Literal["authorization_code", "client_credentials", "refresh_token"]
 OAuthStatus = Literal["not_connected", "waiting_callback", "testing", "connected", "completed", "failed"]
+PROVIDER_METADATA_DESCRIPTION = "Provider-specific OAuth behavior flags and metadata"
+
+
+def _validate_provider_metadata(v: dict[str, Any]) -> dict[str, Any]:
+    flag = v.get("omit_token_exchange_scope")
+    if flag is not None and not isinstance(flag, bool):
+        raise ValueError("provider_metadata.omit_token_exchange_scope must be a boolean")
+    return v
 
 
 # ==================== OAUTH CONNECTION MODELS ====================
@@ -71,6 +79,10 @@ class CreateOAuthConnectionRequest(BaseModel):
         max_length=500,
         description="OAuth audience parameter - identifies the target API/resource for the token request (e.g., required by Pax8, Auth0)"
     )
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=PROVIDER_METADATA_DESCRIPTION,
+    )
     redirect_uri: str | None = Field(
         None,
         description="OAuth redirect URI (defaults to /oauth/callback/{connection_name})"
@@ -86,6 +98,11 @@ class CreateOAuthConnectionRequest(BaseModel):
             if data.get('authorization_url') == '':
                 data['authorization_url'] = None
         return data
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def validate_provider_metadata(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _validate_provider_metadata(v)
 
     @model_validator(mode='after')
     def validate_flow_requirements(self) -> 'CreateOAuthConnectionRequest':
@@ -126,6 +143,17 @@ class UpdateOAuthConnectionRequest(BaseModel):
         max_length=500,
         description="OAuth audience parameter"
     )
+    provider_metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=PROVIDER_METADATA_DESCRIPTION,
+    )
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def validate_provider_metadata(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        if v is None:
+            return None
+        return _validate_provider_metadata(v)
 
     @field_validator('scopes', mode='before')
     @classmethod
@@ -200,6 +228,10 @@ class OAuthConnectionDetail(BaseModel):
         default=None,
         description="OAuth audience parameter for token requests"
     )
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=PROVIDER_METADATA_DESCRIPTION,
+    )
 
     # Status information
     status: OAuthStatus
@@ -266,6 +298,10 @@ class OAuthConnection(BaseModel):
         description="Default values for token_url placeholders (e.g., {'entity_id': 'common'})"
     )
     scopes: str = ""
+    provider_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=PROVIDER_METADATA_DESCRIPTION,
+    )
     redirect_uri: str = Field(
         ...,
         description="Callback URL: /api/oauth/callback/{connection_name}"
@@ -346,6 +382,7 @@ class OAuthConnection(BaseModel):
             authorization_url=self.authorization_url,
             token_url=self.token_url,
             scopes=self.scopes,
+            provider_metadata=self.provider_metadata,
             status=self.status,
             status_message=self.status_message,
             integration_id=self.integration_id,

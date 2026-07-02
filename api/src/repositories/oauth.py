@@ -87,6 +87,7 @@ class OAuthProviderRepository(OrgScopedRepository[OAuthProvider]):
         token_url: str | None,
         scopes_csv: str | None,
         created_by: str,
+        provider_metadata: dict[str, Any] | None = None,
     ) -> OAuthProvider:
         """Create a new OAuth provider/connection in the current scope."""
         from src.core.security import encrypt_secret
@@ -106,6 +107,7 @@ class OAuthProviderRepository(OrgScopedRepository[OAuthProvider]):
             authorization_url=authorization_url,
             token_url=token_url,
             scopes=scopes_csv.split(",") if scopes_csv else [],
+            provider_metadata=provider_metadata or {},
             status="not_connected",
             created_by=created_by,
         )
@@ -126,6 +128,7 @@ class OAuthProviderRepository(OrgScopedRepository[OAuthProvider]):
         token_url: str | None = None,
         scopes: list[str] | None = None,
         audience: str | None = None,
+        provider_metadata: dict[str, Any] | None = None,
     ) -> OAuthProvider | None:
         """Update an OAuth provider in-place."""
         from src.core.security import encrypt_secret
@@ -150,6 +153,8 @@ class OAuthProviderRepository(OrgScopedRepository[OAuthProvider]):
             provider.scopes = scopes
         if audience is not None:
             provider.audience = audience
+        if provider_metadata is not None:
+            provider.provider_metadata = provider_metadata
 
         provider.updated_at = datetime.now(timezone.utc)
         await self.session.flush()
@@ -302,6 +307,7 @@ class OAuthProviderRepository(OrgScopedRepository[OAuthProvider]):
             token_url=provider.token_url or "",
             scopes=scopes_str,
             audience=provider.audience,
+            provider_metadata=provider.provider_metadata or {},
             status=status,
             status_message=provider.status_message,
             integration_id=(

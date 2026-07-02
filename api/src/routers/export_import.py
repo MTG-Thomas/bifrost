@@ -388,6 +388,7 @@ async def _build_integrations_export(
                 token_url_defaults=op.token_url_defaults or {},
                 redirect_uri=op.redirect_uri,
                 scopes=op.scopes or [],
+                provider_metadata=op.provider_metadata or {},
                 organization_id=str(op.organization_id) if op.organization_id else None,
                 organization_name=org_names.get(op.organization_id) if op.organization_id else None,
             )
@@ -1187,6 +1188,7 @@ async def _import_oauth_provider(
         op.token_url_defaults = oauth_item.token_url_defaults
         op.redirect_uri = oauth_item.redirect_uri
         op.scopes = oauth_item.scopes
+        op.provider_metadata = oauth_item.provider_metadata or {}
     else:
         # Create new
         db.add(OAuthProvider(
@@ -1200,6 +1202,7 @@ async def _import_oauth_provider(
             token_url_defaults=oauth_item.token_url_defaults,
             redirect_uri=oauth_item.redirect_uri,
             scopes=oauth_item.scopes,
+            provider_metadata=oauth_item.provider_metadata or {},
             organization_id=org_id,
             integration_id=integration.id,
         ))
