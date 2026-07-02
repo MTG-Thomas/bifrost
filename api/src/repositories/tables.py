@@ -25,13 +25,8 @@ class TableRepository(OrgScopedRepository[Table]):
     async def list_tables(
         self,
         filter_type: OrgFilterType = OrgFilterType.ORG_PLUS_GLOBAL,
-        include_orphaned: bool = False,
     ) -> list[Table]:
-        """List tables with specified filter type.
-
-        Orphaned tables (former-install data; orphaned_at stamped) are hidden by
-        default and only surfaced when ``include_orphaned`` is True.
-        """
+        """List tables with specified filter type."""
         query = select(self.model)
 
         if filter_type == OrgFilterType.ALL:
@@ -42,9 +37,6 @@ class TableRepository(OrgScopedRepository[Table]):
             query = query.where(self.model.organization_id == self.org_id)
         else:
             query = self._apply_cascade_scope(query)
-
-        if not include_orphaned:
-            query = query.where(self.model.orphaned_at.is_(None))
 
         query = query.order_by(self.model.name)
 
@@ -90,7 +82,9 @@ class TableRepository(OrgScopedRepository[Table]):
             raise ValueError(f"Table '{data.name}' already exists")
 
         if data.policies is not None:
-            access_json: dict[str, Any] | None = data.policies.model_dump(mode="json")
+            # by_alias=True preserves the $ref alias on PolicyRuleRef; without it
+            # a ref policy is stored as {"ref": ...} and breaks manifest serialization.
+            access_json: dict[str, Any] | None = data.policies.model_dump(mode="json", by_alias=True)
         else:
             access_json = make_seed_admin_bypass()
 
@@ -129,7 +123,7 @@ class TableRepository(OrgScopedRepository[Table]):
             table.schema = data.schema
         if "policies" in data.model_fields_set:
             table.access = (
-                data.policies.model_dump(mode="json")
+                data.policies.model_dump(mode="json", by_alias=True)
                 if data.policies is not None
                 else None
             )

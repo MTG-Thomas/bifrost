@@ -1,20 +1,14 @@
-"""Websocket table-name resolution must apply the canonical solution/orphan filters.
+"""Websocket table-name resolution applies the canonical solution filters.
 
-A `_repo/` table and a solution-deployed table may legally share (org, name) —
-that's this branch's own design. The websocket name branch of
-`_resolve_table_id` (and `_load_policies_for_table`) previously selected by
-bare name, so the duplicate raised sqlalchemy MultipleResultsFound, which
-propagated to the connection-level handler and killed the ENTIRE websocket.
-
-Canonical semantics (mirror `OrgScopedRepository.get()`): by-name resolution is
-the LIVE `_repo/` namespace — solution-managed rows resolve by id (or
-?solution=), orphaned rows don't resolve by name at all.
+A `_repo/` table and a solution-deployed table may legally share (org, name).
+The websocket name branch of `_resolve_table_id` and `_load_policies_for_table`
+must select the live `_repo/` namespace, while solution-managed rows resolve by
+id or explicit solution scope.
 """
 from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 import pytest
 
@@ -30,12 +24,7 @@ pytestmark = pytest.mark.e2e
 
 @pytest.fixture
 def patched_db(monkeypatch, db_session):
-    """Route the websocket module's `get_db_context` to the test session.
-
-    The helpers under test open their own session via `get_db_context`;
-    pointing it at the (uncommitted, rolled-back) test session keeps seeded
-    rows visible to them without committing anything.
-    """
+    """Route the websocket module's `get_db_context` to the test session."""
 
     @asynccontextmanager
     async def _ctx():
@@ -64,15 +53,12 @@ async def _make_solution(db, org_id) -> uuid.UUID:
     return solution.id
 
 
-def _table(name: str, *, org_id, solution_id=None, orphaned: bool = False, access=None) -> Table:
+def _table(name: str, *, org_id, solution_id=None, access=None) -> Table:
     return Table(
         id=uuid.uuid4(),
         name=name,
         organization_id=org_id,
         solution_id=solution_id,
-        origin_solution_slug="x" if orphaned else None,
-        origin_solution_id=uuid.uuid4() if orphaned else None,
-        orphaned_at=datetime.now(timezone.utc) if orphaned else None,
         created_by="dev@x",
         access=access,
     )
@@ -89,10 +75,6 @@ def _org_user(org_id) -> UserPrincipal:
 
 class TestResolveTableIdByName:
     async def test_plain_repo_table_still_resolves(self, patched_db) -> None:
-        """Happy-path regression guard: an ordinary `_repo/` table with no
-        same-name siblings must keep resolving by name — an over-aggressive
-        future filter change should fail here, not in production.
-        """
         db = patched_db
         org = await _make_org(db)
         name = f"customers_{uuid.uuid4().hex[:8]}"
@@ -104,10 +86,6 @@ class TestResolveTableIdByName:
         assert await ws_mod._resolve_table_id(name, _org_user(org)) == str(live.id)
 
     async def test_repo_row_wins_over_same_name_solution_row(self, patched_db) -> None:
-        """A live `_repo/` table and a solution table share (org, name): the
-        name lookup must return the `_repo/` row — not raise
-        MultipleResultsFound (which killed the whole websocket).
-        """
         db = patched_db
         org = await _make_org(db)
         solution_id = await _make_solution(db, org)
@@ -121,15 +99,13 @@ class TestResolveTableIdByName:
         resolved = await ws_mod._resolve_table_id(name, _org_user(org))
         assert resolved == str(live.id)
 
-    async def test_orphan_only_name_resolves_to_none(self, patched_db) -> None:
-        """Orphaned rows don't resolve by name at all — if the only match is
-        orphaned, the lookup returns None (table-not-found), never the orphan.
-        """
+    async def test_solution_only_name_resolves_to_none(self, patched_db) -> None:
         db = patched_db
         org = await _make_org(db)
+        solution_id = await _make_solution(db, org)
         name = f"customers_{uuid.uuid4().hex[:8]}"
 
-        db.add(_table(name, org_id=org, orphaned=True))
+        db.add(_table(name, org_id=org, solution_id=solution_id))
         await db.flush()
 
         assert await ws_mod._resolve_table_id(name, _org_user(org)) is None
@@ -137,10 +113,6 @@ class TestResolveTableIdByName:
 
 class TestLoadPoliciesForTableByName:
     async def test_name_lookup_skips_solution_rows(self, patched_db) -> None:
-        """Same-name `_repo/` + solution rows: the name branch must load the
-        `_repo/` row's policies (empty here), not raise MultipleResultsFound
-        and not read the solution row's policy document.
-        """
         db = patched_db
         org = await _make_org(db)
         solution_id = await _make_solution(db, org)
@@ -159,15 +131,20 @@ class TestLoadPoliciesForTableByName:
         policies = await ws_mod._load_policies_for_table(name)
         assert policies == TablePolicies()
 
-    async def test_name_lookup_excludes_orphans(self, patched_db) -> None:
-        """Orphan-only name: the policy name branch returns None (not-found),
-        never the orphaned row's policy document.
-        """
+    async def test_name_lookup_excludes_solution_only_rows(self, patched_db) -> None:
         db = patched_db
         org = await _make_org(db)
+        solution_id = await _make_solution(db, org)
         name = f"customers_{uuid.uuid4().hex[:8]}"
 
-        db.add(_table(name, org_id=org, orphaned=True))
+        db.add(
+            _table(
+                name,
+                org_id=org,
+                solution_id=solution_id,
+                access={"policies": [{"name": "deny-all-marker", "actions": ["read"]}]},
+            )
+        )
         await db.flush()
 
         assert await ws_mod._load_policies_for_table(name) is None

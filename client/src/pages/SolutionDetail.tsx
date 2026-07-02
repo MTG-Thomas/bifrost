@@ -22,6 +22,7 @@ import {
 	AppWindow,
 	FileCode,
 	FileText,
+	FolderOpen,
 	Bot,
 	Database,
 	SlidersHorizontal,
@@ -40,6 +41,11 @@ import {
 	Unlink,
 	ArrowUp,
 	RefreshCw,
+	PowerOff,
+	Trash2,
+	RotateCcw,
+	Archive,
+	Download,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -101,13 +107,20 @@ import { CreateEditSolution } from "@/components/solutions/CreateEditSolution";
 import { SolutionCaptureDialog } from "@/components/solutions/SolutionCaptureDialog";
 import { SolutionActionsMenu } from "@/components/solutions/SolutionActionsMenu";
 import { ExportSolutionDialog } from "@/components/solutions/ExportSolutionDialog";
+import { FilesExplorer } from "@/components/files/FilesExplorer";
 import {
 	getSolutionEntities,
 	getSolutionSetup,
 	getSolutionReadme,
-	putSolutionReadme,
 	deleteSolution,
+	uninstallSolution,
+	getSolutionDeletionSummary,
 	exportSolution,
+	createSolutionExportJob,
+	listSolutionExportJobs,
+	downloadSolutionExportJob,
+	type SolutionExportOptions,
+	type SolutionExportJob,
 	setSolutionConfig,
 	syncSolution,
 	previewSolutionFromRepo,
@@ -115,19 +128,19 @@ import {
 import { UpgradeDiffView } from "@/components/solutions/CreateEditSolution";
 import { SolutionSetupWizard } from "@/components/solutions/SolutionSetupWizard";
 import { SolutionReadmeTab } from "@/components/solutions/SolutionReadmeTab";
-import { useAuth } from "@/contexts/AuthContext";
 import type { components } from "@/lib/v1";
 
 type EntitySummary = components["schemas"]["SolutionEntitySummary"];
 type ConfigStatus = components["schemas"]["SolutionConfigStatus"];
 type ConfigType = components["schemas"]["ConfigType"];
+type SolutionDeletionSummary = components["schemas"]["SolutionDeletionSummary"];
 
 /** The three top-level tabs (down from 9). README leads Overview (it's the
  * description, not a section); the 6 entity inventories collapse into Contents
  * (type chips); config VALUES + integration connections live in Configuration;
  * Setup is no longer a tab — it's a STATE surfaced as an Overview banner + a
  * Configuration badge. */
-type TabKey = "overview" | "contents" | "configuration";
+type TabKey = "overview" | "contents" | "configuration" | "exports";
 
 /** The entity kinds shown inside the Contents tab (the old per-entity tabs). */
 type EntityKind =
@@ -136,7 +149,8 @@ type EntityKind =
 	| "forms"
 	| "agents"
 	| "tables"
-	| "claims";
+	| "claims"
+	| "files";
 
 /** Contents type-chip selection: a specific kind or the combined summary. */
 type ContentsFilter = "all" | EntityKind;
@@ -145,19 +159,56 @@ const ENTITY_TABS: {
 	key: EntityKind;
 	label: string;
 	Icon: typeof Workflow;
+	iconClassName: string;
 }[] = [
-	{ key: "workflows", label: "Workflows", Icon: Workflow },
-	{ key: "apps", label: "Apps", Icon: AppWindow },
-	{ key: "forms", label: "Forms", Icon: FileCode },
-	{ key: "agents", label: "Agents", Icon: Bot },
-	{ key: "tables", label: "Tables", Icon: Database },
-	{ key: "claims", label: "Custom Claims", Icon: KeyRound },
+	{
+		key: "workflows",
+		label: "Workflows",
+		Icon: Workflow,
+		iconClassName: "text-blue-600 dark:text-blue-300",
+	},
+	{
+		key: "apps",
+		label: "Apps",
+		Icon: AppWindow,
+		iconClassName: "text-indigo-600 dark:text-indigo-300",
+	},
+	{
+		key: "forms",
+		label: "Forms",
+		Icon: FileCode,
+		iconClassName: "text-emerald-600 dark:text-emerald-300",
+	},
+	{
+		key: "agents",
+		label: "Agents",
+		Icon: Bot,
+		iconClassName: "text-violet-600 dark:text-violet-300",
+	},
+	{
+		key: "tables",
+		label: "Tables",
+		Icon: Database,
+		iconClassName: "text-amber-600 dark:text-amber-300",
+	},
+	{
+		key: "claims",
+		label: "Custom Claims",
+		Icon: KeyRound,
+		iconClassName: "text-rose-600 dark:text-rose-300",
+	},
+	{
+		key: "files",
+		label: "Files",
+		Icon: FolderOpen,
+		iconClassName: "text-cyan-600 dark:text-cyan-300",
+	},
 ];
 
 /** Per-entity-page link target, carrying the `?from` so the entity page can
  * offer a "back to this Solution" affordance (consumed in Task 19b). */
 function entityHref(
-	kind: EntityKind,
+	kind: Exclude<EntityKind, "files">,
 	entity: EntitySummary,
 	solutionId: string,
 ): string {
@@ -199,6 +250,7 @@ const ENTITY_TAB_LABEL: Record<EntityKind, string> = {
 	agents: "agents",
 	tables: "tables",
 	claims: "custom claims",
+	files: "files",
 };
 
 const GRID_TABLE_ENTITY_TABS = new Set<EntityKind>([
@@ -222,6 +274,40 @@ function formatDate(value: string | null | undefined): string {
 		month: "short",
 		day: "numeric",
 	});
+}
+
+function formatDateTime(value: string | null | undefined): string {
+	if (!value) return "-";
+	return new Date(value).toLocaleString(undefined, {
+		year: "numeric",
+		month: "short",
+		day: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	});
+}
+
+function formatBytes(value: number | null | undefined): string {
+	if (!value) return "-";
+	const units = ["B", "KB", "MB", "GB"];
+	let size = value;
+	let unit = 0;
+	while (size >= 1024 && unit < units.length - 1) {
+		size /= 1024;
+		unit += 1;
+	}
+	return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = filename;
+	document.body.appendChild(a);
+	a.click();
+	a.remove();
+	URL.revokeObjectURL(url);
 }
 
 function workflowTypeBadge(entity: EntitySummary) {
@@ -288,7 +374,7 @@ function SolutionEntityGrid({
 	items,
 	solutionId,
 }: {
-	kind: EntityKind;
+	kind: Exclude<EntityKind, "files">;
 	items: EntitySummary[];
 	solutionId: string;
 }) {
@@ -508,7 +594,7 @@ function SolutionEntityTable({
 	items,
 	solutionId,
 }: {
-	kind: EntityKind;
+	kind: Exclude<EntityKind, "files">;
 	items: EntitySummary[];
 	solutionId: string;
 }) {
@@ -678,10 +764,15 @@ function EntityTabContent({
 	kind,
 	items,
 	solutionId,
+	solutionName,
+	fileCount,
 }: {
 	kind: EntityKind;
 	items: EntitySummary[];
 	solutionId: string;
+	solutionName: string;
+	/** Actual file count from SolutionEntities.files (files kind only). */
+	fileCount?: number;
 }) {
 	const navigate = useNavigate();
 	const [search, setSearch] = useState("");
@@ -717,6 +808,26 @@ function EntityTabContent({
 			{ valid: true, missingParams: [] },
 		]),
 	);
+
+	if (kind === "files") {
+		const count = fileCount ?? 0;
+		if (count === 0) {
+			return (
+				<div className="text-sm text-muted-foreground py-8 text-center rounded-2xl border border-dashed">
+					This Solution has no files.
+				</div>
+			);
+		}
+		return (
+			<div className="h-[min(72vh,48rem)] min-h-[32rem]" data-testid="solution-files-tab">
+				<FilesExplorer
+					install={solutionId}
+					installName={solutionName}
+					embedded
+				/>
+			</div>
+		);
+	}
 
 	if (items.length === 0) {
 		return (
@@ -932,29 +1043,24 @@ function chipClass(active: boolean): string {
 }
 
 /** Overview = the install's description (README, rendered GitHub-style) leading
- * a status/contents summary so the tab is never empty. README editing is only
- * offered for disconnected installs (a git-connected install's README is repo-
- * owned — the PUT 409s, so we hide the affordance). */
+ * a status/contents summary so the tab is never empty. Installed Solution
+ * content is read-only in the UI; changes flow through deploy/sync. */
 function OverviewTab({
 	readme,
-	canEditReadme,
-	onSaveReadme,
 	entityCounts,
 	configsCount,
 	version,
 	gitConnected,
 	orgName,
-	onGoToContents,
+	onPickEntity,
 }: {
 	readme: string | null;
-	canEditReadme: boolean;
-	onSaveReadme: (markdown: string) => void | Promise<void>;
 	entityCounts: Record<EntityKind, number>;
 	configsCount: number;
 	version: string | null;
 	gitConnected: boolean;
 	orgName: string;
-	onGoToContents: () => void;
+	onPickEntity: (kind: EntityKind) => void;
 }) {
 	const total = Object.values(entityCounts).reduce((a, b) => a + b, 0);
 	return (
@@ -970,14 +1076,14 @@ function OverviewTab({
 				</CardHeader>
 				<CardContent>
 					<div className="flex flex-wrap gap-4 text-sm">
-						{ENTITY_TABS.map(({ key, label, Icon }) => (
+						{ENTITY_TABS.map(({ key, label, Icon, iconClassName }) => (
 							<button
 								type="button"
 								key={key}
-								onClick={onGoToContents}
+								onClick={() => onPickEntity(key)}
 								className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
 							>
-								<Icon className="h-4 w-4" />
+								<Icon className={`h-4 w-4 ${iconClassName}`} />
 								<span className="font-medium text-foreground">
 									{entityCounts[key]}
 								</span>
@@ -1005,8 +1111,7 @@ function OverviewTab({
 			<div className="min-h-0 flex-1">
 				<SolutionReadmeTab
 					readme={readme}
-					canEdit={canEditReadme}
-					onSave={onSaveReadme}
+					canEdit={false}
 				/>
 			</div>
 		</div>
@@ -1032,7 +1137,7 @@ function ContentsSummary({
 	return (
 		<div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
 			{ENTITY_TABS.filter(({ key }) => entityCounts[key] > 0).map(
-				({ key, label, Icon }) => (
+				({ key, label, Icon, iconClassName }) => (
 					<button
 						type="button"
 						key={key}
@@ -1040,7 +1145,7 @@ function ContentsSummary({
 						onClick={() => onPick(key)}
 						className="flex items-center gap-3 rounded-xl border p-4 text-left hover:bg-muted"
 					>
-						<Icon className="h-5 w-5 text-muted-foreground" />
+						<Icon className={`h-5 w-5 ${iconClassName}`} />
 						<div>
 							<div className="text-lg font-semibold">{entityCounts[key]}</div>
 							<div className="text-xs text-muted-foreground">{label}</div>
@@ -1124,12 +1229,113 @@ function ConfigurationTab({
 	);
 }
 
+function exportJobStatusBadge(job: SolutionExportJob) {
+	const variant =
+		job.status === "completed"
+			? "default"
+			: job.status === "failed" || job.status === "expired"
+				? "destructive"
+				: "secondary";
+	return <Badge variant={variant}>{job.status.replace("_", " ")}</Badge>;
+}
+
+function ExportsTab({
+	jobs,
+	isLoading,
+	error,
+	onDownload,
+	downloadingJobId,
+}: {
+	jobs: SolutionExportJob[];
+	isLoading: boolean;
+	error?: string;
+	onDownload: (job: SolutionExportJob) => void;
+	downloadingJobId: string | null;
+}) {
+	if (isLoading) {
+		return (
+			<Card>
+				<CardContent className="space-y-3 py-6">
+					<Skeleton className="h-5 w-48" />
+					<Skeleton className="h-16 w-full" />
+				</CardContent>
+			</Card>
+		);
+	}
+
+	if (error) {
+		return (
+			<div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-6 text-sm text-destructive">
+				{error}
+			</div>
+		);
+	}
+
+	if (jobs.length === 0) {
+		return (
+			<div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+				No backup exports queued yet.
+			</div>
+		);
+	}
+
+	return (
+		<div className="space-y-3">
+			{jobs.map((job) => {
+				const canDownload = job.status === "completed" && !!job.download_url;
+				const isDownloading = downloadingJobId === job.id;
+				return (
+					<Card key={job.id}>
+						<CardContent className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
+							<div className="min-w-0 flex-1 space-y-2">
+								<div className="flex flex-wrap items-center gap-2">
+									{exportJobStatusBadge(job)}
+									<span className="text-sm font-medium">
+										{job.progress_percent ?? 0}%
+									</span>
+									<span className="text-xs text-muted-foreground">
+										{formatBytes(job.artifact_size_bytes)}
+									</span>
+								</div>
+								<div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+									<span>Created {formatDateTime(job.created_at)}</span>
+									<span>Completed {formatDateTime(job.completed_at)}</span>
+									<span>Expires {formatDateTime(job.expires_at)}</span>
+								</div>
+								{(job.message || job.failure_message) && (
+									<p className="text-sm text-muted-foreground">
+										{job.failure_message ?? job.message}
+									</p>
+								)}
+							</div>
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								disabled={!canDownload || isDownloading}
+								onClick={() => onDownload(job)}
+								className="shrink-0"
+							>
+								{isDownloading ? (
+									<Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+								) : (
+									<Download className="mr-1.5 h-4 w-4" />
+								)}
+								Download
+							</Button>
+						</CardContent>
+					</Card>
+				);
+			})}
+		</div>
+	);
+}
+
 export function SolutionDetail() {
 	const { solutionId } = useParams<{ solutionId: string }>();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
 	const { data: organizations } = useOrganizations();
-	const { isPlatformAdmin } = useAuth();
 
 	// Land on Overview — the install's description + at-a-glance status. Contents
 	// (entities) and Configuration are one click away.
@@ -1139,8 +1345,12 @@ export function SolutionDetail() {
 	const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
 	const [captureOpen, setCaptureOpen] = useState(false);
 	const [exportDialogOpen, setExportDialogOpen] = useState(false);
-	const [deleteOpen, setDeleteOpen] = useState(false);
-	const [deleteConfirm, setDeleteConfirm] = useState("");
+	// Hard-delete modal state.
+	const [hardDeleteOpen, setHardDeleteOpen] = useState(false);
+	const [hardDeleteConfirm, setHardDeleteConfirm] = useState("");
+	const [deletionSummary, setDeletionSummary] =
+		useState<SolutionDeletionSummary | null>(null);
+	const [deletionSummaryLoading, setDeletionSummaryLoading] = useState(false);
 
 	const { data, isLoading, error } = useQuery({
 		queryKey: ["solutions", solutionId, "entities"],
@@ -1164,6 +1374,18 @@ export function SolutionDetail() {
 		enabled: !!solutionId,
 	});
 
+	const exportJobsQuery = useQuery({
+		queryKey: ["solutions", solutionId, "export-jobs"],
+		queryFn: () => listSolutionExportJobs(solutionId!),
+		enabled: !!solutionId,
+		refetchInterval: (query) => {
+			const jobs = query.state.data?.jobs ?? [];
+			return jobs.some((job) => job.status === "pending" || job.status === "running")
+				? 2500
+				: false;
+		},
+	});
+
 	const invalidate = () => {
 		void queryClient.invalidateQueries({
 			queryKey: ["solutions", solutionId, "entities"],
@@ -1178,21 +1400,14 @@ export function SolutionDetail() {
 		mutationFn: ({
 			mode,
 			password,
-			includeData,
+			options,
 		}: {
 			mode: "shareable" | "full";
 			password?: string;
-			includeData?: boolean;
-		}) => exportSolution(solutionId!, mode, password, includeData),
+			options?: SolutionExportOptions;
+		}) => exportSolution(solutionId!, mode, password, options),
 		onSuccess: ({ blob, filename }) => {
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement("a");
-			a.href = url;
-			a.download = filename;
-			document.body.appendChild(a);
-			a.click();
-			a.remove();
-			URL.revokeObjectURL(url);
+			downloadBlob(blob, filename);
 			setExportDialogOpen(false);
 		},
 		onError: (err: unknown) => {
@@ -1202,14 +1417,46 @@ export function SolutionDetail() {
 		},
 	});
 
-	const deleteMut = useMutation({
-		mutationFn: () => deleteSolution(solutionId!),
-		onSuccess: (summary) => {
-			queryClient.invalidateQueries({ queryKey: ["solutions"] });
-			toast.success("Solution uninstalled", {
-				description: `Removed ${summary.workflows_deleted} workflows, ${summary.apps_deleted} apps, ${summary.forms_deleted} forms, ${summary.agents_deleted} agents. Kept ${summary.tables_orphaned} tables and ${summary.config_values_orphaned} config values as orphaned data.`,
+	const backupExportMut = useMutation({
+		mutationFn: ({
+			password,
+			options,
+		}: {
+			password: string;
+			options: SolutionExportOptions;
+		}) => createSolutionExportJob(solutionId!, { password, options }),
+		onSuccess: () => {
+			setExportDialogOpen(false);
+			setTab("exports");
+			toast.success("Backup export queued");
+			void queryClient.invalidateQueries({
+				queryKey: ["solutions", solutionId, "export-jobs"],
 			});
-			navigate("/solutions");
+		},
+		onError: (err: unknown) => {
+			toast.error("Failed to queue backup export", {
+				description: err instanceof Error ? err.message : "Unknown error",
+			});
+		},
+	});
+
+	const downloadExportJobMut = useMutation({
+		mutationFn: (jobId: string) => downloadSolutionExportJob(jobId),
+		onSuccess: ({ blob, filename }) => downloadBlob(blob, filename),
+		onError: (err: unknown) => {
+			toast.error("Failed to download backup export", {
+				description: err instanceof Error ? err.message : "Unknown error",
+			});
+		},
+	});
+
+	/** Non-destructive uninstall — flips status to inactive, data frozen. */
+	const uninstallMut = useMutation({
+		mutationFn: () => uninstallSolution(solutionId!),
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: ["solutions"] });
+			invalidate();
+			toast.success("Solution uninstalled (inactive)");
 		},
 		onError: (err: unknown) => {
 			toast.error("Failed to uninstall", {
@@ -1217,6 +1464,39 @@ export function SolutionDetail() {
 			});
 		},
 	});
+
+	/** Hard-delete — permanently destroys everything. Requires confirm === slug. */
+	const hardDeleteMut = useMutation({
+		mutationFn: () => deleteSolution(solutionId!, hardDeleteConfirm),
+		onSuccess: (summary) => {
+			queryClient.invalidateQueries({ queryKey: ["solutions"] });
+			toast.success("Solution permanently deleted", {
+				description: `Removed ${summary.workflows_deleted} workflows, ${summary.apps_deleted} apps, ${summary.forms_deleted} forms, ${summary.agents_deleted} agents, ${summary.tables_deleted} tables, ${summary.files_swept} files.`,
+			});
+			navigate("/solutions");
+		},
+		onError: (err: unknown) => {
+			toast.error("Failed to delete solution", {
+				description: err instanceof Error ? err.message : "Unknown error",
+			});
+		},
+	});
+
+	/** Open the hard-delete modal and eagerly fetch the deletion-summary. */
+	async function openHardDelete() {
+		setHardDeleteConfirm("");
+		setDeletionSummary(null);
+		setHardDeleteOpen(true);
+		setDeletionSummaryLoading(true);
+		try {
+			const summary = await getSolutionDeletionSummary(solutionId!);
+			setDeletionSummary(summary);
+		} catch {
+			// Summary is informational — allow the modal to proceed without it.
+		} finally {
+			setDeletionSummaryLoading(false);
+		}
+	}
 
 	// "Update now" for a git-connected install with an available update: pull the
 	// repo at its configured ref and full-replace the installed content. The
@@ -1269,6 +1549,7 @@ export function SolutionDetail() {
 			agents: data?.agents?.length ?? 0,
 			tables: data?.tables?.length ?? 0,
 			claims: data?.claims?.length ?? 0,
+			files: data?.files?.length ?? 0,
 		} satisfies Record<EntityKind, number>;
 	}, [data]);
 
@@ -1278,8 +1559,12 @@ export function SolutionDetail() {
 	);
 	const configsCount = data?.configs?.length ?? 0;
 
-	const itemsFor = (key: EntityKind): EntitySummary[] =>
-		(data?.[key] as EntitySummary[] | undefined) ?? [];
+	// `files` carries SolutionFileSummary[], not EntitySummary[] — EntityTabContent
+	// handles the files kind before it reaches the EntitySummary rendering path.
+	const itemsFor = (key: EntityKind): EntitySummary[] => {
+		if (key === "files") return [];
+		return (data?.[key] as EntitySummary[] | undefined) ?? [];
+	};
 
 	const requiredUnset = data?.required_configs_unset ?? [];
 	// Contents tab: "All" shows a combined per-type summary; a specific chip
@@ -1289,6 +1574,10 @@ export function SolutionDetail() {
 		useState<ContentsFilter>("all");
 	const activeKind: EntityKind | null =
 		contentsFilter === "all" ? null : contentsFilter;
+	function openContentKind(kind: EntityKind) {
+		setContentsFilter(kind);
+		setTab("contents");
+	}
 
 	return (
 		<div
@@ -1355,6 +1644,16 @@ export function SolutionDetail() {
 								)}
 							</p>
 							<div className="mt-3 flex flex-wrap items-center gap-2">
+								{sol.status === "inactive" && (
+									<Badge
+										variant="secondary"
+										className="gap-1 border-muted-foreground/30 text-muted-foreground"
+										data-testid="status-inactive-badge"
+									>
+										<PowerOff className="h-3 w-3" />
+										Inactive
+									</Badge>
+								)}
 								{sol.version && (
 									<Badge variant="outline">v{sol.version}</Badge>
 								)}
@@ -1403,7 +1702,7 @@ export function SolutionDetail() {
 							)}
 						</div>
 						<div className="flex shrink-0 items-center justify-end gap-2">
-							{sol.setup_complete === false && (
+							{sol.setup_complete === false && sol.status !== "inactive" && (
 								<Button
 									data-testid="continue-setup"
 									variant="outline"
@@ -1414,7 +1713,17 @@ export function SolutionDetail() {
 									Continue Setup
 								</Button>
 							)}
-							{sol.git_connected && sol.update_available_version ? (
+							{sol.status === "inactive" ? (
+								<Button
+									data-testid="reactivate-solution"
+									variant="outline"
+									className="whitespace-nowrap"
+									onClick={() => setUpdateOpen(true)}
+								>
+									<RotateCcw className="mr-1.5 h-4 w-4" />
+									Reactivate
+								</Button>
+							) : sol.git_connected && sol.update_available_version ? (
 								<Button
 									data-testid="update-now"
 									className="whitespace-nowrap"
@@ -1439,14 +1748,13 @@ export function SolutionDetail() {
 								</Button>
 							)}
 							<SolutionActionsMenu
-								exporting={exportMut.isPending}
+								exporting={exportMut.isPending || backupExportMut.isPending}
+								isInactive={sol.status === "inactive"}
 								onCapture={() => setCaptureOpen(true)}
 								onExport={() => setExportDialogOpen(true)}
 								onEdit={() => setEditOpen(true)}
-								onDelete={() => {
-									setDeleteConfirm("");
-									setDeleteOpen(true);
-								}}
+								onUninstall={() => uninstallMut.mutate()}
+								onHardDelete={openHardDelete}
 							/>
 						</div>
 					</div>
@@ -1523,6 +1831,14 @@ export function SolutionDetail() {
 									)
 								)}
 							</TabsTrigger>
+							<TabsTrigger
+								value="exports"
+								data-testid="tab-exports"
+								className="gap-1.5"
+							>
+								<Archive className="h-4 w-4" />
+								Exports
+							</TabsTrigger>
 						</TabsList>
 
 						{/* OVERVIEW — README leads (it's the description, not a section),
@@ -1530,18 +1846,12 @@ export function SolutionDetail() {
 						<TabsContent value="overview" className="flex-1 min-h-0">
 							<OverviewTab
 								readme={readmeData?.readme ?? null}
-								canEditReadme={isPlatformAdmin && !sol.git_connected}
-								onSaveReadme={async (md) => {
-									await putSolutionReadme(sol.id, md.trim() ? md : null);
-									toast.success("README saved");
-									invalidate();
-								}}
 								entityCounts={entityCounts}
 								configsCount={configsCount}
 								version={sol.version ?? null}
 								gitConnected={sol.git_connected}
 								orgName={orgName}
-								onGoToContents={() => setTab("contents")}
+								onPickEntity={openContentKind}
 							/>
 						</TabsContent>
 
@@ -1581,6 +1891,8 @@ export function SolutionDetail() {
 										kind={activeKind}
 										items={itemsFor(activeKind)}
 										solutionId={sol.id}
+										solutionName={sol.name}
+										fileCount={entityCounts.files}
 									/>
 								) : (
 									<ContentsSummary
@@ -1624,6 +1936,26 @@ export function SolutionDetail() {
 										});
 									}
 								}}
+							/>
+						</TabsContent>
+
+						<TabsContent value="exports" className="flex-1 min-h-0 overflow-auto">
+							<ExportsTab
+								jobs={exportJobsQuery.data?.jobs ?? []}
+								isLoading={exportJobsQuery.isLoading}
+								error={
+									exportJobsQuery.error instanceof Error
+										? exportJobsQuery.error.message
+										: exportJobsQuery.isError
+											? "Failed to load backup exports"
+											: undefined
+								}
+								downloadingJobId={
+									downloadExportJobMut.isPending
+										? (downloadExportJobMut.variables ?? null)
+										: null
+								}
+								onDownload={(job) => downloadExportJobMut.mutate(job.id)}
 							/>
 						</TabsContent>
 					</Tabs>
@@ -1724,83 +2056,171 @@ export function SolutionDetail() {
 					<ExportSolutionDialog
 						open={exportDialogOpen}
 						onOpenChange={setExportDialogOpen}
-						onExport={(mode, password, includeData) =>
-							exportMut.mutate({ mode, password, includeData })
-						}
-						isPending={exportMut.isPending}
+						onExport={(mode, password, options) => {
+							if (mode === "full") {
+								backupExportMut.mutate({
+									password: password ?? "",
+									options: options ?? {
+										includeConfigs: true,
+										includeSecrets: false,
+										includeTables: false,
+										includeFiles: true,
+									},
+								});
+								return;
+							}
+							exportMut.mutate({ mode, password, options });
+						}}
+						isPending={exportMut.isPending || backupExportMut.isPending}
 					/>
 
-					{/* Delete / uninstall dialog (type-to-confirm) */}
+					{/* Hard-delete confirmation modal (type-the-slug to confirm) */}
 					<Dialog
-						open={deleteOpen}
+						open={hardDeleteOpen}
 						onOpenChange={(o) => {
-							if (!o) {
-								setDeleteOpen(false);
-								setDeleteConfirm("");
+							if (!o && !hardDeleteMut.isPending) {
+								setHardDeleteOpen(false);
+								setHardDeleteConfirm("");
 							}
 						}}
 					>
-						<DialogContent data-testid="delete-dialog">
+						<DialogContent data-testid="hard-delete-dialog">
 							<DialogHeader>
-								<DialogTitle>Uninstall {sol.name}?</DialogTitle>
+								<DialogTitle className="flex items-center gap-2">
+									<Trash2 className="h-4 w-4 text-destructive" />
+									Permanently delete {sol.name}?
+								</DialogTitle>
 								<DialogDescription asChild>
 									<div className="space-y-2 text-sm text-muted-foreground">
 										<p>
-											Workflows, apps, forms, and agents will be
-											removed.
-										</p>
-										<p>
+											This is{" "}
 											<span className="font-medium text-foreground">
-												Tables (and their data) and config values
-												are kept as orphaned data
-											</span>{" "}
-											— they will be reattached if you reinstall this
-											Solution.
+												irreversible
+											</span>
+											. All owned entities and files will be
+											permanently destroyed.
 										</p>
-										<p>The git repository is not touched.</p>
+										{deletionSummaryLoading && (
+											<p className="flex items-center gap-2">
+												<Loader2 className="h-4 w-4 animate-spin" />
+												Loading what will be deleted…
+											</p>
+										)}
+										{deletionSummary && !deletionSummaryLoading && (
+											<ul
+												className="list-disc pl-4 text-foreground"
+												data-testid="deletion-summary-list"
+											>
+												{deletionSummary.files > 0 && (
+													<li>
+														{deletionSummary.files} file
+														{deletionSummary.files !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.tables > 0 && (
+													<li>
+														{deletionSummary.tables} table
+														{deletionSummary.tables !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.workflows > 0 && (
+													<li>
+														{deletionSummary.workflows} workflow
+														{deletionSummary.workflows !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.apps > 0 && (
+													<li>
+														{deletionSummary.apps} app
+														{deletionSummary.apps !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.forms > 0 && (
+													<li>
+														{deletionSummary.forms} form
+														{deletionSummary.forms !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.agents > 0 && (
+													<li>
+														{deletionSummary.agents} agent
+														{deletionSummary.agents !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.claims > 0 && (
+													<li>
+														{deletionSummary.claims} custom claim
+														{deletionSummary.claims !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.events > 0 && (
+													<li>
+														{deletionSummary.events} event
+														{deletionSummary.events !== 1 ? "s" : ""}
+													</li>
+												)}
+												{deletionSummary.config_declarations > 0 && (
+													<li>
+														{deletionSummary.config_declarations} config
+														declaration
+														{deletionSummary.config_declarations !== 1
+															? "s"
+															: ""}
+													</li>
+												)}
+											</ul>
+										)}
 									</div>
 								</DialogDescription>
 							</DialogHeader>
 
 							<div className="space-y-2">
-								<Label htmlFor="delete-confirm">
-									Type{" "}
-									<span className="font-mono font-semibold text-foreground">
-										{sol.name}
-									</span>{" "}
-									to confirm
-								</Label>
+								<div className="space-y-1">
+									<Label htmlFor="hard-delete-confirm">
+										Type the Solution slug to confirm
+									</Label>
+									<div
+										data-testid="hard-delete-slug"
+										className="break-all rounded-md border bg-muted px-2.5 py-2 font-mono text-xs font-semibold text-foreground"
+									>
+										{sol.slug}
+									</div>
+								</div>
 								<Input
-									id="delete-confirm"
-									data-testid="delete-confirm-input"
-									value={deleteConfirm}
-									onChange={(e) => setDeleteConfirm(e.target.value)}
+									id="hard-delete-confirm"
+									data-testid="hard-delete-confirm-input"
+									value={hardDeleteConfirm}
+									onChange={(e) => setHardDeleteConfirm(e.target.value)}
 									autoComplete="off"
+									placeholder={sol.slug}
 								/>
 							</div>
 
 							<DialogFooter>
 								<Button
 									variant="outline"
+									disabled={hardDeleteMut.isPending}
 									onClick={() => {
-										setDeleteOpen(false);
-										setDeleteConfirm("");
+										setHardDeleteOpen(false);
+										setHardDeleteConfirm("");
 									}}
 								>
 									Cancel
 								</Button>
 								<Button
 									variant="destructive"
-									data-testid="confirm-delete"
+									data-testid="confirm-hard-delete"
 									disabled={
-										deleteConfirm !== sol.name || deleteMut.isPending
+										hardDeleteConfirm !== sol.slug ||
+										hardDeleteMut.isPending
 									}
-									onClick={() => deleteMut.mutate()}
+									onClick={() => hardDeleteMut.mutate()}
 								>
-									{deleteMut.isPending && (
+									{hardDeleteMut.isPending && (
 										<Loader2 className="mr-2 h-4 w-4 animate-spin" />
 									)}
-									Uninstall
+									<Trash2 className="mr-1.5 h-4 w-4" />
+									Delete permanently
 								</Button>
 							</DialogFooter>
 						</DialogContent>

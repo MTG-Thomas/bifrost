@@ -40,6 +40,8 @@ from bifrost.contracts.events import (
     ScheduleSourceConfig,
     WebhookSourceConfig,
 )
+from bifrost.contracts.files import FilePolicyCreate, FilePolicyUpdate
+from bifrost.contracts.policy_rules import PolicyRuleCreate, PolicyRuleUpdate
 from bifrost.contracts.forms import FormCreate, FormUpdate
 from bifrost.contracts.integrations import (
     ConfigSchemaItem,
@@ -71,6 +73,12 @@ __all__ = [
     # Forms
     "FormCreate",
     "FormUpdate",
+    # Files
+    "FilePolicyCreate",
+    "FilePolicyUpdate",
+    # Policy rules
+    "PolicyRuleCreate",
+    "PolicyRuleUpdate",
     # Agents
     "AgentCreate",
     "AgentUpdate",

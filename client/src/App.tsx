@@ -176,6 +176,9 @@ const DevicePage = lazyWithReload(() =>
 const Tables = lazyWithReload(() =>
 	import("@/pages/Tables").then((m) => ({ default: m.Tables })),
 );
+const Files = lazyWithReload(() =>
+	import("@/pages/Files").then((m) => ({ default: m.Files })),
+);
 const Knowledge = lazyWithReload(() =>
 	import("@/pages/Knowledge").then((m) => ({ default: m.Knowledge })),
 );
@@ -481,6 +484,16 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute requirePlatformAdmin>
 									<TableDetail />
+								</ProtectedRoute>
+							}
+						/>
+
+						{/* Files - PlatformAdmin only */}
+						<Route
+							path="files"
+							element={
+								<ProtectedRoute requirePlatformAdmin>
+									<Files />
 								</ProtectedRoute>
 							}
 						/>

@@ -259,9 +259,14 @@ async def test_delete_git_connected_install_with_connections(e2e_client, platfor
         headers=platform_admin.headers,
     )
     assert inst.status_code == 201, inst.text
-    sid = inst.json()["id"]
+    sol = inst.json()
+    sid = sol["id"]
 
-    resp = e2e_client.delete(f"/api/solutions/{sid}", headers=platform_admin.headers)
+    resp = e2e_client.delete(
+        f"/api/solutions/{sid}",
+        headers=platform_admin.headers,
+        params={"confirm": sol["slug"]},
+    )
     assert resp.status_code == 200, resp.text  # MUST NOT 500 (F3)
 
     assert (

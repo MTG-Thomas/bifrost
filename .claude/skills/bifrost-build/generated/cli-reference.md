@@ -356,7 +356,7 @@ Usage: claims create [OPTIONS]
 Options:
   --name TEXT                     name  [required]
   --description TEXT              description
-  --type TEXT                     type
+  --type [list|scalar]            type
   --query TEXT                    query as JSON literal or @path to a
                                   YAML/JSON file.  [required]
   --global                        Target global scope (org=NULL). Alias for
@@ -432,7 +432,7 @@ Usage: claims update [OPTIONS] NAME
 
 Options:
   --description TEXT              description
-  --type TEXT                     type
+  --type [list|scalar]            type
   --query TEXT                    query as JSON literal or @path to a
                                   YAML/JSON file.
   --global                        Target global scope (org=NULL). Alias for
@@ -816,19 +816,41 @@ Options:
 ```
 Usage: files [OPTIONS] COMMAND [ARGS]...
 
-  Read, write, list, search workspace files.
+  Read, write, list, search files and manage file policies.
+
+  Without --solution, commands target the global _repo workspace file scope
+  (location "workspace" by default). With --solution <slug|id>,
+  read/write/list target that Solution install's runtime file scope and
+  default the location to "solutions". Solution source files are deployed from
+  the local workspace with `bifrost solution deploy`; `bifrost files
+  --solution ...` is for runtime/user file bytes after install, not for
+  editing deploy-owned source.
+
+  `bifrost files write` writes one explicit file through the Files API. It
+  does not walk a local tree, apply the sync ignore rules, compare server
+  state, or trigger the push/sync TUI. Use `bifrost push`/`sync`/`watch` when
+  local disk is the source of truth for _repo source files; use `files write`
+  for one-off API writes, scripts, or Solution runtime file data.
+
+  Examples:
+    bifrost files list workflows/              # global _repo files
+    bifrost files write notes.txt --content hi # one direct API write
+    bifrost files read apps/desk/pages/App.tsx # global _repo file
+    bifrost files list --solution desk         # Solution runtime files
+    bifrost files read notes/today.txt --solution desk
 
 Options:
   --json  Emit JSON instead of human-readable output.
   --help  Show this message and exit.
 
 Commands:
-  delete  Delete a workspace file.
-  exists  Check if a file exists.
-  list    List files in a directory (default: location root).
-  read    Read a workspace file and write its contents to stdout.
-  search  Search workspace file contents.
-  write   Write to a workspace file.
+  delete    Delete a workspace file.
+  exists    Check if a file exists.
+  list      List files in a directory (default: location root).
+  policies  Manage file access policies.
+  read      Read a workspace file and write its contents to stdout.
+  search    Search workspace file contents.
+  write     Write to a workspace file.
 ```
 
 ### `files delete`
@@ -868,11 +890,95 @@ Usage: files list [OPTIONS] [DIRECTORY]
 
   List files in a directory (default: location root).
 
+  Pass ``--solution`` to target a solution install's file scope.
+
 Options:
   --location TEXT  Storage location. Special: "workspace" (default), "temp",
                    "uploads". Custom names (e.g. "reports") are accepted;
                    "_repo", "_tmp", and "_apps" are blocked.
+  --solution TEXT  Solution install slug or UUID. When given, targets that
+                   install's file scope (location defaults to "solutions").
+                   Slug resolved via GET /api/solutions.
   --json           Emit JSON instead of human-readable output.
+  --help           Show this message and exit.
+```
+
+### `files policies`
+
+```
+Usage: files policies [OPTIONS] COMMAND [ARGS]...
+
+  Manage file access policies.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  delete  Delete the file policy for a path prefix.
+  get     Get the file policy for a path prefix.
+  list    List file policies for a location and optional org scope.
+  set     Create or replace the file policy for a path prefix.
+```
+
+#### `files policies delete`
+
+```
+Usage: files policies delete [OPTIONS] PATH
+
+  Delete the file policy for a path prefix.
+
+Options:
+  --location TEXT  Storage location. Special: "workspace" (default), "temp",
+                   "uploads". Custom names (e.g. "reports") are accepted;
+                   "_repo", "_tmp", and "_apps" are blocked.
+  --scope TEXT     Organization UUID for org-scoped policies.
+  --help           Show this message and exit.
+```
+
+#### `files policies get`
+
+```
+Usage: files policies get [OPTIONS] PATH
+
+  Get the file policy for a path prefix.
+
+Options:
+  --location TEXT  Storage location. Special: "workspace" (default), "temp",
+                   "uploads". Custom names (e.g. "reports") are accepted;
+                   "_repo", "_tmp", and "_apps" are blocked.
+  --scope TEXT     Organization UUID for org-scoped policies.
+  --help           Show this message and exit.
+```
+
+#### `files policies list`
+
+```
+Usage: files policies list [OPTIONS]
+
+  List file policies for a location and optional org scope.
+
+Options:
+  --location TEXT  Storage location. Special: "workspace" (default), "temp",
+                   "uploads". Custom names (e.g. "reports") are accepted;
+                   "_repo", "_tmp", and "_apps" are blocked.
+  --scope TEXT     Organization UUID for org-scoped policies.
+  --help           Show this message and exit.
+```
+
+#### `files policies set`
+
+```
+Usage: files policies set [OPTIONS] PATH
+
+  Create or replace the file policy for a path prefix.
+
+Options:
+  --location TEXT  Storage location. Special: "workspace" (default), "temp",
+                   "uploads". Custom names (e.g. "reports") are accepted;
+                   "_repo", "_tmp", and "_apps" are blocked.
+  --scope TEXT     Organization UUID for org-scoped policies.
+  --file FILE      JSON/YAML policy document to store.  [required]
   --help           Show this message and exit.
 ```
 
@@ -884,12 +990,15 @@ Usage: files read [OPTIONS] PATH
   Read a workspace file and write its contents to stdout.
 
   Text files only. The SDK has `read_bytes` for binary; this CLI verb does
-  not.
+  not. Pass ``--solution`` to target a solution install's file scope.
 
 Options:
   --location TEXT  Storage location. Special: "workspace" (default), "temp",
                    "uploads". Custom names (e.g. "reports") are accepted;
                    "_repo", "_tmp", and "_apps" are blocked.
+  --solution TEXT  Solution install slug or UUID. When given, targets that
+                   install's file scope (location defaults to "solutions").
+                   Slug resolved via GET /api/solutions.
   --json           Emit JSON instead of human-readable output.
   --help           Show this message and exit.
 ```
@@ -919,7 +1028,8 @@ Usage: files write [OPTIONS] PATH [SOURCE]
 
   Write to a workspace file. Source: --content, --from-file, or `-` for stdin.
 
-  Text files only. Pass --content "" to truncate an existing file.
+  Text files only. Pass --content "" to truncate an existing file. Pass
+  ``--solution`` to target a solution install's file scope.
 
 Options:
   --content TEXT    Inline content to write.
@@ -927,6 +1037,9 @@ Options:
   --location TEXT   Storage location. Special: "workspace" (default), "temp",
                     "uploads". Custom names (e.g. "reports") are accepted;
                     "_repo", "_tmp", and "_apps" are blocked.
+  --solution TEXT   Solution install slug or UUID. When given, targets that
+                    install's file scope (location defaults to "solutions").
+                    Slug resolved via GET /api/solutions.
   --json            Emit JSON instead of human-readable output.
   --help            Show this message and exit.
 ```
@@ -1307,6 +1420,136 @@ Options:
   --help                        Show this message and exit.
 ```
 
+## `policy-rule`
+
+```
+Usage: policy-rule [OPTIONS] COMMAND [ARGS]...
+
+  Manage named, reusable policy rules.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  create  Create a named policy rule.
+  delete  Delete a named policy rule.
+  get     Get a single policy rule by domain and name.
+  list    List named policy rules.
+  update  Update a named policy rule.
+  usages  Show all file-policies and tables that reference a rule.
+```
+
+### `policy-rule create`
+
+```
+Usage: policy-rule create [OPTIONS]
+
+  Create a named policy rule.
+
+  ``--body`` accepts a JSON literal or ``@path/to/file.yaml``.
+
+  Example:
+
+  \b     bifrost policy-rule create --name read_all --domain file \
+  --body '{"actions": ["read"], "when": null}'
+
+  Org targeting follows the unified ``--org`` standard.
+
+Options:
+  --name TEXT                     name  [required]
+  --domain [file|table]           domain  [required]
+  --description TEXT              description
+  --body TEXT                     body as JSON literal or @path to a YAML/JSON
+                                  file.  [required]
+  --global                        Target global scope (org=NULL). Alias for
+                                  --org global.
+  --org, --organization, --scope TEXT
+                                  Org UUID/name, or 'none'/'global' for global
+                                  scope. Omit = your org. (--organization /
+                                  --scope are synonyms.)
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
+```
+
+### `policy-rule delete`
+
+```
+Usage: policy-rule delete [OPTIONS] {file|table} NAME
+
+  Delete a named policy rule.
+
+  ``DOMAIN`` is 'file' or 'table'. ``NAME`` is the rule's name. Fails with 409
+  if the rule is read-only (built-in) or in use.
+
+Options:
+  --scope TEXT  Organization UUID for org-scoped rules.
+  --json        Emit JSON instead of human-readable output.
+  --help        Show this message and exit.
+```
+
+### `policy-rule get`
+
+```
+Usage: policy-rule get [OPTIONS] {file|table} NAME
+
+  Get a single policy rule by domain and name.
+
+  Uses the usages endpoint (which 404s when not found) to confirm the rule
+  exists, then fetches the full record from the list.
+
+Options:
+  --scope TEXT  Organization UUID for org-scoped rules.
+  --json        Emit JSON instead of human-readable output.
+  --help        Show this message and exit.
+```
+
+### `policy-rule list`
+
+```
+Usage: policy-rule list [OPTIONS]
+
+  List named policy rules.
+
+Options:
+  --domain [file|table]  Filter by domain ('file' or 'table').
+  --scope TEXT           Organization UUID to filter by scope.
+  --json                 Emit JSON instead of human-readable output.
+  --help                 Show this message and exit.
+```
+
+### `policy-rule update`
+
+```
+Usage: policy-rule update [OPTIONS] {file|table} NAME
+
+  Update a named policy rule.
+
+  ``DOMAIN`` is 'file' or 'table'. ``NAME`` is the rule's name. Unset flags
+  are omitted; the server preserves existing values.
+
+Options:
+  --name TEXT         name
+  --description TEXT  description
+  --body TEXT         body as JSON literal or @path to a YAML/JSON file.
+  --scope TEXT        Organization UUID for org-scoped rules.
+  --json              Emit JSON instead of human-readable output.
+  --help              Show this message and exit.
+```
+
+### `policy-rule usages`
+
+```
+Usage: policy-rule usages [OPTIONS] {file|table} NAME
+
+  Show all file-policies and tables that reference a rule.
+
+Options:
+  --scope TEXT  Organization UUID for org-scoped rules.
+  --json        Emit JSON instead of human-readable output.
+  --help        Show this message and exit.
+```
+
 ## `requirements`
 
 ```
@@ -1542,6 +1785,7 @@ Options:
                            blob.
   --out TEXT               Output zip path (default: <slug>-<version>.zip in
                            the current directory).
+  --include-data           Include runtime data in a full backup export.
   --help                   Show this message and exit.
 ```
 
@@ -1678,11 +1922,12 @@ Options:
   --help  Show this message and exit.
 
 Commands:
-  create  Create a new table.
-  delete  Delete a table and all its documents.
-  get     Get a single table by UUID or name.
-  list    List all tables (wrapped ``{tables, total}`` payload from the...
-  update  Update a table.
+  create    Create a new table.
+  delete    Delete a table and all its documents.
+  get       Get a single table by UUID or name.
+  list      List all tables (wrapped ``{tables, total}`` payload from the...
+  policies  Manage table access policies.
+  update    Update a table.
 ```
 
 ### `tables create`
@@ -1755,6 +2000,56 @@ Usage: tables list [OPTIONS]
 Options:
   --json  Emit JSON instead of human-readable output.
   --help  Show this message and exit.
+```
+
+### `tables policies`
+
+```
+Usage: tables policies [OPTIONS] COMMAND [ARGS]...
+
+  Manage table access policies.
+
+Options:
+  --json  Emit JSON instead of human-readable output.
+  --help  Show this message and exit.
+
+Commands:
+  get  Get the access policies for a table.
+  set  Set the access policies for a table.
+```
+
+#### `tables policies get`
+
+```
+Usage: tables policies get [OPTIONS] REF
+
+  Get the access policies for a table.
+
+  ``REF`` is a UUID or table name. Returns the ``policies`` field from the
+  table record, which may contain inline policy objects and/or ``{"$ref":
+  "rule-name"}`` references to named policy rules.
+
+Options:
+  --help  Show this message and exit.
+```
+
+#### `tables policies set`
+
+```
+Usage: tables policies set [OPTIONS] REF
+
+  Set the access policies for a table.
+
+  ``REF`` is a UUID or table name. ``--file`` must be a JSON or YAML document
+  whose ``policies`` key (or top-level list) contains policy objects and/or
+  ``{"$ref": "rule-name"}`` references to named policy rules. The document is
+  round-tripped unchanged — ``$ref`` entries are stored and later resolved at
+  query time.
+
+Options:
+  --file FILE  JSON/YAML policy document to store. May contain ``{"$ref":
+               "rule-name"}`` entries.  [required]
+  --help       Show this message and exit.
 ```
 
 ### `tables update`

@@ -80,6 +80,9 @@ logger = logging.getLogger(__name__)
 # and only the first TABLE_ROW_CAP rows are included — no silent truncation.
 TABLE_ROW_CAP = 50_000
 
+# Hard cap on files exported per solution to keep the encrypted blob bounded.
+FILE_CAP = 1_000
+
 
 def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
@@ -343,6 +346,7 @@ class SolutionCaptureService:
         include_imports: bool = False,
         include_values: bool = False,
         include_data: bool = False,
+        include_files: bool = False,
     ) -> SolutionBundle:
         workflows = await self._workflow_entries(solution.id)
         tables = await self._table_entries(solution.id)
@@ -352,6 +356,7 @@ class SolutionCaptureService:
         claims = await self._claim_entries(solution.id)
         config_schemas = await self._config_entries(solution.id)
         connection_schemas = await self._connection_entries(solution.id)
+        file_locations = await self._file_location_entries(solution.id)
         events = await self._event_entries(solution.id)
         python_files = await self._python_files(
             workflows, include_imports=include_imports
@@ -362,6 +367,9 @@ class SolutionCaptureService:
         table_data: dict[str, list[dict[str, Any]]] = {}
         if include_data:
             table_data = await self._table_data(solution)
+        solution_files: list[Any] = []
+        if include_files:
+            solution_files = await self._solution_file_entries(solution)
         return SolutionBundle(
             solution=solution,
             python_files=python_files,
@@ -373,11 +381,13 @@ class SolutionCaptureService:
             claims=claims,
             config_schemas=config_schemas,
             connection_schemas=connection_schemas,
+            file_locations=file_locations,
             events=events,
             readme=solution.readme,
             version=solution.version,
             config_values=config_values,
             table_data=table_data,
+            solution_files=solution_files,
         )
 
     async def _workflow_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
@@ -729,6 +739,38 @@ class SolutionCaptureService:
                 existing.position = pos
         return entries
 
+    async def _solution_file_entries(self, solution: Solution) -> list[Any]:
+        """Return solution-owned file metadata for a full-backup export."""
+        from src.services.solution_files import enumerate_solution_files
+
+        entries = await enumerate_solution_files(self.db, solution.id)
+        if not entries:
+            return []
+
+        if len(entries) > FILE_CAP:
+            logger.warning(
+                "bundle_for: solution %r has more than %d files; "
+                "only the first %d files are included in the export bundle.",
+                solution.slug,
+                FILE_CAP,
+                FILE_CAP,
+            )
+            entries = entries[:FILE_CAP]
+
+        return entries
+
+    async def _file_location_entries(self, solution_id: UUID) -> list[str]:
+        from src.models.orm.solution_file_location import SolutionFileLocation
+
+        rows = (
+            await self.db.execute(
+                select(SolutionFileLocation.location)
+                .where(SolutionFileLocation.solution_id == solution_id)
+                .order_by(SolutionFileLocation.position, SolutionFileLocation.location)
+            )
+        ).scalars().all()
+        return list(rows)
+
     async def _config_values(self, solution: Solution) -> dict[str, str]:
         """Read the plaintext value for each declared config key that has a value set.
 
@@ -763,7 +805,6 @@ class SolutionCaptureService:
                 Config.organization_id == solution.organization_id
                 if solution.organization_id is not None
                 else Config.organization_id.is_(None),
-                Config.orphaned_at.is_(None),
             )
             config = (await self.db.execute(q)).scalar_one_or_none()
             if config is None:

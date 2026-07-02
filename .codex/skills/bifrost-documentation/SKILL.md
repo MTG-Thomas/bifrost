@@ -1,13 +1,31 @@
 ---
 name: bifrost-documentation
-description: Refresh the bifrost-integrations-docs site by re-capturing screenshots and (optionally) authoring missing pages. Trigger phrases - "refresh docs", "update screenshots", "/bifrost-documentation", "rebuild docs site". Has three modes - bootstrap (one-shot manifest generation, mandatory first run), diff (default - only refresh entries whose Bifrost source changed), full (re-capture and re-author everything).
+description: Refresh the gobifrost site by re-capturing screenshots and (optionally) authoring missing pages. Trigger phrases - "refresh docs", "update screenshots", "/bifrost-documentation", "rebuild docs site". Has three modes - bootstrap (one-shot manifest generation, mandatory first run), diff (default - only refresh entries whose Bifrost source changed), full (re-capture and re-author everything).
 ---
 
 # Bifrost Documentation Pipeline
 
-Refresh `bifrost-integrations-docs` programmatically: re-capture screenshots, author missing Diátaxis-shaped pages, open a docs PR with a TL;DR.
+Refresh `gobifrost` programmatically: re-capture screenshots, author missing Diátaxis-shaped pages, open a docs PR with a TL;DR.
 
-The docs repo is at `~/GitHub/bifrost-integrations-docs` (or clone it from `git@github.com:jackmusick/bifrost-integrations-docs.git` if missing). The bifrost repo's worktree is the source of truth for the running app.
+The docs repo is at `~/GitHub/gobifrost` (or clone it from `git@github.com:gobifrost/website.git` if missing). The bifrost repo's worktree is the source of truth for the running app.
+
+## Default behavior — "catch up everything since the last documented commit"
+
+**When invoked with no mode, do the whole job in one pass — both existing and net-new surface.** The user's expectation: *"run it, figure it all out — all new features, all existing features. Know the last commit it fully documented, document all changes and features since, and update it with screenshots."* Don't ask which mode; just bring the docs current.
+
+The watermark already lives in the manifest: each entry carries `captured_at.bifrost_sha`. The **lowest** sha across all entries is the "fully documented through" commit. Net-new surface is discovered by **router-walk ∖ manifest**.
+
+Run this sequence (fan out the per-page work with `Workflow` — one agent per page — when there's more than a handful):
+
+1. **Establish the watermark.** `WATERMARK=$(min captured_at.bifrost_sha across screenshots.yaml entries)`. Everything in `git log $WATERMARK..HEAD` (bifrost) is in scope.
+2. **Discover undocumented routes.** Enumerate client routes from `client/src/App.tsx` (`grep -oE 'path="[^"]+"'`), normalize, and subtract every `route:` already in `screenshots.yaml`. The remainder is net-new surface needing **MDX + a manifest entry + fixtures**. (Skip non-visual routes: `*/callback*`, `device`, `mfa-setup`, `auth/*`, param-only redirects.)
+3. **Discover stale existing entries.** Entries whose `source_globs` changed in `$WATERMARK..HEAD`, or whose `captured_at.bifrost_sha` is behind HEAD — these need a re-capture (and a prose check if the feature changed, not just pixels).
+4. **Author (fan out).** For each net-new route: pick the Diátaxis quadrant, write the MDX page, add the sidebar entry, and add a `screenshots.yaml` entry (`id`, `route`, `seed`, `diataxis.{page,type}`, per-entry `mocks`/fixtures). For each stale page: update prose if the feature changed. Apply the anti-bloat self-review. **MDX comments are `{/* */}`, never `<!-- -->`.**
+5. **Capture in one loop.** `scripts/docs/run-pipeline.sh --docs-repo $DOCS --bifrost-repo $BIFROST --full` (or `--ids <new+stale ids>`). Runs headless in the playwright-runner container **on this host** — no external browser. Pixel-diff gates commits.
+6. **Stamp the watermark forward.** Every captured entry's `captured_at.bifrost_sha` is set to the bifrost HEAD it was captured against. That advances the watermark so the next run starts exactly here.
+7. **Build + lint + PR.** `npm run lint:manifest` and `npm run build` must pass; commit; open the docs PR with the TL;DR.
+
+The named modes below are the surgical primitives this default orchestrates. Reach for a single mode only when you explicitly want just that slice (e.g. `lint` after hand-editing). The default path is what a release or a monthly catch-up should use.
 
 ## Default behavior — "catch up everything since the last documented commit"
 
@@ -39,13 +57,13 @@ The named modes below are the surgical primitives this default orchestrates. Rea
 ## Workflow
 
 1. **Preflight**
-   - Locate docs repo. Try `~/GitHub/bifrost-integrations-docs` then `/tmp/bifrost-integrations-docs`. If missing, clone to `~/GitHub/`.
+   - Locate docs repo. Try `~/GitHub/gobifrost` then `/tmp/gobifrost`. If missing, clone to `~/GitHub/`.
    - Verify clean tree (`git status --porcelain` empty). If dirty, ask the user to commit/stash before continuing.
    - Pull `main` (`git pull --ff-only origin main`).
    - **Compare last-update timestamps** as a sanity signal:
      ```bash
      BIFROST_LAST=$(cd ~/GitHub/bifrost && git log -1 --format=%cI origin/main)
-     DOCS_LAST=$(cd ~/GitHub/bifrost-integrations-docs && git log -1 --format=%cI origin/main)
+     DOCS_LAST=$(cd ~/GitHub/gobifrost && git log -1 --format=%cI origin/main)
      echo "bifrost: $BIFROST_LAST"
      echo "docs:    $DOCS_LAST"
      ```

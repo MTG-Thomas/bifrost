@@ -26,9 +26,23 @@ SOLUTION_MANAGED_MESSAGE = (
 )
 
 
+_SOLUTION_SCOPED_OPERATIONAL_MODELS = {
+    "PendingCaptureORM",
+    "SolutionExportJob",
+}
+
+
+def _is_solution_scoped_operational_row(entity: Any) -> bool:
+    """Rows tied to a solution but written by runtime queues/schedulers."""
+    return entity.__class__.__name__ in _SOLUTION_SCOPED_OPERATIONAL_MODELS
+
+
 def is_solution_managed(entity: Any) -> bool:
-    """True if ``entity`` carries a non-null ``solution_id``."""
-    return getattr(entity, "solution_id", None) is not None
+    """True if ``entity`` carries deploy-owned portable solution state."""
+    return (
+        getattr(entity, "solution_id", None) is not None
+        and not _is_solution_scoped_operational_row(entity)
+    )
 
 
 def assert_not_solution_managed(entity: Any) -> None:
@@ -54,10 +68,8 @@ class SolutionManagedWriteError(Exception):
     """
 
 
-# Models whose instances are solution-managed when solution_id is set. Other
-# ORM classes never carry solution_id and are skipped cheaply.
 def _instance_is_managed(obj: Any) -> bool:
-    return getattr(obj, "solution_id", None) is not None
+    return is_solution_managed(obj)
 
 
 def install_solution_write_guard() -> None:
@@ -96,6 +108,9 @@ async def assert_entity_id_not_solution_managed(
     — rather than a misleading 404 — must look the row up directly. A missing
     row is left alone (the caller's own not-found handling applies).
     """
+    if model.__name__ in _SOLUTION_SCOPED_OPERATIONAL_MODELS:
+        return
+
     solution_id = (
         await db.execute(select(model.solution_id).where(model.id == entity_id))  # type: ignore[attr-defined]
     ).scalar_one_or_none()

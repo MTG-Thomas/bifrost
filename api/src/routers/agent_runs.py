@@ -53,6 +53,7 @@ from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSi
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
+from src.models.orm.solutions import Solution
 from src.models.orm.summary_backfill_job import SummaryBackfillJob
 from src.core.redis_client import get_redis_client
 from src.services.execution.agent_run_service import (
@@ -952,6 +953,22 @@ async def execute_agent_run(
             "message": f"Agent '{agent.name}' is paused. Request not processed.",
             "agent_id": str(agent.id),
         }
+
+    # Inactive-solution gate: an agent belonging to an inactive solution must not
+    # execute.
+    if agent.solution_id is not None:
+        sol_result = await db.execute(
+            select(Solution.status).where(Solution.id == agent.solution_id)
+        )
+        sol_status = sol_result.scalar_one_or_none()
+        if sol_status != "active":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Agent '{agent.name}' belongs to an inactive solution. "
+                    "Reinstall the solution to execute this agent."
+                ),
+            )
 
     # Enqueue the agent run for sync execution
     run_id = await enqueue_agent_run(

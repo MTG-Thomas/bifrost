@@ -212,6 +212,18 @@ class MCPToolAccessService:
             else:
                 query = query.where(Agent.organization_id.is_(None))
 
+        if not is_superuser:
+            scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
+            if scope_org is not None:
+                query = query.where(
+                    or_(
+                        Agent.organization_id == scope_org,
+                        Agent.organization_id.is_(None),
+                    )
+                )
+            else:
+                query = query.where(Agent.organization_id.is_(None))
+
         result = await self.session.execute(query)
         agent = result.scalars().unique().first()
 
@@ -425,6 +437,19 @@ class MCPToolAccessService:
             .where(Agent.is_active.is_(True))
         )
         query = self._apply_agent_org_scope(query, org_id=org_id, is_superuser=is_superuser)
+
+        if not is_superuser:
+            scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
+            if scope_org is not None:
+                query = query.where(
+                    or_(
+                        Agent.organization_id == scope_org,
+                        Agent.organization_id.is_(None),
+                    )
+                )
+            else:
+                # Non-admin with no org: global only.
+                query = query.where(Agent.organization_id.is_(None))
 
         if not is_superuser:
             scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id

@@ -1,6 +1,15 @@
-"""E2E tests for CLI push/pull endpoints and manifest round-tripping."""
+"""E2E tests for CLI push/pull endpoints and manifest round-tripping.
+
+NOTE: these tests deliberately do NOT grant a workspace file policy. `workspace`
+is superuser-only and never policy-governed, so a superuser reaches it without a
+grant — that is the exact path `bifrost sync`/`watch` uses. (A previous autouse
+`grant_file_policy(location="workspace")` fixture here was masking a regression
+where workspace reads/lists default-denied; see test_workspace_superuser_only.py.)
+"""
 import base64
 import hashlib
+import uuid
+from urllib.parse import quote
 
 
 
@@ -214,6 +223,38 @@ def test_list_with_metadata(e2e_client, platform_admin):
     # ETag should match MD5 of content
     expected_md5 = hashlib.md5(content.encode("utf-8")).hexdigest()
     assert item["etag"] == expected_md5
+
+
+def test_workspace_ignores_file_policies_for_superuser(
+    e2e_client,
+    platform_admin,
+):
+    """workspace is superuser-only and NOT policy-governed: setting an empty
+    (deny-all) policy on a workspace path must NOT hide it from a superuser's
+    metadata listing. Guards against workspace policy enforcement regressing
+    back in (which 403'd `bifrost sync`)."""
+    path = f"modules/metadata-denied-{uuid.uuid4().hex}.py"
+    _write_file(e2e_client, platform_admin.headers, path, "# denied metadata")
+
+    # Even an explicit deny-all policy on this exact path is inert for workspace.
+    for _ in range(2):
+        response = e2e_client.put(
+            f"/api/files/policies/{quote(path, safe='')}",
+            headers=platform_admin.headers,
+            params={"location": "workspace"},
+            json={"policies": {"policies": []}},
+        )
+        assert response.status_code == 200, response.text
+
+    resp = e2e_client.post("/api/files/list", headers=platform_admin.headers, json={
+        "include_metadata": True,
+        "mode": "cloud",
+        "location": "workspace",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert path in data["files"]
+    assert path in {item["path"] for item in data["files_metadata"]}
 
 
 def test_list_with_metadata_excludes_git(e2e_client, platform_admin):
