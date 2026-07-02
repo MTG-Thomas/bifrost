@@ -1785,6 +1785,7 @@ Options:
                            blob.
   --out TEXT               Output zip path (default: <slug>-<version>.zip in
                            the current directory).
+  --include-data           Include runtime data in a full backup export.
   --help                   Show this message and exit.
 ```
 
