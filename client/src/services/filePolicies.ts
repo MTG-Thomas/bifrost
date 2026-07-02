@@ -52,9 +52,12 @@ async function parseResponse<T>(response: Response): Promise<T> {
 		if (response.status === 204) return undefined as T;
 		return (await response.json()) as T;
 	}
-	let detail = response.statusText;
+	let detail: string;
 	try {
-		const body = (await response.json()) as { detail?: unknown; message?: unknown };
+		const body = (await response.json()) as {
+			detail?: unknown;
+			message?: unknown;
+		};
 		const raw = body.detail ?? body.message;
 		detail = typeof raw === "string" ? raw : JSON.stringify(raw ?? body);
 	} catch {
@@ -63,7 +66,10 @@ async function parseResponse<T>(response: Response): Promise<T> {
 	throw new Error(detail || `Request failed: ${response.status}`);
 }
 
-function withQuery(path: string, params: Record<string, string | null | undefined>) {
+function withQuery(
+	path: string,
+	params: Record<string, string | null | undefined>,
+) {
 	const query = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) {
 		if (value !== undefined && value !== null && value !== "") {
@@ -74,11 +80,13 @@ function withQuery(path: string, params: Record<string, string | null | undefine
 	return qs ? `${path}?${qs}` : path;
 }
 
-export async function listFilePolicies(params: {
-	location?: string;
-	scope?: string | null;
-	prefix?: string;
-} = {}): Promise<FilePolicyListResponse> {
+export async function listFilePolicies(
+	params: {
+		location?: string;
+		scope?: string | null;
+		prefix?: string;
+	} = {},
+): Promise<FilePolicyListResponse> {
 	const response = await authFetch(
 		withQuery("/api/files/policies", {
 			location: params.location,
@@ -88,23 +96,27 @@ export async function listFilePolicies(params: {
 	);
 	const result = await parseResponse<{
 		policies?: Array<
-			FilePolicy | {
-				id?: string;
-				location: string;
-				path: string;
-				organization_id?: string | null;
-				policies: FilePolicy["policies"];
-			}
+			| FilePolicy
+			| {
+					id?: string;
+					location: string;
+					path: string;
+					organization_id?: string | null;
+					policies: FilePolicy["policies"];
+			  }
 		>;
 	}>(response);
 	return {
 		policies: (result.policies ?? []).map((policy) => {
-			const raw = policy as FilePolicy & { organization_id?: string | null };
+			const raw = policy as FilePolicy & {
+				organization_id?: string | null;
+			};
 			return {
 				id: raw.id,
 				location: raw.location,
 				path: raw.path,
-				organizationId: raw.organizationId ?? raw.organization_id ?? null,
+				organizationId:
+					raw.organizationId ?? raw.organization_id ?? null,
 				policies: raw.policies,
 			};
 		}),
