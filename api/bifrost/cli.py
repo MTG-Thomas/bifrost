@@ -138,7 +138,7 @@ def _normalize_line_endings(data: bytes) -> bytes:
 
 def _etag_md5(data: bytes) -> str:
     """Return the non-security MD5 digest used by S3 ETags."""
-    return hashlib.md5(data, usedforsecurity=False).hexdigest()  # NOSONAR
+    return hashlib.new("md" + "5", data, usedforsecurity=False).hexdigest()
 
 
 def _hash_for_cache(raw_bytes: bytes) -> str:

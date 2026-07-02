@@ -355,9 +355,9 @@ export function UpgradeDiffView({ diff }: { diff: SolutionUpgradeDiff }) {
 	);
 }
 
-/** Random 6-char suffix for suggested repository names. */
+/** Timestamp suffix for suggested repository names. */
 function repoSuffix(): string {
-	return crypto.randomUUID().replace(/-/g, "").slice(0, 6);
+	return Date.now().toString(36).slice(-6).padStart(6, "0");
 }
 
 /**

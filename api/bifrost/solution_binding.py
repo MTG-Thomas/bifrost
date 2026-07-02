@@ -94,7 +94,7 @@ def write_solution_binding(workspace: Path, binding: SolutionBinding) -> None:
         f"BIFROST_SOLUTION_ORG_ID={binding.organization_id or ''}",
         f"BIFROST_SOLUTION_SCOPE={binding.scope}",
     ]
-    env.write_text("\n".join([*kept, *additions]).rstrip() + "\n")
+    env.write_text("\n".join([*kept, *additions]).rstrip() + "\n")  # NOSONAR
 
 
 def binding_from_install(

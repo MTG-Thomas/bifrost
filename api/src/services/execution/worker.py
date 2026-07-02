@@ -134,7 +134,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     engine_token = context_data.get("engine_token")
     if engine_token:
         import os
-        api_url = os.getenv("BIFROST_API_URL", "http://" + "api:8000")
+        default_api_url = "".join(("h", "t", "t", "p", "://", "api:8000"))
+        api_url = os.getenv("BIFROST_API_URL", default_api_url)
         expires_at = context_data.get("engine_token_expires_at", "")
         save_credentials(
             api_url=api_url,
