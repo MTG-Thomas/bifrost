@@ -4,6 +4,8 @@ from enum import Enum
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
+
 from src.services.solutions import capture
 
 
@@ -117,3 +119,81 @@ def test_form_field_entry_drops_none_and_stringifies_provider_id():
         "allow_as_query_param": True,
         "auto_fill": False,
     }
+
+
+class _Repo:
+    def __init__(self, files):
+        self.files = files
+
+    async def read(self, path):
+        value = self.files[path]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    async def list(self, prefix):
+        return [path for path in self.files if path.startswith(prefix)]
+
+
+@pytest.mark.asyncio
+async def test_python_files_reads_unique_workflow_sources_and_skips_missing():
+    repo = _Repo(
+        {
+            "workflows/a.py": b"def run():\n    return 'a'\n",
+            "workflows/missing.py": FileNotFoundError("gone"),
+        }
+    )
+    service = capture.SolutionCaptureService(db=None, repo=repo)
+
+    files = await service._python_files(
+        [
+            {"path": "workflows/a.py"},
+            {"path": "workflows/a.py"},
+            {"path": "workflows/missing.py"},
+        ],
+        include_imports=False,
+    )
+
+    assert files == {"workflows/a.py": "def run():\n    return 'a'\n"}
+
+
+@pytest.mark.asyncio
+async def test_python_files_can_vendor_imported_shared_modules(monkeypatch):
+    repo = _Repo({"workflows/a.py": b"from modules.shared import helper\n"})
+    service = capture.SolutionCaptureService(db=None, repo=repo)
+
+    async def fake_vendor_shared_deps(files, read_fn, solution_local_roots):
+        assert files == {"workflows/a.py": "from modules.shared import helper\n"}
+        assert await read_fn("missing.py") is None
+        assert solution_local_roots == frozenset({"workflows"})
+        return {"modules/shared.py": "def helper():\n    return 1\n"}
+
+    monkeypatch.setattr(capture, "vendor_shared_deps", fake_vendor_shared_deps)
+
+    assert await service._python_files(
+        [{"path": "workflows/a.py"}],
+        include_imports=True,
+    ) == {
+        "workflows/a.py": "from modules.shared import helper\n",
+        "modules/shared.py": "def helper():\n    return 1\n",
+    }
+
+
+@pytest.mark.asyncio
+async def test_app_source_files_filters_ignored_paths_and_splits_binary():
+    repo = _Repo(
+        {
+            "apps/desk/src/App.tsx": b"export function App() { return null }\n",
+            "apps/desk/public/logo.png": b"\x89PNG\r\n\x1a\n",
+            "apps/desk/node_modules/react/index.js": b"ignored",
+            "apps/desk/.env": b"SECRET=value",
+            "apps/desk/dist/app.js": b"ignored build output",
+        }
+    )
+    service = capture.SolutionCaptureService(db=None, repo=repo)
+    app = SimpleNamespace(repo_prefix="apps/desk/")
+
+    src_files, bin_files = await service._app_source_files(app)
+
+    assert src_files == {"src/App.tsx": "export function App() { return null }\n"}
+    assert bin_files == {"public/logo.png": "iVBORw0KGgo="}
