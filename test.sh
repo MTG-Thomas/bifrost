@@ -281,8 +281,9 @@ run_pytest() {
 cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -v "$@"; }
 cmd_coverage() {
     local target="${1:-coverage.xml}"
+    local source="/coverage/$(basename "$target")"
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        sh -lc 'cat /coverage/coverage.xml' > "$target"
+        sh -lc "cat '$source'" > "$target"
 }
 cmd_e2e_smoke() {
     run_pytest \
