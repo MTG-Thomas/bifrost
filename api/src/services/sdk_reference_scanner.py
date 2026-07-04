@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm import Config, Integration, IntegrationMapping
+from src.core.log_safety import log_safe
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,12 @@ class SDKReferenceScanner:
                     issue_type="config",
                     key=key,
                 ))
-                logger.debug(f"Missing config reference: {key} at {path}:{line_num}")
+                logger.debug(
+                    "Missing config reference: %s at %s:%s",
+                    log_safe(key),
+                    log_safe(path),
+                    line_num,
+                )
 
         # Validate integration references
         if integration_refs:
@@ -204,10 +210,15 @@ class SDKReferenceScanner:
                     issue_type="integration",
                     key=name,
                 ))
-                logger.debug(f"Missing integration reference: {name} at {path}:{line_num}")
+                logger.debug(
+                    "Missing integration reference: %s at %s:%s",
+                    log_safe(name),
+                    log_safe(path),
+                    line_num,
+                )
 
         if issues:
-            logger.info(f"Found {len(issues)} SDK issue(s) in {path}")
+            logger.info("Found %s SDK issue(s) in %s", len(issues), log_safe(path))
 
         return issues
 
@@ -224,7 +235,7 @@ class SDKReferenceScanner:
         all_issues: list[SDKIssue] = []
 
         if not workspace_path.exists():
-            logger.warning(f"Workspace path does not exist: {workspace_path}")
+            logger.warning("Workspace path does not exist: %s", log_safe(workspace_path))
             return all_issues
 
         # Find all Python files, excluding __pycache__ and hidden dirs
@@ -237,14 +248,15 @@ class SDKReferenceScanner:
 
             try:
                 content = py_file.read_text(encoding='utf-8')
-                relative_path = str(py_file.relative_to(workspace_path))
+                relative_path = py_file.relative_to(workspace_path).as_posix()
                 issues = await self.scan_file(relative_path, content)
                 all_issues.extend(issues)
             except (OSError, UnicodeDecodeError) as e:
-                logger.warning(f"Failed to read {py_file}: {e}")
+                logger.warning("Failed to read %s: %s", log_safe(py_file), log_safe(e))
 
         logger.info(
-            f"Workspace scan complete: scanned {workspace_path}, "
-            f"found {len(all_issues)} issue(s)"
+            "Workspace scan complete: scanned %s, found %s issue(s)",
+            log_safe(workspace_path),
+            len(all_issues),
         )
         return all_issues
