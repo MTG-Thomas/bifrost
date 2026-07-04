@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -75,7 +76,7 @@ def test_convert_workflow_orm_to_schema_normalizes_defaults():
         time_saved=None,
         value=None,
         path="workflows/sync.py",
-        created_at=None,
+        created_at=datetime.now(UTC),
     )
 
     result = workflows._convert_workflow_orm_to_schema(row, used_by_count=3)
@@ -156,4 +157,3 @@ async def test_derive_solution_scope_uses_form_then_app_lookup():
         form_id=None,
         app_id=None,
     ) is None
-
