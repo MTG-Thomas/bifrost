@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -141,6 +142,215 @@ def test_policy_public_serializes_row_shape():
     assert public.path == "exports/"
     assert public.policies.policies[0].name == "Writers"
     assert public.policies.policies[0].actions == ["write"]
+
+
+@pytest.mark.asyncio
+async def test_read_file_uses_first_allowed_existing_tier(monkeypatch):
+    authorize_calls = []
+    read_calls = []
+
+    tiers = [
+        SimpleNamespace(scope="global", solution_id=None, organization_id=None),
+        SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A),
+    ]
+
+    class FakeBackend:
+        async def read(self, path, location, *, scope):
+            read_calls.append((path, location, scope))
+            return b"report body"
+
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return tiers
+
+    async def fake_authorize(ctx, **kwargs):
+        authorize_calls.append(kwargs)
+        return kwargs["scope"] == str(ORG_A)
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", fake_authorize)
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    response = await files.read_file(
+        files.FileReadRequest(path="reports/q1.txt", location="reports"),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert response.content == "report body"
+    assert response.binary is False
+    assert [call["scope"] for call in authorize_calls] == ["global", str(ORG_A)]
+    assert read_calls == [("reports/q1.txt", "reports", str(ORG_A))]
+
+
+@pytest.mark.asyncio
+async def test_read_file_binary_encodes_content(monkeypatch):
+    class FakeBackend:
+        async def read(self, path, location, *, scope):
+            return b"\x00\x01raw"
+
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return [SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A)]
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(True))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    response = await files.read_file(
+        files.FileReadRequest(
+            path="reports/raw.bin",
+            location="reports",
+            binary=True,
+            scope=str(ORG_A),
+        ),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert response.content == base64.b64encode(b"\x00\x01raw").decode()
+    assert response.binary is True
+
+
+@pytest.mark.asyncio
+async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
+    writes = []
+    metadata_calls = []
+    publish_calls = []
+
+    class FakeBackend:
+        async def write(self, path, content, location, updated_by, *, scope):
+            writes.append((path, content, location, updated_by, scope))
+
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def record_file_write_metadata(self, **kwargs):
+            metadata_calls.append(kwargs)
+
+    async def fake_publish_file_change(**kwargs):
+        publish_calls.append(kwargs)
+
+    monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_install_org_id", lambda *_args, **_kwargs: _async_value(ORG_A))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr("src.core.pubsub.publish_file_change", fake_publish_file_change)
+
+    await files.write_file(
+        files.FileWriteRequest(
+            path="folder/report.txt",
+            content="hello",
+            location="reports",
+            scope=str(ORG_A),
+            mode="cloud",
+        ),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert writes == [("folder/report.txt", b"hello", "reports", "user@example.test", str(ORG_A))]
+    assert metadata_calls[0]["location"] == "reports"
+    assert metadata_calls[0]["scope"] == str(ORG_A)
+    assert metadata_calls[0]["path"] == "folder/report.txt"
+    assert metadata_calls[0]["s3_path"] == f"reports/{ORG_A}/folder/report.txt"
+    assert metadata_calls[0]["size_bytes"] == 5
+    assert metadata_calls[0]["updated_by"] == "user@example.test"
+    assert metadata_calls[0]["org_id"] == ORG_A
+    assert publish_calls == [
+        {
+            "location": "reports",
+            "scope": str(ORG_A),
+            "path": "folder/report.txt",
+            "action": "write",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_files_simple_filters_each_tier_and_deduplicates(monkeypatch):
+    tiers = [
+        SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A),
+        SimpleNamespace(scope="global", solution_id=None, organization_id=None),
+    ]
+    authorize_calls = []
+    list_calls = []
+    filter_calls = []
+
+    class FakeBackend:
+        async def list(self, directory, location, *, scope):
+            list_calls.append((directory, location, scope))
+            if scope == str(ORG_A):
+                return ["reports/keep.txt", "reports/dup.txt", "reports/drop.txt"]
+            return ["reports/dup.txt", "reports/global.txt"]
+
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return tiers
+
+    async def fake_authorize(ctx, **kwargs):
+        authorize_calls.append(kwargs)
+        return kwargs["scope"] == "global"
+
+    async def fake_filter(ctx, *, paths, location, scope, action, solution_id, organization_id):
+        filter_calls.append((tuple(paths), location, scope, action, solution_id, organization_id))
+        return [path for path in paths if not path.endswith("drop.txt")]
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", fake_authorize)
+    monkeypatch.setattr(files, "_filter_listed_paths", fake_filter)
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    response = await files.list_files_simple(
+        files.FileListRequest(directory="reports", location="reports", scope=str(ORG_A)),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert response.files == ["reports/dup.txt", "reports/keep.txt", "reports/global.txt"]
+    assert list_calls == [
+        ("reports", "reports", str(ORG_A)),
+        ("reports", "reports", "global"),
+    ]
+    assert [call["scope"] for call in authorize_calls] == [str(ORG_A), str(ORG_A), "global"]
+    assert len(filter_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_file_exists_checks_allowed_tiers_until_existing_path(monkeypatch):
+    tiers = [
+        SimpleNamespace(scope="global", solution_id=None, organization_id=None),
+        SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A),
+    ]
+    exists_calls = []
+
+    class FakeBackend:
+        async def exists(self, path, location, *, scope):
+            exists_calls.append((path, location, scope))
+            return scope == str(ORG_A)
+
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return tiers
+
+    async def fake_authorize(ctx, **kwargs):
+        return kwargs["scope"] == str(ORG_A)
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", fake_authorize)
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    response = await files.file_exists(
+        files.FileExistsRequest(path="reports/q1.txt", location="reports"),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert response.exists is True
+    assert exists_calls == [("reports/q1.txt", "reports", str(ORG_A))]
 
 
 @pytest.mark.asyncio
