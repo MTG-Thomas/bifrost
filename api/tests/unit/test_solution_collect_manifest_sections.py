@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import click
 import pytest
+import yaml
+from click.testing import CliRunner
 
 from bifrost.commands.solution import (
     _AmbiguousInstall,
@@ -26,6 +28,7 @@ from bifrost.commands.solution import (
     _resolve_target_install,
     _v2_scaffold_files,
     resolve_install_id_for_workspace,
+    solution_group,
     summarize_bundle,
     _workspace_child_file,
 )
@@ -211,6 +214,82 @@ def test_workspace_child_file_confines_descriptor_paths(tmp_path):
 
     with pytest.raises(click.ClickException, match="file not found"):
         _workspace_child_file(tmp_path, "missing.svg", "logo")
+
+
+def test_solution_init_writes_descriptor_and_refuses_overwrite(tmp_path):
+    runner = CliRunner()
+
+    result = runner.invoke(
+        solution_group,
+        [
+            "init",
+            str(tmp_path),
+            "--slug",
+            "desk",
+            "--name",
+            "Desk",
+            "--version",
+            "1.2.3",
+            "--global-repo-access",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    descriptor = tmp_path / "bifrost.solution.yaml"
+    assert yaml.safe_load(descriptor.read_text()) == {
+        "slug": "desk",
+        "name": "Desk",
+        "version": "1.2.3",
+        "global_repo_access": True,
+    }
+
+    duplicate = runner.invoke(solution_group, ["init", str(tmp_path), "--slug", "desk"])
+    assert duplicate.exit_code != 0
+    assert "already exists" in duplicate.output
+
+
+def test_solution_scaffold_app_creates_app_manifest_and_sample_workflow(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path / "bifrost.solution.yaml", "slug: desk\nname: Desk\n")
+
+    result = CliRunner().invoke(
+        solution_group,
+        ["scaffold-app", "portal", "--api-url", "https://bifrost.example"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "apps" / "portal" / "package.json").is_file()
+    package = json.loads((tmp_path / "apps" / "portal" / "package.json").read_text())
+    assert package["dependencies"]["bifrost"] == "https://bifrost.example/api/sdk/download"
+
+    apps_yaml = yaml.safe_load((tmp_path / ".bifrost" / "apps.yaml").read_text())
+    app_entry = next(iter(apps_yaml["apps"].values()))
+    assert app_entry["slug"] == "portal"
+    assert app_entry["path"] == "apps/portal"
+    assert app_entry["app_model"] == "standalone_v2"
+
+    workflows_yaml = yaml.safe_load((tmp_path / ".bifrost" / "workflows.yaml").read_text())
+    workflow_entry = next(iter(workflows_yaml["workflows"].values()))
+    assert workflow_entry["name"] == "hello"
+    assert workflow_entry["path"] == "functions/hello.py"
+    assert workflow_entry["function_name"] == "main"
+    assert (tmp_path / "functions" / "hello.py").is_file()
+
+
+def test_solution_scaffold_app_requires_solution_root_and_empty_target(tmp_path, monkeypatch):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+
+    outside = runner.invoke(solution_group, ["scaffold-app", "portal"])
+    assert outside.exit_code != 0
+    assert "Not inside a solution workspace" in outside.output
+
+    _write(tmp_path / "bifrost.solution.yaml", "slug: desk\nname: Desk\n")
+    _write(tmp_path / "apps" / "portal" / "existing.txt", "keep\n")
+
+    occupied = runner.invoke(solution_group, ["scaffold-app", "portal"])
+    assert occupied.exit_code != 0
+    assert "already exists and is not empty" in occupied.output
 
 
 def test_collect_python_files_skips_app_generated_and_manifest_dirs(tmp_path):
