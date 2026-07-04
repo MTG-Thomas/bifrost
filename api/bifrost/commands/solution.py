@@ -1663,6 +1663,12 @@ def deploy_cmd(
     default=False,
     help="Overwrite existing table data when the zip carries conflicting rows.",
 )
+@click.option(
+    "--reactivate",
+    is_flag=True,
+    default=False,
+    help="Reactivate an existing inactive install with the same slug.",
+)
 def install_cmd(
     zip_path: str,
     org: str | None,
@@ -1671,6 +1677,7 @@ def install_cmd(
     password: str | None,
     replace_secrets: bool,
     replace_data: bool,
+    reactivate: bool,
 ) -> None:
     """POST a Solution workspace zip to ``/api/solutions/install``.
 

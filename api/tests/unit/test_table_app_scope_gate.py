@@ -16,6 +16,7 @@ from src.models.orm.organizations import Organization
 from src.models.orm.solutions import Solution
 from src.models.orm.tables import Table
 from src.routers.tables import _resolve_solution_table_by_name
+from src.services.solution_scope import resolve_solution_table_by_name
 
 pytestmark = pytest.mark.e2e
 
