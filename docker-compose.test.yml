@@ -231,7 +231,6 @@ services:
       # C1.5: Parity with production hardening
       PIP_NO_CACHE_DIR: "1"
       HOME: /home/bifrost
-      COVERAGE_FILE: /coverage/.coverage
     volumes:
       - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
@@ -241,7 +240,6 @@ services:
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
       - ./api/.coveragerc:/app/.coveragerc:ro
-      - test-coverage:/coverage
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -255,7 +253,7 @@ services:
     user: "1000:1000"
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
-    command: ["coverage", "run", "--parallel-mode", "-m", "src.worker.main"]
+    command: ["python", "-m", "src.worker.main"]
     profiles:
       - e2e  # Only start in E2E mode
 
