@@ -1834,6 +1834,8 @@ Options:
                                   zip carries conflicting secret values.
   --replace-data                  Overwrite existing table data when the zip
                                   carries conflicting rows.
+  --reactivate                    Reactivate an existing inactive install with
+                                  the same slug.
   --help                          Show this message and exit.
 ```
 

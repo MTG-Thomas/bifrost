@@ -178,7 +178,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # install_id widened to nullable (a zip install resolves its target inside the
     # job) — a response-shape change the CLI parses (2026-07-02).
     # CONTRACT_VERSION bumped to 7.
-    "1f1477ec0dfc512e231de4db2d6a8272554c4fa8fc4002b8bf31d215d575af03"
+    "0e3fbaba5c682b5839177c65f6d981dc46850be54e47f6743cca14f67413717d"
 )
 
 

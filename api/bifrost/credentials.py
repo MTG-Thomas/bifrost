@@ -576,9 +576,16 @@ def resolve_current_connection(
     return None, None
 
 
-def _resolve_url(api_url: str | None) -> str | None:
+def _resolve_url(
+    api_url: str | None,
+    *,
+    include_cwd_dotenv: bool = False,
+) -> str | None:
     """Backward-compatible URL-only wrapper for non-interactive resolution."""
-    resolved, _source = resolve_current_connection(api_url)
+    resolved, _source = resolve_current_connection(
+        api_url,
+        include_cwd_dotenv=include_cwd_dotenv,
+    )
     return resolved
 
 

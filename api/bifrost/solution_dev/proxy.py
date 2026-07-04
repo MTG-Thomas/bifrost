@@ -88,6 +88,7 @@ class DevProxyConfig:
     token: str          # CLI access token
     app_id: str         # chosen app's manifest UUID
     org_id: str | None  # resolved --org (or None → caller's default org)
+    solution_id: str | None = None  # chosen solution install UUID, when known
 
 
 # Typed app keys (avoid aiohttp's NotAppKeyWarning for plain-string keys).
