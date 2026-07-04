@@ -14,6 +14,7 @@ from src.models.enums import ConfigType
 from src.services.solutions.zip_install import (
     ContentCollision,
     PreviewResult,
+    _build_bundle,
     _config_type,
     _safe_extract_path,
     preview_zip,
@@ -187,3 +188,75 @@ def test_content_collision_message_lists_sorted_keys_and_tables() -> None:
         "Import would overwrite existing config values: A_KEY, Z_KEY; "
         "table data: tickets. Re-run with replace to overwrite."
     )
+
+
+def test_build_bundle_carries_preview_sections_and_collects_python(tmp_path, monkeypatch):
+    solution = object()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "workflows").mkdir()
+    (workspace / "workflows" / "main.py").write_text("def run(): return 'ok'\n")
+    (workspace / "logo.png").write_bytes(b"png-bytes")
+    preview = PreviewResult(
+        slug="zip-demo",
+        version="1.2.3",
+        logo="logo.png",
+        workflows=[{"id": "wf", "name": "main"}],
+        tables=[{"id": "table", "name": "Tickets"}],
+        apps=[{"id": "app", "name": "Desk"}],
+        forms=[{"id": "form", "name": "Intake"}],
+        agents=[{"id": "agent", "name": "Helper"}],
+        claims=[{"id": "claim", "name": "tenant_ids"}],
+        config_schemas=[{"key": "API_KEY", "type": "secret"}],
+        file_locations=["workspace"],
+        connection_schemas=[{"integration_name": "Halo", "template": {}}],
+        events=[{"id": "event", "name": "Ticket Created"}],
+        readme="# Demo\n",
+    )
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution._collect_python_files",
+        lambda root: {"workflows/main.py": (root / "workflows" / "main.py").read_text()},
+    )
+
+    bundle = _build_bundle(solution, preview, workspace)
+
+    assert bundle.solution is solution
+    assert bundle.python_files == {"workflows/main.py": "def run(): return 'ok'\n"}
+    assert bundle.workflows is preview.workflows
+    assert bundle.tables is preview.tables
+    assert bundle.apps is preview.apps
+    assert bundle.forms is preview.forms
+    assert bundle.agents is preview.agents
+    assert bundle.claims is preview.claims
+    assert bundle.config_schemas is preview.config_schemas
+    assert bundle.file_locations == ["workspace"]
+    assert bundle.connection_schemas == [{"integration_name": "Halo", "template": {}}]
+    assert bundle.events == [{"id": "event", "name": "Ticket Created"}]
+    assert bundle.version == "1.2.3"
+    assert bundle.logo_b64 == "cG5nLWJ5dGVz"
+    assert bundle.logo_content_type == "image/png"
+    assert bundle.readme == "# Demo\n"
+
+
+def test_build_bundle_omits_logo_when_not_declared(tmp_path, monkeypatch):
+    solution = object()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    preview = PreviewResult(slug="zip-demo")
+    monkeypatch.setattr("bifrost.commands.solution._collect_python_files", lambda root: {})
+
+    bundle = _build_bundle(solution, preview, workspace)
+
+    assert bundle.logo_b64 is None
+    assert bundle.logo_content_type is None
+
+
+def test_build_bundle_rejects_missing_declared_logo(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    preview = PreviewResult(slug="zip-demo", logo="missing.svg")
+    monkeypatch.setattr("bifrost.commands.solution._collect_python_files", lambda root: {})
+
+    with pytest.raises(ValueError, match="solution logo file not found"):
+        _build_bundle(object(), preview, workspace)
