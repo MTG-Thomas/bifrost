@@ -144,6 +144,280 @@ def test_policy_public_serializes_row_shape():
 
 
 @pytest.mark.asyncio
+async def test_list_file_policies_resolves_target_scope_and_serializes_rows(monkeypatch):
+    calls = []
+    row = SimpleNamespace(
+        id=UUID("33333333-3333-3333-3333-333333333333"),
+        organization_id=ORG_A,
+        location="reports",
+        path="exports/",
+        policies={"policies": [{"name": "Readers", "actions": ["read"]}]},
+    )
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def list_policies(self, **kwargs):
+            calls.append(kwargs)
+            return [row]
+
+    monkeypatch.setattr(
+        "src.services.file_policy_service.FilePolicyService",
+        FakePolicyService,
+    )
+
+    db = SimpleNamespace()
+    response = await files.list_file_policies(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        location="reports",
+        scope=str(ORG_B),
+        organization_id=str(ORG_A),
+        db=db,
+    )
+
+    assert calls == [{"organization_id": ORG_A, "location": "reports"}]
+    assert len(response.policies) == 1
+    assert response.policies[0].path == "exports/"
+    assert response.policies[0].policies.policies[0].name == "Readers"
+
+
+@pytest.mark.asyncio
+async def test_get_file_policy_decodes_path_and_404s_missing_row(monkeypatch):
+    calls = []
+    row = SimpleNamespace(
+        id=UUID("33333333-3333-3333-3333-333333333333"),
+        organization_id=None,
+        location="workspace",
+        path="folder/report.txt",
+        policies={"policies": []},
+    )
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def get_policy_exact(self, **kwargs):
+            calls.append(kwargs)
+            return row if kwargs["path"] == "folder/report.txt" else None
+
+    monkeypatch.setattr(
+        "src.services.file_policy_service.FilePolicyService",
+        FakePolicyService,
+    )
+
+    response = await files.get_file_policy(
+        "folder%2Freport.txt",
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        location="workspace",
+        scope=None,
+        db=SimpleNamespace(),
+    )
+
+    assert response.path == "folder/report.txt"
+    assert calls[0] == {
+        "organization_id": None,
+        "location": "workspace",
+        "path": "folder/report.txt",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.get_file_policy(
+            "missing.txt",
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            location="workspace",
+            scope=None,
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_set_file_policy_validates_refs_persists_commits_and_publishes(monkeypatch):
+    service_calls = []
+    publish_calls = []
+
+    row = SimpleNamespace(
+        id=UUID("33333333-3333-3333-3333-333333333333"),
+        organization_id=ORG_A,
+        location="reports",
+        path="folder/report.txt",
+        policies={"policies": [{"name": "Writers", "actions": ["write"]}]},
+    )
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def upsert_policy(self, **kwargs):
+            service_calls.append(kwargs)
+            return row
+
+    async def fake_resolve_policy_refs(doc, *, repo, action_domain):
+        assert action_domain == "file"
+        assert doc.policies[0].name == "Writers"
+        assert repo is not None
+
+    async def fake_publish_file_policy_changed(**kwargs):
+        publish_calls.append(kwargs)
+
+    class Db:
+        def __init__(self):
+            self.commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    db = Db()
+    monkeypatch.setattr(
+        "src.services.file_policy_service.FilePolicyService",
+        FakePolicyService,
+    )
+    monkeypatch.setattr("shared.policy_rules.resolve_policy_refs", fake_resolve_policy_refs)
+    monkeypatch.setattr(
+        "src.core.pubsub.publish_file_policy_changed",
+        fake_publish_file_policy_changed,
+    )
+
+    response = await files.set_file_policy(
+        "folder%2Freport.txt",
+        files.FilePolicySetRequest(
+            policies={"policies": [{"name": "Writers", "actions": ["write"]}]}
+        ),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        location="reports",
+        scope=str(ORG_A),
+        db=db,
+    )
+
+    assert response.path == "folder/report.txt"
+    assert service_calls[0]["organization_id"] == ORG_A
+    assert service_calls[0]["location"] == "reports"
+    assert service_calls[0]["path"] == "folder/report.txt"
+    assert service_calls[0]["created_by"] == USER_ID
+    assert db.commits == 1
+    assert publish_calls == [
+        {
+            "location": "reports",
+            "scope": str(ORG_A),
+            "path": "folder/report.txt",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_file_policy_returns_422_for_unresolvable_policy_ref(monkeypatch):
+    from shared.policy_rules import PolicyRuleNotFound
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def upsert_policy(self, **_kwargs):
+            raise AssertionError("policy should not be persisted")
+
+    async def fake_resolve_policy_refs(*_args, **_kwargs):
+        raise PolicyRuleNotFound("missing rule")
+
+    monkeypatch.setattr(
+        "src.services.file_policy_service.FilePolicyService",
+        FakePolicyService,
+    )
+    monkeypatch.setattr("shared.policy_rules.resolve_policy_refs", fake_resolve_policy_refs)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.set_file_policy(
+            "folder",
+            files.FilePolicySetRequest(
+                policies={"policies": [{"$ref": "missing"}]}
+            ),
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            location="reports",
+            scope=str(ORG_A),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "missing rule" in exc_info.value.detail["errors"][0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_file_policy_commits_and_publishes_or_404s(monkeypatch):
+    service_calls = []
+    publish_calls = []
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def delete_policy(self, **kwargs):
+            service_calls.append(kwargs)
+            return kwargs["path"] == "folder/report.txt"
+
+    async def fake_publish_file_policy_changed(**kwargs):
+        publish_calls.append(kwargs)
+
+    class Db:
+        def __init__(self):
+            self.commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    db = Db()
+    monkeypatch.setattr(
+        "src.services.file_policy_service.FilePolicyService",
+        FakePolicyService,
+    )
+    monkeypatch.setattr(
+        "src.core.pubsub.publish_file_policy_changed",
+        fake_publish_file_policy_changed,
+    )
+
+    await files.delete_file_policy(
+        "folder%2Freport.txt",
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        location="reports",
+        scope=str(ORG_A),
+        db=db,
+    )
+
+    assert service_calls[0] == {
+        "organization_id": ORG_A,
+        "location": "reports",
+        "path": "folder/report.txt",
+    }
+    assert db.commits == 1
+    assert publish_calls == [
+        {
+            "location": "reports",
+            "scope": str(ORG_A),
+            "path": "folder/report.txt",
+        }
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.delete_file_policy(
+            "missing.txt",
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            location="reports",
+            scope=str(ORG_A),
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
 async def test_filter_listed_paths_uses_relative_policy_paths_and_solution_context(monkeypatch):
     ctx = _ctx(solution_id=SOLUTION_ID)
     calls = []
