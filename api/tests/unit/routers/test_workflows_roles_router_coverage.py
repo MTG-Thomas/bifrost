@@ -262,7 +262,12 @@ async def test_delete_workflow_returns_conflict_for_dependent_workflow():
         last_execution_at=None,
         endpoint_enabled=False,
         affected_entities=[
-            {"type": "form", "id": str(uuid4()), "name": "Intake"}
+            {
+                "entity_type": "form",
+                "id": str(uuid4()),
+                "name": "Intake",
+                "reference_type": "workflow",
+            }
         ],
     )
     replacement = SimpleNamespace(
