@@ -922,6 +922,277 @@ async def test_get_file_content_editor_base64_encodes_binary_and_maps_missing(mo
 
 
 @pytest.mark.asyncio
+async def test_put_file_content_editor_writes_text_and_returns_modified_content(monkeypatch):
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def write_file(self, path, content, updated_by, **kwargs):
+            assert path == "workflows/a.py"
+            assert content == b"print('hi')"
+            assert updated_by == "admin@example.test"
+            assert kwargs == {
+                "force_deactivation": False,
+                "replacements": None,
+                "workflows_to_deactivate": None,
+            }
+            return SimpleNamespace(
+                final_content=b"print('hi')\n",
+                content_modified=True,
+                needs_indexing=True,
+                workflow_id_conflicts=[
+                    SimpleNamespace(
+                        name="Existing",
+                        function_name="existing",
+                        existing_id="workflow-1",
+                        file_path="workflows/a.py",
+                    )
+                ],
+                diagnostics=[
+                    SimpleNamespace(
+                        severity="warning",
+                        message="needs indexing",
+                        line=1,
+                        column=2,
+                        source="indexing",
+                    )
+                ],
+                pending_deactivations=[],
+                available_replacements=[],
+            )
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    response = await files.put_file_content_editor(
+        files.FileContentRequest(path="workflows/a.py", content="print('hi')"),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
+        db=SimpleNamespace(),
+    )
+
+    assert response.content == "print('hi')\n"
+    assert response.encoding == "utf-8"
+    assert response.size == len(b"print('hi')\n")
+    assert response.content_modified is True
+    assert response.needs_indexing is True
+    assert response.workflow_id_conflicts[0].existing_id == "workflow-1"
+    assert response.diagnostics[0].message == "needs indexing"
+
+
+@pytest.mark.asyncio
+async def test_put_file_content_editor_rejects_stale_or_missing_expected_etag(monkeypatch):
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def read_file(self, path):
+            if path == "missing.py":
+                raise FileNotFoundError(path)
+            return b"current", None
+
+        async def write_file(self, *_args, **_kwargs):
+            raise AssertionError("stale writes should not continue")
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    with pytest.raises(HTTPException) as changed:
+        await files.put_file_content_editor(
+            files.FileContentRequest(
+                path="workflows/a.py",
+                content="new",
+                expected_etag="stale",
+            ),
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
+            db=SimpleNamespace(),
+        )
+
+    assert changed.value.status_code == 409
+    assert changed.value.detail["reason"] == "content_changed"
+
+    with pytest.raises(HTTPException) as missing:
+        await files.put_file_content_editor(
+            files.FileContentRequest(
+                path="missing.py",
+                content="new",
+                expected_etag="etag",
+            ),
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
+            db=SimpleNamespace(),
+        )
+
+    assert missing.value.status_code == 409
+    assert missing.value.detail["reason"] == "path_not_found"
+
+
+@pytest.mark.asyncio
+async def test_put_file_content_editor_returns_pending_deactivation_conflict(monkeypatch):
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def write_file(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                final_content=b"",
+                content_modified=False,
+                needs_indexing=False,
+                workflow_id_conflicts=[],
+                diagnostics=[],
+                pending_deactivations=[
+                    SimpleNamespace(
+                        id="workflow-1",
+                        name="Old Flow",
+                        function_name="old_flow",
+                        path="workflows/old.py",
+                        description="old",
+                        decorator_type="workflow",
+                        has_executions=True,
+                        last_execution_at="2026-01-01T00:00:00Z",
+                        endpoint_enabled=False,
+                        affected_entities=[
+                            {
+                                "entity_type": "agent",
+                                "id": "agent-1",
+                                "name": "Agent",
+                                "reference_type": "tool",
+                            }
+                        ],
+                    )
+                ],
+                available_replacements=[
+                    SimpleNamespace(
+                        function_name="new_flow",
+                        name="New Flow",
+                        decorator_type="workflow",
+                        similarity_score=0.9,
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.put_file_content_editor(
+            files.FileContentRequest(path="workflows/old.py", content=""),
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["reason"] == "workflows_would_deactivate"
+    assert exc_info.value.detail["pending_deactivations"][0]["function_name"] == "old_flow"
+    assert exc_info.value.detail["available_replacements"][0]["function_name"] == "new_flow"
+
+
+@pytest.mark.asyncio
+async def test_create_folder_editor_returns_folder_metadata(monkeypatch):
+    calls = []
+
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def create_folder(self, path, updated_by):
+            calls.append((path, updated_by))
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    response = await files.create_folder_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
+        path="apps/new-folder/",
+        db=SimpleNamespace(),
+    )
+
+    assert calls == [("apps/new-folder/", "admin@example.test")]
+    assert response.path == "apps/new-folder"
+    assert response.name == "new-folder"
+    assert response.type == files.FileType.FOLDER
+
+
+@pytest.mark.asyncio
+async def test_delete_file_editor_deletes_folder_children_and_markers(monkeypatch):
+    storage_deletes = []
+    repo_deletes = []
+    list_calls = []
+
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def delete_file(self, path):
+            storage_deletes.append(path)
+
+    class FakeRepo:
+        def __init__(self):
+            self.calls = 0
+
+        async def list(self, prefix):
+            list_calls.append(prefix)
+            self.calls += 1
+            return ["folder/a.txt", "folder/marker/"] if self.calls == 1 else []
+
+        async def delete(self, path):
+            repo_deletes.append(path)
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+
+    await files.delete_file_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path="folder",
+        db=SimpleNamespace(),
+    )
+
+    assert storage_deletes == ["folder/a.txt"]
+    assert repo_deletes == ["folder/marker/", "folder", "folder/"]
+    assert list_calls == ["folder/", "folder/"]
+
+
+@pytest.mark.asyncio
+async def test_delete_file_editor_deletes_single_file_and_maps_missing(monkeypatch):
+    deletes = []
+
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def delete_file(self, path):
+            deletes.append(path)
+            if path == "missing.txt":
+                raise FileNotFoundError(path)
+
+    class FakeRepo:
+        async def list(self, prefix):
+            return []
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+
+    await files.delete_file_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path="file.txt",
+        db=SimpleNamespace(),
+    )
+    assert deletes == ["file.txt"]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.delete_file_editor(
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            path="missing.txt",
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Not found: missing.txt"
+
+
+@pytest.mark.asyncio
 async def test_list_file_policies_resolves_target_scope_and_serializes_rows(monkeypatch):
     calls = []
     row = SimpleNamespace(
