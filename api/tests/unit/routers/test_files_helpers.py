@@ -27,6 +27,7 @@ def _ctx(
     return SimpleNamespace(
         org_id=org_id,
         solution_id=solution_id,
+        db=SimpleNamespace(),
         user=UserPrincipal(
             user_id=USER_ID,
             email="user@example.test",
@@ -220,3 +221,219 @@ async def test_filter_listed_paths_honors_explicit_solution_and_org_overrides(mo
             "organization_id": ORG_A,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_authorize_file_policy_short_circuits_workspace_and_maps_actions(monkeypatch):
+    admin_ctx = _ctx(is_superuser=True)
+    user_ctx = _ctx(is_superuser=False)
+
+    assert await files._authorize_file_policy(
+        admin_ctx,
+        action="read",
+        location="workspace",
+        scope=None,
+        path="README.md",
+    ) is True
+    assert await files._authorize_file_policy(
+        user_ctx,
+        action="read",
+        location="workspace",
+        scope=None,
+        path="README.md",
+    ) is False
+
+    calls = []
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def is_allowed(self, action, **kwargs):
+            calls.append({"action": action, **kwargs})
+            return True
+
+    monkeypatch.setattr(
+        "src.services.file_policy_service.FilePolicyService",
+        FakePolicyService,
+    )
+
+    assert await files._authorize_file_policy(
+        user_ctx,
+        action="signed_put",
+        location="uploads",
+        scope=str(ORG_A),
+        path="report.pdf",
+    ) is True
+
+    assert calls == [
+        {
+            "action": "write",
+            "organization_id": ORG_A,
+            "location": "uploads",
+            "path": "report.pdf",
+            "user": user_ctx.user,
+            "solution_id": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_authorize_file_policy_handles_solution_global_and_invalid_scopes(monkeypatch):
+    calls = []
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def is_allowed(self, action, **kwargs):
+            calls.append({"action": action, **kwargs})
+            return True
+
+    monkeypatch.setattr(
+        "src.services.file_policy_service.FilePolicyService",
+        FakePolicyService,
+    )
+    monkeypatch.setattr(
+        files,
+        "_install_org_id",
+        lambda ctx, solution_id: _async_value(ORG_B),
+    )
+
+    ctx = _ctx(solution_id=SOLUTION_ID, is_superuser=True)
+
+    assert await files._authorize_file_policy(
+        ctx,
+        action="exists",
+        location="reports",
+        scope=str(SOLUTION_ID),
+        path="owned.txt",
+        solution_id=SOLUTION_ID,
+    ) is True
+    assert await files._authorize_file_policy(
+        ctx,
+        action="signed_get",
+        location="reports",
+        scope="global",
+        path="global.txt",
+    ) is True
+    assert await files._authorize_file_policy(
+        ctx,
+        action="read",
+        location="reports",
+        scope="not-a-uuid",
+        path="bad.txt",
+    ) is False
+    assert await files._authorize_file_policy(
+        ctx,
+        action="read",
+        location="reports",
+        scope=None,
+        path="missing-scope.txt",
+    ) is False
+
+    assert calls[0]["action"] == "read"
+    assert calls[0]["organization_id"] == ORG_B
+    assert calls[0]["solution_id"] == SOLUTION_ID
+    assert calls[1]["action"] == "read"
+    assert calls[1]["organization_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_require_file_policy_raises_for_denied_policy(monkeypatch):
+    monkeypatch.setattr(files, "_authorize_file_policy", _async_false)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files._require_file_policy(
+            _ctx(),
+            action="read",
+            location="reports",
+            scope=str(ORG_A),
+            path="blocked.txt",
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Forbidden"
+
+
+@pytest.mark.asyncio
+async def test_test_principal_returns_current_user_without_target_lookup():
+    ctx = _ctx()
+    db = SimpleNamespace(execute=_async_unexpected)
+
+    assert await files._test_principal(ctx, db, None) is ctx.user
+
+
+@pytest.mark.asyncio
+async def test_test_principal_requires_platform_admin_for_target_user():
+    with pytest.raises(HTTPException) as exc_info:
+        await files._test_principal(
+            _ctx(is_superuser=False),
+            SimpleNamespace(),
+            str(USER_ID),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_test_principal_loads_target_user_and_roles(monkeypatch):
+    target = SimpleNamespace(
+        id=USER_ID,
+        email="target@example.test",
+        organization_id=ORG_B,
+        name="Target User",
+        is_active=True,
+        is_superuser=False,
+        is_verified=True,
+        is_external=True,
+    )
+
+    class Result:
+        def scalar_one_or_none(self):
+            return target
+
+    db = SimpleNamespace(execute=lambda _stmt: _async_value(Result()))
+    monkeypatch.setattr(
+        files,
+        "get_user_roles",
+        lambda user_id, db_arg: _async_value(([ORG_A], ["Support"])),
+    )
+
+    principal = await files._test_principal(_ctx(is_superuser=True), db, str(USER_ID))
+
+    assert principal.user_id == USER_ID
+    assert principal.email == "target@example.test"
+    assert principal.organization_id == ORG_B
+    assert principal.name == "Target User"
+    assert principal.is_verified is True
+    assert principal.is_external is True
+    assert principal.role_ids == [ORG_A]
+    assert principal.role_names == ["Support"]
+
+
+@pytest.mark.asyncio
+async def test_test_principal_404s_missing_target_user():
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    db = SimpleNamespace(execute=lambda _stmt: _async_value(Result()))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files._test_principal(_ctx(is_superuser=True), db, str(USER_ID))
+
+    assert exc_info.value.status_code == 404
+    assert "User not found" in exc_info.value.detail
+
+
+async def _async_value(value):
+    return value
+
+
+async def _async_false(*_args, **_kwargs):
+    return False
+
+
+async def _async_unexpected(*_args, **_kwargs):
+    raise AssertionError("unexpected async call")
