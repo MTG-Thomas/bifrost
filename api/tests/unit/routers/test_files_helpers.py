@@ -1193,6 +1193,110 @@ async def test_delete_file_editor_deletes_single_file_and_maps_missing(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_rename_file_editor_moves_file_and_folder_or_maps_errors(monkeypatch):
+    moves = []
+
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def move_file(self, old_path, new_path):
+            moves.append((old_path, new_path))
+            if old_path == "missing.py":
+                raise FileNotFoundError(old_path)
+            if new_path == "exists.py":
+                raise FileExistsError(new_path)
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    file_response = await files.rename_file_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        old_path="old.py",
+        new_path="new.py",
+        db=SimpleNamespace(),
+    )
+
+    folder_response = await files.rename_file_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        old_path="apps/old/",
+        new_path="apps/new/",
+        db=SimpleNamespace(),
+    )
+
+    assert file_response.path == "new.py"
+    assert file_response.name == "new.py"
+    assert file_response.type == files.FileType.FILE
+    assert file_response.extension == "py"
+    assert folder_response.path == "apps/new/"
+    assert folder_response.name == "new"
+    assert folder_response.type == files.FileType.FOLDER
+    assert folder_response.extension is None
+
+    with pytest.raises(HTTPException) as missing:
+        await files.rename_file_editor(
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            old_path="missing.py",
+            new_path="new.py",
+            db=SimpleNamespace(),
+        )
+    assert missing.value.status_code == 404
+    assert missing.value.detail == "Not found: missing.py"
+
+    with pytest.raises(HTTPException) as exists:
+        await files.rename_file_editor(
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            old_path="old.py",
+            new_path="exists.py",
+            db=SimpleNamespace(),
+        )
+    assert exists.value.status_code == 409
+    assert exists.value.detail == "Already exists: exists.py"
+
+
+@pytest.mark.asyncio
+async def test_search_file_contents_delegates_and_maps_bad_request(monkeypatch):
+    request = SimpleNamespace(query="needle")
+    expected = SimpleNamespace(results=[{"path": "a.py"}])
+    calls = []
+
+    async def fake_search_files_db(db, request_arg, *, root_path):
+        calls.append((db, request_arg, root_path))
+        return expected
+
+    monkeypatch.setattr(files, "search_files_db", fake_search_files_db)
+
+    response = await files.search_file_contents(
+        request,
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        db="db",
+    )
+
+    assert response is expected
+    assert calls == [("db", request, "")]
+
+    async def failing_search_files_db(*_args, **_kwargs):
+        raise ValueError("bad regex")
+
+    monkeypatch.setattr(files, "search_files_db", failing_search_files_db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.search_file_contents(
+            request,
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            db="db",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "bad regex"
+
+
+@pytest.mark.asyncio
 async def test_list_file_policies_resolves_target_scope_and_serializes_rows(monkeypatch):
     calls = []
     row = SimpleNamespace(
