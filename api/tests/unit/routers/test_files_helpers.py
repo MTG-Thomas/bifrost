@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
@@ -630,6 +632,171 @@ async def test_file_exists_checks_allowed_tiers_until_existing_path(monkeypatch)
 
     assert response.exists is True
     assert exists_calls == [("reports/q1.txt", "reports", str(ORG_A))]
+
+
+@pytest.mark.asyncio
+async def test_pull_files_returns_only_changed_manifest_files(monkeypatch):
+    manifest = SimpleNamespace(name="manifest")
+    files_by_name = {
+        "workflows.yaml": "workflow: changed",
+        "tables.yaml": "table: same",
+    }
+    same_hash = hashlib.sha256(files_by_name["tables.yaml"].encode("utf-8")).hexdigest()
+
+    async def fake_generate_manifest(db):
+        assert db is not None
+        return manifest
+
+    def fake_serialize_manifest_dir(value):
+        assert value is manifest
+        return files_by_name
+
+    monkeypatch.setattr("src.services.manifest_generator.generate_manifest", fake_generate_manifest)
+    monkeypatch.setattr("bifrost.manifest.serialize_manifest_dir", fake_serialize_manifest_dir)
+
+    response = await files.pull_files(
+        files.FilePullRequest(
+            prefix="solution-a",
+            local_hashes={
+                "solution-a/.bifrost/tables.yaml": same_hash,
+            },
+        ),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert response.files == {}
+    assert response.deleted == []
+    assert response.manifest_files == {"workflows.yaml": "workflow: changed"}
+
+
+@pytest.mark.asyncio
+async def test_pull_files_fails_soft_when_manifest_generation_errors(monkeypatch):
+    async def fake_generate_manifest(db):
+        raise RuntimeError("manifest unavailable")
+
+    monkeypatch.setattr("src.services.manifest_generator.generate_manifest", fake_generate_manifest)
+
+    response = await files.pull_files(
+        files.FilePullRequest(prefix="", local_hashes={}),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert response.files == {}
+    assert response.deleted == []
+    assert response.manifest_files == {}
+
+
+@pytest.mark.asyncio
+async def test_get_manifest_serializes_current_manifest(monkeypatch):
+    manifest = SimpleNamespace(name="manifest")
+
+    async def fake_generate_manifest(db):
+        assert db == "db"
+        return manifest
+
+    def fake_serialize_manifest_dir(value):
+        assert value is manifest
+        return {"workflows.yaml": "workflow: current"}
+
+    monkeypatch.setattr("src.services.manifest_generator.generate_manifest", fake_generate_manifest)
+    monkeypatch.setattr("bifrost.manifest.serialize_manifest_dir", fake_serialize_manifest_dir)
+
+    response = await files.get_manifest(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        db="db",
+    )
+
+    assert response == {"workflows.yaml": "workflow: current"}
+
+
+@pytest.mark.asyncio
+async def test_manage_watch_session_start_heartbeats_and_stop_publish_activity(monkeypatch):
+    setex_calls = []
+    delete_calls = []
+    publish_calls = []
+
+    class FakeRedis:
+        async def setex(self, key, ttl, value):
+            setex_calls.append((key, ttl, value))
+
+        async def delete(self, key):
+            delete_calls.append(key)
+
+    async def fake_get_shared_redis():
+        return FakeRedis()
+
+    async def fake_publish_file_activity(**kwargs):
+        publish_calls.append(kwargs)
+
+    user = SimpleNamespace(
+        user_id=USER_ID,
+        name="CLI User",
+        email="cli@example.test",
+    )
+    monkeypatch.setattr("src.core.cache.redis_client.get_shared_redis", fake_get_shared_redis)
+    monkeypatch.setattr("src.core.pubsub.publish_file_activity", fake_publish_file_activity)
+
+    assert await files.manage_watch_session(
+        files.WatchSessionRequest(action="start", prefix="repo", session_id="s1"),
+        user,
+    ) == {"ok": True}
+    assert await files.manage_watch_session(
+        files.WatchSessionRequest(action="heartbeat", prefix="repo", session_id="s1"),
+        user,
+    ) == {"ok": True}
+    assert await files.manage_watch_session(
+        files.WatchSessionRequest(action="stop", prefix="repo", session_id="s1"),
+        user,
+    ) == {"ok": True}
+
+    expected_key = f"bifrost:watch:{USER_ID}:repo"
+    assert [call[0] for call in setex_calls] == [expected_key, expected_key]
+    assert {call[1] for call in setex_calls} == {files.WATCH_SESSION_TTL_SECONDS}
+    assert delete_calls == [expected_key]
+    stored = json.loads(setex_calls[0][2])
+    assert stored["user_id"] == str(USER_ID)
+    assert stored["user_name"] == "CLI User"
+    assert stored["prefix"] == "repo"
+    assert stored["session_id"] == "s1"
+    assert [call["activity_type"] for call in publish_calls] == [
+        "watch_start",
+        "watch_stop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_active_watchers_reads_redis_json_payloads(monkeypatch):
+    payload = {
+        "user_id": str(USER_ID),
+        "user_name": "CLI User",
+        "prefix": "repo",
+        "session_id": "s1",
+    }
+
+    class FakeRedis:
+        async def scan_iter(self, pattern):
+            assert pattern == "bifrost:watch:*"
+            for key in ["watch:1", "watch:2"]:
+                yield key
+
+        async def get(self, key):
+            if key == "watch:1":
+                return json.dumps(payload)
+            return None
+
+    async def fake_get_shared_redis():
+        return FakeRedis()
+
+    monkeypatch.setattr("src.core.cache.redis_client.get_shared_redis", fake_get_shared_redis)
+
+    response = await files.list_active_watchers(SimpleNamespace(user_id=USER_ID))
+
+    assert response == {"watchers": [payload]}
 
 
 @pytest.mark.asyncio
