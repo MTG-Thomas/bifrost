@@ -195,7 +195,7 @@ async def test_update_app_reports_missing_noop_and_solution_managed():
 
     assert "Application not found" in missing.structured_content["error"]
     assert noop.structured_content["error"] == "No updates specified"
-    assert "solution-managed" in managed.structured_content["error"]
+    assert "Solution-managed" in managed.structured_content["error"]
 
 
 @pytest.mark.asyncio
@@ -313,4 +313,4 @@ async def test_update_app_dependencies_rejects_invalid_inputs_and_managed_apps()
     assert "Too many dependencies" in too_many_result.structured_content["error"]
     assert "Invalid package name" in bad_name.structured_content["error"]
     assert "Invalid version" in bad_version.structured_content["error"]
-    assert "solution-managed" in managed.structured_content["error"]
+    assert "Solution-managed" in managed.structured_content["error"]
