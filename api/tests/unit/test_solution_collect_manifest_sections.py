@@ -300,7 +300,7 @@ def test_solution_pull_writes_only_manifest_files_and_acks_entities(tmp_path, mo
     archive = BytesIO()
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr(".bifrost/tables.yaml", "tables:\n  table-1:\n    name: Tickets\n")
-        zf.writestr(".bifrost/configs.yml", "configs:\n  API_KEY:\n    type: secret\n")
+        zf.writestr(".bifrost/configs.yaml", "configs:\n  API_KEY:\n    type: secret\n")
         zf.writestr("functions/ignored.py", "raise RuntimeError('do not write')\n")
 
     class Response:
@@ -335,7 +335,7 @@ def test_solution_pull_writes_only_manifest_files_and_acks_entities(tmp_path, mo
 
     assert result.exit_code == 0, result.output
     assert (tmp_path / ".bifrost" / "tables.yaml").is_file()
-    assert (tmp_path / ".bifrost" / "configs.yml").is_file()
+    assert (tmp_path / ".bifrost" / "configs.yaml").is_file()
     assert not (tmp_path / "functions" / "ignored.py").exists()
     assert client.posts[0] == ("/api/solutions/sol-1/export?mode=shareable", None)
     assert client.posts[1] == (
