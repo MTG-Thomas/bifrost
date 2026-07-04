@@ -6,7 +6,7 @@
 # Uses BUILDPLATFORM to run on native architecture (no QEMU emulation)
 # =============================================================================
 # node:20-slim
-FROM --platform=$BUILDPLATFORM node:26-slim@sha256:95a34da32a840bd9b3b09a5b773591c16923e350174b1c50e1200c75bf15eaa9 AS base
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:a1d9d671994fc2d26e297ac56b4b1522a8bc7fa71c43b14cd1b1fe6c5116f7dc AS base
 
 WORKDIR /app
 
@@ -36,7 +36,7 @@ RUN npm run build
 # =============================================================================
 # nginx:alpine
 # NOSONAR - nginx master starts as root to bind port 80, then serves workers as configured by the base image.
-FROM nginx:alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a AS production
+FROM nginx:alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa AS production
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html

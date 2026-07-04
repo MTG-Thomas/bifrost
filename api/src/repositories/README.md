@@ -467,9 +467,33 @@ the name cascade:
   - A solution **workflow** carries `ctx.solution_id`; the SDK appends
     `?solution=` to name lookups (`ExecutionContext.solution_id`,
     `_execution_context.py`).
-  - A solution **app** sends `X-Bifrost-App`; the router maps it to
-    `Application.solution_id` (`_resolve_solution_table_by_name` in
-    `routers/tables.py`).
+  - A solution **app** sends `X-Bifrost-App`; auth maps it to
+    `Application.solution_id` and routers consume it via
+    `services/solution_scope.py` (e.g. `resolve_solution_table_by_name`
+    used by `routers/tables.py`).
+
+### How the install id is DERIVED (the request side)
+
+Symmetric to gate 1's `resolve_effective_scope` for org scope, install
+scope has exactly one derivation chain — enforced by
+`tests/unit/test_solution_scope_enforcement.py`:
+
+- **`core/auth.py` is the ONLY parser of raw transport signals.** It reads
+  `?solution=` and `X-Bifrost-App`, validates them (UUID shape, active
+  install, header/param agreement), and sets `ctx.solution_id` /
+  `ctx.app_id` on the request's ExecutionContext.
+- **`services/solution_scope.py` is the ONLY consumer API.**
+  `parse_ctx_solution_id(ctx)` parses the context value;
+  `solution_context_id(db, ctx)` adds the app→install fallback;
+  `derive_execution_solution_scope(db, ctx, ...)` adds workflow-execute's
+  deprecated body-field compat tiers (body `solution_id` > `form_id` >
+  `app_id`). Routers call these; they never parse signals themselves.
+- **Body fields on `/api/workflows/execute` are DEPRECATED compat.** Live
+  SDKs still send them; removing them is a CONTRACT_VERSION bump.
+- **The worker path derives scope from the workflow's own DB row**
+  (`jobs/consumers/workflow_execution.py` → `workflow_data["solution_id"]`),
+  NOT from request signals — execution identity is the row's, by design.
+  Forms likewise use their own stored `form.solution_id` (owned scope).
 
 ### How the context is plumbed
 
@@ -528,6 +552,30 @@ access through the policy path — callers reach rows only via paths that
 seed an admin bypass or an explicit grant. Policy claim references are
 validated against the org's known claims at write time
 (`_validate_table_policy_claim_refs`).
+
+---
+
+### File policies, global access, and the global-deny rule
+
+File policies (`FilePolicyService`, `shared/policies/file_policies.py`) are a
+sibling of gate 4's table policies, evaluated per-path instead of per-row.
+Like `PolicyRule` and `Table`, `FilePolicy` rows carry a `solution_id` and can
+be **solution-scoped**: a solution's own file policies deploy, cascade, and
+uninstall alongside the rest of its owned entities (see "Solutions" above).
+
+Not every entity type has caught up to solution scoping yet. **Knowledge**
+(`KnowledgeStore`) is the current example: it has no `solution_id`, so a
+solution's agent that needs a knowledge corpus cannot own one — it must fall
+back to **global access** to reach it. This is not a bug or a gap to close
+opportunistically; it's the intended bridge for entity types that haven't
+been solution-scoped yet.
+
+The governing rule, verbatim: **global-deny applies only to entity types
+that CAN be solution-scoped.** An entity type earns a deny-global posture
+(refusing to fall back to the global tier) only once it has a real
+solution-scoped path of its own — otherwise global access is the only way a
+solution can reach it at all. Use this as the signal for when to flip an
+entity to deny-global as Solutions expands to cover more entity types.
 
 ---
 

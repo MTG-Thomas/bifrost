@@ -30,8 +30,19 @@ import httpx
 import yarl
 from aiohttp import web
 
-# Hop-by-hop headers we must not forward when reverse-proxying.
-_STRIP = {"host", "content-length", "transfer-encoding", "connection", "keep-alive"}
+# Headers we must not forward when reverse-proxying: hop-by-hop headers, plus
+# the browser's Accept-Encoding — browsers advertise encodings (br, zstd) that
+# httpx may not decode, and the proxy rebuilds response headers WITHOUT
+# Content-Encoding, so a passed-through compressed body would reach the browser
+# labeled as plain JSON. Stripping it lets httpx negotiate only what it decodes.
+_STRIP = {
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "accept-encoding",
+}
 
 
 class _UpstreamAuthorityError(ValueError):
@@ -65,7 +76,7 @@ def _join_upstream(base_url: str, rel_url: yarl.URL) -> str:
     # (scheme://host[:port]) followed by a path. re.fullmatch on an
     # origin-prefixed pattern is the SSRF barrier static analysis recognizes,
     # and it genuinely rejects any authority the request managed to inject.
-    origin = f"{base.scheme}://{base.raw_host}" + (f":{base.port}" if base.port else "")
+    origin = str(base.origin())
     if not re.fullmatch(re.escape(origin) + r"(?:/.*)?", result, re.DOTALL):
         raise _UpstreamAuthorityError(f"proxy target {result!r} escapes upstream {origin!r}")
     return result
@@ -77,6 +88,7 @@ class DevProxyConfig:
     token: str          # CLI access token
     app_id: str         # chosen app's manifest UUID
     org_id: str | None  # resolved --org (or None → caller's default org)
+    solution_id: str | None = None  # chosen solution install UUID, when known
 
 
 # Typed app keys (avoid aiohttp's NotAppKeyWarning for plain-string keys).
@@ -108,6 +120,7 @@ def build_dev_app(cfg: DevProxyConfig, host, vite_url: str) -> web.Application:
 def _auth_headers(cfg: DevProxyConfig, incoming) -> dict[str, str]:
     headers = {k: v for k, v in incoming.items() if k.lower() not in _STRIP}
     headers["Authorization"] = f"Bearer {cfg.token}"
+    headers["Accept-Encoding"] = "identity"
     if cfg.org_id:
         headers["X-Bifrost-Org"] = cfg.org_id
     headers["X-Bifrost-App"] = cfg.app_id

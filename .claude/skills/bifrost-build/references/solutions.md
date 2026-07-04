@@ -74,12 +74,29 @@ Open the origin the command prints (the **proxy** port; `--port` sets it, defaul
 ### 5. Deploy
 
 ```bash
-bifrost solution deploy                       # your own org (home)
-bifrost solution deploy --global              # the global install
-bifrost solution deploy --org "Target Org"    # a specific org
+bifrost solution deploy                       # bound install from .env
+bifrost solution deploy --solution <id>       # explicit install override
 ```
 
-Full-replace deploy of the workspace — all entities are written (or overwritten) from the workspace content. Org targeting follows the **unified `--org` standard** (see below).
+Full-replace deploy of the workspace — all entities are written (or overwritten) from the workspace content. `deploy` requires a bound install and never creates a missing install. To target another install of the same definition, bind the workspace to it or pass `--solution <install-id-or-slug>`.
+
+### 5a. Declare Solution file locations
+
+If the Solution needs durable runtime files, declare named locations in `.bifrost/files.yaml`:
+
+```yaml
+locations:
+  - finance
+  - documents
+```
+
+These names become policy-addressable file locations for the install. They are the portable declaration, not the file content itself. Rules:
+
+- Use business/domain names (`finance`, `documents`, `attachments`), not platform internals.
+- Do not declare `workspace`; it is reserved.
+- Do not create or manage `_solutions/` or `_solution_artifacts/` folders yourself. Those are internal storage prefixes for deployed source and export artifacts.
+- Deploy seeds each declared location with a solution-scoped root `admin_bypass` file policy so platform admins can seed and maintain runtime files. This does not grant ordinary app users access; add explicit file policies for non-admin read/write/list/delete behavior.
+- Runtime files are read and written through the Files SDK (`files`, `useFiles`) or the Files CLI/API with `--solution <install-id-or-slug>`. They are not source files under `apps/` or `functions/`.
 
 ### 6. Install from a zip
 

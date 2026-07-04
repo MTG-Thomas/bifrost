@@ -114,12 +114,31 @@ def scaffold_app_cmd(slug: str, path: str | None, api_url: str | None) -> None:
     _ = app_dir
 
 
+def _scaffold_api_url(api_url: str | None) -> str:
+    """Resolve the instance URL to bake into a scaffolded app.
+
+    Explicit flag > workspace env > the authenticated client's URL. The bare
+    localhost:8000 fallback is a last resort for logged-out offline scaffolds —
+    baking it while logged in against a real instance broke the app's
+    `npm install` (the SDK dependency pointed at a dead port; drive finding,
+    2026-07-02)."""
+    resolved = api_url or os.getenv("BIFROST_API_URL")
+    if resolved:
+        return resolved
+    try:
+        return BifrostClient.get_instance(require_auth=True).api_url
+    except RuntimeError:
+        # Not logged in — offline scaffold; main.tsx surfaces the
+        # unauthenticated state at dev time rather than failing here.
+        return "http://localhost:8000"
+
+
 def _scaffold_app(slug: str, path: str | None, api_url: str | None) -> pathlib.Path:
     """Scaffold a standalone_v2 app skeleton; return its dir. Shared by
     ``scaffold-app`` and ``migrate-app`` so the two never drift."""
     import uuid as _uuid
 
-    url = api_url or os.getenv("BIFROST_API_URL") or "http://localhost:8000"
+    url = _scaffold_api_url(api_url)
 
     # Anchor everything at the SOLUTION ROOT (the dir holding the descriptor),
     # found by walking up from cwd. Guessing the root from the app dir
@@ -388,9 +407,11 @@ function Home() {
   //   useWorkflowQuery(ref)    → READ: auto-runs on mount, has { data, refresh }.
   //   useWorkflowMutation(ref) → ACTION: runs on mutate(), has { mutate }.
   // This sample is a button (an action), so it uses the mutation hook. The ref
-  // is a workflow UUID or a portable `path::function` ref (e.g.
-  // "functions/hello.py::main", shipped with this scaffold). Bare names are NOT
-  // resolvable — names aren't unique, so the execute endpoint 404s on them.
+  // is a workflow UUID, a portable `path::function` ref (e.g.
+  // "functions/hello.py::main", shipped with this scaffold), or a workflow
+  // name — all resolve to THIS install's own workflow. Prefer `path::function`:
+  // it's the shape `bifrost solution start` runs LOCALLY (name/UUID refs
+  // proxy to the deployed copy).
   const wf = useWorkflowMutation<{ message: string }>("functions/hello.py::main");
   return (
     <main style={{ padding: 24 }}>
@@ -862,6 +883,32 @@ def _collect_file_locations(workspace: pathlib.Path) -> list[str]:
     return ManifestFiles(locations=raw).locations
 
 
+def _collect_file_policies(workspace: pathlib.Path) -> list[dict]:
+    """Read solution-tier file policies from .bifrost/file-policies.yaml (keyed by UUID).
+
+    Each entry is a portable ``{id, location, path, policies}`` dict written by
+    export's INSTALL view (org/solution ids scrubbed). The server's deploy
+    re-stamps ``solution_id`` to the target install and upserts by natural key
+    ``(solution_id, location, path)``.
+    """
+    fp_file = _bifrost_manifest(workspace, "file-policies.yaml")
+    if fp_file is None or not fp_file.is_file():
+        return []
+    data = yaml.safe_load(fp_file.read_text()) or {}
+    raw = data.get("file_policies", {})
+    entries: list[dict] = []
+    for key, body in raw.items():
+        if not isinstance(body, dict):
+            continue
+        entries.append({
+            "id": body.get("id", key),
+            "location": body.get("location"),
+            "path": body.get("path", ""),
+            "policies": body.get("policies", []),
+        })
+    return entries
+
+
 def _collect_connection_schemas(workspace: pathlib.Path) -> list[dict]:
     """Read connection DECLARATIONS from .bifrost/connections.yaml (keyed by name).
 
@@ -1331,38 +1378,68 @@ def pull_cmd(path: str, solution_id: str | None, org: str | None, is_global: boo
         raise SystemExit(rc)
 
 
-async def _poll_deploy_job(client, job_id: str, *, interval: float = 3.0) -> int:
-    """Poll a deploy job until terminal, printing a heartbeat each tick.
+async def _poll_deploy_job(
+    client, job_id: str, *, interval: float = 3.0, action: str = "Deploy"
+) -> int:
+    """Poll a deploy/install job until terminal, printing a heartbeat each tick.
 
-    The deploy endpoint runs the (often >100s) work as a background job and
-    returns immediately, so the CLI polls for the result instead of holding
-    one long HTTP request that times out client-side (Task 7 bug). Returns 0 on
+    The deploy and install endpoints run the (often >30s) work as a background job
+    and return immediately, so the CLI polls for the result instead of holding one
+    long HTTP request that times out client-side (Task 7 / Task H1). Returns 0 on
     ``succeeded``, 1 on ``failed`` (printing the server-captured error).
+
+    ``action`` is the verb used in the messages ("Deploy" / "Install"); the
+    grammar assumes ``<action>ing`` reads naturally ("Deploying" / "Installing").
     """
+    gerund = f"{action[:-1]}ing" if action.endswith("e") else f"{action}ing"
     start = time.monotonic()
+    last_phase: str | None = None
     while True:
         resp = await client.get(f"/api/solutions/deploy-jobs/{job_id}")
         if resp.status_code != 200:
             click.echo(
-                f"Failed to read deploy status ({resp.status_code}): {resp.text[:200]}",
+                f"Failed to read {action.lower()} status "
+                f"({resp.status_code}): {resp.text[:200]}",
                 err=True,
             )
             return 1
         body = resp.json()
         status = body.get("status")
         if status == "succeeded":
-            click.echo("Deploy complete.")
+            result = body.get("result") or {}
+            sid = result.get("solution_id")
+            if sid:
+                slug = result.get("slug")
+                slug_note = f" (slug={slug})" if slug else ""
+                click.echo(f"{action} complete: solution {sid}{slug_note}.")
+            else:
+                click.echo(f"{action} complete.")
             return 0
         if status == "failed":
             error = body.get("error") or "unknown error"
-            # Task 20 downgrade gate now surfaces as a failed job — re-attach the
-            # deliberate-override hint so the operator knows how to proceed.
+            # The build gates now surface as a failed job — re-attach the
+            # deliberate-override hints so the operator knows how to proceed.
             if "older than installed" in error:
                 error = f"{error}\nRe-run with --force to downgrade."
-            click.echo(f"Deploy failed: {error}", err=True)
+            result = body.get("result") or {}
+            if result.get("reason") == "inactive_install_exists":
+                error = (
+                    f"{error}\nRe-run with --reactivate to reactivate it, "
+                    "or delete the existing install first."
+                )
+            elif "overwrite existing" in error:
+                error = (
+                    f"{error}\nRe-run with --replace-secrets to overwrite "
+                    "conflicting config values, or --replace-data for table data."
+                )
+            click.echo(f"{action} failed: {error}", err=True)
             return 1
+        phase = (body.get("result") or {}).get("phase")
+        if isinstance(phase, str) and phase and phase != last_phase:
+            click.echo(f"{action} phase: {phase}")
+            last_phase = phase
         elapsed = int(time.monotonic() - start)
-        click.echo(f"Still deploying... {elapsed}s")
+        click.echo(f"Still {gerund.lower()}... {elapsed}s")
         await asyncio.sleep(interval)
 
 
@@ -1586,6 +1663,12 @@ def deploy_cmd(
     default=False,
     help="Overwrite existing table data when the zip carries conflicting rows.",
 )
+@click.option(
+    "--reactivate",
+    is_flag=True,
+    default=False,
+    help="Reactivate an existing inactive install with the same slug.",
+)
 def install_cmd(
     zip_path: str,
     org: str | None,
@@ -1594,6 +1677,7 @@ def install_cmd(
     password: str | None,
     replace_secrets: bool,
     replace_data: bool,
+    reactivate: bool,
 ) -> None:
     """POST a Solution workspace zip to ``/api/solutions/install``.
 
@@ -1635,30 +1719,50 @@ def install_cmd(
             form["replace_secrets"] = "true"
         if replace_data:
             form["replace_data"] = "true"
+        url = "/api/solutions/install"
+        if reactivate:
+            url += "?reactivate=true"
+        # Install is async server-side: the POST validates the zip + password
+        # synchronously and returns a job id quickly. Give the upload itself a
+        # generous timeout (large bundles) but never block on the deploy work —
+        # that is observed via the poll loop below.
         resp = await client.post(
-            "/api/solutions/install",
+            url,
             files={"file": (pathlib.Path(zip_path).name, zip_bytes, "application/zip")},
             data=form,
+            timeout=600,
         )
+        # Synchronous fail-fast refusals come back on the POST itself, before any
+        # job is created (wrong/missing password → 422; bad zip → 422; inactive
+        # install of the same slug → structured 409 prompt). The build gates
+        # (collision, downgrade, git-connected) surface as a FAILED job, read via
+        # the poll loop.
         if resp.status_code == 409:
-            detail = resp.json().get("detail", resp.text)
-            click.echo(f"Install collision: {detail}", err=True)
-            click.echo(
-                "Re-run with --replace-secrets to overwrite conflicting config values, "
-                "or --replace-data for table data.",
-                err=True,
-            )
+            detail = resp.json().get("detail", {})
+            if isinstance(detail, dict) and detail.get("reason") == "inactive_install_exists":
+                click.echo(
+                    f"An inactive install of '{detail.get('slug')}' already exists "
+                    f"(id={detail.get('solution_id')}).",
+                    err=True,
+                )
+                click.echo(
+                    "Re-run with --reactivate to reactivate it, "
+                    "or delete the existing install first.",
+                    err=True,
+                )
+            else:
+                click.echo(f"Install conflict: {detail}", err=True)
             return 1
         if resp.status_code == 422:
             detail = resp.json().get("detail", resp.text)
             click.echo(f"Install rejected: {detail}", err=True)
             return 1
-        if resp.status_code not in (200, 201):
+        if resp.status_code != 202:
             click.echo(f"Install failed: {resp.status_code} {resp.text}", err=True)
             return 1
-        body = resp.json()
-        click.echo(f"Installed solution {body['id']} (slug={body.get('slug')}).")
-        return 0
+        job_id = resp.json()["deploy_job_id"]
+        click.echo(f"Installing solution (job {job_id})...")
+        return await _poll_deploy_job(client, job_id, action="Install")
 
     rc = asyncio.run(_run())
     if rc:
@@ -1787,6 +1891,31 @@ def export_cmd(
         raise SystemExit(rc)
 
 
+def _vite_child_env(
+    base_env: dict[str, str],
+    *,
+    app_id: str,
+    org_id: str,
+    proxy_origin: str,
+    access_token: str,
+) -> dict[str, str]:
+    """Environment for the `solution start` Vite child.
+
+    The bundle-visible BIFROST_API_URL is the LOCAL PROXY origin, never the
+    upstream API: the proxy is where install scope is injected (?solution=,
+    auth, app header) and where local path::fn refs run in-process. Pointing
+    the bundle at the upstream bypasses all of that — local workflow edits
+    silently don't run, install-owned tables 404, declared-location file
+    writes 403 (drive finding, 2026-07-02).
+    """
+    env = dict(base_env)
+    env["VITE_BIFROST_APP_ID"] = app_id
+    env["VITE_BIFROST_ORG_ID"] = org_id
+    env["BIFROST_API_URL"] = proxy_origin
+    env["BIFROST_ACCESS_TOKEN"] = access_token
+    return env
+
+
 @solution_group.command(name="start", help="Run the app's dev server + local workflows (one origin).")
 @click.argument("app_slug", required=False)
 @org_option
@@ -1856,11 +1985,13 @@ def start_cmd(app_slug: str | None, org: str | None, is_global: bool, port: int)
         click.echo("Installing app dependencies (npm install)…")
         subprocess.run([npm, "install"], cwd=chosen.app_dir, check=True)
 
-    vite_env = dict(os.environ)
-    vite_env["VITE_BIFROST_APP_ID"] = chosen.app_id
-    vite_env["VITE_BIFROST_ORG_ID"] = (org_info or {}).get("id", "")
-    vite_env["BIFROST_API_URL"] = client.api_url
-    vite_env["BIFROST_ACCESS_TOKEN"] = client._access_token
+    vite_env = _vite_child_env(
+        dict(os.environ),
+        app_id=chosen.app_id,
+        org_id=(org_info or {}).get("id", ""),
+        proxy_origin=f"http://127.0.0.1:{port}",
+        access_token=client._access_token,
+    )
 
     vite_port = port + 1
     # Run `npm run dev` in its OWN process group (start_new_session) so teardown

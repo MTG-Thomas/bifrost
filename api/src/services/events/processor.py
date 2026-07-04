@@ -298,6 +298,7 @@ class EventProcessor:
         topic: str,
         data: dict,
         organization_id: UUID | None = None,
+        solution_id: UUID | None = None,
         triggered_by: str | None = None,
     ) -> tuple[UUID, int]:
         """Emit a topic event. Returns (event_id, subscribers_notified).
@@ -308,7 +309,7 @@ class EventProcessor:
         """
         validate_topic(topic)
 
-        source = await self._source_repo.get_by_topic(topic)
+        source = await self._source_repo.get_by_topic(topic, solution_id=solution_id)
         if source is None:
             logger.info(
                 f"No active topic source for '{log_safe(topic)}'; emit is a no-op",
