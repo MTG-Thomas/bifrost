@@ -217,6 +217,138 @@ class TestHandleFileMessage:
 
         assert websocket.sent == []
 
+
+@pytest.mark.asyncio
+class TestHandleTableMessage:
+    async def test_ignores_when_not_subscribed(self) -> None:
+        websocket = FakeWebSocket()
+
+        await ws_mod._handle_table_message(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            "table:table-1",
+            {"type": "document_change"},
+        )
+
+        assert websocket.sent == []
+
+    async def test_policy_changed_invalidates_and_re_evaluates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+
+        async def re_evaluate(websocket: FakeWebSocket, user: UserPrincipal, table_id: str) -> None:
+            calls.append(table_id)
+
+        monkeypatch.setattr(ws_mod, "_re_evaluate_subscription", re_evaluate)
+        ws_mod._table_policy_cache["table-1"] = None
+        websocket = FakeWebSocket()
+        websocket.state.table_subscriptions = {
+            "table-1": {"filter": None, "channel_name": "table:table-1"}
+        }
+
+        await ws_mod._handle_table_message(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            "table:table-1",
+            {"type": "policy_changed"},
+        )
+
+        assert calls == ["table-1"]
+        assert "table-1" not in ws_mod._table_policy_cache
+
+    async def test_re_evaluate_revokes_when_policies_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def no_policies(table_id: str):
+            assert table_id == "table-1"
+            return None
+
+        monkeypatch.setattr(ws_mod, "_load_policies_for_table", no_policies)
+        websocket = FakeWebSocket()
+        websocket.state.table_subscriptions = {
+            "table-1": {"filter": None, "channel_name": "table:table-1"}
+        }
+
+        await ws_mod._re_evaluate_subscription(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            "table-1",
+        )
+
+        assert websocket.sent == [
+            {"type": "subscription_revoked", "channel": "table:table-1"}
+        ]
+        assert websocket.state.table_subscriptions == {}
+
+    async def test_document_change_emits_delete_decision(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def policies(table_id: str):
+            assert table_id == "table-1"
+            return object()
+
+        def decide(**_: object):
+            return "delete", "row-1"
+
+        monkeypatch.setattr(ws_mod, "_load_policies_for_table", policies)
+        monkeypatch.setattr(ws_mod, "decide_visibility_change", decide)
+        websocket = FakeWebSocket()
+        websocket.state.table_subscriptions = {
+            "table-1": {"filter": None, "channel_name": "table:table-1"}
+        }
+
+        await ws_mod._handle_table_message(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            "table:table-1",
+            {"type": "document_change", "old_row": {"id": "row-1"}, "new_row": None},
+        )
+
+        assert websocket.sent == [
+            {
+                "type": "document_change",
+                "action": "delete",
+                "table_id": "table-1",
+                "row_id": "row-1",
+            }
+        ]
+
+    async def test_document_change_emits_row_decision(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        row = {"id": "row-1", "status": "open"}
+
+        async def policies(table_id: str):
+            assert table_id == "table-1"
+            return object()
+
+        def decide(**_: object):
+            return "update", row
+
+        monkeypatch.setattr(ws_mod, "_load_policies_for_table", policies)
+        monkeypatch.setattr(ws_mod, "decide_visibility_change", decide)
+        websocket = FakeWebSocket()
+        websocket.state.table_subscriptions = {
+            "table-1": {"filter": None, "channel_name": "table:table-1"}
+        }
+
+        await ws_mod._handle_table_message(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            "table:table-1",
+            {"type": "document_change", "old_row": None, "new_row": row},
+        )
+
+        assert websocket.sent == [
+            {
+                "type": "document_change",
+                "action": "update",
+                "table_id": "table-1",
+                "row": row,
+            }
+        ]
+
     async def test_revokes_subscription_when_policy_removed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
