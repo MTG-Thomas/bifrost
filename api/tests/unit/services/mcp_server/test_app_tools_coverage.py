@@ -72,12 +72,41 @@ class _Db:
         self.committed = True
 
 
+class _RaisingDb:
+    async def execute(self, _stmt):
+        raise RuntimeError("database unavailable")
+
+
 def _tool_db(db):
     @asynccontextmanager
     async def fake_get_tool_db(_context):
         yield db
 
     return fake_get_tool_db
+
+
+@pytest.mark.asyncio
+async def test_list_apps_returns_file_counts_and_handles_errors():
+    app = _app(name="Alpha", slug="alpha", is_published=True)
+    db = _Db([_ScalarRowsResult([app])])
+    storage = MagicMock()
+    storage.list_files = AsyncMock(return_value=["_layout.tsx", "pages/index.tsx"])
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+    ):
+        result = await apps.list_apps(_context(org_id=app.organization_id))
+
+    assert result.structured_content["count"] == 1
+    assert result.structured_content["apps"][0]["status"] == "published"
+    assert result.structured_content["apps"][0]["file_count"] == 2
+
+    with patch.object(apps, "get_tool_db", _tool_db(_RaisingDb())):
+        failed = await apps.list_apps(_context())
+
+    assert "Error listing apps" in failed.structured_content["error"]
+    assert "database unavailable" in failed.structured_content["error"]
 
 
 @pytest.mark.asyncio
@@ -109,6 +138,16 @@ async def test_get_app_by_slug_disambiguates_and_lists_preview_files():
 
 
 @pytest.mark.asyncio
+async def test_get_app_reports_missing_rows():
+    db = _Db([_ScalarResult(None)])
+
+    with patch.object(apps, "get_tool_db", _tool_db(db)):
+        result = await apps.get_app(_context(), app_id=str(uuid4()))
+
+    assert "Application not found" in result.structured_content["error"]
+
+
+@pytest.mark.asyncio
 async def test_update_app_updates_metadata_and_publishes_draft_notice():
     app = _app(name="Old", description="Before")
     db = _Db([_ScalarResult(app)])
@@ -130,6 +169,33 @@ async def test_update_app_updates_metadata_and_publishes_draft_notice():
     assert app.description == "After"
     assert result.structured_content["updates"] == ["name", "description"]
     publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_app_reports_missing_noop_and_solution_managed():
+    missing_db = _Db([_ScalarResult(None)])
+    with patch.object(apps, "get_tool_db", _tool_db(missing_db)):
+        missing = await apps.update_app(_context(), str(uuid4()), name="New")
+
+    noop_app = _app()
+    noop_db = _Db([_ScalarResult(noop_app)])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(noop_db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+    ):
+        noop = await apps.update_app(_context(), str(noop_app.id))
+
+    managed_app = _app(solution_id=uuid4())
+    managed_db = _Db([_ScalarResult(managed_app)])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(managed_db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=True),
+    ):
+        managed = await apps.update_app(_context(), str(managed_app.id), name="New")
+
+    assert "Application not found" in missing.structured_content["error"]
+    assert noop.structured_content["error"] == "No updates specified"
+    assert "solution-managed" in managed.structured_content["error"]
 
 
 @pytest.mark.asyncio
@@ -186,6 +252,22 @@ async def test_get_app_dependencies_by_slug_reports_declared_packages():
 
 
 @pytest.mark.asyncio
+async def test_get_app_dependencies_reports_empty_and_missing_apps():
+    empty_app = _app(dependencies=None)
+    empty_db = _Db([_ScalarResult(empty_app)])
+    with patch.object(apps, "get_tool_db", _tool_db(empty_db)):
+        empty = await apps.get_app_dependencies(_context(), app_id=str(empty_app.id))
+
+    missing_db = _Db([_ScalarRowsResult([])])
+    with patch.object(apps, "get_tool_db", _tool_db(missing_db)):
+        missing = await apps.get_app_dependencies(_context(), app_slug="missing")
+
+    assert empty.structured_content["dependencies"] == {}
+    assert "No dependencies declared" in empty.content[0].text
+    assert "Application not found" in missing.structured_content["error"]
+
+
+@pytest.mark.asyncio
 async def test_update_app_dependencies_validates_and_invalidates_cache():
     app = _app(dependencies=None)
     db = _Db([_ScalarResult(app)])
@@ -207,3 +289,28 @@ async def test_update_app_dependencies_validates_and_invalidates_cache():
     assert app.dependencies == {"recharts": "~2.12.7"}
     assert result.structured_content["dependencies"] == {"recharts": "~2.12.7"}
     storage.invalidate_render_cache.assert_awaited_once_with(str(app.id))
+
+
+@pytest.mark.asyncio
+async def test_update_app_dependencies_rejects_invalid_inputs_and_managed_apps():
+    app_id = str(uuid4())
+    too_many = {f"pkg{i}": "1.0.0" for i in range(21)}
+
+    bad_id = await apps.update_app_dependencies(_context(), "not-a-uuid", {})
+    too_many_result = await apps.update_app_dependencies(_context(), app_id, too_many)
+    bad_name = await apps.update_app_dependencies(_context(), app_id, {"Bad Name": "1.0.0"})
+    bad_version = await apps.update_app_dependencies(_context(), app_id, {"pkg": "latest"})
+
+    managed_app = _app(solution_id=uuid4())
+    managed_db = _Db([_ScalarResult(managed_app)])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(managed_db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=True),
+    ):
+        managed = await apps.update_app_dependencies(_context(), str(managed_app.id), {})
+
+    assert "Invalid app_id format" in bad_id.structured_content["error"]
+    assert "Too many dependencies" in too_many_result.structured_content["error"]
+    assert "Invalid package name" in bad_name.structured_content["error"]
+    assert "Invalid version" in bad_version.structured_content["error"]
+    assert "solution-managed" in managed.structured_content["error"]
