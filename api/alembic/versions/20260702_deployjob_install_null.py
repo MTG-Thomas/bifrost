@@ -7,7 +7,7 @@ solution_id instead. Deploy and install-from-repo jobs still populate install_id
 (their install exists before enqueue).
 
 Revision ID: 20260702_deployjob_install_null
-Revises: 20260625_solution_export_jobs
+Revises: 20260702_merge_sol_oauth_heads
 Create Date: 2026-07-02
 """
 
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260702_deployjob_install_null"
-down_revision: str = "20260625_solution_export_jobs"
+down_revision: str = "20260702_merge_sol_oauth_heads"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
