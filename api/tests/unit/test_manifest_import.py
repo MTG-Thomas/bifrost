@@ -15,6 +15,8 @@ from bifrost.manifest import (
     ManifestEventSource,
     ManifestIntegration,
     ManifestIntegrationMapping,
+    ManifestMCPConnection,
+    ManifestMCPServer,
     ManifestPolicy,
     ManifestTable,
     ManifestWorkflow,
@@ -406,6 +408,88 @@ class TestManifestDestructiveScope:
         assert _manifest_access_level(None, []) is None
         assert _manifest_access_level("authenticated", ["role-id"]) == "authenticated"
 
+    def test_manifest_org_scope_includes_mcp_server_and_connection_orgs(self):
+        from src.services.manifest_import import _manifest_org_scope
+
+        server_org = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        connection_org = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        manifest = Manifest(
+            mcp_servers={
+                "server": ManifestMCPServer(
+                    id="11111111-1111-1111-1111-111111111111",
+                    name="server",
+                    server_url="https://mcp.example.com",
+                    organization_id=server_org,
+                    connections={
+                        "22222222-2222-2222-2222-222222222222": ManifestMCPConnection(
+                            organization_id=connection_org,
+                            client_id="client-id",
+                        )
+                    },
+                )
+            }
+        )
+
+        assert _manifest_org_scope(manifest) == {server_org, connection_org}
+
+    def test_scope_filter_keeps_mcp_server_for_scoped_connection_org(self):
+        from src.services.manifest_import import _filter_manifest_to_scope
+
+        scoped_org = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        other_org = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        kept_server_id = "11111111-1111-1111-1111-111111111111"
+        removed_server_id = "22222222-2222-2222-2222-222222222222"
+        scope_manifest = Manifest(
+            mcp_servers={
+                "33333333-3333-3333-3333-333333333333": ManifestMCPServer(
+                    id="33333333-3333-3333-3333-333333333333",
+                    name="scope",
+                    server_url="https://scope.example.com",
+                    connections={
+                        "66666666-6666-6666-6666-666666666666": ManifestMCPConnection(
+                            organization_id=scoped_org,
+                            client_id="client-id",
+                        )
+                    },
+                )
+            }
+        )
+        current = Manifest(
+            mcp_servers={
+                kept_server_id: ManifestMCPServer(
+                    id=kept_server_id,
+                    name="kept",
+                    server_url="https://kept.example.com",
+                    connections={
+                        "44444444-4444-4444-4444-444444444444": ManifestMCPConnection(
+                            organization_id=scoped_org,
+                            client_id="client-id",
+                        )
+                    },
+                ),
+                removed_server_id: ManifestMCPServer(
+                    id=removed_server_id,
+                    name="removed",
+                    server_url="https://removed.example.com",
+                    connections={
+                        "55555555-5555-5555-5555-555555555555": ManifestMCPConnection(
+                            organization_id=other_org,
+                            client_id="client-id",
+                        )
+                    },
+                ),
+            }
+        )
+
+        _filter_manifest_to_scope(
+            current,
+            path_exists=lambda path: False,
+            dir_exists=lambda path: False,
+            scope_manifest=scope_manifest,
+        )
+
+        assert set(current.mcp_servers) == {kept_server_id}
+
 
 class TestManifestIntegrationOAuthProviderImport:
     """Pin OAuth provider metadata persistence through integration import."""
@@ -512,3 +596,40 @@ class TestManifestAppPathSafety:
         )
 
         assert _safe_app_repo_path(mapp) == "apps/customer"
+
+    def test_defaults_empty_path_from_slug(self):
+        from src.services.manifest_import import _safe_app_repo_path
+
+        mapp = ManifestApp(
+            id="11111111-1111-1111-1111-111111111111",
+            name="Customer",
+            slug="customer",
+            path="",
+        )
+
+        assert _safe_app_repo_path(mapp) == "apps/customer"
+
+    def test_rejects_empty_path_without_slug(self):
+        from src.services.manifest_import import _safe_app_repo_path
+
+        mapp = ManifestApp(
+            id="11111111-1111-1111-1111-111111111111",
+            name="Customer",
+            path="",
+        )
+
+        with pytest.raises(ValueError, match="no slug or path"):
+            _safe_app_repo_path(mapp)
+
+    def test_rejects_path_that_does_not_match_slug(self):
+        from src.services.manifest_import import _safe_app_repo_path
+
+        mapp = ManifestApp(
+            id="11111111-1111-1111-1111-111111111111",
+            name="Customer",
+            slug="customer",
+            path="apps/other",
+        )
+
+        with pytest.raises(ValueError, match="does not match slug"):
+            _safe_app_repo_path(mapp)
