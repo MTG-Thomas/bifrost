@@ -12,9 +12,11 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 from src.core.principal import UserPrincipal
 from src.routers.files import (
+    SignedUrlBatchRequest,
     SignedUrlRequest,
     SignedUrlResponse,
     get_signed_url,
+    get_signed_urls,
 )
 
 # A concrete org UUID — scope resolution (`resolve_target_org`) validates that a
@@ -264,3 +266,57 @@ class TestPresignedUrlGeneration:
         mock_fss.generate_presigned_download_url.assert_awaited_once_with(
             path=f"uploads/{ORG_A}/file.pdf",
         )
+
+
+class TestSignedUrlBatch:
+    """Batch endpoint returns per-item success/error results without aborting."""
+
+    @pytest.mark.asyncio
+    async def test_batch_mixes_success_forbidden_and_bad_request(self, monkeypatch):
+        from fastapi import HTTPException
+
+        async def fake_build_signed_url(item, ctx, db):
+            if item.path == "ok.pdf":
+                return SignedUrlResponse(
+                    url="https://s3/ok",
+                    path=f"uploads/{ORG_A}/ok.pdf",
+                )
+            if item.path == "denied.pdf":
+                raise HTTPException(status_code=403, detail="policy details hidden")
+            raise HTTPException(status_code=400, detail="bad path")
+
+        monkeypatch.setattr(
+            "src.routers.files._build_signed_url",
+            fake_build_signed_url,
+        )
+
+        response = await get_signed_urls(
+            SignedUrlBatchRequest(
+                requests=[
+                    SignedUrlRequest(path="ok.pdf", method="GET", scope=str(ORG_A)),
+                    SignedUrlRequest(path="denied.pdf", method="GET", scope=str(ORG_A)),
+                    SignedUrlRequest(path="../bad.pdf", method="PUT", scope=str(ORG_A)),
+                ]
+            ),
+            _ctx(),
+            MagicMock(),
+            AsyncMock(),
+        )
+
+        assert [result.path for result in response.results] == [
+            "ok.pdf",
+            "denied.pdf",
+            "../bad.pdf",
+        ]
+        assert response.results[0].status_code == 200
+        assert response.results[0].resolved_path == f"uploads/{ORG_A}/ok.pdf"
+        assert response.results[0].url == "https://s3/ok"
+        assert response.results[0].expires_in == 600
+
+        assert response.results[1].status_code == 403
+        assert response.results[1].error == "forbidden"
+        assert response.results[1].url is None
+
+        assert response.results[2].status_code == 400
+        assert response.results[2].error == "bad path"
+        assert response.results[2].method == "PUT"
