@@ -9,10 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 
-from src.models.enums import AgentAccessLevel
-from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.workflows import Workflow
 from src.services.workflow_orphan import (
     WorkflowOrphanService,
@@ -305,7 +302,7 @@ class TestRemapWorkflowReferences:
     """Tests for moving references from one workflow row to another."""
 
     @pytest.mark.asyncio
-    async def test_remaps_agent_tool_reference_to_active_target(self, db_session):
+    async def test_remaps_references_to_active_target(self):
         old_workflow = Workflow(
             id=uuid4(),
             name="Old Tool",
@@ -324,36 +321,39 @@ class TestRemapWorkflowReferences:
             is_active=True,
             is_orphaned=False,
         )
-        agent = Agent(
-            id=uuid4(),
-            name="Work",
-            system_prompt="You are a test agent.",
-            access_level=AgentAccessLevel.AUTHENTICATED,
-            created_by="test@example.com",
+        db = AsyncMock()
+        db.get = AsyncMock(side_effect=[old_workflow, target_workflow])
+        db.execute = AsyncMock(
+            side_effect=[
+                MagicMock(rowcount=2),
+                MagicMock(rowcount=1),
+                MagicMock(rowcount=3),
+            ]
         )
-        db_session.add_all([old_workflow, target_workflow, agent])
-        await db_session.flush()
-        db_session.add(AgentTool(agent_id=agent.id, workflow_id=old_workflow.id))
-        await db_session.flush()
+        db.commit = AsyncMock()
 
-        service = WorkflowOrphanService(db_session)
-        result = await service.remap_workflow_references(
-            source_workflow_id=old_workflow.id,
-            target_workflow_id=target_workflow.id,
-        )
+        service = WorkflowOrphanService(db)
+        with patch.object(
+            service, "_remap_agent_tool_references", AsyncMock(return_value=4)
+        ) as remap_agents:
+            result = await service.remap_workflow_references(
+                source_workflow_id=old_workflow.id,
+                target_workflow_id=target_workflow.id,
+            )
 
         assert result.source_workflow_id == str(old_workflow.id)
         assert result.target_workflow_id == str(target_workflow.id)
-        assert result.updated["agents"] == 1
+        assert result.updated == {
+            "forms": 3,
+            "form_fields": 3,
+            "agents": 4,
+            "apps": 0,
+        }
         assert old_workflow.is_active is False
         assert old_workflow.is_orphaned is True
-
-        rows = (
-            await db_session.execute(
-                select(AgentTool).where(AgentTool.agent_id == agent.id)
-            )
-        ).scalars().all()
-        assert [row.workflow_id for row in rows] == [target_workflow.id]
+        assert db.execute.await_count == 3
+        db.commit.assert_awaited_once()
+        remap_agents.assert_awaited_once_with(old_workflow.id, target_workflow.id)
 
     @pytest.mark.asyncio
     async def test_rejects_when_workflow_not_found(self):
@@ -469,3 +469,133 @@ class TestRemapWorkflowReferences:
             )
 
         assert result.is_orphaned is False
+
+
+class TestWorkflowOrphanPureHelpers:
+    """Pure AST/signature helper coverage for WorkflowOrphanService."""
+
+    def test_file_contains_workflow_accepts_supported_decorator_shapes(self):
+        service = WorkflowOrphanService(db=None)
+        code = """
+@workflow
+def plain():
+    pass
+
+@bifrost.tool()
+def dotted():
+    pass
+
+@data_provider()
+async def async_provider():
+    pass
+"""
+
+        assert service.file_contains_workflow(code, "plain")
+        assert service.file_contains_workflow(code, "dotted")
+        assert service.file_contains_workflow(code, "async_provider")
+
+    def test_file_contains_workflow_rejects_missing_bad_syntax_or_undecorated(self):
+        service = WorkflowOrphanService(db=None)
+
+        assert not service.file_contains_workflow("def plain():\n    pass\n", "plain")
+        assert not service.file_contains_workflow(
+            "@workflow\ndef other():\n    pass\n", "plain"
+        )
+        assert not service.file_contains_workflow("def broken(:\n", "plain")
+
+    def test_detect_type_returns_decorator_family(self):
+        service = WorkflowOrphanService(db=None)
+        code = """
+@tool()
+def repair_ticket():
+    pass
+"""
+
+        assert service._detect_type(code, "repair_ticket") == "tool"
+        assert service._detect_type(code, "missing") is None
+        assert service._detect_type("def broken(:\n", "repair_ticket") is None
+
+    def test_parse_function_signature_skips_context_and_formats_annotations(self):
+        service = WorkflowOrphanService(db=None)
+        code = """
+from typing import Optional
+
+def run(self, ticket_id: str, context: ExecutionContext, priority: int = 1) -> str | None:
+    return ticket_id
+"""
+
+        signature = service._parse_function_signature(code, "run")
+
+        assert signature == FunctionSignature(
+            name="run",
+            parameters=[
+                ("ticket_id", "str", False),
+                ("priority", "int", True),
+            ],
+            return_type="str | None",
+        )
+        assert service._signature_to_string(signature) == (
+            "(ticket_id: str, priority: int = ...) -> str | None"
+        )
+
+    def test_parse_function_signature_handles_missing_or_invalid_code(self):
+        service = WorkflowOrphanService(db=None)
+
+        assert service._parse_function_signature("def broken(:\n", "run") is None
+        assert service._parse_function_signature("def other():\n    pass\n", "run") is None
+
+    def test_signature_compatibility_exact_compatible_and_incompatible(self):
+        service = WorkflowOrphanService(db=None)
+        original = FunctionSignature(
+            name="run",
+            parameters=[("ticket_id", "str", False), ("priority", "int", True)],
+            return_type="str",
+        )
+
+        assert service._check_signature_compatibility(original, original) == "exact"
+        assert service._check_signature_compatibility(
+            original,
+            FunctionSignature(
+                name="replacement",
+                parameters=[("ticket_id", "str", False)],
+                return_type="str | None",
+            ),
+        ) == "compatible"
+        assert service._check_signature_compatibility(
+            original,
+            FunctionSignature(
+                name="bad",
+                parameters=[("customer_id", "str", False)],
+                return_type="str",
+            ),
+        ) == "incompatible"
+        assert service._check_signature_compatibility(
+            original,
+            FunctionSignature(
+                name="bad",
+                parameters=[
+                    ("ticket_id", "str", False),
+                    ("extra", "str", False),
+                ],
+                return_type="str",
+            ),
+        ) == "incompatible"
+
+    def test_types_compatible_handles_optional_unions(self):
+        service = WorkflowOrphanService(db=None)
+
+        assert service._types_compatible("str", "str")
+        assert service._types_compatible("str", "str | None")
+        assert service._types_compatible("Optional[str]", "str")
+        assert not service._types_compatible("int", "str")
+
+    def test_props_contain_workflow_recurses_nested_dicts_and_lists(self):
+        service = WorkflowOrphanService(db=None)
+
+        assert service._props_contain_workflow(
+            {"children": [{"props": {"dataProviderId": "wf-1"}}]},
+            "wf-1",
+        )
+        assert service._props_contain_workflow({"workflowId": "wf-1"}, "wf-1")
+        assert not service._props_contain_workflow({"workflowId": "wf-2"}, "wf-1")
+        assert not service._props_contain_workflow(None, "wf-1")
