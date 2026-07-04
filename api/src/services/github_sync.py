@@ -88,7 +88,7 @@ def _walk_tree(root: Path) -> dict[str, bytes]:
     for p in root.rglob("*"):
         if p.is_dir():
             continue
-        rel = str(p.relative_to(root))
+        rel = p.relative_to(root).as_posix()
         # Skip .git internals
         if rel.startswith(".git/") or rel == ".git":
             continue

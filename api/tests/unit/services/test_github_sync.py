@@ -5,6 +5,7 @@ Tests the GitHubSyncService data models and exceptions.
 """
 
 import pytest
+from typing import Any, cast
 
 from src.models.contracts.github import (
     OrphanInfo,
@@ -13,6 +14,15 @@ from src.models.contracts.github import (
     WorkflowReference,
 )
 from src.services.github_sync import SyncError
+
+
+class _Head:
+    def __init__(self, valid: bool = True, hexsha: str = "abcdef123456") -> None:
+        self._valid = valid
+        self.commit = type("Commit", (), {"hexsha": hexsha})()
+
+    def is_valid(self) -> bool:
+        return self._valid
 
 
 def test_content_hash_is_stable_sha256():
@@ -62,6 +72,175 @@ class TestDeletedPathsInHead:
             git = Git()
 
         assert _deleted_paths_in_head(Repo()) == set()
+
+
+class TestManifestConflictAutoResolve:
+    def test_auto_resolves_dict_yaml_conflict(self, tmp_path):
+        from src.services.github_sync import _auto_resolve_manifest_conflicts
+
+        class Git:
+            added = []
+
+            def show(self, ref):
+                return {
+                    ":1:.bifrost/workflows.yaml": "wf:\n  name: old\n  local: keep\n",
+                    ":2:.bifrost/workflows.yaml": "wf:\n  name: ours\n  local: keep\n",
+                    ":3:.bifrost/workflows.yaml": "wf:\n  name: theirs\n  remote: add\n",
+                }[ref]
+
+            def add(self, path):
+                self.added.append(path)
+
+        class Repo:
+            git = Git()
+
+        resolved = _auto_resolve_manifest_conflicts(
+            Repo(),
+            tmp_path,
+            {".bifrost/workflows.yaml": [(1, object()), (2, object()), (3, object())]},
+        )
+
+        assert resolved == {".bifrost/workflows.yaml"}
+        merged = (tmp_path / ".bifrost" / "workflows.yaml").read_text()
+        assert "name: theirs" in merged
+        assert "remote: add" in merged
+        assert Repo.git.added == [".bifrost/workflows.yaml"]
+
+    def test_auto_resolve_falls_back_to_theirs_on_bad_yaml(self, tmp_path):
+        from src.services.github_sync import _auto_resolve_manifest_conflicts
+
+        class Git:
+            added = []
+
+            def show(self, ref):
+                if ref == ":3:.bifrost/apps.yaml":
+                    return "apps:\n- theirs\n"
+                return "- not\n- a\n- dict\n"
+
+            def add(self, path):
+                self.added.append(path)
+
+        class Repo:
+            git = Git()
+
+        resolved = _auto_resolve_manifest_conflicts(
+            Repo(),
+            tmp_path,
+            {".bifrost/apps.yaml": [(1, object()), (2, object()), (3, object())]},
+        )
+
+        assert resolved == {".bifrost/apps.yaml"}
+        assert (tmp_path / ".bifrost" / "apps.yaml").read_text() == "apps:\n- theirs\n"
+
+    def test_auto_resolve_ignores_non_manifest_conflicts(self, tmp_path):
+        from src.services.github_sync import _auto_resolve_manifest_conflicts
+
+        resolved = _auto_resolve_manifest_conflicts(
+            object(),
+            tmp_path,
+            {"workflows/conflict.py": [(1, object()), (2, object()), (3, object())]},
+        )
+
+        assert resolved == set()
+
+
+class TestGitHubSyncFetchAndPush:
+    def test_do_fetch_marks_missing_remote_branch(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Origin:
+            def fetch(self, branch):
+                raise RuntimeError("couldn't find remote ref main")
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_fetch(tmp_path, Repo())
+
+        assert result.success is True
+        assert result.remote_branch_exists is False
+        assert result.commits_ahead == 0
+        assert result.commits_behind == 0
+
+    def test_do_fetch_counts_ahead_and_behind(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def rev_list(self, *args):
+                if args[-1] == "origin/main..HEAD":
+                    return "2"
+                if args[-1] == "HEAD..origin/main":
+                    return "3"
+                raise AssertionError(args)
+
+        class Origin:
+            def fetch(self, branch):
+                return None
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True)
+            git = Git()
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_fetch(tmp_path, Repo())
+
+        assert result.commits_ahead == 2
+        assert result.commits_behind == 3
+        assert result.remote_branch_exists is True
+
+    def test_do_push_returns_zero_when_head_invalid(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Repo:
+            head = _Head(valid=False)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_push(tmp_path, Repo())
+
+        assert result.success is True
+        assert result.pushed_commits == 0
+
+    def test_do_push_uses_head_count_when_fetch_fails(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def rev_list(self, *args):
+                assert args == ("--count", "HEAD")
+                return "4"
+
+        class Origin:
+            pushed = []
+
+            def fetch(self, branch):
+                raise RuntimeError("offline")
+
+            def push(self, refspec):
+                self.pushed.append(refspec)
+                return []
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True, hexsha="feedface1234")
+            git = Git()
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_push(tmp_path, Repo())
+
+        assert result.success is True
+        assert result.commit_sha == "feedface1234"
+        assert result.pushed_commits == 4
+        assert cast(Any, Repo.remotes).origin.pushed == ["HEAD:main"]
 
 
 class TestThreeWayMergeDicts:
