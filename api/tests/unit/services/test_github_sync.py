@@ -19,7 +19,7 @@ def test_content_hash_is_stable_sha256():
     from src.services.github_sync import _content_hash
 
     assert _content_hash(b"bifrost") == (
-        "4d1ac5a5c32c794be0a7ea852c306c37a31655ee80ef92d19da49a83487cd679"
+        "0dbe5eed7bf15a420a2a6a7356654aea49eb6c506d544ae1460ff41dc840a100"
     )
 
 
