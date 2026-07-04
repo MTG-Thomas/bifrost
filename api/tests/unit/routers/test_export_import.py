@@ -19,7 +19,7 @@ from src.models.contracts.export_import import (
     TableExportFile,
     TableExportItem,
 )
-from src.routers.export_import import _parse_target_org
+from src.routers.export_import import _json_response, _parse_target_org, _resolve_org_id
 
 
 class TestKnowledgeExport:
@@ -334,3 +334,157 @@ class TestParseTargetOrg:
         """Invalid UUID string raises ValueError."""
         with pytest.raises(ValueError):
             _parse_target_org("not-a-uuid")
+
+
+class TestJsonResponse:
+    @pytest.mark.asyncio
+    async def test_json_response_sets_download_headers_and_body(self):
+        response = _json_response('{"ok": true}', "export.json")
+
+        assert response.media_type == "application/json"
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="export.json"'
+        )
+
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        assert body == b'{"ok": true}'
+
+
+class TestResolveOrgId:
+    @pytest.mark.asyncio
+    async def test_force_global_wins_without_db_lookup(self):
+        warnings: list[str] = []
+        db = _FakeDb([])
+
+        resolved = await _resolve_org_id(
+            db,
+            item_org_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            item_org_name="Contoso",
+            target_org_override=None,
+            force_global=True,
+            warnings=warnings,
+            item_label="item",
+        )
+
+        assert resolved is None
+        assert warnings == []
+        assert db.executed == []
+
+    @pytest.mark.asyncio
+    async def test_override_wins_without_db_lookup(self):
+        warnings: list[str] = []
+        override = UUID("11111111-1111-1111-1111-111111111111")
+        db = _FakeDb([])
+
+        resolved = await _resolve_org_id(
+            db,
+            item_org_id=None,
+            item_org_name="Contoso",
+            target_org_override=override,
+            force_global=False,
+            warnings=warnings,
+            item_label="item",
+        )
+
+        assert resolved == override
+        assert warnings == []
+        assert db.executed == []
+
+    @pytest.mark.asyncio
+    async def test_resolves_by_organization_name_first(self):
+        org_id = UUID("22222222-2222-2222-2222-222222222222")
+        warnings: list[str] = []
+        db = _FakeDb([org_id])
+
+        resolved = await _resolve_org_id(
+            db,
+            item_org_id="33333333-3333-3333-3333-333333333333",
+            item_org_name="Contoso",
+            target_org_override=None,
+            force_global=False,
+            warnings=warnings,
+            item_label="item",
+        )
+
+        assert resolved == org_id
+        assert warnings == []
+        assert len(db.executed) == 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_uuid_falls_back_to_global_with_warning(self):
+        warnings: list[str] = []
+        db = _FakeDb([None])
+
+        resolved = await _resolve_org_id(
+            db,
+            item_org_id="not-a-uuid",
+            item_org_name="Missing",
+            target_org_override=None,
+            force_global=False,
+            warnings=warnings,
+            item_label="config/api_key",
+        )
+
+        assert resolved is None
+        assert "invalid organization_id" in warnings[0]
+        assert "config/api_key" in warnings[0]
+
+    @pytest.mark.asyncio
+    async def test_existing_uuid_resolves_after_name_miss(self):
+        org_id = UUID("44444444-4444-4444-4444-444444444444")
+        warnings: list[str] = []
+        db = _FakeDb([None, org_id])
+
+        resolved = await _resolve_org_id(
+            db,
+            item_org_id=str(org_id),
+            item_org_name="Missing",
+            target_org_override=None,
+            force_global=False,
+            warnings=warnings,
+            item_label="item",
+        )
+
+        assert resolved == org_id
+        assert warnings == []
+        assert len(db.executed) == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_uuid_falls_back_to_global_with_warning(self):
+        org_id = "55555555-5555-5555-5555-555555555555"
+        warnings: list[str] = []
+        db = _FakeDb([None, None])
+
+        resolved = await _resolve_org_id(
+            db,
+            item_org_id=org_id,
+            item_org_name="Missing",
+            target_org_override=None,
+            force_global=False,
+            warnings=warnings,
+            item_label="table/customers",
+        )
+
+        assert resolved is None
+        assert "organization not found" in warnings[0]
+        assert "table/customers" in warnings[0]
+
+
+class _FakeResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
+class _FakeDb:
+    def __init__(self, values: list[object]):
+        self.values = values
+        self.executed = []
+
+    async def execute(self, query):
+        self.executed.append(query)
+        return _FakeResult(self.values.pop(0))
