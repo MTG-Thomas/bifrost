@@ -245,6 +245,7 @@ async def test_handle_signal_schedules_single_shutdown(
 
     worker.handle_signal(15, None)
     first_task = worker._shutdown_task
+    assert first_task is not None
     worker.handle_signal(15, None)
     assert worker._shutdown_task is first_task
     await first_task
