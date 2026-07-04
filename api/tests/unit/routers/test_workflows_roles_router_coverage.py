@@ -5,7 +5,10 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from src.models.contracts.workflows import AssignRolesToWorkflowRequest
+from src.models.contracts.workflows import (
+    AssignRolesToWorkflowRequest,
+    DeleteWorkflowRequest,
+)
 from src.routers import workflows
 
 
@@ -33,6 +36,7 @@ class _Db:
         self.results = list(results)
         self.added = []
         self.flushed = False
+        self.committed = False
 
     async def execute(self, _stmt):
         if not self.results:
@@ -44,6 +48,9 @@ class _Db:
 
     async def flush(self):
         self.flushed = True
+
+    async def commit(self):
+        self.committed = True
 
 
 def _admin():
@@ -193,3 +200,133 @@ async def test_remove_role_from_workflow_404s_when_assignment_missing():
     assert exc.value.status_code == 404
     assert exc.value.detail == "Workflow-role assignment not found"
 
+
+@pytest.mark.asyncio
+async def test_delete_workflow_404s_when_workflow_missing():
+    workflow_id = uuid4()
+    db = _Db(_ScalarResult(None))
+
+    with pytest.raises(HTTPException) as exc:
+        await workflows.delete_workflow(workflow_id, _admin(), db)
+
+    assert exc.value.status_code == 404
+    assert str(workflow_id) in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_delete_workflow_rejects_workflow_without_source_path():
+    workflow_id = uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        name="No Path",
+        path=None,
+        solution_id=None,
+    )
+    db = _Db(_ScalarResult(workflow))
+
+    with (
+        patch.object(workflows, "assert_not_solution_managed"),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await workflows.delete_workflow(workflow_id, _admin(), db)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Workflow has no source file path — cannot delete"
+
+
+@pytest.mark.asyncio
+async def test_delete_workflow_returns_conflict_for_dependent_workflow():
+    workflow_id = uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        name="Delete Me",
+        function_name="delete_me",
+        path="workflows/delete_me.py",
+        type="workflow",
+        solution_id=None,
+    )
+    sibling = SimpleNamespace(
+        id=uuid4(),
+        function_name="keep_me",
+        type="tool",
+        name="Keep Me",
+    )
+    pending = SimpleNamespace(
+        id=str(workflow_id),
+        name=workflow.name,
+        function_name=workflow.function_name,
+        path=workflow.path,
+        description=None,
+        decorator_type="workflow",
+        has_executions=False,
+        last_execution_at=None,
+        endpoint_enabled=False,
+        affected_entities=[
+            {"type": "form", "id": str(uuid4()), "name": "Intake"}
+        ],
+    )
+    replacement = SimpleNamespace(
+        function_name="keep_me",
+        name="Keep Me",
+        decorator_type="tool",
+        similarity_score=0.75,
+    )
+    service = SimpleNamespace(
+        detect_pending_deactivations=AsyncMock(
+            return_value=([pending], [replacement])
+        )
+    )
+    db = _Db(_ScalarResult(workflow), _ScalarResult([workflow, sibling]))
+
+    with (
+        patch.object(workflows, "assert_not_solution_managed"),
+        patch(
+            "src.services.file_storage.deactivation.DeactivationProtectionService",
+            return_value=service,
+        ),
+    ):
+        response = await workflows.delete_workflow(workflow_id, _admin(), db)
+
+    assert response.status_code == 409
+    assert b"workflows_would_deactivate" in response.body
+    assert b"Intake" in response.body
+    service.detect_pending_deactivations.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_workflow_deactivates_when_source_file_is_missing():
+    workflow_id = uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        name="Already Gone",
+        function_name="gone",
+        path="workflows/gone.py",
+        type="workflow",
+        solution_id=None,
+        is_active=True,
+    )
+    db = _Db(_ScalarResult(workflow))
+    file_service = SimpleNamespace(
+        read_file=AsyncMock(side_effect=FileNotFoundError())
+    )
+
+    with (
+        patch.object(workflows, "assert_not_solution_managed"),
+        patch(
+            "src.services.file_storage.FileStorageService",
+            return_value=file_service,
+        ),
+    ):
+        result = await workflows.delete_workflow(
+            workflow_id,
+            _admin(),
+            db,
+            DeleteWorkflowRequest(force_deactivation=True),
+        )
+
+    assert workflow.is_active is False
+    assert db.committed is True
+    assert result == {
+        "status": "deleted",
+        "detail": "Source file not found, workflow deactivated",
+    }
