@@ -5,11 +5,19 @@ build. The COMMIT path is covered by the e2e test (it needs a live deployer)."""
 from __future__ import annotations
 
 import io
+import logging
 import zipfile
 
 import pytest
 
-from src.services.solutions.zip_install import PreviewResult, preview_zip
+from src.models.enums import ConfigType
+from src.services.solutions.zip_install import (
+    ContentCollision,
+    PreviewResult,
+    _config_type,
+    _safe_extract_path,
+    preview_zip,
+)
 
 
 def _make_workspace_zip(extra: dict[str, str] | None = None) -> bytes:
@@ -118,3 +126,64 @@ def test_preview_requires_password_true_for_full_backup_zip() -> None:
         _make_workspace_zip(extra={".bifrost/secrets.enc": "encrypted-blob-placeholder"})
     )
     assert result.requires_password is True
+
+
+def test_safe_extract_path_rejects_zip_slip_member(tmp_path) -> None:
+    zip_path = tmp_path / "evil.zip"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("bifrost.solution.yaml", "slug: ok\nname: OK\n")
+        z.writestr("../evil.txt", "pwned")
+
+    with pytest.raises(ValueError, match="unsafe path"):
+        _safe_extract_path(zip_path, str(dest))
+
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_safe_extract_path_extracts_normal_zip(tmp_path) -> None:
+    zip_path = tmp_path / "ok.zip"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("nested/file.txt", "ok")
+
+    _safe_extract_path(zip_path, str(dest))
+
+    assert (dest / "nested" / "file.txt").read_text() == "ok"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, ConfigType.STRING),
+        ("", ConfigType.STRING),
+        ("string", ConfigType.STRING),
+        ("SECRET", ConfigType.SECRET),
+    ],
+)
+def test_config_type_maps_known_values(raw: str | None, expected: ConfigType) -> None:
+    assert _config_type(raw, key="API_KEY") is expected
+
+
+def test_config_type_logs_and_defaults_unknown_value(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="src.services.solutions.zip_install"):
+        resolved = _config_type("sekret", key="API_KEY")
+
+    assert resolved is ConfigType.STRING
+    assert "unrecognized type" in caplog.text
+    assert "API_KEY" in caplog.text
+
+
+def test_content_collision_message_lists_sorted_keys_and_tables() -> None:
+    collision = ContentCollision(keys=["Z_KEY", "A_KEY"], tables=["tickets"])
+
+    assert collision.keys == ["Z_KEY", "A_KEY"]
+    assert collision.tables == ["tickets"]
+    assert str(collision) == (
+        "Import would overwrite existing config values: A_KEY, Z_KEY; "
+        "table data: tickets. Re-run with replace to overwrite."
+    )
