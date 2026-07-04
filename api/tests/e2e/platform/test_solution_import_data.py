@@ -337,13 +337,17 @@ async def test_reinstall_after_uninstall_collides_on_orphaned_table_rows(
     # 4. Reinstall WITH reactivate=true and replace_data=true -> wholesale
     #    replace on the same install, with exactly the bundle's rows.
     files3 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r2 = e2e_client.post(
-        "/api/solutions/install?reactivate=true",
-        headers=upload_headers,
-        files=files3,
-        data={"organization_id": str(org.id), "password": "pw", "replace_data": "true"},
+    r2 = wait_for_install(
+        e2e_client,
+        e2e_client.post(
+            "/api/solutions/install?reactivate=true",
+            headers=upload_headers,
+            files=files3,
+            data={"organization_id": str(org.id), "password": "pw", "replace_data": "true"},
+        ),
+        headers,
     )
-    assert r2.status_code == 200, r2.text
+    assert r2.status_code in (200, 201), r2.text
     sol_id2 = r2.json()["id"]
     assert sol_id2 == sol_id
 
