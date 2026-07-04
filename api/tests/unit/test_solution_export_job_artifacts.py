@@ -147,7 +147,6 @@ def test_artifact_key_and_filename_are_stable() -> None:
 def test_public_job_only_exposes_download_url_for_completed_unexpired_artifacts() -> None:
     now = datetime.now(timezone.utc)
     base = {
-        "id": uuid4(),
         "solution_id": uuid4(),
         "organization_id": uuid4(),
         "requested_by_id": uuid4(),
@@ -163,6 +162,7 @@ def test_public_job_only_exposes_download_url_for_completed_unexpired_artifacts(
 
     completed = SolutionExportJob(
         **base,
+        id=uuid4(),
         status="completed",
         artifact_storage_key="solution-exports/s/j.zip",
         expires_at=now + timedelta(minutes=5),
