@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import click
 import pytest
 
@@ -18,7 +21,12 @@ from bifrost.commands.solution import (
     _collect_tables,
     _collect_workflows,
     _entities_in_manifest,
+    _poll_deploy_job,
+    _resolve_install_org,
     _resolve_target_install,
+    _v2_scaffold_files,
+    resolve_install_id_for_workspace,
+    summarize_bundle,
     _workspace_child_file,
 )
 
@@ -376,3 +384,132 @@ def test_entities_in_manifest_reports_pull_ack_entities(tmp_path):
         {"entity_type": "agent", "entity_id": "agent-1"},
         {"entity_type": "config", "entity_id": "API_KEY"},
     ]
+
+
+def test_v2_scaffold_files_are_wired_for_instance_sdk_and_runtime_config():
+    files = _v2_scaffold_files("desk", "https://bifrost.example/")
+
+    assert set(files) == {
+        "package.json",
+        "index.html",
+        "src/main.tsx",
+        "src/App.tsx",
+        "src/index.css",
+        "tsconfig.json",
+        "vite.config.ts",
+    }
+    package = json.loads(files["package.json"])
+    assert package["name"] == "desk"
+    assert package["dependencies"]["bifrost"] == "https://bifrost.example/api/sdk/download"
+    assert package["dependencies"]["lucide-react"]
+    assert "window.__BIFROST_APP__" in files["src/main.tsx"]
+    assert "BIFROST_ACCESS_TOKEN" in files["vite.config.ts"]
+    assert "functions/hello.py::main" in files["src/App.tsx"]
+
+
+def test_summarize_bundle_counts_text_files_and_flags_large_vendored_trees():
+    normal = summarize_bundle(
+        {"functions/a.py": "print('a')\n"},
+        [{"src_files": {"App.tsx": "export {}\n"}, "bin_files": {"logo.png": "AA=="}}],
+        vendored_count=2,
+    )
+    assert normal.file_count == 3
+    assert normal.size_mb == 0.0
+    assert normal.warn is False
+    assert normal.message == "Bundle: 3 files, 0.0 MB."
+
+    warned = summarize_bundle({"modules/vendor.py": "x"}, [], vendored_count=201)
+    assert warned.warn is True
+    assert "201 vendored files" in warned.message
+
+
+@pytest.mark.asyncio
+async def test_poll_deploy_job_reports_success_failure_and_read_errors(capsys):
+    class Response:
+        def __init__(self, status_code, body=None, text=""):
+            self.status_code = status_code
+            self._body = body or {}
+            self.text = text
+
+        def json(self):
+            return self._body
+
+    class Client:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.paths: list[str] = []
+
+        async def get(self, path):
+            self.paths.append(path)
+            return self.responses.pop(0)
+
+    success = Client([
+        Response(200, {"status": "running"}),
+        Response(200, {"status": "succeeded"}),
+    ])
+    assert await _poll_deploy_job(success, "job-1", interval=0) == 0
+    assert success.paths == [
+        "/api/solutions/deploy-jobs/job-1",
+        "/api/solutions/deploy-jobs/job-1",
+    ]
+    assert "Still deploying" in capsys.readouterr().out
+
+    failed = Client([Response(200, {"status": "failed", "error": "bundle older than installed"})])
+    assert await _poll_deploy_job(failed, "job-2", interval=0) == 1
+    assert "Re-run with --force" in capsys.readouterr().err
+
+    unreadable = Client([Response(503, text="maintenance")])
+    assert await _poll_deploy_job(unreadable, "job-3", interval=0) == 1
+    assert "Failed to read deploy status (503)" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_resolve_install_org_maps_home_global_and_explicit_org(monkeypatch):
+    async def fake_resolve_org_target(org_ref, is_global, resolver):
+        assert resolver is not None
+        if is_global:
+            return SimpleNamespace(is_set=True, organization_id=None)
+        if org_ref:
+            return SimpleNamespace(is_set=True, organization_id=f"resolved-{org_ref}")
+        return SimpleNamespace(is_set=False, organization_id=None)
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution.resolve_org_target",
+        fake_resolve_org_target,
+    )
+    client = SimpleNamespace(organization={"id": "home-org"})
+
+    assert await _resolve_install_org(client, None, False) == "home-org"
+    assert await _resolve_install_org(client, None, True) is None
+    assert await _resolve_install_org(client, "Support", False) == "resolved-Support"
+
+
+def test_resolve_install_id_for_workspace_prefers_own_then_global_and_fails_closed(tmp_path):
+    _write(tmp_path / "bifrost.solution.yaml", "slug: desk\nname: Desk\n")
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "solutions": [
+                    {"id": "global", "slug": "desk", "organization_id": None},
+                    {"id": "own", "slug": "desk", "organization_id": "org-1"},
+                ]
+            }
+
+    client = SimpleNamespace(
+        organization={"id": "org-1"},
+        _sync_http=SimpleNamespace(get=lambda path: Response()),
+    )
+    assert resolve_install_id_for_workspace(client, tmp_path) == "own"
+
+    client.organization = {}
+    assert resolve_install_id_for_workspace(client, tmp_path) == "global"
+
+    class Forbidden:
+        status_code = 403
+
+    client._sync_http = SimpleNamespace(get=lambda path: Forbidden())
+    assert resolve_install_id_for_workspace(client, tmp_path) is None
+    assert resolve_install_id_for_workspace(client, tmp_path / "missing") is None
