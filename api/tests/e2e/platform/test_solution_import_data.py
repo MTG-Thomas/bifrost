@@ -308,13 +308,17 @@ async def test_reinstall_after_uninstall_collides_on_orphaned_table_rows(
 
     # 1. First install — fills the empty table silently.
     files1 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r0 = e2e_client.post(
-        "/api/solutions/install",
-        headers=upload_headers,
-        files=files1,
-        data={"organization_id": str(org.id), "password": "pw"},
+    r0 = wait_for_install(
+        e2e_client,
+        e2e_client.post(
+            "/api/solutions/install",
+            headers=upload_headers,
+            files=files1,
+            data={"organization_id": str(org.id), "password": "pw"},
+        ),
+        headers,
     )
-    assert r0.status_code == 200, r0.text
+    assert r0.status_code in (200, 201), r0.text
     sol_id = r0.json()["id"]
 
     # 2. UNINSTALL: flips the install inactive and keeps its owned data.
