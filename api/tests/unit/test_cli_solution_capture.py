@@ -15,7 +15,10 @@ from unittest import mock
 
 from click.testing import CliRunner
 
-from bifrost.commands.solution import solution_group
+import click
+import pytest
+
+from bifrost.commands.solution import _resolve_capture_selectors, solution_group
 
 SOL = "11111111-1111-1111-1111-111111111111"
 WF_ID = "22222222-2222-2222-2222-222222222222"
@@ -128,3 +131,60 @@ def test_no_selectors_errors() -> None:
     result = _invoke([SOL], captured)
     assert result.exit_code != 0
     assert "no entities" in result.output.lower() or "at least one" in result.output.lower()
+
+
+def test_resolve_capture_selectors_maps_names_ids_and_config_keys() -> None:
+    candidates = {
+        "workflows": [{"id": "wf-1", "name": "sync_orders"}],
+        "tables": [{"id": "tbl-1", "name": "orders"}],
+        "apps": [{"id": "app-1", "name": "Dashboard"}],
+        "forms": [{"id": "form-1", "name": "Intake"}],
+        "agents": [{"id": "agent-1", "name": "Helper"}],
+        "claims": [{"id": "claim-1", "name": "campus_ids"}],
+    }
+
+    resolved = _resolve_capture_selectors(
+        candidates,
+        {
+            "workflows": ("sync_orders",),
+            "tables": ("tbl-1",),
+            "apps": ("Dashboard",),
+            "forms": ("form-1",),
+            "agents": ("Helper",),
+            "claims": ("claim-1",),
+            "configs": ("API_KEY", "RUN_MODE"),
+        },
+    )
+
+    assert resolved == {
+        "workflows": ["wf-1"],
+        "tables": ["tbl-1"],
+        "apps": ["app-1"],
+        "forms": ["form-1"],
+        "agents": ["agent-1"],
+        "claims": ["claim-1"],
+        "configs": ["API_KEY", "RUN_MODE"],
+    }
+
+
+def test_resolve_capture_selectors_returns_empty_lists_for_missing_kinds() -> None:
+    assert _resolve_capture_selectors({}, {}) == {
+        "workflows": [],
+        "tables": [],
+        "apps": [],
+        "forms": [],
+        "agents": [],
+        "claims": [],
+        "configs": [],
+    }
+
+
+def test_resolve_capture_selectors_reports_unknown_kind_value() -> None:
+    with pytest.raises(click.ClickException) as exc:
+        _resolve_capture_selectors(
+            {"agents": [{"id": "agent-1", "name": "Helper"}]},
+            {"agents": ("Missing",)},
+        )
+
+    assert "no loose agent named or id'd 'Missing'" in str(exc.value)
+    assert "/capture/candidates" in str(exc.value)
