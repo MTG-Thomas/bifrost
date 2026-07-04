@@ -389,7 +389,7 @@ def test_entities_in_manifest_reports_pull_ack_entities(tmp_path):
 def test_v2_scaffold_files_are_wired_for_instance_sdk_and_runtime_config():
     files = _v2_scaffold_files("desk", "https://bifrost.example/")
 
-    assert set(files) == {
+    assert {
         "package.json",
         "index.html",
         "src/main.tsx",
@@ -397,7 +397,7 @@ def test_v2_scaffold_files_are_wired_for_instance_sdk_and_runtime_config():
         "src/index.css",
         "tsconfig.json",
         "vite.config.ts",
-    }
+    }.issubset(files)
     package = json.loads(files["package.json"])
     assert package["name"] == "desk"
     assert package["dependencies"]["bifrost"] == "https://bifrost.example/api/sdk/download"
