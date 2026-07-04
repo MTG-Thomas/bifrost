@@ -1,0 +1,290 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException, status
+
+from src.models.contracts.events import DynamicValuesRequest, EmitEventRequest
+from src.models.enums import EventDeliveryStatus, EventSourceType, ScheduleOverlapPolicy
+from src.routers import events
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _user() -> SimpleNamespace:
+    return SimpleNamespace(user_id=uuid4(), email="admin@example.com")
+
+
+def _ctx() -> SimpleNamespace:
+    return SimpleNamespace(org_id=uuid4(), user=_user())
+
+
+def _source(source_type: EventSourceType, **overrides: object) -> SimpleNamespace:
+    source = SimpleNamespace(
+        id=uuid4(),
+        name="Source",
+        source_type=source_type,
+        event_type=None,
+        organization_id=None,
+        organization=None,
+        is_active=True,
+        error_message=None,
+        created_by="admin@example.com",
+        created_at=_now(),
+        updated_at=_now(),
+        webhook_source=None,
+        schedule_source=None,
+    )
+    for key, value in overrides.items():
+        setattr(source, key, value)
+    return source
+
+
+class TestEventResponseBuilders:
+    @pytest.mark.asyncio
+    async def test_build_event_source_response_includes_webhook_details(self):
+        integration_id = uuid4()
+        webhook_source = SimpleNamespace(
+            adapter_name="generic",
+            integration_id=integration_id,
+            integration=SimpleNamespace(name="NinjaOne"),
+            config={"ticket": "created"},
+            external_id="sub-1",
+            expires_at=_now(),
+            rate_limit_per_minute=30,
+            rate_limit_window_seconds=60,
+            rate_limit_enabled=True,
+        )
+        source = _source(
+            EventSourceType.WEBHOOK,
+            webhook_source=webhook_source,
+            organization=SimpleNamespace(name="MTG"),
+            organization_id=uuid4(),
+        )
+
+        with (
+            patch.object(events, "_build_callback_url", return_value="https://hooks/source"),
+            patch.object(events, "_get_rate_limited_count", AsyncMock(return_value=2)),
+            patch.object(events, "EventSubscriptionRepository") as sub_repo_cls,
+            patch.object(events, "EventRepository") as event_repo_cls,
+        ):
+            sub_repo_cls.return_value.count_by_source = AsyncMock(return_value=4)
+            event_repo_cls.return_value.count_by_source = AsyncMock(return_value=9)
+
+            result = await events._build_event_source_response(source, AsyncMock())
+
+        assert result.subscription_count == 4
+        assert result.event_count_24h == 9
+        assert result.organization_name == "MTG"
+        assert result.webhook.adapter_name == "generic"
+        assert result.webhook.integration_name == "NinjaOne"
+        assert result.webhook.callback_url == "https://hooks/source"
+        assert result.webhook.rate_limited_count_24h == 2
+
+    @pytest.mark.asyncio
+    async def test_build_event_source_response_includes_schedule_details(self):
+        schedule_source = SimpleNamespace(
+            cron_expression="0 9 * * *",
+            timezone="America/Indianapolis",
+            enabled=False,
+            overlap_policy=ScheduleOverlapPolicy.REPLACE,
+        )
+        source = _source(EventSourceType.SCHEDULE, schedule_source=schedule_source)
+
+        with (
+            patch.object(events, "EventSubscriptionRepository") as sub_repo_cls,
+            patch.object(events, "EventRepository") as event_repo_cls,
+        ):
+            sub_repo_cls.return_value.count_by_source = AsyncMock(return_value=0)
+            event_repo_cls.return_value.count_by_source = AsyncMock(return_value=1)
+
+            result = await events._build_event_source_response(source, AsyncMock())
+
+        assert result.webhook is None
+        assert result.schedule.cron_expression == "0 9 * * *"
+        assert result.schedule.timezone == "America/Indianapolis"
+        assert result.schedule.enabled is False
+
+    @pytest.mark.asyncio
+    async def test_build_event_subscription_response_counts_deliveries(self):
+        subscription = SimpleNamespace(
+            id=uuid4(),
+            event_source_id=uuid4(),
+            target_type="agent",
+            workflow_id=None,
+            agent_id=uuid4(),
+            agent=SimpleNamespace(name="Dispatcher"),
+            workflow=None,
+            event_type="ticket.created",
+            filter_expression="$.priority == 'high'",
+            input_mapping={"ticket": "{{ event.data.id }}"},
+            is_active=True,
+            created_by="admin@example.com",
+            created_at=_now(),
+            updated_at=_now(),
+        )
+
+        with patch.object(events, "EventDeliveryRepository") as delivery_repo_cls:
+            repo = delivery_repo_cls.return_value
+            repo.count_by_subscription = AsyncMock(side_effect=[5, 3, 2])
+
+            result = await events._build_event_subscription_response(
+                subscription, AsyncMock()
+            )
+
+        assert result.target_type == "agent"
+        assert result.agent_name == "Dispatcher"
+        assert result.delivery_count == 5
+        assert result.success_count == 3
+        assert result.failed_count == 2
+        repo.count_by_subscription.assert_any_await(
+            subscription.id, status=EventDeliveryStatus.SUCCESS
+        )
+        repo.count_by_subscription.assert_any_await(
+            subscription.id, status=EventDeliveryStatus.FAILED
+        )
+
+
+class TestWebhookAdapterEndpoints:
+    @pytest.mark.asyncio
+    async def test_list_adapters_returns_registry_entries(self):
+        registry = MagicMock()
+        registry.list_adapters.return_value = [
+            {
+                "name": "generic",
+                "display_name": "Generic Webhook",
+                "description": "HTTP webhook",
+                "requires_integration": None,
+                "config_schema": {"type": "object"},
+                "supports_renewal": False,
+            }
+        ]
+
+        with patch.object(events, "get_adapter_registry", return_value=registry):
+            result = await events.list_adapters(_ctx(), _user())
+
+        assert result.adapters[0].name == "generic"
+        assert result.adapters[0].config_schema == {"type": "object"}
+
+    @pytest.mark.asyncio
+    async def test_get_dynamic_values_calls_adapter_with_integration(self):
+        integration = SimpleNamespace(id=uuid4())
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = integration
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=result)
+        adapter = MagicMock()
+        adapter.get_dynamic_values = AsyncMock(
+            return_value=[{"value": "p1", "label": "Project 1"}]
+        )
+        registry = MagicMock()
+        registry.get.return_value = adapter
+        request = DynamicValuesRequest(
+            operation="list_projects",
+            integration_id=integration.id,
+            current_config={"tenant": "mtg"},
+        )
+
+        with patch.object(events, "get_adapter_registry", return_value=registry):
+            response = await events.get_dynamic_values(
+                "generic", request, _ctx(), _user(), db
+            )
+
+        assert response.items == [{"value": "p1", "label": "Project 1"}]
+        adapter.get_dynamic_values.assert_awaited_once_with(
+            operation="list_projects",
+            integration=integration,
+            current_config={"tenant": "mtg"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_dynamic_values_maps_adapter_errors_to_http(self):
+        registry = MagicMock()
+        registry.get.return_value = None
+        request = DynamicValuesRequest(operation="missing")
+
+        with patch.object(events, "get_adapter_registry", return_value=registry):
+            with pytest.raises(HTTPException) as exc:
+                await events.get_dynamic_values(
+                    "missing", request, _ctx(), _user(), AsyncMock()
+                )
+
+        assert exc.value.status_code == status.HTTP_404_NOT_FOUND
+
+        adapter = MagicMock()
+        adapter.get_dynamic_values = AsyncMock(
+            side_effect=NotImplementedError("not supported")
+        )
+        registry.get.return_value = adapter
+
+        with patch.object(events, "get_adapter_registry", return_value=registry):
+            with pytest.raises(HTTPException) as exc:
+                await events.get_dynamic_values(
+                    "generic", request, _ctx(), _user(), AsyncMock()
+                )
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+class TestTopicEndpoints:
+    @pytest.mark.asyncio
+    async def test_emit_topic_event_accepts_global_and_org_scopes(self):
+        event_id = uuid4()
+
+        with patch.object(
+            events, "emit_event", AsyncMock(return_value=(event_id, 3))
+        ) as emit_event:
+            global_response = await events.emit_topic_event(
+                EmitEventRequest(topic="ticket.created", data={"id": "T1"}, scope="GLOBAL"),
+                _user(),
+            )
+
+        assert global_response.event_id == str(event_id)
+        assert global_response.subscribers_notified == 3
+        emit_event.assert_awaited_once()
+        assert emit_event.await_args.kwargs["organization_id"] is None
+
+        org_id = uuid4()
+        with patch.object(
+            events, "emit_event", AsyncMock(return_value=(event_id, 1))
+        ) as emit_event:
+            response = await events.emit_topic_event(
+                EmitEventRequest(
+                    topic="ticket.updated",
+                    data={},
+                    scope=str(org_id),
+                ),
+                _user(),
+            )
+
+        assert response.subscribers_notified == 1
+        assert emit_event.await_args.kwargs["organization_id"] == org_id
+
+    @pytest.mark.asyncio
+    async def test_emit_topic_event_rejects_invalid_scope(self):
+        with pytest.raises(HTTPException) as exc:
+            await events.emit_topic_event(
+                EmitEventRequest(topic="ticket.created", data={}, scope="not-a-uuid"),
+                _user(),
+            )
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Invalid scope" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_list_topics_combines_curated_and_in_use_topics(self):
+        db = AsyncMock()
+
+        with patch.object(events, "EventSourceRepository") as repo_cls:
+            repo_cls.return_value.get_distinct_topic_types = AsyncMock(
+                return_value=["ticket.created", "agent.completed"]
+            )
+
+            response = await events.list_topics(db)
+
+        assert response.curated
+        assert response.in_use == ["ticket.created", "agent.completed"]
