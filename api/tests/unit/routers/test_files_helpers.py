@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -213,6 +214,77 @@ async def test_read_file_binary_encodes_content(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_read_file_reports_forbidden_when_no_tier_is_authorized(monkeypatch):
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return [SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A)]
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(False))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: SimpleNamespace())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.read_file(
+            files.FileReadRequest(path="reports/secret.txt", location="reports"),
+            _ctx(),
+            SimpleNamespace(user_id=USER_ID),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Forbidden"
+
+
+@pytest.mark.asyncio
+async def test_read_file_reports_not_found_after_authorized_tiers_miss(monkeypatch):
+    class FakeBackend:
+        async def read(self, path, location, *, scope):
+            raise FileNotFoundError(path)
+
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return [SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A)]
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(True))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.read_file(
+            files.FileReadRequest(path="reports/missing.txt", location="reports"),
+            _ctx(),
+            SimpleNamespace(user_id=USER_ID),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "File not found: reports/missing.txt"
+
+
+@pytest.mark.asyncio
+async def test_read_file_rejects_binary_when_text_requested(monkeypatch):
+    class FakeBackend:
+        async def read(self, path, location, *, scope):
+            return b"\xff\xfe"
+
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return [SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A)]
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(True))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.read_file(
+            files.FileReadRequest(path="reports/raw.bin", location="reports"),
+            _ctx(),
+            SimpleNamespace(user_id=USER_ID),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "File is binary. Use binary=true to read as base64."
+
+
+@pytest.mark.asyncio
 async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
     writes = []
     metadata_calls = []
@@ -271,6 +343,128 @@ async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_write_file_local_binary_decodes_without_cloud_metadata(monkeypatch):
+    writes = []
+
+    class FakeBackend:
+        async def write(self, path, content, location, updated_by, *, scope):
+            writes.append((path, content, location, updated_by, scope))
+
+    monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    await files.write_file(
+        files.FileWriteRequest(
+            path="folder/raw.bin",
+            content=base64.b64encode(b"\x00\x01raw").decode(),
+            binary=True,
+            location="reports",
+            scope=str(ORG_A),
+            mode="local",
+        ),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert writes == [("folder/raw.bin", b"\x00\x01raw", "reports", "user@example.test", str(ORG_A))]
+
+
+@pytest.mark.asyncio
+async def test_delete_file_cloud_removes_metadata_flushes_and_publishes(monkeypatch):
+    deletes = []
+    metadata_calls = []
+    publish_calls = []
+
+    class FakeBackend:
+        async def delete(self, path, location, *, scope):
+            deletes.append((path, location, scope))
+
+    class FakePolicyService:
+        def __init__(self, db):
+            self.db = db
+
+        async def delete_metadata(self, **kwargs):
+            metadata_calls.append(kwargs)
+
+    class Db:
+        def __init__(self):
+            self.flushes = 0
+
+        async def flush(self):
+            self.flushes += 1
+
+    async def fake_publish_file_change(**kwargs):
+        publish_calls.append(kwargs)
+
+    db = Db()
+    monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_install_org_id", lambda *_args, **_kwargs: _async_value(ORG_A))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db_arg: FakeBackend())
+    monkeypatch.setattr("src.services.file_policy_service.FilePolicyService", FakePolicyService)
+    monkeypatch.setattr("src.core.pubsub.publish_file_change", fake_publish_file_change)
+
+    await files.delete_file(
+        files.FileDeleteRequest(
+            path="folder/report.txt",
+            location="reports",
+            scope=str(ORG_A),
+            mode="cloud",
+        ),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=db,
+    )
+
+    assert deletes == [("folder/report.txt", "reports", str(ORG_A))]
+    assert publish_calls == [
+        {
+            "location": "reports",
+            "scope": str(ORG_A),
+            "path": "folder/report.txt",
+            "action": "delete",
+        }
+    ]
+    assert metadata_calls == [
+        {
+            "organization_id": ORG_A,
+            "location": "reports",
+            "path": "folder/report.txt",
+            "solution_id": None,
+        }
+    ]
+    assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_file_maps_backend_missing_to_404(monkeypatch):
+    class FakeBackend:
+        async def delete(self, path, location, *, scope):
+            raise FileNotFoundError(path)
+
+    monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.delete_file(
+            files.FileDeleteRequest(
+                path="folder/missing.txt",
+                location="reports",
+                scope=str(ORG_A),
+            ),
+            _ctx(),
+            SimpleNamespace(user_id=USER_ID),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "File not found: folder/missing.txt"
+
+
+@pytest.mark.asyncio
 async def test_list_files_simple_filters_each_tier_and_deduplicates(monkeypatch):
     tiers = [
         SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A),
@@ -317,6 +511,91 @@ async def test_list_files_simple_filters_each_tier_and_deduplicates(monkeypatch)
     ]
     assert [call["scope"] for call in authorize_calls] == [str(ORG_A), str(ORG_A), "global"]
     assert len(filter_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_files_simple_returns_workspace_metadata_and_authors(monkeypatch):
+    now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    filter_calls = []
+
+    class FakeRepoStorage:
+        async def list_with_metadata(self, directory):
+            assert directory == "apps"
+            return {
+                ".git/config": SimpleNamespace(etag="git", last_modified=now),
+                "apps/a.tsx": SimpleNamespace(etag="etag-a", last_modified=now),
+                "apps/b.tsx": SimpleNamespace(etag="etag-b", last_modified=now),
+            }
+
+    class Result:
+        def all(self):
+            return [
+                SimpleNamespace(path="apps/a.tsx", updated_by="alice@example.test"),
+                SimpleNamespace(path="apps/b.tsx", updated_by="bob@example.test"),
+            ]
+
+    class Db:
+        async def execute(self, _stmt):
+            return Result()
+
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return [SimpleNamespace(scope=None, solution_id=None, organization_id=None)]
+
+    async def fake_filter(ctx, *, paths, location, scope, action, solution_id, organization_id):
+        filter_calls.append((paths, location, scope, action, solution_id, organization_id))
+        return ["apps/b.tsx", "apps/a.tsx"]
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(True))
+    monkeypatch.setattr(files, "_filter_listed_paths", fake_filter)
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", lambda: FakeRepoStorage())
+
+    response = await files.list_files_simple(
+        files.FileListRequest(
+            directory="apps",
+            location="workspace",
+            include_metadata=True,
+            mode="cloud",
+        ),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=Db(),
+    )
+
+    assert response.files == ["apps/a.tsx", "apps/b.tsx"]
+    assert [item.path for item in response.files_metadata] == ["apps/a.tsx", "apps/b.tsx"]
+    assert [item.etag for item in response.files_metadata] == ["etag-a", "etag-b"]
+    assert [item.updated_by for item in response.files_metadata] == [
+        "alice@example.test",
+        "bob@example.test",
+    ]
+    assert filter_calls[0][0] == ["apps/a.tsx", "apps/b.tsx"]
+
+
+@pytest.mark.asyncio
+async def test_list_files_simple_forbids_when_directory_and_files_denied(monkeypatch):
+    async def fake_file_read_tiers(db, ctx, location, scope):
+        return [SimpleNamespace(scope=str(ORG_A), solution_id=None, organization_id=ORG_A)]
+
+    class FakeBackend:
+        async def list(self, directory, location, *, scope):
+            return ["reports/secret.txt"]
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", fake_file_read_tiers)
+    monkeypatch.setattr(files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(False))
+    monkeypatch.setattr(files, "_filter_listed_paths", lambda *_args, **_kwargs: _async_value([]))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.list_files_simple(
+            files.FileListRequest(directory="reports", location="reports", scope=str(ORG_A)),
+            _ctx(),
+            SimpleNamespace(user_id=USER_ID),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Forbidden"
 
 
 @pytest.mark.asyncio
