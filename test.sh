@@ -291,10 +291,12 @@ cmd_coverage() {
     docker compose -f "$COMPOSE_FILE" stop api worker scheduler >/dev/null 2>&1 || true
 
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        sh -lc "coverage combine --append --keep /coverage >/dev/null 2>&1 || true
+        sh -lc "backup=/tmp/$(basename '$source').pre-combine
+if [ -f '$source' ]; then cp '$source' \"\$backup\"; fi
+coverage combine --append --keep /coverage >/dev/null 2>&1 || true
 case '$basename_target' in
-  *.json) coverage json -o '$source' >/dev/null ;;
-  *.xml) coverage xml -o '$source' >/dev/null ;;
+  *.json) coverage json -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
+  *.xml) coverage xml -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
 esac
 cat '$source'" > "$target"
 }
