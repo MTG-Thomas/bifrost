@@ -150,6 +150,7 @@ services:
       BIFROST_REDIS_URL: redis://redis:6379/0
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
+      COVERAGE_FILE: /coverage/.coverage
       # S3-compatible object storage
       BIFROST_S3_BUCKET: bifrost-test
       BIFROST_S3_ENDPOINT_URL: http://seaweedfs:8333
@@ -167,9 +168,11 @@ services:
       - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
+      - ./api/.coveragerc:/app/.coveragerc:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
       - test-mounts:/mounts  # File storage for uploads, branding, etc.
+      - test-coverage:/coverage
       # Share ONLY the fixture subdir the test-runner stages file:// git repos
       # in, so install/preview-repo can clone them server-side. Do NOT bind the
       # whole LOG_DIR over the api's /tmp/bifrost: the api runs as root and its
@@ -196,7 +199,7 @@ services:
       start_period: 180s
     # Entrypoint handles permissions; run as root so it can fix volume ownership
     user: root
-    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["coverage", "run", "--parallel-mode", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   # Background Worker (Test) - Only started for E2E tests
   # Note: Discovery service has been removed - workflow/form extraction
@@ -228,6 +231,7 @@ services:
       # C1.5: Parity with production hardening
       PIP_NO_CACHE_DIR: "1"
       HOME: /home/bifrost
+      COVERAGE_FILE: /coverage/.coverage
     volumes:
       - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
@@ -236,6 +240,8 @@ services:
       - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
+      - ./api/.coveragerc:/app/.coveragerc:ro
+      - test-coverage:/coverage
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -249,7 +255,7 @@ services:
     user: "1000:1000"
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
-    command: ["python", "-m", "src.worker.main"]
+    command: ["coverage", "run", "--parallel-mode", "-m", "src.worker.main"]
     profiles:
       - e2e  # Only start in E2E mode
 
@@ -277,6 +283,7 @@ services:
       # GitHub E2E test configuration
       GITHUB_TEST_PAT: ${GITHUB_TEST_PAT:-}
       GITHUB_TEST_REPO: ${GITHUB_TEST_REPO:-jackmusick/e2e-test-workspace}
+      COVERAGE_FILE: /coverage/.coverage
     volumes:
       - ./api/src:/app/src
       - /app/src/services/app_compiler/node_modules  # preserve npm deps from image
@@ -285,7 +292,9 @@ services:
       - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
+      - ./api/.coveragerc:/app/.coveragerc:ro
       - test-mounts:/mounts
+      - test-coverage:/coverage
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -299,7 +308,7 @@ services:
         condition: service_healthy
     # Entrypoint handles permissions; run as root so it can fix volume ownership
     user: root
-    command: ["python", "-m", "src.scheduler.main"]
+    command: ["coverage", "run", "--parallel-mode", "-m", "src.scheduler.main"]
     profiles:
       - e2e  # Only start in E2E mode
 
@@ -356,6 +365,7 @@ services:
       - ./api/tests:/app/tests:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
+      - ./api/.coveragerc:/app/.coveragerc:ro
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
