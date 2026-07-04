@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.core.principal import UserPrincipal
+from src.models.contracts.policies import TablePolicies
 from src.routers import websocket as ws_mod
 
 
@@ -129,6 +130,47 @@ class TestFileChannelHelpers:
         assert ws_mod._file_channel("organization", "global") == "files:organization:global"
 
 
+class TestAgentRunChannels:
+    def test_superuser_without_org_can_subscribe_to_all_runs(self) -> None:
+        user = _user(org_id=None, is_superuser=True)
+
+        assert ws_mod._agent_runs_channel_for_user(user) == "agent-runs:all"
+        assert ws_mod._resolve_agent_runs_channel(user, "agent-runs") == "agent-runs:all"
+        assert (
+            ws_mod._resolve_agent_runs_channel(user, "agent-runs:global")
+            == "agent-runs:global"
+        )
+        assert (
+            ws_mod._resolve_agent_runs_channel(user, f"agent-runs:org:{uuid.uuid4()}")
+            is not None
+        )
+
+    def test_org_user_is_limited_to_own_agent_runs_channel(self) -> None:
+        org_id = uuid.uuid4()
+        user = _user(org_id=org_id)
+
+        assert ws_mod._agent_runs_channel_for_user(user) == f"agent-runs:org:{org_id}"
+        assert (
+            ws_mod._resolve_agent_runs_channel(user, "agent-runs")
+            == f"agent-runs:org:{org_id}"
+        )
+        assert ws_mod._resolve_agent_runs_channel(user, "agent-runs:all") is None
+        assert (
+            ws_mod._resolve_agent_runs_channel(user, f"agent-runs:org:{uuid.uuid4()}")
+            is None
+        )
+        assert ws_mod._resolve_agent_runs_channel(user, f"agent-runs:org:{org_id}") == (
+            f"agent-runs:org:{org_id}"
+        )
+
+    def test_user_without_org_has_no_agent_runs_channel(self) -> None:
+        user = _user(org_id=None)
+
+        assert ws_mod._agent_runs_channel_for_user(user) is None
+        assert ws_mod._resolve_agent_runs_channel(user, "agent-runs") is None
+        assert ws_mod._resolve_agent_runs_channel(user, "agent-runs:weird") is None
+
+
 @pytest.mark.asyncio
 class TestAuthorizeFileSubscribe:
     async def test_rejects_invalid_file_channel(self) -> None:
@@ -207,6 +249,99 @@ class TestAuthorizeFileSubscribe:
 
 
 @pytest.mark.asyncio
+class TestFilePolicyWrappers:
+    async def test_file_allowed_delegates_to_policy_service(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, uuid.UUID | None, str, str, UserPrincipal]] = []
+
+        class FakeDbContext:
+            async def __aenter__(self) -> str:
+                return "db"
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        class FakeFilePolicyService:
+            def __init__(self, db: str) -> None:
+                assert db == "db"
+
+            async def is_allowed(
+                self,
+                action: str,
+                *,
+                organization_id: uuid.UUID | None,
+                location: str,
+                path: str,
+                user: UserPrincipal,
+            ) -> bool:
+                calls.append((action, organization_id, location, path, user))
+                return True
+
+        monkeypatch.setattr(ws_mod, "get_db_context", lambda: FakeDbContext())
+        monkeypatch.setattr(
+            "src.services.file_policy_service.FilePolicyService",
+            FakeFilePolicyService,
+        )
+        user = _user(org_id=uuid.uuid4())
+
+        assert await ws_mod._file_allowed(
+            user=user,
+            action="read",
+            organization_id=user.organization_id,
+            location="organization",
+            path="docs/readme.md",
+        )
+        assert calls == [
+            ("read", user.organization_id, "organization", "docs/readme.md", user)
+        ]
+
+    async def test_file_has_applicable_policy_returns_loaded_policy_presence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        paths: list[str] = []
+
+        class FakeDbContext:
+            async def __aenter__(self) -> str:
+                return "db"
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        class FakeFilePolicyService:
+            def __init__(self, db: str) -> None:
+                assert db == "db"
+
+            async def load_policy(
+                self,
+                *,
+                organization_id: uuid.UUID | None,
+                location: str,
+                path: str,
+            ) -> object | None:
+                paths.append(path)
+                return object() if path == "docs" else None
+
+        monkeypatch.setattr(ws_mod, "get_db_context", lambda: FakeDbContext())
+        monkeypatch.setattr(
+            "src.services.file_policy_service.FilePolicyService",
+            FakeFilePolicyService,
+        )
+
+        assert await ws_mod._file_has_applicable_policy(
+            organization_id=None,
+            location="workspace",
+            path="docs",
+        )
+        assert not await ws_mod._file_has_applicable_policy(
+            organization_id=None,
+            location="workspace",
+            path="missing",
+        )
+        assert paths == ["docs", "missing"]
+
+
+@pytest.mark.asyncio
 class TestHandleFileMessage:
     async def test_ignores_unmatched_channels(self) -> None:
         websocket = FakeWebSocket()
@@ -220,6 +355,121 @@ class TestHandleFileMessage:
 
 @pytest.mark.asyncio
 class TestHandleTableMessage:
+    async def test_authorize_table_subscribe_rejects_missing_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def missing_table(name_or_id: str, user: UserPrincipal) -> None:
+            assert name_or_id == "missing"
+            return None
+
+        monkeypatch.setattr(ws_mod, "_resolve_table_id", missing_table)
+        websocket = FakeWebSocket()
+
+        result = await ws_mod._authorize_table_subscribe(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            ws_mod.ChannelSpec("table:missing", None),
+        )
+
+        assert result is None
+        assert websocket.sent == [
+            {"type": "error", "channel": "table:missing", "message": "Table not found"}
+        ]
+
+    async def test_authorize_table_subscribe_rejects_missing_policies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        table_id = str(uuid.uuid4())
+
+        async def resolve_table(name_or_id: str, user: UserPrincipal) -> str:
+            assert name_or_id == "docs"
+            return table_id
+
+        async def missing_policies(resolved_id: str) -> None:
+            assert resolved_id == table_id
+            return None
+
+        monkeypatch.setattr(ws_mod, "_resolve_table_id", resolve_table)
+        monkeypatch.setattr(ws_mod, "_load_policies_for_table", missing_policies)
+        websocket = FakeWebSocket()
+
+        result = await ws_mod._authorize_table_subscribe(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            ws_mod.ChannelSpec("table:docs", None),
+        )
+
+        assert result is None
+        assert websocket.sent == [
+            {"type": "error", "channel": "table:docs", "message": "Table not found"}
+        ]
+
+    async def test_authorize_table_subscribe_rejects_denied_user(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        table_id = str(uuid.uuid4())
+
+        async def resolve_table(name_or_id: str, user: UserPrincipal) -> str:
+            return table_id
+
+        async def load_policies(resolved_id: str) -> TablePolicies:
+            return TablePolicies()
+
+        async def populate_roles(user: UserPrincipal) -> None:
+            user.role_names = {"viewer"}
+
+        monkeypatch.setattr(ws_mod, "_resolve_table_id", resolve_table)
+        monkeypatch.setattr(ws_mod, "_load_policies_for_table", load_policies)
+        monkeypatch.setattr(ws_mod, "_populate_user_roles", populate_roles)
+        monkeypatch.setattr(ws_mod, "is_subscribe_authorized", lambda *_: False)
+        websocket = FakeWebSocket()
+
+        result = await ws_mod._authorize_table_subscribe(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            ws_mod.ChannelSpec("table:docs", None),
+        )
+
+        assert result is None
+        assert websocket.sent == [
+            {"type": "error", "channel": "table:docs", "message": "Access denied"}
+        ]
+
+    async def test_authorize_table_subscribe_registers_canonical_channel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        table_id = str(uuid.uuid4())
+
+        async def resolve_table(name_or_id: str, user: UserPrincipal) -> str:
+            return table_id
+
+        async def load_policies(resolved_id: str) -> TablePolicies:
+            return TablePolicies()
+
+        async def populate_roles(user: UserPrincipal) -> None:
+            return None
+
+        monkeypatch.setattr(ws_mod, "_resolve_table_id", resolve_table)
+        monkeypatch.setattr(ws_mod, "_load_policies_for_table", load_policies)
+        monkeypatch.setattr(ws_mod, "_populate_user_roles", populate_roles)
+        monkeypatch.setattr(ws_mod, "is_subscribe_authorized", lambda *_: True)
+        ws_mod._table_policy_cache[table_id] = None
+        websocket = FakeWebSocket()
+
+        result = await ws_mod._authorize_table_subscribe(
+            websocket,
+            _user(org_id=uuid.uuid4()),
+            ws_mod.ChannelSpec("table:docs", None),
+        )
+
+        assert result == f"table:{table_id}"
+        assert table_id not in ws_mod._table_policy_cache
+        assert (
+            websocket.state.table_subscriptions[table_id]["channel_name"]
+            == f"table:{table_id}"
+        )
+        assert getattr(websocket, "_table_dispatcher")
+
     async def test_ignores_when_not_subscribed(self) -> None:
         websocket = FakeWebSocket()
 
