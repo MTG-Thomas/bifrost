@@ -427,6 +427,82 @@ async def test_test_principal_404s_missing_target_user():
     assert "User not found" in exc_info.value.detail
 
 
+@pytest.mark.asyncio
+async def test_install_org_id_uses_context_org_without_solution_id():
+    ctx = _ctx(org_id=ORG_A)
+
+    assert await files._install_org_id(ctx, None) == ORG_A
+
+
+@pytest.mark.asyncio
+async def test_install_org_id_reads_solution_org_and_falls_back_when_missing():
+    solution = SimpleNamespace(organization_id=ORG_B)
+
+    class Result:
+        def __init__(self, row):
+            self.row = row
+
+        def scalar_one_or_none(self):
+            return self.row
+
+    class Db:
+        def __init__(self):
+            self.rows = [solution, None]
+
+        async def execute(self, _stmt):
+            return Result(self.rows.pop(0))
+
+    ctx = _ctx(org_id=ORG_A)
+    ctx.db = Db()
+
+    assert await files._install_org_id(ctx, SOLUTION_ID) == ORG_B
+    assert await files._install_org_id(ctx, SOLUTION_ID) == ORG_A
+
+
+@pytest.mark.asyncio
+async def test_require_declared_solution_file_location_allows_without_solution_id():
+    await files._require_declared_solution_file_location(
+        _ctx(),
+        solution_id=None,
+        location="reports",
+    )
+
+
+@pytest.mark.asyncio
+async def test_require_declared_solution_file_location_checks_solution_manifest(monkeypatch):
+    calls = []
+
+    async def fake_declares(db, solution_id, location):
+        calls.append((db, solution_id, location))
+        return location == "reports"
+
+    monkeypatch.setattr(
+        "src.services.solution_scope.solution_declares_file_location",
+        fake_declares,
+    )
+    ctx = _ctx()
+
+    await files._require_declared_solution_file_location(
+        ctx,
+        solution_id=SOLUTION_ID,
+        location="reports",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files._require_declared_solution_file_location(
+            ctx,
+            solution_id=SOLUTION_ID,
+            location="private",
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "File location 'private' not found" == exc_info.value.detail
+    assert calls == [
+        (ctx.db, SOLUTION_ID, "reports"),
+        (ctx.db, SOLUTION_ID, "private"),
+    ]
+
+
 async def _async_value(value):
     return value
 
