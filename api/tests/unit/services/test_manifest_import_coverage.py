@@ -183,7 +183,7 @@ def test_filter_manifest_to_scope_keeps_repo_owned_graph_and_scoped_metadata():
     ("app", "expected"),
     [
         (SimpleNamespace(id=APP_ID, path="", slug="portal"), "apps/portal"),
-        (SimpleNamespace(id=APP_ID, path=r"apps\portal\", slug="portal"), "apps/portal"),
+        (SimpleNamespace(id=APP_ID, path="apps\\portal\\", slug="portal"), "apps/portal"),
     ],
 )
 def test_safe_app_repo_path_normalizes_slug_paths(app, expected):
