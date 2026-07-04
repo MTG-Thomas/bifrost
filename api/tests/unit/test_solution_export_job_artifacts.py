@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from src.models.contracts.solutions import SolutionExportOptions
+from src.models.orm.solution_export_jobs import SolutionExportJob
 from src.models.orm.solutions import Solution
 from src.services.solutions import export_jobs
 
@@ -140,6 +142,106 @@ def test_artifact_key_and_filename_are_stable() -> None:
         == f"solution-exports/{solution_id}/{job_id}.zip"
     )
     assert export_jobs.export_artifact_filename(solution) == "helpdesk-pack-unversioned.zip"
+
+
+def test_public_job_only_exposes_download_url_for_completed_unexpired_artifacts() -> None:
+    now = datetime.now(timezone.utc)
+    base = {
+        "id": uuid4(),
+        "solution_id": uuid4(),
+        "organization_id": uuid4(),
+        "requested_by_id": uuid4(),
+        "progress_percent": 100,
+        "message": "done",
+        "artifact_size_bytes": 10,
+        "artifact_sha256": "a" * 64,
+        "artifact_filename": "solution.zip",
+        "completed_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    completed = SolutionExportJob(
+        **base,
+        status="completed",
+        artifact_storage_key="solution-exports/s/j.zip",
+        expires_at=now + timedelta(minutes=5),
+    )
+    expired = SolutionExportJob(
+        **base,
+        id=uuid4(),
+        status="completed",
+        artifact_storage_key="solution-exports/s/expired.zip",
+        expires_at=now - timedelta(minutes=5),
+    )
+    pending = SolutionExportJob(
+        **base,
+        id=uuid4(),
+        status="pending",
+        artifact_storage_key="solution-exports/s/pending.zip",
+        expires_at=now + timedelta(minutes=5),
+    )
+
+    assert export_jobs.public_job(completed).download_url == (
+        f"/api/solutions/export-jobs/{completed.id}/download"
+    )
+    assert export_jobs.public_job(expired).download_url is None
+    assert export_jobs.public_job(pending).download_url is None
+
+
+def test_export_option_runtime_payload_and_password_validation() -> None:
+    source_only = SolutionExportOptions(
+        include_configs=False,
+        include_secrets=False,
+        include_tables=False,
+        include_files=True,
+        password="pw",
+    )
+    configs_without_password = SolutionExportOptions(
+        include_configs=True,
+        include_secrets=False,
+        include_tables=False,
+        include_files=False,
+        password=None,
+    )
+
+    assert export_jobs.export_options_select_runtime_payload(source_only) is True
+    export_jobs.validate_export_options_password(source_only)
+    with pytest.raises(ValueError, match="backup export requires a password"):
+        export_jobs.validate_export_options_password(configs_without_password)
+
+
+@pytest.mark.asyncio
+async def test_apply_config_value_selection_skips_empty_and_filters_secret_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution = Solution(id=uuid4(), slug="helpdesk-pack")
+    options = SolutionExportOptions(
+        include_configs=False,
+        include_secrets=True,
+        include_tables=False,
+        include_files=False,
+        password="pw",
+    )
+    secret_keys = AsyncMock(return_value={"api_key"})
+    monkeypatch.setattr(export_jobs, "solution_secret_config_keys", secret_keys)
+    db = SimpleNamespace()
+
+    assert await export_jobs.apply_config_value_selection(
+        db,
+        solution,
+        options,
+        {},
+    ) == {}
+    secret_keys.assert_not_awaited()
+
+    assert await export_jobs.apply_config_value_selection(
+        db,
+        solution,
+        options,
+        {"api_url": "https://example.test", "api_key": "secret"},
+    ) == {"api_key": "secret"}
+    secret_keys.assert_awaited_once_with(db, solution.id)
 
 
 @pytest.mark.asyncio
