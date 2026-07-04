@@ -73,8 +73,9 @@ def flush_opentelemetry(*, timeout_millis: int = 5_000) -> None:
             continue
 
         try:
-            force_flush(timeout_millis=timeout_millis)
-        except TypeError:
-            force_flush()
+            try:
+                force_flush(timeout_millis=timeout_millis)
+            except TypeError:
+                force_flush()
         except Exception as exc:
             logger.warning("OpenTelemetry %s flush failed: %s", provider_name, exc)

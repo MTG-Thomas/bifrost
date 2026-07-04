@@ -464,13 +464,19 @@ class TestGitSubcommands:
         assert "commit bad" in capsys.readouterr().err
 
     @pytest.mark.parametrize(
-        ("status", "expected"),
-        [("success", EXIT_CLEAN), ("completed", EXIT_CLEAN), ("conflict", EXIT_CONFLICTS), ("failed", EXIT_ERROR)],
+        ("status", "expected_exit", "expected_output"),
+        [
+            ("success", EXIT_CLEAN, "Push complete"),
+            ("completed", EXIT_CLEAN, "Push complete"),
+            ("conflict", EXIT_CONFLICTS, "0 conflicts detected"),
+            ("failed", EXIT_ERROR, "Push failed: push bad"),
+        ],
     )
     def test_run_git_push_maps_status_to_exit_code(
         self,
         status: str,
-        expected: int,
+        expected_exit: int,
+        expected_output: str,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ):
@@ -480,8 +486,8 @@ class TestGitSubcommands:
             lambda *_args, **_kwargs: {"status": status, "error": "push bad"},
         )
 
-        assert git_commands.run_git_push(FakeClient()) == expected
-        assert capsys.readouterr().out
+        assert git_commands.run_git_push(FakeClient()) == expected_exit
+        assert expected_output in capsys.readouterr().out
 
     def test_run_git_resolve_maps_resolution_names_and_exit_code(
         self, monkeypatch: pytest.MonkeyPatch

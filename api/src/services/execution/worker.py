@@ -502,4 +502,7 @@ def run_in_worker(execution_id: str):
     try:
         asyncio.run(worker_main(execution_id))
     finally:
-        telemetry.flush_opentelemetry()
+        try:
+            telemetry.flush_opentelemetry()
+        except Exception as exc:
+            logger.warning("OpenTelemetry worker flush failed: %s", exc)
