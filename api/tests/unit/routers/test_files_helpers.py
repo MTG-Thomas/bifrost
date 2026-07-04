@@ -800,6 +800,128 @@ async def test_list_active_watchers_reads_redis_json_payloads(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_files_editor_recursive_filters_excluded_paths(monkeypatch):
+    class FakeRepoStorage:
+        async def list(self, prefix):
+            assert prefix == "src/"
+            return [
+                "src/workflows/a.py",
+                "src/__pycache__/a.pyc",
+                "src/apps/app.tsx",
+            ]
+
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", lambda: FakeRepoStorage())
+    monkeypatch.setattr(
+        "src.services.editor.file_filter.is_excluded_path",
+        lambda path: "__pycache__" in path,
+    )
+
+    response = await files.list_files_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path="src",
+        recursive=True,
+        db=SimpleNamespace(),
+    )
+
+    assert [item.path for item in response] == ["src/apps/app.tsx", "src/workflows/a.py"]
+    assert [item.name for item in response] == ["app.tsx", "a.py"]
+    assert [item.extension for item in response] == ["tsx", "py"]
+    assert {item.type for item in response} == {files.FileType.FILE}
+
+
+@pytest.mark.asyncio
+async def test_list_files_editor_non_recursive_skips_empty_folder_prefixes(monkeypatch):
+    list_calls = []
+
+    class FakeRepoStorage:
+        async def list_directory(self, prefix):
+            assert prefix == ""
+            return (["README.md"], ["apps/", "empty/"])
+
+        async def list(self, folder_path):
+            list_calls.append(folder_path)
+            return ["apps/index.tsx"] if folder_path == "apps/" else []
+
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", lambda: FakeRepoStorage())
+
+    response = await files.list_files_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path=".",
+        recursive=False,
+        db=SimpleNamespace(),
+    )
+
+    assert list_calls == ["apps/", "empty/"]
+    assert [(item.path, item.name, item.type, item.extension) for item in response] == [
+        ("apps", "apps", files.FileType.FOLDER, None),
+        ("README.md", "README.md", files.FileType.FILE, "md"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_file_content_editor_returns_text_with_md5_etag(monkeypatch):
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def read_file(self, path):
+            assert path == "README.md"
+            return b"hello", None
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    response = await files.get_file_content_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path="README.md",
+        db=SimpleNamespace(),
+    )
+
+    assert response.path == "README.md"
+    assert response.content == "hello"
+    assert response.encoding == "utf-8"
+    assert response.size == 5
+    assert response.etag == hashlib.md5(b"hello").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_get_file_content_editor_base64_encodes_binary_and_maps_missing(monkeypatch):
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def read_file(self, path):
+            if path == "missing.bin":
+                raise FileNotFoundError(path)
+            return b"\xff\xfe", None
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    binary = await files.get_file_content_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path="raw.bin",
+        db=SimpleNamespace(),
+    )
+
+    assert binary.encoding == "base64"
+    assert binary.content == base64.b64encode(b"\xff\xfe").decode("ascii")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.get_file_content_editor(
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            path="missing.bin",
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "File not found: missing.bin"
+
+
+@pytest.mark.asyncio
 async def test_list_file_policies_resolves_target_scope_and_serializes_rows(monkeypatch):
     calls = []
     row = SimpleNamespace(
