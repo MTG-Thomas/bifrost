@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import zipfile
+from io import BytesIO
 from types import SimpleNamespace
 
 import click
@@ -290,6 +292,202 @@ def test_solution_scaffold_app_requires_solution_root_and_empty_target(tmp_path,
     occupied = runner.invoke(solution_group, ["scaffold-app", "portal"])
     assert occupied.exit_code != 0
     assert "already exists and is not empty" in occupied.output
+
+
+def test_solution_pull_writes_only_manifest_files_and_acks_entities(tmp_path, monkeypatch):
+    _write(tmp_path / "bifrost.solution.yaml", "slug: desk\nname: Desk\n")
+
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(".bifrost/tables.yaml", "tables:\n  table-1:\n    name: Tickets\n")
+        zf.writestr(".bifrost/configs.yml", "configs:\n  API_KEY:\n    type: secret\n")
+        zf.writestr("functions/ignored.py", "raise RuntimeError('do not write')\n")
+
+    class Response:
+        def __init__(self, status_code, body=None, text="", content=b""):
+            self.status_code = status_code
+            self._body = body or {}
+            self.text = text
+            self.content = content
+
+        def json(self):
+            return self._body
+
+    class Client:
+        def __init__(self):
+            self.posts: list[tuple[str, dict | None]] = []
+
+        async def post(self, path, json=None):
+            self.posts.append((path, json))
+            if path.endswith("/export?mode=shareable"):
+                return Response(200, content=archive.getvalue())
+            if path.endswith("/pull/ack"):
+                return Response(200, {"cleared": 2})
+            raise AssertionError(path)
+
+    client = Client()
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: client),
+    )
+
+    result = CliRunner().invoke(solution_group, ["pull", str(tmp_path), "--solution", "sol-1"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".bifrost" / "tables.yaml").is_file()
+    assert (tmp_path / ".bifrost" / "configs.yml").is_file()
+    assert not (tmp_path / "functions" / "ignored.py").exists()
+    assert client.posts[0] == ("/api/solutions/sol-1/export?mode=shareable", None)
+    assert client.posts[1] == (
+        "/api/solutions/sol-1/pull/ack",
+        {
+            "entities": [
+                {"entity_type": "table", "entity_id": "table-1"},
+                {"entity_type": "config", "entity_id": "API_KEY"},
+            ]
+        },
+    )
+    assert "2 manifest file(s)" in result.output
+    assert "2 capture(s) cleared" in result.output
+
+
+def test_solution_pull_reports_export_and_ack_failures(tmp_path, monkeypatch):
+    _write(tmp_path / "bifrost.solution.yaml", "slug: desk\nname: Desk\n")
+
+    class Response:
+        def __init__(self, status_code, body=None, text="", content=b""):
+            self.status_code = status_code
+            self._body = body or {}
+            self.text = text
+            self.content = content
+
+        def json(self):
+            return self._body
+
+    class ExportFailureClient:
+        async def post(self, path, json=None):
+            return Response(500, text="boom")
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: ExportFailureClient()),
+    )
+    failed_export = CliRunner().invoke(
+        solution_group, ["pull", str(tmp_path), "--solution", "sol-1"]
+    )
+    assert failed_export.exit_code != 0
+    assert "Pull failed: 500 boom" in failed_export.output
+
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(".bifrost/tables.yaml", "tables:\n  table-1: {}\n")
+
+    class AckFailureClient:
+        async def post(self, path, json=None):
+            if path.endswith("/export?mode=shareable"):
+                return Response(200, content=archive.getvalue())
+            return Response(503, text="queue down")
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: AckFailureClient()),
+    )
+    failed_ack = CliRunner().invoke(
+        solution_group, ["pull", str(tmp_path), "--solution", "sol-1"]
+    )
+    assert failed_ack.exit_code != 0
+    assert "failed to clear the capture queue" in failed_ack.output
+
+
+def test_swap_slugs_resolves_slugs_preserves_uuid_refs_and_prints_result(monkeypatch):
+    uuid_ref = "11111111-1111-1111-1111-111111111111"
+
+    class Response:
+        def __init__(self, status_code, body=None, text=""):
+            self.status_code = status_code
+            self._body = body or {}
+            self.text = text
+
+        def json(self):
+            return self._body
+
+    class Client:
+        def __init__(self):
+            self.gets: list[str] = []
+            self.posts: list[tuple[str, dict]] = []
+
+        async def get(self, path):
+            self.gets.append(path)
+            return Response(200, {"id": "resolved-app"})
+
+        async def post(self, path, json):
+            self.posts.append((path, json))
+            return Response(
+                200,
+                {
+                    "applications": [
+                        {"name": "V1", "slug": "old"},
+                        {"name": "V2", "slug": "live"},
+                    ]
+                },
+            )
+
+    client = Client()
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: client),
+    )
+
+    result = CliRunner().invoke(solution_group, ["swap-slugs", "portal", uuid_ref])
+
+    assert result.exit_code == 0, result.output
+    assert client.gets == ["/api/applications/portal"]
+    assert client.posts == [
+        (
+            "/api/applications/swap-slugs",
+            {"app_a": "resolved-app", "app_b": uuid_ref},
+        )
+    ]
+    assert "V1" in result.output
+    assert "Slug swap complete" in result.output
+
+
+def test_swap_slugs_reports_resolution_and_swap_failures(monkeypatch):
+    class Response:
+        def __init__(self, status_code, body=None, text=""):
+            self.status_code = status_code
+            self._body = body or {}
+            self.text = text
+
+        def json(self):
+            return self._body
+
+    class MissingClient:
+        async def get(self, path):
+            return Response(404, text="missing")
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: MissingClient()),
+    )
+    missing = CliRunner().invoke(solution_group, ["swap-slugs", "missing", "other"])
+    assert missing.exit_code != 0
+    assert "No application 'missing'" in missing.output
+
+    class SwapFailureClient:
+        async def get(self, path):
+            return Response(200, {"id": path.rsplit("/", 1)[-1]})
+
+        async def post(self, path, json):
+            return Response(409, text="slug locked")
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: SwapFailureClient()),
+    )
+    failed = CliRunner().invoke(solution_group, ["swap-slugs", "a", "b"])
+    assert failed.exit_code != 0
+    assert "Slug swap failed (409): slug locked" in failed.output
 
 
 def test_collect_python_files_skips_app_generated_and_manifest_dirs(tmp_path):
