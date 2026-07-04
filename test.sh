@@ -291,7 +291,7 @@ cmd_coverage() {
     docker compose -f "$COMPOSE_FILE" stop api worker scheduler >/dev/null 2>&1 || true
 
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        sh -lc "coverage combine --keep /coverage >/dev/null 2>&1 || true
+        sh -lc "coverage combine --append --keep /coverage >/dev/null 2>&1 || true
 case '$basename_target' in
   *.json) coverage json -o '$source' >/dev/null ;;
   *.xml) coverage xml -o '$source' >/dev/null ;;
