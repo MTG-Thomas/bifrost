@@ -399,6 +399,151 @@ def test_solution_pull_reports_export_and_ack_failures(tmp_path, monkeypatch):
     assert "failed to clear the capture queue" in failed_ack.output
 
 
+def test_solution_install_posts_zip_config_and_replace_flags(tmp_path, monkeypatch):
+    zip_path = tmp_path / "bundle.zip"
+    zip_path.write_bytes(b"zip-bytes")
+
+    async def fake_resolve_install_org(client, org, is_global):
+        assert client is fake_client
+        assert org is None
+        assert is_global is False
+        return "org-1"
+
+    class Response:
+        status_code = 201
+        text = ""
+
+        def json(self):
+            return {"id": "sol-1", "slug": "desk"}
+
+    class Client:
+        def __init__(self):
+            self.posts: list[tuple[str, dict, dict]] = []
+
+        async def post(self, path, files=None, data=None):
+            self.posts.append((path, files, data))
+            return Response()
+
+    fake_client = Client()
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: fake_client),
+    )
+    monkeypatch.setattr(
+        "bifrost.commands.solution._resolve_install_org",
+        fake_resolve_install_org,
+    )
+
+    result = CliRunner().invoke(
+        solution_group,
+        [
+            "install",
+            str(zip_path),
+            "--set",
+            "API_KEY=secret",
+            "--set",
+            "MODE=dry-run",
+            "--password",
+            "pw",
+            "--replace-secrets",
+            "--replace-data",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    path, files, data = fake_client.posts[0]
+    assert path == "/api/solutions/install"
+    assert files == {"file": ("bundle.zip", b"zip-bytes", "application/zip")}
+    assert json.loads(data["config_values"]) == {
+        "API_KEY": "secret",
+        "MODE": "dry-run",
+    }
+    assert data["organization_id"] == "org-1"
+    assert data["password"] == "pw"
+    assert data["replace_secrets"] == "true"
+    assert data["replace_data"] == "true"
+    assert "Installed solution sol-1" in result.output
+
+
+def test_solution_install_validates_set_pairs_before_http(tmp_path, monkeypatch):
+    zip_path = tmp_path / "bundle.zip"
+    zip_path.write_bytes(b"zip-bytes")
+    called = False
+
+    def fail_get_instance(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("HTTP should not be reached")
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(fail_get_instance),
+    )
+
+    result = CliRunner().invoke(
+        solution_group,
+        ["install", str(zip_path), "--set", "MISSING_EQUALS"],
+    )
+
+    assert result.exit_code != 0
+    assert "--set expects KEY=VALUE" in result.output
+    assert called is False
+
+
+def test_solution_install_reports_collision_rejection_and_server_errors(tmp_path, monkeypatch):
+    zip_path = tmp_path / "bundle.zip"
+    zip_path.write_bytes(b"zip-bytes")
+
+    async def fake_resolve_install_org(client, org, is_global):
+        return None
+
+    class Response:
+        def __init__(self, status_code, body=None, text=""):
+            self.status_code = status_code
+            self._body = body or {}
+            self.text = text
+
+        def json(self):
+            return self._body
+
+    class Client:
+        def __init__(self, response):
+            self.response = response
+
+        async def post(self, path, files=None, data=None):
+            return self.response
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution._resolve_install_org",
+        fake_resolve_install_org,
+    )
+
+    for response, expected in [
+        (
+            Response(409, {"detail": "API_KEY already set"}, "conflict"),
+            "Install collision: API_KEY already set",
+        ),
+        (
+            Response(422, {"detail": "wrong password"}, "bad"),
+            "Install rejected: wrong password",
+        ),
+        (
+            Response(500, text="server down"),
+            "Install failed: 500 server down",
+        ),
+    ]:
+        def get_client(**kwargs):
+            return Client(response)
+
+        monkeypatch.setattr(
+            "bifrost.commands.solution.BifrostClient.get_instance",
+            staticmethod(get_client),
+        )
+        result = CliRunner().invoke(solution_group, ["install", str(zip_path)])
+        assert result.exit_code != 0
+        assert expected in result.output
+
+
 def test_swap_slugs_resolves_slugs_preserves_uuid_refs_and_prints_result(monkeypatch):
     uuid_ref = "11111111-1111-1111-1111-111111111111"
 
