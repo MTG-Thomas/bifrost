@@ -741,38 +741,6 @@ class SolutionCaptureService:
                 existing.position = pos
         return entries
 
-    async def _solution_file_entries(self, solution: Solution) -> list[Any]:
-        """Return solution-owned file metadata for a full-backup export."""
-        from src.services.solution_files import enumerate_solution_files
-
-        entries = await enumerate_solution_files(self.db, solution.id)
-        if not entries:
-            return []
-
-        if len(entries) > FILE_CAP:
-            logger.warning(
-                "bundle_for: solution %r has more than %d files; "
-                "only the first %d files are included in the export bundle.",
-                solution.slug,
-                FILE_CAP,
-                FILE_CAP,
-            )
-            entries = entries[:FILE_CAP]
-
-        return entries
-
-    async def _file_location_entries(self, solution_id: UUID) -> list[str]:
-        from src.models.orm.solution_file_location import SolutionFileLocation
-
-        rows = (
-            await self.db.execute(
-                select(SolutionFileLocation.location)
-                .where(SolutionFileLocation.solution_id == solution_id)
-                .order_by(SolutionFileLocation.position, SolutionFileLocation.location)
-            )
-        ).scalars().all()
-        return list(rows)
-
     async def _config_values(self, solution: Solution) -> dict[str, str]:
         """Read the plaintext value for each declared config key that has a value set.
 
