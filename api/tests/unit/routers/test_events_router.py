@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException, status
 
 from src.models.contracts.events import DynamicValuesRequest, EmitEventRequest
+from src.models.contracts.events import EventSourceCreate, ScheduleSourceConfig
 from src.models.enums import EventDeliveryStatus, EventSourceType, ScheduleOverlapPolicy
 from src.routers import events
 
@@ -288,3 +289,128 @@ class TestTopicEndpoints:
 
         assert response.curated
         assert response.in_use == ["ticket.created", "agent.completed"]
+
+
+class TestEventSourceMutationEndpoints:
+    def _db_that_reloads_added_source(self):
+        added = []
+        db = AsyncMock()
+
+        def add(row):
+            if getattr(row, "id", None) is None:
+                row.id = uuid4()
+            added.append(row)
+
+        db.add = MagicMock(side_effect=add)
+        db.flush = AsyncMock()
+        result = MagicMock()
+        result.unique.return_value.scalar_one.side_effect = lambda: added[0]
+        db.execute = AsyncMock(return_value=result)
+        return db, added
+
+    @pytest.mark.asyncio
+    async def test_create_topic_source_defaults_to_caller_org(self):
+        db, added = self._db_that_reloads_added_source()
+        ctx = _ctx()
+        request = EventSourceCreate(
+            name="Ticket Created",
+            source_type=EventSourceType.TOPIC,
+            event_type="ticket.created",
+        )
+        response = SimpleNamespace(id="source-response")
+
+        with patch.object(
+            events,
+            "_build_event_source_response",
+            AsyncMock(return_value=response),
+        ) as build_response:
+            result = await events.create_source(request, ctx, _user(), db)
+
+        assert result is response
+        assert added[0].name == "Ticket Created"
+        assert added[0].source_type == EventSourceType.TOPIC
+        assert added[0].event_type == "ticket.created"
+        assert added[0].organization_id == ctx.org_id
+        db.flush.assert_awaited_once()
+        build_response.assert_awaited_once_with(added[0], db)
+
+    @pytest.mark.asyncio
+    async def test_create_topic_source_rejects_missing_or_invalid_topic(self):
+        db, _added = self._db_that_reloads_added_source()
+
+        with pytest.raises(HTTPException) as exc:
+            await events.create_source(
+                EventSourceCreate(
+                    name="Bad Topic",
+                    source_type=EventSourceType.TOPIC,
+                ),
+                _ctx(),
+                _user(),
+                db,
+            )
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        db.add.assert_not_called()
+
+        with pytest.raises(HTTPException) as exc:
+            await events.create_source(
+                EventSourceCreate(
+                    name="Bad Topic",
+                    source_type=EventSourceType.TOPIC,
+                    event_type="not valid",
+                ),
+                _ctx(),
+                _user(),
+                db,
+            )
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_create_schedule_source_adds_schedule_row(self):
+        db, added = self._db_that_reloads_added_source()
+        explicit_org = uuid4()
+        request = EventSourceCreate(
+            name="Daily Sync",
+            source_type=EventSourceType.SCHEDULE,
+            organization_id=explicit_org,
+            schedule=ScheduleSourceConfig(
+                cron_expression="0 9 * * *",
+                timezone="America/Indianapolis",
+                enabled=True,
+                overlap_policy=ScheduleOverlapPolicy.QUEUE,
+            ),
+        )
+        response = SimpleNamespace(id="schedule-response")
+
+        with patch.object(
+            events,
+            "_build_event_source_response",
+            AsyncMock(return_value=response),
+        ):
+            result = await events.create_source(request, _ctx(), _user(), db)
+
+        assert result is response
+        source, schedule = added
+        assert source.organization_id == explicit_org
+        assert schedule.event_source_id == source.id
+        assert schedule.cron_expression == "0 9 * * *"
+        assert schedule.timezone == "America/Indianapolis"
+        assert schedule.overlap_policy == ScheduleOverlapPolicy.QUEUE
+        assert db.flush.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_create_schedule_source_requires_schedule_config(self):
+        db, _added = self._db_that_reloads_added_source()
+
+        with pytest.raises(HTTPException) as exc:
+            await events.create_source(
+                EventSourceCreate(
+                    name="Daily Sync",
+                    source_type=EventSourceType.SCHEDULE,
+                ),
+                _ctx(),
+                _user(),
+                db,
+            )
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Schedule configuration required" in exc.value.detail
