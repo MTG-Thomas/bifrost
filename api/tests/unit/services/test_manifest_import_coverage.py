@@ -16,6 +16,7 @@ from bifrost.manifest import (
     ManifestMCPServer,
     ManifestOrganization,
     ManifestRole,
+    ManifestTable,
     ManifestWorkflow,
 )
 from src.services import manifest_import
@@ -253,3 +254,114 @@ async def _unused_read(path):
 
 async def _missing_read(path):
     return None
+
+
+def test_collect_removed_entity_ids_groups_only_deletes_with_ids():
+    changes = [
+        {"action": "delete", "entity_type": "workflows", "id": WORKFLOW_ID},
+        {"action": "delete", "entity_type": "workflows", "id": DELEGATE_ID},
+        {"action": "delete", "entity_type": "apps", "id": APP_ID},
+        {"action": "update", "entity_type": "forms", "id": FORM_ID},
+        {"action": "delete", "entity_type": "", "id": "ignored"},
+        {"action": "delete", "entity_type": "agents"},
+    ]
+
+    assert manifest_import._collect_removed_entity_ids(changes) == {
+        "workflows": {WORKFLOW_ID, DELEGATE_ID},
+        "apps": {APP_ID},
+    }
+
+
+def test_manifest_org_scope_collects_direct_and_nested_org_references():
+    manifest = Manifest(
+        organizations=[ManifestOrganization(id=ORG_ID, name="Primary")],
+        workflows={
+            "wf": ManifestWorkflow(
+                id=WORKFLOW_ID,
+                name="Scoped workflow",
+                path="workflows/scoped.py",
+                function_name="run",
+                organization_id=OTHER_ORG_ID,
+            ),
+        },
+        tables={
+            "table": ManifestTable(
+                id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                name="Tickets",
+                organization_id="33333333-3333-3333-3333-333333333333",
+            ),
+        },
+        integrations={
+            "psa": ManifestIntegration(
+                id=INTEGRATION_ID,
+                name="Halo",
+                mappings=[
+                    ManifestIntegrationMapping(
+                        organization_id="44444444-4444-4444-4444-444444444444",
+                        entity_id="tenant",
+                        entity_name="Tenant",
+                    ),
+                ],
+            ),
+        },
+        mcp_servers={
+            "mcp": ManifestMCPServer(
+                id=MCP_ID,
+                name="MCP",
+                server_url="https://mcp.example",
+                connections={
+                    "conn": ManifestMCPConnection(
+                        organization_id="55555555-5555-5555-5555-555555555555",
+                        client_id="client",
+                    ),
+                },
+            ),
+        },
+    )
+
+    assert manifest_import._manifest_org_scope(manifest) == {
+        ORG_ID,
+        OTHER_ORG_ID,
+        "33333333-3333-3333-3333-333333333333",
+        "44444444-4444-4444-4444-444444444444",
+        "55555555-5555-5555-5555-555555555555",
+    }
+
+
+def test_entity_in_org_scope_requires_matching_explicit_org():
+    assert manifest_import._entity_in_org_scope(
+        SimpleNamespace(organization_id=ORG_ID),
+        {ORG_ID},
+    ) is True
+    assert manifest_import._entity_in_org_scope(
+        SimpleNamespace(organization_id=OTHER_ORG_ID),
+        {ORG_ID},
+    ) is False
+    assert manifest_import._entity_in_org_scope(
+        SimpleNamespace(organization_id=None),
+        {ORG_ID},
+    ) is False
+
+
+def test_inline_content_detection_and_manifest_access_level_defaults():
+    assert manifest_import._form_has_inline_content(
+        ManifestForm(id=FORM_ID, name="Ticket", workflow_id=WORKFLOW_ID)
+    ) is True
+    assert manifest_import._form_has_inline_content(
+        ManifestForm(id="empty-form", name="Empty")
+    ) is False
+
+    assert manifest_import._agent_has_inline_content(
+        ManifestAgent(id=AGENT_ID, name="Agent", system_prompt="Help")
+    ) is True
+    assert manifest_import._agent_has_inline_content(
+        ManifestAgent(id="tool-agent", name="Agent", tool_ids=[WORKFLOW_ID])
+    ) is True
+    assert manifest_import._agent_has_inline_content(
+        ManifestAgent(id="empty-agent", name="Agent")
+    ) is False
+
+    assert manifest_import._manifest_access_level("public", ["Support"]) == "public"
+    assert manifest_import._manifest_access_level(None, ["Support"]) == "role_based"
+    assert manifest_import._manifest_access_level(None, []) is None
+    assert manifest_import._manifest_access_level(None, None) is None
