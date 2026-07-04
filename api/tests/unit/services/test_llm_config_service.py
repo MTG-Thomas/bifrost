@@ -177,6 +177,56 @@ class TestLLMConfigService:
         assert mock_system_config.value_json["model"] == "gpt-4o-mini"
 
     @pytest.mark.asyncio
+    async def test_save_config_preserves_existing_api_key_when_omitted(
+        self, mock_session, mock_settings, mock_system_config
+    ):
+        """Saving without an API key should preserve the encrypted key."""
+        original_key = mock_system_config.value_json["encrypted_api_key"]
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = mock_system_config
+        mock_session.execute.return_value = mock_result
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            service = LLMConfigService(mock_session)
+            await service.save_config(
+                provider="anthropic",
+                model="claude-opus-4-20250514",
+                api_key=None,
+                endpoint="https://anthropic.example",
+                max_tokens=2048,
+                default_system_prompt="Be concise.",
+                summarization_model="claude-haiku",
+                tuning_model="claude-sonnet",
+                updated_by="admin@example.com",
+            )
+
+        assert mock_system_config.value_json["encrypted_api_key"] == original_key
+        assert mock_system_config.value_json["endpoint"] == "https://anthropic.example"
+        assert mock_system_config.value_json["default_system_prompt"] == "Be concise."
+        assert mock_system_config.value_json["summarization_model"] == "claude-haiku"
+        assert mock_system_config.value_json["tuning_model"] == "claude-sonnet"
+        assert mock_system_config.updated_by == "admin@example.com"
+        assert mock_system_config.updated_at is not None
+
+    @pytest.mark.asyncio
+    async def test_save_config_requires_initial_api_key(
+        self, mock_session, mock_settings
+    ):
+        """Initial configuration must include an API key."""
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            service = LLMConfigService(mock_session)
+            with pytest.raises(ValueError, match="API key is required"):
+                await service.save_config(
+                    provider="openai",
+                    model="gpt-4o",
+                    api_key=None,
+                )
+
+    @pytest.mark.asyncio
     async def test_save_config_encrypts_api_key(
         self, mock_session, mock_settings, fernet_instance
     ):
@@ -421,6 +471,89 @@ class TestLLMConfigServiceTestConnection:
         assert "failed" in result.message.lower() or "Invalid API key" in result.message
 
     @pytest.mark.asyncio
+    async def test_test_connection_unknown_provider(self, mock_session, mock_settings):
+        """Unknown saved providers should return a typed failure."""
+        mock_llm_config = MagicMock()
+        mock_llm_config.provider = "other"
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch(
+                "src.services.llm.factory.get_llm_config",
+                return_value=mock_llm_config,
+            ):
+                service = LLMConfigService(mock_session)
+                result = await service.test_connection()
+
+        assert result.success is False
+        assert result.message == "Unknown provider: other"
+
+    @pytest.mark.asyncio
+    async def test_test_credentials_uses_saved_key_when_api_key_omitted(
+        self, mock_session, mock_settings
+    ):
+        """Explicit credential tests can reuse the saved encrypted key."""
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch.object(
+                LLMConfigService, "_get_saved_api_key", return_value="saved-key"
+            ) as saved_key:
+                with patch.object(
+                    LLMConfigService,
+                    "_list_openai",
+                    return_value=LLMTestResult(success=True, message="ok", models=[]),
+                ) as list_openai:
+                    service = LLMConfigService(mock_session)
+                    result = await service.test_credentials(
+                        provider="openai", api_key=None, endpoint="https://example"
+                    )
+
+        assert result.success is True
+        saved_key.assert_awaited_once()
+        list_openai.assert_awaited_once_with("saved-key", "https://example")
+
+    @pytest.mark.asyncio
+    async def test_test_credentials_unknown_provider(self, mock_session, mock_settings):
+        """Unknown explicit credential providers should return a typed failure."""
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            service = LLMConfigService(mock_session)
+            result = await service.test_credentials(
+                provider="bogus",  # type: ignore[arg-type]
+                api_key="key",
+            )
+
+        assert result.success is False
+        assert result.message == "Unknown provider: bogus"
+
+    @pytest.mark.asyncio
+    async def test_get_saved_api_key_decrypts_config(
+        self, mock_session, mock_settings, mock_system_config
+    ):
+        """Saved API keys should decrypt with the configured Fernet key."""
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = mock_system_config
+        mock_session.execute.return_value = mock_result
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            service = LLMConfigService(mock_session)
+            assert await service._get_saved_api_key() == "sk-test-api-key-12345"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value_json", [None, {}])
+    async def test_get_saved_api_key_requires_saved_key(
+        self, mock_session, mock_settings, value_json
+    ):
+        """Connection tests without explicit keys need a saved encrypted key."""
+        mock_config = MagicMock()
+        mock_config.value_json = value_json
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = mock_config
+        mock_session.execute.return_value = mock_result
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            service = LLMConfigService(mock_session)
+            with pytest.raises(ValueError, match="API key is required"):
+                await service._get_saved_api_key()
+
+    @pytest.mark.asyncio
     async def test_test_connection_model_listing_failure_still_succeeds(
         self, mock_session, mock_settings
     ):
@@ -483,6 +616,27 @@ class TestLLMConfigServiceTestConnection:
         assert "User not found" in result.message
 
     @pytest.mark.asyncio
+    async def test_openai_verify_completion_success(self, mock_session):
+        """OpenAI completion verification should return success when the probe works."""
+        with patch("openai.AsyncOpenAI") as mock_openai:
+            mock_client = AsyncMock()
+            mock_client.chat.completions.create = AsyncMock()
+            mock_openai.return_value = mock_client
+
+            service = LLMConfigService(mock_session)
+            result = await service._complete_openai(
+                api_key="sk-test-key",
+                model="gpt-4o",
+                endpoint="https://openai.example/v1",
+            )
+
+        assert result.success is True
+        assert "Completion succeeded" in result.message
+        mock_openai.assert_called_once_with(
+            api_key="sk-test-key", base_url="https://openai.example/v1"
+        )
+
+    @pytest.mark.asyncio
     async def test_anthropic_verify_completion_fails_on_completion_error(
         self, mock_session, mock_settings
     ):
@@ -511,6 +665,27 @@ class TestLLMConfigServiceTestConnection:
         assert result.success is False
         assert "rejected a test completion" in result.message
         assert "insufficient_quota" in result.message
+
+    @pytest.mark.asyncio
+    async def test_anthropic_verify_completion_success(self, mock_session):
+        """Anthropic completion verification should return success when the probe works."""
+        with patch("anthropic.AsyncAnthropic") as mock_anthropic:
+            mock_client = AsyncMock()
+            mock_client.messages.create = AsyncMock()
+            mock_anthropic.return_value = mock_client
+
+            service = LLMConfigService(mock_session)
+            result = await service._complete_anthropic(
+                api_key="sk-ant-key",
+                model="claude-sonnet-4-20250514",
+                endpoint="https://anthropic.example",
+            )
+
+        assert result.success is True
+        assert "Completion succeeded" in result.message
+        mock_anthropic.assert_called_once_with(
+            api_key="sk-ant-key", base_url="https://anthropic.example"
+        )
 
     @pytest.mark.asyncio
     async def test_complete_openai_uses_max_completion_tokens(self, mock_session):
