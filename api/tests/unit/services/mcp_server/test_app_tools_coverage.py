@@ -1,0 +1,209 @@
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+import pytest
+
+from src.services.mcp_server.server import MCPContext
+from src.services.mcp_server.tools import apps
+
+
+def _context(*, admin: bool = False, org_id=None) -> MCPContext:
+    return MCPContext(
+        user_id=str(uuid4()),
+        org_id=str(org_id if org_id is not None else uuid4()),
+        is_platform_admin=admin,
+        user_email="admin@example.com" if admin else "user@example.com",
+        user_name="Admin User" if admin else "Test User",
+    )
+
+
+def _app(**overrides):
+    row = SimpleNamespace(
+        id=uuid4(),
+        name="Portal",
+        slug="portal",
+        description="Customer portal",
+        is_published=False,
+        has_unpublished_changes=True,
+        dependencies=None,
+        organization_id=uuid4(),
+        solution_id=None,
+        repo_path="apps/portal",
+        published_snapshot=None,
+        published_at=None,
+    )
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    return row
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _ScalarRowsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _Db:
+    def __init__(self, results):
+        self._results = list(results)
+        self.committed = False
+
+    async def execute(self, _stmt):
+        if not self._results:
+            raise AssertionError("unexpected execute call")
+        return self._results.pop(0)
+
+    async def commit(self):
+        self.committed = True
+
+
+def _tool_db(db):
+    @asynccontextmanager
+    async def fake_get_tool_db(_context):
+        yield db
+
+    return fake_get_tool_db
+
+
+@pytest.mark.asyncio
+async def test_get_app_by_slug_disambiguates_and_lists_preview_files():
+    org_id = uuid4()
+    selected = _app(name="Org Portal", slug="shared", organization_id=org_id)
+    db = _Db([
+        _ScalarRowsResult([
+            _app(name="Other", slug="shared", organization_id=uuid4()),
+            _app(name="Global", slug="shared", organization_id=None),
+            selected,
+        ])
+    ])
+    storage = MagicMock()
+    storage.list_files = AsyncMock(return_value=["pages/index.tsx", "_layout.tsx"])
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+    ):
+        result = await apps.get_app(_context(org_id=org_id), app_slug="shared")
+
+    assert result.structured_content["name"] == "Org Portal"
+    assert result.structured_content["files"] == [
+        {"path": "_layout.tsx"},
+        {"path": "pages/index.tsx"},
+    ]
+    storage.list_files.assert_awaited_once_with(str(selected.id), "preview")
+
+
+@pytest.mark.asyncio
+async def test_update_app_updates_metadata_and_publishes_draft_notice():
+    app = _app(name="Old", description="Before")
+    db = _Db([_ScalarResult(app)])
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch.object(apps, "publish_app_draft_update", new=AsyncMock()) as publish,
+    ):
+        result = await apps.update_app(
+            _context(),
+            str(app.id),
+            name="New",
+            description="After",
+        )
+
+    assert db.committed is True
+    assert app.name == "New"
+    assert app.description == "After"
+    assert result.structured_content["updates"] == ["name", "description"]
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_publish_app_updates_snapshot_and_publishes_notification():
+    app = _app(name="Portal")
+    db = _Db([_ScalarResult(app)])
+    storage = MagicMock()
+    storage.publish = AsyncMock(return_value=2)
+    storage.list_files = AsyncMock(return_value=["_layout.tsx", "pages/index.tsx"])
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.assert_not_solution_managed"),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+        patch.object(apps, "publish_app_published", new=AsyncMock()) as publish,
+    ):
+        result = await apps.publish_app(_context(admin=True), str(app.id))
+
+    assert db.committed is True
+    assert app.published_snapshot == {"_layout.tsx": "", "pages/index.tsx": ""}
+    assert app.published_at is not None
+    assert result.structured_content["files_published"] == 2
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_publish_app_reports_no_files_without_commit():
+    app = _app(name="Empty")
+    db = _Db([_ScalarResult(app)])
+    storage = MagicMock()
+    storage.publish = AsyncMock(return_value=0)
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.assert_not_solution_managed"),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+    ):
+        result = await apps.publish_app(_context(admin=True), str(app.id))
+
+    assert db.committed is False
+    assert result.structured_content["error"] == "No files found to publish"
+
+
+@pytest.mark.asyncio
+async def test_get_app_dependencies_by_slug_reports_declared_packages():
+    app = _app(dependencies={"dayjs": "^1.11.0", "@scope/pkg": "2.0"})
+    db = _Db([_ScalarRowsResult([app])])
+
+    with patch.object(apps, "get_tool_db", _tool_db(db)):
+        result = await apps.get_app_dependencies(_context(org_id=app.organization_id), app_slug=app.slug)
+
+    assert result.structured_content["dependencies"] == app.dependencies
+    assert "dayjs@^1.11.0" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_update_app_dependencies_validates_and_invalidates_cache():
+    app = _app(dependencies=None)
+    db = _Db([_ScalarResult(app)])
+    storage = MagicMock()
+    storage.invalidate_render_cache = AsyncMock()
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+    ):
+        result = await apps.update_app_dependencies(
+            _context(org_id=app.organization_id),
+            str(app.id),
+            {"recharts": "~2.12.7"},
+        )
+
+    assert db.committed is True
+    assert app.dependencies == {"recharts": "~2.12.7"}
+    assert result.structured_content["dependencies"] == {"recharts": "~2.12.7"}
+    storage.invalidate_render_cache.assert_awaited_once_with(str(app.id))
