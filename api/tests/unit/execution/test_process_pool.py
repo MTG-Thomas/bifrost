@@ -9,6 +9,7 @@ NOTE: These tests use mocks to avoid spawning real processes.
 """
 
 import asyncio
+import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -742,9 +743,13 @@ class TestAdmissionControl:
             "src.services.execution.process_pool.has_sufficient_memory_cgroup",
             return_value=False,
         ):
+            fake_redis = AsyncMock()
             with patch.object(pool, '_write_context_to_redis', new_callable=AsyncMock):
-                with pytest.raises(MemoryError, match="memory pressure"):
-                    await pool.route_execution("exec-123", {"timeout_seconds": 300})
+                with patch.object(pool, "_get_redis", new_callable=AsyncMock, return_value=fake_redis):
+                    with pytest.raises(MemoryError, match="memory pressure"):
+                        await pool.route_execution("exec-123", {"timeout_seconds": 300})
+
+            fake_redis.delete.assert_awaited_once_with("bifrost:exec:exec-123:context")
 
         assert pool._admission_attempts == 1
         assert pool._admission_rejections["memory_pressure"] == 1
@@ -1093,6 +1098,64 @@ async def test_successful_install_does_not_notify():
         await _notify_requirements_failures(result)
 
     get_svc.assert_not_called()
+
+
+def test_get_installed_packages_returns_pip_json():
+    from src.services.execution.process_pool import _get_installed_packages
+
+    completed = subprocess.CompletedProcess(
+        args=["pip", "list", "--format=json"],
+        returncode=0,
+        stdout='[{"name": "fastapi", "version": "1.0.0"}]',
+        stderr="",
+    )
+
+    with patch("src.services.execution.process_pool.subprocess.run", return_value=completed) as run:
+        packages = _get_installed_packages()
+
+    assert packages == [{"name": "fastapi", "version": "1.0.0"}]
+    run.assert_called_once_with(
+        ["pip", "list", "--format=json"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_get_installed_packages_returns_empty_on_failure():
+    from src.services.execution.process_pool import _get_installed_packages
+
+    with patch("src.services.execution.process_pool.subprocess.run", side_effect=RuntimeError("pip failed")):
+        assert _get_installed_packages() == []
+
+    completed = subprocess.CompletedProcess(
+        args=["pip", "list", "--format=json"],
+        returncode=1,
+        stdout="not-json",
+        stderr="boom",
+    )
+    with patch("src.services.execution.process_pool.subprocess.run", return_value=completed):
+        assert _get_installed_packages() == []
+
+
+@pytest.mark.asyncio
+async def test_failed_install_notification_error_is_swallowed():
+    from src.services.execution.process_pool import _notify_requirements_failures
+
+    result = RequirementsInstallResult(
+        attempted=["badpkg"],
+        installed=[],
+        failed=[FailedPackage(package="badpkg", error="boom")],
+    )
+    svc = AsyncMock()
+    svc.find_admin_notification_by_title.side_effect = RuntimeError("db down")
+    with patch(
+        "src.services.execution.process_pool.get_notification_service",
+        return_value=svc,
+    ):
+        await _notify_requirements_failures(result)
+
+    svc.create_notification.assert_not_awaited()
 
 
 class TestBurstRaceRegression:
