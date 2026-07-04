@@ -204,7 +204,7 @@ def register_workflow_endpoint(app: FastAPI, workflow: Workflow) -> None:
 
     # Check if route already exists and remove it
     path = f"/api/endpoints/{workflow_name}"
-    app.routes = [r for r in app.routes if getattr(r, "path", None) != path]
+    app.router.routes = [r for r in app.router.routes if getattr(r, "path", None) != path]
 
     # Create the route handler
     # We use api_route to support multiple methods
@@ -224,7 +224,7 @@ def register_workflow_endpoint(app: FastAPI, workflow: Workflow) -> None:
     ) -> EndpointExecuteResponse:
         # Delegate to the main execute_endpoint function
         return await execute_endpoint(
-            workflow_name=workflow_name,
+            workflow_id=workflow_name,
             request=request,
             x_bifrost_key=x_bifrost_key,
         )

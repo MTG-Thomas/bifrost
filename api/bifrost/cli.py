@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     import pathspec
@@ -2844,6 +2844,19 @@ async def _auto_validate_app(
                 print(f"  [{ts}] \u26a0 Auto-validate '{slug}' failed: {e}", flush=True)
 
 
+def _file_activity_ws_url(api_url: str) -> str:
+    """Build the file-activity WebSocket URL, allowing cleartext only for local dev."""
+    parsed = urlsplit(api_url.rstrip("/"))
+    if parsed.scheme == "https":
+        scheme = "wss"
+    elif parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+        scheme = "ws"
+    else:
+        raise ValueError("file-activity WebSocket requires HTTPS unless the API URL is localhost")
+
+    return urlunsplit((scheme, parsed.netloc, "/ws/connect", "channels=file-activity", ""))
+
+
 async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
     """Listen for file-activity WebSocket events from other sessions."""
     try:
@@ -2853,8 +2866,7 @@ async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
         print("  Reinstall CLI: pipx install --force <url>", flush=True)
         return
 
-    ws_url = client.api_url.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url += "/ws/connect?channels=file-activity"
+    ws_url = _file_activity_ws_url(client.api_url)
     backoff = 1.0
     connected_once = False
 

@@ -8,12 +8,17 @@ including parameter mapping, method handling, and schema structure.
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from src.services.openapi_endpoints import (
     generate_workflow_openapi_schema,
     _param_to_openapi_schema,
     get_endpoint_enabled_workflows,
+    register_workflow_endpoint,
     TYPE_TO_OPENAPI,
 )
+from src.routers.endpoints import EndpointExecuteResponse
 
 
 class TestParamToOpenAPISchema:
@@ -258,6 +263,43 @@ class TestGetEndpointEnabledWorkflows:
 
             assert result == []
             mock_db.execute.assert_called_once()
+
+
+class TestRegisterWorkflowEndpoint:
+    """Tests for dynamic route registration."""
+
+    def test_registered_route_delegates_with_workflow_id(self):
+        """Dynamic route passes the registered workflow name as workflow_id."""
+        app = FastAPI()
+        workflow = MagicMock()
+        workflow.name = "dynamic_workflow"
+        workflow.description = "Dynamic workflow"
+        workflow.allowed_methods = ["POST"]
+        workflow.parameters_schema = []
+
+        async def fake_execute_endpoint(workflow_id, request, x_bifrost_key):
+            return EndpointExecuteResponse(
+                execution_id=f"exec-{workflow_id}",
+                status="queued",
+                message=x_bifrost_key,
+            )
+
+        with patch(
+            "src.routers.endpoints.execute_endpoint",
+            side_effect=fake_execute_endpoint,
+        ) as mock_execute:
+            register_workflow_endpoint(app, workflow)
+            response = TestClient(app).post(
+                "/api/endpoints/dynamic_workflow",
+                headers={"X-Bifrost-Key": "test-key"},
+                json={},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["execution_id"] == "exec-dynamic_workflow"
+        mock_execute.assert_called_once()
+        assert mock_execute.call_args.kwargs["workflow_id"] == "dynamic_workflow"
+        assert mock_execute.call_args.kwargs["x_bifrost_key"] == "test-key"
 
 
 class TestTypeMapping:

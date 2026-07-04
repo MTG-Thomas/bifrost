@@ -15,6 +15,24 @@ EXPECTED_DEPLOY_DEV_IF = (
 )
 
 
+def _repo_root() -> Path:
+    path = Path(__file__).resolve()
+    root = path.parents[2]
+    if root == root.parent:
+        # The API test container mounts api/ at /app, so api/scripts becomes
+        # /app/scripts and parents[2] is the filesystem root.
+        return path.parents[1]
+    return root
+
+
+def _resolve_workflow_path(path: Path) -> Path:
+    root = _repo_root()
+    resolved = (root / path).resolve() if not path.is_absolute() else path.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"{path}: workflow path must stay within {root}")
+    return resolved
+
+
 def _job_block(lines: list[str], job_name: str) -> tuple[int, list[str]] | None:
     marker = f"  {job_name}:"
     for index, line in enumerate(lines):
@@ -73,7 +91,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    violations = check_ci_workflow(args.workflow)
+    try:
+        workflow = _resolve_workflow_path(args.workflow)
+    except ValueError as exc:
+        print(f"MTG CI boundary check failed: {exc}", file=sys.stderr)
+        return 2
+
+    violations = check_ci_workflow(workflow)
     if not violations:
         print("MTG CI boundary checks passed.")
         return 0
