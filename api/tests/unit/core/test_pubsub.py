@@ -47,6 +47,17 @@ class FakeSocket:
         self.sent.append(message)
 
 
+class RedisContext:
+    def __init__(self, redis: Any) -> None:
+        self.redis = redis
+
+    async def __aenter__(self) -> Any:
+        return self.redis
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
+
+
 @pytest.fixture
 def recorder(monkeypatch: pytest.MonkeyPatch) -> RecorderManager:
     manager = RecorderManager()
@@ -101,6 +112,69 @@ async def test_connection_manager_uses_table_and_file_dispatchers() -> None:
     assert file_calls == [("files:workspace:GLOBAL", {"type": "file_change"})]
     assert table_socket.sent == []
     assert file_socket.sent == []
+
+
+@pytest.mark.asyncio
+async def test_connection_manager_publish_to_redis_success_and_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = pubsub.ConnectionManager()
+    published: list[tuple[str, str]] = []
+
+    class Redis:
+        async def publish(self, channel: str, message: str) -> None:
+            published.append((channel, message))
+
+    monkeypatch.setattr(pubsub, "get_redis", lambda: RedisContext(Redis()))
+
+    assert await manager._publish_to_redis("execution:1", {"ok": True}) is True
+    assert published == [("bifrost:execution:1", '{"ok": true}')]
+
+    def fail_get_redis() -> RedisContext:
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(pubsub, "get_redis", fail_get_redis)
+    assert await manager._publish_to_redis("execution:1", {"ok": True}) is False
+
+
+@pytest.mark.asyncio
+async def test_connection_manager_init_redis_replaces_listener_and_routes_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[str, dict[str, Any]]] = []
+    stopped: list[str] = []
+    started: list[dict[str, Any]] = []
+
+    class OldListener:
+        async def stop(self) -> None:
+            stopped.append("old")
+
+    class Listener:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+        async def start(self) -> None:
+            started.append(self.kwargs)
+            await self.kwargs["on_message"]("bifrost:user:1", {"type": "notification"})
+
+        async def stop(self) -> None:
+            stopped.append("new")
+
+    async def send_local(channel: str, message: dict[str, Any]) -> None:
+        sent.append((channel, message))
+
+    manager = pubsub.ConnectionManager(_pubsub_listener=cast(Any, OldListener()))
+    monkeypatch.setattr(pubsub, "get_settings", lambda: SimpleNamespace(redis_url="redis://test"))
+    monkeypatch.setattr(pubsub, "ResilientPubSubListener", Listener)
+    monkeypatch.setattr(manager, "_send_local", send_local)
+
+    await manager._init_redis()
+    await manager.close()
+
+    assert stopped == ["old", "new"]
+    assert started[0]["redis_url"] == "redis://test"
+    assert started[0]["patterns"] == ["bifrost:*"]
+    assert sent == [("user:1", {"type": "notification"})]
 
 
 @pytest.mark.asyncio
@@ -233,6 +307,31 @@ async def test_app_worker_pool_and_file_activity_publishers(recorder: RecorderMa
     assert recorder.broadcasts[3][1]["bundle"] == {"entry": "main.js"}
     assert recorder.broadcasts[-1][1]["paths"] == ["workflows/a.py"]
     assert recorder.broadcasts[-1][1]["data"] == {"count": 1}
+
+
+@pytest.mark.asyncio
+async def test_worker_heartbeat_stores_when_worker_id_present(
+    recorder: RecorderManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored: list[tuple[str, int, str]] = []
+
+    class RedisClient:
+        async def setex(self, key: str, ttl: int, value: str) -> None:
+            stored.append((key, ttl, value))
+
+    monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: RedisClient())
+
+    await pubsub.publish_worker_heartbeat({"worker_id": "worker-1", "status": "online"})
+    await pubsub.publish_worker_heartbeat({"status": "missing-worker-id"})
+
+    assert recorder.broadcasts == [
+        ("platform_workers", {"worker_id": "worker-1", "status": "online"}),
+        ("platform_workers", {"status": "missing-worker-id"}),
+    ]
+    assert stored[0][0] == "bifrost:pool:worker-1:heartbeat"
+    assert stored[0][1] == 60
+    assert json.loads(stored[0][2])["status"] == "online"
 
 
 @pytest.mark.asyncio
