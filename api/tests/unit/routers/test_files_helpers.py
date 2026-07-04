@@ -140,3 +140,83 @@ def test_policy_public_serializes_row_shape():
     assert public.path == "exports/"
     assert public.policies.policies[0].name == "Writers"
     assert public.policies.policies[0].actions == ["write"]
+
+
+@pytest.mark.asyncio
+async def test_filter_listed_paths_uses_relative_policy_paths_and_solution_context(monkeypatch):
+    ctx = _ctx(solution_id=SOLUTION_ID)
+    calls = []
+
+    async def fake_authorize(
+        ctx_arg,
+        *,
+        action,
+        location,
+        scope,
+        path,
+        solution_id,
+        organization_id,
+        **_kwargs,
+    ):
+        calls.append(
+            {
+                "ctx": ctx_arg,
+                "action": action,
+                "location": location,
+                "scope": scope,
+                "path": path,
+                "solution_id": solution_id,
+                "organization_id": organization_id,
+            }
+        )
+        return path.endswith(".txt")
+
+    monkeypatch.setattr(files, "_authorize_file_policy", fake_authorize)
+
+    allowed = await files._filter_listed_paths(
+        ctx,
+        paths=[
+            f"reports/{SOLUTION_ID}/keep.txt",
+            f"reports/{SOLUTION_ID}/drop.bin",
+        ],
+        location="reports",
+        scope=str(SOLUTION_ID),
+        action="read",
+    )
+
+    assert allowed == [f"reports/{SOLUTION_ID}/keep.txt"]
+    assert [call["path"] for call in calls] == ["keep.txt", "drop.bin"]
+    assert {call["solution_id"] for call in calls} == {SOLUTION_ID}
+    assert {call["organization_id"] for call in calls} == {files._USE_CONTEXT_SOLUTION_ID}
+
+
+@pytest.mark.asyncio
+async def test_filter_listed_paths_honors_explicit_solution_and_org_overrides(monkeypatch):
+    calls = []
+
+    async def fake_authorize(ctx_arg, **kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(files, "_authorize_file_policy", fake_authorize)
+
+    allowed = await files._filter_listed_paths(
+        _ctx(solution_id=SOLUTION_ID),
+        paths=[f"uploads/{ORG_A}/report.pdf"],
+        location="uploads",
+        scope=str(ORG_A),
+        solution_id=None,
+        organization_id=ORG_A,
+    )
+
+    assert allowed == [f"uploads/{ORG_A}/report.pdf"]
+    assert calls == [
+        {
+            "action": "list",
+            "location": "uploads",
+            "scope": str(ORG_A),
+            "path": "report.pdf",
+            "solution_id": None,
+            "organization_id": ORG_A,
+        }
+    ]
