@@ -1,16 +1,28 @@
 import os
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, cast
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi.exceptions import RequestValidationError
+from fastapi.testclient import TestClient
+from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 os.environ.setdefault("BIFROST_SECRET_KEY", "test-secret-key-for-main-app-unit-tests")
 
 from src import main
+from src.core.request_context import get_request_session_id, get_request_user
+from src.services.audit_context import current_actor
 
 
 pytestmark = pytest.mark.unit
+
+
+class _WidgetModel(BaseModel):
+    count: int
 
 
 class _AsyncContext:
@@ -29,6 +41,14 @@ class _AsyncContext:
     async def __aexit__(self, exc_type, exc, tb):
         self.exited = True
         return False
+
+
+class _SessionFactory:
+    def __init__(self, contexts):
+        self.contexts = list(contexts)
+
+    def __call__(self):
+        return self.contexts.pop(0)
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +85,280 @@ def test_get_mcp_asgi_app_leaves_cache_empty_after_factory_failure(
     assert result is None
     assert main._mcp_asgi_app is None
     assert "Could not create MCP ASGI app: mcp unavailable" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_runs_startup_reconciliation_and_shutdown(
+    monkeypatch,
+    caplog,
+):
+    settings = SimpleNamespace(
+        default_user_email="admin@example.test",
+        default_user_password="secret",
+        environment="unit",
+    )
+    deploy_db = SimpleNamespace(commit=AsyncMock())
+    policy_db = SimpleNamespace(commit=AsyncMock())
+    reconcile_db = SimpleNamespace(commit=AsyncMock())
+    session_factory = _SessionFactory(
+        [
+            _AsyncContext(deploy_db),
+            _AsyncContext(policy_db),
+            _AsyncContext(reconcile_db),
+        ]
+    )
+    policy_service = SimpleNamespace(seed_builtin_admin_bypass=AsyncMock())
+    created_tasks = []
+
+    def capture_task(coro):
+        created_tasks.append(coro)
+        return SimpleNamespace(cancel=Mock())
+
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "configure_opentelemetry", Mock())
+    monkeypatch.setattr(main, "init_db", AsyncMock())
+    monkeypatch.setattr(
+        "src.core.entity_change_hook.register_entity_change_hooks",
+        Mock(),
+    )
+    monkeypatch.setattr(main, "register_dynamic_workflow_endpoints", AsyncMock())
+    monkeypatch.setattr(main, "create_default_user", AsyncMock())
+    monkeypatch.setattr("src.core.database.get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(
+        "src.routers.solutions.reconcile_orphaned_deploy_jobs",
+        AsyncMock(return_value=2),
+    )
+    monkeypatch.setattr(
+        "src.services.policy_rule_service.PolicyRuleService",
+        lambda db: policy_service,
+    )
+    monkeypatch.setattr(
+        "src.services.file_index_reconciler.reconcile_file_index",
+        AsyncMock(return_value={"added": 1}),
+    )
+    monkeypatch.setattr(main.asyncio, "create_task", capture_task)
+    monkeypatch.setattr(main.pubsub_manager, "close", AsyncMock())
+    monkeypatch.setattr(main, "close_health_check_clients", AsyncMock())
+    monkeypatch.setattr(main, "close_db", AsyncMock())
+
+    with caplog.at_level("INFO", logger="src.main"):
+        async with main.app_lifespan(SimpleNamespace()):
+            assert len(created_tasks) == 1
+            await created_tasks[0]
+
+    main.configure_opentelemetry.assert_called_once_with("bifrost-api")
+    main.init_db.assert_awaited_once_with()
+    main.register_dynamic_workflow_endpoints.assert_awaited_once()
+    main.create_default_user.assert_awaited_once_with()
+    deploy_db.commit.assert_awaited_once_with()
+    policy_service.seed_builtin_admin_bypass.assert_awaited_once_with()
+    policy_db.commit.assert_awaited_once_with()
+    reconcile_db.commit.assert_awaited_once_with()
+    main.pubsub_manager.close.assert_awaited_once_with()
+    main.close_health_check_clients.assert_awaited_once_with()
+    main.close_db.assert_awaited_once_with()
+    assert "Marked 2 orphaned solution deploy job(s) as failed" in caplog.text
+    assert "File index reconciliation complete: {'added': 1}" in caplog.text
+    assert "Bifrost API shutdown complete" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_app_lifespan_logs_optional_startup_failures(monkeypatch, caplog):
+    settings = SimpleNamespace(
+        default_user_email="",
+        default_user_password="",
+        environment="unit",
+    )
+    created_tasks = []
+
+    def capture_task(coro):
+        created_tasks.append(coro)
+        return SimpleNamespace(cancel=Mock())
+
+    def failing_session_factory():
+        raise RuntimeError("session factory offline")
+
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(main, "configure_opentelemetry", Mock())
+    monkeypatch.setattr(main, "init_db", AsyncMock())
+    monkeypatch.setattr(
+        "src.core.entity_change_hook.register_entity_change_hooks",
+        Mock(),
+    )
+    monkeypatch.setattr(main, "register_dynamic_workflow_endpoints", AsyncMock())
+    monkeypatch.setattr("src.core.database.get_session_factory", failing_session_factory)
+    monkeypatch.setattr(main.asyncio, "create_task", capture_task)
+    monkeypatch.setattr(main.pubsub_manager, "close", AsyncMock())
+    monkeypatch.setattr(main, "close_health_check_clients", AsyncMock())
+    monkeypatch.setattr(main, "close_db", AsyncMock())
+
+    with caplog.at_level("WARNING", logger="src.main"):
+        async with main.app_lifespan(SimpleNamespace()):
+            assert len(created_tasks) == 1
+            await created_tasks[0]
+
+    assert "Solution deploy job reconciliation failed: session factory offline" in caplog.text
+    assert "Built-in policy rule seeding failed: session factory offline" in caplog.text
+    assert "File index reconciliation failed: session factory offline" in caplog.text
+    main.close_db.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_combined_lifespan_enters_mcp_lifespan_when_available(monkeypatch):
+    entered = {"app": False}
+
+    @asynccontextmanager
+    async def fake_app_lifespan(app):
+        entered["app"] = True
+        yield
+
+    mcp_context = _AsyncContext()
+    mcp_app = SimpleNamespace(lifespan=Mock(return_value=mcp_context))
+    monkeypatch.setattr(main, "app_lifespan", fake_app_lifespan)
+    monkeypatch.setattr(main, "_get_mcp_asgi_app", lambda: mcp_app)
+
+    async with main.lifespan(SimpleNamespace()):
+        assert mcp_context.entered is True
+
+    assert entered["app"] is True
+    assert mcp_context.exited is True
+
+
+@pytest.mark.asyncio
+async def test_combined_lifespan_yields_without_mcp_lifespan(monkeypatch):
+    yielded = False
+
+    @asynccontextmanager
+    async def fake_app_lifespan(app):
+        yield
+
+    monkeypatch.setattr(main, "app_lifespan", fake_app_lifespan)
+    monkeypatch.setattr(main, "_get_mcp_asgi_app", lambda: SimpleNamespace())
+
+    async with main.lifespan(SimpleNamespace()):
+        yielded = True
+
+    assert yielded is True
+
+
+def _add_context_probe_route(captured: dict[str, Any]) -> str:
+    path = f"/__unit/context/{uuid4().hex}"
+
+    async def probe():
+        user = get_request_user()
+        actor = current_actor()
+        captured.update(
+            {
+                "request_user": user,
+                "session_id": get_request_session_id(),
+                "actor": actor,
+            }
+        )
+        return {"ok": True}
+
+    main.app.add_api_route(path, probe, methods=["GET"])
+    main.app.router.routes.insert(0, main.app.router.routes.pop())
+    return path
+
+
+def test_request_context_middleware_sets_user_session_and_audit_actor(
+    monkeypatch,
+):
+    user_id = "12345678-1234-5678-1234-567812345678"
+    org_id = "87654321-4321-6789-4321-678987654321"
+    monkeypatch.setattr(
+        "src.core.security.decode_token",
+        lambda token, expected_type: {
+            "sub": user_id,
+            "org_id": org_id,
+            "email": "admin@example.test",
+            "name": "Admin User",
+        },
+    )
+    captured: dict[str, Any] = {}
+    path = _add_context_probe_route(captured)
+
+    response = TestClient(main.app).get(
+        path,
+        headers={
+            "Authorization": "Bearer access-token",
+            "X-Bifrost-Watch-Session": "watch-1",
+            "X-Forwarded-For": "203.0.113.10, 10.0.0.1",
+            "User-Agent": "unit-agent",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["request_user"].user_id == user_id
+    assert captured["request_user"].user_name == "Admin User"
+    assert captured["session_id"] == "watch-1"
+    actor = captured["actor"]
+    assert actor.user_id == UUID(user_id)
+    assert actor.organization_id == UUID(org_id)
+    assert actor.email == "admin@example.test"
+    assert actor.name == "Admin User"
+    assert actor.ip_address == "203.0.113.10"
+    assert actor.user_agent == "unit-agent"
+    assert actor.source == "http"
+    assert get_request_user() is None
+    assert get_request_session_id() is None
+    assert current_actor() is None
+
+
+def test_request_context_middleware_accepts_cookie_token_with_bad_uuid_claims(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "src.core.security.decode_token",
+        lambda token, expected_type: {
+            "sub": "not-a-uuid",
+            "org_id": "not-an-org-uuid",
+            "email": "reader@example.test",
+        },
+    )
+    captured: dict[str, Any] = {}
+    path = _add_context_probe_route(captured)
+
+    client = TestClient(main.app)
+    client.cookies.set("access_token", "cookie-token")
+    response = client.get(path, headers={"User-Agent": "cookie-agent"})
+
+    assert response.status_code == 200
+    assert captured["request_user"].user_id == "not-a-uuid"
+    assert captured["request_user"].user_name == "reader@example.test"
+    actor = captured["actor"]
+    assert actor.user_id is None
+    assert actor.organization_id is None
+    assert actor.email == "reader@example.test"
+    assert actor.name is None
+    assert actor.user_agent == "cookie-agent"
+
+
+def test_request_context_middleware_clears_context_after_decode_failure(
+    monkeypatch,
+):
+    def fail_decode(token, expected_type):
+        raise RuntimeError("token service unavailable")
+
+    monkeypatch.setattr("src.core.security.decode_token", fail_decode)
+    captured: dict[str, Any] = {}
+    path = _add_context_probe_route(captured)
+
+    response = TestClient(main.app).get(
+        path,
+        headers={
+            "Authorization": "Bearer broken-token",
+            "X-Bifrost-Watch-Session": "watch-failed",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["request_user"] is None
+    assert captured["session_id"] == "watch-failed"
+    assert captured["actor"].user_id is None
+    assert get_request_user() is None
+    assert get_request_session_id() is None
+    assert current_actor() is None
 
 
 @pytest.mark.asyncio
@@ -195,6 +489,137 @@ async def test_value_error_exception_handler_returns_validation_error():
     assert response.status_code == 422
     assert b'"error":"validation_error"' in response.body
     assert b'"message":"bad input"' in response.body
+
+
+@pytest.mark.asyncio
+async def test_request_validation_exception_handler_summarizes_fields():
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[RequestValidationError],
+    )
+    request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/widgets"))
+    exc = RequestValidationError(
+        [
+            {
+                "loc": ("body", "name"),
+                "msg": "Field required",
+                "type": "missing",
+            },
+            {
+                "loc": ("query", "limit"),
+                "msg": "Input should be greater than 0",
+                "type": "greater_than",
+            },
+        ]
+    )
+
+    response = await handler(request, exc)
+
+    assert response.status_code == 422
+    assert b'"error":"validation_error"' in response.body
+    assert b"name: Field required" in response.body
+    assert b"query.limit: Input should be greater than 0" in response.body
+
+
+@pytest.mark.asyncio
+async def test_pydantic_validation_exception_handler_returns_field_details():
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[main.PydanticValidationError],
+    )
+    request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/widgets"))
+    with pytest.raises(main.PydanticValidationError) as raised:
+        _WidgetModel(count="many")
+
+    response = await handler(request, raised.value)
+
+    assert response.status_code == 422
+    assert b'"message":"Validation failed"' in response.body
+    assert b'"count"' in response.body
+    assert b"valid integer" in response.body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detail", "expected_message"),
+    [
+        ("UNIQUE constraint failed: widgets.name", "Resource already exists"),
+        ("FOREIGN KEY constraint failed", "Referenced resource not found"),
+        ("check constraint failed", "Database constraint violation"),
+    ],
+)
+async def test_integrity_exception_handler_classifies_constraint_errors(
+    detail,
+    expected_message,
+    caplog,
+):
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[IntegrityError],
+    )
+    request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/widgets"))
+
+    with caplog.at_level("WARNING", logger="src.main"):
+        response = await handler(
+            request,
+            IntegrityError("insert widgets", {}, Exception(detail)),
+        )
+
+    assert response.status_code == 409
+    assert b'"error":"conflict"' in response.body
+    assert expected_message.encode() in response.body
+    assert "IntegrityError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_no_result_exception_handler_returns_not_found():
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[main.NoResultFound],
+    )
+    request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/widgets/1"))
+
+    response = await handler(request, main.NoResultFound("missing"))
+
+    assert response.status_code == 404
+    assert b'"error":"not_found"' in response.body
+    assert b"Resource not found" in response.body
+
+
+@pytest.mark.asyncio
+async def test_timeout_exception_handler_returns_gateway_timeout(caplog):
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[TimeoutError],
+    )
+    request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/slow"))
+
+    with caplog.at_level("WARNING", logger="src.main"):
+        response = await handler(request, TimeoutError("too slow"))
+
+    assert response.status_code == 504
+    assert b'"error":"timeout"' in response.body
+    assert "Timeout error on POST /slow" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_operational_exception_handler_hides_database_details(caplog):
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[OperationalError],
+    )
+    request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/widgets"))
+
+    with caplog.at_level("ERROR", logger="src.main"):
+        response = await handler(
+            request,
+            OperationalError("select widgets", {}, Exception("connection refused")),
+        )
+
+    assert response.status_code == 503
+    assert b'"error":"service_unavailable"' in response.body
+    assert b"connection refused" not in response.body
+    assert "Database operational error" in caplog.text
 
 
 @pytest.mark.asyncio
