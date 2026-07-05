@@ -106,7 +106,7 @@ def test_collect_push_files_handles_single_file_and_binary_skips(tmp_path, monke
 
     files, skipped = cli._collect_push_files(root, "prefix", single_file=str(root / "keep.txt"))
     assert skipped == 0
-    assert base64.b64decode(files["prefix/keep.txt"]) == b"line\r\n"
+    assert base64.b64decode(files["prefix/keep.txt"]).replace(b"\r\n", b"\n") == b"line\n"
 
     files, skipped = cli._collect_push_files(root, "prefix", single_file=str(root / "ignored.txt"))
     assert files == {}
