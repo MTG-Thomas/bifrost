@@ -81,7 +81,12 @@ def read_solution_binding(workspace: Path) -> SolutionBinding | None:
 
 
 def write_solution_binding(workspace: Path, binding: SolutionBinding) -> None:
-    env = _env_path(workspace)
+    workspace_root = workspace.resolve()
+    if workspace.exists() and not workspace_root.is_dir():
+        raise SolutionBindingError("Workspace path must be a directory")
+    env = (workspace_root / ".env").resolve()
+    if env.parent != workspace_root:
+        raise SolutionBindingError("Workspace .env path escaped workspace root")
     existing = env.read_text().splitlines() if env.is_file() else []
     kept = []
     for line in existing:
@@ -94,7 +99,7 @@ def write_solution_binding(workspace: Path, binding: SolutionBinding) -> None:
         f"BIFROST_SOLUTION_ORG_ID={binding.organization_id or ''}",
         f"BIFROST_SOLUTION_SCOPE={binding.scope}",
     ]
-    env.write_text("\n".join([*kept, *additions]).rstrip() + "\n")  # NOSONAR: _env_path pins this write to workspace/.env.
+    env.write_text("\n".join([*kept, *additions]).rstrip() + "\n")
 
 
 def binding_from_install(
