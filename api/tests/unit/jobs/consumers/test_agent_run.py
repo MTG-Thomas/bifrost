@@ -7,8 +7,8 @@ import pytest
 
 sys.modules.setdefault("resource", ModuleType("resource"))
 
-from src.jobs.consumers import agent_run
-from src.jobs.consumers.agent_run import AgentRunConsumer
+from src.jobs.consumers import agent_run  # noqa: E402
+from src.jobs.consumers.agent_run import AgentRunConsumer  # noqa: E402
 
 
 @pytest.mark.asyncio

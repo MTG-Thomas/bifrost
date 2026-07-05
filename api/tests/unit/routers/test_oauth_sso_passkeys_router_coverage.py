@@ -9,7 +9,6 @@ from fastapi import HTTPException, Response, status
 from src.models.contracts.passkeys import (
     PasskeyAuthOptionsRequest,
     PasskeyAuthVerifyRequest,
-    PasskeyDeleteResponse,
     PasskeyRegistrationVerifyRequest,
 )
 from src.routers import oauth_sso, passkeys
