@@ -6,6 +6,7 @@ Tests the GitHubSyncService data models and exceptions.
 
 import pytest
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 from src.models.contracts.github import (
     OrphanInfo,
@@ -241,6 +242,177 @@ class TestGitHubSyncFetchAndPush:
         assert result.commit_sha == "feedface1234"
         assert result.pushed_commits == 4
         assert cast(Any, Repo.remotes).origin.pushed == ["HEAD:main"]
+
+
+class TestGitHubSyncStatusAndResolve:
+    def test_do_status_reports_conflicts_with_stage_content(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def show(self, ref):
+                return {
+                    ":2:workflows/conflict.py": "ours",
+                    ":3:workflows/conflict.py": "theirs",
+                }[ref]
+
+            def rev_list(self, *args):
+                if args[-1] == "origin/main..HEAD":
+                    return "1"
+                if args[-1] == "HEAD..origin/main":
+                    return "2"
+                raise AssertionError(args)
+
+        class Index:
+            def unmerged_blobs(self):
+                return {"workflows/conflict.py": [(1, object()), (2, object()), (3, object())]}
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_status(tmp_path, Repo())
+
+        assert result.total_changes == 0
+        assert result.commits_ahead == 1
+        assert result.commits_behind == 2
+        assert result.conflicts is not None
+        assert result.conflicts[0].path == "workflows/conflict.py"
+        assert result.conflicts[0].ours_content == "ours"
+        assert result.conflicts[0].theirs_content == "theirs"
+        assert result.conflicts[0].conflict_type == "both_modified"
+
+    def test_do_status_classifies_porcelain_and_resets_index(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            calls = []
+
+            def add(self, **kwargs):
+                self.calls.append(("add", kwargs))
+
+            def status(self, *args):
+                assert args == ("--porcelain",)
+                return "\n".join([
+                    "M  workflows/changed.py",
+                    "A  forms/new.yaml",
+                    "D  workflows/old.py",
+                    "R  workflows/old_name.py -> workflows/new_name.py",
+                    "?? apps/new/file.tsx",
+                ])
+
+            def reset(self, *args):
+                self.calls.append(("reset", args))
+
+            def rev_list(self, *args):
+                raise RuntimeError("no origin")
+
+        class Index:
+            def unmerged_blobs(self):
+                return {}
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_status(tmp_path, Repo())
+
+        assert [(f.path, f.change_type) for f in result.changed_files] == [
+            ("workflows/changed.py", "modified"),
+            ("forms/new.yaml", "added"),
+            ("workflows/old.py", "deleted"),
+            ("workflows/new_name.py", "renamed"),
+            ("apps/new/file.tsx", "added"),
+        ]
+        assert result.total_changes == 5
+        assert ("add", {"A": True}) in Repo.git.calls
+        assert ("reset", ("HEAD",)) in Repo.git.calls
+
+    def test_do_status_lists_untracked_files_when_head_invalid(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def add(self, **kwargs):
+                return None
+
+        class Index:
+            def unmerged_blobs(self):
+                return {}
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=False)
+            untracked_files = ["workflows/new.py"]
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_status(tmp_path, Repo())
+
+        assert result.changed_files[0].path == "workflows/new.py"
+        assert result.changed_files[0].change_type == "added"
+        assert result.total_changes == 1
+
+    def test_do_resolve_rejects_when_no_merge_or_unmerged_entries(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        repo = type(
+            "Repo",
+            (),
+            {"index": type("Index", (), {"unmerged_blobs": lambda self: {}})()},
+        )()
+        service = object.__new__(GitHubSyncService)
+
+        result = service._do_resolve(tmp_path, repo, {"x.py": "ours"})
+
+        assert result.success is False
+        assert result.error == "No conflicts to resolve"
+
+    def test_do_resolve_applies_checkout_and_delete_modify_fallback(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "MERGE_HEAD").write_text("merge")
+
+        class Git:
+            def __init__(self):
+                self.checkout = MagicMock(side_effect=[None, RuntimeError("missing side")])
+                self.add = MagicMock()
+                self.rm = MagicMock()
+
+        class Index:
+            def __init__(self):
+                self.commit = MagicMock()
+
+            def unmerged_blobs(self):
+                return {"workflows/a.py": [(1, object()), (2, object()), (3, object())]}
+
+        class Repo:
+            git = Git()
+            index = Index()
+
+        service = object.__new__(GitHubSyncService)
+
+        result = service._do_resolve(
+            tmp_path,
+            Repo(),
+            {"workflows/a.py": "ours", "workflows/deleted.py": "theirs"},
+        )
+
+        assert result.success is True
+        Repo.git.checkout.assert_any_call("--ours", "workflows/a.py")
+        Repo.git.checkout.assert_any_call("--theirs", "workflows/deleted.py")
+        Repo.git.add.assert_any_call("workflows/a.py")
+        Repo.git.rm.assert_called_once_with("workflows/deleted.py")
+        Repo.index.commit.assert_called_once_with("Merge with conflict resolution")
 
 
 class TestThreeWayMergeDicts:
