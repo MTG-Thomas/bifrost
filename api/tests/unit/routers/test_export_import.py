@@ -1,6 +1,7 @@
 """Tests for export/import models and serialization."""
 
 import json
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -9,6 +10,7 @@ from src.models.contracts.export_import import (
     BulkExportRequest,
     ConfigExportFile,
     ConfigExportItem,
+    ConfigSchemaExportItem,
     ImportResult,
     ImportResultItem,
     IntegrationExportFile,
@@ -19,7 +21,18 @@ from src.models.contracts.export_import import (
     TableExportFile,
     TableExportItem,
 )
-from src.routers.export_import import _json_response, _parse_target_org, _resolve_org_id
+from src.models.enums import ConfigType
+from src.routers import export_import
+from src.routers.export_import import (
+    _import_config_value,
+    _import_oauth_provider,
+    _json_response,
+    _parse_target_org,
+    _resolve_org_id,
+    _sync_config_schema,
+    import_configs,
+    import_knowledge,
+)
 
 
 class TestKnowledgeExport:
@@ -472,6 +485,435 @@ class TestResolveOrgId:
         assert "table/customers" in warnings[0]
 
 
+class TestImportKnowledge:
+    @pytest.mark.asyncio
+    async def test_import_knowledge_creates_placeholder_document_and_warning(self):
+        file = _UploadFile(
+            KnowledgeExportFile(
+                item_count=1,
+                items=[
+                    KnowledgeExportItem(
+                        namespace="docs",
+                        key="intro",
+                        content="Hello",
+                        metadata={"source": "unit"},
+                    )
+                ],
+            ).model_dump_json()
+        )
+        db = _FakeDb([None])
+        user = SimpleNamespace(user_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+
+        result = await import_knowledge(
+            db,
+            user,
+            file,
+            target_organization_id=None,
+        )
+
+        assert result.created == 1
+        assert result.updated == 0
+        assert result.details[0].name == "docs/intro"
+        assert result.details[0].status == "created"
+        assert "placeholder embeddings" in result.warnings[0]
+        assert db.committed is True
+        assert len(db.added) == 1
+        added = db.added[0]
+        assert added.namespace == "docs"
+        assert added.key == "intro"
+        assert added.content == "Hello"
+        assert added.doc_metadata == {"source": "unit"}
+        assert added.embedding == [0.0] * 1536
+
+    @pytest.mark.asyncio
+    async def test_import_knowledge_updates_or_skips_existing_document(self):
+        existing = SimpleNamespace(content="old", doc_metadata={})
+        file = _UploadFile(
+            KnowledgeExportFile(
+                item_count=1,
+                items=[
+                    KnowledgeExportItem(
+                        namespace="docs",
+                        key="intro",
+                        content="New body",
+                        metadata={"v": 2},
+                    )
+                ],
+            ).model_dump_json()
+        )
+        db = _FakeDb([existing])
+        user = SimpleNamespace(user_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+
+        result = await import_knowledge(
+            db,
+            user,
+            file,
+            replace_existing=True,
+            target_organization_id=None,
+        )
+
+        assert result.updated == 1
+        assert existing.content == "New body"
+        assert existing.doc_metadata == {"v": 2}
+
+        existing = SimpleNamespace(content="old", doc_metadata={})
+        db = _FakeDb([existing])
+        result = await import_knowledge(
+            db,
+            user,
+            _UploadFile(file.content),
+            replace_existing=False,
+            target_organization_id=None,
+        )
+
+        assert result.skipped == 1
+        assert existing.content == "old"
+
+    @pytest.mark.asyncio
+    async def test_import_knowledge_rejects_invalid_file(self):
+        with pytest.raises(Exception) as exc:
+            await import_knowledge(
+                _FakeDb([]),
+                SimpleNamespace(user_id="user-1"),
+                _UploadFile("{bad"),
+                target_organization_id=None,
+            )
+
+        assert getattr(exc.value, "status_code", None) == 400
+
+
+class TestImportHelpers:
+    @pytest.mark.asyncio
+    async def test_sync_config_schema_updates_adds_and_deletes_items(self):
+        existing_keep = SimpleNamespace(
+            key="api_url",
+            type="string",
+            required=False,
+            description="old",
+            options=None,
+            position=99,
+        )
+        stale = SimpleNamespace(key="old_key")
+        integration = SimpleNamespace(
+            id=UUID("11111111-1111-1111-1111-111111111111"),
+            config_schema=[existing_keep, stale],
+        )
+        db = _FakeDb([])
+
+        await _sync_config_schema(
+            db,
+            integration,
+            [
+                ConfigSchemaExportItem(
+                    key="api_url",
+                    type="secret",
+                    required=True,
+                    description="new",
+                    options=["a"],
+                    position=1,
+                ),
+                ConfigSchemaExportItem(
+                    key="tenant",
+                    type="string",
+                    required=False,
+                    position=2,
+                ),
+            ],
+        )
+
+        assert existing_keep.type == "secret"
+        assert existing_keep.required is True
+        assert existing_keep.description == "new"
+        assert existing_keep.options == ["a"]
+        assert existing_keep.position == 1
+        assert len(db.added) == 1
+        assert db.added[0].key == "tenant"
+        assert db.deleted == [stale]
+
+    @pytest.mark.asyncio
+    async def test_import_config_value_updates_existing_and_falls_back_on_bad_schema_type(self):
+        integration_id = UUID("22222222-2222-2222-2222-222222222222")
+        existing = SimpleNamespace(value={}, config_type=None, updated_by=None)
+        schema = SimpleNamespace(id=UUID("33333333-3333-3333-3333-333333333333"), type="not-valid")
+        db = _FakeDb([schema, existing])
+        result = ImportResult(entity_type="configs")
+
+        await _import_config_value(
+            db,
+            integration_id,
+            None,
+            "api_url",
+            "https://example.test",
+            None,
+            "user-1",
+            result,
+        )
+
+        assert existing.value == {"value": "https://example.test"}
+        assert existing.config_type == ConfigType.STRING
+        assert existing.updated_by == "user-1"
+        assert db.added == []
+
+    @pytest.mark.asyncio
+    async def test_import_config_value_adds_new_secret_and_warns_on_reencrypt_failure(
+        self,
+        monkeypatch,
+    ):
+        integration_id = UUID("22222222-2222-2222-2222-222222222222")
+        schema = SimpleNamespace(id=UUID("33333333-3333-3333-3333-333333333333"), type="secret")
+        db = _FakeDb([schema, None])
+        result = ImportResult(entity_type="configs")
+        monkeypatch.setattr(export_import, "decrypt_with_key", lambda *_: (_ for _ in ()).throw(ValueError("bad key")))
+
+        await _import_config_value(
+            db,
+            integration_id,
+            UUID("44444444-4444-4444-4444-444444444444"),
+            "api_key",
+            "ciphertext",
+            "source-key",
+            "user-1",
+            result,
+        )
+
+        assert "Could not re-encrypt secret" in result.warnings[0]
+        assert len(db.added) == 1
+        assert db.added[0].key == "api_key"
+        assert db.added[0].config_type == ConfigType.SECRET
+
+    @pytest.mark.asyncio
+    async def test_import_oauth_provider_updates_existing_provider(self):
+        existing = SimpleNamespace(
+            provider_name="old",
+            display_name=None,
+            oauth_flow_type=None,
+            client_id=None,
+            encrypted_client_secret=None,
+            authorization_url=None,
+            token_url=None,
+            token_url_defaults=None,
+            redirect_uri=None,
+            scopes=None,
+            provider_metadata=None,
+        )
+        integration = SimpleNamespace(
+            id=UUID("55555555-5555-5555-5555-555555555555"),
+            name="Demo",
+            oauth_provider=existing,
+        )
+        db = _FakeDb([])
+        result = ImportResult(entity_type="integrations")
+
+        await _import_oauth_provider(
+            db,
+            integration,
+            OAuthProviderExportItem(
+                provider_name="ms",
+                display_name="Microsoft",
+                client_id="client-1",
+                encrypted_client_secret="c2VjcmV0",
+                authorization_url="https://login/authorize",
+                token_url="https://login/token",
+                token_url_defaults={"resource": "graph"},
+                redirect_uri="https://app/callback",
+                scopes=["openid"],
+                provider_metadata={"omit_token_exchange_scope": True},
+            ),
+            source_secret_key=None,
+            result=result,
+        )
+
+        assert existing.provider_name == "ms"
+        assert existing.display_name == "Microsoft"
+        assert existing.encrypted_client_secret == b"secret"
+        assert existing.provider_metadata == {"omit_token_exchange_scope": True}
+        assert db.added == []
+
+    @pytest.mark.asyncio
+    async def test_import_oauth_provider_creates_new_provider_and_warns_on_bad_reencrypt(
+        self,
+        monkeypatch,
+    ):
+        integration = SimpleNamespace(
+            id=UUID("55555555-5555-5555-5555-555555555555"),
+            name="Demo",
+            oauth_provider=None,
+        )
+        db = _FakeDb([])
+        result = ImportResult(entity_type="integrations")
+        monkeypatch.setattr(export_import, "derive_fernet_key_for_oauth", lambda *_: (_ for _ in ()).throw(ValueError("bad key")))
+
+        await _import_oauth_provider(
+            db,
+            integration,
+            OAuthProviderExportItem(
+                provider_name="ms",
+                client_id="client-1",
+                encrypted_client_secret="c2VjcmV0",
+            ),
+            source_secret_key="source-key",
+            result=result,
+            force_global=True,
+        )
+
+        assert "Could not re-encrypt OAuth client secret" in result.warnings[0]
+        assert len(db.added) == 1
+        assert db.added[0].provider_name == "ms"
+        assert db.added[0].encrypted_client_secret == b"secret"
+
+
+class TestImportConfigs:
+    @pytest.mark.asyncio
+    async def test_import_configs_requires_source_key_for_encrypted_exports(self):
+        file = _UploadFile(
+            ConfigExportFile(
+                contains_encrypted_values=True,
+                item_count=1,
+                items=[
+                    ConfigExportItem(
+                        key="api_key",
+                        value="ciphertext",
+                        config_type="secret",
+                    )
+                ],
+            ).model_dump_json()
+        )
+
+        with pytest.raises(Exception) as exc:
+            await import_configs(
+                _FakeDb([]),
+                SimpleNamespace(user_id="user-1"),
+                file,
+                source_secret_key=None,
+                target_organization_id=None,
+            )
+
+        assert getattr(exc.value, "status_code", None) == 400
+
+    @pytest.mark.asyncio
+    async def test_import_configs_creates_string_config_and_warns_missing_integration(self):
+        file = _UploadFile(
+            ConfigExportFile(
+                item_count=1,
+                items=[
+                    ConfigExportItem(
+                        key="tenant_id",
+                        value="tenant-1",
+                        config_type="string",
+                        description="Tenant",
+                        integration_name="Missing Integration",
+                    )
+                ],
+            ).model_dump_json()
+        )
+        db = _FakeDb([None, None])
+        user = SimpleNamespace(user_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+
+        result = await import_configs(
+            db,
+            user,
+            file,
+            target_organization_id=None,
+        )
+
+        assert result.created == 1
+        assert "Integration 'Missing Integration' not found" in result.warnings[0]
+        assert len(db.added) == 1
+        added = db.added[0]
+        assert added.key == "tenant_id"
+        assert added.value == {"value": "tenant-1"}
+        assert added.config_type == ConfigType.STRING
+        assert added.integration_id is None
+        assert added.updated_by == str(user.user_id)
+        assert db.committed is True
+
+    @pytest.mark.asyncio
+    async def test_import_configs_updates_or_skips_existing_config(self):
+        existing = SimpleNamespace(
+            value={"value": "old"},
+            config_type=ConfigType.STRING,
+            description="old",
+            updated_by=None,
+        )
+        file = _UploadFile(
+            ConfigExportFile(
+                item_count=1,
+                items=[
+                    ConfigExportItem(
+                        key="api_url",
+                        value="https://new.example",
+                        config_type="json",
+                        description="new",
+                    )
+                ],
+            ).model_dump_json()
+        )
+        user = SimpleNamespace(user_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+
+        result = await import_configs(
+            _FakeDb([existing]),
+            user,
+            file,
+            replace_existing=True,
+            target_organization_id=None,
+        )
+
+        assert result.updated == 1
+        assert existing.value == {"value": "https://new.example"}
+        assert existing.config_type == ConfigType.JSON
+        assert existing.description == "new"
+        assert existing.updated_by == str(user.user_id)
+
+        existing = SimpleNamespace(
+            value={"value": "old"},
+            config_type=ConfigType.STRING,
+            description="old",
+            updated_by=None,
+        )
+        result = await import_configs(
+            _FakeDb([existing]),
+            user,
+            _UploadFile(file.content),
+            replace_existing=False,
+            target_organization_id=None,
+        )
+
+        assert result.skipped == 1
+        assert existing.value == {"value": "old"}
+
+    @pytest.mark.asyncio
+    async def test_import_configs_records_reencrypt_error_and_continues(self, monkeypatch):
+        file = _UploadFile(
+            ConfigExportFile(
+                contains_encrypted_values=True,
+                item_count=1,
+                items=[
+                    ConfigExportItem(
+                        key="api_key",
+                        value="ciphertext",
+                        config_type="secret",
+                    )
+                ],
+            ).model_dump_json()
+        )
+        monkeypatch.setattr(
+            export_import,
+            "decrypt_with_key",
+            lambda *_: (_ for _ in ()).throw(ValueError("bad key")),
+        )
+
+        result = await import_configs(
+            _FakeDb([]),
+            SimpleNamespace(user_id="user-1"),
+            file,
+            source_secret_key="source-key",
+            target_organization_id=None,
+        )
+
+        assert result.errors == 1
+        assert "Failed to re-encrypt secret" in result.details[0].error
+
+
 class _FakeResult:
     def __init__(self, value):
         self.value = value
@@ -479,12 +921,39 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self.value
 
+    def all(self):
+        return self.value
+
 
 class _FakeDb:
     def __init__(self, values: list[object]):
         self.values = values
         self.executed = []
+        self.added = []
+        self.deleted = []
+        self.committed = False
+        self.flushed = 0
 
     async def execute(self, query):
         self.executed.append(query)
         return _FakeResult(self.values.pop(0))
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def delete(self, obj):
+        self.deleted.append(obj)
+
+    async def commit(self):
+        self.committed = True
+
+    async def flush(self):
+        self.flushed += 1
+
+
+class _UploadFile:
+    def __init__(self, content: str | bytes):
+        self.content = content.encode() if isinstance(content, str) else content
+
+    async def read(self):
+        return self.content
