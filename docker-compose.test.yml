@@ -360,6 +360,12 @@ services:
       - ./api/pyproject.toml:/app/pyproject.toml:ro
       - ./api/pyrightconfig.json:/app/pyrightconfig.json:ro
       - ./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro
+      - ./.github:/app/.github:ro
+      - ./.claude/skills:/app/.claude/skills:ro
+      - ./.env.debug:/app/.env.debug:ro
+      - ./debug.sh:/app/debug.sh:ro
+      - ./docker-compose.debug.yml:/app/docker-compose.debug.yml:ro
+      - ./docker-compose.debug.port.yml:/app/docker-compose.debug.port.yml:ro
       - ./test.sh:/app/test.sh:ro
       - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro  # Read-only —
                                       # the harness guard in
