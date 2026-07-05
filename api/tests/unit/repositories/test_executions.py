@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
 from src.core.principal import UserPrincipal
 from src.models.enums import ExecutionStatus
+from src.repositories import executions
 from src.repositories.executions import ExecutionRepository, _make_json_safe
 
 
@@ -314,3 +315,93 @@ async def test_cancel_execution_rejects_terminal_status_and_publishes_running_ca
         execution_id=running.id,
         status=ExecutionStatus.CANCELLING.value,
     )
+
+
+@pytest.mark.asyncio
+async def test_standalone_create_execution_uses_provided_session_without_commit() -> None:
+    session = AsyncMock()
+    with patch.object(ExecutionRepository, "create_execution", AsyncMock()) as create:
+        await executions.create_execution(
+            execution_id=str(uuid4()),
+            workflow_name="sync_ticket",
+            parameters={"ticket": "123"},
+            org_id="GLOBAL",
+            user_id=str(uuid4()),
+            user_name="Runner",
+            session=session,
+        )
+
+    create.assert_awaited_once()
+    assert create.await_args.args == ()
+    assert create.await_args.kwargs["workflow_name"] == "sync_ticket"
+    assert create.await_args.kwargs["parameters"] == {"ticket": "123"}
+    session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_standalone_update_execution_uses_provided_session_without_commit() -> None:
+    session = AsyncMock()
+    execution_id = str(uuid4())
+    with patch.object(ExecutionRepository, "update_execution", AsyncMock()) as update:
+        await executions.update_execution(
+            execution_id=execution_id,
+            status=ExecutionStatus.SUCCESS,
+            result={"ok": True},
+            metrics={"process_rss_bytes": 1024},
+            session=session,
+        )
+
+    update.assert_awaited_once()
+    assert update.await_args.kwargs["execution_id"] == execution_id
+    assert update.await_args.kwargs["status"] == ExecutionStatus.SUCCESS
+    assert update.await_args.kwargs["result"] == {"ok": True}
+    assert update.await_args.kwargs["metrics"] == {"process_rss_bytes": 1024}
+    session.commit.assert_not_called()
+
+
+class _AsyncSessionContext:
+    def __init__(self, session):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_standalone_wrappers_create_session_and_commit_when_needed() -> None:
+    create_session = AsyncMock()
+    update_session = AsyncMock()
+    session_factory = MagicMock(
+        side_effect=[
+            _AsyncSessionContext(create_session),
+            _AsyncSessionContext(update_session),
+        ]
+    )
+
+    with (
+        patch("src.core.database.get_session_factory", return_value=session_factory),
+        patch.object(ExecutionRepository, "create_execution", AsyncMock()) as create,
+        patch.object(ExecutionRepository, "update_execution", AsyncMock()) as update,
+    ):
+        await executions.create_execution(
+            execution_id=str(uuid4()),
+            workflow_name="sync_ticket",
+            parameters={},
+            org_id=None,
+            user_id=str(uuid4()),
+            user_name="Runner",
+        )
+        await executions.update_execution(
+            execution_id=str(uuid4()),
+            status=ExecutionStatus.FAILED,
+            error_message="boom",
+        )
+
+    assert session_factory.call_count == 2
+    create.assert_awaited_once()
+    update.assert_awaited_once()
+    create_session.commit.assert_awaited_once()
+    update_session.commit.assert_awaited_once()
