@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -662,3 +662,90 @@ def test_resolve_form_and_agent_ignore_empty_content_and_global_metadata():
     assert len(agent_ops) == 1
     assert agent_ops[0].entity_fk == "agent_id"
     assert agent_ops[0].role_ids == {UUID(ROLE_ID)}
+
+
+@pytest.mark.asyncio
+async def test_resolve_role_names_preserves_order_and_creates_missing_roles():
+    existing_id = uuid4()
+    created_id = uuid4()
+    added_roles = []
+
+    class Result:
+        def all(self):
+            return [(existing_id, "Existing")]
+
+    class Db:
+        async def execute(self, _stmt):
+            return Result()
+
+        def add(self, role):
+            added_roles.append(role)
+
+        async def flush(self):
+            added_roles[-1].id = created_id
+
+    created_names = set()
+
+    resolved = await manifest_import._resolve_role_names(
+        Db(),
+        ["Existing", "Missing", "Missing"],
+        create_missing=True,
+        created_out=created_names,
+    )
+
+    assert resolved == [str(existing_id), str(created_id), str(created_id)]
+    assert [role.name for role in added_roles] == ["Missing"]
+    assert added_roles[0].created_by == "solution-install"
+    assert created_names == {"Missing"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_role_names_fails_unknown_role_without_creation():
+    class Result:
+        def all(self):
+            return []
+
+    class Db:
+        async def execute(self, _stmt):
+            return Result()
+
+    with pytest.raises(ValueError, match="unknown role: Missing"):
+        await manifest_import._resolve_role_names(Db(), ["Missing"])
+
+
+@pytest.mark.asyncio
+async def test_apply_ops_stamps_dry_run_upserts_and_executes_real_ops():
+    from src.services.sync_ops import Upsert
+
+    class Model:
+        __tablename__ = "fake"
+
+    existing_id = uuid4()
+    new_id = uuid4()
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    all_ops = []
+    existing = Upsert(Model, existing_id, {"name": "Existing"})
+    new = Upsert(Model, new_id, {"name": "New"})
+
+    await resolver._apply_ops(
+        [existing, new],
+        all_ops,
+        dry_run=True,
+        existing_ids={str(existing_id), existing_id},
+    )
+
+    assert existing.action_taken == "updated"
+    assert new.action_taken == "inserted"
+    assert all_ops == [existing, new]
+
+    executed = []
+
+    class FakeOp:
+        async def execute(self, db):
+            executed.append(db)
+
+    db = object()
+    real_ops = [FakeOp()]
+    await resolver._apply_ops(real_ops, [], dry_run=False, existing_ids=set())
+
+    assert executed == [resolver.db]
