@@ -25,7 +25,12 @@ omit = [
     "tests/*",
     "**/__init__.py",
     "bifrost.py",
-    "bifrost/*",
+    "bifrost/__main__.py",
+    "bifrost/cli.py",
+    "bifrost/commands/*",
+    "bifrost/tui/*",
+    "bifrost/solution_dev/*",
+    "bifrost/migrate_*.py",
 ]
 
 [tool.coverage.report]
