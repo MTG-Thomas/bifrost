@@ -6,7 +6,7 @@ Tests the GitHubSyncService data models and exceptions.
 
 import pytest
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from src.models.contracts.github import (
     OrphanInfo,
@@ -242,6 +242,187 @@ class TestGitHubSyncFetchAndPush:
         assert result.commit_sha == "feedface1234"
         assert result.pushed_commits == 4
         assert cast(Any, Repo.remotes).origin.pushed == ["HEAD:main"]
+
+    @pytest.mark.parametrize(
+        ("flag_name", "summary", "expected_error"),
+        [
+            ("ERROR", "auth failed\n", "auth failed"),
+            (
+                "REJECTED",
+                "fetch first",
+                "Push rejected (non-fast-forward): fetch first",
+            ),
+            (
+                "REMOTE_REJECTED",
+                "protected branch",
+                "Push remote-rejected: protected branch",
+            ),
+        ],
+    )
+    def test_do_push_reports_rejected_push_info(
+        self,
+        tmp_path,
+        flag_name,
+        summary,
+        expected_error,
+    ):
+        from git.remote import PushInfo
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def rev_list(self, *args):
+                assert args == ("--count", "origin/main..HEAD")
+                return "1"
+
+        class PushResult:
+            flags = getattr(PushInfo, flag_name)
+
+            def __init__(self, summary):
+                self.summary = summary
+
+        class Origin:
+            def fetch(self, branch):
+                return None
+
+            def push(self, refspec):
+                assert refspec == "HEAD:main"
+                return [PushResult(summary)]
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True, hexsha="feedface1234")
+            git = Git()
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_push(tmp_path, Repo())
+
+        assert result.success is False
+        assert result.error == expected_error
+
+
+class TestGitHubSyncCommit:
+    @pytest.mark.asyncio
+    async def test_do_commit_returns_noop_when_head_has_no_changes(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            added = []
+
+            def add(self, **kwargs):
+                self.added.append(kwargs)
+
+        class Index:
+            committed = False
+
+            def diff(self, ref):
+                assert ref == "HEAD"
+                return []
+
+            def commit(self, message):
+                self.committed = True
+                raise AssertionError("no-op commit should not call commit")
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+            untracked_files = []
+
+        service = object.__new__(GitHubSyncService)
+        service.db = object()
+        service._regenerate_manifest_to_dir = AsyncMock()
+        service._run_preflight = AsyncMock()
+
+        result = await service._do_commit(tmp_path, Repo(), "Sync changes")
+
+        assert result.success is True
+        assert result.files_committed == 0
+        service._regenerate_manifest_to_dir.assert_awaited_once_with(service.db, tmp_path)
+        service._run_preflight.assert_not_called()
+        assert Repo.git.added == [{"A": True}]
+
+    @pytest.mark.asyncio
+    async def test_do_commit_returns_preflight_failure_without_committing(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        preflight = PreflightResult(
+            valid=False,
+            issues=[
+                PreflightIssue(
+                    path="workflows/bad.py",
+                    message="syntax error",
+                    severity="error",
+                    category="syntax",
+                )
+            ],
+        )
+
+        class Git:
+            def add(self, **kwargs):
+                return None
+
+        class Index:
+            def diff(self, ref):
+                return [object()]
+
+            def commit(self, message):
+                raise AssertionError("preflight failure should not commit")
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+            untracked_files = []
+
+        service = object.__new__(GitHubSyncService)
+        service.db = object()
+        service._regenerate_manifest_to_dir = AsyncMock()
+        service._run_preflight = AsyncMock(return_value=preflight)
+
+        result = await service._do_commit(tmp_path, Repo(), "Sync changes")
+
+        assert result.success is False
+        assert result.error == "Preflight validation failed"
+        assert result.preflight == preflight
+
+    @pytest.mark.asyncio
+    async def test_do_commit_counts_initial_index_and_untracked_changes(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        preflight = PreflightResult(valid=True, issues=[])
+
+        class Git:
+            def add(self, **kwargs):
+                return None
+
+        class Index:
+            def diff(self, ref):
+                assert ref is None
+                return [object(), object()]
+
+            def commit(self, message):
+                assert message == "Initial sync"
+                return type("Commit", (), {"hexsha": "abc123def456"})()
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=False)
+            untracked_files = ["workflows/new.py"]
+
+        service = object.__new__(GitHubSyncService)
+        service.db = object()
+        service._regenerate_manifest_to_dir = AsyncMock()
+        service._run_preflight = AsyncMock(return_value=preflight)
+
+        result = await service._do_commit(tmp_path, Repo(), "Initial sync")
+
+        assert result.success is True
+        assert result.commit_sha == "abc123def456"
+        assert result.files_committed == 3
+        assert result.preflight == preflight
 
 
 class TestGitHubSyncStatusAndResolve:
