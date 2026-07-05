@@ -186,6 +186,91 @@ def test_to_connection_model_handles_global_provider_defaults() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_connection_persists_org_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    db = _FakeDb([])
+    service = OAuthStorageService(session=db)
+    monkeypatch.setattr(oauth_storage, "_encrypt", lambda value: f"encrypted:{value}".encode())
+    request = SimpleNamespace(
+        connection_name="halo",
+        client_id="client-id",
+        client_secret="client-secret",
+        scopes="read,write",
+        token_url_defaults={"tenant": "midtown"},
+        authorization_url="https://auth.example.com/authorize",
+        token_url="https://auth.example.com/token",
+        redirect_uri="/oauth/callback/custom-halo",
+        oauth_flow_type="authorization_code",
+        description="Halo connection",
+    )
+
+    connection = await service.create_connection(
+        str(org_id),
+        request,
+        "operator@example.com",
+    )
+
+    assert len(db.added) == 1
+    provider = db.added[0]
+    assert provider.organization_id == org_id
+    assert provider.provider_name == "halo"
+    assert provider.client_id == "client-id"
+    assert provider.encrypted_client_secret == b"encrypted:client-secret"
+    assert provider.scopes == ["read", "write"]
+    assert provider.token_url_defaults == {"tenant": "midtown"}
+    assert provider.provider_metadata == {
+        "authorization_url": "https://auth.example.com/authorize",
+        "token_url": "https://auth.example.com/token",
+        "redirect_uri": "/oauth/callback/custom-halo",
+        "oauth_flow_type": "authorization_code",
+        "description": "Halo connection",
+        "created_by": "operator@example.com",
+        "status": "not_connected",
+    }
+    assert db.commits == 1
+    assert db.refreshed == [provider]
+    assert connection.org_id == str(org_id)
+    assert connection.connection_name == "halo"
+    assert connection.client_secret_config_key == "oauth_halo_client_secret"
+
+
+@pytest.mark.asyncio
+async def test_create_connection_handles_global_minimal_secretless_request() -> None:
+    db = _FakeDb([])
+    service = OAuthStorageService(session=db)
+    request = SimpleNamespace(
+        connection_name="pkce",
+        client_id="pkce-client",
+        client_secret=None,
+        scopes="",
+        token_url_defaults=None,
+        authorization_url="https://auth.example.com/authorize",
+        token_url="https://auth.example.com/token",
+        redirect_uri=None,
+        oauth_flow_type="authorization_code",
+        description=None,
+    )
+
+    connection = await service.create_connection(
+        "GLOBAL",
+        request,
+        "operator@example.com",
+    )
+
+    provider = db.added[0]
+    assert provider.organization_id is None
+    assert provider.encrypted_client_secret is None
+    assert provider.scopes == []
+    assert provider.token_url_defaults == {}
+    assert provider.provider_metadata["redirect_uri"] == "/oauth/callback/pkce"
+    assert provider.provider_metadata["description"] is None
+    assert connection.org_id == "GLOBAL"
+    assert connection.redirect_uri == "/oauth/callback/pkce"
+
+
+@pytest.mark.asyncio
 async def test_get_connection_returns_org_specific_or_global_provider() -> None:
     provider = _provider()
     service = OAuthStorageService(session=_FakeDb([provider]))
