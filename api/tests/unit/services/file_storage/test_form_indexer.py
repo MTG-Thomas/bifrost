@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -64,7 +64,7 @@ async def test_index_form_normalizes_flat_fields_and_resolves_legacy_workflows(
     launch_workflow_id = uuid4()
     db = AsyncMock()
     added_fields = []
-    db.add.side_effect = added_fields.append
+    db.add = MagicMock(side_effect=added_fields.append)
 
     indexer = FormIndexer(db)
     resolved_names = []

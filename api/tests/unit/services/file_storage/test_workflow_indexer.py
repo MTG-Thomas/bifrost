@@ -14,9 +14,9 @@ async def test_extract_metadata_requires_real_sdk_decorator() -> None:
     assert await indexer.extract_metadata("plain.py", b"# @workflow in comment") is None
 
     content = b"""
-import bifrost
+from src.sdk.decorators import data_provider
 
-@bifrost.data_provider(name="Regions")
+@data_provider(name="Regions")
 async def regions():
     return []
 """

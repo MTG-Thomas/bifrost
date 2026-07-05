@@ -37,12 +37,14 @@ async def test_list_objects_v2_shapes_contents_prefixes_and_continuation_token()
     class FakePager:
         continuation_token = "next-token"
 
+        def __init__(self):
+            self._sent = False
+
         def by_page(self, continuation_token=None):
             assert continuation_token == "incoming-token"
             return self
 
         def __aiter__(self):
-            self._sent = False
             return self
 
         async def __anext__(self):
