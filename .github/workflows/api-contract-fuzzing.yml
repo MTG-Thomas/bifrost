@@ -1,0 +1,48 @@
+name: API Contract Fuzzing
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 9 * * 2"
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  schemathesis:
+    name: Schemathesis OpenAPI Fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Boot test stack
+        run: ./test.sh stack up
+
+      - name: Install Schemathesis
+        run: |
+          python -m venv .schemathesis-venv
+          ./.schemathesis-venv/bin/python -m pip install --upgrade pip
+          ./.schemathesis-venv/bin/python -m pip install "schemathesis==4.22.3"
+
+      - name: Run OpenAPI contract fuzzing
+        run: |
+          ./.schemathesis-venv/bin/schemathesis run \
+            http://localhost:3000/openapi.json \
+            --wait-for-schema 30 \
+            --phases examples,fuzzing \
+            --checks not_a_server_error \
+            --max-examples 50 \
+            --workers auto \
+            --warnings missing_auth,missing_test_data
+
+      - name: Export stack logs
+        if: always()
+        run: ./test.sh stack status || true

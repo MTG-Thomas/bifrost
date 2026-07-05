@@ -19,8 +19,23 @@ if [ "$event_name" = "merge_group" ]; then
   client_changed=true
 elif [ "$event_name" = "pull_request" ]; then
   base_ref="${GITHUB_BASE_REF:-main}"
-  git fetch --no-tags --depth=1 origin "$base_ref"
-  changed_files="$(git diff --name-only "origin/$base_ref...HEAD" || true)"
+  head_ref="${GITHUB_HEAD_REF:-}"
+  if [ -n "$head_ref" ]; then
+    git fetch --no-tags --depth=1 origin \
+      "$base_ref:refs/remotes/origin/$base_ref" \
+      "$head_ref:refs/remotes/origin/$head_ref"
+    # Shallow PR tip fetches may not include a usable merge base, so this
+    # head_ref path intentionally uses two-dot diff instead of three-dot.
+    changed_files="$(git diff --name-only "origin/$base_ref..origin/$head_ref" || true)"
+  elif git rev-parse --verify HEAD^2 >/dev/null 2>&1; then
+    # actions/checkout uses GitHub's synthetic pull_request merge ref by
+    # default. Diff the merge parents directly; origin/base...HEAD can be
+    # empty for that synthetic commit and would incorrectly reuse stale images.
+    changed_files="$(git diff --name-only HEAD^1...HEAD^2 || true)"
+  else
+    git fetch --no-tags --depth=1 origin "$base_ref"
+    changed_files="$(git diff --name-only "origin/$base_ref...HEAD" || true)"
+  fi
 
   api_pattern='^(api/Dockerfile\.dev|pyproject\.toml|requirements(-pyright)?\.lock|api/src/services/app_compiler/(package(-lock)?\.json|compile\.js|tailwind\.js)|api/src/services/app_bundler/package(-lock)?\.json|api/src/services/sdk_package/(package\.json|build_sdk\.js)|client/src/lib/app-sdk/.*)$'
   client_pattern='^(client/Dockerfile\.dev|client/package(-lock)?\.json)$'

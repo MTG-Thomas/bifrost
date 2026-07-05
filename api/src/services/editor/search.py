@@ -19,7 +19,7 @@ import regex as bounded_regex
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models import SearchRequest, SearchResponse, SearchResult
+from src.models.contracts.editor import SearchRequest, SearchResponse, SearchResult
 from src.models.orm.file_index import FileIndex
 
 logger = logging.getLogger(__name__)

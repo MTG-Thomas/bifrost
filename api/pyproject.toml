@@ -25,7 +25,7 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["."]
-omit = ["tests/*", "**/__init__.py"]
+omit = ["tests/*", "**/__init__.py", "fuzz/atheris_targets/*"]
 
 [tool.coverage.report]
 exclude_lines = [

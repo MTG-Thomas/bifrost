@@ -75,6 +75,7 @@
     "dagre": "^0.8.5",
     "date-fns": "^4.4.0",
     "dompurify": "^3.4.10",
+    "fast-check": "^4.8.0",
     "framer-motion": "^12.42.0",
     "fuse.js": "^7.4.2",
     "lucide-react": "^1.22.0",
