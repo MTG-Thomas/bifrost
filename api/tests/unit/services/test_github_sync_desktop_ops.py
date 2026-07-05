@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.models.contracts.github import EntityChange, MergeConflict, PullResult, PushResult
+from src.models.contracts.github import (
+    EntityChange,
+    FetchResult,
+    MergeConflict,
+    PullResult,
+    PushResult,
+)
 from src.services.github_sync import GitHubSyncService
 
 
@@ -105,12 +111,57 @@ async def test_desktop_status_returns_empty_status_when_repo_uninitialized(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_desktop_fetch_regenerates_manifest_and_publishes_progress(
+    tmp_path, monkeypatch
+):
+    progress = AsyncMock()
+    monkeypatch.setitem(
+        sys.modules,
+        "src.core.pubsub",
+        types.SimpleNamespace(publish_git_progress=progress),
+    )
+
+    service = _service(tmp_path, object())
+    service._regenerate_manifest_to_dir = AsyncMock()
+    service._do_fetch = lambda work_dir, repo: FetchResult(
+        success=True,
+        commits_ahead=1,
+        commits_behind=2,
+    )
+
+    result = await service.desktop_fetch(job_id="job-123")
+
+    assert result.success is True
+    assert result.commits_ahead == 1
+    assert result.commits_behind == 2
+    service._regenerate_manifest_to_dir.assert_awaited_once_with(service.db, tmp_path)
+    assert [call.args for call in progress.await_args_list] == [
+        ("job-123", "Syncing from storage...", 0, 0),
+        ("job-123", "Generating manifest...", 0, 0),
+        ("job-123", "Fetching remote...", 0, 0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_desktop_commit_returns_error_result_when_core_commit_raises(tmp_path):
+    service = _service(tmp_path, object())
+    service._do_commit = AsyncMock(side_effect=RuntimeError("preflight crashed"))
+
+    result = await service.desktop_commit("sync")
+
+    assert result.success is False
+    assert result.error == "preflight crashed"
+
+
+@pytest.mark.asyncio
 async def test_do_pull_returns_structured_conflicts_with_missing_stage_content(
     tmp_path, monkeypatch
 ):
     from src.services import github_sync
 
-    monkeypatch.setattr(github_sync, "_auto_resolve_manifest_conflicts", lambda *_: set())
+    monkeypatch.setattr(
+        github_sync, "_auto_resolve_manifest_conflicts", lambda *_: set()
+    )
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "MERGE_HEAD").write_text("merge")
 
@@ -219,6 +270,32 @@ async def test_do_pull_commits_when_all_conflicts_auto_resolve(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_do_pull_returns_success_when_remote_branch_is_absent(tmp_path):
+    class Origin:
+        def fetch(self, branch):
+            raise RuntimeError("couldn't find remote ref main")
+
+    class Git:
+        def merge(self, ref):
+            raise AssertionError("missing remote branch should not merge")
+
+    class Repo:
+        remotes = type("Remotes", (), {"origin": Origin()})()
+        git = Git()
+
+    service = object.__new__(GitHubSyncService)
+    service.branch = "main"
+    service._sync_app_previews = AsyncMock()
+
+    result = await service._do_pull(tmp_path, Repo())
+
+    assert result.success is True
+    assert result.pulled == 0
+    assert result.commit_sha is None
+    service._sync_app_previews.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_desktop_sync_returns_delete_confirmation_and_keeps_deletions_dry(
     tmp_path, monkeypatch
 ):
@@ -251,7 +328,9 @@ async def test_desktop_sync_returns_delete_confirmation_and_keeps_deletions_dry(
         pushed_commits=1,
         commit_sha="abc123",
     )
-    updated = EntityChange(action="updated", entity_type="workflow", name="Updated Workflow")
+    updated = EntityChange(
+        action="updated", entity_type="workflow", name="Updated Workflow"
+    )
     service._import_all_entities = AsyncMock(
         return_value=(3, [updated], {"workflow": {"old"}})
     )
@@ -287,10 +366,14 @@ async def test_desktop_sync_applies_confirmed_deletions_and_shapes_success(
         "src.core.module_cache",
         types.SimpleNamespace(refresh_modules_from_directory=AsyncMock()),
     )
-    monkeypatch.setattr("src.services.github_sync._deleted_paths_in_head", lambda repo: set())
+    monkeypatch.setattr(
+        "src.services.github_sync._deleted_paths_in_head", lambda repo: set()
+    )
 
     removed = EntityChange(action="removed", entity_type="agent", name="Old Agent")
-    deletion_change = EntityChange(action="removed", entity_type="agent", name="Old Agent")
+    deletion_change = EntityChange(
+        action="removed", entity_type="agent", name="Old Agent"
+    )
 
     service = _service(tmp_path, object())
     service._do_pull = AsyncMock(return_value=PullResult(success=True, pulled=0))
@@ -333,6 +416,99 @@ async def test_desktop_sync_returns_push_error_without_importing(tmp_path):
     assert result.conflicts == [conflict]
     assert result.error == "Merge conflicts detected"
     service._import_all_entities.assert_not_called()
+
+
+def test_do_resolve_returns_error_when_no_merge_or_unmerged_entries(tmp_path):
+    class Index:
+        def unmerged_blobs(self):
+            return {}
+
+    class Repo:
+        index = Index()
+
+    service = object.__new__(GitHubSyncService)
+
+    result = service._do_resolve(tmp_path, Repo(), {"workflows/conflict.py": "ours"})
+
+    assert result.success is False
+    assert result.error == "No conflicts to resolve"
+
+
+def test_do_resolve_uses_rm_fallback_for_delete_conflicts(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "MERGE_HEAD").write_text("merge")
+
+    class Git:
+        def __init__(self):
+            self.calls = []
+
+        def checkout(self, *args):
+            self.calls.append(("checkout", args))
+            raise RuntimeError("deleted on one side")
+
+        def rm(self, path):
+            self.calls.append(("rm", path))
+
+        def add(self, path):
+            self.calls.append(("add", path))
+
+    class Index:
+        def __init__(self):
+            self.commits = []
+
+        def unmerged_blobs(self):
+            return {"workflows/conflict.py": [(1, object()), (2, object())]}
+
+        def commit(self, message):
+            self.commits.append(message)
+
+    class Repo:
+        git = Git()
+        index = Index()
+
+    service = object.__new__(GitHubSyncService)
+
+    result = service._do_resolve(tmp_path, Repo(), {"workflows/conflict.py": "theirs"})
+
+    assert result.success is True
+    assert Repo.git.calls == [
+        ("checkout", ("--theirs", "workflows/conflict.py")),
+        ("rm", "workflows/conflict.py"),
+    ]
+    assert Repo.index.commits == ["Merge with conflict resolution"]
+
+
+@pytest.mark.asyncio
+async def test_desktop_abort_merge_reports_no_merge_in_progress(tmp_path):
+    service = _service(tmp_path, object())
+
+    result = await service.desktop_abort_merge()
+
+    assert result.success is False
+    assert result.error == "No merge in progress"
+
+
+@pytest.mark.asyncio
+async def test_desktop_abort_merge_runs_git_abort_when_merge_head_exists(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "MERGE_HEAD").write_text("merge")
+
+    class Git:
+        def __init__(self):
+            self.calls = []
+
+        def merge(self, *args):
+            self.calls.append(args)
+
+    class Repo:
+        git = Git()
+
+    service = _service(tmp_path, Repo())
+
+    result = await service.desktop_abort_merge()
+
+    assert result.success is True
+    assert Repo.git.calls == [("--abort",)]
 
 
 @pytest.mark.asyncio
