@@ -1,0 +1,13 @@
+croniter==6.2.2
+regex==2026.5.9
+sqlalchemy==2.0.49
+greenlet==3.4.0
+starlette==1.0.0
+pydantic==2.13.3
+pydantic-core==2.46.3
+annotated-types==0.7.0
+dnspython==2.8.0
+email-validator==2.3.0
+idna==3.13
+typing-extensions==4.15.0
+typing-inspection==0.4.2
