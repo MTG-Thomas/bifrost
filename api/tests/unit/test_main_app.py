@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-os.environ.setdefault("BIFROST_SECRET_KEY", "test-secret-key")
+os.environ.setdefault("BIFROST_SECRET_KEY", "test-secret-key-for-main-app-unit-tests")
 
 from src import main
 
