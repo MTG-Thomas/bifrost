@@ -7,6 +7,14 @@ from uuid import uuid4
 import pytest
 
 from src.services.file_structure_service import FileStructureService
+from src.services.file_structure_service import _scope_seg
+
+
+def test_scope_seg_uses_global_for_none_and_uuid_string_for_org() -> None:
+    org_id = uuid4()
+
+    assert _scope_seg(None) == "global"
+    assert _scope_seg(org_id) == str(org_id)
 
 
 def _service():
@@ -63,6 +71,26 @@ async def test_list_prefix_nested_prefix_preserves_relative_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_prefix_ignores_base_key_and_deduplicates_folder_entries() -> None:
+    service = _service()
+    service.storage.list_raw_s3 = AsyncMock(
+        return_value=[
+            "reports/global/q1/",
+            "reports/global/q1/january.csv",
+            "reports/global/q1/february.csv",
+            "reports/global/readme.md",
+        ]
+    )
+
+    entries = await service.list_prefix(org_id=None, location="reports", prefix="")
+
+    assert [(entry.kind, entry.name, entry.path) for entry in entries] == [
+        ("folder", "q1", "q1"),
+        ("file", "readme.md", "readme.md"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_list_shares_merges_visible_file_and_policy_locations() -> None:
     service = _service()
     org_id = uuid4()
@@ -95,3 +123,33 @@ async def test_list_shares_merges_visible_file_and_policy_locations() -> None:
     ]
     service.storage.list_raw_s3.assert_awaited_once_with("")
     service.policies.list_policies.assert_awaited_once_with(organization_id=org_id)
+
+
+@pytest.mark.asyncio
+async def test_list_shares_for_global_scope_hides_reserved_prefixes_and_marks_uploads() -> None:
+    service = _service()
+    service.storage.list_raw_s3 = AsyncMock(
+        return_value=[
+            "uploads/global/manual.pdf",
+            "reports/global/q1.pdf",
+            "_tmp/global/hidden.txt",
+            "_apps/global/hidden.js",
+            "reports/org-specific/ignored.pdf",
+        ]
+    )
+    service.policies.list_policies = AsyncMock(
+        return_value=[
+            SimpleNamespace(location="uploads"),
+            SimpleNamespace(location="empty-share"),
+        ]
+    )
+
+    shares = await service.list_shares(org_id=None)
+
+    assert [
+        (share.location, share.read_only, share.has_policy) for share in shares
+    ] == [
+        ("empty-share", False, True),
+        ("reports", False, False),
+        ("uploads", True, True),
+    ]
