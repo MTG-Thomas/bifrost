@@ -256,11 +256,16 @@ async def test_update_table_reports_missing_noop_and_applies_changes():
 async def test_update_and_delete_table_guard_permissions_and_delete_rows():
     table_id = uuid4()
 
-    global_scope = await tables.update_table(
-        _context(admin=False),
-        str(table_id),
-        scope="global",
-    )
+    global_scope_db = _Db([_ScalarResult(_table(id=table_id))])
+    with (
+        patch.object(tables, "get_tool_db", _tool_db(global_scope_db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+    ):
+        global_scope = await tables.update_table(
+            _context(admin=False),
+            str(table_id),
+            scope="global",
+        )
     assert "Only platform admins" in global_scope.structured_content["error"]
 
     table = _table(id=table_id, name="Delete Me")
