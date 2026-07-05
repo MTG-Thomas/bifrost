@@ -1,5 +1,6 @@
 import os
 from types import SimpleNamespace
+from typing import Any, Awaitable, Callable, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -183,7 +184,10 @@ async def test_create_default_user_provisions_and_disables_mfa(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_value_error_exception_handler_returns_validation_error():
-    handler = main.app.exception_handlers[ValueError]
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[ValueError],
+    )
     request = SimpleNamespace(method="GET", url=SimpleNamespace(path="/demo"))
 
     response = await handler(request, ValueError("bad input"))
@@ -195,7 +199,10 @@ async def test_value_error_exception_handler_returns_validation_error():
 
 @pytest.mark.asyncio
 async def test_generic_exception_handler_hides_internal_detail(caplog):
-    handler = main.app.exception_handlers[Exception]
+    handler = cast(
+        Callable[[Any, Exception], Awaitable[Any]],
+        main.app.exception_handlers[Exception],
+    )
     request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/demo"))
 
     with caplog.at_level("ERROR", logger="src.main"):
