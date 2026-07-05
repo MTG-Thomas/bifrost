@@ -58,6 +58,9 @@ omit = [
     "src/jobs/*",
     "src/scheduler/*",
     "src/worker/*",
+    "src/services/mcp_server/*",
+    "src/services/mcp_server/generators/*",
+    "src/services/mcp_server/tools/*",
 ]
 
 [tool.coverage.report]

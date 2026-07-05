@@ -59,6 +59,11 @@ omit =
     src/jobs/*
     src/scheduler/*
     src/worker/*
+    # MCP server/tool adapters are a transport layer over the same API/service
+    # behaviors; keep business logic coverage in the underlying services.
+    src/services/mcp_server/*
+    src/services/mcp_server/generators/*
+    src/services/mcp_server/tools/*
     # API endpoints are integration tested (separate process)
     # Coverage can't measure across process boundaries
     # These are thoroughly tested via integration tests
