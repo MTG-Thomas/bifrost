@@ -12,10 +12,12 @@ from bifrost.manifest import (
     ManifestApp,
     ManifestConfig,
     ManifestEventSource,
+    ManifestEventSubscription,
     ManifestForm,
     ManifestIntegration,
     ManifestIntegrationMapping,
     ManifestMCPConnection,
+    ManifestMCPConnectionTool,
     ManifestMCPServer,
     ManifestOrganization,
     ManifestPolicyRule,
@@ -38,6 +40,9 @@ CONFIG_ID = "99999999-9999-9999-9999-999999999999"
 MCP_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 ROLE_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 EXISTING_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+EVENT_ID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+SUBSCRIPTION_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+MCP_CONNECTION_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
 def test_diff_collect_ignores_oauth_token_mapping_noise_and_cascades_configs():
@@ -990,3 +995,179 @@ async def test_apply_ops_stamps_dry_run_upserts_and_executes_real_ops():
     await resolver._apply_ops(real_ops, [], dry_run=False, existing_ids=set())
 
     assert executed == [resolver.db]
+
+
+@pytest.mark.asyncio
+async def test_resolve_event_source_upserts_schedule_and_valid_subscriptions_only():
+    db = AsyncMock()
+    resolver = manifest_import.ManifestResolver(db)
+    resolver._resolve_workflow_ref = AsyncMock(return_value=UUID(DELEGATE_ID))
+    event = ManifestEventSource(
+        id=EVENT_ID,
+        name="Daily ticket sweep",
+        source_type="schedule",
+        event_type="ticket.sweep",
+        organization_id=ORG_ID,
+        cron_expression="0 6 * * *",
+        timezone="America/New_York",
+        schedule_enabled=None,
+        subscriptions=[
+            ManifestEventSubscription(
+                id=SUBSCRIPTION_ID,
+                workflow_id=WORKFLOW_ID,
+                event_type="ticket.created",
+                input_mapping={"ticket_id": "$.id"},
+            ),
+            ManifestEventSubscription(
+                id="abababab-abab-abab-abab-abababababab",
+                workflow_id="workflows/escalate.py::run",
+                event_type="ticket.escalated",
+            ),
+            ManifestEventSubscription(
+                id="cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd",
+                target_type="agent",
+                agent_id=AGENT_ID,
+                event_type="ticket.assigned",
+            ),
+            ManifestEventSubscription(
+                id="edededed-eded-eded-eded-edededededed",
+                target_type="agent",
+                agent_id="not-a-uuid",
+            ),
+            ManifestEventSubscription(
+                id="fafafafa-fafa-fafa-fafa-fafafafafafa",
+                workflow_id=None,
+            ),
+        ],
+    )
+
+    await resolver._resolve_event_source(
+        "daily-ticket-sweep",
+        event,
+        imported_wf_ids={WORKFLOW_ID},
+    )
+
+    assert db.execute.await_count == 5
+    source_params = db.execute.call_args_list[0][0][0].compile().params
+    assert source_params["id"] == UUID(EVENT_ID)
+    assert source_params["name"] == "daily-ticket-sweep"
+    assert source_params["organization_id"] == UUID(ORG_ID)
+    schedule_params = db.execute.call_args_list[1][0][0].compile().params
+    assert schedule_params["event_source_id"] == UUID(EVENT_ID)
+    assert schedule_params["cron_expression"] == "0 6 * * *"
+    assert schedule_params["timezone"] == "America/New_York"
+    assert schedule_params["enabled"] is True
+    assert schedule_params["overlap_policy"] == "skip"
+
+    subscription_params = [
+        call[0][0].compile().params for call in db.execute.call_args_list[2:]
+    ]
+    assert [params["id"] for params in subscription_params] == [
+        UUID(SUBSCRIPTION_ID),
+        UUID("abababab-abab-abab-abab-abababababab"),
+        UUID("cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"),
+    ]
+    assert subscription_params[0]["workflow_id"] == UUID(WORKFLOW_ID)
+    assert subscription_params[1]["workflow_id"] == UUID(DELEGATE_ID)
+    assert subscription_params[2]["target_type"] == "agent"
+    assert subscription_params[2]["agent_id"] == UUID(AGENT_ID)
+    resolver._resolve_workflow_ref.assert_awaited_once_with("workflows/escalate.py::run")
+
+
+@pytest.mark.asyncio
+async def test_resolve_event_source_upserts_webhook_and_skips_unimported_workflow():
+    db = AsyncMock()
+    resolver = manifest_import.ManifestResolver(db)
+    event = ManifestEventSource(
+        id=EVENT_ID,
+        name="Halo webhook",
+        source_type="webhook",
+        organization_id=None,
+        adapter_name="halopsa",
+        webhook_integration_id=INTEGRATION_ID,
+        webhook_config={"path": "/tickets"},
+        rate_limit_per_minute=None,
+        rate_limit_window_seconds=30,
+        rate_limit_enabled=False,
+        subscriptions=[
+            ManifestEventSubscription(id=SUBSCRIPTION_ID, workflow_id=WORKFLOW_ID),
+        ],
+    )
+
+    await resolver._resolve_event_source(
+        "halo-webhook",
+        event,
+        imported_wf_ids={DELEGATE_ID},
+    )
+
+    assert db.execute.await_count == 2
+    webhook_params = db.execute.call_args_list[1][0][0].compile().params
+    assert webhook_params["event_source_id"] == UUID(EVENT_ID)
+    assert webhook_params["adapter_name"] == "halopsa"
+    assert webhook_params["integration_id"] == UUID(INTEGRATION_ID)
+    assert webhook_params["config"] == {"path": "/tickets"}
+    assert webhook_params["rate_limit_per_minute"] is None
+    assert webhook_params["rate_limit_window_seconds"] == 30
+    assert webhook_params["rate_limit_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_mcp_connection_imports_connection_and_tool_catalog():
+    db = AsyncMock()
+    resolver = manifest_import.ManifestResolver(db)
+    connection = ManifestMCPConnection(
+        organization_id=ORG_ID,
+        client_id="client-1",
+        server_url_override="https://region.example/mcp",
+        available_in_chat=True,
+        available_to_autonomous=True,
+        service_oauth_token_id=CONFIG_ID,
+        tools=[
+            ManifestMCPConnectionTool(
+                tool_name="ticket_lookup",
+                tool_schema={"inputSchema": {"type": "object"}},
+                enabled=False,
+                disabled_reason="Needs review",
+            )
+        ],
+    )
+
+    await resolver._resolve_mcp_connection(
+        MCP_CONNECTION_ID,
+        connection,
+        {MCP_ID},
+        server_id=MCP_ID,
+    )
+
+    assert db.execute.await_count == 2
+    connection_params = db.execute.call_args_list[0][0][0].compile().params
+    assert connection_params["id"] == UUID(MCP_CONNECTION_ID)
+    assert connection_params["server_id"] == UUID(MCP_ID)
+    assert connection_params["organization_id"] == UUID(ORG_ID)
+    assert connection_params["client_id"] == "client-1"
+    assert connection_params["encrypted_client_secret"] == ""
+    assert connection_params["service_oauth_token_id"] == UUID(CONFIG_ID)
+    tool_params = db.execute.call_args_list[1][0][0].compile().params
+    assert tool_params["connection_id"] == UUID(MCP_CONNECTION_ID)
+    assert tool_params["tool_name"] == "ticket_lookup"
+    assert tool_params["enabled"] is False
+    assert tool_params["disabled_reason"] == "Needs review"
+
+
+@pytest.mark.asyncio
+async def test_resolve_mcp_connection_skips_when_parent_server_not_imported():
+    db = AsyncMock()
+    resolver = manifest_import.ManifestResolver(db)
+    connection = ManifestMCPConnection(
+        organization_id=ORG_ID,
+        client_id="client-1",
+    )
+
+    await resolver._resolve_mcp_connection(
+        MCP_CONNECTION_ID,
+        connection,
+        imported_server_ids=set(),
+        server_id=MCP_ID,
+    )
+
+    db.execute.assert_not_called()
