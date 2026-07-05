@@ -180,6 +180,77 @@ def test_filter_manifest_to_scope_keeps_repo_owned_graph_and_scoped_metadata():
     assert set(manifest.mcp_servers) == {"in"}
 
 
+def test_filter_manifest_to_scope_keeps_forms_referenced_by_workflow_paths():
+    manifest = Manifest(
+        workflows={
+            "owned": ManifestWorkflow(
+                id=WORKFLOW_ID,
+                name="Owned",
+                path="workflows/owned.py",
+                function_name="owned",
+            ),
+        },
+    )
+    manifest.forms = {
+        "by-workflow-path": SimpleNamespace(
+            id=FORM_ID,
+            name="By workflow path",
+            workflow_path="workflows/owned.py",
+        ),
+        "by-launch-path": SimpleNamespace(
+            id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            name="By launch path",
+            launch_workflow_path="workflows/owned.py",
+        ),
+        "outside": SimpleNamespace(
+            id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+            name="Outside",
+            workflow_path="workflows/outside.py",
+        ),
+    }
+
+    manifest_import._filter_manifest_to_scope(
+        manifest,
+        path_exists=lambda path: path == "workflows/owned.py",
+        dir_exists=lambda path: False,
+    )
+
+    assert set(manifest.forms) == {"by-workflow-path", "by-launch-path"}
+
+
+def test_diff_collect_displays_config_changes_with_integration_and_org_names():
+    current = Manifest(
+        organizations=[ManifestOrganization(id=ORG_ID, name="Midtown")],
+        integrations={
+            "psa": ManifestIntegration(id=INTEGRATION_ID, name="Halo"),
+        },
+        configs={
+            "psa.api_url": ManifestConfig(
+                id=CONFIG_ID,
+                integration_id=INTEGRATION_ID,
+                key="api_url",
+                organization_id=ORG_ID,
+                value="https://old.example",
+            ),
+        },
+    )
+    incoming = current.model_copy(deep=True)
+    incoming.configs["psa.api_url"].value = "https://new.example"
+
+    changes, changed_ids = manifest_import._diff_and_collect(incoming, current)
+
+    assert changes == [
+        {
+            "id": CONFIG_ID,
+            "action": "update",
+            "entity_type": "configs",
+            "name": "Halo/api_url",
+            "organization": "Midtown",
+        },
+    ]
+    assert changed_ids == {CONFIG_ID}
+
+
 @pytest.mark.parametrize(
     ("app", "expected"),
     [
