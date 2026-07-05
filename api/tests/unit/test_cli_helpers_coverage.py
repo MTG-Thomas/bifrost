@@ -402,3 +402,120 @@ async def test_api_request_prints_json_text_and_connection_errors(capsys):
     generic_error = Client(exc=RuntimeError("boom"))
     assert await cli._api_request("GET", "/api/x", None, client=generic_error) == 1
     assert "boom" in capsys.readouterr().err
+
+
+def test_handle_git_validates_auth_and_arguments(monkeypatch, capsys):
+    import types
+
+    git_mod = types.ModuleType("bifrost.git_commands")
+    git_mod.EXIT_CLEAN = 0
+    git_mod.EXIT_ERROR = 1
+    git_mod.RESOLUTION_MAP = {"keep_local": "local", "keep_remote": "remote"}
+    for name in (
+        "run_git_commit",
+        "run_git_diff",
+        "run_git_discard",
+        "run_git_fetch",
+        "run_git_push",
+        "run_git_resolve",
+        "run_git_status",
+    ):
+        setattr(git_mod, name, lambda *args, **kwargs: 0)
+
+    class ClientFactory:
+        @staticmethod
+        def get_instance(require_auth=True):
+            raise RuntimeError("login first")
+
+    monkeypatch.setitem(sys.modules, "bifrost.git_commands", git_mod)
+    monkeypatch.setattr(cli, "BifrostClient", ClientFactory)
+
+    assert cli.handle_git([]) == 0
+    assert "Usage: bifrost git" in capsys.readouterr().out
+
+    assert cli.handle_git(["status"]) == 1
+    assert "login first" in capsys.readouterr().err
+
+    class AuthenticatedFactory:
+        @staticmethod
+        def get_instance(require_auth=True):
+            return object()
+
+    monkeypatch.setattr(cli, "BifrostClient", AuthenticatedFactory)
+
+    assert cli.handle_git(["commit"]) == 1
+    assert "commit requires -m" in capsys.readouterr().err
+
+    assert cli.handle_git(["commit", "-m"]) == 1
+    assert "requires a commit message" in capsys.readouterr().err
+
+    assert cli.handle_git(["commit", "--bad"]) == 1
+    assert "Unknown option" in capsys.readouterr().err
+
+    assert cli.handle_git(["resolve"]) == 1
+    assert "resolve requires" in capsys.readouterr().err
+
+    assert cli.handle_git(["resolve", "app.py=bad"]) == 1
+    assert "invalid resolution" in capsys.readouterr().err
+
+    assert cli.handle_git(["diff"]) == 1
+    assert "diff requires" in capsys.readouterr().err
+
+    assert cli.handle_git(["discard"]) == 1
+    assert "discard requires" in capsys.readouterr().err
+
+    assert cli.handle_git(["unknown"]) == 1
+    assert "Unknown git subcommand" in capsys.readouterr().err
+
+
+def test_handle_git_dispatches_to_git_commands(monkeypatch):
+    import types
+
+    calls = []
+    client = object()
+
+    def record(name, result):
+        def _run(*args):
+            calls.append((name, args))
+            return result
+
+        return _run
+
+    git_mod = types.ModuleType("bifrost.git_commands")
+    git_mod.EXIT_CLEAN = 0
+    git_mod.EXIT_ERROR = 1
+    git_mod.RESOLUTION_MAP = {"keep_local": "local", "keep_remote": "remote"}
+    git_mod.run_git_fetch = record("fetch", 10)
+    git_mod.run_git_status = record("status", 11)
+    git_mod.run_git_commit = record("commit", 12)
+    git_mod.run_git_push = record("push", 13)
+    git_mod.run_git_resolve = record("resolve", 14)
+    git_mod.run_git_diff = record("diff", 15)
+    git_mod.run_git_discard = record("discard", 16)
+
+    class ClientFactory:
+        @staticmethod
+        def get_instance(require_auth=True):
+            assert require_auth is True
+            return client
+
+    monkeypatch.setitem(sys.modules, "bifrost.git_commands", git_mod)
+    monkeypatch.setattr(cli, "BifrostClient", ClientFactory)
+
+    assert cli.handle_git(["fetch"]) == 10
+    assert cli.handle_git(["status"]) == 11
+    assert cli.handle_git(["commit", "-m", "sync files"]) == 12
+    assert cli.handle_git(["push"]) == 13
+    assert cli.handle_git(["resolve", "app.py=keep_local"]) == 14
+    assert cli.handle_git(["diff", "app.py"]) == 15
+    assert cli.handle_git(["discard", "app.py", "old.py"]) == 16
+
+    assert calls == [
+        ("fetch", (client,)),
+        ("status", (client,)),
+        ("commit", (client, "sync files")),
+        ("push", (client,)),
+        ("resolve", (client, {"app.py": "keep_local"})),
+        ("diff", (client, "app.py")),
+        ("discard", (client, ["app.py", "old.py"])),
+    ]
