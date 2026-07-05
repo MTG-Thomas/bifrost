@@ -24,6 +24,10 @@ from src.models.contracts.export_import import (
 from src.models.enums import ConfigType
 from src.routers import export_import
 from src.routers.export_import import (
+    _build_configs_export,
+    _build_integrations_export,
+    _build_knowledge_export,
+    _build_tables_export,
     _import_config_value,
     _import_oauth_provider,
     _json_response,
@@ -914,6 +918,167 @@ class TestImportConfigs:
         assert "Failed to re-encrypt secret" in result.details[0].error
 
 
+class TestExportBuilders:
+    @pytest.mark.asyncio
+    async def test_build_knowledge_export_resolves_org_names(self):
+        org_id = UUID("11111111-1111-1111-1111-111111111111")
+        doc = SimpleNamespace(
+            namespace="docs",
+            key="intro",
+            content="Hello",
+            doc_metadata={"source": "unit"},
+            organization_id=org_id,
+        )
+        db = _FakeDb([
+            [doc],
+            [SimpleNamespace(id=org_id, name="Contoso")],
+        ])
+
+        export = await _build_knowledge_export(db)
+
+        assert export.item_count == 1
+        assert export.items[0].namespace == "docs"
+        assert export.items[0].organization_id == str(org_id)
+        assert export.items[0].organization_name == "Contoso"
+
+    @pytest.mark.asyncio
+    async def test_build_tables_export_includes_documents_and_org_name(self):
+        org_id = UUID("22222222-2222-2222-2222-222222222222")
+        table = SimpleNamespace(
+            name="customers",
+            description="Customer table",
+            schema={"columns": [{"name": "email"}]},
+            organization_id=org_id,
+            documents=[
+                SimpleNamespace(id="doc-1", data={"email": "a@example.test"}),
+                SimpleNamespace(id="doc-2", data=None),
+            ],
+        )
+        db = _FakeDb([
+            [table],
+            [SimpleNamespace(id=org_id, name="Northwind")],
+        ])
+
+        export = await _build_tables_export(db)
+
+        assert export.item_count == 1
+        assert export.items[0].name == "customers"
+        assert export.items[0].organization_name == "Northwind"
+        assert export.items[0].documents[0].data == {"email": "a@example.test"}
+        assert export.items[0].documents[1].data == {}
+
+    @pytest.mark.asyncio
+    async def test_build_configs_export_marks_secrets_and_integration_names(self):
+        org_id = UUID("33333333-3333-3333-3333-333333333333")
+        integration_id = UUID("44444444-4444-4444-4444-444444444444")
+        cfg = SimpleNamespace(
+            key="api_key",
+            value={"value": "encrypted"},
+            config_type=ConfigType.SECRET,
+            description="API key",
+            organization_id=org_id,
+            integration_id=integration_id,
+        )
+        db = _FakeDb([
+            [cfg],
+            [SimpleNamespace(id=org_id, name="Fabrikam")],
+            "Halo",
+        ])
+
+        export = await _build_configs_export(db)
+
+        assert export.contains_encrypted_values is True
+        assert export.item_count == 1
+        assert export.items[0].key == "api_key"
+        assert export.items[0].value == "encrypted"
+        assert export.items[0].organization_name == "Fabrikam"
+        assert export.items[0].integration_name == "Halo"
+
+    @pytest.mark.asyncio
+    async def test_build_integrations_export_collects_schema_mappings_defaults_and_oauth(self):
+        org_id = UUID("55555555-5555-5555-5555-555555555555")
+        workflow_id = UUID("66666666-6666-6666-6666-666666666666")
+        integration_id = UUID("77777777-7777-7777-7777-777777777777")
+        integration = SimpleNamespace(
+            id=integration_id,
+            name="Microsoft Partner",
+            entity_id="tenant_id",
+            entity_id_name="Tenant ID",
+            default_entity_id="default-tenant",
+            list_entities_data_provider_id=workflow_id,
+            config_schema=[
+                SimpleNamespace(
+                    key="api_key",
+                    type="secret",
+                    required=True,
+                    description="Key",
+                    options=None,
+                    position=2,
+                ),
+                SimpleNamespace(
+                    key="api_url",
+                    type="string",
+                    required=False,
+                    description="URL",
+                    options=["one"],
+                    position=1,
+                ),
+            ],
+            mappings=[
+                SimpleNamespace(
+                    organization_id=org_id,
+                    entity_id="tenant-1",
+                    entity_name="Tenant One",
+                )
+            ],
+            oauth_provider=SimpleNamespace(
+                provider_name="microsoft",
+                display_name="Microsoft",
+                oauth_flow_type="authorization_code",
+                client_id="client-1",
+                encrypted_client_secret=b"secret",
+                authorization_url="https://login/authorize",
+                token_url="https://login/token",
+                token_url_defaults={"resource": "graph"},
+                redirect_uri="https://app/callback",
+                scopes=["openid"],
+                provider_metadata={"omit_token_exchange_scope": True},
+                organization_id=org_id,
+            ),
+        )
+        mapping_config = SimpleNamespace(
+            key="api_url",
+            value={"value": "https://tenant.example"},
+            config_type=ConfigType.STRING,
+        )
+        default_config = SimpleNamespace(
+            key="api_key",
+            value={"value": "encrypted-default"},
+            config_type=ConfigType.SECRET,
+        )
+        db = _FakeDb([
+            [integration],
+            [SimpleNamespace(id=org_id, name="Contoso")],
+            "List Tenants",
+            [mapping_config],
+            [default_config],
+        ])
+
+        export = await _build_integrations_export(db)
+
+        assert export.contains_encrypted_values is True
+        assert export.item_count == 1
+        item = export.items[0]
+        assert item.name == "Microsoft Partner"
+        assert item.list_entities_data_provider_name == "List Tenants"
+        assert [schema.key for schema in item.config_schema] == ["api_url", "api_key"]
+        assert item.mappings[0].organization_name == "Contoso"
+        assert item.mappings[0].config == {"api_url": "https://tenant.example"}
+        assert item.default_config == {"api_key": "encrypted-default"}
+        assert item.oauth_provider is not None
+        assert item.oauth_provider.encrypted_client_secret == "c2VjcmV0"
+
+
 class _FakeResult:
     def __init__(self, value):
         self.value = value
@@ -921,8 +1086,14 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self.value
 
+    def unique(self):
+        return self
+
     def all(self):
         return self.value
+
+    def scalars(self):
+        return self
 
 
 class _FakeDb:
