@@ -150,3 +150,126 @@ class TestListAgentsTool:
 
         assert "Error listing agents" in result.structured_content["error"]
         assert "database down" in result.structured_content["error"]
+
+
+class TestAgentMutationValidation:
+    @pytest.mark.asyncio
+    async def test_create_agent_rejects_invalid_inputs_before_db_access(self):
+        ctx = _context(admin=False)
+
+        result = await agents.create_agent(ctx, name="", system_prompt="prompt")
+        assert "name is required" in result.structured_content["error"]
+
+        result = await agents.create_agent(ctx, name="Dispatcher", system_prompt="")
+        assert "system_prompt is required" in result.structured_content["error"]
+
+        result = await agents.create_agent(ctx, name="x" * 256, system_prompt="prompt")
+        assert "255 characters" in result.structured_content["error"]
+
+        result = await agents.create_agent(
+            ctx,
+            name="Dispatcher",
+            system_prompt="x" * 50001,
+        )
+        assert "50000 characters" in result.structured_content["error"]
+
+        result = await agents.create_agent(
+            ctx,
+            name="Dispatcher",
+            system_prompt="prompt",
+            scope="tenant",
+        )
+        assert "scope must be" in result.structured_content["error"]
+
+        result = await agents.create_agent(
+            ctx,
+            name="Dispatcher",
+            system_prompt="prompt",
+            channels=["chat", "pager"],
+        )
+        assert "Invalid channels" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_agent_rejects_privilege_and_org_scope_escalation(self):
+        org_id = uuid4()
+        ctx = _context(admin=False, org_id=org_id)
+
+        result = await agents.create_agent(
+            ctx,
+            name="Global",
+            system_prompt="prompt",
+            scope="global",
+        )
+        assert "Only platform admins" in result.structured_content["error"]
+
+        result = await agents.create_agent(
+            ctx,
+            name="Privileged",
+            system_prompt="prompt",
+            system_tools=["create_agent"],
+        )
+        assert "privileged agent management tools" in result.structured_content["error"]
+
+        result = await agents.create_agent(
+            ctx,
+            name="Other Org",
+            system_prompt="prompt",
+            organization_id=str(uuid4()),
+        )
+        assert "another organization" in result.structured_content["error"]
+
+        result = await agents.create_agent(
+            _context(admin=False, org_id=None),
+            name="No Org",
+            system_prompt="prompt",
+        )
+        assert "organization_id is required" in result.structured_content["error"]
+
+        result = await agents.create_agent(
+            _context(admin=True, org_id=None),
+            name="Bad Org",
+            system_prompt="prompt",
+            organization_id="not-a-uuid",
+        )
+        assert "not a valid UUID" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_update_agent_rejects_invalid_inputs_before_db_access(self):
+        ctx = _context(admin=False)
+
+        result = await agents.update_agent(ctx, agent_id="")
+        assert "agent_id is required" in result.structured_content["error"]
+
+        result = await agents.update_agent(ctx, agent_id="bad")
+        assert "not a valid UUID" in result.structured_content["error"]
+
+        result = await agents.update_agent(
+            ctx,
+            agent_id=str(uuid4()),
+            channels=["chat", "pager"],
+        )
+        assert "Invalid channels" in result.structured_content["error"]
+
+        result = await agents.update_agent(
+            ctx,
+            agent_id=str(uuid4()),
+            delegated_agent_ids=[str(uuid4())],
+        )
+        assert "delegation" in result.structured_content["error"]
+
+        result = await agents.update_agent(
+            _context(admin=False, org_id=None),
+            agent_id=str(uuid4()),
+            name="Renamed",
+        )
+        assert "Organization context is required" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_delete_agent_rejects_missing_or_invalid_id_before_db_access(self):
+        ctx = _context(admin=False)
+
+        result = await agents.delete_agent(ctx, agent_id="")
+        assert "agent_id is required" in result.structured_content["error"]
+
+        result = await agents.delete_agent(ctx, agent_id="bad")
+        assert "not a valid UUID" in result.structured_content["error"]
