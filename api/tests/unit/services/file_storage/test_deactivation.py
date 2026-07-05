@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -50,3 +51,70 @@ async def test_deactivate_workflows_by_id_returns_zero_without_valid_ids() -> No
     assert await service.deactivate_workflows_by_id(["bad-id"]) == 0
 
     db.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_deactivate_workflows_by_id_updates_active_valid_ids() -> None:
+    result = SimpleNamespace(rowcount=2)
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+    service = DeactivationProtectionService(db)
+    first_id = uuid4()
+    second_id = uuid4()
+
+    count = await service.deactivate_workflows_by_id(
+        [str(first_id), "bad-id", str(second_id)]
+    )
+
+    assert count == 2
+    db.execute.assert_awaited_once()
+    statement = db.execute.await_args.args[0]
+    compiled = statement.compile()
+    assert compiled.params["id_1"] == [first_id, second_id]
+    assert compiled.params["is_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_deactivate_workflows_by_id_returns_zero_when_update_matches_none() -> None:
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=SimpleNamespace(rowcount=0))
+    service = DeactivationProtectionService(db)
+
+    count = await service.deactivate_workflows_by_id([str(uuid4())])
+
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_deactivate_removed_workflows_scopes_to_repo_rows_with_remaining_names() -> None:
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=SimpleNamespace(rowcount=3))
+    service = DeactivationProtectionService(db)
+
+    count = await service.deactivate_removed_workflows(
+        "workflows/sync.py",
+        {"keep_customer_sync"},
+    )
+
+    assert count == 3
+    statement = db.execute.await_args.args[0]
+    compiled = statement.compile()
+    assert compiled.params["path_1"] == "workflows/sync.py"
+    assert compiled.params["function_name_1"] == ["keep_customer_sync"]
+    assert compiled.params["is_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_deactivate_removed_workflows_deactivates_all_repo_rows_when_empty() -> None:
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=SimpleNamespace(rowcount=1))
+    service = DeactivationProtectionService(db)
+
+    count = await service.deactivate_removed_workflows("workflows/sync.py", set())
+
+    assert count == 1
+    statement = db.execute.await_args.args[0]
+    compiled = statement.compile()
+    assert compiled.params["path_1"] == "workflows/sync.py"
+    assert "function_name_1" not in compiled.params
+    assert compiled.params["is_active"] is False
