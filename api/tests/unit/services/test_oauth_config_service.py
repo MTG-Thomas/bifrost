@@ -104,6 +104,14 @@ async def test_secret_decrypt_failure_log_omits_secret_material(caplog):
     assert "super-secret-value" not in log_text
 
 
+@pytest.mark.asyncio
+async def test_get_secret_value_returns_none_when_config_missing() -> None:
+    service = OAuthConfigService(db=AsyncMock())
+    service._get_config_value = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    assert await service._get_secret_value("missing_secret") is None
+
+
 def test_provider_config_completeness_rules() -> None:
     assert not OAuthProviderConfig(
         provider="google",
@@ -123,6 +131,11 @@ def test_provider_config_completeness_rules() -> None:
     ).is_complete
     assert not OAuthProviderConfig(
         provider="oidc",
+        client_id="client",
+        client_secret="secret",
+    ).is_complete
+    assert not OAuthProviderConfig(
+        provider="unknown",  # type: ignore[arg-type]
         client_id="client",
         client_secret="secret",
     ).is_complete
@@ -168,6 +181,17 @@ async def test_set_config_value_updates_existing_and_adds_missing(
     assert db.added[0].value_json == {"value": "enc:secret"}
     assert db.added[0].created_by == "operator"
     assert db.flushes == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_config_keys_executes_delete_and_flushes() -> None:
+    db = _FakeDb()
+    service = OAuthConfigService(db=db)
+
+    await service._delete_config_keys(["a", "b"])
+
+    assert len(db.executed) == 1
+    assert db.flushes == 1
 
 
 @pytest.mark.asyncio
@@ -222,6 +246,7 @@ async def test_get_provider_config_returns_none_for_incomplete_provider() -> Non
     assert await service.get_provider_config("microsoft") is None
     assert await service.get_provider_config("google") is None
     assert await service.get_provider_config("oidc") is None
+    assert await service.get_provider_config("unknown") is None  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -406,9 +431,11 @@ async def test_discovery_tests_return_not_configured_and_error_responses(
 
     assert (await service.test_google_config("id", "secret")).success is False
     assert "HTTP 500" in (await service.test_oidc_config("https://issuer", "id", "secret")).message
+    assert "HTTP 500" in (await service.test_microsoft_config("id", "secret")).message
 
     _FakeAsyncClient.error = httpx.RequestError("offline")
     assert "Network error" in (await service.test_microsoft_config("id", "secret")).message
+    assert "Network error" in (await service.test_google_config("id", "secret")).message
 
 
 @pytest.mark.asyncio
@@ -427,3 +454,65 @@ async def test_oidc_discovery_reports_missing_required_fields(
 
     assert response.success is False
     assert "missing required fields" in response.message
+
+
+@pytest.mark.asyncio
+async def test_discovery_tests_use_saved_configs_for_fallback_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.error = None
+    _FakeAsyncClient.response = _FakeResponse(
+        payload={
+            "issuer": "https://issuer.example.com",
+            "authorization_endpoint": "https://issuer.example.com/auth",
+            "token_endpoint": "https://issuer.example.com/token",
+        }
+    )
+    monkeypatch.setattr(oauth_config_service.httpx, "AsyncClient", _FakeAsyncClient)
+    service = OAuthConfigService(db=AsyncMock())
+    configs = {
+        "microsoft": OAuthProviderConfig(
+            provider="microsoft",
+            client_id="ms-client",
+            client_secret="secret",
+            tenant_id="organizations",
+        ),
+        "oidc": OAuthProviderConfig(
+            provider="oidc",
+            client_id="oidc-client",
+            client_secret="secret",
+            discovery_url="https://issuer.example.com/.well-known/openid-configuration",
+        ),
+    }
+    service.get_provider_config = AsyncMock(side_effect=lambda provider: configs.get(provider))  # type: ignore[method-assign]
+
+    microsoft = await service.test_microsoft_config()
+    oidc = await service.test_oidc_config(client_id="id", client_secret="secret")
+
+    assert microsoft.success is True
+    assert oidc.success is True
+    assert _FakeAsyncClient.calls[0][0] == (
+        "https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration"
+    )
+    assert _FakeAsyncClient.calls[1][0] == (
+        "https://issuer.example.com/.well-known/openid-configuration"
+    )
+
+
+@pytest.mark.asyncio
+async def test_oidc_fallback_reports_missing_discovery_url() -> None:
+    service = OAuthConfigService(db=AsyncMock())
+    service.get_provider_config = AsyncMock(
+        return_value=OAuthProviderConfig(
+            provider="oidc",
+            client_id="id",
+            client_secret="secret",
+            discovery_url=None,
+        )
+    )  # type: ignore[method-assign]
+
+    response = await service.test_oidc_config(client_id="id", client_secret="secret")
+
+    assert response.success is False
+    assert response.message == "OIDC discovery URL is required"
