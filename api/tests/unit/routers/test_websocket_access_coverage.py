@@ -45,12 +45,271 @@ class _Db:
         return self._result
 
 
+class _WebSocket:
+    def __init__(self):
+        self.state = SimpleNamespace()
+        self.send_json = AsyncMock()
+
+
 def _db_context(db):
     @asynccontextmanager
     async def fake_get_db_context():
         yield db
 
     return fake_get_db_context
+
+
+def test_parse_channels_accepts_strings_objects_and_rejects_invalid_specs():
+    specs = ws_mod._parse_channels(
+        [
+            "conversation:abc",
+            {
+                "name": "table:customers",
+                "filter": {"user": "is_platform_admin"},
+                "scope": "global",
+            },
+            {"name": "files:workspace:docs", "scope": 42},
+        ]
+    )
+
+    assert [spec.name for spec in specs] == [
+        "conversation:abc",
+        "table:customers",
+        "files:workspace:docs",
+    ]
+    assert specs[1].filter is not None
+    assert specs[1].scope == "global"
+    assert specs[2].scope is None
+
+    with pytest.raises(ws_mod.WSError, match="channel must be"):
+        ws_mod._parse_channels([{"filter": {}}])
+
+    with pytest.raises(ws_mod.WSError, match="invalid filter"):
+        ws_mod._parse_channels([{"name": "table:bad", "filter": {"unknown": []}}])
+
+
+def test_file_channel_scope_and_path_helpers_cover_access_boundaries():
+    org_id = uuid4()
+    user = _user(org_id=org_id)
+    admin = _user(org_id=org_id, is_superuser=True)
+
+    assert ws_mod._parse_file_channel("files:workspace:apps/demo") == (
+        "workspace",
+        "apps/demo",
+    )
+    assert ws_mod._parse_file_channel("table:abc") is None
+    assert ws_mod._path_matches("apps/demo", "/apps/demo/main.py")
+    assert not ws_mod._path_matches("apps/demo", "apps/other/main.py")
+    assert ws_mod._file_org_and_scope(
+        user=user,
+        location="workspace",
+        requested_scope="ignored",
+    ) == (None, None)
+    assert ws_mod._file_org_and_scope(
+        user=user,
+        location="repo",
+        requested_scope=str(org_id),
+    ) == (org_id, str(org_id))
+    assert ws_mod._file_org_and_scope(
+        user=user,
+        location="repo",
+        requested_scope="global",
+    ) is None
+    assert ws_mod._file_org_and_scope(
+        user=admin,
+        location="repo",
+        requested_scope="global",
+    ) == (None, "global")
+    assert ws_mod._file_org_and_scope(
+        user=user,
+        location="repo",
+        requested_scope="not-a-uuid",
+    ) is None
+    assert ws_mod._file_channel("repo", None) == "files:repo:GLOBAL"
+
+
+@pytest.mark.asyncio
+async def test_load_policies_for_table_handles_cache_validation_and_ref_errors():
+    table_id = str(uuid4())
+    row = ({"policies": [{"name": "read", "actions": ["read"]}]}, uuid4(), None)
+    ws_mod._table_policy_cache.clear()
+
+    with (
+        patch.object(ws_mod, "get_db_context", _db_context(_Db(_OneResult(row)))),
+        patch.object(ws_mod, "resolve_policy_refs", AsyncMock()) as resolve_refs,
+    ):
+        policies = await ws_mod._load_policies_for_table(table_id)
+
+    assert policies is not None
+    assert len(policies.policies) == 1
+    resolve_refs.assert_awaited_once()
+    assert table_id in ws_mod._table_policy_cache
+
+    ws_mod._table_policy_cache[table_id] = ws_mod._RawTableEntry(
+        access={"policies": [{"$ref": "missing"}]},
+        org_id=uuid4(),
+        solution_id=None,
+    )
+    with (
+        patch.object(ws_mod, "get_db_context", _db_context(_Db(_OneResult(None)))),
+        patch.object(
+            ws_mod,
+            "resolve_policy_refs",
+            AsyncMock(side_effect=ws_mod.PolicyRuleNotFound("missing")),
+        ),
+    ):
+        denied = await ws_mod._load_policies_for_table(table_id)
+
+    assert denied is not None
+    assert denied.policies == []
+
+    invalid_row = ({"policies": [{"name": "bad", "actions": []}]}, None, None)
+    with patch.object(ws_mod, "get_db_context", _db_context(_Db(_OneResult(invalid_row)))):
+        invalid = await ws_mod._load_policies_for_table("table-name")
+
+    assert invalid is not None
+    assert invalid.policies == []
+
+
+@pytest.mark.asyncio
+async def test_authorize_file_subscribe_reports_errors_and_registers_success():
+    user = _user()
+    websocket = _WebSocket()
+
+    assert await ws_mod._authorize_file_subscribe(
+        websocket,
+        user,
+        ws_mod.ChannelSpec(name="bad", filter=None),
+    ) is None
+    websocket.send_json.assert_awaited_with(
+        {"type": "error", "channel": "bad", "message": "Invalid file channel"}
+    )
+
+    websocket = _WebSocket()
+    with patch.object(ws_mod, "_populate_user_roles", AsyncMock()):
+        assert await ws_mod._authorize_file_subscribe(
+            websocket,
+            user,
+            ws_mod.ChannelSpec(name="files:repo:docs", filter=None, scope="global"),
+        ) is None
+    websocket.send_json.assert_awaited_with(
+        {
+            "type": "error",
+            "channel": "files:repo:docs",
+            "message": "Access denied",
+        }
+    )
+
+    websocket = _WebSocket()
+    org_id = uuid4()
+    with (
+        patch.object(ws_mod, "_populate_user_roles", AsyncMock()) as populate,
+        patch.object(ws_mod, "_file_has_applicable_policy", AsyncMock(return_value=True)) as has_policy,
+    ):
+        channel = await ws_mod._authorize_file_subscribe(
+            websocket,
+            _user(org_id=org_id),
+            ws_mod.ChannelSpec(
+                name="files:repo:docs",
+                filter=None,
+                scope=str(org_id),
+            ),
+        )
+
+    assert channel == f"files:repo:{org_id}"
+    populate.assert_awaited_once()
+    has_policy.assert_awaited_once()
+    assert f"files:repo:{org_id}:docs" in websocket.state.file_subscriptions
+    assert hasattr(websocket, "_file_dispatcher")
+
+
+@pytest.mark.asyncio
+async def test_handle_file_message_revokes_filters_and_deduplicates_delivery():
+    user = _user()
+    websocket = _WebSocket()
+    websocket.state.file_subscriptions = {
+        "a": {
+            "channel_name": "files:repo:GLOBAL",
+            "requested_channel": "files:repo:docs",
+            "location": "repo",
+            "scope": None,
+            "organization_id": None,
+            "prefix": "docs",
+        },
+        "b": {
+            "channel_name": "files:repo:GLOBAL",
+            "requested_channel": "files:repo:docs-again",
+            "location": "repo",
+            "scope": None,
+            "organization_id": None,
+            "prefix": "docs",
+        },
+    }
+
+    await ws_mod._handle_file_message(
+        websocket,
+        user,
+        "files:other:GLOBAL",
+        {"type": "file_change", "path": "docs/a.md"},
+    )
+    websocket.send_json.assert_not_awaited()
+
+    with patch.object(ws_mod, "_file_has_applicable_policy", AsyncMock(return_value=False)):
+        await ws_mod._handle_file_message(
+            websocket,
+            user,
+            "files:repo:GLOBAL",
+            {"type": "file_policy_changed"},
+        )
+
+    assert websocket.send_json.await_count == 2
+    assert websocket.state.file_subscriptions == {}
+
+    websocket = _WebSocket()
+    websocket.state.file_subscriptions = {
+        "a": {
+            "channel_name": "files:repo:GLOBAL",
+            "requested_channel": "files:repo:docs",
+            "location": "repo",
+            "scope": None,
+            "organization_id": None,
+            "prefix": "docs",
+        },
+        "b": {
+            "channel_name": "files:repo:GLOBAL",
+            "requested_channel": "files:repo:docs-again",
+            "location": "repo",
+            "scope": None,
+            "organization_id": None,
+            "prefix": "docs",
+        },
+    }
+
+    with patch.object(ws_mod, "_file_allowed", AsyncMock(return_value=True)) as allowed:
+        await ws_mod._handle_file_message(
+            websocket,
+            user,
+            "files:repo:GLOBAL",
+            {
+                "type": "file_change",
+                "location": "repo",
+                "scope": "GLOBAL",
+                "path": "/docs/a.md",
+                "action": "write",
+            },
+        )
+
+    allowed.assert_awaited_once()
+    websocket.send_json.assert_awaited_once_with(
+        {
+            "type": "file_change",
+            "channel": "files:repo:docs",
+            "location": "repo",
+            "scope": "GLOBAL",
+            "path": "docs/a.md",
+            "action": "write",
+        }
+    )
 
 
 @pytest.mark.asyncio
