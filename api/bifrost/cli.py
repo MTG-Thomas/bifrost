@@ -237,13 +237,9 @@ def _check_cli_version() -> None:
     if installed in ("unknown", "0.0.0+source"):
         return  # dev/source install — nothing to compare against
 
-    # Re-load dotenv so a CWD-local .env's BIFROST_API_URL is honored even
-    # if bifrost.client's import-time load happened against a different cwd.
-    try:
-        from dotenv import find_dotenv, load_dotenv
-        load_dotenv(find_dotenv(usecwd=True), override=False)
-    except ImportError:
-        pass  # python-dotenv is optional; without it, only os.environ is consulted
+    # Re-load only the CLI-safe allowlist so an opted-in CWD .env can set
+    # BIFROST_API_URL without importing tokens, proxy settings, or CA paths.
+    credentials.load_allowed_dotenv(override=True)
 
     # Use credentials._resolve_url (not get_credentials) because the version
     # check only needs the URL — get_credentials returns None unless full
@@ -262,7 +258,7 @@ def _check_cli_version() -> None:
     # bifrost.gocovi.com) 403 the default `Python-urllib/X.Y` UA; httpx's UA
     # gets through and matches every other SDK request.
     try:
-        resp = httpx.get(f"{api_url}/api/version", timeout=3)
+        resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
@@ -459,9 +455,7 @@ async def native_login_flow(api_url: str, auto_open: bool = True) -> bool:
                 return False
 
             token_data = token_response.json()
-            expires_at = datetime.now(timezone.utc) + timedelta(
-                seconds=token_data.get("expires_in", 1800)
-            )
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 1800))
             credentials.save_credentials(
                 api_url=api_url,
                 access_token=token_data["access_token"],
@@ -2710,7 +2704,7 @@ async def _process_watch_batch(
                 # guard below never fires and every file re-uploads each tick.
                 rel = abs_p.relative_to(base_path).as_posix()
                 repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
-                file_hash = hashlib.md5(raw).hexdigest()
+                file_hash = _etag_md5(raw)
                 if state.get_known_hash(repo_path) == file_hash:
                     # No-op push: the server already has this content (common
                     # case: observer fired on our own pull write).
@@ -3484,11 +3478,22 @@ async def _sync_files(
         return 1
 
     data = resp.json()
+    prefix_filter = repo_prefix + "/" if repo_prefix else ""
     for item in data.get("files_metadata", []):
-        server_metadata[item["path"]] = {
+        server_path = item["path"]
+        if prefix_filter and not server_path.startswith(prefix_filter):
+            continue
+        try:
+            rel = _safe_server_rel_path(server_path, repo_prefix)
+        except ValueError as e:
+            print(f"Error: unsafe server file path {server_path!r}: {e}", file=sys.stderr)
+            return 1
+        server_metadata[server_path] = {
             "etag": item["etag"],
+            "content_hash": item.get("content_hash") or "",
             "last_modified": item["last_modified"],
             "updated_by": item.get("updated_by", ""),
+            "rel": rel,
         }
 
     # Filter .git/ objects from server listing

@@ -132,6 +132,14 @@ services:
         condition: service_healthy
     command: ["python", "-m", "scripts.init_container"]
 
+  coverage-init:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /coverage && chown -R 1000:1000 /coverage"]
+    volumes:
+      - test-coverage:/coverage
+    profiles:
+      - test
+
   # FastAPI Application (Test) - Only started for E2E tests
   api:
     image: bifrost-test-api-dev:latest
@@ -362,6 +370,7 @@ services:
       - ./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro
       - ./.github:/app/.github:ro
       - ./.claude/skills:/app/.claude/skills:ro
+      - ./.claude/hooks:/app/.claude/hooks:ro
       - ./.env.debug:/app/.env.debug:ro
       - ./debug.sh:/app/debug.sh:ro
       - ./docker-compose.debug.yml:/app/docker-compose.debug.yml:ro
@@ -395,6 +404,8 @@ services:
       seaweedfs:
         condition: service_started
       init:
+        condition: service_completed_successfully
+      coverage-init:
         condition: service_completed_successfully
     # C1.5: Run as bifrost uid so posture tests introspect a hardened context.
     # user: "1000:1000" bypasses gosu so cap_drop: ALL works.

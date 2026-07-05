@@ -500,14 +500,16 @@ def get_module_sync(path: str) -> CachedModule | None:
                     logger.warning(f"Failed to re-cache API module to Redis: {e}")
                 return api_module
 
-            # --- Cold-cache fallback 2: direct object storage (legacy fallback) ---
+            # --- Cold-cache fallback 2: direct object storage (legacy path) ---
             storage_content = _get_object_storage_module(storage_path)
             if storage_content is None:
                 continue
             try:
                 content_str = storage_content.decode("utf-8")
             except UnicodeDecodeError:
-                logger.warning(f"Could not decode S3 module as UTF-8: {storage_path}")
+                logger.warning(
+                    f"Could not decode object storage module as UTF-8: {storage_path}"
+                )
                 continue
 
             content_hash = hashlib.sha256(storage_content).hexdigest()
@@ -526,7 +528,7 @@ def get_module_sync(path: str) -> CachedModule | None:
 
             return module
 
-        logger.debug(f"Module not in cache, API, or S3: {path}")
+        logger.debug(f"Module not in cache, API, or object storage: {path}")
         return None
 
     except redis.RedisError as e:
@@ -618,17 +620,6 @@ def get_module_index_sync() -> set[str]:
                 logger.warning(f"Failed to repopulate module index from API: {e}")
             return api_paths
 
-        # API not available — try direct S3 (legacy path)
-        logger.debug("API index unavailable, falling back to S3 listing")
-        s3_paths = _list_s3_modules()
-        if s3_paths:
-            try:
-                client.sadd(MODULE_INDEX_KEY, *api_paths)
-                client.expire(MODULE_INDEX_KEY, MODULE_CACHE_TTL)
-            except redis.RedisError as e:
-                logger.warning(f"Failed to repopulate module index from API: {e}")
-            return api_paths
-
         # API not available — try direct object storage (legacy path)
         logger.debug("API index unavailable, falling back to object storage listing")
         storage_paths = _list_object_storage_modules()
@@ -661,13 +652,23 @@ def solution_has_submodules(base_path: str) -> bool:
     ctx = get_solution_context()
     if ctx is None:
         return False
+    prefix = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{base_path.rstrip('/')}/"
+    if _object_storage_provider() == "azure_blob":
+        client = _get_blob_container_client()
+        if client is None:
+            return False
+        try:
+            return next(client.list_blobs(name_starts_with=prefix), None) is not None
+        except Exception as e:
+            logger.debug(f"Azure Blob submodule check failed for {prefix}: {e}")
+            return False
+
     bucket = os.environ.get("BIFROST_S3_BUCKET")
     if not bucket:
         return False
     client = _get_s3_client()
     if client is None:
         return False
-    prefix = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{base_path.rstrip('/')}/"
     try:
         resp = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
         return resp.get("KeyCount", 0) > 0 or bool(resp.get("Contents"))

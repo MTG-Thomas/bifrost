@@ -10,7 +10,8 @@ across multiple Bifrost instances simultaneously, with three backends:
 - JsonBackend: ~/.bifrost/credentials.json as a dict-of-URLs
 - User config: ~/.bifrost/config.json stores the default connection pointer
 
-Resolution order: env vars → selected default → only stored connection → optional prompt.
+Resolution order: env vars → CWD .env → selected default → only stored
+connection → optional prompt → legacy single-record JSON.
 """
 
 import json
@@ -74,7 +75,12 @@ def get_credentials_path() -> Path:
 def load_allowed_dotenv(
     dotenv_path: str | os.PathLike[str] | None = None, *, override: bool = True
 ) -> None:
-    """Load the explicit ``.env`` allowlist used by the CLI."""
+    """Load the explicit ``.env`` allowlist used by the CLI.
+
+    The CLI supports opt-in project-local ``BIFROST_API_URL`` discovery, but it
+    must not import credentials, proxy settings, CA bundle paths, or other
+    security-sensitive process environment from an attacker-controlled CWD.
+    """
     try:
         from dotenv import dotenv_values, find_dotenv
     except ImportError:
@@ -505,6 +511,7 @@ def _upsert_cwd_dotenv_token_vars(updates: dict[str, str]) -> None:
     try:
         env_path.write_text("".join(lines))
     except OSError:
+        # Best effort: process env was already updated, so callers can continue.
         return
 
 
@@ -554,7 +561,6 @@ def resolve_current_connection(
         cwd_url = _resolve_url_from_cwd_dotenv()
         if cwd_url:
             return cwd_url, "cwd .env"
-
     urls = get_persistent_backend().list_urls()
     default_url = get_default_connection()
     if default_url and default_url in {url.rstrip("/") for url in urls}:
