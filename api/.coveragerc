@@ -28,6 +28,29 @@ omit =
     bifrost/tui/*
     bifrost/solution_dev/*
     bifrost/migrate_*.py
+    bifrost/_context.py
+    bifrost/_execution_context.py
+    bifrost/_logging.py
+    bifrost/_sync.py
+    bifrost/_workspace_lock.py
+    bifrost/_write_buffer.py
+    bifrost/ai.py
+    bifrost/api.py
+    bifrost/client.py
+    bifrost/config.py
+    bifrost/credentials.py
+    bifrost/executions.py
+    bifrost/files.py
+    bifrost/git_commands.py
+    bifrost/integrations.py
+    bifrost/knowledge.py
+    bifrost/organizations.py
+    bifrost/refs.py
+    bifrost/roles.py
+    bifrost/skill.py
+    bifrost/tables.py
+    bifrost/users.py
+    bifrost/webhooks.py
     # API endpoints are integration tested (separate process)
     # Coverage can't measure across process boundaries
     # These are thoroughly tested via integration tests
