@@ -11,6 +11,8 @@ Tests cover:
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+import pytest
+
 
 from src.services.tool_registry import (
     _normalize_tool_name,
@@ -53,6 +55,57 @@ def _make_tool_definition(**overrides) -> ToolDefinition:
 
 def _make_registry() -> ToolRegistry:
     return ToolRegistry(session=MagicMock())
+
+
+class _ScalarResult:
+    def __init__(self, values):
+        self._values = values
+
+    def all(self):
+        return self._values
+
+
+class _Result:
+    def __init__(self, *, rows=None, scalars=None, scalar=None):
+        self._rows = rows or []
+        self._scalars = scalars or []
+        self._scalar = scalar
+
+    def fetchall(self):
+        return self._rows
+
+    def scalars(self):
+        return _ScalarResult(self._scalars)
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+
+class _SequenceSession:
+    def __init__(self, *results):
+        self._results = list(results)
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return self._results.pop(0)
+
+
+def _workflow(**overrides):
+    defaults = dict(
+        id=uuid4(),
+        name="Get Ticket",
+        tool_description="Fetch ticket details",
+        description="Fallback description",
+        category="HaloPSA",
+        parameters_schema=[{"name": "ticket_id", "type": "int", "required": True}],
+        path="workflows/get_ticket.py",
+        function_name="run",
+        is_active=True,
+        type="tool",
+    )
+    defaults.update(overrides)
+    return type("WorkflowRow", (), defaults)()
 
 
 # ── _normalize_tool_name ─────────────────────────────────────────────
@@ -455,3 +508,118 @@ class TestFormatToolsForAnthropic:
         assert "input_schema" in result[0]
         assert "parameters" not in result[0]
         assert result[0]["input_schema"] is params
+
+
+class TestToolRegistryQueries:
+    @pytest.mark.asyncio
+    async def test_get_all_tools_maps_active_tool_workflows(self):
+        workflow = _workflow()
+        session = _SequenceSession(_Result(scalars=[workflow]))
+        registry = ToolRegistry(session=session)
+
+        tools = await registry.get_all_tools()
+
+        assert len(tools) == 1
+        tool = tools[0]
+        assert tool.id == workflow.id
+        assert tool.name == "Get Ticket"
+        assert tool.description == "Fetch ticket details"
+        assert tool.category == "HaloPSA"
+        assert tool.parameters_schema == workflow.parameters_schema
+        assert tool.file_path == "workflows/get_ticket.py"
+        assert tool.function_name == "run"
+        assert len(session.statements) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_tools_by_ids_returns_empty_without_query_for_empty_ids(self):
+        session = _SequenceSession()
+        registry = ToolRegistry(session=session)
+
+        assert await registry.get_tools_by_ids([]) == []
+        assert session.statements == []
+
+    @pytest.mark.asyncio
+    async def test_get_tools_by_ids_logs_assigned_non_tool_and_inactive_workflows(self, caplog):
+        requested_id = uuid4()
+        debug_rows = [
+            type(
+                "DebugWorkflow",
+                (),
+                {
+                    "id": requested_id,
+                    "name": "Regular Workflow",
+                    "is_active": False,
+                    "type": "workflow",
+                },
+            )()
+        ]
+        active_tool = _workflow(id=requested_id, tool_description=None)
+        session = _SequenceSession(
+            _Result(rows=debug_rows),
+            _Result(scalars=[active_tool]),
+        )
+        registry = ToolRegistry(session=session)
+
+        tools = await registry.get_tools_by_ids([requested_id])
+
+        assert len(tools) == 1
+        assert tools[0].description == "Fallback description"
+        assert "type='workflow'" in caplog.text
+        assert "is_active=False" in caplog.text
+        assert len(session.statements) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_tool_definitions_uses_all_tools_or_requested_ids(self, monkeypatch):
+        registry = _make_registry()
+        all_tool = _make_registered_tool(name="List Tickets", category="HaloPSA")
+        requested_tool = _make_registered_tool(name="Search Knowledge", category="General")
+
+        async def get_all_tools():
+            return [all_tool]
+
+        async def get_tools_by_ids(tool_ids):
+            assert tool_ids == [requested_tool.id]
+            return [requested_tool]
+
+        monkeypatch.setattr(registry, "get_all_tools", get_all_tools)
+        monkeypatch.setattr(registry, "get_tools_by_ids", get_tools_by_ids)
+
+        assert [tool.name for tool in await registry.get_tool_definitions()] == [
+            "halopsa_list_tickets"
+        ]
+        assert [
+            tool.name for tool in await registry.get_tool_definitions([requested_tool.id])
+        ] == ["wf_search_knowledge"]
+
+    @pytest.mark.asyncio
+    async def test_get_tool_by_name_and_id_return_none_for_missing_workflows(self):
+        session = _SequenceSession(
+            _Result(scalar=None),
+            _Result(scalar=None),
+        )
+        registry = ToolRegistry(session=session)
+
+        assert await registry.get_tool_by_name("Missing") is None
+        assert await registry.get_tool_by_id(uuid4()) is None
+        assert len(session.statements) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_tool_by_name_and_id_map_workflow_rows(self):
+        by_name = _workflow(name="Lookup Asset", tool_description=None)
+        by_id = _workflow(name="Update Asset")
+        session = _SequenceSession(
+            _Result(scalar=by_name),
+            _Result(scalar=by_id),
+        )
+        registry = ToolRegistry(session=session)
+
+        name_tool = await registry.get_tool_by_name("Lookup Asset")
+        id_tool = await registry.get_tool_by_id(by_id.id)
+
+        assert name_tool is not None
+        assert name_tool.description == "Fallback description"
+        assert name_tool.file_path == by_name.path
+        assert id_tool is not None
+        assert id_tool.name == "Update Asset"
+        assert id_tool.description == "Fetch ticket details"
+        assert len(session.statements) == 2
