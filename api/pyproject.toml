@@ -55,6 +55,9 @@ omit = [
     "bifrost/users.py",
     "bifrost/webhooks.py",
     "src/routers/*",
+    "src/jobs/*",
+    "src/scheduler/*",
+    "src/worker/*",
 ]
 
 [tool.coverage.report]

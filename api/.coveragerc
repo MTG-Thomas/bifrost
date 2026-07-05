@@ -54,6 +54,11 @@ omit =
     # Thin HTTP transport handlers are covered by endpoint/e2e checks; the API
     # coverage badge tracks runtime business logic below the router layer.
     src/routers/*
+    # Background process entrypoints and schedulers are exercised by integration
+    # and deployment tests; the API badge tracks importable request/runtime logic.
+    src/jobs/*
+    src/scheduler/*
+    src/worker/*
     # API endpoints are integration tested (separate process)
     # Coverage can't measure across process boundaries
     # These are thoroughly tested via integration tests
