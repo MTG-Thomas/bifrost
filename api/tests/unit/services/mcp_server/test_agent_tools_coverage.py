@@ -18,6 +18,16 @@ def _context(*, admin: bool = False, org_id=None, user_id=None) -> SimpleNamespa
     )
 
 
+def _context_without_org(*, admin: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        is_platform_admin=admin,
+        org_id=None,
+        user_id=uuid4(),
+        is_external=False,
+        user_email="admin@example.com" if admin else "user@example.com",
+    )
+
+
 def _agent(**overrides):
     row = SimpleNamespace(
         id=uuid4(),
@@ -219,7 +229,7 @@ class TestAgentMutationValidation:
         assert "another organization" in result.structured_content["error"]
 
         result = await agents.create_agent(
-            _context(admin=False, org_id=None),
+            _context_without_org(admin=False),
             name="No Org",
             system_prompt="prompt",
         )
@@ -258,7 +268,7 @@ class TestAgentMutationValidation:
         assert "delegation" in result.structured_content["error"]
 
         result = await agents.update_agent(
-            _context(admin=False, org_id=None),
+            _context_without_org(admin=False),
             agent_id=str(uuid4()),
             name="Renamed",
         )
