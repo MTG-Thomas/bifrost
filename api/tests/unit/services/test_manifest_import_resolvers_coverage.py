@@ -85,13 +85,13 @@ async def test_resolve_workflow_ref_tries_uuid_path_function_then_name():
     )
     assert path_db.execute_count == 1
 
-    name_db = FakeDb([None, UUID(WORKFLOW_ID)])
+    name_db = FakeDb([UUID(WORKFLOW_ID)])
     assert await ManifestResolver(name_db)._resolve_workflow_ref("Ticket triage") == UUID(WORKFLOW_ID)
-    assert name_db.execute_count == 2
+    assert name_db.execute_count == 1
 
-    missing_db = FakeDb([None, None])
+    missing_db = FakeDb([None])
     assert await ManifestResolver(missing_db)._resolve_workflow_ref("Missing") is None
-    assert missing_db.execute_count == 2
+    assert missing_db.execute_count == 1
 
 
 def test_resolve_config_uses_natural_key_cache_and_tracks_only_global_configs():
