@@ -149,6 +149,36 @@ class TestPasswordLoginSuccess:
 
 
 class TestPasswordLoginMfaRefusal:
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"error": "bad"}, "returned HTTP 401"),
+            ({"access_token": "only-access"}, "missing access_token/refresh_token"),
+        ],
+    )
+    def test_password_login_reports_http_and_payload_errors(
+        self,
+        capsys,
+        monkeypatch,
+        payload,
+        expected,
+    ):
+        status_code = 401 if "error" in payload else 200
+        stub = _stub_post(payload, status_code=status_code)
+        monkeypatch.setattr("httpx.AsyncClient", stub)
+
+        rc, result = asyncio.run(
+            cli.password_login_flow(
+                "http://localhost:38421",
+                "dev@gobifrost.com",
+                "password",
+            )
+        )
+
+        assert rc == 1
+        assert result is None
+        assert expected in capsys.readouterr().err
+
     def test_mfa_required_returns_exit_2(self, capsys, monkeypatch):
         stub = _stub_post({"mfa_required": True, "mfa_token": "mt", "expires_in": 300})
         monkeypatch.setattr("httpx.AsyncClient", stub)
@@ -712,6 +742,42 @@ class TestNativeLoginFlow:
 
 class TestDeviceLoginFlow:
     @pytest.mark.asyncio
+    async def test_device_login_uses_env_default_and_reports_code_request_error(
+        self,
+        monkeypatch,
+        capsys,
+    ):
+        class Response:
+            status_code = 503
+
+            def json(self):
+                return {}
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                assert kwargs["base_url"] == "https://env.example.test"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                assert path == "/auth/device/code"
+                return Response()
+
+        monkeypatch.setenv("BIFROST_DEV_URL", "https://env.example.test/")
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.device_login_flow(api_url=None, auto_open=False) is False
+        assert "Error requesting device code: 503" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
     async def test_device_login_polls_until_token_and_saves_credentials(
         self,
         monkeypatch,
@@ -795,6 +861,102 @@ class TestDeviceLoginFlow:
         out = capsys.readouterr().out
         assert "Enter this code: ABCD-1234" in out
         assert "Logged in as device@example.test" in out
+
+    @pytest.mark.asyncio
+    async def test_device_login_reports_poll_http_error_and_auth_me_fallback(
+        self,
+        monkeypatch,
+        capsys,
+    ):
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class PollErrorClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/device/code":
+                    return Response(
+                        200,
+                        {
+                            "device_code": "device-1",
+                            "user_code": "ABCD-1234",
+                            "verification_url": "/device",
+                            "interval": 1,
+                        },
+                    )
+                if path == "/auth/device/token":
+                    return Response(500, {})
+                raise AssertionError(f"unexpected POST {path}")
+
+        class SuccessClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/device/code":
+                    return Response(
+                        200,
+                        {
+                            "device_code": "device-1",
+                            "user_code": "ABCD-1234",
+                            "verification_url": "/device",
+                            "interval": 1,
+                        },
+                    )
+                if path == "/auth/device/token":
+                    return Response(
+                        200,
+                        {
+                            "access_token": "access-2",
+                            "refresh_token": "refresh-2",
+                            "expires_in": 1800,
+                        },
+                    )
+                raise AssertionError(f"unexpected POST {path}")
+
+            async def get(self, path, headers=None):
+                raise RuntimeError("profile unavailable")
+
+        async def sleep(_delay):
+            return None
+
+        monkeypatch.setattr(cli.httpx, "AsyncClient", PollErrorClient)
+        monkeypatch.setattr(cli.asyncio, "sleep", sleep)
+        monkeypatch.setattr(
+            cli.credentials,
+            "save_credentials",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.device_login_flow("https://api.example.test", auto_open=False) is False
+        assert "Error polling for token: 500" in capsys.readouterr().err
+
+        monkeypatch.setattr(cli.httpx, "AsyncClient", SuccessClient)
+        assert await cli.device_login_flow("https://api.example.test", auto_open=False)
+        assert "Logged in successfully" in capsys.readouterr().out
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
