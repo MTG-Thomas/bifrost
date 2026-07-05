@@ -7,6 +7,7 @@ import pytest
 
 from src.models.enums import EventDeliveryStatus, EventStatus
 from src.services.events import processor as p
+from src.services.webhooks.protocol import Deliver, Rejected, ValidationResponse, WebhookRequest
 
 
 def _make_event(event_id: uuid.UUID | None = None) -> SimpleNamespace:
@@ -113,6 +114,190 @@ def test_delivery_failure_target_uses_agent_id_for_agent_subscriptions():
     assert target_id == delivery.subscription.agent_id
 
 
+def test_render_template_preserves_single_value_types_and_substitutes_mixed_text():
+    context = {
+        "payload": {
+            "ticket": {"id": 123, "title": "Cannot log in"},
+            "tags": ["urgent", "vip"],
+        }
+    }
+
+    assert p._render_template("{{ payload.ticket.id }}", context) == 123
+    assert p._render_template("Ticket {{ payload.ticket.id }}: {{ payload.ticket.title }}", context) == (
+        "Ticket 123: Cannot log in"
+    )
+    assert p._render_template("{{ payload.missing }}", context) == "{{ payload.missing }}"
+    assert p._render_template("tags={{ payload.tags }}", context) == "tags=['urgent', 'vip']"
+
+
+def test_process_input_mapping_builds_event_parameters_with_schedule_context():
+    event = _make_event()
+    event.headers = {"x-source": "halo"}
+    event.data = {"ticket": {"id": 123, "summary": "Cannot log in"}}
+    event.event_source.schedule_source = SimpleNamespace()
+    event.event_source.schedule_source.cron_expression = "0 6 * * *"
+    subscription = SimpleNamespace(id=uuid.uuid4())
+
+    mapped = p._process_input_mapping(
+        {
+            "ticket_id": "{{ payload.ticket.id }}",
+            "summary": "Ticket {{ payload.ticket.summary }}",
+            "source": "{{ headers.x-source }}",
+            "cron": "{{ cron_expression }}",
+            "static": {"priority": "high"},
+        },
+        event,
+        subscription,
+    )
+
+    assert mapped == {
+        "ticket_id": 123,
+        "summary": "Ticket Cannot log in",
+        "source": "halo",
+        "cron": "0 6 * * *",
+        "static": {"priority": "high"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_handles_adapter_result_types_and_errors(monkeypatch):
+    session = AsyncMock()
+    processor = p.EventProcessor(session)
+    event_source = SimpleNamespace(id=uuid.uuid4())
+    webhook_source = SimpleNamespace(
+        adapter_name="generic",
+        config={"secret": "s"},
+        state={"token": "t"},
+    )
+    request = WebhookRequest(
+        method="POST",
+        path="/webhooks/source",
+        headers={},
+        query_params={},
+        body=b"{}",
+        client_ip="10.0.0.1",
+    )
+    adapter = SimpleNamespace(handle_request=AsyncMock())
+    monkeypatch.setattr(p, "get_adapter", lambda _name: adapter)
+
+    validation = ValidationResponse(status_code=202, body="ok")
+    adapter.handle_request.return_value = validation
+    assert await processor.process_webhook(event_source, webhook_source, request) is validation
+
+    rejected = Rejected(message="bad signature", status_code=401)
+    adapter.handle_request.return_value = rejected
+    assert await processor.process_webhook(event_source, webhook_source, request) is rejected
+
+    deliver = Deliver(data={"id": 1}, event_type="ticket.created")
+    processor._process_delivery = AsyncMock(return_value=deliver)
+    adapter.handle_request.return_value = deliver
+    assert await processor.process_webhook(event_source, webhook_source, request) is deliver
+    processor._process_delivery.assert_awaited_once_with(
+        webhook_source=webhook_source,
+        event_source=event_source,
+        deliver=deliver,
+        request=request,
+    )
+
+    adapter.handle_request.side_effect = RuntimeError("adapter exploded")
+    result = await processor.process_webhook(event_source, webhook_source, request)
+    assert isinstance(result, Rejected)
+    assert result.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_rejects_missing_and_unknown_adapter(monkeypatch):
+    processor = p.EventProcessor(AsyncMock())
+    event_source = SimpleNamespace(id=uuid.uuid4())
+    webhook_source = SimpleNamespace(adapter_name="missing", config=None, state=None)
+    request = WebhookRequest("POST", "/webhooks/source", {}, {}, b"{}")
+    monkeypatch.setattr(p, "get_adapter", lambda _name: None)
+
+    missing = await processor.process_webhook(event_source, webhook_source, request)
+    assert isinstance(missing, Rejected)
+    assert missing.status_code == 500
+
+    adapter = SimpleNamespace(handle_request=AsyncMock(return_value=object()))
+    monkeypatch.setattr(p, "get_adapter", lambda _name: adapter)
+    unknown = await processor.process_webhook(event_source, webhook_source, request)
+    assert isinstance(unknown, Rejected)
+    assert unknown.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_emit_topic_noops_without_active_source_and_skips_invalid_subscriptions():
+    source_id = uuid.uuid4()
+    event_source_id = uuid.uuid4()
+    session = AsyncMock()
+    session.add = MagicMock()
+    processor = p.EventProcessor(session)
+    processor._source_repo.get_by_topic = AsyncMock(
+        return_value=SimpleNamespace(id=source_id, organization_id=event_source_id)
+    )
+    valid_workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        target_type="workflow",
+        workflow_id=uuid.uuid4(),
+        workflow=SimpleNamespace(id=uuid.uuid4()),
+    )
+    missing_workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        target_type="workflow",
+        workflow_id=None,
+        workflow=None,
+    )
+    valid_agent = SimpleNamespace(
+        id=uuid.uuid4(),
+        target_type="agent",
+        agent_id=uuid.uuid4(),
+        workflow_id=None,
+    )
+    missing_agent = SimpleNamespace(
+        id=uuid.uuid4(),
+        target_type="agent",
+        agent_id=None,
+        workflow_id=None,
+    )
+    processor._subscription_repo.get_active_for_event = AsyncMock(
+        return_value=[valid_workflow, missing_workflow, valid_agent, missing_agent]
+    )
+
+    event_id, notified = await processor.emit_topic(topic="ticket.created", data={"id": 123})
+
+    assert isinstance(event_id, uuid.UUID)
+    assert notified == 4
+    assert session.add.call_count == 3
+    assert session.flush.await_count == 3
+
+    processor._source_repo.get_by_topic.return_value = None
+    event_id, notified = await processor.emit_topic(topic="ticket.closed", data={})
+    assert isinstance(event_id, uuid.UUID)
+    assert notified == 0
+
+
+@pytest.mark.asyncio
+async def test_broadcast_event_update_swallows_pubsub_failures(monkeypatch):
+    processor = p.EventProcessor(AsyncMock())
+    event = _make_event()
+    manager = SimpleNamespace(broadcast=AsyncMock(side_effect=RuntimeError("socket down")))
+    monkeypatch.setattr("src.core.pubsub.manager", manager)
+
+    await processor._broadcast_event_update(
+        event_source_id=event.event_source_id,
+        event=event,
+        update_type="event_updated",
+        success_count=1,
+        failed_count=2,
+        queued_count=3,
+        pending_count=4,
+    )
+
+    manager.broadcast.assert_awaited_once()
+    channel, message = manager.broadcast.call_args[0]
+    assert channel == f"event-source:{event.event_source_id}"
+    assert message["event"]["delivery_count"] == 10
+
+
 @pytest.mark.asyncio
 async def test_emit_delivery_retry_exhausted_loads_event_and_emits_builtin(monkeypatch):
     db = AsyncMock()
@@ -191,3 +376,55 @@ async def test_run_delivery_execution_update_failed_emits_retry_and_broadcasts()
     emit_retry.assert_awaited_once_with(db, delivery, "workflow failed")
     broadcast.assert_awaited_once_with(db, delivery_repo, delivery)
 
+
+@pytest.mark.asyncio
+async def test_run_delivery_execution_update_returns_when_delivery_missing():
+    scalar_result = MagicMock()
+    scalar_result.unique.return_value.scalar_one_or_none.return_value = None
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=scalar_result)
+
+    await p._run_delivery_execution_update(
+        db,
+        str(uuid.uuid4()),
+        EventDeliveryStatus.SUCCESS,
+        None,
+    )
+
+    db.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_delivery_from_execution_uses_session_factory(monkeypatch):
+    calls = []
+
+    class SessionContext:
+        async def __aenter__(self):
+            return "db-session"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class SessionFactory:
+        def __call__(self):
+            return SessionContext()
+
+    db = SimpleNamespace(commit=AsyncMock())
+
+    async def enter(self):
+        return db
+
+    SessionContext.__aenter__ = enter
+
+    monkeypatch.setattr("src.core.database.get_session_factory", lambda: SessionFactory())
+
+    async def run_update(session, execution_id, delivery_status, error_message):
+        calls.append((session, execution_id, delivery_status, error_message))
+
+    monkeypatch.setattr(p, "_run_delivery_execution_update", run_update)
+    execution_id = str(uuid.uuid4())
+
+    await p.update_delivery_from_execution(execution_id, "Success", "ignored")
+
+    assert calls == [(db, execution_id, EventDeliveryStatus.SUCCESS, "ignored")]
+    db.commit.assert_awaited_once()
