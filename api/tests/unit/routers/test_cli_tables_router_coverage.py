@@ -93,6 +93,47 @@ async def test_create_table_reports_exact_scope_duplicate() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_table_allows_bad_app_header_and_returns_created_table() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    db = _db(None)
+
+    async def refresh(row):
+        row.id = uuid4()
+        row.created_at = created
+        row.updated_at = created
+
+    db.refresh = AsyncMock(side_effect=refresh)
+
+    with patch.object(cli, "_resolve_sdk_org_id", AsyncMock(return_value=ORG_ID)):
+        result = await cli.cli_create_table(
+            SDKTableCreateRequest(
+                name="tickets",
+                table_schema={"columns": [{"name": "id", "type": "text"}]},
+                description="Ticket cache",
+                scope=ORG_ID,
+            ),
+            _request(headers={"X-Bifrost-App": "not-a-uuid"}),
+            _user(),
+            db,
+        )
+
+    assert result.name == "tickets"
+    assert result.organization_id == ORG_ID
+    assert result.table_schema == {"columns": [{"name": "id", "type": "text"}]}
+    assert result.description == "Ticket cache"
+    assert result.created_at == created.isoformat()
+    assert result.updated_at == created.isoformat()
+    assert db.add.call_count == 1
+    created_table = db.add.call_args.args[0]
+    assert created_table.name == "tickets"
+    assert created_table.organization_id.hex == ORG_ID.replace("-", "")
+    assert created_table.created_by == "operator@example.com"
+    assert created_table.access
+    db.commit.assert_awaited_once()
+    db.refresh.assert_awaited_once_with(created_table)
+
+
+@pytest.mark.asyncio
 async def test_list_tables_sorts_tables_and_uses_external_trust_flags() -> None:
     created = datetime(2026, 1, 1, tzinfo=timezone.utc)
     tables = [
