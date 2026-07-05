@@ -93,7 +93,7 @@ async def iter_encrypted_payload_file(
     """Yield decrypted chunks from a payload file created by export."""
     import base64
 
-    with path.open("rb") as f:
+    with path.open("rb") as f:  # NOSONAR - async iterator decrypts bounded payload chunks from local disk.
         first = f.readline()
         if not first:
             raise ValueError(f"empty solution file payload: {path}")

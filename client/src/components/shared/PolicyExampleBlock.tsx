@@ -38,11 +38,11 @@ export function PolicyExampleBlock({
 	const [copied, setCopied] = useState(false);
 	const text = serialize(policy, format);
 
-	function handleCopy() {
+	async function handleCopy() {
 		// Guard the clipboard call so jsdom (no navigator.clipboard) doesn't
 		// throw; the button still flips to "Copied!" for user feedback.
 		try {
-			void navigator.clipboard?.writeText(text);
+			await navigator.clipboard?.writeText(text);
 		} catch {
 			// no-op; visual state still updates
 		}

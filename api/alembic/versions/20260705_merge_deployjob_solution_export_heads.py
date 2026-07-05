@@ -19,8 +19,10 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Merge migration heads only; schema changes live in the parent revisions."""
     pass
 
 
 def downgrade() -> None:
+    """Merge migration heads only; downgrade behavior lives in parent revisions."""
     pass

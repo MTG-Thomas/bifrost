@@ -163,7 +163,7 @@ async def create_user(
     )
 
     svc = UserInviteService(db)
-    raw_token, invite = await svc.create_or_replace(
+    raw_token, _ = await svc.create_or_replace(
         user_id=new_user.id, created_by=user.user_id
     )
     invite_status = InviteStatus.PENDING

@@ -158,7 +158,7 @@ function referencedKnowledgeNamespaces(
 			for (const n of ns) if (typeof n === "string" && n) out.add(n);
 		}
 	}
-	return Array.from(out).sort();
+	return Array.from(out).sort((a, b) => a.localeCompare(b));
 }
 
 /**

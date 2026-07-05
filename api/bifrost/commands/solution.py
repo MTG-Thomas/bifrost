@@ -56,6 +56,7 @@ from bifrost.solution_descriptor import (
 # on first run with no deploy.
 _SAMPLE_WORKFLOW_PATH = "functions/hello.py"
 _SAMPLE_WORKFLOW_REF = f"{_SAMPLE_WORKFLOW_PATH}::main"
+_SOLUTIONS_API_PATH = "/api/solutions"
 _SAMPLE_WORKFLOW_SOURCE = '''\
 from bifrost import workflow
 
@@ -103,7 +104,7 @@ async def _post_create_install_for_descriptor(
     descriptor: SolutionDescriptor,
     target_org_id: str | None,
 ) -> Any:
-    create = await client.post("/api/solutions", json={
+    create = await client.post(_SOLUTIONS_API_PATH, json={
         "slug": descriptor.slug,
         "name": descriptor.name,
         "organization_id": target_org_id,
@@ -145,7 +146,7 @@ def _create_and_bind_solution_workspace(
         try:
             install = create.json()
             binding = binding_from_install(install, descriptor_slug=descriptor.slug)
-        except (ValueError, SolutionBindingError) as exc:
+        except ValueError as exc:
             raise click.ClickException(
                 "Created Solution install, but failed to read its binding from the "
                 f"response: {exc}. Use `bifrost solution bind --solution <id>` "
@@ -237,7 +238,7 @@ def bind_cmd(path: str, solution_ref: str) -> None:
 
     async def _run() -> None:
         client = BifrostClient.get_instance(require_auth=True)
-        resp = await client.get("/api/solutions")
+        resp = await client.get(_SOLUTIONS_API_PATH)
         if resp.status_code != 200:
             raise click.ClickException(
                 f"Failed to list installs ({resp.status_code}): {resp.text[:200]}"
@@ -1372,7 +1373,7 @@ def resolve_install_id_for_workspace(client, solution_root) -> str | None:
         if solution_root is None or not is_solution_workspace(solution_root):
             return None
         descriptor = load_descriptor(solution_root)
-        resp = client._sync_http.get("/api/solutions")
+        resp = client._sync_http.get(_SOLUTIONS_API_PATH)
         if resp.status_code != 200:
             return None
         installs = resp.json().get("solutions", [])
@@ -1403,7 +1404,7 @@ async def _resolve_bound_solution(
     solution_ref: str | None,
 ):
     if solution_ref is not None:
-        resp = await client.get("/api/solutions")
+        resp = await client.get(_SOLUTIONS_API_PATH)
         if resp.status_code != 200:
             raise click.ClickException(
                 f"Failed to list installs ({resp.status_code}): {resp.text[:200]}"
@@ -1499,7 +1500,7 @@ def pull_cmd(path: str, solution_id: str | None, org: str | None, is_global: boo
 
         target_id = solution_id
         if target_id is None:
-            resp = await client.get("/api/solutions")
+            resp = await client.get(_SOLUTIONS_API_PATH)
             if resp.status_code != 200:
                 raise click.ClickException(
                     f"Failed to list installs ({resp.status_code}): {resp.text[:200]}"
@@ -2010,7 +2011,7 @@ def export_cmd(
             sol_id = solution_ref
         except (ValueError, AttributeError):
             # Slug resolution.
-            list_resp = await client.get("/api/solutions")
+            list_resp = await client.get(_SOLUTIONS_API_PATH)
             if list_resp.status_code != 200:
                 raise click.ClickException(
                     f"Failed to list solutions ({list_resp.status_code}): {list_resp.text[:200]}"

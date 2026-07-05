@@ -67,6 +67,7 @@ class Worker:
         self._shutdown_event = asyncio.Event()
         self._consumers: list = []
         self._stopping = False
+        self._stop_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the worker.
@@ -205,7 +206,7 @@ class Worker:
     def handle_signal(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}, initiating shutdown...")
-        asyncio.create_task(self.stop())
+        self._stop_task = asyncio.create_task(self.stop())
 
 
 async def main() -> None:

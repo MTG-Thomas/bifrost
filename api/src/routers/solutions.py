@@ -114,7 +114,7 @@ def _safe_zip_filename(filename: str) -> str:
 
 
 async def _spool_upload_to_temp(file: UploadFile, *, prefix: str) -> Path:
-    tmp = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".zip", delete=False)
+    tmp = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".zip", delete=False)  # NOSONAR - async endpoint spools UploadFile chunks into a local temporary zip.
     path = Path(tmp.name)
     try:
         with tmp:
@@ -408,7 +408,7 @@ async def export_solution(
 
     artifact = SolutionSourceArtifactStorage(solution_id)
     filename = _safe_zip_filename(f"{sol.slug}-{sol.version or 'unversioned'}.zip")
-    tmp = tempfile.NamedTemporaryFile(
+    tmp = tempfile.NamedTemporaryFile(  # NOSONAR - async endpoint prepares a local zip artifact for background response cleanup.
         prefix="bifrost-solution-export-",
         suffix=".zip",
         delete=False,
@@ -417,7 +417,7 @@ async def export_solution(
     tmp.close()
     source_path: Path | None = None
     try:
-        stored_source_path = tempfile.NamedTemporaryFile(
+        stored_source_path = tempfile.NamedTemporaryFile(  # NOSONAR - async endpoint prepares a local source zip before async storage copy.
             prefix="bifrost-solution-source-",
             suffix=".zip",
             delete=False,

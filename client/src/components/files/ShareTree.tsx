@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useState } from "react";
 import {
 	ChevronDown,
 	ChevronRight,
@@ -69,6 +69,16 @@ function FolderNode({
 	const [children, setChildren] = useState<StructureEntry[] | null>(null);
 	const selected =
 		selectedLocation === location && selectedPrefix === prefix;
+	const selectAndToggle = () => {
+		onSelect(location, prefix);
+		setExpanded((value) => !value);
+	};
+	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (event.key === "Enter" || event.key === " ") {
+			event.preventDefault();
+			selectAndToggle();
+		}
+	};
 
 	useEffect(() => {
 		let cancelled = false;
@@ -93,15 +103,14 @@ function FolderNode({
 					<div
 						role="treeitem"
 						aria-selected={selected}
+						tabIndex={0}
 						className={
 							"flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-sm hover:bg-muted " +
 							(selected ? "bg-muted font-medium" : "")
 						}
 						style={{ paddingLeft: `${depth * 12 + 4}px` }}
-						onClick={() => {
-							onSelect(location, prefix);
-							setExpanded((value) => !value);
-						}}
+						onClick={selectAndToggle}
+						onKeyDown={handleKeyDown}
 					>
 						{expanded ? (
 							<ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -188,6 +197,13 @@ export function ShareTree({
 				const locationActive = selectedLocation === share.location;
 				const selected = locationActive && selectedPrefix === "";
 				const effectiveReadOnly = readOnly || share.readOnly;
+				const selectShare = () => onSelect(share.location, "");
+				const handleShareKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+					if (event.key === "Enter" || event.key === " ") {
+						event.preventDefault();
+						selectShare();
+					}
+				};
 				return (
 					<div key={share.location}>
 						<ContextMenu>
@@ -195,11 +211,13 @@ export function ShareTree({
 								<div
 									role="treeitem"
 									aria-selected={selected}
+									tabIndex={0}
 									className={
 										"flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-sm hover:bg-muted " +
 										(selected ? "bg-muted font-medium" : "")
 									}
-									onClick={() => onSelect(share.location, "")}
+									onClick={selectShare}
+									onKeyDown={handleShareKeyDown}
 								>
 									<HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 									<span className="truncate" title={share.location}>

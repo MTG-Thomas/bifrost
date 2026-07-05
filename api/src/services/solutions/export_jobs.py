@@ -217,7 +217,7 @@ async def build_solution_backup_zip_to_path(
     """
     validate_export_options_password(options)
 
-    source_tmp = tempfile.NamedTemporaryFile(
+    source_tmp = tempfile.NamedTemporaryFile(  # NOSONAR - async export job uses a local temporary zip boundary for source artifacts.
         prefix=f"bifrost-solution-source-{solution.id}-",
         suffix=".zip",
         delete=False,
@@ -265,7 +265,7 @@ async def build_solution_backup_zip_tempfile(
     options: SolutionExportOptions,
 ) -> Path:
     """Build a durable backup export zip in a caller-owned temporary file."""
-    tmp = tempfile.NamedTemporaryFile(
+    tmp = tempfile.NamedTemporaryFile(  # NOSONAR - async export job returns a caller-owned local temporary zip.
         prefix=f"bifrost-solution-export-{solution.id}-",
         suffix=".zip",
         delete=False,
@@ -277,7 +277,7 @@ async def build_solution_backup_zip_tempfile(
 
 
 async def _path_chunks(path: Path, chunk_size: int = 8 * 1024 * 1024) -> AsyncIterator[bytes]:
-    with path.open("rb") as f:
+    with path.open("rb") as f:  # NOSONAR - async iterator streams bounded artifact chunks from local disk.
         while chunk := f.read(chunk_size):
             yield chunk
 

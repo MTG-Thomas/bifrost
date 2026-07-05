@@ -417,7 +417,7 @@ export function Solutions() {
 						className="accent-primary"
 						aria-label="Show inactive"
 					/>
-					Show inactive
+					<span>Show inactive</span>
 				</label>
 			</div>
 
