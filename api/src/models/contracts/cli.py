@@ -227,9 +227,7 @@ class SDKIntegrationsGetRequest(BaseModel):
     )
     solution: str | None = Field(
         default=None,
-        description="Solution install id (from ctx.solution_id) — when set and the "
-        "named integration is missing but DECLARED by this solution, the server "
-        "raises 424 instead of returning null.",
+        description="Optional solution install id used to fail loudly for declared missing integrations.",
     )
 
     model_config = ConfigDict(from_attributes=True)

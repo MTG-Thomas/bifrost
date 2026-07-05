@@ -67,11 +67,17 @@ def _source_in_scope(context: Any, source_org_id: UUID | None) -> bool:
     - org user: own org OR global.
     A cross-org source is out of scope for any non-bypass caller.
     """
+    if isinstance(source_org_id, str) and source_org_id:
+        source_org_id = UUID(source_org_id)
+    elif source_org_id is not None and not isinstance(source_org_id, UUID):
+        source_org_id = None
+
     if getattr(context, "is_platform_admin", False):
+        if _is_mcp_context(context):
+            context_org_id = _context_org_id(context)
+            return context_org_id is None or source_org_id is None or source_org_id == context_org_id
         return True
-    ctx_org = getattr(context, "org_id", None)
-    if isinstance(ctx_org, str) and ctx_org:
-        ctx_org = UUID(ctx_org)
+    ctx_org = _context_org_id(context)
     if source_org_id is not None:
         return source_org_id == ctx_org
     return True
@@ -454,7 +460,7 @@ async def get_event_source(
             # scope — 404-style denial for out-of-scope sources (don't reveal
             # existence cross-org / global-to-external).
             if not _source_in_scope(context, source.organization_id):
-                return error_result(f"Event source not found: {source_id}")
+                return error_result("Not authorized to access event resources for this organization.")
 
             sub_repo = EventSubscriptionRepository(db)
             subscription_count = await sub_repo.count_by_source(source.id, active_only=True)
@@ -528,7 +534,7 @@ async def update_event_source(
             # scope — 404-style denial for out-of-scope sources (don't reveal
             # existence cross-org / global-to-external).
             if not _source_in_scope(context, source.organization_id):
-                return error_result(f"Event source not found: {source_id}")
+                return error_result("Not authorized to access event resources for this organization.")
 
             # Update basic fields
             if name is not None:
@@ -613,7 +619,7 @@ async def delete_event_source(
             # scope — 404-style denial for out-of-scope sources (don't reveal
             # existence cross-org / global-to-external).
             if not _source_in_scope(context, source.organization_id):
-                return error_result(f"Event source not found: {source_id}")
+                return error_result("Not authorized to access event resources for this organization.")
 
             # Unsubscribe webhooks
             if source.source_type == EventSourceType.WEBHOOK and source.webhook_source:
@@ -879,6 +885,33 @@ async def delete_event_subscription(
 
     try:
         async with get_tool_db(context) as db:
+            if _is_mcp_context(context):
+                result = await db.execute(
+                    select(EventSubscription)
+                    .options(joinedload(EventSubscription.event_source))
+                    .where(
+                        EventSubscription.id == UUID(subscription_id),
+                        EventSubscription.event_source_id == UUID(source_id),
+                    )
+                )
+                subscription = result.scalar_one_or_none()
+
+                if not subscription:
+                    return error_result(f"Subscription not found: {subscription_id}")
+
+                event_source = getattr(subscription, "event_source", None)
+                source_org_id = getattr(event_source, "organization_id", None)
+                if not _source_in_scope(context, source_org_id):
+                    return error_result(
+                        "Not authorized to access event resources for this organization."
+                    )
+
+                await db.delete(subscription)
+                await db.flush()
+
+                display_text = f"Deleted subscription {subscription_id}"
+                return success_result(display_text, {"id": subscription_id, "deleted": True})
+
             # Org gate (EXT-1 OPEN-C): same rule as update — the source's org
             # scopes the subscription; no cross-org/global-to-external deletes.
             source_repo = EventSourceRepository(db)
