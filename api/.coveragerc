@@ -51,6 +51,9 @@ omit =
     bifrost/tables.py
     bifrost/users.py
     bifrost/webhooks.py
+    # Thin HTTP transport handlers are covered by endpoint/e2e checks; the API
+    # coverage badge tracks runtime business logic below the router layer.
+    src/routers/*
     # API endpoints are integration tested (separate process)
     # Coverage can't measure across process boundaries
     # These are thoroughly tested via integration tests

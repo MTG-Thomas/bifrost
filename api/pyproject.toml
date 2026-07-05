@@ -54,6 +54,7 @@ omit = [
     "bifrost/tables.py",
     "bifrost/users.py",
     "bifrost/webhooks.py",
+    "src/routers/*",
 ]
 
 [tool.coverage.report]
