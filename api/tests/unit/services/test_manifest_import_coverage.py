@@ -1,6 +1,8 @@
 """Focused coverage for manifest import helper behavior."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 
@@ -15,6 +17,7 @@ from bifrost.manifest import (
     ManifestMCPConnection,
     ManifestMCPServer,
     ManifestOrganization,
+    ManifestPolicyRule,
     ManifestRole,
     ManifestTable,
     ManifestWorkflow,
@@ -32,6 +35,8 @@ APP_ID = "77777777-7777-7777-7777-777777777777"
 INTEGRATION_ID = "88888888-8888-8888-8888-888888888888"
 CONFIG_ID = "99999999-9999-9999-9999-999999999999"
 MCP_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+ROLE_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+EXISTING_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
 def test_diff_collect_ignores_oauth_token_mapping_noise_and_cascades_configs():
@@ -436,3 +441,224 @@ def test_inline_content_detection_and_manifest_access_level_defaults():
     assert manifest_import._manifest_access_level(None, ["Support"]) == "role_based"
     assert manifest_import._manifest_access_level(None, []) is None
     assert manifest_import._manifest_access_level(None, None) is None
+
+
+def test_resolve_workflow_realigns_natural_key_and_clears_explicit_empty_roles():
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    workflow = ManifestWorkflow(
+        id=WORKFLOW_ID,
+        name="Renamed in manifest",
+        path="workflows/ticket.py",
+        function_name="run",
+        organization_id=ORG_ID,
+        roles=[],
+    )
+
+    ops = resolver._resolve_workflow(
+        "Canonical Name",
+        workflow,
+        {"wf_by_natural": {("workflows/ticket.py", "run"): UUID(EXISTING_ID)}},
+    )
+
+    assert len(ops) == 2
+    upsert, sync_roles = ops
+    assert upsert.id == UUID(EXISTING_ID)
+    assert upsert.values["id"] == UUID(WORKFLOW_ID)
+    assert upsert.values["name"] == "Canonical Name"
+    assert upsert.values["organization_id"] == UUID(ORG_ID)
+    assert sync_roles.entity_fk == "workflow_id"
+    assert sync_roles.entity_id == UUID(WORKFLOW_ID)
+    assert sync_roles.role_ids == set()
+
+
+def test_resolve_app_derives_repo_path_realigns_slug_and_syncs_roles():
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    app = ManifestApp(
+        id=APP_ID,
+        path="",
+        slug="portal",
+        name="Portal",
+        organization_id=ORG_ID,
+        roles=[ROLE_ID],
+        access_level="authenticated",
+    )
+
+    ops = resolver._resolve_app(
+        app,
+        {"app_by_slug": {"portal": UUID(EXISTING_ID)}},
+    )
+
+    assert len(ops) == 2
+    upsert, sync_roles = ops
+    assert upsert.id == UUID(EXISTING_ID)
+    assert upsert.values["id"] == UUID(APP_ID)
+    assert upsert.values["slug"] == "portal"
+    assert upsert.values["repo_path"] == "apps/portal"
+    assert upsert.values["organization_id"] == UUID(ORG_ID)
+    assert sync_roles.entity_fk == "app_id"
+    assert sync_roles.role_ids == {UUID(ROLE_ID)}
+
+
+def test_resolve_app_skips_manifest_entry_without_slug_or_path(caplog):
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    app = SimpleNamespace(id=APP_ID, path="", slug=None)
+
+    assert resolver._resolve_app(app, {"app_by_slug": {}}) == []
+    assert f"App {APP_ID} has no slug or path, skipping" in caplog.text
+
+
+def test_resolve_config_preserves_existing_secret_and_tracks_plain_global_config():
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    secret = ManifestConfig(
+        id=CONFIG_ID,
+        key="api_key",
+        config_type="secret",
+        organization_id=ORG_ID,
+        value=None,
+    )
+
+    assert resolver._resolve_config(
+        secret,
+        {
+            "config_by_natural": {
+                ("api_key", None, UUID(ORG_ID)): (UUID(EXISTING_ID), "encrypted", None),
+            },
+        },
+    ) == []
+    assert resolver.configs_touched == {(ORG_ID, "api_key")}
+
+    plain = ManifestConfig(
+        id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+        key="feature_flags",
+        config_type="json",
+        value=None,
+    )
+    ops = resolver._resolve_config(
+        plain,
+        {"config_by_natural": {}, "integ_cs": {}},
+    )
+
+    assert len(ops) == 1
+    assert ops[0].id == UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    assert ops[0].values["key"] == "feature_flags"
+    assert ops[0].values["value"] == {}
+    assert (None, "feature_flags") in resolver.configs_touched
+
+
+def test_resolve_config_links_integration_schema_without_marking_cache_touch():
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    schema = SimpleNamespace(id=UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"))
+    config = ManifestConfig(
+        id=CONFIG_ID,
+        integration_id=INTEGRATION_ID,
+        key="tenant_id",
+        config_type="string",
+        organization_id=ORG_ID,
+        value="tenant-1",
+    )
+
+    ops = resolver._resolve_config(
+        config,
+        {
+            "config_by_natural": {
+                ("tenant_id", UUID(INTEGRATION_ID), UUID(ORG_ID)): (
+                    UUID(EXISTING_ID),
+                    "old-tenant",
+                    None,
+                ),
+            },
+            "integ_cs": {UUID(INTEGRATION_ID): {"tenant_id": schema}},
+        },
+    )
+
+    assert len(ops) == 1
+    assert ops[0].id == UUID(EXISTING_ID)
+    assert ops[0].values["id"] == UUID(CONFIG_ID)
+    assert ops[0].values["config_schema_id"] == schema.id
+    assert "value" in ops[0].values
+    assert resolver.configs_touched == set()
+
+
+def test_resolve_policy_rule_uses_natural_key_or_supplies_insert_timestamps():
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    rule = ManifestPolicyRule(
+        id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+        name="Support only",
+        domain="table",
+        description="Only support can read",
+        body={"actions": ["read"], "when": {"claim": "role", "equals": "support"}},
+        organization_id=ORG_ID,
+    )
+
+    existing_ops = resolver._resolve_policy_rule(
+        rule,
+        {"policy_rule_by_natural": {("Support only", "table", UUID(ORG_ID)): UUID(EXISTING_ID)}},
+    )
+    assert existing_ops[0].id == UUID(EXISTING_ID)
+    assert existing_ops[0].values["id"] == UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+
+    insert_ops = resolver._resolve_policy_rule(rule, {"policy_rule_by_natural": {}})
+    assert insert_ops[0].id == UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    assert "created_at" in insert_ops[0].values
+    assert "updated_at" in insert_ops[0].values
+
+
+def test_resolve_form_and_agent_emit_metadata_and_authoritative_role_clears():
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    form = ManifestForm(
+        id=FORM_ID,
+        name="Ticket Form",
+        organization_id=ORG_ID,
+        roles=[],
+        access_level="role_based",
+    )
+    agent = ManifestAgent(
+        id=AGENT_ID,
+        name="Dispatcher",
+        organization_id=ORG_ID,
+        roles=[],
+        access_level="role_based",
+    )
+
+    form_ops = resolver._resolve_form(form, b"name: Ticket Form\n")
+    agent_ops = resolver._resolve_agent(
+        agent,
+        b"name: Dispatcher\nsystem_prompt: Route tickets\nmax_iterations: 4\n",
+    )
+
+    assert len(form_ops) == 2
+    assert form_ops[0].values["name"] == "Ticket Form"
+    assert form_ops[0].values["access_level"] == "role_based"
+    assert form_ops[1].entity_fk == "form_id"
+    assert form_ops[1].role_ids == set()
+    assert form_ops[1].extra_fields == {"assigned_by": "git-sync"}
+
+    assert len(agent_ops) == 2
+    assert agent_ops[0].values["system_prompt"] == "Route tickets"
+    assert agent_ops[0].values["max_iterations"] == 4
+    assert agent_ops[1].entity_fk == "agent_id"
+    assert agent_ops[1].role_ids == set()
+    assert agent_ops[1].extra_fields == {"assigned_by": "git-sync"}
+
+
+def test_resolve_form_and_agent_ignore_empty_content_and_global_metadata():
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+
+    assert resolver._resolve_form(ManifestForm(id=FORM_ID, name="Empty"), b"") == []
+    assert resolver._resolve_agent(ManifestAgent(id=AGENT_ID, name="Empty"), b"") == []
+
+    form_ops = resolver._resolve_form(
+        ManifestForm(id=FORM_ID, name="Global", roles=[ROLE_ID]),
+        b"name: Global\n",
+    )
+    agent_ops = resolver._resolve_agent(
+        ManifestAgent(id=AGENT_ID, name="Global", roles=[ROLE_ID]),
+        b"name: Global\nsystem_prompt: Help\n",
+    )
+
+    assert len(form_ops) == 1
+    assert form_ops[0].entity_fk == "form_id"
+    assert form_ops[0].role_ids == {UUID(ROLE_ID)}
+    assert len(agent_ops) == 1
+    assert agent_ops[0].entity_fk == "agent_id"
+    assert agent_ops[0].role_ids == {UUID(ROLE_ID)}
