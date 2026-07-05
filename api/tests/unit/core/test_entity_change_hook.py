@@ -30,12 +30,24 @@ class SessionStub:
         self.deleted = list(deleted)
 
 
+class ScalarRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
 class DbResult:
-    def __init__(self, *, scalar=None):
+    def __init__(self, *, scalar=None, scalars=()):
         self._scalar = scalar
+        self._scalars = list(scalars)
 
     def scalar_one_or_none(self):
         return self._scalar
+
+    def scalars(self):
+        return ScalarRows(self._scalars)
 
 
 class DbStub:
@@ -235,6 +247,95 @@ async def test_serialize_table_returns_compact_manifest_payload() -> None:
         exclude_defaults=True,
         by_alias=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_serialize_workflow_includes_role_ids() -> None:
+    row = SimpleNamespace(id="workflow-1", name="Create Ticket")
+    roles = [SimpleNamespace(role_id="role-a"), SimpleNamespace(role_id="role-b")]
+    serialized = Serializable(
+        {"name": "Create Ticket", "roles": ["role-a", "role-b"]}
+    )
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(DbStub(DbResult(scalar=row), DbResult(scalars=roles))),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_workflow",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("workflows", "workflow-1")
+
+    assert result == {"name": "Create Ticket", "roles": ["role-a", "role-b"]}
+    serialize.assert_called_once_with(row, ["role-a", "role-b"])
+
+
+@pytest.mark.asyncio
+async def test_serialize_integration_collects_schema_oauth_and_mappings() -> None:
+    row = SimpleNamespace(id="integration-1", name="Halo")
+    schemas = [SimpleNamespace(name="tenant")]
+    oauth = SimpleNamespace(provider="halo")
+    mappings = [SimpleNamespace(name="ticket")]
+    serialized = Serializable({"name": "Halo"})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(
+                DbStub(
+                    DbResult(scalar=row),
+                    DbResult(scalars=schemas),
+                    DbResult(scalar=oauth),
+                    DbResult(scalars=mappings),
+                )
+            ),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_integration",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity(
+            "integrations",
+            "integration-1",
+        )
+
+    assert result == {"name": "Halo"}
+    serialize.assert_called_once_with(row, schemas, oauth, mappings)
+
+
+@pytest.mark.asyncio
+async def test_serialize_event_source_collects_related_rows() -> None:
+    row = SimpleNamespace(id="event-1", name="Nightly")
+    schedule = SimpleNamespace(cron="0 0 * * *")
+    webhook = SimpleNamespace(path="/hook")
+    subscriptions = [SimpleNamespace(workflow_id="workflow-1")]
+    serialized = Serializable({"name": "Nightly"})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(
+                DbStub(
+                    DbResult(scalar=row),
+                    DbResult(scalar=schedule),
+                    DbResult(scalar=webhook),
+                    DbResult(scalars=subscriptions),
+                )
+            ),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_event_source",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("events", "event-1")
+
+    assert result == {"name": "Nightly"}
+    serialize.assert_called_once_with(row, schedule, webhook, subscriptions)
 
 
 @pytest.mark.asyncio
