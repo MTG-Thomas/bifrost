@@ -105,7 +105,9 @@ def _scope_allowed(scope: str | None, match: re.Match[str], payload: dict) -> bo
         return bool(payload.get("app_id")) and not payload.get("form_id")
 
     if scope == "app_id":
-        return match.group(1) == payload.get("app_id")
+        # Let app routers normalize unbound app reads/renders to 404. The
+        # middleware still keeps form tokens out of app routes entirely.
+        return bool(payload.get("app_id")) and not payload.get("form_id")
 
     if scope == "app_ref":
         return bool(payload.get("app_id")) and not payload.get("form_id")
@@ -114,9 +116,9 @@ def _scope_allowed(scope: str | None, match: re.Match[str], payload: dict) -> bo
         return match.group(1) == payload.get("form_id")
 
     if scope == "form_read":
-        if payload.get("form_id"):
-            return match.group(1) == payload.get("form_id")
-        return bool(payload.get("app_id"))
+        # Let form routers normalize wrong-form and cross-tenant reads to 404.
+        # Mutating form routes still require an exact form_id match above.
+        return bool(payload.get("form_id") or payload.get("app_id"))
 
     return False
 

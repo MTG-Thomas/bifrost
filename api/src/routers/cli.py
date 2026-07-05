@@ -1051,7 +1051,7 @@ async def sdk_integrations_list_mappings(
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                include_default_secrets=not is_external,
+                include_default_secrets=False,
                 external=is_external,
             )
             items.append({
@@ -1115,7 +1115,7 @@ async def sdk_integrations_get_mapping(
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=not is_external,
+            include_default_secrets=False,
             external=is_external,
         )
 
