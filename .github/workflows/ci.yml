@@ -18,8 +18,61 @@ env:
   API_IMAGE: mtg-thomas/bifrost-api
   CLIENT_IMAGE: mtg-thomas/bifrost-client
   WORKER_IMAGE: mtg-thomas/bifrost-worker
+  CI_API_TEST_IMAGE: mtg-thomas/bifrost-ci-api-dev
+  CI_CLIENT_TEST_IMAGE: mtg-thomas/bifrost-ci-client-dev
 
 jobs:
+  # =============================================================================
+  # CI Test Images - Baked dependency/toolchain images for future PR test runs.
+  # Source code is still mounted from each PR checkout by docker-compose.test.yml.
+  # =============================================================================
+  publish-ci-test-images:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    name: Publish CI Test Images
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API CI test image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./api/Dockerfile.dev
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+            ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=test-api-dev
+          cache-to: type=gha,scope=test-api-dev,mode=max
+
+      - name: Build and push client CI test image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ./client
+          file: ./client/Dockerfile.dev
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+            ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=test-client-dev
+          cache-to: type=gha,scope=test-client-dev,mode=max
+
   # =============================================================================
   # Lint & Type Check - Fast, gates all builds alongside unit tests
   # =============================================================================
@@ -128,6 +181,7 @@ jobs:
     name: Unit Tests
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -135,13 +189,31 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      # Pre-build dev images via build-push-action for GHA layer caching.
-      # docker-compose.test.yml pins all api-stack services to bifrost-test-api-dev:latest
-      # and the client service to bifrost-test-client-dev:latest. When
-      # BIFROST_SKIP_BUILD=1, test.sh passes --no-build to compose so it reuses
-      # these local images instead of rebuilding (which would skip the GHA cache).
-      # Cache scope is shared with test-e2e so whichever job runs second gets warm hits.
-      - name: Build API dev image (cached)
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect test image input changes
+        id: test-image-inputs
+        run: bash scripts/ci/detect-test-image-inputs.sh
+
+      # Prefer baked main images. docker-compose.test.yml still bind-mounts the
+      # current checkout, so PR source code is what tests execute.
+      - name: Pull API CI test image
+        id: pull-api-ci-image
+        if: steps.test-image-inputs.outputs.api_changed != 'true'
+        continue-on-error: true
+        env:
+          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+        run: |
+          docker pull "$API_CI_IMAGE_REF"
+          docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
+
+      - name: Build API dev image
+        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
@@ -151,7 +223,18 @@ jobs:
           cache-from: type=gha,scope=test-api-dev
           cache-to: type=gha,scope=test-api-dev,mode=max
 
-      - name: Build client dev image (cached)
+      - name: Pull client CI test image
+        id: pull-client-ci-image
+        if: steps.test-image-inputs.outputs.client_changed != 'true'
+        continue-on-error: true
+        env:
+          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+        run: |
+          docker pull "$CLIENT_CI_IMAGE_REF"
+          docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
+
+      - name: Build client dev image
+        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ./client
@@ -197,6 +280,7 @@ jobs:
     name: E2E Tests (shard ${{ matrix.shard }}/4)
     permissions:
       contents: read
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -208,8 +292,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      # See test-unit for caching strategy notes.
-      - name: Build API dev image (cached)
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect test image input changes
+        id: test-image-inputs
+        run: bash scripts/ci/detect-test-image-inputs.sh
+
+      - name: Pull API CI test image
+        id: pull-api-ci-image
+        if: steps.test-image-inputs.outputs.api_changed != 'true'
+        continue-on-error: true
+        env:
+          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+        run: |
+          docker pull "$API_CI_IMAGE_REF"
+          docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
+
+      - name: Build API dev image
+        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
@@ -219,7 +324,18 @@ jobs:
           cache-from: type=gha,scope=test-api-dev
           cache-to: type=gha,scope=test-api-dev,mode=max
 
-      - name: Build client dev image (cached)
+      - name: Pull client CI test image
+        id: pull-client-ci-image
+        if: steps.test-image-inputs.outputs.client_changed != 'true'
+        continue-on-error: true
+        env:
+          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+        run: |
+          docker pull "$CLIENT_CI_IMAGE_REF"
+          docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
+
+      - name: Build client dev image
+        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: ./client
