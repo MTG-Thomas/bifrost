@@ -371,6 +371,14 @@ class _ScalarOneOrNoneResult:
         return self._row
 
 
+class _OneOrNoneResult:
+    def __init__(self, row):
+        self._row = row
+
+    def one_or_none(self):
+        return self._row
+
+
 @pytest.mark.asyncio
 async def test_list_namespaces_aggregates_global_and_org_counts():
     session = AsyncMock()
@@ -392,6 +400,26 @@ async def test_list_namespaces_aggregates_global_and_org_counts():
     assert [(item.namespace, item.scopes) for item in namespaces] == [
         ("alpha", {"global": 2, "org": 3, "total": 5}),
         ("beta", {"global": 0, "org": 1, "total": 1}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_all_namespaces_aggregates_without_scope_filter():
+    session = AsyncMock()
+    session.execute.return_value = _AllResult(
+        [
+            ("alpha", None, 2),
+            ("alpha", UUID("00000000-0000-0000-0000-000000000001"), 3),
+            ("zeta", UUID("00000000-0000-0000-0000-000000000002"), 4),
+        ]
+    )
+    repo = KnowledgeRepository(session, org_id=None, is_superuser=True)
+
+    namespaces = await repo.list_all_namespaces()
+
+    assert [(item.namespace, item.scopes) for item in namespaces] == [
+        ("alpha", {"global": 2, "org": 3, "total": 5}),
+        ("zeta", {"global": 0, "org": 4, "total": 4}),
     ]
 
 
@@ -429,6 +457,120 @@ async def test_get_by_key_and_namespace_listing_convert_rows_to_documents():
     )
     assert list(by_namespace) == ["handbook.md"]
     assert by_namespace["handbook.md"].content == "body"
+
+
+@pytest.mark.asyncio
+async def test_get_by_key_returns_none_when_missing():
+    session = AsyncMock()
+    session.execute.return_value = _ScalarOneOrNoneResult(None)
+    repo = KnowledgeRepository(session, org_id=None, is_superuser=True)
+
+    assert await repo.get_by_key("missing.md", "docs") is None
+
+
+@pytest.mark.asyncio
+async def test_get_by_id_applies_scope_and_converts_document():
+    doc_id = UUID("00000000-0000-0000-0000-000000000020")
+    org_id = UUID("00000000-0000-0000-0000-000000000021")
+    doc = SimpleNamespace(
+        id=doc_id,
+        namespace="docs",
+        content="body",
+        doc_metadata={},
+        organization_id=None,
+        key="global.md",
+        created_at=None,
+    )
+    session = AsyncMock()
+    session.execute.return_value = _ScalarOneOrNoneResult(doc)
+    repo = KnowledgeRepository(session, org_id=org_id, is_superuser=False)
+
+    result = await repo.get_by_id(doc_id)
+
+    assert result == KnowledgeDocument(
+        id=str(doc_id),
+        namespace="docs",
+        content="body",
+        metadata={},
+        organization_id=None,
+        key="global.md",
+        created_at=None,
+    )
+    compiled = session.execute.call_args[0][0].compile()
+    assert "organization_id IS NULL" in str(compiled)
+
+
+@pytest.mark.asyncio
+async def test_get_by_id_returns_none_when_not_visible_or_missing():
+    session = AsyncMock()
+    session.execute.return_value = _ScalarOneOrNoneResult(None)
+    repo = KnowledgeRepository(session, org_id=None, is_superuser=True)
+
+    assert await repo.get_by_id(UUID("00000000-0000-0000-0000-000000000020")) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_by_key_and_namespace_return_rowcount_semantics():
+    org_id = UUID("00000000-0000-0000-0000-000000000031")
+    session = AsyncMock()
+    deleted = MagicMock()
+    deleted.rowcount = 1
+    empty = MagicMock()
+    empty.rowcount = 0
+    namespace_deleted = MagicMock()
+    namespace_deleted.rowcount = 7
+    session.execute.side_effect = [deleted, empty, namespace_deleted]
+    repo = KnowledgeRepository(session, org_id=org_id, is_superuser=False)
+
+    assert await repo.delete_by_key("handbook.md", "docs") is True
+    assert await repo.delete_by_key("missing.md", "docs") is False
+    assert await repo.delete_namespace("docs") == 7
+
+    first_stmt = session.execute.call_args_list[0][0][0].compile()
+    assert first_stmt.params["key_1"] == "handbook.md"
+    assert first_stmt.params["namespace_1"] == "docs"
+    assert first_stmt.params["organization_id_1"] == org_id
+
+
+@pytest.mark.asyncio
+async def test_list_documents_by_namespace_converts_rows_and_applies_filters():
+    org_id = UUID("00000000-0000-0000-0000-000000000041")
+    doc = SimpleNamespace(
+        id=UUID("00000000-0000-0000-0000-000000000042"),
+        namespace="docs",
+        content="body",
+        doc_metadata={"kind": "manual"},
+        organization_id=org_id,
+        key="handbook.md",
+        created_at=None,
+    )
+    session = AsyncMock()
+    session.execute.return_value = _ScalarsResult([doc])
+    repo = KnowledgeRepository(session, org_id=org_id, is_superuser=False)
+
+    docs = await repo.list_documents_by_namespace(
+        namespace="docs",
+        include_global=False,
+        limit=10,
+        offset=5,
+        search="handbook",
+    )
+
+    assert docs == [
+        KnowledgeDocument(
+            id=str(doc.id),
+            namespace="docs",
+            content="body",
+            metadata={"kind": "manual"},
+            organization_id=str(org_id),
+            key="handbook.md",
+            created_at=None,
+        )
+    ]
+    compiled = session.execute.call_args[0][0].compile()
+    assert compiled.params["namespace_1"] == "docs"
+    assert compiled.params["organization_id_1"] == org_id
+    assert {compiled.params["param_1"], compiled.params["param_2"]} == {5, 10}
 
 
 @pytest.mark.asyncio
