@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -40,12 +41,26 @@ def test_compute_version_falls_back_to_unknown_when_git_fails(monkeypatch) -> No
 
 def test_getattr_lazy_loads_ai_once(monkeypatch) -> None:
     sentinel = SimpleNamespace(name="ai-module")
-    ai_module = SimpleNamespace(ai=sentinel)
-    monkeypatch.delattr(bifrost, "ai", raising=False)
-    monkeypatch.setitem(sys.modules, "bifrost.ai", ai_module)
+    ai_module = types.ModuleType("bifrost.ai")
+    ai_module.ai = sentinel
+    original_package_ai = vars(bifrost).get("ai")
+    had_package_ai = "ai" in vars(bifrost)
+    original_ai_module = sys.modules.get("bifrost.ai")
 
-    assert bifrost.__getattr__("ai") is sentinel
-    assert bifrost.ai is sentinel
+    try:
+        if had_package_ai:
+            delattr(bifrost, "ai")
+        monkeypatch.setitem(sys.modules, "bifrost.ai", ai_module)
+
+        assert bifrost.__getattr__("ai") is sentinel
+        assert bifrost.ai is sentinel
+    finally:
+        if "ai" in vars(bifrost):
+            delattr(bifrost, "ai")
+        if had_package_ai:
+            bifrost.ai = original_package_ai
+        if original_ai_module is not None:
+            sys.modules["bifrost.ai"] = original_ai_module
 
 
 def test_getattr_rejects_unknown_export() -> None:
