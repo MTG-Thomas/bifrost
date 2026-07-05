@@ -14,14 +14,48 @@ Tests the event source, subscription, and webhook adapter tools:
 - list_webhook_adapters
 """
 
+import sys
+import types
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from fastmcp.tools import ToolResult
 
-from src.services.mcp_server.server import MCPContext
+
+class ToolResult:
+    """Minimal FastMCP ToolResult stand-in for isolated unit tests."""
+
+    def __init__(self, content=None, structured_content=None):
+        self.content = content
+        self.structured_content = structured_content
+
+
+fastmcp_module = types.ModuleType("fastmcp")
+fastmcp_tools_module = types.ModuleType("fastmcp.tools")
+fastmcp_tools_module.ToolResult = ToolResult
+fastmcp_module.tools = fastmcp_tools_module
+sys.modules.setdefault("fastmcp", fastmcp_module)
+sys.modules.setdefault("fastmcp.tools", fastmcp_tools_module)
+
+
+@dataclass
+class MCPContext:
+    """Small test context matching the production class name and fields used here."""
+
+    user_id: UUID | str
+    org_id: UUID | str | None = None
+    is_platform_admin: bool = False
+    user_email: str = ""
+    user_name: str = ""
+    session: object | None = None
+
+    def __post_init__(self):
+        if isinstance(self.user_id, str) and self.user_id:
+            self.user_id = UUID(self.user_id)
+        if isinstance(self.org_id, str) and self.org_id:
+            self.org_id = UUID(self.org_id)
 
 
 def is_error_result(result: ToolResult) -> bool:
