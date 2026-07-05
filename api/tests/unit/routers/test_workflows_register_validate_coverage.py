@@ -13,6 +13,7 @@ from src.models.contracts.workflows import (
     WorkflowValidationRequest,
     WorkflowValidationResponse,
 )
+from src.models.contracts.executions import WorkflowExecutionRequest, WorkflowExecutionResponse
 from src.models.enums import ExecutionStatus
 from src.routers import workflows
 
@@ -94,6 +95,40 @@ def _admin(**overrides):
 
 def _ctx(user, org_id=None):
     return SimpleNamespace(user=user, org_id=org_id if org_id is not None else user.organization_id)
+
+
+def _exec_user(**overrides):
+    data = {
+        "user_id": uuid4(),
+        "email": "user@example.com",
+        "name": "User",
+        "organization_id": uuid4(),
+        "is_superuser": False,
+        "is_external": False,
+        "embed": False,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+def _workflow(**overrides):
+    data = {
+        "id": uuid4(),
+        "name": "sync_records",
+        "type": "workflow",
+        "organization_id": None,
+        "cache_ttl_seconds": 0,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+class _WorkflowRepo:
+    def __init__(self, workflow=None, access_error: Exception | None = None):
+        self.workflow = workflow
+        self.access_error = access_error
+        self.resolve = AsyncMock(return_value=workflow)
+        self.can_access = AsyncMock(side_effect=access_error)
 
 
 @pytest.mark.asyncio
@@ -272,6 +307,185 @@ async def test_update_workflow_validates_name_access_and_methods() -> None:
         assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
         assert detail in exc.value.detail
         assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_rejects_inline_code_for_non_admin() -> None:
+    user = _exec_user(is_superuser=False)
+    repo = _WorkflowRepo()
+
+    with patch("src.repositories.WorkflowRepository", return_value=repo):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.execute_workflow(
+                WorkflowExecutionRequest(code="cHJpbnQoJ2hpJyk="),
+                _ctx(user),
+                _Db(),
+                user,
+            )
+
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
+    assert exc.value.detail == "Inline code execution requires platform admin access"
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_maps_missing_and_denied_workflow() -> None:
+    user = _exec_user()
+    missing_repo = _WorkflowRepo(workflow=None)
+
+    with patch("src.repositories.WorkflowRepository", return_value=missing_repo):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.execute_workflow(
+                WorkflowExecutionRequest(workflow_id="missing"),
+                _ctx(user),
+                _Db(),
+                user,
+            )
+
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
+    assert exc.value.detail == "Workflow 'missing' not found"
+
+    from src.repositories import AccessDeniedError
+
+    workflow = _workflow()
+    denied_repo = _WorkflowRepo(workflow=workflow, access_error=AccessDeniedError("denied"))
+    with patch("src.repositories.WorkflowRepository", return_value=denied_repo):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.execute_workflow(
+                WorkflowExecutionRequest(workflow_id="sync_records"),
+                _ctx(user),
+                _Db(),
+                user,
+            )
+
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
+    assert exc.value.detail == "Access denied to execute this workflow"
+    denied_repo.can_access.assert_awaited_once_with(id=workflow.id)
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_schedules_workflow_with_delay() -> None:
+    user = _exec_user(is_superuser=True)
+    workflow = _workflow(organization_id=uuid4())
+    repo = _WorkflowRepo(workflow=workflow)
+    scheduled_id = uuid4()
+
+    with (
+        patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch.object(workflows, "_insert_scheduled_execution", AsyncMock(return_value=scheduled_id)) as insert_scheduled,
+    ):
+        result = await workflows.execute_workflow(
+            WorkflowExecutionRequest(
+                workflow_id="sync_records",
+                input_data={"ticket": "123"},
+                delay_seconds=60,
+            ),
+            _ctx(user),
+            _Db(),
+            user,
+        )
+
+    assert result.execution_id == str(scheduled_id)
+    assert result.workflow_id == str(workflow.id)
+    assert result.workflow_name == "sync_records"
+    assert result.status == ExecutionStatus.SCHEDULED
+    assert result.scheduled_at is not None
+    insert_scheduled.assert_awaited_once()
+    assert insert_scheduled.await_args.kwargs["parameters"] == {"ticket": "123"}
+    assert insert_scheduled.await_args.kwargs["organization_id"] == workflow.organization_id
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_returns_cached_transient_data_provider_result() -> None:
+    user = _exec_user()
+    workflow = _workflow(type="data_provider", cache_ttl_seconds=300)
+    repo = _WorkflowRepo(workflow=workflow)
+
+    with (
+        patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch.object(
+            workflows,
+            "get_cached_data_provider",
+            AsyncMock(return_value={"data": [{"label": "One", "value": "1"}]}),
+        ) as cached,
+        patch("src.services.execution.service.run_workflow", AsyncMock()) as run_workflow,
+    ):
+        result = await workflows.execute_workflow(
+            WorkflowExecutionRequest(
+                workflow_id="options",
+                input_data={"q": "o"},
+                transient=True,
+            ),
+            _ctx(user),
+            _Db(),
+            user,
+        )
+
+    assert result.status == ExecutionStatus.SUCCESS
+    assert result.result == [{"label": "One", "value": "1"}]
+    assert result.is_transient is True
+    cached.assert_awaited_once()
+    run_workflow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_translates_execution_service_errors() -> None:
+    user = _exec_user(is_superuser=True)
+
+    class WorkflowNotFoundError(Exception):
+        pass
+
+    class WorkflowLoadError(Exception):
+        pass
+
+    async def fail_not_found(**_kwargs):
+        raise WorkflowNotFoundError("gone")
+
+    async def fail_load(**_kwargs):
+        raise WorkflowLoadError("bad import")
+
+    async def fail_value(**_kwargs):
+        raise ValueError("bad input")
+
+    async def fail_unexpected(**_kwargs):
+        raise RuntimeError("boom")
+
+    import types
+
+    service_mod = types.ModuleType("src.services.execution.service")
+    service_mod.WorkflowNotFoundError = WorkflowNotFoundError
+    service_mod.WorkflowLoadError = WorkflowLoadError
+    service_mod.run_code = fail_not_found
+    service_mod.run_workflow = AsyncMock()
+
+    with patch.dict("sys.modules", {"src.services.execution.service": service_mod}):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.execute_workflow(
+                WorkflowExecutionRequest(code="cHJpbnQoJ2hpJyk="),
+                _ctx(user),
+                _Db(),
+                user,
+            )
+
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
+    assert exc.value.detail == "gone"
+
+    for runner, expected_status, expected_detail in (
+        (fail_load, status.HTTP_500_INTERNAL_SERVER_ERROR, "bad import"),
+        (fail_value, status.HTTP_400_BAD_REQUEST, "bad input"),
+        (fail_unexpected, status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to execute workflow: RuntimeError: boom"),
+    ):
+        service_mod.run_code = runner
+        with patch.dict("sys.modules", {"src.services.execution.service": service_mod}):
+            with pytest.raises(HTTPException) as exc:
+                await workflows.execute_workflow(
+                    WorkflowExecutionRequest(code="cHJpbnQoJ2hpJyk="),
+                    _ctx(user),
+                    _Db(),
+                    user,
+                )
+
+        assert exc.value.status_code == expected_status
+        assert exc.value.detail == expected_detail
 
 
 @pytest.mark.asyncio
