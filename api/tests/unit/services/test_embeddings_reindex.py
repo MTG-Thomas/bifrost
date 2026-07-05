@@ -344,7 +344,7 @@ async def test_run_reindex_updates_keyless_rows_and_reports_completion():
     assert db.commit.await_count == 1
 
     update_stmt = db.execute.await_args_list[2].args[0]
-    compiled = str(update_stmt.compile(compile_kwargs={"literal_binds": True}))
+    compiled = str(update_stmt.compile())
     assert "UPDATE knowledge_store" in compiled
 
     final_update = notif_service.update_notification.await_args_list[-1].args[1]
