@@ -129,7 +129,9 @@ describe("InfrastructureStatus", () => {
 		renderWithProviders(<InfrastructureStatus />);
 
 		expect(await screen.findByText("Fallback snapshot")).toBeInTheDocument();
-		expect(screen.getByText("Using fallback snapshot")).toBeInTheDocument();
+		expect(
+			await screen.findByText("Using fallback snapshot"),
+		).toBeInTheDocument();
 		expect(
 			screen.getByText(/status endpoint returned 404/i),
 		).toBeInTheDocument();
