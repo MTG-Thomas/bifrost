@@ -58,6 +58,28 @@ class _OneResult:
         return self._value
 
 
+class _EventDb:
+    def __init__(self, results=None):
+        self.results = list(results or [])
+        self.added = []
+        self.deleted = []
+        self.flushed = 0
+
+    async def execute(self, _query):
+        if not self.results:
+            raise AssertionError("unexpected execute call")
+        return self.results.pop(0)
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def delete(self, value):
+        self.deleted.append(value)
+
+    async def flush(self):
+        self.flushed += 1
+
+
 # ==================== Fixtures ====================
 
 
@@ -162,6 +184,101 @@ class TestListEventSources:
         assert is_error_result(result)
         assert "not authorized" in result.structured_content["error"].lower()
 
+    @pytest.mark.asyncio
+    async def test_invalid_requested_org_uuid_returns_validation_error(self, context):
+        """organization_id is validated before repository access."""
+        from src.services.mcp_server.tools.events import list_event_sources
+
+        result = await list_event_sources(context, organization_id="not-a-uuid")
+
+        assert is_error_result(result)
+        assert result.structured_content["error"] == "organization_id must be a valid UUID"
+
+    @pytest.mark.asyncio
+    async def test_serializes_webhook_and_schedule_sources(self, context):
+        """List response includes type-specific webhook and schedule fields."""
+        from src.models.enums import EventSourceType
+        from src.services.mcp_server.tools.events import list_event_sources
+
+        webhook_id = uuid4()
+        schedule_id = uuid4()
+        sources = [
+            SimpleNamespace(
+                id=webhook_id,
+                name="Webhook",
+                source_type=EventSourceType.WEBHOOK,
+                organization_id=None,
+                is_active=True,
+                webhook_source=SimpleNamespace(adapter_name=None),
+                schedule_source=None,
+            ),
+            SimpleNamespace(
+                id=schedule_id,
+                name="Schedule",
+                source_type=EventSourceType.SCHEDULE,
+                organization_id=context.org_id,
+                is_active=False,
+                webhook_source=None,
+                schedule_source=SimpleNamespace(
+                    cron_expression="*/5 * * * *",
+                    timezone="America/Indianapolis",
+                    enabled=True,
+                ),
+            ),
+        ]
+
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_organization = AsyncMock(return_value=sources)
+        mock_sub_repo = MagicMock()
+        mock_sub_repo.count_by_source = AsyncMock(side_effect=[3, 1])
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ), patch(
+                "src.repositories.events.EventSubscriptionRepository",
+                return_value=mock_sub_repo,
+            ):
+                result = await list_event_sources(context)
+
+        assert not is_error_result(result)
+        assert result.structured_content["count"] == 2
+        webhook, schedule = result.structured_content["sources"]
+        assert webhook["adapter_name"] == "generic"
+        assert webhook["callback_url"] == f"/api/hooks/{webhook_id}"
+        assert webhook["subscription_count"] == 3
+        assert schedule["cron_expression"] == "*/5 * * * *"
+        assert schedule["timezone"] == "America/Indianapolis"
+        assert schedule["schedule_enabled"] is True
+        assert schedule["subscription_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_repository_failure_returns_error_result(self, context):
+        """Repository exceptions are serialized as ToolResult errors."""
+        from src.services.mcp_server.tools.events import list_event_sources
+
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_organization = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ):
+                result = await list_event_sources(context)
+
+        assert is_error_result(result)
+        assert "Error listing event sources: db down" == result.structured_content["error"]
+
 
 class TestCreateEventSource:
     """Tests for create_event_source tool."""
@@ -202,6 +319,68 @@ class TestCreateEventSource:
 
         assert is_error_result(result)
         assert "not authorized" in result.structured_content["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_invalid_workflow_id_returns_validation_error(self, context):
+        from src.services.mcp_server.tools.events import create_event_source
+
+        result = await create_event_source(
+            context,
+            name="with workflow",
+            source_type="webhook",
+            workflow_id="not-a-uuid",
+        )
+
+        assert is_error_result(result)
+        assert "Invalid workflow_id" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_session_context_without_org_cannot_create_source(self):
+        """Session-backed non-admin contexts pass auth but still need org scope."""
+        from src.services.mcp_server.tools.events import create_event_source
+
+        session_context = SimpleNamespace(
+            session=object(),
+            is_platform_admin=False,
+            org_id=None,
+            user_email="user@example.com",
+        )
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await create_event_source(session_context, "no org", "webhook")
+
+        assert is_error_result(result)
+        assert "without an organization scope" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_webhook_adapter_returns_error(self, context):
+        from src.services.mcp_server.tools.events import create_event_source
+
+        registry = MagicMock()
+        registry.get.return_value = None
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.services.webhooks.registry.get_adapter_registry",
+                return_value=registry,
+            ):
+                result = await create_event_source(
+                    context,
+                    name="bad adapter",
+                    source_type="webhook",
+                    adapter_name="missing",
+                )
+
+        assert is_error_result(result)
+        assert result.structured_content["error"] == "Unknown webhook adapter: missing"
 
 
 class TestGetEventSource:
@@ -274,6 +453,112 @@ class TestGetEventSource:
         assert is_error_result(result)
         assert "not authorized" in result.structured_content["error"].lower()
 
+    @pytest.mark.asyncio
+    async def test_serializes_webhook_source_details(self, context):
+        """Webhook source details include callback, integration, and expiry fields."""
+        from datetime import datetime, timezone
+
+        from src.models.enums import EventSourceType
+        from src.services.mcp_server.tools.events import get_event_source
+
+        source_id = uuid4()
+        integration_id = uuid4()
+        expires_at = datetime(2026, 7, 5, tzinfo=timezone.utc)
+        created_at = datetime(2026, 7, 4, tzinfo=timezone.utc)
+        mock_source = SimpleNamespace(
+            id=source_id,
+            name="Webhook",
+            source_type=EventSourceType.WEBHOOK,
+            organization_id=None,
+            is_active=True,
+            error_message=None,
+            created_by="admin@example.com",
+            created_at=created_at,
+            webhook_source=SimpleNamespace(
+                adapter_name=None,
+                integration_id=integration_id,
+                external_id="external-1",
+                expires_at=expires_at,
+            ),
+            schedule_source=None,
+        )
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_id_with_details = AsyncMock(return_value=mock_source)
+        mock_sub_repo = MagicMock()
+        mock_sub_repo.count_by_source = AsyncMock(return_value=7)
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ), patch(
+                "src.repositories.events.EventSubscriptionRepository",
+                return_value=mock_sub_repo,
+            ):
+                result = await get_event_source(context, str(source_id))
+
+        assert not is_error_result(result)
+        data = result.structured_content
+        assert data["adapter_name"] == "generic"
+        assert data["callback_url"] == f"/api/hooks/{source_id}"
+        assert data["integration_id"] == str(integration_id)
+        assert data["external_id"] == "external-1"
+        assert data["expires_at"] == expires_at.isoformat()
+        assert data["created_at"] == created_at.isoformat()
+        assert data["subscription_count"] == 7
+
+    @pytest.mark.asyncio
+    async def test_serializes_schedule_source_details(self, context):
+        """Schedule source details include cron, timezone, and enabled state."""
+        from src.models.enums import EventSourceType
+        from src.services.mcp_server.tools.events import get_event_source
+
+        source_id = uuid4()
+        mock_source = SimpleNamespace(
+            id=source_id,
+            name="Schedule",
+            source_type=EventSourceType.SCHEDULE,
+            organization_id=None,
+            is_active=True,
+            error_message="last failure",
+            created_by="admin@example.com",
+            created_at=None,
+            webhook_source=None,
+            schedule_source=SimpleNamespace(
+                cron_expression="0 * * * *",
+                timezone="UTC",
+                enabled=False,
+            ),
+        )
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_id_with_details = AsyncMock(return_value=mock_source)
+        mock_sub_repo = MagicMock()
+        mock_sub_repo.count_by_source = AsyncMock(return_value=0)
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ), patch(
+                "src.repositories.events.EventSubscriptionRepository",
+                return_value=mock_sub_repo,
+            ):
+                result = await get_event_source(context, str(source_id))
+
+        assert not is_error_result(result)
+        assert result.structured_content["cron_expression"] == "0 * * * *"
+        assert result.structured_content["timezone"] == "UTC"
+        assert result.structured_content["schedule_enabled"] is False
+        assert result.structured_content["error_message"] == "last failure"
+
 
 class TestUpdateEventSource:
     """Tests for update_event_source tool."""
@@ -308,6 +593,67 @@ class TestUpdateEventSource:
                 result = await update_event_source(context, source_id, name="new name")
                 assert is_error_result(result)
                 assert "not found" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_updates_schedule_fields_and_clears_error_when_reactivated(self, context):
+        """Successful schedule updates mutate fields and serialize the reloaded row."""
+        from src.models.enums import EventSourceType
+        from src.services.mcp_server.tools.events import update_event_source
+
+        source_id = uuid4()
+        schedule_source = SimpleNamespace(
+            cron_expression="old",
+            timezone="UTC",
+            enabled=False,
+            updated_at=None,
+        )
+        source = SimpleNamespace(
+            id=source_id,
+            name="Old",
+            source_type=EventSourceType.SCHEDULE,
+            organization_id=None,
+            is_active=False,
+            error_message="failed",
+            schedule_source=schedule_source,
+        )
+        reloaded = SimpleNamespace(
+            id=source_id,
+            name="New",
+            source_type=EventSourceType.SCHEDULE,
+            is_active=True,
+            schedule_source=schedule_source,
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_by_id_with_details = AsyncMock(return_value=source)
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_session.execute = AsyncMock(return_value=_OneResult(reloaded))
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_repo,
+            ):
+                result = await update_event_source(
+                    context,
+                    str(source_id),
+                    name="New",
+                    is_active=True,
+                    cron_expression="*/10 * * * *",
+                    timezone="America/New_York",
+                    schedule_enabled=True,
+                )
+
+        assert not is_error_result(result)
+        assert source.name == "New"
+        assert source.is_active is True
+        assert source.error_message is None
+        assert schedule_source.cron_expression == "*/10 * * * *"
+        assert schedule_source.timezone == "America/New_York"
+        assert schedule_source.enabled is True
+        assert result.structured_content["schedule_enabled"] is True
 
 
 class TestDeleteEventSource:
@@ -445,6 +791,88 @@ class TestListEventSubscriptions:
                 assert is_error_result(result)
                 assert "not found" in result.structured_content["error"]
 
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_source_has_no_subscriptions(self, context):
+        from src.services.mcp_server.tools.events import list_event_subscriptions
+
+        source_id = uuid4()
+        mock_source = SimpleNamespace(id=source_id, name="Source", organization_id=None)
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_id = AsyncMock(return_value=mock_source)
+        mock_sub_repo = MagicMock()
+        mock_sub_repo.get_by_source = AsyncMock(return_value=[])
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ), patch(
+                "src.repositories.events.EventSubscriptionRepository",
+                return_value=mock_sub_repo,
+            ):
+                result = await list_event_subscriptions(context, str(source_id))
+
+        assert not is_error_result(result)
+        assert result.structured_content == {
+            "source_id": str(source_id),
+            "subscriptions": [],
+            "count": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_serializes_subscription_delivery_counts(self, context):
+        from src.services.mcp_server.tools.events import list_event_subscriptions
+
+        source_id = uuid4()
+        subscription_id = uuid4()
+        workflow_id = uuid4()
+        mock_source = SimpleNamespace(id=source_id, name="Source", organization_id=None)
+        mock_subscription = SimpleNamespace(
+            id=subscription_id,
+            workflow_id=workflow_id,
+            workflow=SimpleNamespace(name="Workflow"),
+            event_type="ticket.created",
+            input_mapping={"ticket": "$.id"},
+            is_active=True,
+        )
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_id = AsyncMock(return_value=mock_source)
+        mock_sub_repo = MagicMock()
+        mock_sub_repo.get_by_source = AsyncMock(return_value=[mock_subscription])
+        mock_delivery_repo = MagicMock()
+        mock_delivery_repo.count_by_subscription = AsyncMock(side_effect=[5, 4, 1])
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ), patch(
+                "src.repositories.events.EventSubscriptionRepository",
+                return_value=mock_sub_repo,
+            ), patch(
+                "src.repositories.events.EventDeliveryRepository",
+                return_value=mock_delivery_repo,
+            ):
+                result = await list_event_subscriptions(context, str(source_id))
+
+        assert not is_error_result(result)
+        assert result.structured_content["count"] == 1
+        subscription = result.structured_content["subscriptions"][0]
+        assert subscription["id"] == str(subscription_id)
+        assert subscription["workflow_id"] == str(workflow_id)
+        assert subscription["workflow_name"] == "Workflow"
+        assert subscription["delivery_count"] == 5
+        assert subscription["success_count"] == 4
+        assert subscription["failed_count"] == 1
+
 
 class TestCreateEventSubscription:
     """Tests for create_event_subscription tool."""
@@ -490,6 +918,46 @@ class TestCreateEventSubscription:
                 assert is_error_result(result)
                 assert "not found" in result.structured_content["error"]
 
+    @pytest.mark.asyncio
+    async def test_creates_subscription_and_serializes_workflow_name(self, context):
+        from src.services.mcp_server.tools.events import create_event_subscription
+
+        source_id = uuid4()
+        workflow_id = uuid4()
+        subscription_id = uuid4()
+        mock_source = SimpleNamespace(id=source_id, name="Source", organization_id=None)
+        reloaded_subscription = SimpleNamespace(
+            id=subscription_id,
+            workflow=SimpleNamespace(name="Workflow"),
+        )
+        db = _EventDb(results=[_OneResult(reloaded_subscription)])
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_id = AsyncMock(return_value=mock_source)
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ):
+                result = await create_event_subscription(
+                    context,
+                    str(source_id),
+                    str(workflow_id),
+                    event_type="ticket.created",
+                    input_mapping={"id": "$.ticket.id"},
+                )
+
+        assert not is_error_result(result)
+        assert len(db.added) == 1
+        assert db.flushed == 1
+        assert result.structured_content["id"] == str(subscription_id)
+        assert result.structured_content["workflow_name"] == "Workflow"
+        assert result.structured_content["event_type"] == "ticket.created"
+        assert result.structured_content["input_mapping"] == {"id": "$.ticket.id"}
+
 
 class TestUpdateEventSubscription:
     """Tests for update_event_subscription tool."""
@@ -506,6 +974,79 @@ class TestUpdateEventSubscription:
         result = await update_event_subscription(context, str(uuid4()), "")
         assert is_error_result(result)
         assert "required" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_subscription_not_found(self, context):
+        from src.services.mcp_server.tools.events import update_event_subscription
+
+        source_id = uuid4()
+        subscription_id = uuid4()
+        mock_source = SimpleNamespace(id=source_id, organization_id=None)
+        db = _EventDb(results=[_OneResult(None)])
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_id = AsyncMock(return_value=mock_source)
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ):
+                result = await update_event_subscription(
+                    context,
+                    str(source_id),
+                    str(subscription_id),
+                )
+
+        assert is_error_result(result)
+        assert f"Subscription not found: {subscription_id}" == result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_updates_subscription_fields(self, context):
+        from src.services.mcp_server.tools.events import update_event_subscription
+
+        source_id = uuid4()
+        subscription_id = uuid4()
+        workflow_id = uuid4()
+        mock_source = SimpleNamespace(id=source_id, organization_id=None)
+        subscription = SimpleNamespace(
+            id=subscription_id,
+            workflow_id=workflow_id,
+            workflow=None,
+            event_type=None,
+            input_mapping=None,
+            is_active=True,
+            updated_at=None,
+        )
+        db = _EventDb(results=[_OneResult(subscription)])
+        mock_source_repo = MagicMock()
+        mock_source_repo.get_by_id = AsyncMock(return_value=mock_source)
+
+        with patch("src.core.database.get_db_context") as mock_db:
+            mock_db.return_value.__aenter__ = AsyncMock(return_value=db)
+            mock_db.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch(
+                "src.repositories.events.EventSourceRepository",
+                return_value=mock_source_repo,
+            ):
+                result = await update_event_subscription(
+                    context,
+                    str(source_id),
+                    str(subscription_id),
+                    event_type="ticket.updated",
+                    input_mapping={"ticket": "$"},
+                    is_active=False,
+                )
+
+        assert not is_error_result(result)
+        assert db.flushed == 1
+        assert subscription.event_type == "ticket.updated"
+        assert subscription.input_mapping == {"ticket": "$"}
+        assert subscription.is_active is False
+        assert result.structured_content["workflow_id"] == str(workflow_id)
 
 
 class TestDeleteEventSubscription:
