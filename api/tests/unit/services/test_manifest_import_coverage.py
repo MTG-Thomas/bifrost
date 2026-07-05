@@ -1274,6 +1274,90 @@ async def test_prefetch_existing_entities_builds_all_resolver_caches():
     assert len(db.statements) == 12
 
 
+class _ManifestClaim:
+    def __init__(self, *, claim_id: str = CONFIG_ID, org_id: str = ORG_ID):
+        self.claim_id = claim_id
+        self.org_id = org_id
+
+    def to_orm_values(self, _destination):
+        return SimpleNamespace(
+            direct={
+                "id": self.claim_id,
+                "organization_id": self.org_id,
+                "description": "Allowed campuses",
+                "type": "list",
+                "query": {"table": "memberships", "select": "campus_id"},
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_custom_claim_updates_existing_natural_key_without_rekeying():
+    existing_id = UUID(EXISTING_ID)
+    db = _SequenceDb()
+    resolver = manifest_import.ManifestResolver(db)
+
+    assert await resolver._resolve_custom_claim(
+        "allowed_campus_ids",
+        _ManifestClaim(),
+        {
+            "claim_by_natural": {("allowed_campus_ids", UUID(ORG_ID)): existing_id},
+            "claim_ids": set(),
+        },
+    ) == []
+
+    assert len(db.statements) == 1
+    params = db.statements[0].compile().params
+    assert params["id_1"] == existing_id
+    assert params["name"] == "allowed_campus_ids"
+    assert params["organization_id"] == UUID(ORG_ID)
+    assert params["query"] == {"table": "memberships", "select": "campus_id"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_custom_claim_updates_existing_manifest_id_from_cache():
+    db = _SequenceDb()
+    resolver = manifest_import.ManifestResolver(db)
+    claim_id = UUID(CONFIG_ID)
+
+    assert await resolver._resolve_custom_claim(
+        "allowed_campus_ids",
+        _ManifestClaim(),
+        {
+            "claim_by_natural": {},
+            "claim_ids": {claim_id},
+        },
+    ) == []
+
+    assert len(db.statements) == 1
+    params = db.statements[0].compile().params
+    assert params["id_1"] == claim_id
+    assert params["name"] == "allowed_campus_ids"
+    assert params["type"] == "list"
+
+
+@pytest.mark.asyncio
+async def test_resolve_custom_claim_inserts_new_claim_when_cache_misses():
+    db = _SequenceDb()
+    resolver = manifest_import.ManifestResolver(db)
+
+    assert await resolver._resolve_custom_claim(
+        "allowed_campus_ids",
+        _ManifestClaim(),
+        {
+            "claim_by_natural": {},
+            "claim_ids": set(),
+        },
+    ) == []
+
+    assert len(db.statements) == 1
+    params = db.statements[0].compile().params
+    assert params["id"] == UUID(CONFIG_ID)
+    assert params["name"] == "allowed_campus_ids"
+    assert params["description"] == "Allowed campuses"
+    assert params["organization_id"] == UUID(ORG_ID)
+
+
 @pytest.mark.asyncio
 async def test_resolve_deletions_requires_manifest_or_work_dir():
     resolver = manifest_import.ManifestResolver(_SequenceDb())
