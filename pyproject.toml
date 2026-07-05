@@ -109,6 +109,7 @@ dependencies = [
     "pytest-asyncio",
     "pytest-cov",
     "pytest-env",
+    "hypothesis",
     "pytest-timeout",  # Per-test timeout protection (catches infinite hangs)
     "websockets",  # For E2E WebSocket tests
 
@@ -162,3 +163,14 @@ dependencies = [
     "setuptools>=78.1.1",  # transitive (build) — multiple CVEs in older versions
     "tqdm>=4.66.3",  # transitive (anthropic, openai, etc.)
 ]
+
+[tool.mutmut]
+source_paths = ["api/src/services"]
+only_mutate = ["api/src/services/cron_parser.py", "api/src/services/editor/search.py"]
+pytest_add_cli_args_test_selection = [
+    "api/tests/unit/services/test_cron_parser.py",
+    "api/tests/unit/services/test_editor_search.py",
+    "api/tests/unit/fuzz/test_stateful_and_metamorphic.py",
+]
+mutate_only_covered_lines = true
+max_stack_depth = 8
