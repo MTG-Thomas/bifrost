@@ -516,6 +516,62 @@ async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> 
 
 
 @pytest.mark.asyncio
+async def test_execute_workflow_runs_inline_code_for_admin_without_publish_when_transient() -> None:
+    admin = _exec_user(is_superuser=True)
+    service_result = WorkflowExecutionResponse(
+        execution_id=str(uuid4()),
+        workflow_name="inline.py",
+        status=ExecutionStatus.SUCCESS,
+        result={"ran": True},
+    )
+
+    with (
+        patch("src.repositories.WorkflowRepository", return_value=_WorkflowRepo()),
+        patch("src.services.execution.service.run_code", AsyncMock(return_value=service_result)) as run_code,
+        patch.object(workflows, "publish_execution_update", AsyncMock()) as publish_execution_update,
+        patch.object(workflows, "publish_history_update", AsyncMock()) as publish_history_update,
+    ):
+        result = await workflows.execute_workflow(
+            WorkflowExecutionRequest(
+                code="cHJpbnQoJ2hpJyk=",
+                script_name="inline.py",
+                input_data={"x": 1},
+                transient=True,
+            ),
+            _ctx(admin),
+            _Db(),
+            admin,
+        )
+
+    assert result is service_result
+    assert result.is_transient is True
+    run_code.assert_awaited_once()
+    assert run_code.await_args.kwargs["script_name"] == "inline.py"
+    assert run_code.await_args.kwargs["input_data"] == {"x": 1}
+    assert run_code.await_args.kwargs["transient"] is True
+    publish_execution_update.assert_not_awaited()
+    publish_history_update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_rejects_org_and_run_as_overrides_for_regular_user() -> None:
+    user = _exec_user(is_superuser=False)
+    workflow = _workflow()
+    repo = _WorkflowRepo(workflow=workflow)
+
+    for request in (
+        WorkflowExecutionRequest(workflow_id="sync_records", org_id=str(uuid4())),
+        WorkflowExecutionRequest(workflow_id="sync_records", run_as=str(uuid4())),
+    ):
+        with patch("src.repositories.WorkflowRepository", return_value=repo):
+            with pytest.raises(HTTPException) as exc:
+                await workflows.execute_workflow(request, _ctx(user), _Db(), user)
+
+        assert exc.value.status_code == status.HTTP_403_FORBIDDEN
+        assert exc.value.detail == "org_id and run_as overrides require platform admin"
+
+
+@pytest.mark.asyncio
 async def test_execute_workflow_reports_missing_run_as_user() -> None:
     admin = _exec_user(is_superuser=True)
     workflow = _workflow()
