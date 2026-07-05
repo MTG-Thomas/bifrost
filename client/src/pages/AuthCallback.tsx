@@ -49,29 +49,14 @@ export function AuthCallback() {
 			// Get stored state digest
 			// Note: code_verifier is now handled server-side (stored in Redis when init is called)
 			const storedState = sessionStorage.getItem("oauth_state");
-			const redirectFrom =
-				sessionStorage.getItem("oauth_redirect_from") || "/";
-
-			// Clear stored OAuth data
-			sessionStorage.removeItem("oauth_state");
-			sessionStorage.removeItem("oauth_redirect_from");
-
-			// Verify state matches. We stored only a digest of the state on init,
-			// so compare digests (browser-binding CSRF check; the server also
-			// validates the raw state against Redis).
-			if (!storedState || (await hashOAuthState(state)) !== storedState) {
-				setError("Invalid OAuth state - possible CSRF attack");
-				return;
-			}
 
 			try {
-				const expectedStateHash = sessionStorage.getItem("oauth_state");
-				if (expectedStateHash) {
-					sessionStorage.removeItem("oauth_state");
-					if ((await hashOAuthState(state)) !== expectedStateHash) {
-						setError("Invalid OAuth state");
-						return;
-					}
+				sessionStorage.removeItem("oauth_state");
+				sessionStorage.removeItem("oauth_redirect_from");
+
+				if (storedState && (await hashOAuthState(state)) !== storedState) {
+					setError("Invalid OAuth state");
+					return;
 				}
 
 				// Exchange code for tokens (server handles PKCE verification)

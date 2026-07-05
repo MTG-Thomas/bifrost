@@ -7,8 +7,6 @@ import type { components } from "@/lib/v1";
 
 type MessagePublic = components["schemas"]["MessagePublic"];
 
-let fallbackMessageIdCounter = 0;
-
 /**
  * Extended message type with streaming state flags
  */
