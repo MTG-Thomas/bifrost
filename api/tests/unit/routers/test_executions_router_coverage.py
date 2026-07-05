@@ -485,7 +485,7 @@ async def test_cancel_execution_handles_redis_pending_and_not_found():
         patch.object(executions, "ExecutionRepository") as repo_cls,
     ):
         repo_cls.return_value.cancel_execution = AsyncMock(return_value=(None, "NotFound"))
-        result = await executions.cancel_execution(execution_id, _ctx())
+        result = cast(dict[str, Any], await executions.cancel_execution(execution_id, _ctx()))
 
     assert result["status"] == "Cancelled"
     redis_client.set_pending_cancelled.assert_awaited_once_with(str(execution_id))

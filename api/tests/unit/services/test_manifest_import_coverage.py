@@ -11,6 +11,7 @@ from bifrost.manifest import (
     ManifestAgent,
     ManifestApp,
     ManifestConfig,
+    ManifestEventSource,
     ManifestForm,
     ManifestIntegration,
     ManifestIntegrationMapping,
@@ -316,12 +317,20 @@ def test_safe_app_repo_path_normalizes_slug_paths(app, expected):
     assert manifest_import._safe_app_repo_path(app) == expected
 
 
+def test_safe_app_repo_path_treats_whitespace_path_as_missing():
+    assert manifest_import._safe_app_repo_path(
+        SimpleNamespace(id=APP_ID, path="   ", slug="portal")
+    ) == "apps/portal"
+
+
 @pytest.mark.parametrize(
     "app",
     [
         SimpleNamespace(id=APP_ID, path="", slug=None),
         SimpleNamespace(id=APP_ID, path="/apps/portal", slug="portal"),
         SimpleNamespace(id=APP_ID, path="apps/portal/build", slug="portal"),
+        SimpleNamespace(id=APP_ID, path="apps/.", slug="."),
+        SimpleNamespace(id=APP_ID, path="apps/..", slug=".."),
         SimpleNamespace(id=APP_ID, path="apps/portal", slug="other"),
     ],
 )
@@ -388,7 +397,9 @@ def test_collect_removed_entity_ids_groups_only_deletes_with_ids():
         {"action": "delete", "entity_type": "apps", "id": APP_ID},
         {"action": "update", "entity_type": "forms", "id": FORM_ID},
         {"action": "delete", "entity_type": "", "id": "ignored"},
+        {"action": "delete", "entity_type": "agents", "id": ""},
         {"action": "delete", "entity_type": "agents"},
+        {"entity_type": "tables", "id": "ignored"},
     ]
 
     assert manifest_import._collect_removed_entity_ids(changes) == {
@@ -414,6 +425,14 @@ def test_manifest_org_scope_collects_direct_and_nested_org_references():
                 id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 name="Tickets",
                 organization_id="33333333-3333-3333-3333-333333333333",
+            ),
+        },
+        events={
+            "event": ManifestEventSource(
+                id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+                name="Webhook",
+                source_type="webhook",
+                organization_id="66666666-6666-6666-6666-666666666666",
             ),
         },
         integrations={
@@ -450,7 +469,85 @@ def test_manifest_org_scope_collects_direct_and_nested_org_references():
         "33333333-3333-3333-3333-333333333333",
         "44444444-4444-4444-4444-444444444444",
         "55555555-5555-5555-5555-555555555555",
+        "66666666-6666-6666-6666-666666666666",
     }
+
+
+def test_filter_non_file_entities_keeps_scoped_configs_tables_and_events():
+    manifest = Manifest(
+        organizations=[
+            ManifestOrganization(id=ORG_ID, name="In scope"),
+            ManifestOrganization(id=OTHER_ORG_ID, name="Out"),
+        ],
+        integrations={
+            "mapped": ManifestIntegration(
+                id=INTEGRATION_ID,
+                name="Mapped",
+                mappings=[
+                    ManifestIntegrationMapping(
+                        organization_id=ORG_ID,
+                        entity_id="tenant",
+                        entity_name="Tenant",
+                    ),
+                ],
+            ),
+            "out": ManifestIntegration(
+                id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+                name="Out",
+                mappings=[
+                    ManifestIntegrationMapping(
+                        organization_id=OTHER_ORG_ID,
+                        entity_id="other",
+                        entity_name="Other",
+                    ),
+                ],
+            ),
+        },
+        configs={
+            "mapped-url": ManifestConfig(
+                id=CONFIG_ID,
+                integration_id=INTEGRATION_ID,
+                key="url",
+            ),
+            "out-url": ManifestConfig(
+                id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                integration_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+                key="url",
+            ),
+        },
+        tables={
+            "in": ManifestTable(id="table-in", name="Tickets", organization_id=ORG_ID),
+            "out": ManifestTable(id="table-out", name="Devices", organization_id=OTHER_ORG_ID),
+        },
+        events={
+            "in": ManifestEventSource(
+                id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+                name="In",
+                source_type="webhook",
+                organization_id=ORG_ID,
+            ),
+            "out": ManifestEventSource(
+                id="abababab-abab-abab-abab-abababababab",
+                name="Out",
+                source_type="webhook",
+                organization_id=OTHER_ORG_ID,
+            ),
+        },
+    )
+    scope_manifest = Manifest(
+        organizations=[ManifestOrganization(id=ORG_ID, name="In scope")],
+        events={"in": manifest.events["in"]},
+        integrations={},
+        configs={"mapped-url": manifest.configs["mapped-url"]},
+        tables={"in": manifest.tables["in"]},
+    )
+
+    manifest_import._filter_non_file_entities_to_scope(manifest, scope_manifest)
+
+    assert set(manifest.integrations) == set()
+    assert set(manifest.configs) == {"mapped-url"}
+    assert set(manifest.tables) == {"in"}
+    assert set(manifest.events) == {"in"}
 
 
 def test_entity_in_org_scope_requires_matching_explicit_org():
@@ -473,6 +570,9 @@ def test_inline_content_detection_and_manifest_access_level_defaults():
         ManifestForm(id=FORM_ID, name="Ticket", workflow_id=WORKFLOW_ID)
     ) is True
     assert manifest_import._form_has_inline_content(
+        ManifestForm(id="empty-inline-form", name="Empty", default_launch_params={})
+    ) is True
+    assert manifest_import._form_has_inline_content(
         ManifestForm(id="empty-form", name="Empty")
     ) is False
 
@@ -483,12 +583,16 @@ def test_inline_content_detection_and_manifest_access_level_defaults():
         ManifestAgent(id="tool-agent", name="Agent", tool_ids=[WORKFLOW_ID])
     ) is True
     assert manifest_import._agent_has_inline_content(
+        ManifestAgent(id="token-agent", name="Agent", llm_max_tokens=0)
+    ) is False
+    assert manifest_import._agent_has_inline_content(
         ManifestAgent(id="empty-agent", name="Agent")
     ) is False
 
     assert manifest_import._manifest_access_level("public", ["Support"]) == "public"
     assert manifest_import._manifest_access_level(None, ["Support"]) == "role_based"
     assert manifest_import._manifest_access_level(None, []) is None
+    assert manifest_import._manifest_access_level(None, [""]) == "role_based"
     assert manifest_import._manifest_access_level(None, None) is None
 
 
