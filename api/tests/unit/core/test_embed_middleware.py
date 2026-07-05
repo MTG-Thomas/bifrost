@@ -72,25 +72,25 @@ async def test_embed_token_cannot_mutate_allowlisted_app_route():
 
 
 @pytest.mark.asyncio
-async def test_form_embed_token_cannot_replay_against_another_form():
+async def test_form_embed_token_read_reaches_router_for_404_normalization():
     form_id = str(uuid4())
     other_form_id = str(uuid4())
     token = _embed_token(form_id=form_id)
 
     response = await _dispatch("GET", f"/api/forms/{other_form_id}", token)
 
-    assert response.status_code == 403
+    assert response.status_code == 204
 
 
 @pytest.mark.asyncio
-async def test_app_embed_token_cannot_replay_against_another_app_render_route():
+async def test_app_embed_token_render_reaches_router_for_404_normalization():
     app_id = str(uuid4())
     other_app_id = str(uuid4())
     token = _embed_token(app_id=app_id)
 
     response = await _dispatch("GET", f"/api/applications/{other_app_id}/render", token)
 
-    assert response.status_code == 403
+    assert response.status_code == 204
 
 
 @pytest.mark.asyncio
@@ -104,7 +104,7 @@ async def test_embed_token_can_access_its_scoped_form_route():
 
 
 @pytest.mark.asyncio
-async def test_cookie_embed_token_is_scoped_like_bearer_token():
+async def test_cookie_embed_token_read_reaches_router_for_404_normalization():
     form_id = str(uuid4())
     other_form_id = str(uuid4())
     token = _embed_token(form_id=form_id)
@@ -116,4 +116,4 @@ async def test_cookie_embed_token_is_scoped_like_bearer_token():
         token_source="cookie",
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 204

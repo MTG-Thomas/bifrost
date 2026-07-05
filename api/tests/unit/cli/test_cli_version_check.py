@@ -7,14 +7,18 @@ concerns the gate must honor regardless of which gate fires:
 
 * Skip silently for source/dev installs (``__version__`` of ``"unknown"`` or
   ``"0.0.0+source"``).
-* Resolve the API URL via ``credentials._resolve_url`` so the opt-in project
-  ``.env`` allowlist is honored alongside the keyring/JSON store. We use ``_resolve_url`` (not
-  ``get_credentials``) because the version check only needs the URL — a
-  logged-out CLI with ``BIFROST_API_URL`` set in ``.env`` should still get
-  checked, even though it has no tokens yet.
-* Compare installed vs. server version with string equality and ``sys.exit(1)``
-  when they differ — no warning-and-continue, no escape hatch.
-* Treat network/parse failures as best-effort: skip silently, do not block.
+* Resolve the API URL via ``credentials._resolve_url`` so a project
+  ``.env`` (loaded by python-dotenv before the call) is honored alongside
+  the keyring/JSON store. We use ``_resolve_url`` (not ``get_credentials``)
+  because the version check only needs the URL — a logged-out CLI with
+  ``BIFROST_API_URL`` set in ``.env`` should still get checked.
+* Route the request through httpx (not urllib) so CDN/WAF UA blocking doesn't
+  silently no-op the check.
+
+Note: network/parse/missing-version failures now emit a visible stderr warning
+(not a silent skip) — see ``test_cli_contract_gate.py::TestUnreachableVerdict``.
+The skip-case tests below only assert "does not raise SystemExit"; they no
+longer assert silence.
 """
 
 from __future__ import annotations
@@ -189,38 +193,6 @@ class TestVersionComparison:
         ):
             cli._check_cli_version()  # no SystemExit
 
-    def test_warns_on_stale_cli_from_old_server(self, monkeypatch, capsys):
-        """Old servers without contract_version warn instead of blocking."""
-        _patch_version(monkeypatch, "1.2.3")
-        from bifrost import cli
-
-        with patch(
-            "bifrost.credentials._resolve_url",
-            return_value="https://server.example",
-        ), patch(
-            "httpx.get",
-            return_value=_make_url_response({"version": "1.3.0"}),
-        ):
-            cli._check_cli_version()
-
-        err = capsys.readouterr().err
-        assert "contract version" in err
-
-    def test_warns_when_old_server_is_older_too(self, monkeypatch, capsys):
-        """Old servers without contract_version cannot prove incompatibility."""
-        _patch_version(monkeypatch, "2.0.0")
-        from bifrost import cli
-
-        with patch(
-            "bifrost.credentials._resolve_url",
-            return_value="https://server.example",
-        ), patch(
-            "httpx.get",
-            return_value=_make_url_response({"version": "1.9.9"}),
-        ):
-            cli._check_cli_version()
-        assert "contract version" in capsys.readouterr().err
-
     def test_passes_with_semver_dev_format(self, monkeypatch):
         """Regression: the new CI dev-version format `0.8.1-dev.47` must
         match itself through the strict-equality check, just like any other
@@ -238,22 +210,6 @@ class TestVersionComparison:
             return_value=_make_url_response({"version": "0.8.1-dev.47"}),
         ):
             cli._check_cli_version()  # no SystemExit
-
-    def test_warns_on_old_server_dev_count_mismatch(self, monkeypatch, capsys):
-        """Old servers without contract_version only produce a warning."""
-        _patch_version(monkeypatch, "0.8.1-dev.47")
-        from bifrost import cli
-
-        with patch(
-            "bifrost.credentials._resolve_url",
-            return_value="https://server.example",
-        ), patch(
-            "httpx.get",
-            return_value=_make_url_response({"version": "0.8.1-dev.48"}),
-        ):
-            cli._check_cli_version()
-        assert "contract version" in capsys.readouterr().err
-
 
 # --------------------------------------------------------------------------- #
 # URL resolution: .env / env-var path

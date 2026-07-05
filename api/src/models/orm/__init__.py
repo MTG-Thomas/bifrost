@@ -51,6 +51,7 @@ from src.models.orm.solution_deploy_jobs import SolutionDeployJob
 from src.models.orm.solution_connection_schema import SolutionConnectionSchema
 from src.models.orm.solution_file_location import SolutionFileLocation
 from src.models.orm.solutions import Solution
+from src.models.orm.solution_export_jobs import SolutionExportJob
 from src.models.orm.custom_claims import CustomClaim
 from src.models.orm.tables import Document, Table
 from src.models.orm.users import Role, User, UserRole
@@ -71,8 +72,9 @@ __all__ = [
     "Solution",
     "SolutionConfigSchema",
     "SolutionConnectionSchema",
-    "SolutionDeployJob",
     "SolutionFileLocation",
+    "SolutionDeployJob",
+    "SolutionExportJob",
     "PendingCaptureORM",
     # Applications (App Builder)
     "Application",

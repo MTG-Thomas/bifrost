@@ -7,8 +7,6 @@ import type { components } from "@/lib/v1";
 
 type MessagePublic = components["schemas"]["MessagePublic"];
 
-let fallbackMessageIdCounter = 0;
-
 /**
  * Extended message type with streaming state flags
  */
@@ -51,8 +49,7 @@ export function generateMessageId(): string {
     ].join("-");
   }
 
-  fallbackMessageIdCounter += 1;
-  return `fallback-${Date.now().toString(36)}-${fallbackMessageIdCounter.toString(36)}`;
+  return `fallback-${Date.now().toString(36)}`;
 }
 
 /**

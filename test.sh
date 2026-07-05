@@ -164,7 +164,7 @@ stack_up() {
             echo "Stack already up."
             return 0
         fi
-        echo "Stack containers running but API not ready — see logs above." >&2
+        dump_stack_startup_logs "existing stack api readiness"
         exit 1
     fi
 
@@ -195,7 +195,7 @@ stack_up() {
 
     echo "Starting API + Worker + Scheduler..."
     if ! docker compose -f "$COMPOSE_FILE" --profile e2e up -d "$build_flag"; then
-        dump_stack_startup_logs "api-worker-scheduler compose up"
+        dump_stack_startup_logs "docker compose up"
         exit 1
     fi
     echo "Waiting for API to be serving traffic on /health/ready..."
@@ -205,10 +205,7 @@ stack_up() {
     fi
 
     echo "Starting client..."
-    if ! docker compose -f "$COMPOSE_FILE" --profile client up -d "$build_flag" client; then
-        dump_stack_startup_logs "client compose up"
-        exit 1
-    fi
+    docker compose -f "$COMPOSE_FILE" --profile client up -d "$build_flag" client
     echo "Waiting for client to be healthy..."
     for i in {1..120}; do
         cid=$(docker compose -f "$COMPOSE_FILE" ps -q client 2>/dev/null)
@@ -273,6 +270,13 @@ run_pytest() {
     # changed migrations they should run `./test.sh stack reset` once.
     require_stack_up
     reset_state
+    # LOG_DIR is mkdir'd on the host as the runner/host user, then bind-mounted
+    # into the test-runner container at /tmp/bifrost. The container runs as
+    # uid 1000 (non-root, hardened), so it cannot write pytest's --junitxml file
+    # into a dir it doesn't own -> PermissionError [Errno 13] at pytest exit, and
+    # the whole session is reported as ERROR even though every test ran. Make the
+    # mount dir world-writable so the uid-1000 container can write results into it.
+    chmod 777 "$LOG_DIR" 2>/dev/null || true
     local build_args=("--build")
     if [ "${BIFROST_SKIP_BUILD:-0}" = "1" ]; then
         build_args=()
@@ -284,23 +288,19 @@ run_pytest() {
     return "${PIPESTATUS[0]}"
 }
 
-cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -v "$@"; }
+# `unit` is the fast every-PR lane: it deselects `@pytest.mark.slow` tests
+# (real-process forks, memory-profiling, subprocess import scans — seconds each,
+# not the ms a unit test should cost). Those still run in `all` and nightly, so
+# no coverage is dropped — just moved off the per-PR critical path. A caller can
+# re-include them ad hoc with `./test.sh unit -m slow` or `-m ""`.
+cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -m "not slow" -v "$@"; }
+cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
+cmd_all()  { run_pytest tests/ -v "$@"; }
 cmd_coverage() {
     local target="${1:-coverage.xml}"
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
         sh -lc 'cat /coverage/coverage.xml' > "$target"
 }
-cmd_e2e_smoke() {
-    run_pytest \
-        tests/e2e/api/test_auth.py::TestHealthCheck \
-        tests/e2e/api/test_auth.py::TestRegistrationFlow::test_platform_admin_can_access_protected_endpoints \
-        tests/e2e/api/test_workflows.py::TestWorkflowListing \
-        tests/e2e/api/test_workflows.py::TestWorkflowValidation::test_validate_valid_workflow \
-        tests/e2e/platform/test_cli_ephemeral_login.py::test_ephemeral_env_vars_authenticate_bifrost_api_subprocess \
-        -v "$@"
-}
-cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
-cmd_all()  { run_pytest tests/ -v "$@"; }
 
 cmd_quality() {
     local sub="${1:-}"
@@ -381,7 +381,7 @@ client_e2e() {
 
 client_docs() {
     require_stack_up
-    if [[ -z "${DOCS_REPO_PATH:-}" ]]; then
+    if [ -z "${DOCS_REPO_PATH:-}" ]; then
         echo "DOCS_REPO_PATH must be set to the absolute path of the gobifrost checkout." >&2
         exit 2
     fi

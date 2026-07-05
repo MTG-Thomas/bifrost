@@ -169,12 +169,6 @@ def e2e_client():
 _UNSET = object()
 
 
-_UNSET = object()
-
-
-_UNSET = object()
-
-
 def write_and_register(
     e2e_client, headers, path: str, content: str, function_name: str,
     *, organization_id=_UNSET,

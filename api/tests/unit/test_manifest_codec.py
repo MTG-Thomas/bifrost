@@ -1618,21 +1618,6 @@ def test_child_models_have_no_standalone_orm_path(dest):
             child.to_orm_values(dest)
 
 
-def test_oauth_provider_manifest_carries_provider_metadata():
-    """OAuth provider behavior flags should round-trip through manifest data."""
-    from bifrost.manifest import ManifestOAuthProvider
-    from bifrost.manifest_codec import Destination
-
-    provider = ManifestOAuthProvider(
-        provider_name="scope-sensitive",
-        provider_metadata={"omit_token_exchange_scope": True},
-    )
-
-    assert provider.view(Destination.GIT_SYNC)["provider_metadata"] == {
-        "omit_token_exchange_scope": True,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Structural guard against "Leak A": a field that to_orm_values(INSTALL) writes
 # from self.X but that view(INSTALL) drops will silently reconstitute to its

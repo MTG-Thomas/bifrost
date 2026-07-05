@@ -181,7 +181,7 @@ Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`),
 **When a DTO changes:**
 
 1. Run the DTO-parity test: `./test.sh tests/unit/test_dto_flags.py`. If it fails, either add the new field to the appropriate CLI command / MCP tool, or add it to `DTO_EXCLUDES` in `api/bifrost/dto_flags.py` with a one-line comment explaining why (UI-managed, out-of-scope, etc.).
-2. If the field should round-trip through Solutions or `.bifrost/` manifests, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the relevant Solutions export/import code.
+2. If the field should round-trip in portable exports, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the scrub rules in `api/bifrost/portable.py`.
 3. If the field changes a command or tool, regenerate the skill appendices via `python api/scripts/skill-truth/generate.py` (CI enforces freshness).
 4. **Run the contract-version tripwire: `./test.sh tests/unit/test_contract_version.py`.** It fingerprints every CLI/SDK-consumed DTO (command DTOs + all `src.models.contracts.cli` SDK DTOs, pulled in programmatically). If one changed, the test fails and forces a decision: if the change is **breaking** (field removed/renamed/retyped, a response shape the CLI parses), bump `CONTRACT_VERSION` in **both** `api/shared/contract_version.py` and `api/bifrost/contract_version.py`, then refresh `EXPECTED_CONTRACT_FINGERPRINT`. If it's **cosmetic/additive**, just refresh the fingerprint. This keeps a missed bump from shipping a CLI that silently breaks against the server — the CLI's runtime gate hard-blocks on a contract mismatch. (Pure route renames aren't gated — they 404 loudly rather than corrupt; the DTO layer catches the silent breakages.)
 

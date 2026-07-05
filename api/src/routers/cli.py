@@ -1045,13 +1045,14 @@ async def sdk_integrations_list_mappings(
         logger.info(f"SDK listed {len(mappings)} mappings for integration '{log_safe(request.name)}' for user {current_user.email}")
 
         is_external = await _is_external_user_db(current_user, db)
+        include_default_secrets = not is_external and not current_user.is_superuser
         items = []
         for mapping in mappings:
             # Get merged config (integration defaults + org overrides)
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                include_default_secrets=False,
+                include_default_secrets=include_default_secrets,
                 external=is_external,
             )
             items.append({
@@ -1112,10 +1113,11 @@ async def sdk_integrations_get_mapping(
 
         # Get merged config for the mapping
         is_external = await _is_external_user_db(current_user, db)
+        include_default_secrets = not is_external and not current_user.is_superuser
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=False,
+            include_default_secrets=include_default_secrets,
             external=is_external,
         )
 

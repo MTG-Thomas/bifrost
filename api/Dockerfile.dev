@@ -119,6 +119,28 @@ COPY client/src/lib/app-sdk/provider.tsx \
 COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/index.ts
 RUN chmod -R a+rX /app/src/services/sdk_package
 
+# SDK package builder (esbuild) + the v2 `bifrost` SDK source it bundles. The
+# SDK source of truth lives in client/src/lib/app-sdk; it is copied here so
+# /api/sdk/download can bundle + serve the installable `bifrost` package without
+# the client/ tree at runtime. A unit test enforces this file list stays in sync.
+COPY api/src/services/sdk_package/package.json /app/src/services/sdk_package/
+COPY api/src/services/sdk_package/build_sdk.js /app/src/services/sdk_package/
+RUN cd /app/src/services/sdk_package && npm install --production
+COPY client/src/lib/app-sdk/provider.tsx \
+     client/src/lib/app-sdk/tables.ts \
+     client/src/lib/app-sdk/transport.ts \
+     client/src/lib/app-sdk/use-table.ts \
+     client/src/lib/app-sdk/use-infinite-table.ts \
+     client/src/lib/app-sdk/ws-client.ts \
+     client/src/lib/app-sdk/use-workflow.ts \
+     client/src/lib/app-sdk/use-workflow-hooks.ts \
+     client/src/lib/app-sdk/files.ts \
+     client/src/lib/app-sdk/use-files.ts \
+     client/src/lib/app-sdk/bifrost-header.tsx \
+     /app/src/services/sdk_package/sdk_src/
+COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/index.ts
+RUN chmod -R a+rX /app/src/services/sdk_package
+
 # Copy entrypoint script
 COPY api/entrypoint.sh /entrypoint.sh
 RUN chmod 755 /entrypoint.sh

@@ -379,24 +379,13 @@ export function Tables() {
 											<DataTableCell className="font-medium font-mono">
 												<span className="flex items-center gap-2">
 													{table.name}
-												{table.is_solution_managed && (
-													<SolutionManagedBadge
-														solutionId={table.solution_id}
-													/>
-												)}
-												{table.orphaned_at && (
-													<Badge
-														variant="outline"
-														className="font-sans text-xs font-normal text-muted-foreground"
-													>
-														Orphaned
-														{table.origin_solution_slug
-															? ` · from ${table.origin_solution_slug}`
-															: ""}
-													</Badge>
-												)}
-											</span>
-										</DataTableCell>
+													{table.is_solution_managed && (
+														<SolutionManagedBadge
+															solutionId={table.solution_id}
+														/>
+													)}
+												</span>
+											</DataTableCell>
 											<DataTableCell className="max-w-xs truncate text-muted-foreground">
 												{table.description || "-"}
 											</DataTableCell>

@@ -210,3 +210,4 @@ class TestMCPAgentAccessExternal:
     def test_role_based_agent_allowed_for_external_with_role(self):
         agent = self._agent("role_based", role_names=("Portal User",))
         assert self._check(agent, ["Portal User"], is_external=True) is True
+

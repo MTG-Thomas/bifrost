@@ -15,8 +15,8 @@ include the global SECRET default). Then assert:
 
   - an EXTERNAL portal user gets NONE of the global SECRET/token back from ANY
     of get / list_mappings / get_mapping / upsert_mapping / refresh_token;
-  - a NORMAL org user still receives the global tier from the legacy get and
-    write echo paths, while mapping reads drop integration-level SECRET defaults.
+  - a NORMAL org user (and the sentinel/engine path) still receives the global
+    tier — proving the restriction is external-specific, not a blanket break.
 
 Engine/sentinel path is unchanged (a workflow legitimately uses its org's
 integrations including global defaults).
@@ -291,8 +291,8 @@ _CONFIG_ENDPOINTS = ["get", "list_mappings", "get_mapping", "upsert_mapping"]
 @pytest.mark.parametrize("endpoint", _CONFIG_ENDPOINTS)
 class TestExternalIntegrationsSurface:
     """NEW-G: EVERY config-returning /api/sdk/integrations/* endpoint must drop
-    the global SECRET default for an external caller. Mapping read endpoints
-    also omit integration-level SECRET defaults for normal org users."""
+    the global SECRET default for an external caller, and keep it for a normal
+    org user."""
 
     def test_external_never_sees_global_secret(
         self, e2e_client, external_user, global_integration, endpoint
@@ -316,16 +316,12 @@ class TestExternalIntegrationsSurface:
         resp = _call_endpoint(e2e_client, org1_user, endpoint, global_integration)
         assert resp.status_code in (200, 201), f"{endpoint}: {resp.status_code} {resp.text}"
         blob = _serialize(resp.json())
-        if endpoint in {"list_mappings", "get_mapping"}:
-            assert GLOBAL_CONFIG_SECRET not in blob, (
-                f"normal org user must not receive the global SECRET default via {endpoint}"
-            )
-        else:
-            # Legacy get and write echo paths still merge the global SECRET
-            # default into the org mapping's config for a normal org user.
-            assert GLOBAL_CONFIG_SECRET in blob, (
-                f"normal org user must still receive the global SECRET default via {endpoint}"
-            )
+        # The mapping-echo siblings (and get) merge the global SECRET default
+        # into the org mapping's config for a normal org user — proving the
+        # restriction is external-specific, not a blanket break.
+        assert GLOBAL_CONFIG_SECRET in blob, (
+            f"normal org user must still receive the global SECRET default via {endpoint}"
+        )
 
 
 class TestExternalIntegrationsRefreshToken:

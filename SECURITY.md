@@ -17,7 +17,9 @@ historical commit, please rebase onto current `main` before reporting.
 
 Report privately through GitHub's private vulnerability reporting flow:
 
-Go to https://github.com/MTG-Thomas/bifrost/security/advisories/new
+### 1. GitHub private vulnerability reporting (preferred)
+
+Go to https://github.com/gobifrost/bifrost/security/advisories/new
 and submit a draft advisory. This keeps the report confidential and lets
 us discuss, patch, and coordinate disclosure inside GitHub's tooling.
 
@@ -46,9 +48,7 @@ The repo runs:
   (see `.github/workflows/codeql.yml`)
 - **Secret scanning + push protection** at the repo level
 - **OpenSSF Scorecard** weekly, results published to
-  https://api.securityscorecards.dev/projects/github.com/MTG-Thomas/bifrost
-- **Snyk** dependency, IaC, and container scanning as a non-blocking rollout
-  lane (see `.github/workflows/snyk.yml` and `docs/security/snyk.md`)
+  https://api.securityscorecards.dev/projects/github.com/gobifrost/bifrost
 
 ### Auto-Merge Policy for Dependency Updates
 

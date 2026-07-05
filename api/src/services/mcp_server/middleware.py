@@ -155,6 +155,7 @@ class ToolFilterMiddleware(Middleware):
                             is_superuser=is_superuser,
                             user_id=user_id,
                             org_id=org_id,
+                            is_external=is_external,
                         )
                         if agent_result is None:
                             logger.warning(

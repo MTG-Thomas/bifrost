@@ -58,6 +58,6 @@ describe("chat-utils ids", () => {
 		});
 		vi.spyOn(Date, "now").mockReturnValue(1790000000000);
 
-		expect(generateMessageId()).toBe("fallback-mubbs7i8-1");
+		expect(generateMessageId()).toBe("fallback-mubbs7i8");
 	});
 });

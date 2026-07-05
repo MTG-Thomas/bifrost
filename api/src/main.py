@@ -162,7 +162,8 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"Solution deploy job reconciliation failed: {e}")
 
-    # Seed built-in policy rules before file prefixes can reference them.
+    # Seed built-in policy rules (idempotent; must exist before any file prefix
+    # with {"$ref": "admin_bypass"} is created).
     try:
         from src.services.policy_rule_service import PolicyRuleService
 

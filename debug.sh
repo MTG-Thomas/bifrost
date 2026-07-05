@@ -111,6 +111,18 @@ configure_debug_admin() {
         umask "$previous_umask"
         export BIFROST_DEFAULT_USER_PASSWORD="$generated_password"
     fi
+    set +a
+
+    # Explicit port-mode opt-out. `env -u NETBIRD_SETUP_KEY ./debug.sh up` does
+    # NOT force port mode on its own, because the global ~/.config/bifrost/debug.env
+    # above re-introduces NETBIRD_SETUP_KEY under `set -a`. Browser/Playwright work
+    # (and the Solutions QA fan-out) needs a deterministic way to force port mode
+    # regardless of the global config, so honor BIFROST_FORCE_PORT=1 by dropping
+    # the netbird key after sourcing. (Netbird-mode users are unaffected — they
+    # simply don't set this flag.)
+    if [ "${BIFROST_FORCE_PORT:-}" = "1" ]; then
+        unset NETBIRD_SETUP_KEY
+    fi
 }
 
 # =============================================================================

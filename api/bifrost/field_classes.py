@@ -55,16 +55,13 @@ def classify(
     if keep_on_portable:
         extra["bifrost_keep_on_portable"] = True
     if predicate is not None:
-        if predicate not in PREDICATES:
-            raise ValueError(f"unknown predicate key {predicate!r}")
+        assert predicate in PREDICATES, f"unknown predicate key {predicate!r}"
         extra["bifrost_class_predicate"] = predicate  # a STRING, schema-safe
-    if import_owner not in ("direct", "indexer", "restamp"):
-        raise ValueError(f"bad import_owner {import_owner!r}")
+    assert import_owner in ("direct", "indexer", "restamp"), f"bad import_owner {import_owner!r}"
     if import_owner != "direct":
         extra["bifrost_import_owner"] = import_owner
     if install_view is not None:
-        if install_view not in ("keep", "drop", "keep_empty_list"):
-            raise ValueError(f"bad install_view {install_view!r}")
+        assert install_view in ("keep", "drop", "keep_empty_list"), f"bad install_view {install_view!r}"
         extra["bifrost_install_view"] = install_view
     return {"json_schema_extra": extra}
 

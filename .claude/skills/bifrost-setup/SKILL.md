@@ -141,6 +141,12 @@ On native Windows, prefer:
 py -3.11 -m pipx install --force {url}/api/cli/download
 ```
 
+On native Windows, prefer:
+
+```powershell
+py -3.11 -m pipx install --force {url}/api/cli/download
+```
+
 Verify with:
 ```powershell
 bifrost help

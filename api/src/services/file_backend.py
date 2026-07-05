@@ -9,6 +9,7 @@ S3 key resolution is delegated to `shared.file_paths.resolve_s3_key`.
 """
 
 import asyncio
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path, PureWindowsPath
 
@@ -87,14 +88,25 @@ class LocalBackend(FileBackend):
             # Freeform local locations are siblings of workspace_root.
             base_dir = self.workspace_root.parent / location
 
-        base = base_dir.resolve()
-        resolved = (base / path).resolve()
+        # Resolve + sandbox the (possibly attacker-controlled) path against
+        # base_dir. Implemented with os.path.realpath + a startswith prefix
+        # check (the barrier static analysis recognizes for path traversal);
+        # the trailing os.sep prevents sibling-prefix confusion (base
+        # "/tmp/foo" must not accept "/tmp/foo_evil/x").
         try:
-            resolved.relative_to(base)
-        except ValueError as e:
-            raise ValueError(f"Invalid path: path traversal not allowed: {path}") from e
+            base_real = os.path.realpath(base_dir)
+            resolved = os.path.realpath(os.path.join(base_real, path))
+        except Exception as e:
+            raise ValueError(f"Invalid path: {path}") from e
 
-        return resolved
+        # Pure startswith barrier (the form static analysis recognizes), with a
+        # trailing os.sep on BOTH sides so it accepts base_dir itself (the
+        # empty-path/list("") case) and real descendants, but not a sibling
+        # sharing a string prefix ("/tmp/foo" must reject "/tmp/foo_evil/x").
+        if not (resolved + os.sep).startswith(base_real + os.sep):
+            raise ValueError(f"Path must be within {location} directory: {path}")
+
+        return Path(resolved)
 
     async def read(self, path: str, location: Location, scope: str | None = None) -> bytes:
         """Read file from local filesystem. Scope is ignored in local mode."""

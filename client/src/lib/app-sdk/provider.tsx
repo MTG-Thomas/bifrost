@@ -214,9 +214,9 @@ export function BifrostProvider({
   // go out on the default same-origin transport with no token / app header.
   // Render-time assignment is idempotent (same-inputs skip), so StrictMode's
   // double render installs once.
-  // Deliberate render-phase install: the transport is a module-global external
-  // store that child mount effects read synchronously, so it must be written
-  // during render. An effect-time install is too late by definition here.
+  // The transport is a module-global external store that child MOUNT EFFECTS
+  // read synchronously, so it must be written during render (guarded by a
+  // same-key skip for idempotence under StrictMode/re-renders).
   const installKey = `${baseUrl}|${token}|${orgScope ?? ""}|${appId ?? ""}`;
   const installedRef = useRef<{
     key: string;
