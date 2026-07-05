@@ -518,6 +518,133 @@ async def test_materialize_source_filters_metadata_tmp_and_directory_keys(
     assert not (tmp_path / "pages" / ".tmp.index.tsx").exists()
 
 
+async def test_auto_migrate_returns_false_when_repo_prefix_has_no_source() -> None:
+    from src.services.app_bundler import auto_migrate
+
+    fake_repo = type("FakeRepo", (), {})()
+    fake_repo.list = AsyncMock(
+        return_value=[
+            "apps/empty/",
+            "apps/empty/app.yaml",
+            "apps/empty/pages/.tmp.index.tsx",
+        ]
+    )
+    fake_repo.read = AsyncMock()
+    fake_repo.write = AsyncMock()
+
+    with patch.object(auto_migrate, "RepoStorage", return_value=fake_repo), \
+         patch.object(auto_migrate, "migrate_app") as migrate:
+        migrated, results = await auto_migrate.auto_migrate_repo_prefix(
+            app_id="app-id",
+            repo_prefix="apps/empty",
+        )
+
+    assert migrated is False
+    assert results == []
+    fake_repo.list.assert_awaited_once_with("apps/empty/")
+    fake_repo.read.assert_not_called()
+    fake_repo.write.assert_not_called()
+    migrate.assert_not_called()
+
+
+async def test_auto_migrate_writes_back_only_changed_files() -> None:
+    from bifrost.migrate_imports import FileMigrationResult
+    from src.services.app_bundler import auto_migrate
+
+    fake_repo = type("FakeRepo", (), {})()
+    fake_repo.list = AsyncMock(
+        return_value=[
+            "apps/demo/pages/index.tsx",
+            "apps/demo/components/SearchInput.tsx",
+            "apps/demo/app.yaml",
+            "apps/demo/pages/.tmp.index.tsx",
+        ]
+    )
+    payloads = {
+        "apps/demo/pages/index.tsx": (
+            b'import { SearchInput, Route } from "bifrost";\n'
+        ),
+        "apps/demo/components/SearchInput.tsx": (
+            b"export default function SearchInput() { return null; }\n"
+        ),
+    }
+    fake_repo.read = AsyncMock(side_effect=lambda key: payloads[key])
+    fake_repo.write = AsyncMock()
+
+    captured_app_dir: dict[str, pathlib.Path] = {}
+
+    def fake_migrate_app(app_dir, platform_names, lucide_names):
+        captured_app_dir["path"] = app_dir
+        page = app_dir / "pages" / "index.tsx"
+        component = app_dir / "components" / "SearchInput.tsx"
+        return [
+            FileMigrationResult(
+                path=page,
+                original=page.read_text(encoding="utf-8"),
+                updated='import { Route } from "react-router-dom";\n',
+                moved_router=1,
+            ),
+            FileMigrationResult(
+                path=component,
+                original=component.read_text(encoding="utf-8"),
+                updated=component.read_text(encoding="utf-8"),
+            ),
+        ]
+
+    with patch.object(auto_migrate, "RepoStorage", return_value=fake_repo), \
+         patch.object(auto_migrate, "load_lucide_icon_names", return_value={"Search"}), \
+         patch.object(auto_migrate, "migrate_app", side_effect=fake_migrate_app):
+        migrated, results = await auto_migrate.auto_migrate_repo_prefix(
+            app_id="app-id",
+            repo_prefix="apps/demo",
+        )
+
+    assert migrated is True
+    assert len(results) == 2
+    assert captured_app_dir["path"].name == "app"
+    assert fake_repo.read.await_args_list == [
+        (("apps/demo/pages/index.tsx",),),
+        (("apps/demo/components/SearchInput.tsx",),),
+    ]
+    fake_repo.write.assert_awaited_once_with(
+        "apps/demo/pages/index.tsx",
+        b'import { Route } from "react-router-dom";\n',
+    )
+
+
+async def test_auto_migrate_reports_unchanged_results_without_writes() -> None:
+    from bifrost.migrate_imports import FileMigrationResult
+    from src.services.app_bundler import auto_migrate
+
+    fake_repo = type("FakeRepo", (), {})()
+    fake_repo.list = AsyncMock(return_value=["apps/demo/pages/index.tsx"])
+    fake_repo.read = AsyncMock(return_value=b"export default function Page(){}\n")
+    fake_repo.write = AsyncMock()
+
+    def fake_migrate_app(app_dir, platform_names, lucide_names):
+        page = app_dir / "pages" / "index.tsx"
+        original = page.read_text(encoding="utf-8")
+        return [
+            FileMigrationResult(
+                path=page,
+                original=original,
+                updated=original,
+            )
+        ]
+
+    with patch.object(auto_migrate, "RepoStorage", return_value=fake_repo), \
+         patch.object(auto_migrate, "load_lucide_icon_names", return_value=set()), \
+         patch.object(auto_migrate, "migrate_app", side_effect=fake_migrate_app):
+        migrated, results = await auto_migrate.auto_migrate_repo_prefix(
+            app_id="app-id",
+            repo_prefix="apps/demo/",
+        )
+
+    assert migrated is False
+    assert len(results) == 1
+    fake_repo.write.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # _generate_app_tailwind — per-app Tailwind compilation step that fills in
 # arbitrary values / responsive variants the host's preloaded Tailwind misses.
