@@ -479,6 +479,117 @@ def test_do_resolve_uses_rm_fallback_for_delete_conflicts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_desktop_resolve_commits_merge_and_reports_ahead_behind(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "MERGE_HEAD").write_text("merge")
+
+    class Git:
+        def __init__(self):
+            self.calls = []
+
+        def checkout(self, *args):
+            self.calls.append(("checkout", args))
+
+        def add(self, path):
+            self.calls.append(("add", path))
+
+        def commit(self, *args):
+            self.calls.append(("commit", args))
+
+        def rev_list(self, *args):
+            if args[-1] == "origin/main..HEAD":
+                return "3"
+            if args[-1] == "HEAD..origin/main":
+                return "1"
+            raise AssertionError(args)
+
+    class Index:
+        def unmerged_blobs(self):
+            return {"workflows/conflict.py": [(1, object()), (2, object())]}
+
+    class Repo:
+        git = Git()
+        index = Index()
+
+    service = _service(tmp_path, Repo())
+
+    result = await service.desktop_resolve({"workflows/conflict.py": "ours"})
+
+    assert result.success is True
+    assert result.commits_ahead == 3
+    assert result.commits_behind == 1
+    assert Repo.git.calls == [
+        ("checkout", ("--ours", "workflows/conflict.py")),
+        ("add", "workflows/conflict.py"),
+        ("commit", ("-m", "Merge with conflict resolution")),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_desktop_resolve_handles_stash_conflict_without_merge_head(tmp_path):
+    class Git:
+        def __init__(self):
+            self.calls = []
+
+        def checkout(self, *args):
+            self.calls.append(("checkout", args))
+            raise RuntimeError("deleted on one side")
+
+        def rm(self, path):
+            self.calls.append(("rm", path))
+            raise RuntimeError("already gone")
+
+        def add(self, path):
+            self.calls.append(("add", path))
+
+        def rev_list(self, *args):
+            raise RuntimeError("no origin ref")
+
+    class Index:
+        def __init__(self):
+            self.commits = []
+
+        def unmerged_blobs(self):
+            return {"workflows/conflict.py": [(2, object()), (3, object())]}
+
+        def commit(self, message):
+            self.commits.append(message)
+
+    class Repo:
+        git = Git()
+        index = Index()
+
+    service = _service(tmp_path, Repo())
+
+    result = await service.desktop_resolve({"workflows/conflict.py": "theirs"})
+
+    assert result.success is True
+    assert result.commits_ahead == 0
+    assert result.commits_behind == 0
+    assert Repo.git.calls == [
+        ("checkout", ("--theirs", "workflows/conflict.py")),
+        ("rm", "workflows/conflict.py"),
+        ("add", "workflows/conflict.py"),
+    ]
+    assert Repo.index.commits == ["Apply stashed changes with conflict resolution"]
+
+
+@pytest.mark.asyncio
+async def test_desktop_resolve_returns_error_result_when_checkout_open_fails(tmp_path):
+    service = object.__new__(GitHubSyncService)
+    service.repo_manager = type(
+        "FailingManager",
+        (),
+        {"lock": lambda self: (_ for _ in ()).throw(RuntimeError("storage offline"))},
+    )()
+
+    result = await service.desktop_resolve({"workflows/conflict.py": "ours"})
+
+    assert result.success is False
+    assert result.error == "storage offline"
+
+
+@pytest.mark.asyncio
 async def test_desktop_abort_merge_reports_no_merge_in_progress(tmp_path):
     service = _service(tmp_path, object())
 
