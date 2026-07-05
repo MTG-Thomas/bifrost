@@ -110,6 +110,35 @@ def test_form_serializer_inlines_ordered_field_schema():
     }
 
 
+def test_form_field_schema_helper_omits_unset_optional_values():
+    field = SimpleNamespace(
+        name="notes",
+        type="textarea",
+        required=False,
+        label=None,
+        placeholder=None,
+        help_text=None,
+        default_value=None,
+        options=None,
+        data_provider_id=None,
+        data_provider_inputs=None,
+        visibility_expression=None,
+        validation=None,
+        allowed_types=None,
+        multiple=None,
+        max_size_mb=None,
+        content=None,
+        allow_as_query_param=None,
+        auto_fill=None,
+    )
+
+    assert manifest_generator._form_field_to_schema_dict(field) == {
+        "name": "notes",
+        "type": "textarea",
+        "required": False,
+    }
+
+
 def test_agent_and_app_serializers_coerce_relationship_ids_and_defaults():
     agent = manifest_generator.serialize_agent(
         SimpleNamespace(
@@ -338,3 +367,73 @@ def test_event_and_mcp_serializers_include_nested_children():
     assert event.adapter_name == "halo"
     assert event.subscriptions[0].input_mapping == {"ticket": "$.id"}
     assert server.connections[MCP_CONN_ID].tools[0].disabled_reason == "admin"
+
+
+def test_schedule_event_serializer_sets_schedule_fields_and_webhook_defaults():
+    event = manifest_generator.serialize_event_source(
+        SimpleNamespace(
+            id=EVENT_ID,
+            name="Daily Sync",
+            source_type="schedule",
+            event_type=None,
+            organization_id=None,
+            is_active=False,
+        ),
+        schedule=SimpleNamespace(
+            cron_expression="0 8 * * *",
+            timezone="America/Indianapolis",
+            enabled=False,
+            overlap_policy=SimpleNamespace(value="replace"),
+        ),
+    )
+
+    assert event.source_type == "schedule"
+    assert event.organization_id is None
+    assert event.is_active is False
+    assert event.cron_expression == "0 8 * * *"
+    assert event.timezone == "America/Indianapolis"
+    assert event.schedule_enabled is False
+    assert event.overlap_policy == "replace"
+    assert event.rate_limit_per_minute == 60
+    assert event.rate_limit_window_seconds == 60
+    assert event.rate_limit_enabled is True
+    assert event.subscriptions == []
+
+
+def test_mcp_connection_serializer_includes_tools_and_omits_secret_material():
+    tool = manifest_generator.serialize_mcp_connection_tool(
+        SimpleNamespace(
+            tool_name="lookup_ticket",
+            tool_schema=None,
+            enabled=True,
+            disabled_reason=None,
+        )
+    )
+    connection = manifest_generator.serialize_mcp_connection(
+        SimpleNamespace(
+            organization_id=ORG_ID,
+            client_id="client-id",
+            encrypted_client_secret="do-not-export",
+            server_url_override="https://regional.example/mcp",
+            available_in_chat=False,
+            available_to_autonomous=True,
+            service_oauth_token_id=CONFIG_ID,
+        ),
+        tools=[
+            SimpleNamespace(
+                tool_name="lookup_ticket",
+                tool_schema={"type": "object"},
+                enabled=False,
+                disabled_reason="disabled by admin",
+            )
+        ],
+    )
+
+    assert tool.tool_schema == {}
+    assert connection.organization_id == ORG_ID
+    assert connection.server_url_override == "https://regional.example/mcp"
+    assert connection.available_in_chat is False
+    assert connection.available_to_autonomous is True
+    assert connection.service_oauth_token_id == CONFIG_ID
+    assert connection.tools[0].tool_schema == {"type": "object"}
+    assert "secret" not in connection.model_dump()

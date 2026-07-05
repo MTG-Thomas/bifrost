@@ -8,13 +8,18 @@ Tests cover:
 - JSON serialization of tool results
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
 
-from src.services.agent_executor import AgentExecutor, _serialize_for_json
+from src.services.agent_executor import (
+    FALLBACK_SYSTEM_PROMPT,
+    AgentExecutor,
+    _serialize_for_json,
+)
 from src.services.llm import ToolDefinition
 
 
@@ -800,3 +805,207 @@ class TestChatDelegation:
 
         assert result.error is not None
         assert "timed out" in result.error
+
+
+class TestDefaultSystemPrompt:
+    """Test default prompt loading and fallback behavior."""
+
+    @pytest.mark.asyncio
+    async def test_returns_configured_default_system_prompt(self, executor):
+        """Configured LLM prompt is returned when available."""
+        config = SimpleNamespace(default_system_prompt="Use the repo playbook.")
+
+        class FakeConfigService:
+            def __init__(self, _session):
+                pass
+
+            async def get_config(self):
+                return config
+
+        with patch(
+            "src.services.llm_config_service.LLMConfigService",
+            FakeConfigService,
+        ):
+            result = await executor._get_default_system_prompt()
+
+        assert result == "Use the repo playbook."
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_config_has_no_default_prompt(self, executor):
+        """Empty config prompts use the built-in fallback."""
+        config = SimpleNamespace(default_system_prompt="")
+
+        class FakeConfigService:
+            def __init__(self, _session):
+                pass
+
+            async def get_config(self):
+                return config
+
+        with patch(
+            "src.services.llm_config_service.LLMConfigService",
+            FakeConfigService,
+        ):
+            result = await executor._get_default_system_prompt()
+
+        assert result == FALLBACK_SYSTEM_PROMPT
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_config_lookup_fails(self, executor):
+        """Config lookup errors do not break chat startup."""
+        class FakeConfigService:
+            def __init__(self, _session):
+                pass
+
+            async def get_config(self):
+                raise RuntimeError("config unavailable")
+
+        with patch(
+            "src.services.llm_config_service.LLMConfigService",
+            FakeConfigService,
+        ):
+            result = await executor._get_default_system_prompt()
+
+        assert result == FALLBACK_SYSTEM_PROMPT
+
+
+class TestKnowledgeSearch:
+    """Test agent knowledge-search helper branches without live services."""
+
+    @pytest.mark.asyncio
+    async def test_knowledge_search_requires_query(self, executor, mock_agent):
+        """Missing query returns a validation error before external calls."""
+        from src.services.llm.base import ToolCallRequest
+
+        mock_agent.knowledge_sources = ["docs"]
+
+        result = await executor._execute_knowledge_search(
+            ToolCallRequest(
+                id="call_search",
+                name="search_knowledge",
+                arguments={},
+            ),
+            mock_agent,
+        )
+
+        assert result.result is None
+        assert result.error == "No query provided for knowledge search"
+        assert result.tool_call_id == "call_search"
+
+    @pytest.mark.asyncio
+    async def test_knowledge_search_requires_agent_sources(self, executor, mock_agent):
+        """Agents without knowledge sources return a local error."""
+        from src.services.llm.base import ToolCallRequest
+
+        mock_agent.knowledge_sources = []
+
+        result = await executor._execute_knowledge_search(
+            ToolCallRequest(
+                id="call_search",
+                name="search_knowledge",
+                arguments={"query": "coverage"},
+            ),
+            mock_agent,
+        )
+
+        assert result.result is None
+        assert result.error == "No knowledge sources configured for this agent"
+
+    @pytest.mark.asyncio
+    async def test_knowledge_search_formats_results(self, executor, mock_agent):
+        """Search documents are converted to the chat tool-result envelope."""
+        from src.services.llm.base import ToolCallRequest
+
+        mock_agent.organization_id = uuid4()
+        mock_agent.knowledge_sources = ["docs", "runbooks"]
+
+        doc_with_score = MagicMock(
+            content="Use targeted tests.",
+            namespace="docs",
+            score=0.87654,
+            key="testing.md",
+            metadata={"section": "unit"},
+        )
+        doc_without_score = MagicMock(
+            content="No score document.",
+            namespace="runbooks",
+            score=None,
+            key="runbook.md",
+            metadata={},
+        )
+
+        mock_embedding_client = AsyncMock()
+        mock_embedding_client.embed_single = AsyncMock(return_value=[0.1, 0.2])
+        mock_repo = AsyncMock()
+        mock_repo.search = AsyncMock(return_value=[doc_with_score, doc_without_score])
+
+        with patch(
+            "src.services.embeddings.get_embedding_client",
+            new_callable=AsyncMock,
+            return_value=mock_embedding_client,
+        ), patch(
+            "src.repositories.knowledge.KnowledgeRepository",
+            return_value=mock_repo,
+        ) as MockKnowledgeRepository:
+            result = await executor._execute_knowledge_search(
+                ToolCallRequest(
+                    id="call_search",
+                    name="search_knowledge",
+                    arguments={"query": "coverage", "limit": 2},
+                ),
+                mock_agent,
+            )
+
+        assert result.error is None
+        assert result.result == {
+            "documents": [
+                {
+                    "content": "Use targeted tests.",
+                    "namespace": "docs",
+                    "score": 0.8765,
+                    "key": "testing.md",
+                    "metadata": {"section": "unit"},
+                },
+                {
+                    "content": "No score document.",
+                    "namespace": "runbooks",
+                    "score": None,
+                    "key": "runbook.md",
+                    "metadata": {},
+                },
+            ],
+            "count": 2,
+        }
+        mock_embedding_client.embed_single.assert_awaited_once_with("coverage")
+        mock_repo.search.assert_awaited_once_with(
+            query_embedding=[0.1, 0.2],
+            namespace=["docs", "runbooks"],
+            limit=2,
+            fallback=True,
+        )
+        assert MockKnowledgeRepository.call_args.kwargs["org_id"] == mock_agent.organization_id
+        assert MockKnowledgeRepository.call_args.kwargs["is_superuser"] is True
+
+    @pytest.mark.asyncio
+    async def test_knowledge_search_catches_embedding_errors(self, executor, mock_agent):
+        """Unexpected helper errors are returned as tool errors."""
+        from src.services.llm.base import ToolCallRequest
+
+        mock_agent.knowledge_sources = ["docs"]
+
+        with patch(
+            "src.services.embeddings.get_embedding_client",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("embedding offline"),
+        ):
+            result = await executor._execute_knowledge_search(
+                ToolCallRequest(
+                    id="call_search",
+                    name="search_knowledge",
+                    arguments={"query": "coverage"},
+                ),
+                mock_agent,
+            )
+
+        assert result.result is None
+        assert "embedding offline" in result.error
