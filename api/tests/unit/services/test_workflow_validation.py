@@ -3,10 +3,13 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+import pytest
+
 
 from src.services.workflow_validation import (
     _convert_workflow_metadata_to_model,
     _extract_relative_path,
+    validate_workflow_file,
 )
 
 
@@ -266,3 +269,136 @@ class TestConvertWorkflowMetadataToModel:
         result = _convert_workflow_metadata_to_model(metadata)
         assert result.relative_file_path == path
         assert result.source_file_path == path
+
+
+class TestValidateWorkflowFile:
+
+    @pytest.mark.asyncio
+    async def test_valid_workflow_returns_metadata_with_best_practice_warnings(self):
+        content = """
+from src.sdk.decorators import workflow
+
+@workflow(name="valid_workflow", description="Does useful work")
+async def valid_workflow():
+    return "ok"
+"""
+
+        result = await validate_workflow_file("workflows/valid.py", content)
+
+        assert result.valid is True
+        assert result.metadata is not None
+        assert result.metadata.name == "valid_workflow"
+        assert result.metadata.source_file_path is not None
+        assert [issue.severity for issue in result.issues] == ["warning", "warning"]
+        assert "category other than 'General'" in result.issues[0].message
+        assert "adding tags" in result.issues[1].message
+
+    @pytest.mark.asyncio
+    async def test_syntax_error_returns_line_issue(self):
+        result = await validate_workflow_file("workflows/bad.py", "def broken(:\n    pass\n")
+
+        assert result.valid is False
+        assert result.metadata is None
+        assert len(result.issues) == 1
+        assert result.issues[0].line == 1
+        assert result.issues[0].severity == "error"
+        assert "Syntax error" in result.issues[0].message
+
+    @pytest.mark.asyncio
+    async def test_import_error_returns_issue(self):
+        content = """
+import module_that_does_not_exist_for_validation
+"""
+
+        result = await validate_workflow_file("workflows/import_error.py", content)
+
+        assert result.valid is False
+        assert result.metadata is None
+        assert len(result.issues) == 1
+        assert result.issues[0].severity == "error"
+        assert "Import error" in result.issues[0].message
+
+    @pytest.mark.asyncio
+    async def test_missing_workflow_decorator_returns_issue(self):
+        content = """
+async def helper():
+    return "not discoverable"
+"""
+
+        result = await validate_workflow_file("workflows/no_decorator.py", content)
+
+        assert result.valid is False
+        assert result.metadata is None
+        assert len(result.issues) == 1
+        assert result.issues[0].severity == "error"
+        assert "No @workflow decorator found" in result.issues[0].message
+
+    @pytest.mark.asyncio
+    async def test_invalid_workflow_metadata_collects_all_validation_errors(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from src.services.execution.module_loader import WorkflowMetadata, WorkflowParameter
+
+        metadata = WorkflowMetadata(
+            name="Invalid Name",
+            description=" ",
+            parameters=[WorkflowParameter(name="unsupported", type="tuple", required=True)],
+            timeout_seconds=90000,
+        )
+        metadata.execution_mode = "later"
+
+        def fake_workflow():
+            return None
+
+        fake_workflow._executable_metadata = metadata
+
+        monkeypatch.setattr(
+            "src.services.execution.module_loader.import_module",
+            lambda path: SimpleNamespace(fake_workflow=fake_workflow),
+        )
+
+        content = "def placeholder():\n    return None\n"
+
+        result = await validate_workflow_file("workflows/invalid_metadata.py", content)
+
+        assert result.valid is False
+        messages = [issue.message for issue in result.issues]
+        assert any("Invalid workflow name" in message for message in messages)
+        assert any("Workflow description is required" in message for message in messages)
+        assert any("Invalid execution mode" in message for message in messages)
+        assert any("Invalid timeout" in message for message in messages)
+        assert any("Invalid parameter type" in message for message in messages)
+        assert any("category other than 'General'" in message for message in messages)
+        assert any("adding tags" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_file_storage_not_found_when_content_is_omitted(self, monkeypatch):
+        class FakeStorage:
+            def __init__(self, db):
+                self.db = db
+
+            async def read_file(self, path):
+                raise FileNotFoundError(path)
+
+        class FakeDbContext:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(
+            "src.core.database.get_db_context",
+            lambda: FakeDbContext(),
+        )
+        monkeypatch.setattr(
+            "src.services.file_storage.FileStorageService",
+            FakeStorage,
+        )
+
+        result = await validate_workflow_file("missing.py")
+
+        assert result.valid is False
+        assert result.metadata is None
+        assert len(result.issues) == 1
+        assert result.issues[0].message == "File not found in database: missing.py"
