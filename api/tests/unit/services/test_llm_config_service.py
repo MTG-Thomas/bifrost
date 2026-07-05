@@ -6,6 +6,7 @@ Tests LLM configuration CRUD operations with mocked database.
 
 import base64
 from datetime import datetime, timezone
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -862,3 +863,124 @@ class TestLLMConfigServiceLegacyCustomProvider:
         assert result.success is True
         assert "listing not available" in result.message.lower()
         assert result.models is None
+
+
+class TestLLMConfigServiceProviderPricing:
+    """Test provider pricing sync parsing and persistence decisions."""
+
+    @pytest.mark.asyncio
+    async def test_sync_provider_pricing_updates_existing_and_adds_selected_model(
+        self, mock_session
+    ):
+        """Only valid provider pricing rows should update or create pricing entries."""
+        existing_priced = MagicMock()
+        existing_priced.model = "existing-model"
+        existing_priced.input_price_per_million = Decimal("0")
+        existing_priced.output_price_per_million = Decimal("0")
+        existing_priced.updated_at = None
+
+        existing_result = MagicMock()
+        existing_result.scalars.return_value.all.return_value = [existing_priced]
+        used_result = MagicMock()
+        used_result.all.return_value = [("used-model",), ("missing-price-model",)]
+        mock_session.execute.side_effect = [existing_result, used_result]
+
+        response = MagicMock()
+        response.json.return_value = {
+            "data": [
+                {
+                    "id": "existing-model",
+                    "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+                },
+                {
+                    "id": "selected-model",
+                    "pricing": {"prompt": "0.000003", "completion": "0.000004"},
+                },
+                {
+                    "id": "used-model",
+                    "pricing": {"prompt": "0.000005", "completion": "0.000006"},
+                },
+                {"id": "missing-price-model", "pricing": {"prompt": "0.000001"}},
+                {"id": "bad-decimal", "pricing": {"prompt": "nan", "completion": "0.1"}},
+                {
+                    "id": "too-expensive",
+                    "pricing": {"prompt": "2", "completion": "0.000001"},
+                },
+                {"id": "", "pricing": {"prompt": "0.1", "completion": "0.1"}},
+            ]
+        }
+        response.raise_for_status = MagicMock()
+
+        class FakeHttpClient:
+            def __init__(self, timeout: int) -> None:
+                self.timeout = timeout
+
+            async def __aenter__(self) -> "FakeHttpClient":
+                return self
+
+            async def __aexit__(self, *_args) -> None:
+                return None
+
+            async def get(self, url: str, headers: dict[str, str]) -> MagicMock:
+                assert url == "https://llm.example/models"
+                assert headers == {"Authorization": "Bearer sk-test"}
+                return response
+
+        with patch("httpx.AsyncClient", FakeHttpClient):
+            service = LLMConfigService(mock_session)
+            synced = await service.sync_provider_pricing(
+                provider="openai",
+                model="selected-model",
+                api_key="sk-test",
+                endpoint="https://llm.example/",
+            )
+
+        assert synced == 3
+        assert existing_priced.input_price_per_million == Decimal("1.0000")
+        assert existing_priced.output_price_per_million == Decimal("2.0000")
+        assert existing_priced.updated_at is not None
+        added_models = {call.args[0].model for call in mock_session.add.call_args_list}
+        assert added_models == {"selected-model", "used-model"}
+        mock_session.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_provider_pricing_returns_zero_when_provider_has_no_valid_prices(
+        self, mock_session
+    ):
+        """Invalid or missing provider pricing should avoid DB writes."""
+        response = MagicMock()
+        response.json.return_value = {
+            "data": [
+                {"id": "no-pricing"},
+                {"id": "missing-completion", "pricing": {"prompt": "0.0001"}},
+                {"id": "invalid", "pricing": {"prompt": "not-decimal", "completion": "0.1"}},
+            ]
+        }
+        response.raise_for_status = MagicMock()
+
+        class FakeHttpClient:
+            def __init__(self, timeout: int) -> None:
+                self.timeout = timeout
+
+            async def __aenter__(self) -> "FakeHttpClient":
+                return self
+
+            async def __aexit__(self, *_args) -> None:
+                return None
+
+            async def get(self, *_args, **_kwargs) -> MagicMock:
+                return response
+
+        with patch("httpx.AsyncClient", FakeHttpClient):
+            service = LLMConfigService(mock_session)
+            synced = await service.sync_provider_pricing(
+                provider="openai",
+                model="selected-model",
+                api_key="sk-test",
+                endpoint="https://llm.example",
+            )
+
+        assert synced == 0
+        mock_session.execute.assert_not_awaited()
+        mock_session.add.assert_not_called()
+        mock_session.flush.assert_not_awaited()

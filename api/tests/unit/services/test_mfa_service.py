@@ -46,6 +46,17 @@ class RowCountResult:
         self.rowcount = rowcount
 
 
+class ScalarListResult:
+    def __init__(self, values: list[Any]) -> None:
+        self.values = values
+
+    def scalars(self) -> "ScalarListResult":
+        return self
+
+    def all(self) -> list[Any]:
+        return self.values
+
+
 def _service(db: FakeDb | None = None) -> MFAService:
     return MFAService(db or FakeDb())  # type: ignore[arg-type]
 
@@ -117,6 +128,48 @@ async def test_verify_recovery_code_returns_false_without_match(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
+async def test_verify_totp_enrollment_requires_pending_method(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service()
+    monkeypatch.setattr(service, "_get_pending_totp", _async_return(None))
+
+    with pytest.raises(ValueError, match="No pending TOTP enrollment found"):
+        await service.verify_totp_enrollment(SimpleNamespace(id=uuid4()), "123456")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_verify_totp_code_requires_configured_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service()
+    monkeypatch.setattr(service, "_get_active_totp", _async_return(SimpleNamespace(encrypted_secret=None)))
+
+    with pytest.raises(ValueError, match="MFA method has no encrypted secret"):
+        await service.verify_totp_code(uuid4(), "123456")
+
+
+@pytest.mark.asyncio
+async def test_verify_totp_code_returns_false_for_invalid_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    db = FakeDb()
+    service = _service(db)
+    method = SimpleNamespace(encrypted_secret="encrypted", last_used_at=None)
+    monkeypatch.setattr(service, "_get_active_totp", _async_return(method))
+    monkeypatch.setattr(mfa_service, "decrypt_secret", lambda encrypted: "secret")
+
+    class FakeTotp:
+        def __init__(self, secret: str) -> None:
+            self.secret = secret
+
+        def verify(self, code: str, valid_window: int) -> bool:
+            assert code == "000000"
+            assert valid_window == service.settings.mfa_totp_login_window
+            return False
+
+    monkeypatch.setattr(mfa_service.pyotp, "TOTP", FakeTotp)
+
+    assert await service.verify_totp_code(uuid4(), "000000") is False
+    assert method.last_used_at is None
+    assert db.flushes == 0
+
+
+@pytest.mark.asyncio
 async def test_create_trusted_device_updates_existing(monkeypatch: pytest.MonkeyPatch) -> None:
     db = FakeDb()
     service = _service(db)
@@ -183,6 +236,16 @@ async def test_revoke_trusted_device_and_all_return_rowcounts() -> None:
     assert await service.revoke_trusted_device(uuid4(), uuid4()) is True
     assert await service.revoke_all_trusted_devices(uuid4()) == 3
     assert db.flushes == 2
+
+
+@pytest.mark.asyncio
+async def test_get_trusted_devices_returns_ordered_scalars_from_query() -> None:
+    devices = [SimpleNamespace(id=uuid4()), SimpleNamespace(id=uuid4())]
+    db = FakeDb([ScalarListResult(devices)])
+    service = _service(db)
+
+    assert await service.get_trusted_devices(uuid4()) == devices
+    assert len(db.executed) == 1
 
 
 @pytest.mark.asyncio
