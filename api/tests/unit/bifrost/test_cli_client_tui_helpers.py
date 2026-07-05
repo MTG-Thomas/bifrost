@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from unittest.mock import AsyncMock
 
 from bifrost import client
 from bifrost.tui.file_select import FileSelectApp, interactive_file_select
 from bifrost.tui.progress import ProgressApp, _FileRow
-from bifrost.tui.sync_app import SyncApp, SyncResult, SyncRow, interactive_sync
+from bifrost.tui.sync_app import SyncApp, SyncResult, SyncRow, _SectionHeader, interactive_sync
 from bifrost.tui.theme import BIFROST_THEME, BifrostApp
 from bifrost.tui.watch import WatchApp, _BatchRow, _format_row
 
@@ -242,6 +243,40 @@ def test_sync_app_status_header_confirm_and_cancel(monkeypatch):
     assert exits[1] is None
 
 
+def test_sync_app_composes_grouped_sections_and_focus_actions(monkeypatch):
+    file_item = {"name": "file.py", "section": "files", "default_action": "push"}
+    entity_item = {"name": "Agent", "section": "entities", "default_action": "pull"}
+    other_item = {"name": "other", "default_action": "skip"}
+    app = SyncApp([file_item, entity_item, other_item])
+
+    composed = list(app.compose())
+
+    list_view = next(widget for widget in composed if widget.__class__.__name__ == "ListView")
+    children = list(getattr(list_view, "_nodes", [])) or list(getattr(list_view, "_pending_children", []))
+    assert any(isinstance(child, _SectionHeader) for child in children)
+    assert sum(isinstance(child, SyncRow) for child in children) == 3
+
+    row = SyncRow({"name": "row", "default_action": "push", "valid_actions": ["push", "skip"]}, 20)
+    monkeypatch.setattr(row, "_update_label", lambda: None)
+    monkeypatch.setattr(app, "_get_focused_sync_row", lambda: row)
+    app.action_cycle_forward()
+    assert row.action == "skip"
+    app.action_cycle_backward()
+    assert row.action == "push"
+
+    rows = [
+        SyncRow({"name": "a", "default_action": "push", "valid_actions": ["push", "skip"]}, 20),
+        SyncRow({"name": "b", "default_action": "pull", "valid_actions": ["pull"]}, 20),
+    ]
+    for sync_row in rows:
+        monkeypatch.setattr(sync_row, "_update_label", lambda: None)
+    monkeypatch.setattr(app, "query", lambda _kind: rows)
+    app.action_reset_all()
+    assert [sync_row.action for sync_row in rows] == ["push", "pull"]
+    app.action_skip_all()
+    assert [sync_row.action for sync_row in rows] == ["skip", "pull"]
+
+
 @pytest.mark.asyncio
 async def test_interactive_sync_non_tty_groups_defaults(monkeypatch):
     monkeypatch.setattr("bifrost.tui.sync_app.sys.stdin.isatty", lambda: False)
@@ -328,7 +363,123 @@ def test_watch_app_logs_update_status_and_pending(monkeypatch):
     assert any("3 pending" in status for status in status_updates)
 
 
+@pytest.mark.asyncio
+async def test_progress_app_do_work_records_item_and_post_errors(monkeypatch):
+    async def worker(data, name):
+        if name == "bad.py":
+            raise RuntimeError("worker failed")
+
+    async def post(errors):
+        assert errors == ["bad.py: worker failed"]
+        raise RuntimeError("post failed")
+
+    app = ProgressApp(
+        "Pushing files",
+        [("good.py", object()), ("bad.py", object())],
+        worker,
+        post,
+    )
+    app._rows = [_FakeProgressRow("good.py"), _FakeProgressRow("bad.py")]
+    bar = _FakeProgressBar()
+    scroll = _FakeScroll()
+    summary = _FakeSummary()
+
+    def query_one(selector, *_args):
+        if selector == "#file-list":
+            return scroll
+        if selector == "#summary":
+            return summary
+        return bar
+
+    monkeypatch.setattr(app, "query_one", query_one)
+
+    await app._do_work()
+
+    assert app._done is True
+    assert app._errors == ["bad.py: worker failed", "post-processing: post failed"]
+    assert app._rows[0].done is True
+    assert app._rows[1].error == "worker failed"
+    assert bar.advanced == [1, 1]
+    assert scroll.scrolls == 2
+    assert "2 error(s)" in summary.values[-1]
+
+
+@pytest.mark.asyncio
+async def test_progress_app_success_post_summary_exits(monkeypatch):
+    async def worker(_data, _name):
+        return None
+
+    async def post(errors):
+        assert errors == []
+        return "All done"
+
+    app = ProgressApp("Pulling files", [("a.py", object())], worker, post)
+    app._rows = [_FakeProgressRow("a.py")]
+    bar = _FakeProgressBar()
+    scroll = _FakeScroll()
+    summary = _FakeSummary()
+    exits: list[list[str]] = []
+    monkeypatch.setattr(app, "exit", lambda result=None: exits.append(result))
+    monkeypatch.setattr("bifrost.tui.progress.asyncio.sleep", AsyncMock())
+
+    def query_one(selector, *_args):
+        if selector == "#file-list":
+            return scroll
+        if selector == "#summary":
+            return summary
+        return bar
+
+    monkeypatch.setattr(app, "query_one", query_one)
+
+    await app._do_work()
+
+    assert app._errors == []
+    assert summary.values[-1].endswith("All done")
+    assert exits == [[]]
+
+
 class SimpleRow:
     def __init__(self, item, action):
         self.item = item
         self.action = action
+
+
+class _FakeProgressRow:
+    def __init__(self, name):
+        self.name = name
+        self.frames: list[str] = []
+        self.done = False
+        self.error: str | None = None
+
+    def set_working(self, frame):
+        self.frames.append(frame)
+
+    def set_done(self):
+        self.done = True
+
+    def set_error(self, err):
+        self.error = err
+
+
+class _FakeProgressBar:
+    def __init__(self):
+        self.advanced: list[int] = []
+
+    def advance(self, value):
+        self.advanced.append(value)
+
+
+class _FakeScroll:
+    def __init__(self):
+        self.scrolls = 0
+
+    def scroll_end(self, animate=False):
+        self.scrolls += 1
+
+
+class _FakeSummary:
+    def __init__(self):
+        self.values: list[str] = []
+
+    def update(self, value):
+        self.values.append(value)
