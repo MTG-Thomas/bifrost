@@ -744,7 +744,6 @@ async def test_apply_ops_stamps_dry_run_upserts_and_executes_real_ops():
         async def execute(self, db):
             executed.append(db)
 
-    db = object()
     real_ops = [FakeOp()]
     await resolver._apply_ops(real_ops, [], dry_run=False, existing_ids=set())
 
