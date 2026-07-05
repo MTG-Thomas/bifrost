@@ -110,7 +110,7 @@ test.describe("Execution Details", () => {
 	});
 
 	test("should show execution output/results", async ({ page }) => {
-		const drawer = await openExecutionDrawer(page);
+		await openExecutionDrawer(page);
 
 		await expect(
 			page.getByRole("heading", { name: /history|executions/i }).first(),
@@ -125,7 +125,7 @@ test.describe("Execution Details", () => {
 	});
 
 	test("should show execution logs", async ({ page }) => {
-		const drawer = await openExecutionDrawer(page);
+		await openExecutionDrawer(page);
 
 		await expect(
 			page.getByRole("heading", { name: /history|executions/i }).first(),
