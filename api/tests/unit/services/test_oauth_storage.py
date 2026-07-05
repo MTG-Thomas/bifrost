@@ -50,6 +50,11 @@ class _FakeDb:
         self.commits += 1
 
     async def refresh(self, row):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        if getattr(row, "created_at", None) is None:
+            row.created_at = now
+        if getattr(row, "updated_at", None) is None:
+            row.updated_at = now
         self.refreshed.append(row)
 
 

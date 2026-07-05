@@ -223,6 +223,55 @@ def test_filter_manifest_to_scope_keeps_forms_referenced_by_workflow_paths():
     assert set(manifest.forms) == {"by-workflow-path", "by-launch-path"}
 
 
+def test_filter_manifest_to_scope_keeps_standalone_agents_and_clears_empty_scope():
+    manifest = Manifest(
+        organizations=[ManifestOrganization(id=ORG_ID, name="Out of scope")],
+        roles=[ManifestRole(id=ROLE_ID, name="Out of scope")],
+        workflows={
+            "owned": ManifestWorkflow(
+                id=WORKFLOW_ID,
+                name="Owned",
+                path="workflows/owned.py",
+                function_name="owned",
+            ),
+        },
+        agents={
+            "standalone": ManifestAgent(
+                id=AGENT_ID,
+                name="Standalone",
+                system_prompt="Handle requests without workflow tools",
+            ),
+            "outside": ManifestAgent(
+                id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+                name="Outside",
+                tool_ids=["eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"],
+            ),
+        },
+        configs={"out": ManifestConfig(id=CONFIG_ID, key="url", organization_id=ORG_ID)},
+        tables={
+            "out": ManifestTable(
+                id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                name="Tickets",
+                organization_id=ORG_ID,
+            ),
+        },
+    )
+
+    manifest_import._filter_manifest_to_scope(
+        manifest,
+        path_exists=lambda path: path == "workflows/owned.py",
+        dir_exists=lambda path: False,
+        scope_manifest=Manifest(),
+    )
+
+    assert set(manifest.workflows) == {"owned"}
+    assert set(manifest.agents) == {"standalone"}
+    assert manifest.organizations == []
+    assert manifest.roles == []
+    assert manifest.configs == {}
+    assert manifest.tables == {}
+
+
 def test_diff_collect_displays_config_changes_with_integration_and_org_names():
     current = Manifest(
         organizations=[ManifestOrganization(id=ORG_ID, name="Midtown")],
@@ -711,6 +760,95 @@ async def test_resolve_role_names_fails_unknown_role_without_creation():
 
     with pytest.raises(ValueError, match="unknown role: Missing"):
         await manifest_import._resolve_role_names(Db(), ["Missing"])
+
+
+@pytest.mark.asyncio
+async def test_resolve_ref_field_updates_scalar_and_list_portable_refs(caplog):
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+    resolved = {
+        "workflows/ticket.py::run": WORKFLOW_ID,
+        "workflows/escalate.py::run": DELEGATE_ID,
+    }
+
+    async def resolve_portable_ref(ref):
+        return resolved.get(ref)
+
+    resolver._resolve_portable_ref = resolve_portable_ref
+
+    data = {"workflow_id": "workflows/ticket.py::run"}
+    await resolver._resolve_ref_field(data, "workflow_id")
+    assert data["workflow_id"] == WORKFLOW_ID
+
+    data = {
+        "tool_ids": [
+            "workflows/escalate.py::run",
+            "workflows/missing.py::run",
+            "plain-tool-id",
+        ],
+    }
+    await resolver._resolve_ref_field(data, "tool_ids")
+
+    assert data["tool_ids"] == [
+        DELEGATE_ID,
+        "workflows/missing.py::run",
+        "plain-tool-id",
+    ]
+    assert "Could not resolve portable ref" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_resolve_ref_field_leaves_unresolved_scalar_portable_ref(caplog):
+    resolver = manifest_import.ManifestResolver(AsyncMock())
+
+    async def resolve_portable_ref(_ref):
+        return None
+
+    resolver._resolve_portable_ref = resolve_portable_ref
+
+    data = {"workflow_id": "workflows/missing.py::run"}
+    await resolver._resolve_ref_field(data, "workflow_id")
+
+    assert data["workflow_id"] == "workflows/missing.py::run"
+    assert "Could not resolve portable ref 'workflows/missing.py::run'" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_resolve_workflow_ref_tries_uuid_path_function_then_name():
+    found_id = UUID(WORKFLOW_ID)
+    missing_id = UUID(DELEGATE_ID)
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class Db:
+        def __init__(self, values):
+            self.values = list(values)
+            self.calls = 0
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            return Result(self.values.pop(0))
+
+    uuid_db = Db([found_id])
+    assert await manifest_import.ManifestResolver(uuid_db)._resolve_workflow_ref(WORKFLOW_ID) == found_id
+    assert uuid_db.calls == 1
+
+    path_db = Db([None, found_id])
+    assert (
+        await manifest_import.ManifestResolver(path_db)._resolve_workflow_ref(
+            "workflows/ticket.py::run"
+        )
+        == found_id
+    )
+    assert path_db.calls == 2
+
+    name_db = Db([missing_id])
+    assert await manifest_import.ManifestResolver(name_db)._resolve_workflow_ref("Ticket") == missing_id
+    assert name_db.calls == 1
 
 
 @pytest.mark.asyncio
