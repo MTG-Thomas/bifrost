@@ -183,6 +183,28 @@ async def test_get_app_reports_missing_rows():
 
 
 @pytest.mark.asyncio
+async def test_get_app_validates_selector_and_wraps_storage_errors():
+    missing_selector = await apps.get_app(_context())
+    bad_id = await apps.get_app(_context(), app_id="not-a-uuid")
+
+    app = _app()
+    db = _Db([_ScalarRowsResult([app])])
+    storage = MagicMock()
+    storage.list_files = AsyncMock(side_effect=RuntimeError("preview store offline"))
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+    ):
+        storage_error = await apps.get_app(_context(org_id=app.organization_id), app_slug=app.slug)
+
+    assert missing_selector.structured_content["error"] == "Either app_id or app_slug is required"
+    assert "Invalid app_id format" in bad_id.structured_content["error"]
+    assert "Error getting app" in storage_error.structured_content["error"]
+    assert "preview store offline" in storage_error.structured_content["error"]
+
+
+@pytest.mark.asyncio
 async def test_update_app_updates_metadata_and_publishes_draft_notice():
     app = _app(name="Old", description="Before")
     db = _Db([_ScalarResult(app)])
@@ -231,6 +253,24 @@ async def test_update_app_reports_missing_noop_and_solution_managed():
     assert "Application not found" in missing.structured_content["error"]
     assert noop.structured_content["error"] == "No updates specified"
     assert "Solution-managed" in managed.structured_content["error"]
+
+
+@pytest.mark.asyncio
+async def test_update_app_validates_id_and_shapes_repository_errors():
+    bad_id = await apps.update_app(_context(), "not-a-uuid", name="New")
+
+    app = _app()
+    db = _Db([_ScalarResult(app)])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch.object(db, "commit", new=AsyncMock(side_effect=RuntimeError("commit failed"))),
+    ):
+        failed = await apps.update_app(_context(), str(app.id), name="New")
+
+    assert "Invalid app_id format" in bad_id.structured_content["error"]
+    assert "Error updating app" in failed.structured_content["error"]
+    assert "commit failed" in failed.structured_content["error"]
 
 
 @pytest.mark.asyncio
@@ -419,6 +459,25 @@ async def test_create_app_scaffolds_global_app_and_detects_duplicates():
 
 
 @pytest.mark.asyncio
+async def test_create_app_shapes_scaffold_storage_errors():
+    db = _Db([_RowsResult([])])
+    file_storage = MagicMock()
+    file_storage.write_file = AsyncMock(side_effect=RuntimeError("repo write failed"))
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.routers.applications.ensure_no_stale_app_source", new=AsyncMock()),
+        patch("src.services.file_storage.FileStorageService", return_value=file_storage),
+    ):
+        failed = await apps.create_app(_context(), "Customer Portal")
+
+    assert db.flushed is True
+    assert db.committed is False
+    assert "Error creating app" in failed.structured_content["error"]
+    assert "repo write failed" in failed.structured_content["error"]
+
+
+@pytest.mark.asyncio
 async def test_publish_app_reports_missing_invalid_guard_and_storage_errors():
     bad_id = await apps.publish_app(_context(), "not-a-uuid")
 
@@ -570,6 +629,129 @@ async def test_push_files_counts_unchanged_created_deleted_and_compile_warnings(
     assert result.structured_content["compile_warnings"] == ["✗ pages/new.tsx: syntax error"]
     file_storage.write_file.assert_awaited_once()
     assert file_storage.delete_file.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_push_files_counts_updates_and_surfaces_write_delete_errors():
+    app = _app(repo_path="apps/portal")
+    db = _Db([
+        _ScalarRowsResult([app]),
+        _ScalarResult("old-hash"),
+        _ScalarResult(None),
+        _RowsResult([
+            ("apps/portal/pages/delete-me.tsx",),
+            ("apps/portal/pages/write-fail.tsx",),
+        ]),
+    ])
+    file_storage = MagicMock()
+    file_storage.write_file = AsyncMock(side_effect=[None, RuntimeError("write denied")])
+    file_storage.delete_file = AsyncMock(side_effect=RuntimeError("delete denied"))
+    compiler = MagicMock()
+    compiler.compile_batch = AsyncMock(return_value=[
+        SimpleNamespace(success=True, compiled="compiled", path="pages/index.tsx", error=None)
+    ])
+    app_storage = MagicMock()
+    app_storage.write_preview_file = AsyncMock()
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch("hashlib.sha256", return_value=SimpleNamespace(hexdigest=lambda: "new-hash")),
+        patch("src.services.file_storage.FileStorageService", return_value=file_storage),
+        patch("src.services.app_compiler.AppCompilerService", return_value=compiler),
+        patch("src.services.app_storage.AppStorageService", return_value=app_storage),
+    ):
+        result = await apps.push_files(
+            _context(),
+            {
+                "apps/portal/pages/index.tsx": "export default function Index() {}",
+                "apps/portal/pages/write-fail.tsx": "export default function Bad() {}",
+            },
+            delete_missing_prefix="apps/portal/pages",
+        )
+
+    assert db.committed is True
+    assert result.structured_content["updated"] == 1
+    assert result.structured_content["created"] == 0
+    assert result.structured_content["deleted"] == 0
+    assert result.structured_content["errors"] == [
+        "apps/portal/pages/write-fail.tsx: write denied",
+        "delete apps/portal/pages/delete-me.tsx: delete denied",
+    ]
+    app_storage.write_preview_file.assert_awaited_once_with(
+        str(app.id),
+        "pages/index.tsx",
+        b"compiled",
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_app_reports_compile_structure_dependency_and_workflow_errors():
+    workflow_ref = str(uuid4())
+    app = _app(
+        name="Validation Target",
+        dependencies={"recharts": "2.12.7"},
+        repo_prefix="apps/portal/",
+    )
+    files = [
+        SimpleNamespace(path="apps/portal/_layout.tsx", content="export default function Layout(){return <>{children}</>}"),
+        SimpleNamespace(
+            path="apps/portal/pages/index.tsx",
+            content=(
+                "import dayjs from 'dayjs';\n"
+                f"export default function Index(){{useWorkflowQuery('{workflow_ref}');"
+                "useWorkflowMutation('not-a-uuid'); return null;}}"
+            ),
+        ),
+        SimpleNamespace(path="apps/portal/components/Card.tsx", content="export const Card = () => null"),
+    ]
+    db = _Db([
+        _ScalarResult(app),
+        _RowsResult(files),
+        _ScalarResult(None),
+    ])
+    compiler = MagicMock()
+    compiler.compile_batch = AsyncMock(return_value=[
+        SimpleNamespace(success=True, default_export="Layout", error=None),
+        SimpleNamespace(success=False, default_export=None, error="tsx syntax error"),
+        SimpleNamespace(success=True, default_export=None, error=None),
+    ])
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.app_compiler.AppCompilerService", return_value=compiler),
+    ):
+        result = await apps.validate_app(_context(), str(app.id))
+
+    messages = [item["message"] for item in result.structured_content["errors"]]
+    warning_messages = [item["message"] for item in result.structured_content["warnings"]]
+    assert result.structured_content["valid"] is False
+    assert "Compilation failed: tsx syntax error" in messages
+    assert any("Layout uses {children}" in message for message in messages)
+    assert any("Missing default export" in message for message in messages)
+    assert f"Workflow '{workflow_ref}' not found" in messages
+    assert "'not-a-uuid' is not a valid UUID" in messages
+    assert "Missing dependency: 'dayjs' is imported but not declared in app dependencies" in messages
+    assert "Unused dependency: 'recharts' is declared but not imported by any file" in warning_messages
+
+
+@pytest.mark.asyncio
+async def test_validate_app_reports_invalid_missing_and_repository_errors():
+    bad_id = await apps.validate_app(_context(), "not-a-uuid")
+
+    missing_db = _Db([_ScalarResult(None)])
+    with patch.object(apps, "get_tool_db", _tool_db(missing_db)):
+        missing = await apps.validate_app(_context(), str(uuid4()))
+
+    app = _app(repo_prefix="apps/portal/")
+    failing_db = _Db([_ScalarResult(app)])
+    with patch.object(apps, "get_tool_db", _tool_db(failing_db)):
+        failed = await apps.validate_app(_context(), str(app.id))
+
+    assert "Invalid app_id format" in bad_id.structured_content["error"]
+    assert "Application not found" in missing.structured_content["error"]
+    assert "Error validating app" in failed.structured_content["error"]
+    assert "unexpected execute call" in failed.structured_content["error"]
 
 
 @pytest.mark.asyncio
