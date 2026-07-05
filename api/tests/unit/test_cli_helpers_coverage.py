@@ -565,13 +565,13 @@ def test_push_sync_pull_and_watch_report_lock_or_auth_errors(monkeypatch, tmp_pa
     monkeypatch.setattr(cli, "WorkspaceLock", RaisingLock)
 
     assert cli.handle_push([str(path)]) == 1
-    assert "busy" in capsys.readouterr().err
+    assert "another bifrost session" in capsys.readouterr().err
     assert cli.handle_sync([str(path)]) == 1
-    assert "busy" in capsys.readouterr().err
+    assert "another bifrost session" in capsys.readouterr().err
     assert cli.handle_watch([str(path)]) == 1
-    assert "busy" in capsys.readouterr().err
+    assert "another bifrost session" in capsys.readouterr().err
     assert cli.handle_pull([str(path)]) == 1
-    assert "busy" in capsys.readouterr().err
+    assert "another bifrost session" in capsys.readouterr().err
 
     class Lock:
         def __init__(self, path, action):
