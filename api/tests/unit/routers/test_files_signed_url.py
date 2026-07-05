@@ -115,20 +115,6 @@ class TestPathResolution:
         mock_fss.generate_presigned_upload_url = AsyncMock(return_value="https://s3/url")
         mock_fss_class.return_value = mock_fss
 
-        req = SignedUrlRequest(path="report.pdf", scope=str(ORG_A))
-        result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
-        assert result.path == f"uploads/{ORG_A}/report.pdf"
-
-    @pytest.mark.asyncio
-    @patch("src.routers.files.FileStorageService")
-    async def test_uploads_no_scope_falls_back_to_global(self, mock_fss_class):
-        # A caller with no org (ctx.org_id=None) and no explicit scope resolves
-        # to the 'global' scope (a real logged-in user would default to their
-        # own org instead). Resolution succeeds; the policy gate governs access.
-        mock_fss = MagicMock()
-        mock_fss.generate_presigned_upload_url = AsyncMock(return_value="https://s3/url")
-        mock_fss_class.return_value = mock_fss
-
         req = SignedUrlRequest(path="report.pdf")  # default location=uploads, no scope
         result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
         assert result.path == "uploads/global/report.pdf"
@@ -158,9 +144,11 @@ class TestPathResolution:
         )
         mock_fss_class.return_value = mock_fss
 
-        req = SignedUrlRequest(path="x.bin", location="temp", scope=str(ORG_A), method="GET")
-        result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
-        assert result.path == f"_tmp/{ORG_A}/x.bin"
+        req = SignedUrlRequest(
+            path="x.bin", location="temp", scope="org-a", method="GET"
+        )
+        result = await get_signed_url(req, MagicMock(), MagicMock(), AsyncMock())
+        assert result.path == "_tmp/org-a/x.bin"
 
     @pytest.mark.asyncio
     @patch("src.routers.files.FileStorageService")
@@ -171,9 +159,11 @@ class TestPathResolution:
         )
         mock_fss_class.return_value = mock_fss
 
-        req = SignedUrlRequest(path="q1.pdf", location="reports", scope=str(ORG_A), method="GET")
-        result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
-        assert result.path == f"reports/{ORG_A}/q1.pdf"
+        req = SignedUrlRequest(
+            path="q1.pdf", location="reports", scope="org-a", method="GET"
+        )
+        result = await get_signed_url(req, MagicMock(), MagicMock(), AsyncMock())
+        assert result.path == "reports/org-a/q1.pdf"
 
 
 class TestPathValidation:
@@ -246,13 +236,15 @@ class TestPresignedUrlGeneration:
         }
         mock_fss_class.return_value = mock_fss
 
-        req = SignedUrlRequest(path="file.pdf", method="PUT", content_type="application/pdf", scope=str(ORG_A))
-        result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
+        req = SignedUrlRequest(
+            path="file.pdf", method="PUT", content_type="application/pdf", scope="org-a"
+        )
+        result = await get_signed_url(req, MagicMock(), MagicMock(), AsyncMock())
         assert result.url == "https://s3/put-url"
         assert result.headers == {"Content-Type": "application/pdf"}
         mock_fss.presigned_upload_headers.assert_called_once_with("application/pdf")
         mock_fss.generate_presigned_upload_url.assert_awaited_once_with(
-            path=f"uploads/{ORG_A}/file.pdf",
+            path="uploads/org-a/file.pdf",
             content_type="application/pdf",
         )
 

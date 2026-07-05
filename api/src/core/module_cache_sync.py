@@ -500,9 +500,9 @@ def get_module_sync(path: str) -> CachedModule | None:
                     logger.warning(f"Failed to re-cache API module to Redis: {e}")
                 return api_module
 
-            # --- Cold-cache fallback 2: direct S3 (legacy; not needed post-scrub) ---
-            s3_content = _get_s3_module(storage_path)
-            if s3_content is None:
+            # --- Cold-cache fallback 2: direct object storage (legacy fallback) ---
+            storage_content = _get_object_storage_module(storage_path)
+            if storage_content is None:
                 continue
             try:
                 content_str = storage_content.decode("utf-8")

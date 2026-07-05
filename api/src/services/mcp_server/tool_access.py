@@ -97,8 +97,9 @@ class MCPToolAccessService:
         accessible_agents = await self._get_accessible_agents(
             user_roles=user_roles,
             is_superuser=is_superuser,
-            is_external=is_external,
+            user_id=user_id,
             org_id=org_id,
+            is_external=is_external,
         )
 
         # Step 2: Collect tools from accessible agents, enforcing per-workflow
@@ -223,18 +224,6 @@ class MCPToolAccessService:
             else:
                 query = query.where(Agent.organization_id.is_(None))
 
-        if not is_superuser:
-            scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
-            if scope_org is not None:
-                query = query.where(
-                    or_(
-                        Agent.organization_id == scope_org,
-                        Agent.organization_id.is_(None),
-                    )
-                )
-            else:
-                query = query.where(Agent.organization_id.is_(None))
-
         result = await self.session.execute(query)
         agent = result.scalars().unique().first()
 
@@ -243,7 +232,17 @@ class MCPToolAccessService:
             return None
 
         # Check access using same rules as _get_accessible_agents
-        if not self._check_agent_access(agent, user_roles, is_superuser, is_external):
+        if not self._agent_in_org_scope(agent, org_id=org_id, is_superuser=is_superuser):
+            logger.warning(f"User denied org-scoped access to agent {agent_id}")
+            return None
+
+        if not self._check_agent_access(
+            agent,
+            user_roles,
+            is_superuser,
+            user_id=user_id,
+            is_external=is_external,
+        ):
             logger.warning(f"User denied access to agent {agent_id}")
             return None
 
@@ -386,15 +385,11 @@ class MCPToolAccessService:
         user_roles: list[str],
         is_superuser: bool,
         is_external: bool = False,
+        user_id: UUID | str | None = None,
     ) -> bool:
         """Check if user has access to a specific agent (same rules as _get_accessible_agents)."""
         if agent.access_level == AgentAccessLevel.AUTHENTICATED:
-            # "Everyone except external users": no authenticated-tier
-            # entitlement for externals.
             return is_superuser or not is_external
-
-        if agent.access_level == AgentAccessLevel.EVERYONE:
-            return True
 
         if agent.access_level == AgentAccessLevel.ROLE_BASED:
             agent_role_names = {role.name for role in agent.roles}
@@ -414,8 +409,9 @@ class MCPToolAccessService:
         self,
         user_roles: list[str],
         is_superuser: bool,
-        is_external: bool = False,
+        user_id: UUID | str | None = None,
         org_id: UUID | str | None = None,
+        is_external: bool = False,
     ) -> list[Agent]:
         """
         Get agents accessible to the user based on access_level and roles.
@@ -468,19 +464,6 @@ class MCPToolAccessService:
                 # Non-admin with no org: global only.
                 query = query.where(Agent.organization_id.is_(None))
 
-        if not is_superuser:
-            scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
-            if scope_org is not None:
-                query = query.where(
-                    or_(
-                        Agent.organization_id == scope_org,
-                        Agent.organization_id.is_(None),
-                    )
-                )
-            else:
-                # Non-admin with no org: global only.
-                query = query.where(Agent.organization_id.is_(None))
-
         result = await self.session.execute(query)
         all_agents = result.scalars().unique().all()
         all_agents = [
@@ -495,25 +478,7 @@ class MCPToolAccessService:
 
         for agent in all_agents:
             if agent.access_level == AgentAccessLevel.AUTHENTICATED:
-                # "Everyone except external users": no authenticated-tier
-                # entitlement for externals.
                 if is_superuser or not is_external:
-                    accessible_agents.append(agent)
-
-            elif agent.access_level == AgentAccessLevel.EVERYONE:
-                accessible_agents.append(agent)
-
-            elif agent.access_level == AgentAccessLevel.ROLE_BASED:
-                # Get role names from agent's roles
-                agent_role_names = {role.name for role in agent.roles}
-
-                if not agent_role_names:
-                    # ROLE_BASED with no roles = only superusers can access
-                    if is_superuser:
-                        accessible_agents.append(agent)
-                elif is_superuser or (user_role_set & agent_role_names):
-                    # User has at least one matching role, or is a platform
-                    # admin (superuser bypass — issue #244)
                     accessible_agents.append(agent)
 
             elif self._check_agent_access(

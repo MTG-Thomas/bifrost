@@ -131,6 +131,8 @@ def _load_execution_infrastructure(install_requirements_on_startup: bool) -> Non
 
 def _template_main(
     pipe: Connection,
+    preload_modules: list[str] | None = None,
+    install_requirements_on_startup: bool = True,
 ) -> None:
     """
     Entry point for the template process.

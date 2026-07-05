@@ -49,25 +49,6 @@ from src.core.cache.keys import (
     refresh_token_jti_key,
     user_refresh_tokens_pattern,
 )
-from src.models import (
-    AuthStatusResponse,
-    DeviceAuthorizeRequest,
-    DeviceCodeResponse,
-    DeviceTokenErrorResponse,
-    DeviceTokenRequest,
-    DeviceTokenResponse,
-    OAuthProviderInfo,
-)
-from src.models.contracts.passkeys import (
-    InvitePasskeyOptionsRequest,
-    InvitePasskeyVerifyRequest,
-    SetupPasskeyOptionsRequest,
-    SetupPasskeyOptionsResponse,
-    SetupPasskeyVerifyRequest,
-    SetupPasskeyVerifyResponse,
-)
-from src.config import get_settings
-from src.core.auth import CurrentActiveUser, CurrentSuperuser
 from src.core.db_deps import DbSession
 from src.core.log_safety import log_safe
 from src.core.rate_limit import auth_limiter, get_client_ip, mfa_limiter
@@ -106,10 +87,6 @@ from src.repositories.users import UserRepository
 from src.services.audit import emit_audit
 from src.services.audit_context import ActorContext, current_actor
 from src.services.user_provisioning import ensure_user_provisioned, get_user_roles
-from shared.external_access import (
-    resolve_external_claim,
-    resolve_provider_org_claim,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -2220,7 +2197,9 @@ async def register_from_invite(
     return public
 
 
-@router.post("/register-from-invite/passkey/options", response_model=SetupPasskeyOptionsResponse)
+@router.post(
+    "/register-from-invite/passkey/options", response_model=SetupPasskeyOptionsResponse
+)
 async def register_from_invite_passkey_options(
     request: InvitePasskeyOptionsRequest,
     db: DbSession,
@@ -2231,9 +2210,11 @@ async def register_from_invite_passkey_options(
     invite_svc = UserInviteService(db)
     try:
         _, invited_user = await invite_svc.get_valid_invite_user(token=request.token)
-        options = await PasskeyService(db).generate_registration_options(invited_user.id)
+        options = await PasskeyService(db).generate_registration_options(
+            invited_user.id
+        )
     except (InviteConsumeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     return SetupPasskeyOptionsResponse(
         registration_token=request.token,
@@ -2242,7 +2223,9 @@ async def register_from_invite_passkey_options(
     )
 
 
-@router.post("/register-from-invite/passkey/verify", response_model=SetupPasskeyVerifyResponse)
+@router.post(
+    "/register-from-invite/passkey/verify", response_model=SetupPasskeyVerifyResponse
+)
 async def register_from_invite_passkey_verify(
     request: InvitePasskeyVerifyRequest,
     response: Response,
@@ -2265,7 +2248,7 @@ async def register_from_invite_passkey_verify(
         registered = await invite_svc.consume(token=request.token)
         await db.commit()
     except (InviteConsumeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     login = await _generate_login_tokens(registered, db, response)
     return SetupPasskeyVerifyResponse(

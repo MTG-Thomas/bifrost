@@ -166,9 +166,28 @@ class _AbstractConsumer(ABC):
     the per-message ``process_message`` handler.
     """
 
-    # Subclasses expose a human-readable name for logging:
-    # ``BaseConsumer`` via an attribute, ``BroadcastConsumer`` via a property.
-    queue_name: str
+    def __init__(
+        self,
+        queue_name: str,
+        prefetch_count: int = 1,
+        dead_letter_exchange: str | None = None,
+        retry_delays_seconds: list[int] | None = None,
+        max_retry_attempts: int | None = None,
+    ):
+        """
+        Initialize consumer.
+
+        Args:
+            queue_name: Name of the queue to consume from
+            prefetch_count: Number of messages to prefetch (QoS)
+            dead_letter_exchange: Exchange for failed messages (poison queue)
+        """
+        self.queue_name = queue_name
+        self.prefetch_count = prefetch_count
+        self.dead_letter_exchange = dead_letter_exchange or f"{queue_name}-dlx"
+        self.retry_delays_seconds = retry_delays_seconds or DEFAULT_RETRY_DELAYS_SECONDS
+        self.max_retry_attempts = max_retry_attempts or len(self.retry_delays_seconds)
+        self._init_consumer_state()
 
     def _init_consumer_state(self) -> None:
         """Initialize the connection/in-flight bookkeeping shared by subclasses."""
@@ -278,16 +297,44 @@ class _AbstractConsumer(ABC):
         broker routes it to the dead-letter queue (queue consumers) or simply
         drops it (broadcast consumers have no DLQ — each worker owns its queue).
         """
-        async with message.process(requeue=False):
-            try:
-                body = json.loads(message.body.decode())
+        started = asyncio.get_running_loop().time()
+        context: DeliveryContext | None = None
+        try:
+            context = self._build_context(message)
 
             logger.info(
                 f"Processing message from {self.queue_name}",
                 extra=self._log_extra(context),
             )
 
-                await self.process_message(body)
+            await self.process_message(context.body)
+            await message.ack()
+            self._log_decision("ack", context, duration=self._duration(started))
+        except DuplicateMessage as e:
+            await message.ack()
+            self._log_decision("duplicate_ack", context, reason=str(e), duration=self._duration(started))
+        except DomainFailureHandled as e:
+            await message.ack()
+            self._log_decision("domain_failure_ack", context, reason=str(e), duration=self._duration(started))
+        except RetryableConsumerError as e:
+            await self._retry_or_poison(message, context, reason=str(e), started=started)
+        except PermanentConsumerError as e:
+            await self._dead_letter_and_ack(message, context, reason=str(e), started=started)
+        except json.JSONDecodeError as e:
+            malformed = self._malformed_context(message)
+            await self._dead_letter_and_ack(message, malformed, reason=f"malformed JSON: {e}", started=started)
+        except asyncio.CancelledError:
+            if context is None:
+                await message.nack(requeue=True)
+            else:
+                await self._retry_or_poison(message, context, reason="consumer shutdown", started=started)
+            raise
+        except Exception as e:
+            logger.exception(
+                "Unhandled consumer exception; dead-lettering message",
+                extra=self._log_extra(context, reason=str(e), error_type=type(e).__name__),
+            )
+            await self._dead_letter_and_ack(message, context, reason=str(e), started=started)
 
     def _build_context(self, message: IncomingMessage) -> DeliveryContext:
         body = json.loads(message.body.decode())
@@ -312,17 +359,183 @@ class _AbstractConsumer(ABC):
             enqueued_at=headers.get("x-enqueued-at"),
         )
 
-            except Exception as e:
-                logger.error(
-                    f"Error processing message from {self.queue_name}: {e}",
-                    extra={
-                        "message_id": message.message_id,
-                        "error": str(e),
-                        "error_type": type(e).__name__,
-                    },
-                    exc_info=True,
-                )
-                raise
+    def _malformed_context(self, message: IncomingMessage) -> DeliveryContext:
+        headers = dict(message.headers or {})
+        return DeliveryContext(
+            queue_name=self.queue_name,
+            body={"_malformed_body": message.body.decode(errors="replace")},
+            message_id=message.message_id,
+            correlation_id=message.correlation_id,
+            headers=headers,
+            redelivered=bool(message.redelivered),
+            delivery_tag=getattr(message, "delivery_tag", None),
+            routing_key=getattr(message, "routing_key", None),
+            exchange=getattr(message, "exchange", None),
+            retry_count=int(headers.get("x-retry-count") or 0),
+            replay_count=int(headers.get("x-replayed-count") or 0),
+            idempotency_key=headers.get("x-idempotency-key") or message.message_id,
+            enqueued_at=headers.get("x-enqueued-at"),
+        )
+
+    async def _retry_or_poison(
+        self,
+        message: IncomingMessage,
+        context: DeliveryContext | None,
+        *,
+        reason: str,
+        started: float,
+    ) -> None:
+        if context is None:
+            await message.nack(requeue=True)
+            return
+        if context.retry_count >= self.max_retry_attempts:
+            await self._dead_letter_and_ack(
+                message,
+                context,
+                reason=f"retry attempts exhausted: {reason}",
+                started=started,
+            )
+            return
+        try:
+            await self._publish_retry(message, context, reason=reason)
+        except Exception:
+            logger.exception(
+                "Failed to publish delayed retry; requeueing original message",
+                extra=self._log_extra(context, reason=reason),
+            )
+            await message.nack(requeue=True)
+            return
+        await message.ack()
+        self._log_decision("retry_scheduled", context, reason=reason, duration=self._duration(started))
+
+    async def _dead_letter_and_ack(
+        self,
+        message: IncomingMessage,
+        context: DeliveryContext | None,
+        *,
+        reason: str,
+        started: float,
+    ) -> None:
+        if context is None:
+            await message.reject(requeue=False)
+            return
+        try:
+            await self._publish_poison(message, context, reason=reason)
+        except Exception:
+            logger.exception(
+                "Failed to publish poison message; requeueing original",
+                extra=self._log_extra(context, reason=reason),
+            )
+            await message.nack(requeue=True)
+            return
+        await message.ack()
+        self._log_decision("dead_lettered", context, reason=reason, duration=self._duration(started))
+
+    async def _publish_retry(self, message: IncomingMessage, context: DeliveryContext, *, reason: str) -> None:
+        if self._channel is None:
+            raise RuntimeError("consumer channel is not available")
+        next_retry = context.retry_count + 1
+        retry_queue = f"{self.queue_name}-retry-{min(next_retry, len(self.retry_delays_seconds))}"
+        context_headers = dict(context.headers)
+        if context.idempotency_key:
+            context_headers.setdefault("x-idempotency-key", context.idempotency_key)
+        headers = _message_headers(
+            context.body,
+            self.queue_name,
+            message_id=context.message_id,
+            headers=context_headers,
+            retry_count=next_retry,
+            replay_count=context.replay_count,
+        )
+        headers["x-last-error"] = reason[:500]
+        await self._channel.default_exchange.publish(
+            aio_pika.Message(
+                body=json.dumps(context.body).encode(),
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                message_id=context.message_id,
+                correlation_id=context.correlation_id,
+                headers=headers,
+            ),
+            routing_key=retry_queue,
+        )
+
+    async def _publish_poison(self, message: IncomingMessage, context: DeliveryContext, *, reason: str) -> None:
+        if self._channel is None:
+            raise RuntimeError("consumer channel is not available")
+        context_headers = dict(context.headers)
+        if context.idempotency_key:
+            context_headers.setdefault("x-idempotency-key", context.idempotency_key)
+        headers = _message_headers(
+            context.body,
+            self.queue_name,
+            message_id=context.message_id,
+            headers=context_headers,
+            retry_count=context.retry_count,
+            replay_count=context.replay_count,
+        )
+        headers["x-poison-reason"] = reason[:500]
+        headers["x-poisoned-at"] = datetime.now(timezone.utc).isoformat()
+        exchange = await self._channel.declare_exchange(
+            self.dead_letter_exchange,
+            aio_pika.ExchangeType.DIRECT,
+            durable=True,
+        )
+        await exchange.publish(
+            aio_pika.Message(
+                body=json.dumps(context.body).encode(),
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                message_id=context.message_id,
+                correlation_id=context.correlation_id,
+                headers=headers,
+            ),
+            routing_key=self.queue_name,
+        )
+
+    def _duration(self, started: float) -> float:
+        return asyncio.get_running_loop().time() - started
+
+    def _log_extra(
+        self,
+        context: DeliveryContext | None,
+        *,
+        reason: str | None = None,
+        error_type: str | None = None,
+        duration: float | None = None,
+    ) -> dict[str, Any]:
+        extra: dict[str, Any] = {"queue": self.queue_name}
+        if reason is not None:
+            extra["reason"] = reason
+        if error_type is not None:
+            extra["error_type"] = error_type
+        if duration is not None:
+            extra["duration_seconds"] = duration
+        if context is not None:
+            extra.update(
+                {
+                    "message_id": context.message_id,
+                    "correlation_id": context.correlation_id,
+                    "idempotency_key": context.idempotency_key,
+                    "retry_count": context.retry_count,
+                    "replay_count": context.replay_count,
+                    "redelivered": context.redelivered,
+                }
+            )
+            if context.enqueued_at:
+                extra["enqueued_at"] = context.enqueued_at
+        return extra
+
+    def _log_decision(
+        self,
+        decision: str,
+        context: DeliveryContext | None,
+        *,
+        reason: str | None = None,
+        duration: float | None = None,
+    ) -> None:
+        logger.info(
+            "RabbitMQ message decision",
+            extra={"decision": decision, **self._log_extra(context, reason=reason, duration=duration)},
+        )
 
     @abstractmethod
     async def process_message(self, body: dict[str, Any]) -> None:
@@ -353,19 +566,16 @@ class BaseConsumer(_AbstractConsumer):
         queue_name: str,
         prefetch_count: int = 1,
         dead_letter_exchange: str | None = None,
+        retry_delays_seconds: list[int] | None = None,
+        max_retry_attempts: int | None = None,
     ):
-        """
-        Initialize consumer.
-
-        Args:
-            queue_name: Name of the queue to consume from
-            prefetch_count: Number of messages to prefetch (QoS)
-            dead_letter_exchange: Exchange for failed messages (poison queue)
-        """
-        self._init_consumer_state()
-        self.queue_name = queue_name
-        self.prefetch_count = prefetch_count
-        self.dead_letter_exchange = dead_letter_exchange or f"{queue_name}-dlx"
+        super().__init__(
+            queue_name=queue_name,
+            prefetch_count=prefetch_count,
+            dead_letter_exchange=dead_letter_exchange,
+            retry_delays_seconds=retry_delays_seconds,
+            max_retry_attempts=max_retry_attempts,
+        )
 
     async def start(self) -> None:
         """Start consuming messages."""
@@ -394,6 +604,17 @@ class BaseConsumer(_AbstractConsumer):
         )
         await dlq.bind(dlx, routing_key=self.queue_name)
 
+        for idx, delay in enumerate(self.retry_delays_seconds, start=1):
+            await channel.declare_queue(
+                f"{self.queue_name}-retry-{idx}",
+                durable=True,
+                arguments={
+                    "x-message-ttl": delay * 1000,
+                    "x-dead-letter-exchange": "",
+                    "x-dead-letter-routing-key": self.queue_name,
+                },
+            )
+
         # Declare main queue with dead letter routing
         queue = await channel.declare_queue(
             self.queue_name,
@@ -409,6 +630,58 @@ class BaseConsumer(_AbstractConsumer):
 
         # Start consuming, capturing the consumer tag so drain() can cancel it.
         self._consumer_tag = await queue.consume(self._on_message)
+
+
+def infer_idempotency_key(queue_name: str, message: dict[str, Any]) -> str:
+    """Return a stable key used in broker headers for observability and replay."""
+    if "idempotency_key" in message:
+        return str(message["idempotency_key"])
+    if queue_name == "workflow-executions" and message.get("execution_id"):
+        return str(message["execution_id"])
+    if queue_name == "agent-runs" and message.get("run_id"):
+        return str(message["run_id"])
+    if queue_name == "agent-summarization" and message.get("run_id"):
+        return str(message["run_id"])
+    if queue_name == "agent-summarization-backfill" and message.get("run_id"):
+        return f"{message['run_id']}:{message.get('backfill_job_id') or 'live'}"
+    if queue_name == "agent-tuning-chat" and message.get("turn_id"):
+        return str(message["turn_id"])
+    if queue_name == "agent-tuning-chat" and message.get("run_id"):
+        return f"{message['run_id']}:{message.get('message_id') or message.get('content')}"
+    return str(message.get("id") or json.dumps(message, sort_keys=True, default=str))
+
+
+def _bounded_message_id(message_id: str) -> str:
+    """Return a value safe for AMQP shortstr message_id properties."""
+    if len(message_id.encode("utf-8")) <= AMQP_SHORTSTR_MAX_BYTES:
+        return message_id
+    return f"sha256:{hashlib.sha256(message_id.encode('utf-8')).hexdigest()}"
+
+
+def _message_headers(
+    message: dict[str, Any],
+    origin_queue: str,
+    *,
+    message_id: str | None = None,
+    headers: dict[str, Any] | None = None,
+    retry_count: int = 0,
+    replay_count: int = 0,
+) -> dict[str, Any]:
+    merged = dict(headers or {})
+    idempotency_key = merged.get("x-idempotency-key") or infer_idempotency_key(origin_queue, message)
+    merged.update(
+        {
+            "x-idempotency-key": str(idempotency_key),
+            "x-origin-queue": merged.get("x-origin-queue") or origin_queue,
+            "x-schema-version": merged.get("x-schema-version") or SCHEMA_VERSION,
+            "x-enqueued-at": merged.get("x-enqueued-at") or datetime.now(timezone.utc).isoformat(),
+            "x-retry-count": retry_count,
+            "x-replayed-count": replay_count,
+        }
+    )
+    if message_id and "x-original-message-id" not in merged:
+        merged["x-original-message-id"] = message_id
+    return merged
 
 
 class BroadcastConsumer(_AbstractConsumer):
@@ -430,13 +703,8 @@ class BroadcastConsumer(_AbstractConsumer):
         Args:
             exchange_name: Name of the fanout exchange to consume from
         """
-        self._init_consumer_state()
+        super().__init__(queue_name=f"{exchange_name} (broadcast)")
         self.exchange_name = exchange_name
-
-    @property
-    def queue_name(self) -> str:  # type: ignore[override]
-        """Return the exchange name for logging compatibility."""
-        return f"{self.exchange_name} (broadcast)"
 
     async def start(self) -> None:
         """Start consuming messages from the fanout exchange."""
@@ -475,6 +743,35 @@ class BroadcastConsumer(_AbstractConsumer):
 
         # Start consuming, capturing the consumer tag so drain() can cancel it.
         self._consumer_tag = await queue.consume(self._on_message)
+
+    async def _process_message_with_ack(self, message: IncomingMessage) -> None:
+        """Process a broadcast message without queue retry or poison routing."""
+        async with message.process(requeue=False):
+            try:
+                body = json.loads(message.body.decode())
+
+                logger.info(
+                    f"Processing message from {self.queue_name}",
+                    extra={"message_id": message.message_id},
+                )
+
+                await self.process_message(body)
+
+                logger.info(
+                    "Message processed successfully",
+                    extra={"message_id": message.message_id},
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error processing message from {self.queue_name}: {e}",
+                    extra={
+                        "message_id": message.message_id,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True,
+                )
+                raise
 
 
 async def publish_broadcast(

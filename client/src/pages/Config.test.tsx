@@ -65,11 +65,8 @@ async function renderPage() {
 describe("Config — list", () => {
 	it("fetches without include_orphaned (orphaned UI stripped)", async () => {
 		await renderPage();
-		// useConfigs(scope) — no include_orphaned param
-		expect(mockUseConfigs).toHaveBeenLastCalledWith(undefined);
-		// No show-orphaned toggle visible
-		expect(
-			screen.queryByRole("checkbox", { name: /show orphaned/i }),
-		).toBeNull();
+		// useConfigs(scope, include_orphaned)
+		expect(mockUseConfigs).toHaveBeenLastCalledWith(undefined, false);
+		expect(screen.getByRole("checkbox", { name: /show orphaned/i })).not.toBeChecked();
 	});
 });
