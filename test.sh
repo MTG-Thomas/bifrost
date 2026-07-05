@@ -277,8 +277,14 @@ run_pytest() {
     # the whole session is reported as ERROR even though every test ran. Make the
     # mount dir world-writable so the uid-1000 container can write results into it.
     chmod 777 "$LOG_DIR" 2>/dev/null || true
-    docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        pytest "$@" --junitxml="/tmp/bifrost/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
+    local build_args=("--build")
+    if [ "${BIFROST_SKIP_BUILD:-0}" = "1" ]; then
+        build_args=()
+        echo "BIFROST_SKIP_BUILD=1 — using pre-built test-runner image from local docker."
+    fi
+
+    docker compose -f "$COMPOSE_FILE" --profile test run "${build_args[@]}" --rm test-runner \
+        pytest "$@" --durations=25 --junitxml="$LOG_DIR/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
     return "${PIPESTATUS[0]}"
 }
 
