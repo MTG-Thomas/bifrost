@@ -264,7 +264,9 @@ async def test_build_solution_backup_zip_overlays_runtime_payload_on_stored_sour
     assert dest.read_bytes() == b"zip"
     assert not source_path.exists()
     assert calls[0][0] == "bundle"
-    assert calls[0][1][1] == {
+    bundle_call = calls[0][1]
+    assert isinstance(bundle_call, tuple)
+    assert bundle_call[1] == {
         "include_imports": True,
         "include_values": True,
         "include_data": False,
