@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from uuid import UUID
 
 from src.config import Settings, get_settings
-from src.services.repo_storage import _get_shared_session
+from src.services.file_storage.s3_client import _get_shared_session
 
 logger = logging.getLogger(__name__)
 

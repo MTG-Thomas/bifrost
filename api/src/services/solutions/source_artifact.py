@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import UUID
 
 from src.config import Settings, get_settings
-from src.services.repo_storage import _get_shared_session
+from src.services.file_storage.s3_client import _get_shared_session
 
 SOURCE_ARTIFACTS_ROOT = "_solution_artifacts"
 SOURCE_ARTIFACT_NAME = "source.zip"
