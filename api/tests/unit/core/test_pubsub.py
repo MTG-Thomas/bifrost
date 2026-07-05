@@ -58,6 +58,14 @@ class RedisContext:
         return None
 
 
+class ListenerHealth:
+    def __init__(self, healthy: bool) -> None:
+        self.healthy = healthy
+
+    def is_healthy(self) -> bool:
+        return self.healthy
+
+
 @pytest.fixture
 def recorder(monkeypatch: pytest.MonkeyPatch) -> RecorderManager:
     manager = RecorderManager()
@@ -83,6 +91,65 @@ async def test_connection_manager_broadcast_falls_back_to_local_send(
 
     assert json.loads(live.sent[0]) == {"type": "event", "ok": True}
     assert manager.connections["execution:1"] == {live}
+
+
+@pytest.mark.asyncio
+async def test_connection_manager_connect_initializes_redis_only_when_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = pubsub.ConnectionManager()
+    first = FakeSocket()
+    second = FakeSocket()
+    init_calls = 0
+
+    async def init_redis() -> None:
+        nonlocal init_calls
+        init_calls += 1
+        manager._pubsub_listener = cast(Any, ListenerHealth(True))
+
+    monkeypatch.setattr(manager, "_init_redis", init_redis)
+
+    await manager.connect(first, ["execution:1", "system"])
+    await manager.connect(second, ["execution:1"])
+
+    assert init_calls == 1
+    assert first.accepted is True
+    assert second.accepted is True
+    assert manager.connections["execution:1"] == {first, second}
+    assert manager.connections["system"] == {first}
+
+
+@pytest.mark.asyncio
+async def test_connection_manager_connect_reinitializes_unhealthy_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = pubsub.ConnectionManager(_pubsub_listener=cast(Any, ListenerHealth(False)))
+    init_calls = 0
+
+    async def init_redis() -> None:
+        nonlocal init_calls
+        init_calls += 1
+        manager._pubsub_listener = cast(Any, ListenerHealth(True))
+
+    monkeypatch.setattr(manager, "_init_redis", init_redis)
+
+    await manager.connect(FakeSocket(), ["system"])
+
+    assert init_calls == 1
+    assert "system" in manager.connections
+
+
+def test_connection_manager_disconnect_removes_empty_channels() -> None:
+    manager = pubsub.ConnectionManager()
+    socket = FakeSocket()
+    manager.connections = {
+        "execution:1": {cast(Any, socket)},
+        "system": {cast(Any, socket)},
+    }
+
+    manager.disconnect(cast(Any, socket))
+
+    assert manager.connections == {}
 
 
 @pytest.mark.asyncio
@@ -178,6 +245,27 @@ async def test_connection_manager_init_redis_replaces_listener_and_routes_messag
 
 
 @pytest.mark.asyncio
+async def test_connection_manager_init_redis_failure_clears_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = pubsub.ConnectionManager(_pubsub_listener=cast(Any, ListenerHealth(True)))
+
+    class FailingListener:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(pubsub, "get_settings", lambda: SimpleNamespace(redis_url="redis://test"))
+    monkeypatch.setattr(pubsub, "ResilientPubSubListener", FailingListener)
+
+    await manager._init_redis()
+
+    assert manager._pubsub_listener is None
+
+
+@pytest.mark.asyncio
 async def test_basic_publishers_emit_expected_channels(recorder: RecorderManager) -> None:
     execution_id = uuid4()
     user_id = uuid4()
@@ -259,6 +347,39 @@ async def test_history_and_agent_run_publish_to_all_relevant_channels(recorder: 
     agent_payload = next(payload for channel, payload in recorder.broadcasts if channel == f"agent-run:{run.id}")
     assert agent_payload["iterations_used"] == 0
     assert agent_payload["confidence"] == 0.75
+
+
+@pytest.mark.asyncio
+async def test_agent_run_without_org_publishes_global_channel(recorder: RecorderManager) -> None:
+    started_at = "2026-07-05T12:00:00+00:00"
+    run = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        org_id=None,
+        status="running",
+        trigger_type="schedule",
+        iterations_used=3,
+        tokens_used=None,
+        duration_ms=None,
+        error=None,
+        started_at=started_at,
+        completed_at=None,
+        confidence=None,
+    )
+
+    await pubsub.publish_agent_run_update(cast(Any, run), "Global Agent")
+
+    channels = [channel for channel, _ in recorder.broadcasts]
+    assert channels == [
+        f"agent-run:{run.id}",
+        "agent-runs:all",
+        "agent-runs:global",
+    ]
+    payload = recorder.broadcasts[0][1]
+    assert payload["org_id"] is None
+    assert payload["tokens_used"] == 0
+    assert payload["started_at"] == started_at
+    assert payload["confidence"] is None
 
 
 @pytest.mark.asyncio
