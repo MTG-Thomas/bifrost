@@ -5,6 +5,8 @@ import pytest
 from fastapi import HTTPException, status
 
 from src.models.contracts.llm import (
+    EmbeddingConfigRequest,
+    EmbeddingReindexResponse,
     EmbeddingTestRequest,
     LLMConfigRequest,
     LLMTestRequest,
@@ -319,3 +321,122 @@ class TestEmbeddingConfigEndpoints:
 
         db.delete.assert_awaited_once_with(existing)
         db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_embedding_test_returns_no_key_without_saved_or_inherited_key(self):
+        db = _db()
+        db.execute = AsyncMock(side_effect=[
+            _scalar_first_result(None),
+            _scalar_first_result(SimpleNamespace(value_json={"provider": "anthropic"})),
+        ])
+
+        result = await llm_config.test_embedding_connection(
+            EmbeddingTestRequest(api_key=None, endpoint=None),
+            db,
+            _user(),
+        )
+
+        assert result.success is False
+        assert result.message == "No API key provided and no saved key found"
+
+    @pytest.mark.asyncio
+    async def test_trigger_embedding_reindex_requires_saved_embedding_config(self):
+        db = _db()
+        db.execute = AsyncMock(return_value=_scalar_first_result(None))
+
+        with pytest.raises(HTTPException) as exc:
+            await llm_config.trigger_embedding_reindex(db, _user())
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "No embedding configuration" in exc.value.detail
+
+    @pytest.mark.asyncio
+    async def test_trigger_embedding_reindex_returns_noop_when_store_empty(self):
+        db = _db()
+        db.execute = AsyncMock(
+            return_value=_scalar_first_result(
+                SimpleNamespace(value_json={"model": "text-embedding-3-small", "dimensions": 1536})
+            )
+        )
+
+        with patch(
+            "src.services.embeddings.reindex.count_knowledge_rows",
+            AsyncMock(return_value=0),
+        ):
+            result = await llm_config.trigger_embedding_reindex(db, _user())
+
+        assert isinstance(result, EmbeddingReindexResponse)
+        assert result.notification_id == ""
+        assert result.row_count == 0
+
+    @pytest.mark.asyncio
+    async def test_list_embedding_models_filters_capability_aware_payload(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "data": [
+                        {
+                            "id": "chat-only",
+                            "architecture": {"output_modalities": ["text"]},
+                        },
+                        {
+                            "id": "embedder",
+                            "architecture": {"output_modalities": ["embeddings"]},
+                        },
+                        {"id": "bad-modalities", "architecture": {"output_modalities": "embeddings"}},
+                        {"id": 123},
+                    ]
+                }
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, *args, **kwargs):
+                return Response()
+
+        with (
+            patch(
+                "src.services.embeddings.url_safety.validate_embedding_endpoint",
+                return_value="https://provider.test/v1",
+            ),
+            patch("httpx.AsyncClient", Client),
+        ):
+            result = await llm_config._list_embedding_models(
+                "sk-test",
+                "https://provider.test/v1/",
+            )
+
+        assert result == ["embedder"]
+
+    @pytest.mark.asyncio
+    async def test_set_embedding_config_rejects_endpoint_before_live_call(self):
+        db = _db()
+        db.execute = AsyncMock(return_value=_scalar_first_result(None))
+
+        with patch(
+            "src.services.embeddings.url_safety.validate_embedding_endpoint",
+            side_effect=ValueError("private address"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await llm_config.set_embedding_config(
+                    EmbeddingConfigRequest(
+                        model="text-embedding-3-small",
+                        api_key="sk-test",
+                        endpoint="https://internal.test/v1",
+                    ),
+                    db,
+                    _user(),
+                )
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Embedding endpoint rejected" in exc.value.detail
