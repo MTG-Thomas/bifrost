@@ -428,6 +428,117 @@ async def test_execute_workflow_returns_cached_transient_data_provider_result() 
 
 
 @pytest.mark.asyncio
+async def test_execute_workflow_runs_data_provider_without_cache() -> None:
+    user = _exec_user()
+    workflow = _workflow(type="data_provider", cache_ttl_seconds=0)
+    repo = _WorkflowRepo(workflow=workflow)
+    service_result = WorkflowExecutionResponse(
+        execution_id=str(uuid4()),
+        workflow_id=str(workflow.id),
+        workflow_name=workflow.name,
+        status=ExecutionStatus.SUCCESS,
+        result={"rows": [1]},
+    )
+
+    with (
+        patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch("src.services.execution.service.run_workflow", AsyncMock(return_value=service_result)) as run_workflow,
+    ):
+        result = await workflows.execute_workflow(
+            WorkflowExecutionRequest(
+                workflow_id="options",
+                input_data={"q": "o"},
+                transient=False,
+            ),
+            _ctx(user),
+            _Db(),
+            user,
+        )
+
+    assert result.status == ExecutionStatus.SUCCESS
+    assert result.result == {"rows": [1]}
+    assert result.is_transient is False
+    run_workflow.assert_awaited_once()
+    assert run_workflow.await_args.kwargs["workflow_id"] == str(workflow.id)
+    assert run_workflow.await_args.kwargs["sync"] is True
+    assert run_workflow.await_args.kwargs["transient"] is False
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> None:
+    admin = _exec_user(is_superuser=True)
+    run_as = SimpleNamespace(
+        id=uuid4(),
+        name=None,
+        email="delegate@example.com",
+        is_superuser=False,
+    )
+    workflow = _workflow(type="workflow", organization_id=None)
+    repo = _WorkflowRepo(workflow=workflow)
+    service_result = WorkflowExecutionResponse(
+        execution_id=str(uuid4()),
+        workflow_id=str(workflow.id),
+        workflow_name=workflow.name,
+        status=ExecutionStatus.SUCCESS,
+        result={"ok": True},
+        duration_ms=12,
+    )
+
+    with (
+        patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch("src.services.execution.service.run_workflow", AsyncMock(return_value=service_result)) as run_workflow,
+        patch.object(workflows, "publish_execution_update", AsyncMock()) as publish_execution_update,
+        patch.object(workflows, "publish_history_update", AsyncMock()) as publish_history_update,
+    ):
+        result = await workflows.execute_workflow(
+            WorkflowExecutionRequest(
+                workflow_id="sync_records",
+                input_data={"ticket": "123"},
+                sync=True,
+                run_as=str(run_as.id),
+            ),
+            _ctx(admin),
+            _Db(run_as),
+            admin,
+        )
+
+    assert result is service_result
+    assert result.is_transient is True
+    run_workflow.assert_awaited_once()
+    shared_ctx = run_workflow.await_args.kwargs["context"]
+    assert shared_ctx.user_id == str(run_as.id)
+    assert shared_ctx.email == "delegate@example.com"
+    assert shared_ctx.is_platform_admin is False
+    assert run_workflow.await_args.kwargs["input_data"] == {"ticket": "123"}
+    assert run_workflow.await_args.kwargs["sync"] is True
+    publish_execution_update.assert_awaited_once()
+    publish_history_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_reports_missing_run_as_user() -> None:
+    admin = _exec_user(is_superuser=True)
+    workflow = _workflow()
+    repo = _WorkflowRepo(workflow=workflow)
+    missing_user_id = uuid4()
+
+    with patch("src.repositories.WorkflowRepository", return_value=repo):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.execute_workflow(
+                WorkflowExecutionRequest(
+                    workflow_id="sync_records",
+                    run_as=str(missing_user_id),
+                ),
+                _ctx(admin),
+                _Db(None),
+                admin,
+            )
+
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
+    assert exc.value.detail == f"run_as user '{missing_user_id}' not found"
+
+
+@pytest.mark.asyncio
 async def test_execute_workflow_translates_execution_service_errors() -> None:
     user = _exec_user(is_superuser=True)
 
