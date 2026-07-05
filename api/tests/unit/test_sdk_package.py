@@ -57,16 +57,13 @@ def test_materialize_sdk_src_prefers_baked_source(tmp_path, monkeypatch):
 def test_materialize_sdk_src_stages_client_fallback(tmp_path, monkeypatch):
     import src.services.sdk_package as sdkpkg
 
-    module_path = tmp_path / "api" / "src" / "services" / "sdk_package" / "__init__.py"
-    module_path.parent.mkdir(parents=True)
-    module_path.write_text("")
     client_src = tmp_path / "api" / "client" / "src" / "lib" / "app-sdk"
     client_src.mkdir(parents=True)
     for name in sdkpkg._SDK_SOURCE_FILES:
         (client_src / name).write_text(f"// {name}")
     (client_src / "index.v2.ts").write_text("export const v2 = true")
 
-    monkeypatch.setattr(sdkpkg, "__file__", str(module_path))
+    monkeypatch.setattr(sdkpkg, "_client_sdk_candidates", lambda: [client_src])
     monkeypatch.setattr(sdkpkg, "_SDK_SRC", tmp_path / "missing")
 
     staged = sdkpkg._materialize_sdk_src(tmp_path / "work")
@@ -81,12 +78,9 @@ def test_materialize_sdk_src_returns_baked_path_when_no_source_available(
 ):
     import src.services.sdk_package as sdkpkg
 
-    module_path = tmp_path / "api" / "src" / "services" / "sdk_package" / "__init__.py"
-    module_path.parent.mkdir(parents=True)
-    module_path.write_text("")
     missing = tmp_path / "missing"
 
-    monkeypatch.setattr(sdkpkg, "__file__", str(module_path))
+    monkeypatch.setattr(sdkpkg, "_client_sdk_candidates", lambda: [])
     monkeypatch.setattr(sdkpkg, "_SDK_SRC", missing)
 
     assert sdkpkg._materialize_sdk_src(tmp_path / "work") == missing

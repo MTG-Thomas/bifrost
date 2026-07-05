@@ -80,6 +80,17 @@ def _bundle(workdir: Path) -> bytes:
     return out.read_bytes()
 
 
+def _client_sdk_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "client" / "src" / "lib" / "app-sdk"
+        if candidate.is_dir():
+            candidates.append(candidate)
+            break
+    candidates.append(Path("/client/src/lib/app-sdk"))
+    return candidates
+
+
 def _materialize_sdk_src(workdir: Path) -> Path:
     """Return a readable SDK source dir without mutating bind-mounted source.
 
@@ -91,13 +102,7 @@ def _materialize_sdk_src(workdir: Path) -> Path:
     if (_SDK_SRC / "index.ts").is_file():
         return _SDK_SRC
 
-    candidates = [Path("/client/src/lib/app-sdk")]
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "client" / "src" / "lib" / "app-sdk"
-        if candidate.is_dir():
-            candidates.append(candidate)
-            break
-    client_src = next((c for c in candidates if (c / "index.v2.ts").is_file()), None)
+    client_src = next((c for c in _client_sdk_candidates() if (c / "index.v2.ts").is_file()), None)
     if client_src is None:
         return _SDK_SRC
 
