@@ -10,6 +10,33 @@ from src.models.contracts.claims import ClaimQuery, CustomClaim
 from src.models.contracts.policies import TablePolicies
 
 
+class _ScalarResult:
+    def __init__(self, rows=None, one=None):
+        self._rows = rows or []
+        self._one = one
+
+    def scalar_one_or_none(self):
+        return self._one
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _Db:
+    def __init__(self, *results):
+        self.results = list(results)
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        if not self.results:
+            raise AssertionError("unexpected query")
+        return self.results.pop(0)
+
+
 def _claim(name: str, *, organization_id=None, solution_id=None, table="memberships") -> CustomClaim:
     return CustomClaim(
         id=uuid4(),
@@ -212,6 +239,152 @@ async def test_run_claim_query_returns_empty_when_source_table_denies_read(monke
         resolving=set(),
     )
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_run_claim_query_returns_empty_for_unknown_source_table() -> None:
+    from shared.claims import preresolve
+
+    claim = _claim("missing_source")
+
+    rows = await preresolve._run_claim_query(
+        claim,
+        claims={},
+        user=SimpleNamespace(claims={}),
+        db=_Db(_ScalarResult(one=None)),  # type: ignore[arg-type]
+        resolving=set(),
+    )
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_run_claim_query_fails_closed_when_where_cannot_compile(monkeypatch) -> None:
+    from shared.claims import preresolve
+    from sqlalchemy import true
+
+    source = SimpleNamespace(id=uuid4(), organization_id=uuid4(), access=None)
+
+    async def fake_load_source_policies(_source, _db):
+        return TablePolicies.model_validate({
+            "policies": [{"name": "read", "actions": ["read"]}]
+        })
+
+    def fake_compile_read_filter(_policies, _user):
+        return true()
+
+    def fail_compile_to_sql(_expr, _user):
+        raise ValueError("bad claim expression")
+
+    monkeypatch.setattr(preresolve, "_load_source_policies", fake_load_source_policies)
+    monkeypatch.setattr(preresolve, "compile_read_filter", fake_compile_read_filter)
+    monkeypatch.setattr(preresolve, "compile_to_sql", fail_compile_to_sql)
+
+    claim = _claim_with_query(
+        "bad_where",
+        where={"eq": [{"row": "campus_id"}, "north"]},
+    )
+    rows = await preresolve._run_claim_query(
+        claim,
+        claims={},
+        user=SimpleNamespace(claims={}),
+        db=_Db(_ScalarResult(one=source)),  # type: ignore[arg-type]
+        resolving=set(),
+    )
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_run_claim_query_applies_read_policy_dependencies_and_extracts_rows(
+    monkeypatch,
+) -> None:
+    from shared.claims import preresolve
+    from sqlalchemy import true
+
+    source = SimpleNamespace(id=uuid4(), organization_id=uuid4(), access=None)
+    dependent = _claim_with_query("allowed_campus_ids")
+    resolved: list[str] = []
+    documents = [
+        SimpleNamespace(data={"campus": {"id": "north"}}),
+        SimpleNamespace(data={"campus": {"id": "south"}}),
+    ]
+
+    async def fake_load_source_policies(_source, _db):
+        return TablePolicies.model_validate({
+            "policies": [
+                {
+                    "name": "read",
+                    "actions": ["read"],
+                    "when": {
+                        "in": [
+                            {"row": "campus.id"},
+                            {"claims": "allowed_campus_ids"},
+                        ]
+                    },
+                }
+            ]
+        })
+
+    async def fake_resolve_claim(claim, _claims, _user, _db, _resolving):
+        resolved.append(claim.name)
+
+    monkeypatch.setattr(preresolve, "_load_source_policies", fake_load_source_policies)
+    monkeypatch.setattr(preresolve, "_resolve_claim", fake_resolve_claim)
+    monkeypatch.setattr(preresolve, "compile_read_filter", lambda _policies, _user: true())
+    monkeypatch.setattr(preresolve, "compile_to_sql", lambda _expr, _user: true())
+
+    claim = _claim_with_query(
+        "campus_ids",
+        select="campus.id",
+        where={"eq": [{"row": "active"}, True]},
+    )
+    rows = await preresolve._run_claim_query(
+        claim,
+        claims={dependent.name: dependent},
+        user=SimpleNamespace(claims={}),
+        db=_Db(_ScalarResult(one=source), _ScalarResult(rows=documents)),  # type: ignore[arg-type]
+        resolving=set(),
+    )
+
+    assert resolved == ["allowed_campus_ids"]
+    assert rows == [{"campus.id": "north"}, {"campus.id": "south"}]
+
+
+@pytest.mark.asyncio
+async def test_resolve_claim_source_table_prefers_solution_owned_table() -> None:
+    from shared.claims import preresolve
+
+    own_table = SimpleNamespace(id=uuid4(), name="memberships")
+    org_table = SimpleNamespace(id=uuid4(), name="memberships")
+    solution_id = uuid4()
+    claim = _claim("allowed_campus_ids", solution_id=solution_id)
+
+    result = await preresolve._resolve_claim_source_table(
+        _Db(_ScalarResult(one=own_table), _ScalarResult(one=org_table)),  # type: ignore[arg-type]
+        claim,
+        "memberships",
+        claim.organization_id,
+    )
+
+    assert result is own_table
+
+
+@pytest.mark.asyncio
+async def test_resolve_claim_source_table_falls_back_to_loose_org_table() -> None:
+    from shared.claims import preresolve
+
+    org_table = SimpleNamespace(id=uuid4(), name="memberships")
+    claim = _claim("allowed_campus_ids", solution_id=uuid4())
+
+    result = await preresolve._resolve_claim_source_table(
+        _Db(_ScalarResult(one=None), _ScalarResult(one=org_table)),  # type: ignore[arg-type]
+        claim,
+        "memberships",
+        claim.organization_id,
+    )
+
+    assert result is org_table
 
 
 def test_get_or_init_cache_reuses_existing_claims_dict() -> None:
