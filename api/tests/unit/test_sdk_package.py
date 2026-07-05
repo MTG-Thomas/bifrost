@@ -16,10 +16,13 @@ import io
 import json
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 _SDK_SERVICE = Path("/app/src/services/sdk_package")
+
+
 def _ensure_sdk_src() -> bool:
     """Return whether the baked SDK source or client fallback tree is available."""
     dst = _SDK_SERVICE / "sdk_src"
@@ -30,6 +33,92 @@ def _ensure_sdk_src() -> bool:
         Path(__file__).resolve().parents[3] / "client" / "src" / "lib" / "app-sdk",
     ]
     return any((c / "index.v2.ts").is_file() for c in candidates)
+
+
+def test_pep440ish_coerces_git_describe_versions():
+    import src.services.sdk_package as sdkpkg
+
+    assert sdkpkg._pep440ish("v1.2-3-gabc1234") == "1.2.0"
+    assert sdkpkg._pep440ish("2.3.4-dirty") == "2.3.4"
+    assert sdkpkg._pep440ish("unknown") == "0.0.0"
+
+
+def test_materialize_sdk_src_prefers_baked_source(tmp_path, monkeypatch):
+    import src.services.sdk_package as sdkpkg
+
+    baked = tmp_path / "baked"
+    baked.mkdir()
+    (baked / "index.ts").write_text("export const baked = true")
+    monkeypatch.setattr(sdkpkg, "_SDK_SRC", baked)
+
+    assert sdkpkg._materialize_sdk_src(tmp_path / "work") == baked
+
+
+def test_materialize_sdk_src_stages_client_fallback(tmp_path, monkeypatch):
+    import src.services.sdk_package as sdkpkg
+
+    module_path = tmp_path / "api" / "src" / "services" / "sdk_package" / "__init__.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("")
+    client_src = tmp_path / "api" / "client" / "src" / "lib" / "app-sdk"
+    client_src.mkdir(parents=True)
+    for name in sdkpkg._SDK_SOURCE_FILES:
+        (client_src / name).write_text(f"// {name}")
+    (client_src / "index.v2.ts").write_text("export const v2 = true")
+
+    monkeypatch.setattr(sdkpkg, "__file__", str(module_path))
+    monkeypatch.setattr(sdkpkg, "_SDK_SRC", tmp_path / "missing")
+
+    staged = sdkpkg._materialize_sdk_src(tmp_path / "work")
+
+    assert staged == tmp_path / "work" / "sdk_src"
+    assert (staged / "provider.tsx").read_text() == "// provider.tsx"
+    assert (staged / "index.ts").read_text() == "export const v2 = true"
+
+
+def test_materialize_sdk_src_returns_baked_path_when_no_source_available(
+    tmp_path, monkeypatch
+):
+    import src.services.sdk_package as sdkpkg
+
+    module_path = tmp_path / "api" / "src" / "services" / "sdk_package" / "__init__.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("")
+    missing = tmp_path / "missing"
+
+    monkeypatch.setattr(sdkpkg, "__file__", str(module_path))
+    monkeypatch.setattr(sdkpkg, "_SDK_SRC", missing)
+
+    assert sdkpkg._materialize_sdk_src(tmp_path / "work") == missing
+
+
+def test_bundle_invokes_node_builder_with_materialized_source(tmp_path, monkeypatch):
+    import src.services.sdk_package as sdkpkg
+
+    src = tmp_path / "sdk_src"
+    src.mkdir()
+    calls = []
+
+    def fake_materialize(workdir):
+        assert workdir == tmp_path
+        return src
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        Path(argv[3]).write_bytes(b"// bundled sdk")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(sdkpkg, "_materialize_sdk_src", fake_materialize)
+    monkeypatch.setattr(sdkpkg.subprocess, "run", fake_run)
+
+    assert sdkpkg._bundle(tmp_path) == b"// bundled sdk"
+    argv, kwargs = calls[0]
+    assert argv[:2] == ["node", str(sdkpkg._BUILDER)]
+    assert argv[2] == str(src)
+    assert kwargs["cwd"] == str(tmp_path)
+    assert kwargs["check"] is True
+    assert kwargs["timeout"] == 120
+    assert kwargs["env"]["NODE_PATH"] == str(sdkpkg._NODE_MODULES)
 
 
 @pytest.mark.e2e
