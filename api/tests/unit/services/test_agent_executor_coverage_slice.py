@@ -6,8 +6,10 @@ from uuid import uuid4
 
 import pytest
 
+from src.models.contracts.agents import ToolResult
 from src.models.enums import MessageRole
 from src.services.agent_executor import AgentExecutor
+from src.services.llm import LLMMessage
 from src.services.llm.base import ToolCallRequest
 
 
@@ -423,3 +425,203 @@ async def test_update_tool_call_message_persists_result_state(
     assert message.tool_state == "completed"
     assert message.tool_result == {"answer": 42}
     assert message.duration_ms == 123
+
+
+def _stream(*chunks):
+    async def _generator(**_kwargs):
+        for chunk in chunks:
+            yield chunk
+
+    return _generator
+
+
+@pytest.mark.asyncio
+async def test_chat_streams_final_text_and_records_usage(executor):
+    conversation = SimpleNamespace(id=uuid4(), user_id=uuid4())
+    user_msg = SimpleNamespace(id=uuid4())
+    assistant_msg = SimpleNamespace(id=uuid4())
+    llm_client = SimpleNamespace(
+        model_name="test-model",
+        provider_name="test-provider",
+        stream=_stream(
+            SimpleNamespace(type="delta", content="hel", tool_call=None),
+            SimpleNamespace(type="delta", content="lo", tool_call=None),
+            SimpleNamespace(
+                type="done",
+                content=None,
+                tool_call=None,
+                input_tokens=5,
+                output_tokens=2,
+            ),
+        ),
+    )
+
+    with (
+        patch("src.services.agent_executor.get_llm_client", new=AsyncMock(return_value=llm_client)),
+        patch("src.services.agent_router.AgentRouter") as router_cls,
+        patch.object(executor, "_save_message", new=AsyncMock(side_effect=[user_msg, assistant_msg])),
+        patch.object(
+            executor,
+            "_build_message_history",
+            new=AsyncMock(return_value=[LLMMessage(role="system", content="prompt")]),
+        ),
+        patch.object(executor, "_record_ai_usage", new=AsyncMock()) as record_usage,
+    ):
+        router_cls.return_value.parse_mention = AsyncMock(return_value=None)
+        chunks = [
+            chunk
+            async for chunk in executor.chat(
+                agent=None,
+                conversation=conversation,
+                user_message="hello",
+                enable_routing=False,
+                local_id="local-1",
+            )
+        ]
+
+    assert [chunk.type for chunk in chunks] == [
+        "message_start",
+        "delta",
+        "delta",
+        "done",
+    ]
+    assert chunks[0].user_message_id == str(user_msg.id)
+    assert chunks[0].assistant_message_id == str(assistant_msg.id)
+    assert chunks[0].local_id == "local-1"
+    assert chunks[1].content == "hel"
+    assert chunks[2].content == "lo"
+    assert chunks[3].content == "hello"
+    assert chunks[3].token_count_input == 5
+    assert chunks[3].token_count_output == 2
+    record_usage.assert_awaited_once()
+    usage_kwargs = record_usage.await_args.kwargs
+    assert usage_kwargs["provider"] == "test-provider"
+    assert usage_kwargs["model"] == "test-model"
+    assert usage_kwargs["organization_id"] is None
+    assert usage_kwargs["user_id"] == conversation.user_id
+
+
+@pytest.mark.asyncio
+async def test_chat_executes_tool_calls_and_remaps_duplicate_provider_ids(executor):
+    conversation = SimpleNamespace(id=uuid4(), user_id=uuid4())
+    agent = SimpleNamespace(
+        id=uuid4(),
+        name="Tool Agent",
+        organization_id=uuid4(),
+        llm_model="override-model",
+        llm_max_tokens=321,
+    )
+    user_msg = SimpleNamespace(id=uuid4())
+    text_msg = SimpleNamespace(id=uuid4())
+    tool_call_msg = SimpleNamespace(id=uuid4())
+    tool_msg = SimpleNamespace(id=uuid4())
+    assistant_msg = SimpleNamespace(id=uuid4())
+    saved_messages = AsyncMock(
+        side_effect=[user_msg, text_msg, tool_call_msg, tool_msg, assistant_msg]
+    )
+    update_tool_call = AsyncMock()
+    execute_tool = AsyncMock(
+        return_value=ToolResult(
+            tool_call_id="dup_iter1",
+            tool_name="demo_tool",
+            result={"ok": True},
+            error=None,
+            duration_ms=7,
+        )
+    )
+    tool_call = ToolCallRequest(
+        id="dup",
+        name="demo_tool",
+        arguments={"value": 1},
+    )
+    stream_calls = []
+
+    async def stream(**kwargs):
+        stream_calls.append(kwargs)
+        if len(stream_calls) == 1:
+            yield SimpleNamespace(type="delta", content="checking", tool_call=None)
+            yield SimpleNamespace(type="tool_call", content=None, tool_call=tool_call)
+            yield SimpleNamespace(
+                type="done",
+                content=None,
+                tool_call=None,
+                input_tokens=10,
+                output_tokens=4,
+            )
+        else:
+            yield SimpleNamespace(type="delta", content="complete", tool_call=None)
+            yield SimpleNamespace(
+                type="done",
+                content=None,
+                tool_call=None,
+                input_tokens=3,
+                output_tokens=2,
+            )
+
+    llm_client = SimpleNamespace(
+        model_name="test-model",
+        provider_name="test-provider",
+        stream=stream,
+    )
+    history = [
+        LLMMessage(role="system", content="prompt"),
+        LLMMessage(
+            role="assistant",
+            content=None,
+            tool_calls=[
+                ToolCallRequest(id="dup", name="old_tool", arguments={}),
+            ],
+        ),
+    ]
+
+    with (
+        patch("src.services.agent_executor.get_llm_client", new=AsyncMock(return_value=llm_client)),
+        patch("src.services.agent_router.AgentRouter") as router_cls,
+        patch.object(executor, "_save_message", new=saved_messages),
+        patch.object(executor, "_update_tool_call_message", new=update_tool_call),
+        patch.object(executor, "_execute_tool", new=execute_tool),
+        patch.object(executor, "_get_agent_tools", new=AsyncMock(return_value=[SimpleNamespace(name="demo_tool")])),
+        patch.object(executor, "_build_message_history", new=AsyncMock(return_value=history)),
+        patch.object(executor, "_record_ai_usage", new=AsyncMock()),
+    ):
+        router_cls.return_value.parse_mention = AsyncMock(return_value=None)
+        chunks = [
+            chunk
+            async for chunk in executor.chat(
+                agent=agent,
+                conversation=conversation,
+                user_message="use the tool",
+                enable_routing=False,
+            )
+        ]
+
+    assert len(stream_calls) == 2
+    assert stream_calls[0]["model"] == "override-model"
+    assert stream_calls[0]["max_tokens"] == 321
+    assert tool_call.id == "dup_iter1"
+    execute_tool.assert_awaited_once()
+    assert execute_tool.await_args.args[0].id == "dup_iter1"
+    update_tool_call.assert_awaited_once_with(
+        message_id=tool_call_msg.id,
+        tool_state="completed",
+        tool_result={"ok": True},
+        duration_ms=7,
+    )
+    assert saved_messages.await_args_list[2].kwargs["tool_call_id"] == "dup_iter1"
+    assert saved_messages.await_args_list[3].kwargs["role"] == MessageRole.TOOL
+    assert saved_messages.await_args_list[3].kwargs["content"] == '{"ok":true}'
+    assert saved_messages.await_args_list[3].kwargs["tool_call_id"] == "dup_iter1"
+    assert [chunk.type for chunk in chunks] == [
+        "message_start",
+        "delta",
+        "tool_call",
+        "assistant_message_end",
+        "tool_call",
+        "tool_progress",
+        "tool_result",
+        "delta",
+        "done",
+    ]
+    assert chunks[-1].content == "complete"
+    assert chunks[-1].token_count_input == 13
+    assert chunks[-1].token_count_output == 6
