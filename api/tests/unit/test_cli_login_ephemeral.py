@@ -12,6 +12,8 @@ Three login modes:
 """
 
 import asyncio
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -366,6 +368,61 @@ class TestBrowserLoginWritesEnv:
 
 class TestNativeLoginFlow:
     @pytest.mark.asyncio
+    async def test_callback_server_accepts_valid_callback(self):
+        server, future, redirect_uri = cli._open_cli_callback_server("state-1")
+        try:
+            with urllib.request.urlopen(  # noqa: S310 - localhost test callback
+                f"{redirect_uri}?state=state-1&code=code-1&transaction_id=txn-1",
+                timeout=5,
+            ) as response:
+                body = response.read().decode("utf-8")
+
+            assert response.status == 200
+            assert "login complete" in body
+            assert await asyncio.wait_for(future, timeout=5) == {
+                "state": "state-1",
+                "code": "code-1",
+                "transaction_id": "txn-1",
+            }
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("query", "expected_error"),
+        [
+            ("state=wrong&code=code-1&transaction_id=txn-1", "Invalid OAuth state"),
+            ("state=state-1&code=code-1", "Missing code or transaction_id"),
+        ],
+    )
+    async def test_callback_server_rejects_bad_callback(self, query, expected_error):
+        server, future, redirect_uri = cli._open_cli_callback_server("state-1")
+        try:
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(f"{redirect_uri}?{query}", timeout=5)  # noqa: S310
+
+            assert exc.value.code == 400
+            with pytest.raises(RuntimeError, match=expected_error):
+                await asyncio.wait_for(future, timeout=5)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.asyncio
+    async def test_callback_server_returns_404_for_other_paths(self):
+        server, _future, redirect_uri = cli._open_cli_callback_server("state-1")
+        try:
+            other_uri = redirect_uri.replace("/callback", "/elsewhere")
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(other_uri, timeout=5)  # noqa: S310
+
+            assert exc.value.code == 404
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.asyncio
     async def test_native_login_saves_tokens_and_reports_user(self, monkeypatch, capsys):
         saved: list[dict[str, str]] = []
         opened_urls: list[str] = []
@@ -507,6 +564,150 @@ class TestNativeLoginFlow:
 
         assert await cli.native_login_flow("https://api.example.test") is False
         assert "Error starting native OAuth login: 503" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_native_login_reports_token_exchange_error(self, monkeypatch, capsys):
+        class FakeServer:
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def open_callback_server(expected_state):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            future.set_result(
+                {
+                    "transaction_id": "txn-1",
+                    "code": "code-1",
+                    "state": expected_state,
+                }
+            )
+            return FakeServer(), future, "http://127.0.0.1/callback"
+
+        class Response:
+            def __init__(self, status_code, payload=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/cli/start":
+                    return Response(
+                        200,
+                        {
+                            "authorization_url": "/auth/cli/authorize",
+                            "expires_in": 30,
+                        },
+                    )
+                if path == "/auth/cli/token":
+                    return Response(401)
+                raise AssertionError(f"unexpected POST {path}")
+
+        monkeypatch.setattr(cli, "_open_cli_callback_server", open_callback_server)
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.native_login_flow("https://api.example.test", auto_open=False) is False
+        captured = capsys.readouterr()
+        assert "Open this URL to continue" in captured.out
+        assert "Error exchanging native OAuth token: 401" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_native_login_falls_back_when_user_info_fails(self, monkeypatch, capsys):
+        saved: list[dict[str, str]] = []
+
+        class FakeServer:
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def open_callback_server(expected_state):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            future.set_result(
+                {
+                    "transaction_id": "txn-1",
+                    "code": "code-1",
+                    "state": expected_state,
+                }
+            )
+            return FakeServer(), future, "http://127.0.0.1/callback"
+
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/cli/start":
+                    return Response(
+                        200,
+                        {
+                            "authorization_url": "/auth/cli/authorize",
+                            "expires_in": 30,
+                        },
+                    )
+                if path == "/auth/cli/token":
+                    return Response(
+                        200,
+                        {
+                            "access_token": "access-1",
+                            "refresh_token": "refresh-1",
+                            "expires_in": 1800,
+                        },
+                    )
+                raise AssertionError(f"unexpected POST {path}")
+
+            async def get(self, path, headers=None):
+                raise RuntimeError("profile unavailable")
+
+        monkeypatch.setattr(cli, "_open_cli_callback_server", open_callback_server)
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(
+            cli.credentials,
+            "save_credentials",
+            lambda **kwargs: saved.append(kwargs),
+        )
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.native_login_flow("https://api.example.test", auto_open=False)
+        assert saved[0]["access_token"] == "access-1"
+        assert "Logged in successfully" in capsys.readouterr().out
 
 
 class TestDeviceLoginFlow:
