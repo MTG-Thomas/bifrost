@@ -184,6 +184,74 @@ def test_write_bifrost_package_proxy_count_matches_imported_subset(
     )
 
 
+def test_write_bifrost_package_reexports_user_components_and_router_wrappers(
+    bundler: BundlerService, tmp_path: pathlib.Path
+) -> None:
+    pkg = _build_pkg_with_bifrost_imports(
+        bundler,
+        tmp_path,
+        {"SearchInput", "NamedOnly", "Link", "Route", "Settings"},
+        {
+            "components/SearchInput.tsx": (
+                "export default function SearchInput() { return null; }\n"
+            ),
+            "components/NamedOnly.tsx": (
+                "export function NamedOnly() { return null; }\n"
+            ),
+        },
+    )
+
+    assert (
+        'export { default as SearchInput } from "../../components/SearchInput";'
+        in pkg
+    )
+    assert 'export { NamedOnly } from "../../components/NamedOnly";' in pkg
+    assert 'export { Route } from "react-router-dom";' in pkg
+    assert "export const Link = _p['Link'];" in pkg
+    assert 'export { Settings } from "lucide-react";' in pkg
+    assert "Deprecated imports detected" in pkg
+
+
+def test_write_bifrost_package_ignores_invalid_component_names(
+    bundler: BundlerService, tmp_path: pathlib.Path
+) -> None:
+    pkg = _build_pkg_with_bifrost_imports(
+        bundler,
+        tmp_path,
+        {"123Bad", "GoodComponent"},
+        {
+            "components/123Bad.tsx": "export default function Bad() { return null; }\n",
+            "components/GoodComponent.tsx": (
+                "export default function GoodComponent() { return null; }\n"
+            ),
+        },
+    )
+
+    assert "123Bad" not in pkg
+    assert (
+        'export { default as GoodComponent } from "../../components/GoodComponent";'
+        in pkg
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("export default function Widget() { return null; }", True),
+        ("export { default } from './Widget';", True),
+        ("export function Widget() { return null; }", False),
+        ("const Widget = () => null;\nexport { Widget };", False),
+    ],
+)
+def test_has_default_export_detects_supported_default_forms(
+    source: str,
+    expected: bool,
+) -> None:
+    from src.services.app_bundler import _has_default_export
+
+    assert _has_default_export(source) is expected
+
+
 # ---------------------------------------------------------------------------
 # build_with_migrate + SCHEMA_VERSION — the deploy-time auto-heal contract.
 #
@@ -306,6 +374,148 @@ async def test_build_writes_current_schema_version_into_manifest(
         "manifest must record the bundler's current SCHEMA_VERSION so readers "
         "can detect stale manifests and trigger a rebuild"
     )
+
+
+async def test_build_returns_error_without_overwriting_manifest_when_no_sources(
+    bundler: BundlerService,
+) -> None:
+    with patch.object(bundler, "_materialize_source", new=AsyncMock(return_value=[])), \
+         patch.object(bundler._app_storage, "write_preview_file", new=AsyncMock()) as write:
+        result = await bundler.build(
+            app_id="app-id",
+            repo_prefix="apps/empty",
+            mode="preview",
+            dependencies={},
+        )
+
+    assert result.success is False
+    assert result.errors is not None
+    assert "No source files" in result.errors[0].text
+    write.assert_not_called()
+
+
+async def test_build_surfaces_esbuild_failure_and_preserves_last_good_bundle(
+    bundler: BundlerService,
+) -> None:
+    async def fake_materialize(src_dir: pathlib.Path, repo_prefix: str) -> list[str]:
+        (src_dir / "pages").mkdir()
+        (src_dir / "pages" / "index.tsx").write_text(
+            "export default function Page(){ return null; }\n",
+            encoding="utf-8",
+        )
+        return ["pages/index.tsx"]
+
+    async def fake_run_esbuild(_cfg: dict) -> dict:
+        return {
+            "success": False,
+            "errors": [
+                {"text": "Could not resolve ./missing", "file": "pages/index.tsx"}
+            ],
+            "warnings": [{"text": "unused import", "line": 2}],
+            "duration_ms": 17,
+        }
+
+    no_tailwind = AsyncMock(return_value=(False, set()))
+    with patch.object(bundler, "_materialize_source", new=fake_materialize), \
+         patch.object(bundler, "_generate_app_tailwind", new=no_tailwind), \
+         patch.object(bundler, "_run_esbuild", new=fake_run_esbuild), \
+         patch.object(
+             bundler._app_storage,
+             "write_preview_file",
+             new=AsyncMock(),
+         ) as write:
+        result = await bundler.build(
+            app_id="app-id",
+            repo_prefix="apps/broken",
+            mode="preview",
+            dependencies={},
+        )
+
+    assert result.success is False
+    assert result.duration_ms == 17
+    assert result.errors and result.errors[0].text == "Could not resolve ./missing"
+    assert result.warnings and result.warnings[0].text == "unused import"
+    write.assert_not_called()
+
+
+async def test_build_uploads_live_outputs_and_manifest(
+    bundler: BundlerService,
+) -> None:
+    async def fake_materialize(src_dir: pathlib.Path, repo_prefix: str) -> list[str]:
+        (src_dir / "pages").mkdir()
+        (src_dir / "pages" / "index.tsx").write_text(
+            "export default function Page(){ return null; }\n",
+            encoding="utf-8",
+        )
+        return ["pages/index.tsx"]
+
+    async def fake_run_esbuild(cfg: dict) -> dict:
+        out_dir = pathlib.Path(cfg["out_dir"])
+        out_dir.mkdir()
+        (out_dir / "entry-live.js").write_bytes(b"// live bundle\n")
+        (out_dir / "entry-live.css").write_bytes(b".live{}\n")
+        return {
+            "success": True,
+            "outputs": [{"path": "entry-live.js"}, {"path": "entry-live.css"}],
+            "entry_file": "entry-live.js",
+            "css_file": "entry-live.css",
+            "duration_ms": 9,
+            "warnings": [],
+        }
+
+    written: dict[str, bytes] = {}
+
+    async def fake_write_live(app_id: str, rel: str, data: bytes) -> None:
+        written[rel] = data
+
+    no_tailwind = AsyncMock(return_value=(False, set()))
+    with patch.object(bundler, "_materialize_source", new=fake_materialize), \
+         patch.object(bundler, "_generate_app_tailwind", new=no_tailwind), \
+         patch.object(bundler, "_run_esbuild", new=fake_run_esbuild), \
+         patch.object(bundler, "_write_live", new=fake_write_live):
+        result = await bundler.build(
+            app_id="app-id",
+            repo_prefix="apps/live",
+            mode="live",
+            dependencies={"dayjs": "^1.11.0"},
+        )
+
+    assert result.success is True
+    assert written["entry-live.js"] == b"// live bundle\n"
+    assert written["entry-live.css"] == b".live{}\n"
+    manifest = __import__("json").loads(written["manifest.json"].decode())
+    assert manifest["entry"] == "entry-live.js"
+    assert manifest["css"] == "entry-live.css"
+    assert manifest["dependencies"] == {"dayjs": "^1.11.0"}
+
+
+async def test_materialize_source_filters_metadata_tmp_and_directory_keys(
+    bundler: BundlerService,
+    tmp_path: pathlib.Path,
+) -> None:
+    repo_prefix = "apps/demo/"
+    keys = [
+        "apps/demo/",
+        "apps/demo/app.yaml",
+        "apps/demo/pages/index.tsx",
+        "apps/demo/pages/.tmp.index.tsx",
+        "apps/demo/components/Button.tsx",
+    ]
+    payloads = {
+        "apps/demo/pages/index.tsx": b"export default function Page(){}\n",
+        "apps/demo/components/Button.tsx": b"export function Button(){}\n",
+    }
+    bundler._repo.list = AsyncMock(return_value=keys)
+    bundler._repo.read = AsyncMock(side_effect=lambda key: payloads[key])
+
+    rel_paths = await bundler._materialize_source(tmp_path, repo_prefix)
+
+    assert rel_paths == ["pages/index.tsx", "components/Button.tsx"]
+    assert (tmp_path / "pages" / "index.tsx").read_bytes() == payloads[
+        "apps/demo/pages/index.tsx"
+    ]
+    assert not (tmp_path / "app.yaml").exists()
+    assert not (tmp_path / "pages" / ".tmp.index.tsx").exists()
 
 
 # ---------------------------------------------------------------------------
