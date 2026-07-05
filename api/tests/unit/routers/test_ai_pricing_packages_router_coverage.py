@@ -186,6 +186,20 @@ async def test_get_packages_from_workers_merges_versions_and_skips_bad_entries()
 
 
 @pytest.mark.asyncio
+async def test_get_packages_from_workers_returns_none_for_empty_or_bad_worker_data() -> None:
+    raw_redis = AsyncMock()
+    raw_redis.scan = AsyncMock(return_value=(0, ["bifrost:pool:a", "bifrost:pool:b"]))
+    raw_redis.hget = AsyncMock(side_effect=["not-json", None])
+    redis_client = SimpleNamespace(_get_redis=AsyncMock(return_value=raw_redis))
+
+    with patch.object(packages, "get_redis_client", return_value=redis_client):
+        result = await packages.get_packages_from_workers()
+
+    assert result is None
+    assert raw_redis.hget.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_get_installed_packages_falls_back_to_local_when_no_workers() -> None:
     with (
         patch.object(packages, "get_packages_from_workers", AsyncMock(return_value=None)),
@@ -199,6 +213,113 @@ async def test_get_installed_packages_falls_back_to_local_when_no_workers() -> N
 
     assert result[0].name == "fastapi"
     local.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_installed_packages_uses_worker_packages_without_local_fallback() -> None:
+    worker_packages = [packages.InstalledPackage(name="httpx", version="0.28.0")]
+    with (
+        patch.object(packages, "get_packages_from_workers", AsyncMock(return_value=worker_packages)),
+        patch.object(packages, "get_installed_packages_local", AsyncMock()) as local,
+    ):
+        result = await packages.get_installed_packages()
+
+    assert result == worker_packages
+    local.assert_not_awaited()
+
+
+class _FakeProc:
+    def __init__(self, *, stdout: bytes = b"[]", stderr: bytes = b"", returncode: int = 0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+        self.killed = False
+        self.waited = False
+
+    async def communicate(self):
+        return self.stdout, self.stderr
+
+    def kill(self):
+        self.killed = True
+
+    async def wait(self):
+        self.waited = True
+
+
+@pytest.mark.asyncio
+async def test_check_package_updates_parses_success_and_handles_errors(monkeypatch) -> None:
+    proc = _FakeProc(
+        stdout=(
+            b'[{"name":"httpx","version":"0.27.0","latest_version":"0.28.0"}]'
+        )
+    )
+    monkeypatch.setattr(
+        packages.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+
+    updates = await packages.check_package_updates()
+
+    assert [(u.name, u.current_version, u.latest_version) for u in updates] == [
+        ("httpx", "0.27.0", "0.28.0")
+    ]
+
+    monkeypatch.setattr(
+        packages.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=_FakeProc(stdout=b"not-json")),
+    )
+    assert await packages.check_package_updates() == []
+
+    monkeypatch.setattr(
+        packages.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=_FakeProc(stderr=b"pip failed", returncode=1)),
+    )
+    assert await packages.check_package_updates() == []
+
+
+@pytest.mark.asyncio
+async def test_package_subprocess_helpers_handle_timeout_and_local_parse(monkeypatch) -> None:
+    timed_out = _FakeProc()
+
+    async def raise_timeout(_awaitable, timeout):
+        _awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(
+        packages.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=timed_out),
+    )
+    monkeypatch.setattr(packages.asyncio, "wait_for", raise_timeout)
+
+    assert await packages.check_package_updates() == []
+    assert timed_out.killed is True
+    assert timed_out.waited is True
+
+    local_proc = _FakeProc(stdout=b'[{"name":"fastapi","version":"1.2.3"}]')
+
+    async def passthrough(awaitable, timeout):
+        return await awaitable
+
+    monkeypatch.setattr(packages.asyncio, "wait_for", passthrough)
+    monkeypatch.setattr(
+        packages.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=local_proc),
+    )
+
+    installed = await packages.get_installed_packages_local()
+    assert [(pkg.name, pkg.version) for pkg in installed] == [("fastapi", "1.2.3")]
+
+    monkeypatch.setattr(
+        packages.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=_FakeProc(stdout=b"not-json")),
+    )
+    assert await packages.get_installed_packages_local() == []
 
 
 @pytest.mark.asyncio
@@ -225,6 +346,41 @@ async def test_install_package_warms_cache_on_miss_then_broadcasts_recycle() -> 
     append.assert_called_once_with("fastapi==1\n", "httpx", "0.28.0")
     save.assert_awaited_once_with("fastapi==1\nhttpx==0.28.0\n")
     assert publish.await_args.kwargs["message"]["package"] == "httpx"
+
+
+@pytest.mark.asyncio
+async def test_install_from_requirements_warms_cache_and_broadcasts_recycle() -> None:
+    with (
+        patch.object(packages, "warm_requirements_cache", AsyncMock()) as warm,
+        patch.object(packages, "get_requirements", AsyncMock()) as get_req,
+        patch.object(packages, "save_requirements", AsyncMock()) as save,
+        patch.object(packages, "publish_broadcast", AsyncMock()) as publish,
+    ):
+        result = await packages.install_package(
+            InstallPackageRequest(package_name=None, version=None),
+            _ctx(),
+            _user(),
+        )
+
+    assert result.package_name is None
+    warm.assert_awaited_once()
+    get_req.assert_not_awaited()
+    save.assert_not_awaited()
+    assert publish.await_args.kwargs["message"]["package"] is None
+    assert publish.await_args.kwargs["message"]["is_update"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_and_update_endpoints_wrap_unexpected_errors() -> None:
+    with patch.object(packages, "get_installed_packages", AsyncMock(side_effect=RuntimeError("boom"))):
+        with pytest.raises(HTTPException) as exc:
+            await packages.list_packages(_ctx(), _user())
+    assert exc.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    with patch.object(packages, "check_package_updates", AsyncMock(side_effect=RuntimeError("boom"))):
+        with pytest.raises(HTTPException) as exc:
+            await packages.check_updates(_ctx(), _user())
+    assert exc.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
 
 
 @pytest.mark.asyncio
