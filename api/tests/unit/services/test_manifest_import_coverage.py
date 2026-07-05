@@ -15,10 +15,12 @@ from bifrost.manifest import (
     ManifestEventSubscription,
     ManifestForm,
     ManifestIntegration,
+    ManifestIntegrationConfigSchema,
     ManifestIntegrationMapping,
     ManifestMCPConnection,
     ManifestMCPConnectionTool,
     ManifestMCPServer,
+    ManifestOAuthProvider,
     ManifestOrganization,
     ManifestPolicyRule,
     ManifestRole,
@@ -1171,3 +1173,259 @@ async def test_resolve_mcp_connection_skips_when_parent_server_not_imported():
     )
 
     db.execute.assert_not_called()
+
+
+class _RowsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _ScalarsResult:
+    def __init__(self, values):
+        self._values = values
+
+    def all(self):
+        return self._values
+
+
+class _ScalarRowsResult:
+    def __init__(self, values):
+        self._values = values
+
+    def scalars(self):
+        return _ScalarsResult(self._values)
+
+
+class _SequenceDb:
+    def __init__(self, *results):
+        self._results = list(results)
+        self.statements = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        if self._results:
+            return self._results.pop(0)
+        return _RowsResult([])
+
+
+@pytest.mark.asyncio
+async def test_resolve_deletions_requires_manifest_or_work_dir():
+    resolver = manifest_import.ManifestResolver(_SequenceDb())
+
+    with pytest.raises(ValueError, match="Either manifest or work_dir must be provided"):
+        await resolver._resolve_deletions()
+
+
+@pytest.mark.asyncio
+async def test_resolve_deletions_honors_explicit_config_removal_and_preserves_tables():
+    stale_table_id = UUID("abababab-abab-abab-abab-abababababab")
+    db = _SequenceDb(
+        _RowsResult([
+            (
+                UUID(CONFIG_ID),
+                UUID(INTEGRATION_ID),
+                UUID(ORG_ID),
+                "api_url",
+            )
+        ]),
+        _RowsResult([(stale_table_id, "Tickets")]),
+    )
+    resolver = manifest_import.ManifestResolver(db)
+    manifest = Manifest(
+        configs={
+            "api_url": ManifestConfig(
+                id=CONFIG_ID,
+                integration_id=INTEGRATION_ID,
+                organization_id=ORG_ID,
+                key="api_url",
+                value="https://api.example",
+            ),
+        },
+        tables={
+            "tickets": ManifestTable(
+                id="cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd",
+                name="Tickets",
+            )
+        },
+    )
+
+    changes = await resolver._resolve_deletions(
+        manifest=manifest,
+        dry_run=True,
+        removed_entity_ids={"configs": {CONFIG_ID}},
+    )
+
+    assert [(change.action, change.entity_type, change.name) for change in changes] == [
+        ("removed", "configs", CONFIG_ID),
+        ("keep", "tables", "Tickets"),
+    ]
+    assert resolver.configs_touched == {(ORG_ID, "api_url")}
+    assert len(db.statements) == 2
+
+
+@pytest.mark.asyncio
+async def test_resolve_deletions_applies_explicit_hard_and_soft_removals():
+    db = _SequenceDb(
+        _RowsResult([(UUID(WORKFLOW_ID), "Import tickets")]),
+        _RowsResult([]),
+        _RowsResult([]),
+        _RowsResult([(UUID(ORG_ID), "Midtown")]),
+        _RowsResult([]),
+        _RowsResult([(UUID(ROLE_ID), "Operator")]),
+        _RowsResult([]),
+    )
+    resolver = manifest_import.ManifestResolver(db)
+
+    changes = await resolver._resolve_deletions(
+        manifest=Manifest(),
+        removed_entity_ids={
+            "workflows": {WORKFLOW_ID},
+            "organizations": {ORG_ID},
+            "roles": {ROLE_ID},
+        },
+    )
+
+    assert [(change.action, change.entity_type, change.name) for change in changes] == [
+        ("removed", "workflows", "Import tickets"),
+        ("removed", "organizations", "Midtown"),
+        ("removed", "roles", "Operator"),
+    ]
+    assert len(db.statements) == 7
+
+
+@pytest.mark.asyncio
+async def test_resolve_integration_rekeys_dependent_cache_and_syncs_children(monkeypatch):
+    from src.services.sync_ops import Upsert
+
+    old_integration_id = UUID(EXISTING_ID)
+    new_integration_id = UUID(INTEGRATION_ID)
+    existing_schema = SimpleNamespace(
+        key="api_url",
+        type="string",
+        required=False,
+        description="Old URL",
+        options=None,
+        position=9,
+    )
+    stale_schema = SimpleNamespace(
+        key="old_key",
+        type="string",
+        required=False,
+        description="Remove me",
+        options=None,
+        position=10,
+    )
+    existing_mapping = SimpleNamespace(
+        id=UUID("abababab-abab-abab-abab-abababababab"),
+        organization_id=UUID(ORG_ID),
+        entity_id="old-tenant",
+        entity_name="Old Tenant",
+    )
+    stale_mapping = SimpleNamespace(
+        id=UUID("cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"),
+        organization_id=None,
+        entity_id="global",
+        entity_name="Global",
+    )
+    db = _SequenceDb(
+        _ScalarRowsResult([existing_schema, stale_schema]),
+        _ScalarRowsResult([existing_mapping, stale_mapping]),
+        _RowsResult([]),
+        _RowsResult([]),
+        _ScalarRowsResult([existing_schema]),
+        _RowsResult([]),
+        _RowsResult([]),
+        _RowsResult([]),
+        _RowsResult([]),
+    )
+    resolver = manifest_import.ManifestResolver(db)
+    executed_upserts = []
+
+    async def capture_execute(self, _db):
+        executed_upserts.append(self)
+
+    monkeypatch.setattr(Upsert, "execute", capture_execute)
+
+    cache = {
+        "integ_by_name": {"Halo": old_integration_id},
+        "integ_cs": {old_integration_id: {"api_url": existing_schema, "old_key": stale_schema}},
+        "integ_mappings": {
+            old_integration_id: {ORG_ID: existing_mapping, None: stale_mapping}
+        },
+        "config_by_natural": {
+            ("api_url", old_integration_id, UUID(ORG_ID)): (
+                UUID(CONFIG_ID),
+                "https://old.example",
+                None,
+            )
+        },
+    }
+    integration = ManifestIntegration(
+        id=INTEGRATION_ID,
+        name="Halo",
+        entity_id="tenant_id",
+        entity_id_name="Tenant",
+        default_entity_id="default-tenant",
+        list_entities_data_provider_id=WORKFLOW_ID,
+        config_schema=[
+            ManifestIntegrationConfigSchema(
+                key="api_url",
+                type="string",
+                required=True,
+                description="Tenant URL",
+                options=["https://api.example"],
+                position=0,
+            ),
+            ManifestIntegrationConfigSchema(
+                key="token_url",
+                type="string",
+                required=False,
+                description="Token URL",
+                position=1,
+            ),
+        ],
+        oauth_provider=ManifestOAuthProvider(
+            provider_name="halo",
+            display_name="Halo OAuth",
+            oauth_flow_type="authorization_code",
+            client_id="client-id",
+            authorization_url="https://auth.example/authorize",
+            token_url="https://auth.example/token",
+            token_url_defaults={"audience": "halo"},
+            scopes=["read", "write"],
+            provider_metadata={"pkce": True},
+            redirect_uri="https://app.example/callback",
+        ),
+        mappings=[
+            ManifestIntegrationMapping(
+                organization_id=ORG_ID,
+                entity_id="tenant-1",
+                entity_name="Tenant One",
+            ),
+            ManifestIntegrationMapping(
+                organization_id=OTHER_ORG_ID,
+                entity_id="tenant-2",
+                entity_name="Tenant Two",
+            ),
+        ],
+    )
+
+    assert await resolver._resolve_integration("Halo", integration, cache) == []
+
+    assert executed_upserts[0].id == old_integration_id
+    assert executed_upserts[0].values["id"] == new_integration_id
+    assert executed_upserts[0].values["list_entities_data_provider_id"] == UUID(WORKFLOW_ID)
+    assert existing_schema.type == "string"
+    assert existing_schema.required is True
+    assert existing_schema.description == "Tenant URL"
+    assert existing_schema.options == ["https://api.example"]
+    assert existing_schema.position == 0
+    assert existing_mapping.entity_id == "tenant-1"
+    assert existing_mapping.entity_name == "Tenant One"
+    assert old_integration_id not in cache["integ_cs"]
+    assert old_integration_id not in cache["integ_mappings"]
+    assert ("api_url", new_integration_id, UUID(ORG_ID)) in cache["config_by_natural"]
+    assert len(db.statements) == 8
