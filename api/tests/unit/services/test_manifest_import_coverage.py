@@ -26,6 +26,7 @@ from bifrost.manifest import (
     ManifestPolicyRule,
     ManifestPolicyRef,
     ManifestRole,
+    ManifestSolutionFile,
     ManifestTable,
     ManifestWorkflow,
 )
@@ -1356,6 +1357,122 @@ async def test_resolve_custom_claim_inserts_new_claim_when_cache_misses():
     assert params["name"] == "allowed_campus_ids"
     assert params["description"] == "Allowed campuses"
     assert params["organization_id"] == UUID(ORG_ID)
+
+
+@pytest.mark.asyncio
+async def test_resolve_solution_files_noops_without_manifest_entries_or_sidecar():
+    resolver = manifest_import.ManifestResolver(_SequenceDb())
+    install_id = UUID(APP_ID)
+
+    await resolver._resolve_solution_files(
+        Manifest(),
+        install_id=install_id,
+        sidecar_content=SimpleNamespace(solution_files=[]),
+    )
+    await resolver._resolve_solution_files(
+        Manifest(
+            solution_files=[
+                ManifestSolutionFile(
+                    location="shared",
+                    path="docs/readme.md",
+                    sha256="0" * 64,
+                    size=5,
+                )
+            ]
+        ),
+        install_id=install_id,
+        sidecar_content=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_solution_files_fails_closed_before_writing(monkeypatch):
+    writes = []
+
+    async def fake_write_solution_file(*args, **kwargs):
+        writes.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "src.services.solution_files.write_solution_file",
+        fake_write_solution_file,
+    )
+    resolver = manifest_import.ManifestResolver(_SequenceDb())
+    manifest = Manifest(
+        solution_files=[
+            ManifestSolutionFile(
+                location="shared",
+                path="docs/readme.md",
+                sha256="0" * 64,
+                size=5,
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="matching sidecar bytes"):
+        await resolver._resolve_solution_files(
+            manifest,
+            install_id=UUID(APP_ID),
+            sidecar_content=SimpleNamespace(solution_files=[]),
+        )
+    with pytest.raises(ValueError, match="no content_b64"):
+        await resolver._resolve_solution_files(
+            manifest,
+            install_id=UUID(APP_ID),
+            sidecar_content=SimpleNamespace(
+                solution_files=[
+                    {
+                        "location": "shared",
+                        "path": "docs/readme.md",
+                        "content_b64": "",
+                    }
+                ]
+            ),
+        )
+
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_solution_files_decodes_sidecar_and_replaces_files(monkeypatch):
+    import base64
+
+    writes = []
+
+    async def fake_write_solution_file(db, install_id, location, path, content, *, mode):
+        writes.append((db, install_id, location, path, content, mode))
+
+    monkeypatch.setattr(
+        "src.services.solution_files.write_solution_file",
+        fake_write_solution_file,
+    )
+    db = _SequenceDb()
+    install_id = UUID(APP_ID)
+    manifest = Manifest(
+        solution_files=[
+            ManifestSolutionFile(
+                location="shared",
+                path="docs/readme.md",
+                sha256="0" * 64,
+                size=5,
+            )
+        ]
+    )
+
+    await manifest_import.ManifestResolver(db)._resolve_solution_files(
+        manifest,
+        install_id=install_id,
+        sidecar_content=SimpleNamespace(
+            solution_files=[
+                {
+                    "location": "shared",
+                    "path": "docs/readme.md",
+                    "content_b64": base64.b64encode(b"hello").decode(),
+                }
+            ]
+        ),
+    )
+
+    assert writes == [(db, install_id, "shared", "docs/readme.md", b"hello", "replace")]
 
 
 @pytest.mark.asyncio
