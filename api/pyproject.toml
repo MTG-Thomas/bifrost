@@ -21,7 +21,17 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["."]
-omit = ["tests/*", "**/__init__.py"]
+omit = [
+    "tests/*",
+    "**/__init__.py",
+    "bifrost.py",
+    "bifrost/__main__.py",
+    "bifrost/cli.py",
+    "bifrost/commands/*",
+    "bifrost/tui/*",
+    "bifrost/solution_dev/*",
+    "bifrost/migrate_*.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [
