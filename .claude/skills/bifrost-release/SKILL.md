@@ -5,11 +5,17 @@ description: Build and release Bifrost. Use when pushing commits to main, cuttin
 
 # Bifrost Release
 
-## MTG fork versioning
+## Release cadence (the three rungs, and who they're for)
 
-On `MTG-Thomas/bifrost`, semver is **MTG-owned** starting at `v1.0.0`. Do not
-continue upstream `0.9.x` numbering. See `docs/VERSIONING.md`. Dev builds use
-MTG tags only — CI does not fetch upstream release tags.
+Bifrost ships on a deliberate three-rung ladder. Know which audience each rung serves before you cut it:
+
+| Rung | Tag / image | Cadence | Stability promise | Who runs it |
+|------|-------------|---------|-------------------|-------------|
+| **dev** | `:dev` (every merge to main) | Continuous | **Bleeding edge. Expect bugs.** This is where the maintainer flushes out defects in his own production before they reach anyone else. | The maintainer's prod + community members who want the very latest and accept breakage. |
+| **pre-release** | `vX.Y.Z-rc.N` → versioned images, GitHub Release marked *pre-release*, **no `:latest`** | Roughly monthly, **in between** full releases | **Safer than dev** — a candidate that's been through the gates and is being soak-tested, but not yet blessed as final. | Operators who want fresher-than-monthly without riding `:dev`. |
+| **full release** | `vX.Y.Z` → versioned images + `:latest` + final GitHub Release | Roughly monthly | **Blessed/stable.** The default for production installs. | Everyone on `:latest`. |
+
+The intent going forward (announce this in the first full release that introduces it): **full releases land roughly monthly; between them we cut `-rc.N` pre-releases that are intended to be safer but more frequent. `:dev` remains bleeding edge and will contain bugs the maintainer intends to find in his own production first.** When you draft notes for the release that introduces this cadence, include a short "Release cadence going forward" callout stating exactly that.
 
 ## Step 1: Ask which workflow
 
@@ -99,8 +105,8 @@ git push origin main
 
 > "Pushed. CI will now:
 > 1. Run **unit tests** (fast ~2 min) — if they pass:
-> 2. Build and push `ghcr.io/mtg-thomas/bifrost-api:dev` and `ghcr.io/mtg-thomas/bifrost-client:dev`
-> 3. Also tag `ghcr.io/mtg-thomas/bifrost-api:<git-describe>` for traceability
+> 2. Build and push `ghcr.io/gobifrost/bifrost-api:dev` and `ghcr.io/gobifrost/bifrost-client:dev`
+> 3. Also tag `ghcr.io/gobifrost/bifrost-api:<git-describe>` for traceability
 >
 > E2E tests run in parallel but don't block the build.
 >
@@ -109,7 +115,64 @@ git push origin main
 > kubectl rollout restart deployment/bifrost-api deployment/bifrost-worker deployment/bifrost-scheduler deployment/bifrost-client -n bifrost
 > ```
 >
-> Watch CI: https://github.com/MTG-Thomas/bifrost/actions"
+> Watch CI: https://github.com/gobifrost/bifrost/actions"
+
+---
+
+## Pre-Release
+
+For a release candidate — a versioned, signed build the community can pin and test, that is
+explicitly **not** final. Same machinery as a full release EXCEPT the `-rc.N` suffix makes CI mark
+the GitHub Release as a pre-release and skip the `:latest` tag.
+
+### 1. Determine the version
+
+Ask: "What pre-release tag? Format `vX.Y.Z-rc.N` — e.g. `v0.9.3-rc.1`. Bump `N` for each candidate
+of the same target version (`-rc.1`, `-rc.2`, …)."
+
+- The tag MUST start with `v` and MUST contain a `-` (the `-` is what flips CI to pre-release).
+- `X.Y.Z` is the version you intend to finalize; `-rc.N` says "candidate N for that version."
+- Do NOT reuse an `-rc` number. Do NOT cut `vX.Y.Z` with no suffix here — that's the full-release path.
+
+### 2. Plugin manifest version guard
+
+The tag-build CI job has a hard guard: every plugin manifest `version` must equal the tag's version
+(WITH the `-rc.N` suffix). Run the bump locally first, land it via a PR, THEN tag:
+
+```bash
+TAG="vX.Y.Z-rc.N"; VERSION="${TAG#v}"
+scripts/update-plugin-version.sh "$VERSION"
+```
+
+Same guard and trade-off as a full release — forgetting it fails the build, it doesn't ship stale.
+
+### 3. Tag and push
+
+```bash
+git tag vX.Y.Z-rc.N
+git push origin vX.Y.Z-rc.N
+```
+
+### 4. What CI does
+
+> "Pushed the pre-release tag. CI will:
+> 1. Run the gate jobs on the tag ref.
+> 2. Build + push versioned images:
+>    - `ghcr.io/gobifrost/bifrost-api:X.Y.Z-rc.N` (and client)
+>    - **NOT** `:latest` — that stays on the last full release.
+> 3. Create a GitHub Release marked **pre-release** (CI detects the `-` in the tag).
+>
+> The `:dev` images are unaffected, and the dev baseline (`git describe`) does NOT move to an `-rc`
+> tag — dev versions keep counting from the last FULL release.
+>
+> Watch CI: https://github.com/gobifrost/bifrost/actions"
+
+### 5. Release notes (scaled rigor)
+
+Pre-releases still get human notes via `gh release edit <tag> --notes-file <file>` — a short
+"what's new to test / known issues" is enough. The full Contributors + Fixed-CVEs rigor below is for
+*final* releases. Do **not** draft a gobifrost.com blog post for a pre-release (that's a full-release
+step).
 
 ---
 
@@ -330,11 +393,11 @@ gh release edit <tag> --notes-file /tmp/release-notes-<tag>.md
 > "Tag `<tag>` pushed. CI will now:
 > 1. Run **unit tests + E2E tests** (both required for a release, ~12 min total)
 > 2. Build and push images:
->    - `ghcr.io/mtg-thomas/bifrost-api:<version>` (e.g., `2.1.0`)
->    - `ghcr.io/mtg-thomas/bifrost-api:2.1` and `ghcr.io/mtg-thomas/bifrost-api:2`
->    - `ghcr.io/mtg-thomas/bifrost-api:latest`
+>    - `ghcr.io/gobifrost/bifrost-api:<version>` (e.g., `2.1.0`)
+>    - `ghcr.io/gobifrost/bifrost-api:2.1` and `ghcr.io/gobifrost/bifrost-api:2`
+>    - `ghcr.io/gobifrost/bifrost-api:latest`
 >    - Same for `bifrost-client`
-> 3. Create a GitHub Release at https://github.com/MTG-Thomas/bifrost/releases
+> 3. Create a GitHub Release at https://github.com/gobifrost/bifrost/releases
 >
 > After CI completes, K8s pods on `:latest` or `:<version>` will need a rollout:
 > ```bash
@@ -343,7 +406,7 @@ gh release edit <tag> --notes-file /tmp/release-notes-<tag>.md
 >
 > CLI users on `:latest` will automatically get the new version next `pipx install`.
 >
-> Watch CI: https://github.com/MTG-Thomas/bifrost/actions"
+> Watch CI: https://github.com/gobifrost/bifrost/actions"
 
 ### 6. Offer to draft a blog post (gobifrost `/blog` skill)
 
@@ -376,8 +439,8 @@ Follow the skill's workflow exactly — it handles preflight, voice-matching aga
 ## K8s Quick Reference
 
 **Current image tags in use** (all in namespace `bifrost`):
-- `api`, `init container`, `worker`, `scheduler` → `ghcr.io/mtg-thomas/bifrost-api:dev`
-- `client` → `ghcr.io/mtg-thomas/bifrost-client:dev`
+- `api`, `init container`, `worker`, `scheduler` → `ghcr.io/gobifrost/bifrost-api:dev`
+- `client` → `ghcr.io/gobifrost/bifrost-client:dev`
 
 **Force rollout after a push:**
 ```bash

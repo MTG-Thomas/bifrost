@@ -375,7 +375,6 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 		// never subscribe — we gate on the model the first load resolved.
 		let unsub: (() => void) | null = null;
 		const initialLoad = loadBundle();
-		let disposed = false;
 		if (isPreview) {
 			void (async () => {
 				try {

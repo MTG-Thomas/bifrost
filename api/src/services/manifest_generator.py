@@ -174,9 +174,11 @@ def serialize_integration(
     mappings: list[IntegrationMapping] | None = None,
 ) -> ManifestIntegration:
     """Serialize an Integration ORM object to ManifestIntegration."""
-    valid_schema_items, _ = parse_config_schema_items(
-        config_schema,
-        integration_name=integ.name,
+    return ManifestIntegration.from_row(
+        integ,
+        config_schema=config_schema,
+        oauth_provider=oauth_provider,
+        mappings=mappings,
     )
     valid_by_key = {item.key: item for item in valid_schema_items}
     manifest = ManifestIntegration.from_row(

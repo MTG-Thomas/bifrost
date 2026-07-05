@@ -75,9 +75,10 @@ def _get_embed_payload(request: Request) -> dict | None:
     """
     token = None
     auth_header = request.headers.get("authorization", "")
-    token = None
     if auth_header.lower().startswith("bearer "):
-        token = auth_header[7:]
+        token = auth_header[7:]  # Strip "Bearer "
+    elif "access_token" in request.cookies:
+        token = request.cookies["access_token"]
     elif "embed_token" in request.cookies:
         token = request.cookies["embed_token"]
 

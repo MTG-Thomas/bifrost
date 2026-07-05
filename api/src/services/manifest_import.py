@@ -650,15 +650,6 @@ async def _resolve_role_names(
     return resolved
 
 
-def _manifest_access_level(access_level: str | None, roles: list[str] | None) -> str | None:
-    """Use role_based when a manifest declares roles but omits access_level."""
-    if access_level is not None:
-        return access_level
-    if roles:
-        return "role_based"
-    return None
-
-
 # =============================================================================
 # Manifest Resolver
 # =============================================================================
@@ -1508,11 +1499,12 @@ class ManifestResolver:
                 match_on="id",
             ))
 
-        # Role sync op. Explicit roles: [] is authoritative and clears existing
-        # junction rows, while an omitted roles field still means no role intent
-        # for hand-authored manifests.
-        roles_supplied = "roles" in getattr(mwf, "model_fields_set", set())
-        if mwf.roles or roles_supplied:
+        # Role sync op. Fire whenever the entry carries a `roles` key — INCLUDING an
+        # empty list — so emptying roles clears the bindings, matching install deploy
+        # (full role sync). git-sync always serializes `roles` (model default []), so
+        # a present-empty list reliably means "no roles" (B3). `is not None` guards a
+        # hypothetical roles-less model; SyncRoles({}) deletes all rows.
+        if getattr(mwf, "roles", None) is not None:
             role_ids = {UUID(r) for r in mwf.roles}
             ops.append(SyncRoles(
                 junction_model=WorkflowRole,
@@ -1751,14 +1743,6 @@ class ManifestResolver:
         entity_changes: list[EntityChange] = []
         now = datetime.now(timezone.utc)
 
-        def _explicit_ids(entity_type: str) -> list[UUID] | None:
-            if not removed_entity_ids:
-                return None
-            return [
-                UUID(entity_id)
-                for entity_id in removed_entity_ids.get(entity_type, set())
-            ]
-
         # Solution-managed rows (solution_id IS NOT NULL) have exactly one
         # writer: the deploy / git-connected-pull path. They are intentionally
         # excluded from the committed _repo/ manifest (manifest_generator skips
@@ -1789,9 +1773,7 @@ class ManifestResolver:
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
             q = _spare_solution_managed(model, q)
-            if explicit_ids is not None:
-                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
-            elif present:
+            if present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -1830,9 +1812,7 @@ class ManifestResolver:
             else:
                 q = select(model.id).where(*base_filter)  # type: ignore[attr-defined]
             q = _spare_solution_managed(model, q)
-            if explicit_ids is not None:
-                q = q.where(model.id.in_(explicit_ids))  # type: ignore[attr-defined]
-            elif present:
+            if present:
                 q = q.where(model.id.notin_(present))  # type: ignore[attr-defined]
             result = await self.db.execute(q)
             rows = result.all()
@@ -1935,7 +1915,6 @@ class ManifestResolver:
             [],
             present_file_policy_uuids,
             "file_policies",
-            _explicit_ids("file_policies"),
         )
 
         # Delete custom claims not in manifest.
@@ -1952,6 +1931,16 @@ class ManifestResolver:
             present_policy_rule_uuids,
             "policy_rules",
             _explicit_ids("policy_rules"),
+        )
+
+        # Delete non-builtin policy rules not in manifest.
+        from src.models.orm.policy_rule import PolicyRule as PolicyRuleOrm
+
+        await _bulk_delete(
+            PolicyRuleOrm,
+            [PolicyRuleOrm.is_builtin == False],  # noqa: E712
+            present_policy_rule_uuids,
+            "policy_rules",
         )
 
         # Delete event subscriptions not in manifest

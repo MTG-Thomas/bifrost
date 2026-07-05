@@ -286,11 +286,60 @@ export function Users() {
 		enabled: isPlatformAdmin,
 	});
 
+	const getOrgInfo = (
+		orgId: string | null | undefined,
+	): { name: string; isProvider: boolean } => {
+		if (!orgId) return { name: "Platform", isProvider: false };
+		const org = organizations?.find((o: Organization) => o.id === orgId);
+		return {
+			name: org?.name || orgId,
+			isProvider: org?.is_provider ?? false,
+		};
+	};
+
 	const filteredUsers = useSearch(users || [], searchTerm, ["email", "name"]);
 
 	const sortedUsers = useMemo(() => {
 		if (!filteredUsers) return [];
-		return [...filteredUsers].sort((a, b) => compareUsers(a, b, sortColumn, sortDirection));
+		return [...filteredUsers].sort((a, b) => {
+			const dir = sortDirection === "asc" ? 1 : -1;
+			switch (sortColumn) {
+				case "name":
+					return (
+						dir *
+						(a.name || a.email || "").localeCompare(
+							b.name || b.email || "",
+						)
+					);
+				case "email":
+					return dir * (a.email || "").localeCompare(b.email || "");
+				case "status": {
+					const aVal = a.invite_status ?? "active";
+					const bVal = b.invite_status ?? "active";
+					return dir * aVal.localeCompare(bVal);
+				}
+				case "created": {
+					const aDate = a.created_at
+						? new Date(a.created_at).getTime()
+						: 0;
+					const bDate = b.created_at
+						? new Date(b.created_at).getTime()
+						: 0;
+					return dir * (aDate - bDate);
+				}
+				case "last_login": {
+					const aDate = a.last_login
+						? new Date(a.last_login).getTime()
+						: 0;
+					const bDate = b.last_login
+						? new Date(b.last_login).getTime()
+						: 0;
+					return dir * (aDate - bDate);
+				}
+				default:
+					return 0;
+			}
+		});
 	}, [filteredUsers, sortColumn, sortDirection]);
 
 	const handleSort = (column: SortColumn) => {
@@ -541,7 +590,9 @@ export function Users() {
 						</DataTableHeader>
 						<DataTableBody>
 							{sortedUsers.map((user) => {
-								const orgInfo = getOrgInfo(organizations, user.organization_id);
+								const orgInfo = getOrgInfo(
+									user.organization_id,
+								);
 								return (
 									<DataTableRow
 										key={user.id}

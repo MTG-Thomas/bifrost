@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useState } from "react";
 import {
 	ChevronDown,
 	ChevronRight,
@@ -38,10 +38,6 @@ interface ShareTreeProps {
 		location: string,
 		prefix: string,
 	) => void;
-}
-
-function isTreeActivationKey(event: KeyboardEvent): boolean {
-	return event.key === "Enter" || event.key === " ";
 }
 
 interface FolderNodeProps {
@@ -96,7 +92,6 @@ function FolderNode({
 				<ContextMenuTrigger asChild>
 					<div
 						role="treeitem"
-						tabIndex={0}
 						aria-selected={selected}
 						className={
 							"flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-sm hover:bg-muted " +
@@ -104,12 +99,6 @@ function FolderNode({
 						}
 						style={{ paddingLeft: `${depth * 12 + 4}px` }}
 						onClick={() => {
-							onSelect(location, prefix);
-							setExpanded((value) => !value);
-						}}
-						onKeyDown={(event) => {
-							if (!isTreeActivationKey(event)) return;
-							event.preventDefault();
 							onSelect(location, prefix);
 							setExpanded((value) => !value);
 						}}
@@ -205,18 +194,12 @@ export function ShareTree({
 							<ContextMenuTrigger asChild>
 								<div
 									role="treeitem"
-									tabIndex={0}
 									aria-selected={selected}
 									className={
 										"flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-sm hover:bg-muted " +
 										(selected ? "bg-muted font-medium" : "")
 									}
 									onClick={() => onSelect(share.location, "")}
-									onKeyDown={(event) => {
-										if (!isTreeActivationKey(event)) return;
-										event.preventDefault();
-										onSelect(share.location, "");
-									}}
 								>
 									<HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 									<span className="truncate" title={share.location}>

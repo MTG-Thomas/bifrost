@@ -25,7 +25,6 @@ from .credentials import (
     get_credentials,
     get_ephemeral_credentials_source,
     is_token_expired,
-    load_allowed_dotenv,
     resolve_current_connection,
     save_credentials,
     save_ephemeral_credentials,

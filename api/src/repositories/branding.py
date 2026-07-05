@@ -85,12 +85,7 @@ class BrandingRepository:
             if primary_color is not None:
                 existing.primary_color = primary_color
             if terminology is not None:
-                merged_terminology = dict(existing.terminology or {})
-                for noun, terms in terminology.items():
-                    noun_terms = dict(merged_terminology.get(noun, {}))
-                    noun_terms.update(terms)
-                    merged_terminology[noun] = noun_terms
-                existing.terminology = merged_terminology
+                existing.terminology = terminology
             if application_name is not _UNSET:
                 existing.application_name = application_name
 
@@ -98,21 +93,22 @@ class BrandingRepository:
             await self.session.refresh(existing)
             logger.info("Global branding updated")
             return existing
-        # Create new
-        branding = GlobalBranding(
-            square_logo_data=square_logo_data,
-            square_logo_content_type=square_logo_content_type,
-            rectangle_logo_data=rectangle_logo_data,
-            rectangle_logo_content_type=rectangle_logo_content_type,
-            primary_color=primary_color,
-            terminology=terminology,
-            application_name=None if application_name is _UNSET else application_name,
-        )
-        self.session.add(branding)
-        await self.session.flush()
-        await self.session.refresh(branding)
-        logger.info("Global branding created")
-        return branding
+        else:
+            # Create new
+            branding = GlobalBranding(
+                square_logo_data=square_logo_data,
+                square_logo_content_type=square_logo_content_type,
+                rectangle_logo_data=rectangle_logo_data,
+                rectangle_logo_content_type=rectangle_logo_content_type,
+                primary_color=primary_color,
+                terminology=terminology,
+                application_name=None if application_name is _UNSET else application_name,
+            )
+            self.session.add(branding)
+            await self.session.flush()
+            await self.session.refresh(branding)
+            logger.info("Global branding created")
+            return branding
 
     async def delete_branding(self) -> bool:
         """

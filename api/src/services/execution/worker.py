@@ -163,9 +163,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     engine_token = context_data.get("engine_token")
     if engine_token:
         import os
-        scheme = "".join(chr(c) for c in (104, 116, 116, 112))
-        default_api_url = f"{scheme}://api:8000"
-        api_url = os.getenv("BIFROST_API_URL", default_api_url)
+        api_url = os.getenv("BIFROST_API_URL", "http://api:8000")
         expires_at = context_data.get("engine_token_expires_at", "")
         save_credentials(
             api_url=api_url,
@@ -194,26 +192,6 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             _exec_solution_id,
             global_repo_access=bool(context_data.get("solution_global_repo_access", False)),
         )
-
-    span_attributes = {
-        "bifrost.execution.id": execution_id,
-        "bifrost.workflow.name": str(context_data.get("name") or ""),
-        "bifrost.workflow.function": str(context_data.get("function_name") or ""),
-        "bifrost.execution.organization_id": str((context_data.get("organization") or {}).get("id") or ""),
-        "bifrost.worker.is_script": bool(context_data.get("code")),
-        "bifrost.worker.has_file_path": bool(context_data.get("file_path")),
-        "bifrost.worker.solution_id": str(context_data.get("solution_id") or ""),
-    }
-    queue_wait_ms = _queue_wait_ms(context_data.get("created_at"))
-    if queue_wait_ms is not None:
-        span_attributes["bifrost.queue.wait_ms"] = queue_wait_ms
-
-    span_context = tracer.start_as_current_span("bifrost.worker.execute", attributes=span_attributes)
-    span = span_context.__enter__()
-
-    def _finish(result: dict[str, Any]) -> dict[str, Any]:
-        _annotate_worker_span(span, result)
-        return result
 
     try:
         # Reconstruct Organization
@@ -403,6 +381,11 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
 
     finally:
         span_context.__exit__(*sys.exc_info())
+        # Always clear the solution import root — a forked worker is reused for
+        # later executions and must not inherit this one's root.
+        clear_solution_context()
+
+    finally:
         # Always clear the solution import root — a forked worker is reused for
         # later executions and must not inherit this one's root.
         clear_solution_context()

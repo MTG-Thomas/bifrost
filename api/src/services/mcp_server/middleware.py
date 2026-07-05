@@ -147,14 +147,20 @@ class ToolFilterMiddleware(Middleware):
                 async with get_db_context() as db:
                     service = MCPToolAccessService(db)
 
-                    if agent_id is not None:
-                        # Agent-scoped: only tools from this specific agent
-                        agent_result = await service.get_tools_for_agent(
-                            agent_id=agent_id,
-                            user_roles=user_roles,
-                            is_superuser=is_superuser,
-                            user_id=user_id,
-                            org_id=org_id,
+                if agent_id is not None:
+                    # Agent-scoped: only tools from this specific agent
+                    agent_result = await service.get_tools_for_agent(
+                        agent_id=agent_id,
+                        user_roles=user_roles,
+                        is_superuser=is_superuser,
+                        user_id=user_id,
+                        org_id=org_id,
+                        is_external=is_external,
+                    )
+                    if agent_result is None:
+                        logger.warning(
+                            f"MCP tools/list: Agent {agent_id} not found or access denied "
+                            f"for user {user_email}"
                         )
                         if agent_result is None:
                             logger.warning(

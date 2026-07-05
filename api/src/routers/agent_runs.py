@@ -53,6 +53,7 @@ from src.models.contracts.executions import AIUsagePublicSimple, AIUsageTotalsSi
 from src.models.orm.agent_run_verdict_history import AgentRunVerdictHistory
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.ai_usage import AIUsage
+from src.models.orm.agents import Agent
 from src.models.orm.solutions import Solution
 from src.models.orm.summary_backfill_job import SummaryBackfillJob
 from src.core.redis_client import get_redis_client
@@ -955,7 +956,7 @@ async def execute_agent_run(
         }
 
     # Inactive-solution gate: an agent belonging to an inactive solution must not
-    # execute.
+    # execute (mirrors the worker-side gate in get_workflow_for_execution).
     if agent.solution_id is not None:
         sol_result = await db.execute(
             select(Solution.status).where(Solution.id == agent.solution_id)

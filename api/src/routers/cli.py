@@ -744,15 +744,10 @@ async def sdk_integrations_get(
             mapping = await repo.get_integration_for_org(request.name, org_uuid)
 
         if mapping:
-            # Org-specific mapping found
-            is_external = await _is_external_user_db(current_user, db)
-            config_kwargs: dict[str, Any] = {"include_default_secrets": not is_external}
-            if is_external:
-                config_kwargs["external"] = True
+            # Org-specific mapping found. EXTERNAL callers (OPEN-E) drop the
+            # global tier on both the config merge and the OAuth-token cascade.
             config = await repo.get_config_for_mapping(
-                mapping.integration_id,
-                org_uuid,
-                **config_kwargs,
+                mapping.integration_id, org_uuid, external=current_user.is_external
             )
             integration = mapping.integration
             entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
@@ -786,8 +781,7 @@ async def sdk_integrations_get(
                 response_data["oauth"] = await _build_oauth_data(
                     integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
                     oauth_scope=request.oauth_scope,
-                    db=db,
-                    org_uuid=org_uuid,
+                    external=current_user.is_external,
                 )
 
             logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (org mapping) for user {current_user.email}")
@@ -796,30 +790,30 @@ async def sdk_integrations_get(
         # Fall back to integration defaults
         integration = await repo.get_integration_by_name(request.name)
         if not integration:
-            if request.solution:
-                from src.models.orm.solution_connection_schema import SolutionConnectionSchema
-
-                solution_id = UUID(request.solution)
-                declared = (
-                    await db.execute(
-                        select(SolutionConnectionSchema.id).where(
-                            SolutionConnectionSchema.solution_id == solution_id,
-                            SolutionConnectionSchema.integration_name == request.name,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if declared is not None:
-                    raise HTTPException(
-                        status_code=status.HTTP_424_FAILED_DEPENDENCY,
-                        detail=f"Solution declares integration '{request.name}', but no Integration exists for it.",
-                    )
+            # RequiredConnectionUnset: if the missing integration was DECLARED by
+            # the calling solution, escalate to a loud 424 (mirrors
+            # RequiredConfigUnset) instead of a silent None. Loose (non-solution
+            # or non-declared) calls keep the silent-None behavior.
+            if request.solution and await _connection_is_declared(
+                db, request.solution, request.name
+            ):
+                raise HTTPException(
+                    status_code=424,
+                    detail=(
+                        f"Required integration '{request.name}' is not set up. "
+                        f"Set it up in the Integrations settings, or in the "
+                        f"solution's Setup tab."
+                    ),
+                )
             logger.debug(f"SDK integrations.get('{log_safe(request.name)}'): integration not found")
             return None
 
         entity_id = integration.default_entity_id or integration.entity_id
+        # Integration DEFAULTS are the global (org_id=NULL) tier — an EXTERNAL
+        # caller (OPEN-E) reading them would receive decrypted global secrets,
+        # so external=True returns no defaults at all.
         config = await repo.get_integration_defaults(
-            integration.id,
-            external=await _is_external_user_db(current_user, db),
+            integration.id, external=current_user.is_external
         )
 
         secret_keys = [s.key for s in integration.config_schema if s.type == "secret"]
@@ -832,8 +826,12 @@ async def sdk_integrations_get(
             "config_secret_keys": secret_keys,
         }
 
-        # Build OAuth data if provider exists
-        if integration.oauth_provider and not await _is_external_user_db(current_user, db):
+        # Build OAuth data if provider exists. This is the DEFAULTS path: the
+        # only provider here is the INTEGRATION-LEVEL (global) one, and
+        # _build_oauth_data decrypts its client_secret. An EXTERNAL caller
+        # (OPEN-E) must get NO OAuth block at all — there is no org-tier
+        # provider on this branch to fall back to.
+        if integration.oauth_provider and not current_user.is_external:
             # Cascade: prefer org-scoped token, fall back to global.
             # See api/src/repositories/README.md for the pattern.
             oauth_token_repo = OAuthTokenRepository(
@@ -868,8 +866,6 @@ async def _build_oauth_data(
     decrypt_secret: Any,
     oauth_scope: str | None = None,
     external: bool = False,
-    db: Any | None = None,
-    org_uuid: UUID | None = None,
 ) -> SDKIntegrationsOAuthData:
     """Build OAuth data dict from provider and token for CLI response.
 
@@ -880,11 +876,15 @@ async def _build_oauth_data(
         resolve_url_template: Function to resolve {entity_id} in URLs
         decrypt_secret: Function to decrypt encrypted values
         oauth_scope: Override scope for token request (triggers fresh token fetch)
-        external: If true, do not decrypt or return global OAuth client secrets
-        db: Optional DB session for persisting successful auto-refresh recovery
-        org_uuid: Organization scope for token persistence during auto-refresh
+        external: When True (EXT-1 OPEN-E), an EXTERNAL portal caller — the
+            provider's ``client_secret`` is a GLOBAL third-party credential, so
+            it is never decrypted/returned and the client-credentials
+            auto-refresh (which needs it) is suppressed. Only a stored,
+            org-bound ``access_token`` (already scoped by the caller's repo)
+            is returned. Engine/sentinel/normal callers leave this False.
     """
-    # Decrypt client secret for runtime SDK data and server-side token refresh.
+    # Decrypt client secret (needed for both stored tokens and auto-refresh).
+    # An external never receives it (global third-party credential — OPEN-E).
     client_secret = None
     if provider.encrypted_client_secret and not external:
         try:
@@ -1047,12 +1047,12 @@ async def sdk_integrations_list_mappings(
         is_external = await _is_external_user_db(current_user, db)
         items = []
         for mapping in mappings:
-            # Get merged config (integration defaults + org overrides)
+            # Get merged config (integration defaults + org overrides).
+            # External callers drop the global tier (NEW-G).
             config = await repo.get_config_for_mapping(
                 integration.id,
                 mapping.organization_id,
-                include_default_secrets=False,
-                external=is_external,
+                external=current_user.is_external,
             )
             items.append({
                 "id": str(mapping.id),
@@ -1110,13 +1110,12 @@ async def sdk_integrations_get_mapping(
         if not mapping:
             return None
 
-        # Get merged config for the mapping
-        is_external = await _is_external_user_db(current_user, db)
+        # Get merged config for the mapping. External callers drop the global
+        # tier (NEW-G).
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=False,
-            external=is_external,
+            external=current_user.is_external,
         )
 
         logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
@@ -1233,11 +1232,12 @@ async def sdk_integrations_upsert_mapping(
 
         await db.commit()
 
-        # Get merged config for response
+        # Get merged config for the post-write echo. External callers drop the
+        # global tier (NEW-G).
         config = await repo.get_config_for_mapping(
             integration.id,
             mapping.organization_id,
-            include_default_secrets=not await _is_external_user_db(current_user, db),
+            external=current_user.is_external,
         )
 
         return SDKIntegrationsMappingItem(
@@ -2787,7 +2787,13 @@ async def download_cli() -> Response:
                     continue
                 if file_path.name in exclude_files:
                     continue
-                if file_path.suffix not in (".py", ".toml", ".json"):
+                # Ship .py + .toml, PLUS the data files the CLI reads at runtime.
+                # lucide_icon_names.json is the snapshot `bifrost migrate-imports`
+                # uses to classify lucide icons; excluding it ships a CLI that
+                # silently leaves icon imports in "bifrost" and breaks a v1→v2
+                # app migration (battle-test 2026-06-13).
+                _data_files = {"lucide_icon_names.json"}
+                if file_path.suffix not in (".py", ".toml") and file_path.name not in _data_files:
                     continue
                 if file_path.name == "pyproject.toml":
                     continue  # Already added above

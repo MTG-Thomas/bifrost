@@ -10,8 +10,7 @@ across multiple Bifrost instances simultaneously, with three backends:
 - JsonBackend: ~/.bifrost/credentials.json as a dict-of-URLs
 - User config: ~/.bifrost/config.json stores the default connection pointer
 
-Resolution order: env vars → CWD .env → selected default → only stored
-connection → optional prompt → legacy single-record JSON.
+Resolution order: env vars → selected default → only stored connection → optional prompt.
 """
 
 import json
@@ -70,34 +69,6 @@ def get_config_dir() -> Path:
 
 def get_credentials_path() -> Path:
     return get_config_dir() / "credentials.json"
-
-
-def load_allowed_dotenv(
-    dotenv_path: str | os.PathLike[str] | None = None, *, override: bool = True
-) -> None:
-    """Load the explicit ``.env`` allowlist used by the CLI.
-
-    The CLI supports opt-in project-local ``BIFROST_API_URL`` discovery, but it
-    must not import credentials, proxy settings, CA bundle paths, or other
-    security-sensitive process environment from an attacker-controlled CWD.
-    """
-    try:
-        from dotenv import dotenv_values, find_dotenv
-    except ImportError:
-        return
-
-    if dotenv_path is None and os.environ.get("BIFROST_LOAD_CWD_ENV") != "1":
-        return
-
-    path = str(dotenv_path) if dotenv_path is not None else find_dotenv(usecwd=True)
-    if not path:
-        return
-
-    for key, value in dotenv_values(path).items():
-        if key not in _DOTENV_ALLOWED_KEYS or value is None:
-            continue
-        if override or key not in os.environ:
-            os.environ[key] = value
 
 
 def get_config_path() -> Path:
@@ -428,117 +399,9 @@ def prompt_for_default_connection(urls: list[str]) -> str | None:
 # Public functions
 # --------------------------------------------------------------------------- #
 
-def _read_cwd_dotenv_values() -> dict[str, str | None]:
-    try:
-        from dotenv import dotenv_values
-    except ImportError:
-        return {}
-    path = Path.cwd() / ".env"
-    if not path.exists():
-        return {}
-    return dotenv_values(path) or {}
-
-
-def _resolve_url_from_cwd_dotenv() -> str | None:
-    url = (_read_cwd_dotenv_values().get("BIFROST_API_URL") or "").rstrip("/")
-    return url or None
-
-
-def _get_cwd_dotenv_credentials(api_url: str) -> Credentials | None:
-    values = _read_cwd_dotenv_values()
-    env_url = (values.get("BIFROST_API_URL") or "").rstrip("/")
-    if not env_url or env_url != api_url.rstrip("/"):
-        return None
-    access = values.get("BIFROST_ACCESS_TOKEN") or ""
-    refresh = values.get("BIFROST_REFRESH_TOKEN") or ""
-    if not access or not refresh:
-        return None
-    return Credentials(
-        api_url=env_url,
-        access_token=access,
-        refresh_token=refresh,
-        expires_at="2099-01-01T00:00:00+00:00",
-    )
-
-
-def credentials_are_ephemeral(api_url: str) -> bool:
-    """Return True when credentials for api_url come from env vars or CWD .env only."""
-    return get_ephemeral_credentials_source(api_url) is not None
-
-
-def get_ephemeral_credentials_source(
-    api_url: str,
-) -> Literal["env", "cwd_dotenv"] | None:
-    """Return the active ephemeral credential source for api_url, if any."""
-    url = api_url.rstrip("/")
-    if EnvBackend().get(url) is not None:
-        return "env"
-    if _get_cwd_dotenv_credentials(url) is not None:
-        return "cwd_dotenv"
-    return None
-
-
-def _replace_dotenv_line(lines: list[str], key: str, value: str) -> bool:
-    prefixes = (f"{key}=", f"export {key}=")
-    for i, line in enumerate(lines):
-        if line.lstrip().startswith(prefixes):
-            lines[i] = f"{key}={value}\n"
-            return True
-    return False
-
-
-def _append_dotenv_line(lines: list[str], key: str, value: str) -> None:
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] = lines[-1] + "\n"
-    lines.append(f"{key}={value}\n")
-
-
-def _upsert_cwd_dotenv_token_vars(updates: dict[str, str]) -> None:
-    """Write or update BIFROST_* token lines in CWD's .env."""
-    env_path = Path.cwd() / ".env"
-    if env_path.exists():
-        try:
-            lines = env_path.read_text().splitlines(keepends=True)
-        except OSError:
-            return
-    else:
-        lines = []
-
-    for key, value in updates.items():
-        if not _replace_dotenv_line(lines, key, value):
-            _append_dotenv_line(lines, key, value)
-
-    try:
-        env_path.write_text("".join(lines))
-    except OSError:
-        # Best effort: process env was already updated, so callers can continue.
-        return
-
-
-def save_ephemeral_credentials(
-    api_url: str,
-    access_token: str,
-    refresh_token: str,
-    source: Literal["env", "cwd_dotenv"] = "env",
-    **_unused: object,
-) -> None:
-    """Persist rotated tokens for env-var or CWD .env ephemeral sessions."""
-    os.environ["BIFROST_ACCESS_TOKEN"] = access_token
-    os.environ["BIFROST_REFRESH_TOKEN"] = refresh_token
-
-    if source == "cwd_dotenv":
-        _upsert_cwd_dotenv_token_vars(
-            {
-                "BIFROST_ACCESS_TOKEN": access_token,
-                "BIFROST_REFRESH_TOKEN": refresh_token,
-            }
-        )
-
-
 def resolve_current_connection(
     api_url: str | None = None,
     *,
-    include_cwd_dotenv: bool = True,
     prompt_for_default: bool = False,
 ) -> tuple[str | None, str | None]:
     """
@@ -547,20 +410,16 @@ def resolve_current_connection(
     Order:
       1. The argument (if given).
       2. BIFROST_API_URL env var.
-      3. BIFROST_API_URL in CWD .env when enabled.
-      4. The user-selected default connection.
-      5. The only stored URL, when exactly one exists.
-      6. Optional interactive selection when multiple URLs exist.
+      3. The user-selected default connection.
+      4. The only stored URL, when exactly one exists.
+      5. Optional interactive selection when multiple URLs exist.
     """
     if api_url:
         return api_url.rstrip("/"), "argument"
     env_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
     if env_url:
         return env_url, "BIFROST_API_URL"
-    if include_cwd_dotenv:
-        cwd_url = _resolve_url_from_cwd_dotenv()
-        if cwd_url:
-            return cwd_url, "cwd .env"
+
     urls = get_persistent_backend().list_urls()
     default_url = get_default_connection()
     if default_url and default_url in {url.rstrip("/") for url in urls}:
@@ -576,16 +435,9 @@ def resolve_current_connection(
     return None, None
 
 
-def _resolve_url(
-    api_url: str | None,
-    *,
-    include_cwd_dotenv: bool = False,
-) -> str | None:
+def _resolve_url(api_url: str | None) -> str | None:
     """Backward-compatible URL-only wrapper for non-interactive resolution."""
-    resolved, _source = resolve_current_connection(
-        api_url,
-        include_cwd_dotenv=include_cwd_dotenv,
-    )
+    resolved, _source = resolve_current_connection(api_url)
     return resolved
 
 

@@ -8,10 +8,12 @@ Python full-replace writer from deleting it.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID
 
 from src.config import Settings, get_settings
+from src.services.repo_storage import _get_shared_session
 
 SOURCE_ARTIFACTS_ROOT = "_solution_artifacts"
 SOURCE_ARTIFACT_NAME = "source.zip"
@@ -24,21 +26,19 @@ class SolutionSourceArtifactStorage:
         self.solution_id = str(solution_id)
         self.prefix = f"{SOURCE_ARTIFACTS_ROOT}/{self.solution_id}/"
         self._settings = settings or get_settings()
-        if self._settings.object_storage_provider == "azure_blob":
-            from src.services.file_storage.azure_blob_client import (
-                AzureBlobStorageClient,
-            )
+        self._bucket: str = self._settings.s3_bucket or ""
 
-            self._storage = AzureBlobStorageClient(self._settings)
-            self._bucket = self._settings.azure_blob_container or ""
-        else:
-            from src.services.file_storage.s3_client import S3StorageClient
-
-            self._storage = S3StorageClient(self._settings)
-            self._bucket = self._settings.s3_bucket or ""
-
-    def _get_client(self):
-        return self._storage.get_client()
+    @asynccontextmanager
+    async def _get_client(self):
+        session = _get_shared_session()
+        async with session.create_client(
+            "s3",
+            endpoint_url=self._settings.s3_endpoint_url,
+            aws_access_key_id=self._settings.s3_access_key,
+            aws_secret_access_key=self._settings.s3_secret_key,
+            region_name=self._settings.s3_region,
+        ) as client:
+            yield client
 
     def _key(self) -> str:
         return f"{self.prefix}{SOURCE_ARTIFACT_NAME}"
@@ -46,6 +46,11 @@ class SolutionSourceArtifactStorage:
     async def write(self, data: bytes) -> None:
         async with self._get_client() as client:
             await client.put_object(Bucket=self._bucket, Key=self._key(), Body=data)
+
+    async def write_from_path(self, path: Path) -> None:
+        async with self._get_client() as client:
+            with path.open("rb") as f:
+                await client.put_object(Bucket=self._bucket, Key=self._key(), Body=f)
 
     async def read(self) -> bytes | None:
         async with self._get_client() as client:
@@ -59,13 +64,23 @@ class SolutionSourceArtifactStorage:
                     return None
                 raise
 
-    async def copy_to_path(self, path: str | Path) -> bool:
-        """Copy the stored source artifact to ``path`` when it exists."""
-        data = await self.read()
-        if data is None:
-            return False
-        Path(path).write_bytes(data)
-        return True
+    async def copy_to_path(self, path: Path) -> bool:
+        async with self._get_client() as client:
+            try:
+                response = await client.get_object(Bucket=self._bucket, Key=self._key())
+            except client.exceptions.NoSuchKey:
+                return False
+            except Exception as exc:  # noqa: BLE001 - aiobotocore backends vary
+                if "NoSuchKey" in str(type(exc).__name__) or "404" in str(exc):
+                    return False
+                raise
+
+            body = response["Body"]
+            async with body:
+                with path.open("wb") as f:
+                    while chunk := await body.read(8 * 1024 * 1024):
+                        f.write(chunk)
+            return True
 
     async def delete(self) -> None:
         async with self._get_client() as client:

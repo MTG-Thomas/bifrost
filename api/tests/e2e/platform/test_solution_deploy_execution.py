@@ -35,22 +35,14 @@ def _create_solution(
     return resp.json()["id"]
 
 
-def _deploy(
-    e2e_client,
-    headers,
-    solution_id: str,
-    *,
-    python_files: dict,
-    workflows: list,
-    apps: list | None = None,
-) -> dict:
+def _deploy(e2e_client, headers, solution_id: str, *, python_files: dict, workflows: list) -> dict:
     from tests.e2e.platform.conftest import deploy_solution
 
     resp = deploy_solution(
         e2e_client,
         solution_id,
         headers,
-        {"python_files": python_files, "workflows": workflows, "apps": apps or []},
+        {"python_files": python_files, "workflows": workflows},
     )
     assert resp.status_code in (200, 201), f"deploy failed: {resp.status_code} {resp.text}"
     return resp.json()

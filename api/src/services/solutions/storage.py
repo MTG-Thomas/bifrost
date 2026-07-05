@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from contextlib import asynccontextmanager
 from uuid import UUID
 
 from src.config import Settings, get_settings
+from src.services.repo_storage import _get_shared_session
 
 logger = logging.getLogger(__name__)
 
@@ -33,21 +35,19 @@ class SolutionStorage:
         self.solution_id = str(solution_id)
         self.prefix = f"{SOLUTIONS_ROOT}/{self.solution_id}/"
         self._settings = settings or get_settings()
-        if self._settings.object_storage_provider == "azure_blob":
-            from src.services.file_storage.azure_blob_client import (
-                AzureBlobStorageClient,
-            )
+        self._bucket: str = self._settings.s3_bucket or ""
 
-            self._storage = AzureBlobStorageClient(self._settings)
-            self._bucket = self._settings.azure_blob_container or ""
-        else:
-            from src.services.file_storage.s3_client import S3StorageClient
-
-            self._storage = S3StorageClient(self._settings)
-            self._bucket = self._settings.s3_bucket or ""
-
-    def _get_client(self):
-        return self._storage.get_client()
+    @asynccontextmanager
+    async def _get_client(self):
+        session = _get_shared_session()
+        async with session.create_client(
+            "s3",
+            endpoint_url=self._settings.s3_endpoint_url,
+            aws_access_key_id=self._settings.s3_access_key,
+            aws_secret_access_key=self._settings.s3_secret_key,
+            region_name=self._settings.s3_region,
+        ) as client:
+            yield client
 
     def _key(self, path: str) -> str:
         """Convert a relative path to an S3 key under this install's prefix."""

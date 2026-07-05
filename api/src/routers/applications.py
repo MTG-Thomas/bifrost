@@ -40,7 +40,7 @@ from src.models.contracts.applications import (
     ApplicationUpdate,
 )
 from src.models.orm.applications import Application
-from src.models.orm.file_index import FileIndex
+from src.services.solutions.guard import assert_entity_id_not_solution_managed
 from src.core.exceptions import AccessDeniedError
 from src.services.solutions.guard import assert_entity_id_not_solution_managed
 from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
@@ -190,6 +190,9 @@ async def get_application_or_404(
             if not app:
                 raise AccessDeniedError(f"Application '{slug}' not found")
             return app
+        # include_solution_managed: a deployed (solution-managed) app MUST be
+        # openable by its slug for regular users (criterion 16) — the deployed
+        # entities are visible/usable even though the Solution itself is not.
         return await repo.can_access(slug=slug, include_solution_managed=True)
     except AccessDeniedError:
         raise HTTPException(
@@ -285,7 +288,7 @@ async def create_application(
         target_org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
 
     try:
@@ -332,7 +335,7 @@ async def list_applications(
         filter_org,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
 
     # Superusers use list_all_in_scope (respects filter_type, no role checks)
@@ -367,7 +370,7 @@ async def get_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
     application = await get_application_or_404(ctx, slug)
     return await application_to_public(application, repo)
@@ -385,20 +388,13 @@ async def update_application(
     user: CurrentUser,
 ) -> ApplicationPublic:
     """Update application metadata and access control by ID."""
-    sensitive_fields = {"slug", "scope", "access_level", "role_ids"}
-    requested_sensitive_fields = sensitive_fields & data.model_fields_set
-    if requested_sensitive_fields and not user.is_platform_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only platform admins can update application control-plane fields",
-        )
-
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
 
     try:
@@ -454,7 +450,7 @@ async def delete_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
     success = await repo.delete_application(app_id)
 
@@ -490,7 +486,7 @@ async def get_draft(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
     app = await get_application_by_id_or_404(ctx, app_id)
     export_data = await repo.export_application(app)
@@ -523,7 +519,7 @@ async def save_draft(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
     app = await get_application_by_id_or_404(ctx, app_id)
 
@@ -567,7 +563,7 @@ async def publish_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
 
     try:
@@ -617,18 +613,14 @@ async def replace_application_endpoint(
     Validates that the new path is unique, non-nested with other apps, and has
     source files under it. ``force: true`` bypasses all three checks.
     """
-    if not user.is_platform_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only platform admins can repoint app source roots",
-        )
-
+    # Repointing a solution-managed app's source is a deploy-owned action.
+    await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     repo = ApplicationRepository(
         ctx.db,
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
 
     try:
@@ -668,12 +660,6 @@ async def swap_application_slugs(
     slug advisory lock for both slugs, so it can't race a same-slug deploy or
     leave the live slug momentarily unowned.
     """
-    if not user.is_platform_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only platform admins can swap application slugs",
-        )
-
     # Slug is a deploy-owned property for solution-managed apps — refuse both.
     await assert_entity_id_not_solution_managed(ctx.db, Application, data.app_a)
     await assert_entity_id_not_solution_managed(ctx.db, Application, data.app_b)
@@ -682,7 +668,7 @@ async def swap_application_slugs(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
     try:
         app_a, app_b = await repo.swap_slugs(data.app_a, data.app_b)
@@ -912,7 +898,7 @@ async def export_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
     application = await get_application_by_id_or_404(ctx, app_id)
     export_data = await repo.export_application(application, version_id)
@@ -949,7 +935,7 @@ async def rollback_application(
         ctx.org_id,
         user_id=user.user_id,
         is_superuser=user.is_platform_admin,
-        is_external=getattr(user, "is_external", False),
+        is_external=user.is_external,
     )
     application = await get_application_by_id_or_404(ctx, app_id)
     await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)

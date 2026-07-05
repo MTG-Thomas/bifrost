@@ -587,24 +587,10 @@ async def get_bundle_manifest(
     # iframe — the iframe never updated the address bar, breaking deep-links /
     # refresh; Codex P1-b/G7). The client reads these instead of scraping
     # index.html.
-    app_model = getattr(app, "app_model", "inline_v1")
-    if app_model == "standalone_v2":
-        from html.parser import HTMLParser
+    if app.app_model == "standalone_v2":
+        import re as _re
 
         from src.services.solutions.app_build import SolutionAppBuilder
-
-        class _IndexAssetParser(HTMLParser):
-            def __init__(self) -> None:
-                super().__init__()
-                self.entry: str | None = None
-                self.css: str | None = None
-
-            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-                attr_map = dict(attrs)
-                if tag == "script" and attr_map.get("type") == "module" and attr_map.get("src"):
-                    self.entry = attr_map["src"]
-                if tag == "link" and attr_map.get("rel") == "stylesheet" and attr_map.get("href"):
-                    self.css = attr_map["href"]
 
         # The entry chunk + CSS are whatever index.html references — Vite may emit
         # several .js chunks (vendor splits), so the <script type=module src> and
@@ -614,12 +600,10 @@ async def get_bundle_manifest(
         css: str | None = None
         try:
             html = (await SolutionAppBuilder().read_dist(app_id_str, "index.html")).decode()
-            parser = _IndexAssetParser()
-            parser.feed(html)
-            if parser.entry:
-                entry = parser.entry.split("/dist/")[-1].lstrip("/")
-            if parser.css:
-                css = parser.css.split("/dist/")[-1].lstrip("/")
+            if m := _re.search(r'<script[^>]+type="module"[^>]+src="([^"]+)"', html):
+                entry = m.group(1).split("/dist/")[-1].lstrip("/")
+            if m := _re.search(r'<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"', html):
+                css = m.group(1).split("/dist/")[-1].lstrip("/")
         except Exception:  # noqa: BLE001 - missing/unbuilt dist → entry stays None, shell shows a clear error
             pass
         return {
@@ -706,7 +690,7 @@ async def get_bundle_manifest(
                             "dependencies": m.get("dependencies") or (app.dependencies or {}),
                             "migrated": False,
                             "organization_id": str(app.organization_id) if app.organization_id else None,
-                            "app_model": app_model,
+                            "app_model": app.app_model,
                         }
                 except FileNotFoundError:
                     continue
@@ -739,7 +723,7 @@ async def get_bundle_manifest(
             # so the developer knows to pull.
             "migrated": migrated,
             "organization_id": str(app.organization_id) if app.organization_id else None,
-            "app_model": app_model,
+            "app_model": app.app_model,
         }
 
     assert manifest_bytes is not None
@@ -756,7 +740,7 @@ async def get_bundle_manifest(
         # always run as their org. Global apps return null and fall back to
         # caller's-org behavior.
         "organization_id": str(app.organization_id) if app.organization_id else None,
-        "app_model": app_model,
+        "app_model": app.app_model,
     }
 
 

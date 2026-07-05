@@ -23,9 +23,9 @@ def test_vendoring_importable_from_bifrost_package() -> None:
 def test_manifest_importable_without_src() -> None:
     """``bifrost.manifest`` must import with no ``src`` on the path.
 
-    Solution and manifest flows import ``bifrost.manifest`` when a bundle
-    carries ``.bifrost/*.yaml`` files. A top-level ``from src.models.contracts.claims
-    import ClaimQuery`` crashed the installed CLI (ModuleNotFoundError:
+    ``bifrost export`` imports ``bifrost.manifest`` the moment a bundle carries
+    ``.bifrost/*.yaml`` files. A top-level ``from src.models.contracts.claims
+    import ClaimQuery`` crashed export in the installed CLI (ModuleNotFoundError:
     'src'); the in-repo unit tests missed it because ``src`` resolves here. This
     asserts the module has no MODULE-LEVEL ``src.*`` import (the kind that fires
     at import time), by AST — so it catches the regression even though ``src``

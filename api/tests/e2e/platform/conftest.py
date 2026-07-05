@@ -54,7 +54,7 @@ class _DeployResult:
         return self._payload
 
 
-def wait_for_deploy(e2e_client, post_resp, headers, *, timeout_s: float = 600.0):
+def wait_for_deploy(e2e_client, post_resp, headers, *, timeout_s: float = 30.0):
     """Given a deploy POST response, return a terminal-state shim.
 
     A synchronous error (non-202 — git-connected, pending-capture block,
@@ -137,7 +137,9 @@ def deploy_solution(e2e_client, solution_id, headers, body):
 
     Drop-in for ``e2e_client.post(f"/api/solutions/{id}/deploy", ...)`` that
     returns a terminal-state shim (see :func:`wait_for_deploy`)."""
-    resp = e2e_client.post(f"/api/solutions/{solution_id}/deploy", headers=headers, json=body)
+    resp = e2e_client.post(
+        f"/api/solutions/{solution_id}/deploy", headers=headers, json=body
+    )
     return wait_for_deploy(e2e_client, resp, headers)
 
 
@@ -228,18 +230,14 @@ def make_solution_with_required_config(e2e_client, platform_admin, db_session):
     from src.models.orm.config import Config
     from src.models.orm.solution_config_schema import SolutionConfigSchema
 
-    async def _make(key: str = "api_key", required: bool = True, set_value: bool = False) -> dict[str, Any]:
+    async def _make(
+        key: str = "api_key", required: bool = True, set_value: bool = False
+    ) -> dict[str, Any]:
         headers = platform_admin.headers
         slug = f"setup-status-{uuid.uuid4().hex[:8]}"
-        r = e2e_client.post(
-            "/api/solutions",
-            headers=headers,
-            json={
-                "slug": slug,
-                "name": slug.upper(),
-                "scope": "org",
-            },
-        )
+        r = e2e_client.post("/api/solutions", headers=headers, json={
+            "slug": slug, "name": slug.upper(), "scope": "org",
+        })
         assert r.status_code in (200, 201), r.text
         sol = r.json()
         sol_id = uuid.UUID(sol["id"])
@@ -255,14 +253,12 @@ def make_solution_with_required_config(e2e_client, platform_admin, db_session):
         )
         db_session.add(decl)
         if set_value:
-            db_session.add(
-                Config(
-                    key=key,
-                    value="a-value",
-                    organization_id=org_id,
-                    updated_by="setup-status-test",
-                )
-            )
+            db_session.add(Config(
+                key=key,
+                value="a-value",
+                organization_id=org_id,
+                updated_by="setup-status-test",
+            ))
         await db_session.commit()
 
         return sol
@@ -281,15 +277,9 @@ def make_solution_without_configs(e2e_client, platform_admin):
     async def _make() -> dict[str, Any]:
         headers = platform_admin.headers
         slug = f"setup-empty-{uuid.uuid4().hex[:8]}"
-        r = e2e_client.post(
-            "/api/solutions",
-            headers=headers,
-            json={
-                "slug": slug,
-                "name": slug.upper(),
-                "scope": "org",
-            },
-        )
+        r = e2e_client.post("/api/solutions", headers=headers, json={
+            "slug": slug, "name": slug.upper(), "scope": "org",
+        })
         assert r.status_code in (200, 201), r.text
         return r.json()
 

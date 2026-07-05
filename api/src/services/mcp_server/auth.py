@@ -451,8 +451,6 @@ class BifrostAuthProvider:
                     "is_external": await resolve_external_claim(db, user),
                     "is_provider_org": await resolve_provider_org_claim(db, user),
                     "org_id": str(user.organization_id) if user.organization_id else None,
-                    "mcp": True,
-                    "scope": "mcp:access",
                     "type": "access",
                 }
                 access_token = create_access_token(data=token_data)
@@ -508,8 +506,6 @@ class BifrostAuthProvider:
                     "is_external": await resolve_external_claim(db, user),
                     "is_provider_org": await resolve_provider_org_claim(db, user),
                     "org_id": str(user.organization_id) if user.organization_id else None,
-                    "mcp": True,
-                    "scope": "mcp:access",
                     "type": "access",
                 }
                 access_token = create_access_token(data=token_data)

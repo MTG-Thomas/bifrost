@@ -22253,16 +22253,6 @@ export interface components {
              * @description UUID of the owning Solution install (null if not solution-managed)
              */
             solution_id?: string | null;
-            /**
-             * Orphaned At
-             * @description When this table was orphaned by a Solution uninstall (null if not orphaned)
-             */
-            orphaned_at?: string | null;
-            /**
-             * Origin Solution Slug
-             * @description Slug of the Solution this table was orphaned from (null if not orphaned)
-             */
-            origin_solution_slug?: string | null;
         };
         /**
          * TableUpdate

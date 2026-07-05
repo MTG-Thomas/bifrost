@@ -61,7 +61,7 @@ async def _load_agent_with_access(
     org/global agents may be visible to regular users, but they are not
     user-owned mutable resources.
     """
-    is_admin = _is_tuning_admin(user)
+    is_admin = user.has_platform_admin_grant()
 
     agent = (
         await db.execute(select(Agent).where(Agent.id == agent_id))

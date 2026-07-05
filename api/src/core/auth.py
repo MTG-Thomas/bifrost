@@ -376,8 +376,6 @@ async def get_execution_context(
         db=db,
         # Set by the v2 SDK provider for Solution apps; harmless/None otherwise.
         app_id=app_id_header,
-        # Appended by the SDK (?solution=) when a solution workflow is executing;
-        # None otherwise. Lets a workflow resolve its own install's table by name.
         solution_id=effective_solution_id,
     )
 

@@ -3,12 +3,9 @@
 **Open-source automation platform for Integration Services** - Built to democratize best-in-class tooling before venture capital gets the chance to own something we're all incredibly passionate about.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![CI](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/MTG-Thomas/bifrost/graph/badge.svg)](https://codecov.io/gh/MTG-Thomas/bifrost)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/quality_gate?project=MTG-Thomas_bifrost)](https://sonarcloud.io/summary/new_code?id=MTG-Thomas_bifrost)
-[![CodeQL](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/MTG-Thomas/bifrost/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/MTG-Thomas/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/MTG-Thomas/bifrost)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13022/badge)](https://www.bestpractices.dev/en/projects/13022)
+[![CodeQL](https://github.com/gobifrost/bifrost/actions/workflows/codeql.yml/badge.svg)](https://github.com/gobifrost/bifrost/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/gobifrost/bifrost/badge)](https://securityscorecards.dev/viewer/?uri=github.com/gobifrost/bifrost)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12665/badge)](https://www.bestpractices.dev/projects/12665)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](https://www.docker.com/)
@@ -257,17 +254,17 @@ Bifrost release artifacts are signed with [Sigstore](https://www.sigstore.dev/) 
 **Verify a Docker image:**
 
 ```bash
-cosign verify ghcr.io/mtg-thomas/bifrost-api:TAG \
-  --certificate-identity-regexp "https://github.com/MTG-Thomas/bifrost/.*" \
+cosign verify ghcr.io/gobifrost/bifrost-api:TAG \
+  --certificate-identity-regexp "https://github.com/gobifrost/bifrost/.*" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-(Same form for `ghcr.io/mtg-thomas/bifrost-client`.)
+(Same form for `ghcr.io/gobifrost/bifrost-client`.)
 
 **Inspect SLSA build provenance:**
 
 ```bash
-gh attestation verify ghcr.io/mtg-thomas/bifrost-api:TAG --owner MTG-Thomas
+gh attestation verify ghcr.io/gobifrost/bifrost-api:TAG --owner gobifrost
 ```
 
 **Verify a source tarball** (attached to GitHub Releases):
@@ -275,7 +272,7 @@ gh attestation verify ghcr.io/mtg-thomas/bifrost-api:TAG --owner MTG-Thomas
 ```bash
 cosign verify-blob \
   --bundle bifrost-VERSION-source.tar.gz.sigstore \
-  --certificate-identity-regexp "https://github.com/MTG-Thomas/bifrost/.*" \
+  --certificate-identity-regexp "https://github.com/gobifrost/bifrost/.*" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   bifrost-VERSION-source.tar.gz
 ```

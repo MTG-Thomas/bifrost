@@ -268,8 +268,9 @@ class TestApplicationVersioning:
             "/api/applications",
             headers=platform_admin.headers,
             json={
-                "name": slug,
-                "slug": slug,
+                "name": "Versioning Test App",
+                "slug": "versioning-test-app",
+                "app_model": "inline_v1",
                 "description": "Tests draft/live versioning",
                 "app_model": "inline_v1",
             },
@@ -709,7 +710,15 @@ class TestCodeEngineApps:
         then runs `bifrost apps create --slug <slug>`. Creating the app must
         reject the unclaimed source prefix instead of silently adopting it.
         """
-        slug = f"reject-local-source-{uuid.uuid4().hex[:8]}"
+        from tests.e2e.file_policy_helpers import grant_file_policy
+
+        slug = "preserve-local-source"
+        grant_file_policy(
+            e2e_client,
+            platform_admin.headers,
+            location="workspace",
+            prefix=f"apps/{slug}",
+        )
 
         # Pre-stage a user-authored file at apps/<slug>/_layout.tsx,
         # mimicking a `bifrost watch` push that ran before `apps create`.
@@ -735,7 +744,7 @@ class TestCodeEngineApps:
             response = e2e_client.post(
                 "/api/applications",
                 headers=platform_admin.headers,
-                json={"name": "Reject Local Source", "slug": slug},
+                json={"name": "Preserve Local Source", "slug": slug, "app_model": "inline_v1"},
             )
             assert response.status_code == 409
             assert "Source files already exist" in response.text

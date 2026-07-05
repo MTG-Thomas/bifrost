@@ -154,11 +154,11 @@ function referencedKnowledgeNamespaces(
 	const out = new Set<string>();
 	for (const agent of agents ?? []) {
 		const ns = (agent as { knowledge_sources?: unknown }).knowledge_sources;
-	if (Array.isArray(ns)) {
+		if (Array.isArray(ns)) {
 			for (const n of ns) if (typeof n === "string" && n) out.add(n);
 		}
 	}
-	return Array.from(out).sort((a, b) => a.localeCompare(b));
+	return Array.from(out).sort();
 }
 
 /**
@@ -355,9 +355,9 @@ export function UpgradeDiffView({ diff }: { diff: SolutionUpgradeDiff }) {
 	);
 }
 
-/** Timestamp suffix for suggested repository names. */
+/** Random 6-char suffix for suggested repository names. */
 function repoSuffix(): string {
-	return Date.now().toString(36).slice(-6).padStart(6, "0");
+	return Math.random().toString(36).slice(2, 8);
 }
 
 /**

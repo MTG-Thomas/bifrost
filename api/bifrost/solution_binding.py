@@ -26,13 +26,7 @@ class SolutionBindingError(ValueError):
 
 
 def _env_path(workspace: Path) -> Path:
-    root = workspace.expanduser().resolve()
-    env = (root / ".env").resolve()
-    try:
-        env.relative_to(root)
-    except ValueError as exc:
-        raise SolutionBindingError(".env path escapes workspace") from exc
-    return env
+    return workspace / ".env"
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:
@@ -47,11 +41,6 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     key = key.strip()
     value = value.strip().strip('"').strip("'")
     return key, value
-
-
-def _write_validated_env_file(env_path: Path, content: str) -> None:
-    with open(env_path, "w", encoding="utf-8") as env_file:
-        env_file.write(content)
 
 
 def read_solution_binding(workspace: Path) -> SolutionBinding | None:
@@ -99,7 +88,7 @@ def write_solution_binding(workspace: Path, binding: SolutionBinding) -> None:
         f"BIFROST_SOLUTION_ORG_ID={binding.organization_id or ''}",
         f"BIFROST_SOLUTION_SCOPE={binding.scope}",
     ]
-    _write_validated_env_file(env, "\n".join([*kept, *additions]).rstrip() + "\n")
+    env.write_text("\n".join([*kept, *additions]).rstrip() + "\n")
 
 
 def binding_from_install(

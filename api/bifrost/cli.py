@@ -237,9 +237,13 @@ def _check_cli_version() -> None:
     if installed in ("unknown", "0.0.0+source"):
         return  # dev/source install — nothing to compare against
 
-    # Re-load only the CLI-safe allowlist so an opted-in CWD .env can set
-    # BIFROST_API_URL without importing tokens, proxy settings, or CA paths.
-    credentials.load_allowed_dotenv(override=True)
+    # Re-load dotenv so a CWD-local .env's BIFROST_API_URL is honored even
+    # if bifrost.client's import-time load happened against a different cwd.
+    try:
+        from dotenv import find_dotenv, load_dotenv
+        load_dotenv(find_dotenv(usecwd=True), override=False)
+    except ImportError:
+        pass  # python-dotenv is optional; without it, only os.environ is consulted
 
     # Use credentials._resolve_url (not get_credentials) because the version
     # check only needs the URL — get_credentials returns None unless full
@@ -258,7 +262,7 @@ def _check_cli_version() -> None:
     # bifrost.gocovi.com) 403 the default `Python-urllib/X.Y` UA; httpx's UA
     # gets through and matches every other SDK request.
     try:
-        resp = httpx.get(f"{api_url}/api/version", timeout=3, trust_env=False)
+        resp = httpx.get(f"{api_url}/api/version", timeout=3)
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data, dict):
@@ -312,184 +316,6 @@ def _check_cli_version() -> None:
             f"contract versioning (CLI {installed}, server {server_version}). "
             f"Continuing; consider upgrading the server."
         )
-
-
-def _resolve_login_api_url(api_url: str | None) -> str | None:
-    """Resolve the API URL for production login without localhost fallbacks."""
-    resolved = (api_url or os.environ.get("BIFROST_API_URL") or "").rstrip("/")
-    return resolved or None
-
-
-def _pkce_s256(value: str) -> str:
-    digest = hashlib.sha256(value.encode("utf-8")).digest()
-    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-
-
-def _open_cli_callback_server(expected_state: str):
-    loop = asyncio.get_running_loop()
-    callback_future: asyncio.Future[dict[str, str]] = loop.create_future()
-
-    class CallbackHandler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:
-            return
-
-        def do_GET(self) -> None:
-            parsed = urlparse(self.path)
-            params = parse_qs(parsed.query)
-            payload = {key: values[0] for key, values in params.items() if values}
-
-            if parsed.path != "/callback":
-                self.send_response(404)
-                self.end_headers()
-                return
-
-            if payload.get("state") != expected_state:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Invalid Bifrost CLI login state. You can close this tab.")
-                if not callback_future.done():
-                    loop.call_soon_threadsafe(
-                        callback_future.set_exception,
-                        RuntimeError("Invalid OAuth state returned to callback"),
-                    )
-                return
-
-            if not payload.get("code") or not payload.get("transaction_id"):
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Missing Bifrost CLI authorization response. You can close this tab.")
-                if not callback_future.done():
-                    loop.call_soon_threadsafe(
-                        callback_future.set_exception,
-                        RuntimeError("Missing code or transaction_id in callback"),
-                    )
-                return
-
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(
-                b"<html><body><h1>Bifrost CLI login complete</h1>"
-                b"<p>You can close this tab and return to your terminal.</p></body></html>"
-            )
-            if not callback_future.done():
-                loop.call_soon_threadsafe(callback_future.set_result, payload)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    redirect_uri = f"http://127.0.0.1:{server.server_port}/callback"
-    return server, callback_future, redirect_uri
-
-
-async def native_login_flow(api_url: str, auto_open: bool = True) -> bool:
-    """Native browser OAuth login with localhost callback."""
-    api_url = api_url.rstrip("/")
-
-    from bifrost.credentials import warn_if_keyring_fallback
-
-    warn_if_keyring_fallback()
-
-    state = secrets.token_urlsafe(32)
-    code_verifier = secrets.token_urlsafe(64)
-    code_challenge = _pkce_s256(code_verifier)
-
-    try:
-        server, callback_future, redirect_uri = _open_cli_callback_server(state)
-    except OSError as e:
-        print(
-            f"Could not start localhost callback listener: {e}\n"
-            "Try 'bifrost login --device-code' for the legacy browser flow.",
-            file=sys.stderr,
-        )
-        return False
-
-    try:
-        async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:
-            start_response = await client.post(
-                "/auth/cli/start",
-                json={
-                    "redirect_uri": redirect_uri,
-                    "state": state,
-                    "code_challenge": code_challenge,
-                    "code_challenge_method": "S256",
-                },
-            )
-            if start_response.status_code != 200:
-                print(
-                    f"Error starting native OAuth login: {start_response.status_code}",
-                    file=sys.stderr,
-                )
-                return False
-
-            start_data = start_response.json()
-            authorization_url = f"{api_url}{start_data['authorization_url']}"
-            print(f"\nOpening browser to {authorization_url}\n")
-
-            if auto_open:
-                with contextlib.suppress(Exception):
-                    webbrowser.open(authorization_url)
-            else:
-                print(f"Open this URL to continue: {authorization_url}\n")
-
-            print("Waiting for browser authorization...", flush=True)
-            callback_data = await asyncio.wait_for(
-                callback_future,
-                timeout=float(start_data.get("expires_in", 300)),
-            )
-
-            token_response = await client.post(
-                "/auth/cli/token",
-                json={
-                    "transaction_id": callback_data["transaction_id"],
-                    "code": callback_data["code"],
-                    "state": callback_data["state"],
-                    "code_verifier": code_verifier,
-                },
-            )
-            if token_response.status_code != 200:
-                print(
-                    f"Error exchanging native OAuth token: {token_response.status_code}",
-                    file=sys.stderr,
-                )
-                return False
-
-            token_data = token_response.json()
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 1800))
-            credentials.save_credentials(
-                api_url=api_url,
-                access_token=token_data["access_token"],
-                refresh_token=token_data["refresh_token"],
-                expires_at=expires_at.isoformat(),
-            )
-
-            try:
-                user_response = await client.get(
-                    "/auth/me",
-                    headers={"Authorization": f"Bearer {token_data['access_token']}"},
-                )
-                if user_response.status_code == 200:
-                    user_data = user_response.json()
-                    print(f"Logged in as {user_data.get('email', 'unknown')}\n")
-                else:
-                    print("Logged in successfully\n")
-            except Exception:
-                print("Logged in successfully\n")
-
-            return True
-    except TimeoutError:
-        print(
-            "\nTimed out waiting for browser authorization. "
-            "Try 'bifrost login --device-code' if this environment cannot open a browser.",
-            file=sys.stderr,
-        )
-        return False
-    except Exception as e:
-        print(f"\nNative OAuth login failed: {e}", file=sys.stderr)
-        return False
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 async def device_login_flow(api_url: str | None = None, auto_open: bool = True) -> bool:
@@ -2704,7 +2530,7 @@ async def _process_watch_batch(
                 # guard below never fires and every file re-uploads each tick.
                 rel = abs_p.relative_to(base_path).as_posix()
                 repo_path = f"{repo_prefix}/{rel}" if repo_prefix else rel
-                file_hash = _etag_md5(raw)
+                file_hash = hashlib.md5(raw).hexdigest()
                 if state.get_known_hash(repo_path) == file_hash:
                     # No-op push: the server already has this content (common
                     # case: observer fired on our own pull write).
@@ -3478,22 +3304,11 @@ async def _sync_files(
         return 1
 
     data = resp.json()
-    prefix_filter = repo_prefix + "/" if repo_prefix else ""
     for item in data.get("files_metadata", []):
-        server_path = item["path"]
-        if prefix_filter and not server_path.startswith(prefix_filter):
-            continue
-        try:
-            rel = _safe_server_rel_path(server_path, repo_prefix)
-        except ValueError as e:
-            print(f"Error: unsafe server file path {server_path!r}: {e}", file=sys.stderr)
-            return 1
-        server_metadata[server_path] = {
+        server_metadata[item["path"]] = {
             "etag": item["etag"],
-            "content_hash": item.get("content_hash") or "",
             "last_modified": item["last_modified"],
             "updated_by": item.get("updated_by", ""),
-            "rel": rel,
         }
 
     # Filter .git/ objects from server listing

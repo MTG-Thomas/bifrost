@@ -106,13 +106,6 @@
 | GET | `/api/claims/{name}` |
 | PATCH | `/api/claims/{name}` |
 | GET | `/api/cli/download` |
-| GET | `/api/codex-gateway/keys` |
-| POST | `/api/codex-gateway/keys` |
-| DELETE | `/api/codex-gateway/keys/{key_id}` |
-| DELETE | `/api/codex-gateway/oauth` |
-| POST | `/api/codex-gateway/oauth/connect` |
-| POST | `/api/codex-gateway/oauth/import-auth-cache` |
-| GET | `/api/codex-gateway/oauth/status` |
 | GET | `/api/config` |
 | POST | `/api/config` |
 | DELETE | `/api/config/{config_id}` |
@@ -470,7 +463,6 @@
 | POST | `/api/users/{user_id}/invite/resend` |
 | POST | `/api/users/{user_id}/invite/send` |
 | GET | `/api/users/{user_id}/roles` |
-| POST | `/api/v1/responses` |
 | GET | `/api/version` |
 | GET | `/api/workflow-keys` |
 | POST | `/api/workflow-keys` |
@@ -493,9 +485,6 @@
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
 | POST | `/auth/admin/revoke-user` |
-| GET | `/auth/cli/authorize` |
-| POST | `/auth/cli/start` |
-| POST | `/auth/cli/token` |
 | POST | `/auth/device/authorize` |
 | POST | `/auth/device/code` |
 | POST | `/auth/device/token` |
@@ -540,4 +529,3 @@
 | GET | `/health/detailed` |
 | GET | `/health/live` |
 | GET | `/health/ready` |
-| POST | `/v1/responses` |

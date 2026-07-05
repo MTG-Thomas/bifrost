@@ -81,6 +81,8 @@ logger = logging.getLogger(__name__)
 TABLE_ROW_CAP = 50_000
 
 # Hard cap on files exported per solution to keep the encrypted blob bounded.
+# If a solution exceeds this, a WARNING is logged (solution slug + actual count)
+# and only the first FILE_CAP files are included — no silent truncation.
 FILE_CAP = 1_000
 
 
@@ -393,6 +395,9 @@ class SolutionCaptureService:
         )
 
     async def _workflow_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
+        from bifrost.manifest import ManifestWorkflow
+        from bifrost.manifest_codec import Destination
+
         rows = (
             await self.db.execute(
                 select(Workflow).where(Workflow.solution_id == solution_id)
@@ -400,23 +405,14 @@ class SolutionCaptureService:
         ).scalars().all()
         out: list[dict[str, Any]] = []
         for w in rows:
-            roles = await self._role_ids(WorkflowRole, "workflow_id", w.id)
-            out.append(_drop_none({
-                "id": str(w.id),
-                "name": w.name,
-                "function_name": w.function_name,
-                "path": w.path,
-                "type": w.type,
-                "description": w.description,
-                "endpoint_enabled": w.endpoint_enabled,
-                "public_endpoint": w.public_endpoint,
-                "timeout_seconds": w.timeout_seconds,
-                "category": w.category,
-                "tags": w.tags or [],
-                "access_level": w.access_level,
-                "roles": roles,
-                "role_names": await self._role_names(roles),
-            }))
+            role_ids = await self._role_ids(WorkflowRole, "workflow_id", w.id)
+            role_names = await self._role_names(role_ids)
+            out.append(
+                ManifestWorkflow.from_row(w, roles=role_ids).view(
+                    Destination.INSTALL,
+                    extras={"roles": role_ids, "role_names": role_names},
+                )
+            )
         return out
 
     async def _event_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
@@ -424,13 +420,14 @@ class SolutionCaptureService:
 
         Each entry is a ManifestEventSource-shaped dict (source + nested
         schedule/webhook config + subscriptions). Built via the canonical
-        ``serialize_event_source`` (same code git-sync uses), which already
+        ``ManifestEventSource.from_row`` (same code git-sync uses), which already
         OMITS the webhook instance secrets (``state``/``external_id``/
         ``expires_at``) — only the portable ``config`` travels. The instance
         re-establishes the external subscription + binds ``integration_id`` after
         install.
         """
-        from src.services.manifest_generator import serialize_event_source
+        from bifrost.manifest import ManifestEventSource
+        from bifrost.manifest_codec import Destination
 
         sources = (
             await self.db.execute(
@@ -460,43 +457,33 @@ class SolutionCaptureService:
                     )
                 )
             ).scalars().all()
-            manifest = serialize_event_source(es, schedule, webhook, list(subs))
-            out.append(manifest.model_dump(mode="json"))
+            out.append(ManifestEventSource.from_row(es, schedule=schedule, webhook=webhook, subscriptions=list(subs)).view(Destination.INSTALL))
         return out
 
     async def _table_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
+        from bifrost.manifest import ManifestTable
+        from bifrost.manifest_codec import Destination
+
         rows = (
             await self.db.execute(select(Table).where(Table.solution_id == solution_id))
         ).scalars().all()
-        return [
-            _drop_none({
-                "id": str(t.id),
-                "name": t.name,
-                "description": t.description,
-                "schema": t.schema,
-                "policies": (t.access or {}).get("policies"),
-            })
-            for t in rows
-        ]
+        return [ManifestTable.from_row(t).view(Destination.INSTALL) for t in rows]
 
     async def _claim_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
+        from bifrost.manifest import ManifestCustomClaim
+        from bifrost.manifest_codec import Destination
+
         rows = (
             await self.db.execute(
                 select(CustomClaim).where(CustomClaim.solution_id == solution_id)
             )
         ).scalars().all()
-        return [
-            _drop_none({
-                "id": str(c.id),
-                "name": c.name,
-                "description": c.description,
-                "type": c.type,
-                "query": c.query,
-            })
-            for c in rows
-        ]
+        return [ManifestCustomClaim.from_row(c).view(Destination.INSTALL) for c in rows]
 
     async def _app_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
+        from bifrost.manifest import ManifestApp
+        from bifrost.manifest_codec import Destination
+
         rows = (
             await self.db.execute(
                 select(Application).where(Application.solution_id == solution_id)
@@ -546,27 +533,27 @@ class SolutionCaptureService:
                     if binary_dist:
                         bin_dist_files = binary_dist
             roles = await self._role_ids(AppRole, "app_id", app.id)
-            out.append(_drop_none({
-                "id": str(app.id),
-                "name": app.name,
-                "slug": app.slug,
-                "repo_path": app.repo_path,
-                "description": app.description,
-                "dependencies": app.dependencies,
-                "app_model": app.app_model,
-                "access_level": _enum_value(app.access_level),
-                "roles": roles,
-                "role_names": await self._role_names(roles),
-                "logo_b64": logo_b64,
-                "logo_content_type": app.logo_content_type,
-                "src_files": src_files,
-                "bin_files": bin_files,
-                "dist_files": dist_files,
-                "bin_dist_files": bin_dist_files,
-            }))
+            out.append(
+                ManifestApp.from_row(app, roles=roles).view(
+                    Destination.INSTALL,
+                    extras={
+                        "repo_path": app.repo_path,
+                        "logo_b64": logo_b64,
+                        "logo_content_type": app.logo_content_type,
+                        "src_files": src_files if src_files else None,
+                        "bin_files": bin_files if bin_files else None,
+                        "dist_files": dist_files,
+                        "bin_dist_files": bin_dist_files,
+                        "role_names": await self._role_names(roles),
+                    },
+                )
+            )
         return out
 
     async def _form_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
+        from bifrost.manifest import ManifestForm
+        from bifrost.manifest_codec import Destination
+
         rows = (
             await self.db.execute(select(Form).where(Form.solution_id == solution_id))
         ).scalars().all()
@@ -580,56 +567,58 @@ class SolutionCaptureService:
                 )
             ).scalars().all()
             roles = await self._role_ids(FormRole, "form_id", form.id)
-            out.append(_drop_none({
-                "id": str(form.id),
-                "name": form.name,
-                "description": form.description,
-                "workflow_id": form.workflow_id,
-                "launch_workflow_id": form.launch_workflow_id,
-                "default_launch_params": form.default_launch_params,
-                "allowed_query_params": form.allowed_query_params,
-                "access_level": _enum_value(form.access_level),
-                "workflow_path": form.workflow_path,
-                "workflow_function_name": form.workflow_function_name,
-                "roles": roles,
-                "role_names": await self._role_names(roles),
-                "form_schema": {
-                    "fields": [self._form_field_entry(f) for f in fields],
-                },
-            }))
+            # form_schema for install uses _form_field_entry (includes position) — passed
+            # via extras to override the model's schema (built without position).
+            form_schema = {"fields": [self._form_field_entry(f) for f in fields]}
+            out.append(
+                ManifestForm.from_row(form, roles=roles).view(
+                    Destination.INSTALL,
+                    extras={
+                        "workflow_path": form.workflow_path,
+                        "workflow_function_name": form.workflow_function_name,
+                        "role_names": await self._role_names(roles),
+                        "form_schema": form_schema,
+                    },
+                )
+            )
         return out
 
     async def _agent_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
+        from bifrost.manifest import ManifestAgent
+        from bifrost.manifest_codec import Destination
+
         rows = (
             await self.db.execute(select(Agent).where(Agent.solution_id == solution_id))
         ).scalars().all()
         out: list[dict[str, Any]] = []
         for agent in rows:
             roles = await self._role_ids(AgentRole, "agent_id", agent.id)
-            out.append(_drop_none({
-                "id": str(agent.id),
-                "name": agent.name,
-                "description": agent.description,
-                "system_prompt": agent.system_prompt,
-                "channels": agent.channels,
-                "access_level": _enum_value(agent.access_level),
-                "knowledge_sources": list(agent.knowledge_sources or []),
-                "system_tools": list(agent.system_tools or []),
-                "llm_model": agent.llm_model,
-                "llm_max_tokens": agent.llm_max_tokens,
-                "max_iterations": agent.max_iterations,
-                "max_token_budget": agent.max_token_budget,
-                "max_run_timeout": agent.max_run_timeout,
-                "tool_ids": await self._junction_ids(AgentTool, "agent_id", "workflow_id", agent.id),
-                "delegated_agent_ids": await self._junction_ids(
-                    AgentDelegation, "parent_agent_id", "child_agent_id", agent.id
-                ),
-                "roles": roles,
-                "role_names": await self._role_names(roles),
-            }))
+            tool_ids = await self._junction_ids(AgentTool, "agent_id", "workflow_id", agent.id)
+            delegated_agent_ids = await self._junction_ids(
+                AgentDelegation, "parent_agent_id", "child_agent_id", agent.id
+            )
+            # Install bundle omits mcp_connection_ids — only git_sync carries them.
+            # max_run_timeout is a transport extra (not a model field).
+            out.append(
+                ManifestAgent.from_row(
+                    agent,
+                    roles=roles,
+                    tool_ids=tool_ids,
+                    delegated_agent_ids=delegated_agent_ids,
+                ).view(
+                    Destination.INSTALL,
+                    extras={
+                        "max_run_timeout": agent.max_run_timeout,
+                        "role_names": await self._role_names(roles),
+                    },
+                )
+            )
         return out
 
     async def _config_entries(self, solution_id: UUID) -> list[dict[str, Any]]:
+        from bifrost.manifest import ManifestSolutionConfigSchema
+        from bifrost.manifest_codec import Destination
+
         rows = (
             await self.db.execute(
                 select(SolutionConfigSchema)
@@ -638,15 +627,7 @@ class SolutionCaptureService:
             )
         ).scalars().all()
         return [
-            _drop_none({
-                "id": str(c.id),
-                "key": c.key,
-                "type": c.type,
-                "required": c.required,
-                "description": c.description,
-                "default": c.default,
-                "position": c.position,
-            })
+            ManifestSolutionConfigSchema.from_row(c).view(Destination.INSTALL)
             for c in rows
         ]
 

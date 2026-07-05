@@ -1,7 +1,5 @@
 /**
- * Tests for the Tables list page "Show orphaned" toggle: toggling it threads
- * `include_orphaned` into the list fetch, and orphaned rows render an origin
- * badge.
+ * Tests for the Tables list page.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -35,20 +33,18 @@ vi.mock("@/pages/TablesClaimsTab", () => ({
 	TablesClaimsTab: () => null,
 }));
 
-const orphanedTable = {
+const regularTable = {
 	id: "tbl-1",
-	name: "Leftover Customers",
+	name: "Customers",
 	description: "",
 	organization_id: null,
 	created_at: "2026-01-01T00:00:00Z",
-	orphaned_at: "2026-02-01T00:00:00Z",
-	origin_solution_slug: "crm-sync",
 };
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockUseTables.mockReturnValue({
-		data: { tables: [orphanedTable] },
+		data: { tables: [regularTable] },
 		isLoading: false,
 		refetch: vi.fn(),
 	});
@@ -60,24 +56,15 @@ async function renderPage() {
 	return renderWithProviders(<Tables />);
 }
 
-describe("Tables — Show orphaned toggle", () => {
-	it("fetches without include_orphaned by default", async () => {
+describe("Tables — list", () => {
+	it("fetches without include_orphaned (orphaned UI stripped)", async () => {
 		await renderPage();
-		// useTables(scope, includeOrphaned) — default off
-		expect(mockUseTables).toHaveBeenLastCalledWith(undefined, false);
-	});
-
-	it("threads include_orphaned=true when toggled on", async () => {
-		const { user } = await renderPage();
-		await user.click(
-			screen.getByRole("checkbox", { name: /show orphaned/i }),
-		);
-		expect(mockUseTables).toHaveBeenLastCalledWith(undefined, true);
-	});
-
-	it("badges an orphaned row with its origin solution", async () => {
-		await renderPage();
-		expect(screen.getByText(/orphaned · from crm-sync/i)).toBeInTheDocument();
+		// useTables(scope) — no include_orphaned param
+		expect(mockUseTables).toHaveBeenLastCalledWith(undefined);
+		// No show-orphaned toggle visible
+		expect(
+			screen.queryByRole("checkbox", { name: /show orphaned/i }),
+		).toBeNull();
 	});
 });
 

@@ -10,7 +10,6 @@ what end users see (the Solution is invisible to them — criterion 16).
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -21,7 +20,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Body, File, HTTPException, Response, UploadFile, status
 from fastapi import Form as FastapiForm
@@ -87,7 +86,6 @@ from src.services.solutions.export_jobs import (
     create_export_job,
     list_export_jobs,
     public_job,
-    validate_export_options_password,
 )
 
 if TYPE_CHECKING:
@@ -97,16 +95,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/solutions", tags=["Solutions"])
 
-# Running deploy jobs heartbeat ``updated_at`` on this interval so long deploys
-# stay live across rolling restarts. Orphans are detected when ``updated_at`` is
-# older than ``DEPLOY_ORPHAN_STALE_SECONDS`` (~1.5x heartbeat).
-DEPLOY_JOB_HEARTBEAT_SECONDS = 60
-DEPLOY_ORPHAN_STALE_SECONDS = 90
-DEPLOY_JOB_ORPHAN_THRESHOLD = timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS)
-_DEPLOY_ORPHAN_ERROR = (
-    "Deploy did not finish because the API restarted before its in-process "
-    "background task completed. Re-run the deploy; it is idempotent."
-)
+DEPLOY_JOB_ORPHAN_THRESHOLD = timedelta(minutes=15)
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 _ZIP_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -118,12 +107,6 @@ def _cleanup_file(path: str | Path) -> None:
         logger.warning("Failed to remove temporary file %s", path)
 
 
-def _new_temp_zip_path(*, prefix: str) -> Path:
-    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".zip")
-    os.close(fd)
-    return Path(name)
-
-
 def _safe_zip_filename(filename: str) -> str:
     stem = filename.removesuffix(".zip")
     safe_stem = _ZIP_FILENAME_SAFE_RE.sub("-", stem).strip(".-_")
@@ -131,24 +114,16 @@ def _safe_zip_filename(filename: str) -> str:
 
 
 async def _spool_upload_to_temp(file: UploadFile, *, prefix: str) -> Path:
-    path = await asyncio.to_thread(_new_temp_zip_path, prefix=prefix)
-    tmp = await asyncio.to_thread(path.open, "wb")
+    tmp = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".zip", delete=False)
+    path = Path(tmp.name)
     try:
-        while chunk := await file.read(UPLOAD_CHUNK_SIZE):
-            await asyncio.to_thread(tmp.write, chunk)
+        with tmp:
+            while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+                tmp.write(chunk)
     except Exception:
         _cleanup_file(path)
         raise
-    finally:
-        await asyncio.to_thread(tmp.close)
     return path
-
-
-def _is_stale_deploy_job(job: SolutionDeployJob, now: datetime) -> bool:
-    if job.status not in ("queued", "running"):
-        return False
-    stale_before = now - timedelta(seconds=DEPLOY_ORPHAN_STALE_SECONDS)
-    return job.updated_at < stale_before
 
 
 async def reconcile_orphaned_deploy_jobs(
@@ -167,9 +142,13 @@ async def reconcile_orphaned_deploy_jobs(
         )
     )
     jobs = list(result.scalars().all())
+    error = (
+        "Deploy did not finish because the API restarted before its in-process "
+        "background task completed. Re-run the deploy; it is idempotent."
+    )
     for job in jobs:
         job.status = "failed"
-        job.error = _DEPLOY_ORPHAN_ERROR
+        job.error = error
         job.updated_at = resolved_now
     return len(jobs)
 
@@ -429,16 +408,22 @@ async def export_solution(
 
     artifact = SolutionSourceArtifactStorage(solution_id)
     filename = _safe_zip_filename(f"{sol.slug}-{sol.version or 'unversioned'}.zip")
-    out_path = await asyncio.to_thread(
-        _new_temp_zip_path,
+    tmp = tempfile.NamedTemporaryFile(
         prefix="bifrost-solution-export-",
+        suffix=".zip",
+        delete=False,
     )
+    out_path = Path(tmp.name)
+    tmp.close()
     source_path: Path | None = None
     try:
-        source_path = await asyncio.to_thread(
-            _new_temp_zip_path,
+        stored_source_path = tempfile.NamedTemporaryFile(
             prefix="bifrost-solution-source-",
+            suffix=".zip",
+            delete=False,
         )
+        source_path = Path(stored_source_path.name)
+        stored_source_path.close()
         has_stored_source = await artifact.copy_to_path(source_path)
         if has_stored_source and mode == "shareable":
             source_path.replace(out_path)
@@ -512,14 +497,13 @@ async def create_solution_export_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
 
     try:
-        validate_export_options_password(body.options)
+        created = await create_export_job(ctx.db, sol, user.user_id, body.options)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
 
-    job_id = uuid4()
     try:
         notification = await get_notification_service().create_notification(
             str(user.user_id),
@@ -530,7 +514,7 @@ async def create_solution_export_job(
                 percent=0,
                 metadata={
                     "solution_id": str(solution_id),
-                    "job_id": str(job_id),
+                    "job_id": str(created.id),
                     "action": "download_solution_export",
                     "action_label": "Download",
                 },
@@ -544,23 +528,17 @@ async def create_solution_export_job(
             detail="Failed to create export notification",
         ) from exc
 
-    try:
-        created = await create_export_job(
-            ctx.db,
-            sol,
-            user.user_id,
-            body.options,
-            job_id=job_id,
-            notification_id=UUID(notification.id),
-        )
-    except ValueError as exc:
+    row = await ctx.db.get(SolutionExportJob, created.id)
+    if row is None:
+        await ctx.db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Export job was not persisted",
+        )
+    row.notification_id = UUID(notification.id)
     await ctx.db.commit()
-    return created
+    await ctx.db.refresh(row)
+    return public_job(row)
 
 
 @router.get(

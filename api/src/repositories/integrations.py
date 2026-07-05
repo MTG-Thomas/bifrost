@@ -617,12 +617,7 @@ class IntegrationsRepository(BaseRepository[Integration]):
         return config
 
     async def get_config_for_mapping(
-        self,
-        integration_id: UUID,
-        org_id: UUID,
-        *,
-        external: bool = False,
-        include_default_secrets: bool = False,
+        self, integration_id: UUID, org_id: UUID, *, external: bool
     ) -> dict:
         """
         Get merged configuration for an integration mapping.
@@ -633,11 +628,16 @@ class IntegrationsRepository(BaseRepository[Integration]):
         Args:
             integration_id: Integration UUID
             org_id: Organization UUID
-            external: External portal callers pass True to drop the global
-                org_id=NULL integration defaults entirely.
-            include_default_secrets: Include integration-default secret fallback
-                values. SDK mapping reads can leave this false so global
-                defaults do not leak as decrypted org config.
+            external: REQUIRED (no default — EXT-1 OPEN-E / NEW-G). Every call
+                site MUST consciously decide: an EXTERNAL portal caller passes
+                True (drop the global org_id=NULL integration defaults entirely
+                so a decrypted global SECRET is never returned — org-specific
+                config only); engine/sentinel/admin callers pass False
+                explicitly (keep the defaults+overrides merge). The default was
+                removed so a new sibling endpoint can't silently re-open the
+                global tier by forgetting the flag (the OPEN-E/NEW-G failure
+                mode — four sibling endpoints, one missed flag = a hospital
+                portal user reading another tenant's secrets).
 
         Returns:
             dict: Merged configuration (integration defaults + org overrides),

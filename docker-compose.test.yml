@@ -75,11 +75,7 @@ services:
     # No ports exposed - all access via Docker network.
     # Ephemeral storage so test runs never inherit broker state.
     tmpfs:
-      # Ephemeral storage - prevents Erlang cookie permission issues.
-      # RabbitMQ runs as uid 100 / gid 101 in this image. Some Docker hosts
-      # ignore mode-only tmpfs ownership here and leave the mount root-owned,
-      # which breaks boot with ".erlang.cookie: eacces".
-      - /var/lib/rabbitmq:uid=100,gid=101,mode=1777
+      - /var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 5s
@@ -175,7 +171,11 @@ services:
       # whole LOG_DIR over the api's /tmp/bifrost: the api runs as root and its
       # entrypoint `chown -R`s /tmp/bifrost to the bifrost uid (1000), which
       # would clobber the host-owned LOG_DIR (test-runner.log, test-results.xml,
-      # *.log) on CI runners whose uid is not 1000.
+      # *.log) — on a CI runner whose uid != 1000 the host-side `tee
+      # $LOG_DIR/test-runner.log` in run_pytest then fails with EPERM and the
+      # step exits 1 even though every test passed. The fixture repos are created
+      # by the uid-1000 test-runner, so chown-ing just this subdir to 1000 is a
+      # no-op and never touches the LOG_DIR root.
       - ${LOG_DIR:-/tmp/bifrost}/solution-repo-fixtures:/tmp/bifrost/solution-repo-fixtures
     depends_on:
       pgbouncer:
@@ -358,14 +358,14 @@ services:
       - ./api/alembic.ini:/app/alembic.ini:ro
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
-      - ./docker-compose.yml:/app/docker-compose.yml:ro
-      - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
-      - ./.github:/app/.github:ro
-      - ./.claude:/app/.claude:ro
-      - ./.env.debug:/app/.env.debug:ro
-      - ./debug.sh:/app/debug.sh:ro
-      - ./docker-compose.debug.yml:/app/docker-compose.debug.yml:ro
-      - ./docker-compose.debug.port.yml:/app/docker-compose.debug.port.yml:ro
+      - ./api/pyrightconfig.json:/app/pyrightconfig.json:ro
+      - ./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro
+      - ./test.sh:/app/test.sh:ro
+      - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro  # Read-only —
+                                      # the harness guard in
+                                      # tests/unit/test_compose_test_harness.py
+                                      # asserts the api service never re-binds
+                                      # the host LOG_DIR root over /tmp/bifrost.
       - ./client/src:/client/src:ro  # Read-only — the drift test in
                                       # tests/unit/test_platform_names_match_runtime.py
                                       # parses app-code-runtime.ts to detect new platform exports.
@@ -390,9 +390,11 @@ services:
         condition: service_started
       init:
         condition: service_completed_successfully
-    # Entrypoint fixes mounted result/coverage directory ownership, then drops to bifrost.
-    user: root
+    # C1.5: Run as bifrost uid so posture tests introspect a hardened context.
+    # user: "1000:1000" bypasses gosu so cap_drop: ALL works.
+    user: "1000:1000"
     security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     # Default command runs all tests except E2E
     command: ["pytest", "tests/", "--ignore=tests/e2e/", "-v"]
     profiles:

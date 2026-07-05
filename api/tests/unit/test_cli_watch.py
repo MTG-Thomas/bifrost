@@ -418,3 +418,50 @@ def test_watch_allowed_in_plain_repo_workspace(tmp_path):
             handle_watch([str(tmp_path)])
         except RuntimeError as e:
             assert str(e) == "stop-after-guard"
+
+
+# =============================================================================
+# Initial-sync abort: a failed server listing must stop watch from starting
+# the observer (otherwise it half-initializes and mass-pushes per-file).
+# =============================================================================
+
+
+def test_watch_aborts_when_initial_sync_fails(tmp_path):
+    """If the initial _sync_files aborts (e.g. server file listing 403s), watch
+    must return that code and NEVER construct the Observer."""
+    import asyncio
+
+    from bifrost.cli import _watch_and_push
+
+    class _ListFails:
+        async def post(self, url: str, json: Any = None):
+            # The initial sync's /api/files/list returns 403 → _sync_files aborts.
+            if url == "/api/files/list":
+                return SimpleNamespace(
+                    status_code=403,
+                    json=lambda: {"detail": "Forbidden"},
+                    text="Forbidden",
+                )
+            return SimpleNamespace(status_code=204, json=lambda: {})
+
+    # Give the workspace one local file so a non-aborting run would try to push.
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "x.py").write_text("print('x')\n")
+
+    observer_constructed = {"v": False}
+
+    def _boom_observer(*a, **k):
+        observer_constructed["v"] = True
+        raise AssertionError("Observer must not be constructed after an aborted initial sync")
+
+    # _watch_and_push does `from watchdog.observers import Observer` internally,
+    # so patch it at the source module.
+    with patch("watchdog.observers.Observer", _boom_observer):
+        rc = asyncio.run(
+            _watch_and_push(
+                str(tmp_path), repo_prefix="", mirror=False, validate=False, client=_ListFails()
+            )
+        )
+
+    assert rc == 1, "watch must propagate the initial-sync abort code"
+    assert observer_constructed["v"] is False

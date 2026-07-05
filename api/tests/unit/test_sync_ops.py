@@ -900,62 +900,12 @@ class TestManifestWorkflowImport:
             {"wf_by_natural": {}, "wf_ids": set()},
         )
 
-        assert len(ops) == 1
-        assert isinstance(ops[0], Upsert)
-        assert ops[0].model is Workflow
-        assert ops[0].values["name"] == "custom_tool_name"
-        assert ops[0].values["function_name"] == "python_function_name"
-
-    def test_explicit_empty_roles_clears_workflow_roles(self) -> None:
-        from uuid import UUID
-
-        from bifrost.manifest import ManifestWorkflow
-        from src.models.orm.workflow_roles import WorkflowRole
-        from src.services.manifest_import import ManifestResolver
-        from src.services.sync_ops import SyncRoles
-
-        wf_id = UUID("11111111-1111-1111-1111-111111111111")
-        mwf = ManifestWorkflow(
-            id=str(wf_id),
-            name="tool",
-            path="workflows/tool.py",
-            function_name="tool",
-            roles=[],
-        )
-        resolver = ManifestResolver(AsyncMock())
-
-        ops = resolver._resolve_workflow(
-            "tool",
-            mwf,
-            {"wf_by_natural": {}, "wf_ids": set()},
-        )
-
-        role_ops = [op for op in ops if isinstance(op, SyncRoles)]
-        assert len(role_ops) == 1
-        assert role_ops[0].junction_model is WorkflowRole
-        assert role_ops[0].entity_id == wf_id
-        assert role_ops[0].role_ids == set()
-
-    def test_omitted_roles_does_not_emit_role_sync(self) -> None:
-        from uuid import UUID
-
-        from bifrost.manifest import ManifestWorkflow
-        from src.services.manifest_import import ManifestResolver
-        from src.services.sync_ops import SyncRoles
-
-        wf_id = UUID("11111111-1111-1111-1111-111111111111")
-        mwf = ManifestWorkflow(
-            id=str(wf_id),
-            name="tool",
-            path="workflows/tool.py",
-            function_name="tool",
-        )
-        resolver = ManifestResolver(AsyncMock())
-
-        ops = resolver._resolve_workflow(
-            "tool",
-            mwf,
-            {"wf_by_natural": {}, "wf_ids": set()},
-        )
-
-        assert not any(isinstance(op, SyncRoles) for op in ops)
+        # The resolver emits the workflow Upsert plus a SyncRoles op — the latter
+        # always present now (B3): roles defaults to [] and an empty list clears
+        # bindings, matching install deploy. This test is about the Upsert's name,
+        # so assert on the Upsert op specifically rather than the op count.
+        upserts = [op for op in ops if isinstance(op, Upsert)]
+        assert len(upserts) == 1
+        assert upserts[0].model is Workflow
+        assert upserts[0].values["name"] == "custom_tool_name"
+        assert upserts[0].values["function_name"] == "python_function_name"

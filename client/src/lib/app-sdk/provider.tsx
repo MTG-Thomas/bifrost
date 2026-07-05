@@ -214,9 +214,11 @@ export function BifrostProvider({
   // go out on the default same-origin transport with no token / app header.
   // Render-time assignment is idempotent (same-inputs skip), so StrictMode's
   // double render installs once.
-  // Deliberate render-phase install: the transport is a module-global external
-  // store that child mount effects read synchronously, so it must be written
-  // during render. An effect-time install is too late by definition here.
+  /* eslint-disable react-hooks/refs -- deliberate render-phase install: the
+     transport is a module-global external store that child MOUNT EFFECTS read
+     synchronously, so it must be written during render (guarded by a same-key
+     skip for idempotence under StrictMode/re-renders). An effect-time install
+     is too late by definition here. */
   const installKey = `${baseUrl}|${token}|${orgScope ?? ""}|${appId ?? ""}`;
   const installedRef = useRef<{
     key: string;
@@ -265,6 +267,7 @@ export function BifrostProvider({
   ) {
     install();
   }
+  /* eslint-enable react-hooks/refs */
 
   // Unmount cleanup with a DEFERRED release. StrictMode runs ALL passive
   // cleanups (this one included) and then re-runs effects CHILD-FIRST, so a

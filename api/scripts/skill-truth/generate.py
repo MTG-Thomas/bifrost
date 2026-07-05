@@ -16,10 +16,8 @@ import click
 #   parents[1] = api/scripts              (or /app/scripts in container)
 #   parents[2] = api/                     (or /app in container)
 #   parents[3] = repo root                (or / in container, where /.claude/skills is mounted)
-API = Path(__file__).resolve().parents[2]
 REPO = Path(__file__).resolve().parents[3]
 GEN_DIR = REPO / ".claude/skills/bifrost-build/generated"
-sys.path.insert(0, str(API))
 
 
 def _walk_group(name: str, group: click.Group, lines: list[str], depth: int = 0) -> None:
@@ -111,7 +109,6 @@ def gen_web_sdk_surface() -> str:
         ["node", str(script)],
         capture_output=True,
         text=True,
-        encoding="utf-8",
         check=True,
     )
     return result.stdout
@@ -135,12 +132,12 @@ def main() -> int:
     for fname, fn in sorted(GENERATORS.items()):
         new = fn()
         path = GEN_DIR / fname
-        old = path.read_text(encoding="utf-8") if path.exists() else None
+        old = path.read_text() if path.exists() else None
         if args.check:
             if old != new:
                 drift.append(fname)
         else:
-            path.write_text(new, encoding="utf-8", newline="\n")
+            path.write_text(new)
     if args.check and drift:
         print("STALE: " + ", ".join(drift))
         return 1

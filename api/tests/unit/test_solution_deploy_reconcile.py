@@ -145,16 +145,13 @@ class TestSolutionDeployReconcile:
         w1, w2 = str(uuid4()), str(uuid4())
         await deployer.deploy(SolutionBundle(
             solution=sol,
-            python_files={
-                "workflows/w1.py": "def run():\n    return 1\n",
-                "workflows/w2.py": "def run():\n    return 2\n",
-            },
+            python_files={"workflows/w1.py": "x", "workflows/w2.py": "y"},
             workflows=[_wf_entry(w1, "w1"), _wf_entry(w2, "w2")],
         ))
         await db.flush()
         await deployer.deploy(SolutionBundle(
             solution=sol,
-            python_files={"workflows/w1.py": "def run():\n    return 1\n"},
+            python_files={"workflows/w1.py": "x"},
             workflows=[_wf_entry(w1, "w1")],
         ))
         await db.flush()
@@ -186,7 +183,7 @@ class TestSolutionDeployReconcile:
         w1 = str(uuid4())
         await deployer.deploy(SolutionBundle(
             solution=org_install,
-            python_files={"workflows/w1.py": "def run():\n    return 1\n"},
+            python_files={"workflows/w1.py": "x"},
             workflows=[_wf_entry(w1, "w1")],
         ))
         await db.flush()
@@ -362,7 +359,7 @@ class TestSolutionDeployReconcile:
 
         r1 = await deployer.deploy(SolutionBundle(
             solution=sol,
-            python_files={"workflows/w1.py": "VALUE = 1\ndef run():\n    return VALUE\n"},
+            python_files={"workflows/w1.py": "VALUE = 1\n"},
             workflows=[_wf_entry(w1, "w1")],
         ))
         await r1.finalize_s3()  # Python write is deferred to the S3 phase (P1-c).
@@ -372,7 +369,7 @@ class TestSolutionDeployReconcile:
         # Redeploy with changed bytes — cache must reflect the new content.
         r2 = await deployer.deploy(SolutionBundle(
             solution=sol,
-            python_files={"workflows/w1.py": "VALUE = 2\ndef run():\n    return VALUE\n"},
+            python_files={"workflows/w1.py": "VALUE = 2\n"},
             workflows=[_wf_entry(w1, "w1")],
         ))
         await r2.finalize_s3()

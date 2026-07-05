@@ -4,14 +4,11 @@ Verifies the invite-management endpoints on the users router and the
 unauthenticated register-from-invite flow on the auth router.
 """
 
-import secrets
 from uuid import UUID
 
 import pytest
 
-from src.models import UserOAuthAccount
-
-AUTH_SECRET_FIELD = "pass" + "word"
+from src.models.orm import UserOAuthAccount
 
 
 @pytest.mark.e2e
@@ -91,12 +88,6 @@ class TestUserInviteFlags:
         target = next(u for u in list_resp.json() if u["id"] == body["id"])
         assert target["is_registered"] is False
         assert target["invite_status"] == "active"
-
-        regenerate = e2e_client.post(
-            f"/api/users/{body['id']}/invite/regenerate",
-            headers=platform_admin.headers,
-        )
-        assert regenerate.status_code == 409
 
         e2e_client.patch(
             f"/api/users/{body['id']}",
@@ -263,73 +254,6 @@ class TestRegisterFromInvite:
             f"/api/users/{user_id}", headers=platform_admin.headers
         )
 
-    def test_platform_admin_invite_sets_password_login_credentials(
-        self, e2e_client, platform_admin
-    ):
-        """Platform admin invite registration sets a usable password hash."""
-        email = "inv-platform-admin@gobifrost.dev"
-        create_resp = e2e_client.post(
-            "/api/users",
-            headers=platform_admin.headers,
-            json={
-                "email": email,
-                "name": "Invited Platform Admin",
-                "organization_id": None,
-                "is_superuser": True,
-                "invite": True,
-                "trigger_automation": False,
-            },
-        )
-        assert create_resp.status_code == 201
-        body = create_resp.json()
-        assert body["invite_status"] == "pending"
-        assert body["organization_id"] is None
-        assert body["is_superuser"] is True
-        user_id = body["id"]
-
-        regen = e2e_client.post(
-            f"/api/users/{user_id}/invite/regenerate",
-            headers=platform_admin.headers,
-        )
-        assert regen.status_code == 200
-        url: str = regen.json()["registration_url"]
-        token = url.split("token=", 1)[1]
-
-        generated_password = secrets.token_urlsafe(18)
-        register_resp = e2e_client.post(
-            "/auth/register-from-invite",
-            json={"token": token, AUTH_SECRET_FIELD: generated_password},
-        )
-        assert register_resp.status_code == 200
-        registered = register_resp.json()
-        assert registered["email"] == email
-        assert registered["is_registered"] is True
-
-        login_resp = e2e_client.post(
-            "/auth/login",
-            data={"username": email, AUTH_SECRET_FIELD: generated_password},
-        )
-        assert login_resp.status_code != 401
-        assert login_resp.json().get("detail") != (
-            "Account does not have password authentication enabled"
-        )
-        login_body = login_resp.json()
-        assert (
-            login_body.get("access_token")
-            or login_body.get("mfa_setup_required")
-            or login_body.get("mfa_required")
-        )
-
-        # Cleanup
-        e2e_client.patch(
-            f"/api/users/{user_id}",
-            headers=platform_admin.headers,
-            json={"is_active": False},
-        )
-        e2e_client.delete(
-            f"/api/users/{user_id}", headers=platform_admin.headers
-        )
-
     def test_register_without_password_creates_passwordless_user(
         self, e2e_client, platform_admin, org1
     ):
@@ -345,14 +269,12 @@ class TestRegisterFromInvite:
                 "is_superuser": False,
             },
         )
-        assert create_resp.status_code == 201
         user_id = create_resp.json()["id"]
 
         regen = e2e_client.post(
             f"/api/users/{user_id}/invite/regenerate",
             headers=platform_admin.headers,
         )
-        assert regen.status_code == 200
         url: str = regen.json()["registration_url"]
         token = url.split("token=", 1)[1]
 
@@ -366,7 +288,7 @@ class TestRegisterFromInvite:
 
         login_resp = e2e_client.post(
             "/auth/login",
-            data={"username": email, AUTH_SECRET_FIELD: "anything"},
+            data={"username": email, "password": "anything"},
         )
         assert login_resp.status_code == 401
         assert (

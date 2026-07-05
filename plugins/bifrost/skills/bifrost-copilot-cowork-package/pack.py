@@ -27,9 +27,6 @@ from pathlib import Path
 
 
 COWORK_NAMESPACE = uuid.UUID("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
-SKILL_MD = "SKILL.md"
-COLOR_ICON = "color.png"
-OUTLINE_ICON = "outline.png"
 
 JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini", ".AppleDouble", ".Spotlight-V100", ".Trashes"}
 
@@ -50,27 +47,18 @@ def reverse_dns(name: str) -> str:
     return f"com.bifrost.{kebab(name).replace('-', '')}"
 
 
-def _host_from_api_url(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    if parsed.hostname:
-        if parsed.port is not None:
-            return f"{parsed.hostname}:{parsed.port}"
-        return parsed.hostname
-    return url
-
-
 def get_bifrost_host() -> str:
     """Resolve the Bifrost API host the CLI is currently pointed at."""
     env = os.environ.get("BIFROST_API_URL")
     if env:
-        return _host_from_api_url(env)
+        return urllib.parse.urlparse(env).hostname or env
     out = subprocess.run(
         ["bifrost", "auth", "list"], check=True, capture_output=True, text=True,
     ).stdout
     for line in out.splitlines():
         if "(current" in line:
             url = line.strip().split()[0]
-            return _host_from_api_url(url)
+            return urllib.parse.urlparse(url).hostname or url
     raise RuntimeError(
         "Could not determine the current Bifrost host from `bifrost auth list`. "
         "Pass --bifrost-host explicitly or set BIFROST_API_URL."
@@ -122,12 +110,6 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
     the `name:` from frontmatter, the `description:` from frontmatter, and an
     optional tmpdir handle for the caller to clean up.
     """
-    skill_dir, cleanup = resolve_skill_dir(path)
-    name, desc = parse_skill_frontmatter(skill_dir / SKILL_MD)
-    return skill_dir, name, desc, cleanup
-
-
-def resolve_skill_dir(path: Path) -> tuple[Path, Path | None]:
     cleanup: Path | None = None
     if path.is_file() and zipfile.is_zipfile(path):
         tmp = Path(tempfile.mkdtemp(prefix="copilot-skill-src-"))
@@ -135,27 +117,24 @@ def resolve_skill_dir(path: Path) -> tuple[Path, Path | None]:
         with zipfile.ZipFile(path) as z:
             z.extractall(tmp)
         # Look for a single top-level folder containing SKILL.md.
-        candidates = [p.parent for p in tmp.rglob(SKILL_MD)]
+        candidates = [p.parent for p in tmp.rglob("SKILL.md")]
         if not candidates:
-            raise RuntimeError(f"No {SKILL_MD} found inside {path}")
+            raise RuntimeError(f"No SKILL.md found inside {path}")
         skill_dir = candidates[0]
     elif path.is_dir():
-        if (path / SKILL_MD).exists():
+        if (path / "SKILL.md").exists():
             skill_dir = path
         else:
-            candidates = [p.parent for p in path.rglob(SKILL_MD)]
+            candidates = [p.parent for p in path.rglob("SKILL.md")]
             if not candidates:
-                raise RuntimeError(f"No {SKILL_MD} found under {path}")
+                raise RuntimeError(f"No SKILL.md found under {path}")
             skill_dir = candidates[0]
     else:
         raise RuntimeError(f"--skill-source must be a folder, .zip, or .skill: {path}")
-    return skill_dir, cleanup
 
-
-def parse_skill_frontmatter(skill_path: Path) -> tuple[str, str]:
-    text = skill_path.read_text()
+    text = (skill_dir / "SKILL.md").read_text()
     if not text.startswith("---"):
-        raise RuntimeError(f"{SKILL_MD} missing YAML frontmatter: {skill_path}")
+        raise RuntimeError(f"SKILL.md missing YAML frontmatter: {skill_dir/'SKILL.md'}")
     _, fm, _ = text.split("---", 2)
     name = ""
     desc = ""
@@ -178,10 +157,10 @@ def parse_skill_frontmatter(skill_path: Path) -> tuple[str, str]:
             else:
                 desc_lines.append(line.strip())
     if desc_lines:
-        desc = " ".join(line for line in desc_lines if line)
+        desc = " ".join(l for l in desc_lines if l)
     if not name:
         raise RuntimeError("SKILL.md frontmatter missing `name:`")
-    return name, desc
+    return skill_dir, name, desc, cleanup
 
 
 def build_skill_md(agent: dict, skill_name: str) -> str:
@@ -255,7 +234,7 @@ def build_manifest(agent: dict, skill_name: str, app_id: str,
             "short": short_desc,
             "full": desc_full[:4000],
         },
-        "icons": {"color": COLOR_ICON, "outline": OUTLINE_ICON},
+        "icons": {"color": "color.png", "outline": "outline.png"},
         "accentColor": "#4F46E5",
         "agentSkills": [{"folder": f"./skills/{skill_name}"}],
         "agentConnectors": [{
@@ -353,16 +332,16 @@ def main() -> int:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(entry, dest)
     else:
-        (skills_dir / SKILL_MD).write_text(build_skill_md(agent, skill_name))
+        (skills_dir / "SKILL.md").write_text(build_skill_md(agent, skill_name))
 
     if icon_src:
-        render_icon(icon_src, 192, pkg_dir / COLOR_ICON)
+        render_icon(icon_src, 192, pkg_dir / "color.png")
     else:
-        (pkg_dir / COLOR_ICON).write_bytes(solid_png(192, (79, 70, 229)))
+        (pkg_dir / "color.png").write_bytes(solid_png(192, (79, 70, 229)))
     if outline_src:
-        render_icon(outline_src, 32, pkg_dir / OUTLINE_ICON)
+        render_icon(outline_src, 32, pkg_dir / "outline.png")
     else:
-        (pkg_dir / OUTLINE_ICON).write_bytes(solid_png(32, (255, 255, 255)))
+        (pkg_dir / "outline.png").write_bytes(solid_png(32, (255, 255, 255)))
 
     if src_cleanup:
         shutil.rmtree(src_cleanup, ignore_errors=True)
