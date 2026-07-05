@@ -210,3 +210,167 @@ async def test_artifact_service_delegates_build_upload_delete_and_static_helpers
     assert service.artifact_storage_key(solution.id, "job") == f"solution-exports/{solution.id}/job.zip"
     assert service.artifact_filename(solution) == "customer-portal-1.2.3.zip"
     assert service.capture_flags(options)["include_imports"] is True
+
+
+async def test_build_solution_backup_zip_overlays_runtime_payload_on_stored_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "stored-source.zip"
+    dest = tmp_path / "backup.zip"
+    source_path.write_bytes(b"source")
+    dest.write_bytes(b"old")
+    solution = _solution()
+    options = _options(include_secrets=True, password="pw")
+    calls: list[tuple[str, object]] = []
+
+    class _Artifact:
+        def __init__(self, solution_id):
+            assert solution_id == solution.id
+
+        async def copy_to_path(self, path):
+            assert path == source_path
+            return True
+
+    class _Capture:
+        def __init__(self, db):
+            self.db = db
+
+        async def bundle_for(self, solution_arg, **flags):
+            calls.append(("bundle", (solution_arg, flags)))
+            bundle = type(
+                "Bundle",
+                (),
+                {"config_values": {"API_URL": "url", "API_TOKEN": "secret"}},
+            )()
+            return bundle
+
+    async def apply_selection(db, solution_arg, options_arg, values):
+        assert values == {"API_URL": "url", "API_TOKEN": "secret"}
+        return {"API_TOKEN": "secret"}
+
+    async def add_live(source_arg, bundle_arg, db, dest_arg, *, password):
+        calls.append(("overlay", (source_arg, bundle_arg.config_values, dest_arg, password)))
+        dest_arg.write_bytes(b"zip")
+
+    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: source_path)
+    monkeypatch.setattr(export_jobs, "SolutionSourceArtifactStorage", _Artifact)
+    monkeypatch.setattr(export_jobs, "SolutionCaptureService", _Capture)
+    monkeypatch.setattr(export_jobs, "apply_config_value_selection", apply_selection)
+    monkeypatch.setattr(export_jobs, "add_live_content_to_workspace_zip_file", add_live)
+
+    await export_jobs.build_solution_backup_zip_to_path(object(), solution, options, dest)
+
+    assert dest.read_bytes() == b"zip"
+    assert not source_path.exists()
+    assert calls[0][0] == "bundle"
+    assert calls[0][1][1] == {
+        "include_imports": True,
+        "include_values": True,
+        "include_data": False,
+        "include_files": False,
+    }
+    assert calls[1] == ("overlay", (source_path, {"API_TOKEN": "secret"}, dest, "pw"))
+
+
+async def test_build_solution_backup_zip_uses_live_capture_when_source_artifact_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "missing-source.zip"
+    dest = tmp_path / "backup.zip"
+    solution = _solution()
+    options = _options(password="pw")
+    calls: list[tuple[str, object]] = []
+
+    class _Artifact:
+        def __init__(self, _solution_id):
+            pass
+
+        async def copy_to_path(self, path):
+            assert path == source_path
+            return False
+
+    class _Capture:
+        def __init__(self, _db):
+            pass
+
+        async def bundle_for(self, solution_arg, **flags):
+            bundle = type("Bundle", (), {"config_values": {}})()
+            calls.append(("bundle", (solution_arg, flags)))
+            return bundle
+
+    async def build_workspace(bundle_arg, db, dest_arg, *, password):
+        calls.append(("live", (bundle_arg.config_values, dest_arg, password)))
+        dest_arg.write_bytes(b"zip")
+
+    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: source_path)
+    monkeypatch.setattr(export_jobs, "SolutionSourceArtifactStorage", _Artifact)
+    monkeypatch.setattr(export_jobs, "SolutionCaptureService", _Capture)
+    monkeypatch.setattr(export_jobs, "build_workspace_zip_for_export", build_workspace)
+
+    await export_jobs.build_solution_backup_zip_to_path(object(), solution, options, dest)
+
+    assert dest.read_bytes() == b"zip"
+    assert calls[-1] == ("live", ({}, dest, "pw"))
+    assert not source_path.exists()
+
+
+async def test_build_solution_backup_zip_removes_partial_dest_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "stored-source.zip"
+    dest = tmp_path / "partial.zip"
+    source_path.write_bytes(b"source")
+    dest.write_bytes(b"partial")
+    solution = _solution()
+    options = _options(password="pw")
+
+    class _Artifact:
+        def __init__(self, _solution_id):
+            pass
+
+        async def copy_to_path(self, _path):
+            return False
+
+    class _Capture:
+        def __init__(self, _db):
+            pass
+
+        async def bundle_for(self, _solution, **_flags):
+            raise RuntimeError("capture failed")
+
+    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: source_path)
+    monkeypatch.setattr(export_jobs, "SolutionSourceArtifactStorage", _Artifact)
+    monkeypatch.setattr(export_jobs, "SolutionCaptureService", _Capture)
+
+    with pytest.raises(RuntimeError, match="capture failed"):
+        await export_jobs.build_solution_backup_zip_to_path(
+            object(), solution, options, dest
+        )
+
+    assert not dest.exists()
+    assert not source_path.exists()
+
+
+async def test_build_solution_backup_zip_tempfile_returns_caller_owned_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    out_path = tmp_path / "generated.zip"
+    solution = _solution()
+    options = _options(password="pw")
+
+    async def build_to_path(db, solution_arg, options_arg, dest_arg):
+        assert solution_arg == solution
+        assert options_arg == options
+        dest_arg.write_bytes(b"zip")
+
+    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: out_path)
+    monkeypatch.setattr(export_jobs, "build_solution_backup_zip_to_path", build_to_path)
+
+    assert await export_jobs.build_solution_backup_zip_tempfile(
+        object(), solution, options
+    ) == out_path
+    assert out_path.read_bytes() == b"zip"
