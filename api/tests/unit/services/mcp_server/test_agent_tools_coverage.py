@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -40,6 +41,44 @@ def _agent(**overrides):
     for key, value in overrides.items():
         setattr(row, key, value)
     return row
+
+
+def _agent_detail(**overrides):
+    now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    row = SimpleNamespace(
+        id=uuid4(),
+        name="Dispatcher",
+        description="Routes tickets",
+        system_prompt="Route work carefully",
+        channels=["chat", "teams"],
+        access_level=SimpleNamespace(value="role_based"),
+        organization_id=uuid4(),
+        is_active=True,
+        created_by="creator@example.com",
+        created_at=now,
+        updated_at=now,
+        tools=[SimpleNamespace(id=uuid4())],
+        delegated_agents=[SimpleNamespace(id=uuid4())],
+        roles=[SimpleNamespace(id=uuid4())],
+        knowledge_sources=["kb"],
+        system_tools=["list_agents"],
+        llm_model="gpt-4o",
+        llm_max_tokens=2048,
+    )
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    return row
+
+
+class _Result:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+    def scalar_one(self):
+        return self.value
 
 
 def _fake_tool_db(db):
@@ -160,6 +199,76 @@ class TestListAgentsTool:
 
         assert "Error listing agents" in result.structured_content["error"]
         assert "database down" in result.structured_content["error"]
+
+
+class TestGetAgentTool:
+    @pytest.mark.asyncio
+    async def test_get_agent_by_id_shapes_full_agent_details(self):
+        agent = _agent_detail()
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(agent))
+
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.get_agent(_context(), agent_id=str(agent.id))
+
+        content = result.structured_content
+        assert content["id"] == str(agent.id)
+        assert content["name"] == "Dispatcher"
+        assert content["created_at"] == agent.created_at.isoformat()
+        assert content["updated_at"] == agent.updated_at.isoformat()
+        assert content["tool_ids"] == [str(agent.tools[0].id)]
+        assert content["delegated_agent_ids"] == [str(agent.delegated_agents[0].id)]
+        assert content["role_ids"] == [str(agent.roles[0].id)]
+        assert content["knowledge_sources"] == ["kb"]
+        assert content["system_tools"] == ["list_agents"]
+        assert content["llm_max_tokens"] == 2048
+        db.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_agent_by_name_returns_prioritized_lookup_result(self):
+        agent = _agent_detail(
+            access_level=None,
+            organization_id=None,
+            created_at=None,
+            updated_at=None,
+            tools=[],
+            delegated_agents=[],
+            roles=[],
+            knowledge_sources=None,
+            system_tools=None,
+        )
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(agent))
+
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.get_agent(_context(admin=False), agent_name="Dispatcher")
+
+        assert result.structured_content["access_level"] == "role_based"
+        assert result.structured_content["organization_id"] is None
+        assert result.structured_content["created_at"] is None
+        assert result.structured_content["tool_ids"] == []
+        assert result.structured_content["knowledge_sources"] == []
+
+    @pytest.mark.asyncio
+    async def test_get_agent_reports_missing_invalid_and_db_errors(self):
+        result = await agents.get_agent(_context())
+        assert "Either agent_id or agent_name is required" in result.structured_content["error"]
+
+        db = AsyncMock()
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.get_agent(_context(), agent_id="bad")
+        assert "not a valid UUID" in result.structured_content["error"]
+
+        db.execute = AsyncMock(return_value=_Result(None))
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.get_agent(_context(), agent_id=str(uuid4()))
+        assert "not found" in result.structured_content["error"]
+
+        db.execute = AsyncMock(side_effect=RuntimeError("query failed"))
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.get_agent(_context(), agent_id=str(uuid4()))
+        assert "Error getting agent" in result.structured_content["error"]
+        assert "query failed" in result.structured_content["error"]
 
 
 class TestAgentMutationValidation:
@@ -283,3 +392,276 @@ class TestAgentMutationValidation:
 
         result = await agents.delete_agent(ctx, agent_id="bad")
         assert "not a valid UUID" in result.structured_content["error"]
+
+
+class TestCreateAgentTool:
+    @pytest.mark.asyncio
+    async def test_create_agent_resolves_tools_delegates_and_shapes_response(self):
+        org_id = uuid4()
+        workflow_id = uuid4()
+        delegate_id = uuid4()
+        reloaded = _agent_detail(
+            name="Dispatcher",
+            description="Routes tickets",
+            channels=["chat"],
+        )
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _Result(SimpleNamespace(id=workflow_id, organization_id=org_id)),
+                _Result(SimpleNamespace(id=delegate_id, organization_id=org_id)),
+                _Result(reloaded),
+            ]
+        )
+
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.create_agent(
+                _context(admin=True, org_id=org_id),
+                name="Dispatcher",
+                system_prompt="Route work carefully",
+                description="Routes tickets",
+                tool_ids=[str(workflow_id)],
+                delegated_agent_ids=[str(delegate_id)],
+                knowledge_sources=["kb"],
+                system_tools=["list_agents"],
+                llm_model="gpt-4o",
+                llm_max_tokens=1024,
+            )
+
+        assert result.structured_content == {
+            "success": True,
+            "id": str(reloaded.id),
+            "name": "Dispatcher",
+            "description": "Routes tickets",
+            "channels": ["chat"],
+            "tool_count": 1,
+            "delegated_agent_count": 1,
+        }
+        assert db.execute.await_count == 3
+        assert db.add.call_count == 3
+        db.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_agent_rejects_cross_org_tool_before_relationship_writes(self):
+        org_id = uuid4()
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.execute = AsyncMock(
+            return_value=_Result(SimpleNamespace(id=uuid4(), organization_id=uuid4()))
+        )
+
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.create_agent(
+                _context(admin=True, org_id=org_id),
+                name="Dispatcher",
+                system_prompt="Route work carefully",
+                tool_ids=[str(uuid4())],
+            )
+
+        assert "belongs to a different organization" in result.structured_content["error"]
+        db.flush.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_agent_returns_error_when_db_write_fails(self):
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.flush = AsyncMock(side_effect=RuntimeError("flush failed"))
+
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.create_agent(
+                _context(admin=True, org_id=None),
+                name="Global",
+                system_prompt="Route work carefully",
+                scope="global",
+            )
+
+        assert "Error creating agent" in result.structured_content["error"]
+        assert "flush failed" in result.structured_content["error"]
+
+
+class TestUpdateAgentTool:
+    @pytest.mark.asyncio
+    async def test_update_agent_applies_fields_relationships_and_shapes_response(self):
+        org_id = uuid4()
+        agent_id = uuid4()
+        workflow_id = uuid4()
+        delegate_id = uuid4()
+        existing = _agent_detail(id=agent_id, organization_id=org_id)
+        reloaded = _agent_detail(id=agent_id, name="Renamed", organization_id=org_id)
+        db = AsyncMock()
+        db.add = MagicMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _Result(existing),
+                _Result(SimpleNamespace(id=workflow_id, organization_id=org_id)),
+                MagicMock(),
+                _Result(SimpleNamespace(id=delegate_id, organization_id=org_id)),
+                MagicMock(),
+                _Result(reloaded),
+            ]
+        )
+
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        ):
+            result = await agents.update_agent(
+                _context(admin=True, org_id=org_id),
+                agent_id=str(agent_id),
+                name="Renamed",
+                description="Updated",
+                system_prompt="Updated prompt",
+                channels=["chat", "slack"],
+                is_active=False,
+                tool_ids=[str(workflow_id)],
+                delegated_agent_ids=[str(delegate_id)],
+                llm_model="gpt-4.1",
+                llm_max_tokens=4096,
+            )
+
+        assert result.structured_content["success"] is True
+        assert result.structured_content["id"] == str(agent_id)
+        assert result.structured_content["name"] == "Renamed"
+        assert result.structured_content["updates"] == [
+            "name",
+            "description",
+            "system_prompt",
+            "channels",
+            "is_active",
+            "llm_model",
+            "llm_max_tokens",
+            "tool_ids",
+            "delegated_agent_ids",
+        ]
+        assert existing.name == "Renamed"
+        assert existing.is_active is False
+        assert db.execute.await_count == 6
+        assert db.add.call_count == 2
+        db.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_update_agent_rejects_solution_managed_and_missing_updates(self):
+        org_id = uuid4()
+        agent_id = uuid4()
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=org_id)))
+
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=True),
+            patch("src.services.solutions.guard.SOLUTION_MANAGED_MESSAGE", "locked"),
+        ):
+            result = await agents.update_agent(
+                _context(admin=False, org_id=org_id),
+                agent_id=str(agent_id),
+                name="Renamed",
+            )
+        assert result.structured_content["error"] == "locked"
+        db.flush.assert_not_called()
+
+        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=org_id)))
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        ):
+            result = await agents.update_agent(
+                _context(admin=False, org_id=org_id),
+                agent_id=str(agent_id),
+            )
+        assert "No updates provided" in result.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_update_agent_reports_access_cross_scope_and_db_errors(self):
+        org_id = uuid4()
+        agent_id = uuid4()
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(None))
+
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.update_agent(
+                _context(admin=True, org_id=None),
+                agent_id=str(agent_id),
+                name="Missing",
+            )
+        assert "not found" in result.structured_content["error"]
+
+        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=uuid4())))
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        ):
+            result = await agents.update_agent(
+                _context(admin=False, org_id=org_id),
+                agent_id=str(agent_id),
+                name="Wrong Org",
+            )
+        assert "permission" in result.structured_content["error"]
+
+        db.execute = AsyncMock(side_effect=RuntimeError("update query failed"))
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.update_agent(
+                _context(admin=True, org_id=None),
+                agent_id=str(agent_id),
+                name="Broken",
+            )
+        assert "Error updating agent" in result.structured_content["error"]
+        assert "update query failed" in result.structured_content["error"]
+
+
+class TestDeleteAgentTool:
+    @pytest.mark.asyncio
+    async def test_delete_agent_soft_deletes_and_shapes_response(self):
+        org_id = uuid4()
+        agent = _agent_detail(organization_id=org_id)
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(agent))
+
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        ):
+            result = await agents.delete_agent(
+                _context(admin=False, org_id=org_id),
+                agent_id=str(agent.id),
+            )
+
+        assert result.structured_content["success"] is True
+        assert result.structured_content["id"] == str(agent.id)
+        assert result.structured_content["message"] == "Agent 'Dispatcher' has been deactivated."
+        assert agent.is_active is False
+        db.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_agent_reports_not_found_locked_access_and_db_errors(self):
+        agent_id = uuid4()
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(None))
+
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.delete_agent(_context(admin=True, org_id=None), str(agent_id))
+        assert "not found" in result.structured_content["error"]
+
+        locked_agent = _agent_detail(id=agent_id)
+        db.execute = AsyncMock(return_value=_Result(locked_agent))
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=True),
+            patch("src.services.solutions.guard.SOLUTION_MANAGED_MESSAGE", "locked"),
+        ):
+            result = await agents.delete_agent(_context(admin=True, org_id=None), str(agent_id))
+        assert result.structured_content["error"] == "locked"
+
+        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=None)))
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        ):
+            result = await agents.delete_agent(_context(admin=False), str(agent_id))
+        assert "Only platform admins" in result.structured_content["error"]
+
+        db.execute = AsyncMock(side_effect=RuntimeError("delete query failed"))
+        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+            result = await agents.delete_agent(_context(admin=True, org_id=None), str(agent_id))
+        assert "Error deleting agent" in result.structured_content["error"]
+        assert "delete query failed" in result.structured_content["error"]
