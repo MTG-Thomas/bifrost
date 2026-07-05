@@ -274,6 +274,72 @@ async def test_serialize_workflow_includes_role_ids() -> None:
 
 
 @pytest.mark.asyncio
+async def test_serialize_form_includes_role_ids() -> None:
+    row = SimpleNamespace(id="form-1", name="Ticket Request")
+    roles = [SimpleNamespace(role_id="requester")]
+    serialized = Serializable({"name": "Ticket Request", "roles": ["requester"]})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(DbStub(DbResult(scalar=row), DbResult(scalars=roles))),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_form",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("forms", "form-1")
+
+    assert result == {"name": "Ticket Request", "roles": ["requester"]}
+    serialize.assert_called_once_with(row, ["requester"])
+
+
+@pytest.mark.asyncio
+async def test_serialize_agent_includes_role_ids() -> None:
+    row = SimpleNamespace(id="agent-1", name="Dispatcher")
+    roles = [SimpleNamespace(role_id="operator")]
+    serialized = Serializable({"name": "Dispatcher", "roles": ["operator"]})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(DbStub(DbResult(scalar=row), DbResult(scalars=roles))),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_agent",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("agents", "agent-1")
+
+    assert result == {"name": "Dispatcher", "roles": ["operator"]}
+    serialize.assert_called_once_with(row, ["operator"])
+
+
+@pytest.mark.asyncio
+async def test_serialize_app_includes_role_ids() -> None:
+    row = SimpleNamespace(id="app-1", name="Desk")
+    roles = [SimpleNamespace(role_id="viewer")]
+    serialized = Serializable({"name": "Desk", "roles": ["viewer"]})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(DbStub(DbResult(scalar=row), DbResult(scalars=roles))),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_app",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("apps", "app-1")
+
+    assert result == {"name": "Desk", "roles": ["viewer"]}
+    serialize.assert_called_once_with(row, ["viewer"])
+
+
+@pytest.mark.asyncio
 async def test_serialize_integration_collects_schema_oauth_and_mappings() -> None:
     row = SimpleNamespace(id="integration-1", name="Halo")
     schemas = [SimpleNamespace(name="tenant")]
@@ -369,6 +435,27 @@ async def test_serialize_organization_uses_manifest_serializer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_serialize_role_uses_manifest_serializer() -> None:
+    row = SimpleNamespace(id="role-1", name="Dispatcher")
+    serialized = Serializable({"name": "Dispatcher"})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(DbStub(DbResult(scalar=row))),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_role",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("roles", "role-1")
+
+    assert result == {"name": "Dispatcher"}
+    serialize.assert_called_once_with(row)
+
+
+@pytest.mark.asyncio
 async def test_serialize_entity_logs_and_returns_none_on_query_failure() -> None:
     class BrokenDb:
         async def execute(self, _statement):
@@ -382,3 +469,29 @@ async def test_serialize_entity_logs_and_returns_none_on_query_failure() -> None
 
     assert result is None
     assert "Failed to serialize tables/table-1" in warning.call_args.args[0]
+
+
+def test_after_commit_returns_without_pending_changes() -> None:
+    session = SessionStub()
+
+    with patch.object(entity_change_hook.asyncio, "get_running_loop") as get_loop:
+        entity_change_hook._after_commit(session)
+
+    get_loop.assert_not_called()
+
+
+def test_register_entity_change_hooks_registers_session_listeners() -> None:
+    entity_change_hook._MODEL_REGISTRY[WatchedThing] = ("things", "id")
+
+    with (
+        patch.object(entity_change_hook.event, "listen") as listen,
+        patch.object(entity_change_hook.logger, "info") as info,
+    ):
+        entity_change_hook.register_entity_change_hooks()
+
+    assert [call.args[1:] for call in listen.call_args_list] == [
+        ("after_flush", entity_change_hook._after_flush),
+        ("after_commit", entity_change_hook._after_commit),
+        ("after_rollback", entity_change_hook._after_rollback),
+    ]
+    info.assert_called_once()
