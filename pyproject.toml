@@ -103,8 +103,8 @@ dependencies = [
     "python-json-logger",
     "structlog",
     "sentry-sdk[fastapi]",
-    "opentelemetry-sdk==1.41.1",
-    "opentelemetry-exporter-otlp-proto-grpc==1.41.1",
+    "opentelemetry-sdk==1.43.0",
+    "opentelemetry-exporter-otlp-proto-grpc==1.43.0",
     "psutil",  # Process monitoring for worker heartbeats
 
     # =========================================================================
