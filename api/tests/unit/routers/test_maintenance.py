@@ -104,6 +104,9 @@ class _RowsResult:
     def scalars(self):
         return self
 
+    def scalar_one_or_none(self):
+        return self._rows[0] if self._rows else None
+
 
 @pytest.mark.asyncio
 async def test_get_maintenance_status_counts_python_files() -> None:
@@ -179,3 +182,154 @@ async def test_cleanup_orphaned_maps_errors_to_http_500() -> None:
 
     assert exc_info.value.status_code == 500
     assert "Failed to clean up orphaned entities" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_scan_app_dependencies_reports_missing_refs_and_creates_notification(monkeypatch) -> None:
+    app_id = uuid4()
+    app = SimpleNamespace(
+        id=app_id,
+        name="Portal",
+        slug="portal",
+        repo_prefix="apps/portal/",
+    )
+    workflow_id = uuid4()
+    notification_service = SimpleNamespace(
+        find_admin_notification_by_title=AsyncMock(return_value=None),
+        create_notification=AsyncMock(),
+    )
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _RowsResult([app]),
+            _RowsResult([(workflow_id, "known_workflow", "workflows/known.py", "run")]),
+            _RowsResult(
+                [
+                    ("apps/portal/page.tsx", "useWorkflow('missing_workflow')"),
+                    ("apps/portal/empty.tsx", None),
+                ]
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "parse_dependencies",
+        lambda content: {"missing_workflow"} if "missing" in content else set(),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "get_notification_service",
+        lambda: notification_service,
+    )
+
+    response = await maintenance.scan_app_dependencies(ctx=None, user=None, db=db)
+
+    assert response.apps_scanned == 1
+    assert response.files_scanned == 2
+    assert response.dependencies_rebuilt == 1
+    assert response.issues_found == 1
+    assert response.issues[0].app_slug == "portal"
+    assert response.issues[0].file_path == "page.tsx"
+    assert response.notification_created is True
+    notification_service.find_admin_notification_by_title.assert_awaited_once()
+    notification_service.create_notification.assert_awaited_once()
+    request = notification_service.create_notification.await_args.kwargs["request"]
+    assert request.title == "Missing App Dependencies: 1 app(s)"
+    assert request.metadata["issues"][0]["dependency_id"] == "missing_workflow"
+
+
+@pytest.mark.asyncio
+async def test_scan_app_dependencies_skips_duplicate_notification(monkeypatch) -> None:
+    app = SimpleNamespace(
+        id=uuid4(),
+        name="Portal",
+        slug="portal",
+        repo_prefix="apps/portal/",
+    )
+    notification_service = SimpleNamespace(
+        find_admin_notification_by_title=AsyncMock(return_value=SimpleNamespace(id=uuid4())),
+        create_notification=AsyncMock(),
+    )
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _RowsResult([app]),
+            _RowsResult([]),
+            _RowsResult([("apps/portal/page.tsx", "useWorkflow('missing')")]),
+        ]
+    )
+    monkeypatch.setattr(maintenance, "parse_dependencies", lambda _content: {"missing"})
+    monkeypatch.setattr(maintenance, "get_notification_service", lambda: notification_service)
+
+    response = await maintenance.scan_app_dependencies(ctx=None, user=None, db=db)
+
+    assert response.issues_found == 1
+    assert response.notification_created is False
+    notification_service.create_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_app_dependencies_maps_errors_to_http_500() -> None:
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=RuntimeError("db failed"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await maintenance.scan_app_dependencies(ctx=None, user=None, db=db)
+
+    assert exc_info.value.status_code == 500
+    assert "Failed to rebuild app dependencies: db failed" == exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_returns_system_issue_when_file_listing_fails(monkeypatch) -> None:
+    service = SimpleNamespace(list_files=AsyncMock(side_effect=RuntimeError("storage down")))
+    monkeypatch.setattr(
+        "src.services.file_storage.FileStorageService",
+        lambda _db: service,
+    )
+
+    response = await maintenance.run_preflight(user=None, db=AsyncMock())
+
+    assert response.valid is False
+    assert response.issues[0].category == "system"
+    assert response.issues[0].detail == "Failed to list files: storage down"
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_warns_for_unregistered_decorated_functions(monkeypatch) -> None:
+    files = [
+        SimpleNamespace(path="workflows/registered.py"),
+        SimpleNamespace(path="workflows/missing.py"),
+        SimpleNamespace(path="notes/readme.txt"),
+        SimpleNamespace(path="workflows/bad.py"),
+    ]
+    service = SimpleNamespace(
+        list_files=AsyncMock(return_value=files),
+        read_file=AsyncMock(
+            side_effect=[
+                (b"@workflow\ndef registered():\n    pass\n", None),
+                (b"@tool()\nasync def missing_tool():\n    pass\n", None),
+                (b"def broken(:\n", None),
+            ]
+        ),
+    )
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _RowsResult([SimpleNamespace(id=uuid4())]),
+            _RowsResult([]),
+        ]
+    )
+    monkeypatch.setattr(
+        "src.services.file_storage.FileStorageService",
+        lambda _db: service,
+    )
+
+    response = await maintenance.run_preflight(user=None, db=db)
+
+    assert response.valid is True
+    assert response.issues == []
+    assert len(response.warnings) == 1
+    assert response.warnings[0].category == "unregistered_function"
+    assert "missing_tool" in response.warnings[0].detail
+    assert response.warnings[0].path == "workflows/missing.py"
