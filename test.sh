@@ -273,13 +273,13 @@ run_pytest() {
     # changed migrations they should run `./test.sh stack reset` once.
     require_stack_up
     reset_state
-    local build_flag="--build"
+    local build_args=("--build")
     if [ "${BIFROST_SKIP_BUILD:-0}" = "1" ]; then
-        build_flag="--no-build"
+        build_args=()
         echo "BIFROST_SKIP_BUILD=1 — using pre-built test-runner image from local docker."
     fi
 
-    docker compose -f "$COMPOSE_FILE" --profile test run "$build_flag" --rm test-runner \
+    docker compose -f "$COMPOSE_FILE" --profile test run "${build_args[@]}" --rm test-runner \
         pytest "$@" --durations=25 --junitxml="$LOG_DIR/test-results.xml" 2>&1 | tee "$LOG_DIR/test-runner.log"
     return "${PIPESTATUS[0]}"
 }
