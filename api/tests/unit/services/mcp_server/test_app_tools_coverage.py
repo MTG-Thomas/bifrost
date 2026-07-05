@@ -20,6 +20,16 @@ def _context(*, admin: bool = False, org_id=None) -> MCPContext:
     )
 
 
+def _context_without_org() -> MCPContext:
+    return MCPContext(
+        user_id=str(uuid4()),
+        org_id=None,
+        is_platform_admin=False,
+        user_email="user@example.com",
+        user_name="Test User",
+    )
+
+
 def _app(**overrides):
     row = SimpleNamespace(
         id=uuid4(),
@@ -346,16 +356,15 @@ async def test_create_app_validates_scope_org_and_stale_source():
     no_name = await apps.create_app(_context(), "")
     bad_scope = await apps.create_app(_context(), "Portal", scope="tenant")
     bad_org = await apps.create_app(
-        _context(org_id=None),
+        _context_without_org(),
         "Portal",
         organization_id="not-a-uuid",
     )
     missing_org = await apps.create_app(
-        _context(org_id=None),
+        _context_without_org(),
         "Portal",
         scope="organization",
     )
-
     db = _Db([_ScalarRowsResult([])])
     with (
         patch.object(apps, "get_tool_db", _tool_db(db)),
