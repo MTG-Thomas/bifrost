@@ -1022,6 +1022,16 @@ class TestDeviceLoginFlow:
 
 
 class TestLogoutClearsKeychainAndPromptsEnv:
+    def test_logout_help_and_unknown_option(self, capsys):
+        assert cli.handle_logout(["--help"]) == 0
+        assert "Usage: bifrost logout" in capsys.readouterr().out
+
+        assert cli.handle_logout(["--url"]) == 1
+        assert "--url requires a value" in capsys.readouterr().err
+
+        assert cli.handle_logout(["--bogus"]) == 1
+        assert "Unknown option: --bogus" in capsys.readouterr().err
+
     def test_logout_clears_specific_url(self, monkeypatch, tmp_path):
         from bifrost import credentials as creds_mod
 
@@ -1174,8 +1184,38 @@ class TestLogoutClearsKeychainAndPromptsEnv:
         assert rc == 0
         assert (tmp_path / ".env").read_text() == env_before
 
+    def test_logout_prompt_decline_or_eof_leaves_env_alone(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("BIFROST_API_URL=https://prod.example.com\n")
+        monkeypatch.setattr(
+            cli,
+            "logout_flow",
+            lambda api_url=None: (True, "https://prod.example.com"),
+        )
+
+        monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+        assert cli.handle_logout([]) == 0
+        assert (tmp_path / ".env").read_text() == "BIFROST_API_URL=https://prod.example.com\n"
+
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _prompt: (_ for _ in ()).throw(EOFError()),
+        )
+        assert cli.handle_logout([]) == 0
+        assert (tmp_path / ".env").read_text() == "BIFROST_API_URL=https://prod.example.com\n"
+
 
 class TestAuthList:
+    def test_auth_help_and_unknown_subcommand(self, capsys):
+        assert cli.handle_auth([]) == 1
+        assert "Usage: bifrost auth" in capsys.readouterr().out
+
+        assert cli.handle_auth(["--help"]) == 0
+        assert "Usage: bifrost auth" in capsys.readouterr().out
+
+        assert cli.handle_auth(["wat"]) == 1
+        assert "Unknown auth subcommand: wat" in capsys.readouterr().err
+
     def test_auth_list_with_no_credentials(self, monkeypatch, tmp_path, capsys):
         from bifrost import credentials as creds_mod
 
