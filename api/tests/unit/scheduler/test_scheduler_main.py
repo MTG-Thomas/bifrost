@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -155,6 +156,190 @@ def test_build_clone_url_from_config_handles_github_and_owner_repo(scheduler) ->
 @pytest.mark.asyncio
 async def test_handle_embedding_reindex_requires_notification_id(scheduler) -> None:
     await scheduler._handle_embedding_reindex({})
+
+
+@pytest.mark.asyncio
+async def test_handle_reimport_stores_success_and_failure_results(
+    monkeypatch: pytest.MonkeyPatch,
+    scheduler,
+) -> None:
+    redis = AsyncMock()
+
+    class FakeSyncService:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        async def reimport_from_repo(self) -> int:
+            return 7
+
+    class FakeDbContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(scheduler_main, "get_db_context", lambda: FakeDbContext())
+    monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: redis)
+    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", FakeSyncService)
+
+    await scheduler._handle_reimport({"job_id": "job-1"})
+
+    redis.setex.assert_awaited_once()
+    assert redis.setex.await_args.args[:2] == ("bifrost:job:job-1", 300)
+    payload = json.loads(redis.setex.await_args.args[2])
+    assert payload["status"] == "success"
+    assert payload["entities_imported"] == 7
+
+    class FailingSyncService(FakeSyncService):
+        async def reimport_from_repo(self) -> int:
+            raise RuntimeError("repo unavailable")
+
+    redis.setex.reset_mock()
+    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", FailingSyncService)
+
+    await scheduler._handle_reimport({"job_id": "job-2"})
+
+    payload = json.loads(redis.setex.await_args.args[2])
+    assert payload == {"status": "failed", "error": "repo unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_handle_reimport_tolerates_redis_result_storage_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    scheduler,
+) -> None:
+    redis = AsyncMock()
+    redis.setex.side_effect = RuntimeError("redis down")
+
+    class FakeSyncService:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        async def reimport_from_repo(self) -> int:
+            return 1
+
+    class FakeDbContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(scheduler_main, "get_db_context", lambda: FakeDbContext())
+    monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: redis)
+    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", FakeSyncService)
+
+    await scheduler._handle_reimport({"job_id": "job-redis"})
+
+    redis.setex.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_git_operation_reports_missing_or_incomplete_config(
+    monkeypatch: pytest.MonkeyPatch,
+    scheduler,
+) -> None:
+    class FakeDbContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(scheduler_main, "get_db_context", lambda: FakeDbContext())
+    publish = AsyncMock()
+    monkeypatch.setattr(scheduler_main, "publish_git_op_completed", publish)
+
+    with patch("src.services.github_config.get_github_config", AsyncMock(return_value=None)):
+        await scheduler._handle_git_operation(
+            {"type": "git_status", "jobId": "job-missing", "orgId": "org-1"}
+        )
+
+    publish.assert_awaited_once_with(
+        "job-missing",
+        status="failed",
+        result_type="status",
+        error="GitHub not configured",
+    )
+
+    publish.reset_mock()
+    config = SimpleNamespace(token="", repo_url="https://github.com/org/repo", branch="main")
+    with patch("src.services.github_config.get_github_config", AsyncMock(return_value=config)):
+        await scheduler._handle_git_operation(
+            {"type": "git_status", "jobId": "job-incomplete", "orgId": "org-1"}
+        )
+
+    publish.assert_awaited_once_with(
+        "job-incomplete",
+        status="failed",
+        result_type="status",
+        error="GitHub token or repository not configured",
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_git_operation_status_unknown_and_exception_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    scheduler,
+) -> None:
+    class FakeDbContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class FakeStatus:
+        def model_dump(self):
+            return {"clean": True}
+
+    class FakeSyncService:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        async def desktop_status(self):
+            return FakeStatus()
+
+    config = SimpleNamespace(
+        token="token",
+        repo_url="https://github.com/org/repo.git",
+        branch="main",
+    )
+    publish = AsyncMock()
+    monkeypatch.setattr(scheduler_main, "get_db_context", lambda: FakeDbContext())
+    monkeypatch.setattr(scheduler_main, "publish_git_op_completed", publish)
+    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", FakeSyncService)
+
+    with patch("src.services.github_config.get_github_config", AsyncMock(return_value=config)):
+        await scheduler._handle_git_operation({"type": "git_status", "jobId": "job-status"})
+        await scheduler._handle_git_operation({"type": "git_unknown", "jobId": "job-unknown"})
+
+    assert publish.await_args_list[0].kwargs == {
+        "status": "success",
+        "result_type": "status",
+        "data": {"clean": True},
+    }
+    assert publish.await_args_list[0].args == ("job-status",)
+    assert publish.await_args_list[1].kwargs == {
+        "status": "failed",
+        "result_type": "unknown",
+        "error": "Unknown operation type: git_unknown",
+    }
+
+    publish.reset_mock()
+    with patch(
+        "src.services.github_config.get_github_config",
+        AsyncMock(side_effect=RuntimeError("config failed")),
+    ):
+        await scheduler._handle_git_operation({"type": "git_status", "jobId": "job-error"})
+
+    publish.assert_awaited_once_with(
+        "job-error",
+        status="failed",
+        result_type="status",
+        error="config failed",
+    )
 
 
 @pytest.mark.asyncio
