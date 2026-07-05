@@ -281,6 +281,130 @@ class TestIntegrationsRepository:
         assert result["base_url"] == "https://example.test"
         assert result["secret"] == "shared-secret"
 
+    async def test_get_org_config_overrides_returns_only_org_entries(
+        self, repository, mock_session
+    ):
+        integration_id = uuid4()
+        org_id = uuid4()
+        wrapped = MagicMock()
+        wrapped.key = "api_key"
+        wrapped.value = {"value": "tenant-secret"}
+        plain = MagicMock()
+        plain.key = "region"
+        plain.value = "us"
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [wrapped, plain]
+        mock_session.execute.return_value = mock_result
+
+        result = await repository.get_org_config_overrides(integration_id, org_id)
+
+        assert result == {"api_key": "tenant-secret", "region": "us"}
+
+    async def test_get_config_for_mapping_external_reads_only_org_tier(
+        self, repository, mock_session
+    ):
+        integration_id = uuid4()
+        org_id = uuid4()
+        org_entry = MagicMock()
+        org_entry.key = "base_url"
+        org_entry.value = {"value": "https://tenant.example.test"}
+        org_entry.config_type = ConfigType.STRING
+        org_entry.organization_id = org_id
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [org_entry]
+        mock_session.execute.return_value = mock_result
+
+        result = await repository.get_config_for_mapping(
+            integration_id,
+            org_id,
+            external=True,
+        )
+
+        assert result == {"base_url": "https://tenant.example.test"}
+        statement = mock_session.execute.call_args.args[0]
+        compiled = statement.compile()
+        assert org_id in compiled.params.values()
+
+    async def test_get_config_for_mapping_sets_secret_to_none_on_decrypt_failure(
+        self, repository, mock_session
+    ):
+        integration_id = uuid4()
+        org_id = uuid4()
+        org_secret = MagicMock()
+        org_secret.key = "api_key"
+        org_secret.value = "encrypted"
+        org_secret.config_type = ConfigType.SECRET
+        org_secret.organization_id = org_id
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [org_secret]
+        mock_session.execute.return_value = mock_result
+
+        with patch(
+            "src.repositories.integrations.decrypt_secret",
+            side_effect=ValueError("bad ciphertext"),
+        ):
+            result = await repository.get_config_for_mapping(integration_id, org_id)
+
+        assert result == {"api_key": None}
+
+    async def test_get_integration_defaults_external_never_reads_global_tier(
+        self, repository, mock_session
+    ):
+        result = await repository.get_integration_defaults(uuid4(), external=True)
+
+        assert result == {}
+        mock_session.execute.assert_not_called()
+
+    async def test_get_integration_defaults_decrypts_secret_and_plain_values(
+        self, repository, mock_session
+    ):
+        secret = MagicMock()
+        secret.key = "api_key"
+        secret.value = {"value": "encrypted"}
+        secret.config_type = ConfigType.SECRET
+        plain = MagicMock()
+        plain.key = "base_url"
+        plain.value = "https://example.test"
+        plain.config_type = ConfigType.STRING
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [secret, plain]
+        mock_session.execute.return_value = mock_result
+
+        with patch(
+            "src.repositories.integrations.decrypt_secret",
+            return_value="decrypted",
+        ):
+            result = await repository.get_integration_defaults(uuid4(), external=False)
+
+        assert result == {
+            "api_key": "decrypted",
+            "base_url": "https://example.test",
+        }
+
+    async def test_get_integration_defaults_sets_secret_none_on_decrypt_failure(
+        self, repository, mock_session
+    ):
+        secret = MagicMock()
+        secret.key = "api_key"
+        secret.value = "encrypted"
+        secret.config_type = ConfigType.SECRET
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [secret]
+        mock_session.execute.return_value = mock_result
+
+        with patch(
+            "src.repositories.integrations.decrypt_secret",
+            side_effect=ValueError("bad ciphertext"),
+        ):
+            result = await repository.get_integration_defaults(uuid4(), external=False)
+
+        assert result == {"api_key": None}
+
     async def test_get_provider_org_token_filters_by_organization(
         self, repository, mock_session
     ):
