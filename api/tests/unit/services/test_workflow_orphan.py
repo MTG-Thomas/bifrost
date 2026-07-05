@@ -5,6 +5,7 @@ Tests the WorkflowOrphanService data models and basic service initialization.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -276,6 +277,30 @@ def _make_service(*, workflow=None, conflict_row=None):
     return service, db
 
 
+class _ScalarResult:
+    def __init__(self, values):
+        self._values = list(values)
+
+    def all(self):
+        return self._values
+
+    def __iter__(self):
+        return iter(self._values)
+
+
+class _ExecuteResult:
+    def __init__(self, values=(), *, scalar=None, rowcount=None):
+        self._values = list(values)
+        self._scalar = scalar
+        self.rowcount = rowcount
+
+    def scalars(self):
+        return _ScalarResult(self._values)
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+
 class TestReplaceWorkflowASTSemantics:
     """replace_workflow now validates via file content (AST), not a sibling DB row."""
 
@@ -469,6 +494,269 @@ class TestRemapWorkflowReferences:
             )
 
         assert result.is_orphaned is False
+
+
+class TestWorkflowOrphanReporting:
+    """Behavior tests for orphan listing and reference discovery."""
+
+    @pytest.mark.asyncio
+    async def test_get_orphaned_workflows_includes_code_and_references(self):
+        wf = _make_workflow(is_orphaned=True, path="workflows/orphan.py")
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_ExecuteResult([wf]))
+        service = WorkflowOrphanService(db)
+
+        refs = [WorkflowReference(type="form", id="form-1", name="Needs repair")]
+        with (
+            patch.object(service, "_get_workflow_references", AsyncMock(return_value=refs)),
+            patch.object(service, "_get_code", AsyncMock(return_value=_WORKFLOW_CODE)),
+        ):
+            orphans = await service.get_orphaned_workflows()
+
+        assert len(orphans) == 1
+        assert orphans[0].id == str(wf.id)
+        assert orphans[0].last_path == "workflows/orphan.py"
+        assert orphans[0].code == _WORKFLOW_CODE
+        assert orphans[0].used_by == refs
+
+    @pytest.mark.asyncio
+    async def test_get_workflow_references_deduplicates_forms_and_includes_agents(self):
+        workflow_id = uuid4()
+        form = SimpleNamespace(id=uuid4(), name="Main form")
+        duplicate_field = SimpleNamespace(form_id=form.id)
+        new_field_form_id = uuid4()
+        new_field = SimpleNamespace(form_id=new_field_form_id)
+        field_form = SimpleNamespace(id=new_field_form_id, name="Field form")
+        agent = SimpleNamespace(id=uuid4(), name="Support agent")
+
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _ExecuteResult([form]),
+                _ExecuteResult([duplicate_field, new_field]),
+                _ExecuteResult([form, field_form]),
+                _ExecuteResult([agent]),
+            ]
+        )
+        service = WorkflowOrphanService(db)
+
+        refs = await service._get_workflow_references(workflow_id)
+
+        assert [(ref.type, ref.id, ref.name) for ref in refs] == [
+            ("form", str(form.id), "Main form"),
+            ("form", str(field_form.id), "Field form"),
+            ("agent", str(agent.id), "Support agent"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_app_references_are_empty_after_component_engine_removal(self):
+        service = WorkflowOrphanService(db=None)
+
+        result = await service._get_app_references(uuid4())
+
+        assert result == []
+
+
+class TestCompatibleReplacementDiscovery:
+    """Tests for replacement candidate filtering and sorting."""
+
+    @pytest.mark.asyncio
+    async def test_compatible_replacements_filters_candidates_and_sorts_exact_first(self):
+        orphan_id = uuid4()
+        orphan = _make_workflow(
+            is_orphaned=True,
+            type="workflow",
+            path="workflows/orphan.py",
+            function_name="run",
+        )
+        orphan.id = orphan_id
+        exact = _make_workflow(
+            is_orphaned=False,
+            type="workflow",
+            path="workflows/exact.py",
+            function_name="run_exact",
+        )
+        compatible = _make_workflow(
+            is_orphaned=False,
+            type="workflow",
+            path="workflows/compatible.py",
+            function_name="run_compatible",
+        )
+        duplicate = _make_workflow(
+            is_orphaned=False,
+            type="workflow",
+            path=compatible.path,
+            function_name=compatible.function_name,
+        )
+        missing_code = _make_workflow(
+            is_orphaned=False,
+            type="workflow",
+            path="workflows/missing.py",
+            function_name="run_missing",
+        )
+        invalid_sig = _make_workflow(
+            is_orphaned=False,
+            type="workflow",
+            path="workflows/invalid.py",
+            function_name="run_invalid",
+        )
+        incompatible = _make_workflow(
+            is_orphaned=False,
+            type="workflow",
+            path="workflows/incompatible.py",
+            function_name="run_incompatible",
+        )
+
+        db = AsyncMock()
+        db.get = AsyncMock(return_value=orphan)
+        db.execute = AsyncMock(
+            return_value=_ExecuteResult(
+                [orphan, compatible, duplicate, missing_code, invalid_sig, incompatible, exact]
+            )
+        )
+        service = WorkflowOrphanService(db)
+
+        code_by_path = {
+            orphan.path: "def run(ticket_id: str, priority: int = 1) -> str:\n    return ticket_id\n",
+            compatible.path: "def run_compatible(ticket_id: str) -> str | None:\n    return ticket_id\n",
+            missing_code.path: None,
+            invalid_sig.path: "def other():\n    pass\n",
+            incompatible.path: "def run_incompatible(customer_id: str) -> str:\n    return customer_id\n",
+            exact.path: "def run_exact(ticket_id: str, priority: int = 1) -> str:\n    return ticket_id\n",
+        }
+
+        with patch.object(
+            service,
+            "_get_code",
+            AsyncMock(side_effect=lambda path: code_by_path[path]),
+        ):
+            replacements = await service.get_compatible_replacements(orphan_id)
+
+        assert [(r.path, r.function_name, r.compatibility) for r in replacements] == [
+            ("workflows/exact.py", "run_exact", "exact"),
+            ("workflows/compatible.py", "run_compatible", "compatible"),
+        ]
+        assert replacements[0].signature == (
+            "(ticket_id: str, priority: int = ...) -> str"
+        )
+
+    @pytest.mark.asyncio
+    async def test_compatible_replacements_handles_missing_code_or_signature(self):
+        wf = _make_workflow(is_orphaned=True, function_name="run")
+        db = AsyncMock()
+        db.get = AsyncMock(return_value=wf)
+        service = WorkflowOrphanService(db)
+
+        with patch.object(service, "_get_code", AsyncMock(return_value=None)):
+            assert await service.get_compatible_replacements(wf.id) == []
+
+        with patch.object(service, "_get_code", AsyncMock(return_value="def other():\n    pass\n")):
+            assert await service.get_compatible_replacements(wf.id) == []
+
+    @pytest.mark.asyncio
+    async def test_compatible_replacements_rejects_missing_or_active_workflow(self):
+        missing_service, _ = _make_service(workflow=None)
+        with pytest.raises(ValueError, match="not found"):
+            await missing_service.get_compatible_replacements(uuid4())
+
+        active = _make_workflow(is_orphaned=False)
+        active_service, _ = _make_service(workflow=active)
+        with pytest.raises(ValueError, match="not orphaned"):
+            await active_service.get_compatible_replacements(active.id)
+
+
+class TestWorkflowOrphanCleanup:
+    """Behavior tests for cleanup actions around orphaned workflow rows."""
+
+    @pytest.mark.asyncio
+    async def test_recreate_file_clears_orphan_when_code_exists(self):
+        wf = _make_workflow(is_orphaned=True, path="workflows/recreate.py")
+        service, db = _make_service(workflow=wf)
+
+        with patch.object(service, "_get_code", AsyncMock(return_value=_WORKFLOW_CODE)):
+            result = await service.recreate_file(wf.id)
+
+        assert result is wf
+        assert wf.is_orphaned is False
+        db.commit.assert_awaited_once()
+        db.refresh.assert_awaited_once_with(wf)
+
+    @pytest.mark.asyncio
+    async def test_recreate_file_rejects_invalid_states(self):
+        service, _ = _make_service(workflow=None)
+        with pytest.raises(ValueError, match="not found"):
+            await service.recreate_file(uuid4())
+
+        active = _make_workflow(is_orphaned=False)
+        service, _ = _make_service(workflow=active)
+        with pytest.raises(ValueError, match="not orphaned"):
+            await service.recreate_file(active.id)
+
+        missing_path = _make_workflow(is_orphaned=True, path="")
+        service, _ = _make_service(workflow=missing_path)
+        with pytest.raises(ValueError, match="missing path"):
+            await service.recreate_file(missing_path.id)
+
+        missing_code = _make_workflow(is_orphaned=True)
+        service, _ = _make_service(workflow=missing_code)
+        with patch.object(service, "_get_code", AsyncMock(return_value=None)):
+            with pytest.raises(ValueError, match="no code"):
+                await service.recreate_file(missing_code.id)
+
+    @pytest.mark.asyncio
+    async def test_deactivate_workflow_reports_reference_count(self):
+        wf = _make_workflow(is_orphaned=True)
+        service, db = _make_service(workflow=wf)
+        refs = [
+            WorkflowReference(type="form", id="form-1", name="Form"),
+            WorkflowReference(type="agent", id="agent-1", name="Agent"),
+        ]
+
+        with patch.object(
+            service, "_get_workflow_references", AsyncMock(return_value=refs)
+        ):
+            result, ref_count = await service.deactivate_workflow(wf.id)
+
+        assert result is wf
+        assert ref_count == 2
+        assert wf.is_active is False
+        db.commit.assert_awaited_once()
+        db.refresh.assert_awaited_once_with(wf)
+
+    @pytest.mark.asyncio
+    async def test_deactivate_workflow_rejects_missing_row(self):
+        service, _ = _make_service(workflow=None)
+
+        with pytest.raises(ValueError, match="not found"):
+            await service.deactivate_workflow(uuid4())
+
+
+class TestAgentToolRemapReferences:
+    """Tests for agent-tool reference cleanup without real DB rows."""
+
+    @pytest.mark.asyncio
+    async def test_remap_agent_tools_updates_rows_and_deletes_duplicates(self):
+        source_id = uuid4()
+        target_id = uuid4()
+        row_to_update = SimpleNamespace(agent_id=uuid4(), workflow_id=source_id)
+        row_to_delete = SimpleNamespace(agent_id=uuid4(), workflow_id=source_id)
+        db = AsyncMock()
+        db.execute = AsyncMock(
+            side_effect=[
+                _ExecuteResult([row_to_update, row_to_delete]),
+                _ExecuteResult(scalar=None),
+                _ExecuteResult(scalar=MagicMock()),
+            ]
+        )
+        db.delete = AsyncMock()
+        service = WorkflowOrphanService(db)
+
+        updated = await service._remap_agent_tool_references(source_id, target_id)
+
+        assert updated == 2
+        assert row_to_update.workflow_id == target_id
+        assert row_to_delete.workflow_id == source_id
+        db.delete.assert_awaited_once_with(row_to_delete)
 
 
 class TestWorkflowOrphanPureHelpers:
