@@ -129,6 +129,100 @@ async def test_process_message_retries_missing_pending_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_result_dispatches_success_and_failure() -> None:
+    consumer = make_consumer()
+    consumer._process_success = AsyncMock()  # type: ignore[method-assign]
+    consumer._process_failure = AsyncMock()  # type: ignore[method-assign]
+
+    await consumer._handle_result({"execution_id": "exec-success", "success": True})
+    await consumer._handle_result({"execution_id": "exec-failure", "success": False})
+
+    consumer._process_success.assert_awaited_once_with(
+        "exec-success",
+        {"execution_id": "exec-success", "success": True},
+    )
+    consumer._process_failure.assert_awaited_once_with(
+        "exec-failure",
+        {"execution_id": "exec-failure", "success": False},
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_success_and_failure_ignore_results_without_pending_context() -> None:
+    consumer = make_consumer()
+    consumer._redis_client.get_pending_execution.return_value = None
+    consumer._redis_client.delete_pending_execution = AsyncMock()
+    consumer._redis_client.push_result = AsyncMock()
+
+    await consumer._process_success(
+        "missing-success",
+        {"success": True, "result": {"ok": True}, "duration_ms": 12},
+    )
+    await consumer._process_failure(
+        "missing-failure",
+        {"success": False, "error": "boom", "error_type": "ExecutionError"},
+    )
+
+    assert consumer._redis_client.get_pending_execution.await_count == 2
+    consumer._redis_client.delete_pending_execution.assert_not_called()
+    consumer._redis_client.push_result.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_message_records_cancelled_before_start_for_sync_execution() -> None:
+    consumer = make_consumer()
+    execution_id = str(uuid4())
+    pending = pending_context()
+    pending["cancelled"] = True
+    pending["sync"] = True
+    consumer._redis_client.get_pending_execution.return_value = pending
+    consumer._redis_client.delete_pending_execution = AsyncMock()
+    consumer._redis_client.push_result = AsyncMock()
+
+    with (
+        patch(
+            "src.services.execution.queue_tracker.remove_from_queue",
+            new_callable=AsyncMock,
+        ) as remove_from_queue,
+        patch("src.repositories.executions.create_execution", new_callable=AsyncMock) as create_execution,
+        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_execution_update",
+            new_callable=AsyncMock,
+        ) as publish_execution_update,
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_history_update",
+            new_callable=AsyncMock,
+        ) as publish_history_update,
+    ):
+        await consumer.process_message(
+            {
+                "execution_id": execution_id,
+                "code": "cHJpbnQoJ2hpJyk=",
+                "script_name": "inline.py",
+                "sync": True,
+            }
+        )
+
+    remove_from_queue.assert_awaited_once_with(execution_id)
+    create_execution.assert_awaited_once()
+    update_execution.assert_awaited_once()
+    assert create_execution.await_args.kwargs["status"].value == "Cancelled"
+    assert update_execution.await_args.kwargs["error_message"] == (
+        "Execution was cancelled before it could start"
+    )
+    publish_execution_update.assert_awaited_once_with(execution_id, "Cancelled")
+    publish_history_update.assert_awaited_once()
+    consumer._redis_client.delete_pending_execution.assert_awaited_once_with(execution_id)
+    consumer._redis_client.push_result.assert_awaited_once_with(
+        execution_id=execution_id,
+        status="Cancelled",
+        error="Execution was cancelled before it could start",
+        duration_ms=0,
+    )
+
+
+@pytest.mark.asyncio
 async def test_process_message_retries_pool_admission_memory_pressure_without_deleting_pending() -> None:
     consumer = make_consumer()
     execution_id = str(uuid4())
