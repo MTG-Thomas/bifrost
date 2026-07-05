@@ -100,6 +100,36 @@ async def test_can_access_execution_checks_owner_for_existing_rows():
 
 
 @pytest.mark.asyncio
+async def test_can_access_execution_checks_embed_session_redis_key():
+    user = _user(embed=True, jti="embed-session")
+    redis = SimpleNamespace(exists=AsyncMock(return_value=1))
+
+    @asynccontextmanager
+    async def redis_ctx():
+        yield redis
+
+    with patch("src.core.cache.redis_client.get_redis", return_value=redis_ctx()):
+        assert await ws_mod.can_access_execution(user, "not-a-uuid")
+
+    redis.exists.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_can_access_agent_run_rejects_bad_id_and_delegates_loader():
+    user = _user()
+
+    assert not await ws_mod.can_access_agent_run(user, "not-a-uuid")
+
+    with (
+        patch.object(ws_mod, "get_db_context", _db_context(object())),
+        patch.object(ws_mod, "load_agent_run_for_user", AsyncMock(return_value=object())) as loader,
+    ):
+        assert await ws_mod.can_access_agent_run(user, str(uuid4()))
+
+    loader.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_can_access_app_handles_bad_missing_global_and_org_rows():
     user = _user()
 
@@ -173,4 +203,3 @@ async def test_generate_conversation_title_returns_none_on_empty_or_failure():
             conversation=SimpleNamespace(id=uuid4()),
             user_message="hello",
         ) is None
-
