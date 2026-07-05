@@ -4,9 +4,12 @@ Unit tests for GitHub Sync Service.
 Tests the GitHubSyncService data models and exceptions.
 """
 
-import pytest
+import sys
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from src.models.contracts.github import (
     OrphanInfo,
@@ -423,6 +426,357 @@ class TestGitHubSyncCommit:
         assert result.commit_sha == "abc123def456"
         assert result.files_committed == 3
         assert result.preflight == preflight
+
+
+class TestGitHubSyncPreflight:
+    @pytest.mark.asyncio
+    async def test_run_preflight_reports_syntax_and_lint_issues(self, tmp_path, monkeypatch):
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / "workflows").mkdir()
+        bad_file = tmp_path / "workflows" / "bad.py"
+        bad_file.write_text("def broken(:\n")
+
+        def fake_run(*args, **kwargs):
+            assert kwargs["cwd"] == str(tmp_path)
+            return type(
+                "Result",
+                (),
+                {
+                    "stdout": (
+                        '[{"filename": "'
+                        + str(bad_file).replace("\\", "\\\\")
+                        + '", "location": {"row": 1}, "code": "F401", '
+                        '"message": "unused import"}]'
+                    )
+                },
+            )()
+
+        monkeypatch.setattr("src.services.github_sync.subprocess.run", fake_run)
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        assert result.valid is False
+        assert [(issue.category, issue.severity) for issue in result.issues] == [
+            ("syntax", "error"),
+            ("lint", "warning"),
+        ]
+        assert Path(result.issues[0].path).parts[-2:] == ("workflows", "bad.py")
+
+    @pytest.mark.asyncio
+    async def test_run_preflight_ignores_missing_ruff(self, tmp_path, monkeypatch):
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / "workflows").mkdir()
+        (tmp_path / "workflows" / "ok.py").write_text("x = 1\n")
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("ruff")
+
+        monkeypatch.setattr("src.services.github_sync.subprocess.run", fake_run)
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        assert result.valid is True
+        assert result.issues == []
+
+    @pytest.mark.asyncio
+    async def test_run_preflight_reports_manifest_ref_and_health_issues(
+        self, tmp_path, monkeypatch
+    ):
+        from bifrost.manifest import (
+            Manifest,
+            ManifestConfig,
+            ManifestEventSource,
+            ManifestForm,
+            ManifestIntegration,
+            ManifestOAuthProvider,
+        )
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / ".bifrost").mkdir()
+        manifest = Manifest(
+            forms={
+                "form-id": ManifestForm(
+                    id="form-id",
+                    name="Needs Workflow",
+                    workflow_id="missing-workflow",
+                    launch_workflow_id="missing-launch",
+                )
+            },
+            configs={
+                "secret": ManifestConfig(
+                    id="config-id",
+                    key="secret",
+                    config_type="secret",
+                    value=None,
+                )
+            },
+            integrations={
+                "oauth": ManifestIntegration(
+                    id="integration-id",
+                    name="OAuth",
+                    oauth_provider=ManifestOAuthProvider(
+                        provider_name="github",
+                        client_id="__NEEDS_SETUP__",
+                    ),
+                )
+            },
+            events={
+                "webhook": ManifestEventSource(
+                    id="event-id",
+                    name="Webhook",
+                    source_type="webhook",
+                )
+            },
+        )
+
+        monkeypatch.setattr(
+            "src.services.github_sync.read_manifest_from_dir",
+            lambda _: manifest,
+        )
+        monkeypatch.setattr(
+            "src.services.github_sync.subprocess.run",
+            lambda *_, **__: type("Result", (), {"stdout": ""})(),
+        )
+        monkeypatch.setattr("bifrost.manifest.get_all_paths", lambda _: ["workflows/missing.py"])
+        monkeypatch.setattr("bifrost.manifest.validate_manifest", lambda _: ["bad cross ref"])
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        messages = [issue.message for issue in result.issues]
+        assert result.valid is False
+        assert any("Manifest references missing file" in message for message in messages)
+        assert any("unknown workflow UUID" in message for message in messages)
+        assert any("unknown launch workflow UUID" in message for message in messages)
+        assert any("will be orphaned" in message for message in messages)
+        assert any("bad cross ref" in message for message in messages)
+        assert any("needs a value" in message for message in messages)
+        assert any("OAuth provider needs" in message for message in messages)
+        assert any("will need external registration" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_run_preflight_uses_legacy_form_file_refs(self, tmp_path, monkeypatch):
+        from bifrost.manifest import Manifest, ManifestForm
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / ".bifrost").mkdir()
+        (tmp_path / "forms").mkdir()
+        (tmp_path / "forms" / "legacy.yaml").write_text(
+            "workflow: missing-workflow\nlaunch_workflow: missing-launch\n"
+        )
+        manifest = Manifest(
+            forms={
+                "form-id": ManifestForm(
+                    id="form-id",
+                    name="Legacy",
+                    path="forms/legacy.yaml",
+                )
+            }
+        )
+
+        monkeypatch.setattr(
+            "src.services.github_sync.read_manifest_from_dir",
+            lambda _: manifest,
+        )
+        monkeypatch.setattr(
+            "src.services.github_sync.subprocess.run",
+            lambda *_, **__: type("Result", (), {"stdout": ""})(),
+        )
+        monkeypatch.setattr("bifrost.manifest.get_all_paths", lambda _: [])
+        monkeypatch.setattr("bifrost.manifest.validate_manifest", lambda _: [])
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        assert result.valid is False
+        assert [issue.category for issue in result.issues] == ["ref", "ref", "orphan"]
+
+
+class TestGitHubSyncAppPreviews:
+    @pytest.mark.asyncio
+    async def test_sync_app_previews_returns_when_manifest_has_no_apps(
+        self, tmp_path, monkeypatch
+    ):
+        from bifrost.manifest import Manifest
+        from src.services.github_sync import GitHubSyncService
+
+        monkeypatch.setattr("src.services.github_sync.read_manifest_from_dir", lambda _: Manifest())
+
+        service = object.__new__(GitHubSyncService)
+        await service._sync_app_previews(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_sync_app_previews_syncs_valid_apps_and_skips_bad_paths(
+        self, tmp_path, monkeypatch
+    ):
+        from bifrost.manifest import Manifest, ManifestApp
+        from src.services.github_sync import GitHubSyncService
+
+        calls: list[tuple[str, str]] = []
+
+        class FakeAppStorage:
+            def __init__(self, settings):
+                self.settings = settings
+
+            async def sync_preview_compiled(self, app_id, source_dir):
+                calls.append((app_id, source_dir))
+                if app_id == "app-error":
+                    raise RuntimeError("storage down")
+                return 2, ["compile warning"] if app_id == "app-warning" else []
+
+        manifest = Manifest(
+            apps={
+                "app-ok": ManifestApp(
+                    id="app-ok",
+                    name="OK",
+                    slug="ok",
+                    path="apps/ok",
+                ),
+                "app-warning": ManifestApp(
+                    id="app-warning",
+                    name="Warning",
+                    slug="warning",
+                    path="apps/warning",
+                ),
+                "app-error": ManifestApp(
+                    id="app-error",
+                    name="Error",
+                    slug="error",
+                    path="apps/error",
+                ),
+                "app-bad": ManifestApp(
+                    id="app-bad",
+                    name="Bad",
+                    slug="bad",
+                    path="../outside",
+                ),
+            }
+        )
+
+        fake_module = type("Module", (), {"AppStorageService": FakeAppStorage})
+        monkeypatch.setitem(sys.modules, "src.services.app_storage", fake_module)
+        monkeypatch.setattr("src.services.github_sync.read_manifest_from_dir", lambda _: manifest)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_manager = type("RepoManager", (), {"_settings": object()})()
+
+        await service._sync_app_previews(tmp_path)
+
+        assert calls == [
+            ("app-ok", "apps/ok"),
+            ("app-warning", "apps/warning"),
+            ("app-error", "apps/error"),
+        ]
+
+
+class TestGitHubSyncCloneOrInit:
+    def test_clone_or_init_copies_remote_tree_without_overwriting_existing_files(
+        self, tmp_path, monkeypatch
+    ):
+        from src.services.github_sync import GitHubSyncService
+
+        clone_root = tmp_path / "clone"
+        clone_root.mkdir()
+        (clone_root / ".git").mkdir()
+        (clone_root / "remote.txt").write_text("remote")
+        (clone_root / "dir").mkdir()
+        (clone_root / "dir" / "nested.txt").write_text("nested")
+        (clone_root / "existing.txt").write_text("from remote")
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "existing.txt").write_text("keep local")
+
+        class FakeGitRepo:
+            cloned = []
+
+            def __init__(self, path):
+                self.path = path
+
+            @classmethod
+            def clone_from(cls, repo_url, clone_dir, branch):
+                cls.cloned.append((repo_url, branch))
+                clone_dir_path = Path(clone_dir)
+                for item in clone_root.iterdir():
+                    if item.is_dir():
+                        import shutil
+
+                        shutil.copytree(item, clone_dir_path / item.name)
+                    else:
+                        import shutil
+
+                        shutil.copy2(item, clone_dir_path / item.name)
+
+        monkeypatch.setattr("src.services.github_sync.GitRepo", FakeGitRepo)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_url = "https://example.invalid/repo.git"
+        service.branch = "main"
+
+        repo = service._clone_or_init(target)
+
+        assert isinstance(repo, FakeGitRepo)
+        assert FakeGitRepo.cloned == [("https://example.invalid/repo.git", "main")]
+        assert (target / ".git").exists()
+        assert (target / "remote.txt").read_text() == "remote"
+        assert (target / "dir" / "nested.txt").read_text() == "nested"
+        assert (target / "existing.txt").read_text() == "keep local"
+
+    def test_clone_or_init_initializes_empty_remote_on_missing_branch(
+        self, tmp_path, monkeypatch
+    ):
+        from src.services.github_sync import GitHubSyncService
+
+        class FakeRepoInstance:
+            def __init__(self):
+                self.remotes = []
+
+            def create_remote(self, name, url):
+                self.remotes.append((name, url))
+
+        class FakeGitRepo:
+            initialized = None
+
+            @classmethod
+            def clone_from(cls, *args, **kwargs):
+                raise RuntimeError("could not find remote branch main")
+
+            @classmethod
+            def init(cls, path):
+                cls.initialized = path
+                return FakeRepoInstance()
+
+        monkeypatch.setattr("src.services.github_sync.GitRepo", FakeGitRepo)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_url = "https://example.invalid/repo.git"
+        service.branch = "main"
+
+        repo = service._clone_or_init(tmp_path)
+
+        assert FakeGitRepo.initialized == str(tmp_path)
+        assert repo.remotes == [("origin", "https://example.invalid/repo.git")]
+
+    def test_clone_or_init_wraps_unexpected_clone_errors(self, tmp_path, monkeypatch):
+        from src.services.github_sync import GitHubSyncService, SyncError
+
+        class FakeGitRepo:
+            @classmethod
+            def clone_from(cls, *args, **kwargs):
+                raise RuntimeError("permission denied")
+
+        monkeypatch.setattr("src.services.github_sync.GitRepo", FakeGitRepo)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_url = "https://example.invalid/repo.git"
+        service.branch = "main"
+
+        with pytest.raises(SyncError, match="Failed to clone"):
+            service._clone_or_init(tmp_path)
 
 
 class TestGitHubSyncStatusAndResolve:
