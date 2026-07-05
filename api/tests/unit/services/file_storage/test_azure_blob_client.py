@@ -247,6 +247,102 @@ async def test_copy_object_raises_on_failed_copy(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_put_and_delete_object_use_blob_content_settings(monkeypatch) -> None:
+    uploaded: dict = {}
+    deleted: list[str] = []
+
+    class ContentSettings:
+        def __init__(self, content_type):
+            self.content_type = content_type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "azure.storage.blob",
+        SimpleNamespace(ContentSettings=ContentSettings),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "azure.core.exceptions",
+        SimpleNamespace(ResourceNotFoundError=RuntimeError),
+    )
+
+    class FakeContainer:
+        async def upload_blob(self, **kwargs):
+            uploaded.update(kwargs)
+
+        async def delete_blob(self, key):
+            deleted.append(key)
+
+    client = AzureBlobStorageClient(_settings())
+    client._container_client = FakeContainer()
+
+    await client.put_object(
+        Bucket="ignored",
+        Key="docs/readme.md",
+        Body=b"# docs",
+        ContentType="text/markdown",
+    )
+    await client.delete_object(Bucket="ignored", Key="docs/readme.md")
+
+    assert uploaded["name"] == "docs/readme.md"
+    assert uploaded["data"] == b"# docs"
+    assert uploaded["overwrite"] is True
+    assert uploaded["content_settings"].content_type == "text/markdown"
+    assert deleted == ["docs/readme.md"]
+
+
+@pytest.mark.asyncio
+async def test_delete_object_ignores_missing_blob(monkeypatch) -> None:
+    class ResourceNotFoundError(Exception):
+        pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "azure.core.exceptions",
+        SimpleNamespace(ResourceNotFoundError=ResourceNotFoundError),
+    )
+
+    class FakeContainer:
+        async def delete_blob(self, key):
+            raise ResourceNotFoundError(key)
+
+    client = AzureBlobStorageClient(_settings())
+    client._container_client = FakeContainer()
+
+    await client.delete_object(Bucket="ignored", Key="already-gone.txt")
+
+
+@pytest.mark.asyncio
+async def test_copy_object_times_out_when_copy_never_finishes(monkeypatch) -> None:
+    sleep = AsyncMock()
+    monkeypatch.setattr("src.services.file_storage.azure_blob_client.asyncio.sleep", sleep)
+
+    class FakeDestBlob:
+        async def start_copy_from_url(self, source_url):
+            return {"copy_status": "pending"}
+
+        async def get_blob_properties(self):
+            return SimpleNamespace(copy=SimpleNamespace(status="pending"))
+
+    class FakeContainer:
+        def get_blob_client(self, key):
+            return FakeDestBlob()
+
+    client = AzureBlobStorageClient(_settings())
+    client._container_client = FakeContainer()
+    client.generate_presigned_download_url = AsyncMock(return_value="https://source-url")
+
+    with pytest.raises(TimeoutError, match="did not complete"):
+        await client.copy_object(
+            Bucket="ignored",
+            CopySource={"Bucket": "ignored", "Key": "src.txt"},
+            Key="dest.txt",
+        )
+
+    assert sleep.await_count == 30
+
+
+@pytest.mark.asyncio
 async def test_generate_blob_sas_uses_account_key_and_content_type(monkeypatch) -> None:
     generated_args: dict = {}
 
@@ -274,6 +370,82 @@ async def test_generate_blob_sas_uses_account_key_and_content_type(monkeypatch) 
     assert generated_args["permission"] == "write"
     assert generated_args["account_key"] == "key"
     assert generated_args["content_type"] == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_generate_blob_sas_uses_user_delegation_key_for_default_credential(
+    monkeypatch,
+) -> None:
+    generated_args: dict = {}
+
+    def generate_blob_sas(**kwargs):
+        generated_args.update(kwargs)
+        return "delegated-sas"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "azure.storage.blob",
+        SimpleNamespace(generate_blob_sas=generate_blob_sas),
+    )
+
+    service_client = SimpleNamespace(
+        get_user_delegation_key=AsyncMock(return_value="delegation-key")
+    )
+    client = AzureBlobStorageClient(_settings(azure_blob_auth="default_credential"))
+    client._service_client = service_client
+
+    sas = await client._generate_blob_sas(
+        "downloads/file.txt",
+        permissions="read",
+        expires_in=60,
+    )
+
+    assert sas == "delegated-sas"
+    assert generated_args["user_delegation_key"] == "delegation-key"
+    assert "account_key" not in generated_args
+    service_client.get_user_delegation_key.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_presigned_urls_use_container_blob_urls_and_sas(monkeypatch) -> None:
+    class BlobSasPermissions:
+        def __init__(self, **flags):
+            self.flags = flags
+
+    monkeypatch.setitem(
+        sys.modules,
+        "azure.storage.blob",
+        SimpleNamespace(BlobSasPermissions=BlobSasPermissions),
+    )
+
+    class FakeContainer:
+        def get_blob_client(self, path):
+            return SimpleNamespace(url=f"https://acct.blob.core.windows.net/files/{path}")
+
+    client = AzureBlobStorageClient(_settings())
+    client._container_client = FakeContainer()
+    client._generate_blob_sas = AsyncMock(side_effect=["upload-sas", "download-sas"])
+
+    upload_url = await client.generate_presigned_upload_url(
+        "uploads/a.txt",
+        "text/plain",
+        expires_in=120,
+    )
+    download_url = await client.generate_presigned_download_url(
+        "uploads/a.txt",
+        expires_in=300,
+    )
+
+    assert upload_url == "https://acct.blob.core.windows.net/files/uploads/a.txt?upload-sas"
+    assert download_url == "https://acct.blob.core.windows.net/files/uploads/a.txt?download-sas"
+    upload_call, download_call = client._generate_blob_sas.await_args_list
+    assert upload_call.args == ("uploads/a.txt",)
+    assert upload_call.kwargs["permissions"].flags == {"write": True, "create": True}
+    assert upload_call.kwargs["expires_in"] == 120
+    assert upload_call.kwargs["content_type"] == "text/plain"
+    assert download_call.args == ("uploads/a.txt",)
+    assert download_call.kwargs["permissions"].flags == {"read": True}
+    assert download_call.kwargs["expires_in"] == 300
 
 
 @pytest.mark.asyncio
