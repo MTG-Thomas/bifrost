@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -27,6 +28,36 @@ class SessionStub:
         self.new = list(new)
         self.dirty = list(dirty)
         self.deleted = list(deleted)
+
+
+class DbResult:
+    def __init__(self, *, scalar=None):
+        self._scalar = scalar
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+
+class DbStub:
+    def __init__(self, *results):
+        self.results = list(results)
+
+    async def execute(self, _statement):
+        return self.results.pop(0)
+
+
+class Serializable:
+    def __init__(self, payload):
+        self.payload = payload
+        self.model_dump = MagicMock(return_value=payload)
+
+
+def _db_context(db):
+    @asynccontextmanager
+    async def context():
+        yield db
+
+    return context
 
 
 @pytest.fixture(autouse=True)
@@ -178,3 +209,75 @@ async def test_publish_update_event_includes_serialized_entity_data() -> None:
         session_id=None,
         data={"name": "Thing"},
     )
+
+
+@pytest.mark.asyncio
+async def test_serialize_table_returns_compact_manifest_payload() -> None:
+    row = SimpleNamespace(id="table-1", name="Tickets")
+    serialized = Serializable({"name": "Tickets"})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(DbStub(DbResult(scalar=row))),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_table",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("tables", "table-1")
+
+    assert result == {"name": "Tickets"}
+    serialize.assert_called_once_with(row)
+    serialized.model_dump.assert_called_once_with(
+        mode="json",
+        exclude_defaults=True,
+        by_alias=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_serialize_config_returns_none_when_row_is_missing() -> None:
+    with patch(
+        "src.core.database.get_db_context",
+        _db_context(DbStub(DbResult(scalar=None))),
+    ):
+        assert await entity_change_hook._serialize_entity("configs", "missing") is None
+
+
+@pytest.mark.asyncio
+async def test_serialize_organization_uses_manifest_serializer() -> None:
+    row = SimpleNamespace(id="org-1", name="Acme")
+    serialized = Serializable({"name": "Acme"})
+
+    with (
+        patch(
+            "src.core.database.get_db_context",
+            _db_context(DbStub(DbResult(scalar=row))),
+        ),
+        patch(
+            "src.services.manifest_generator.serialize_organization",
+            return_value=serialized,
+        ) as serialize,
+    ):
+        result = await entity_change_hook._serialize_entity("organizations", "org-1")
+
+    assert result == {"name": "Acme"}
+    serialize.assert_called_once_with(row)
+
+
+@pytest.mark.asyncio
+async def test_serialize_entity_logs_and_returns_none_on_query_failure() -> None:
+    class BrokenDb:
+        async def execute(self, _statement):
+            raise RuntimeError("database unavailable")
+
+    with (
+        patch("src.core.database.get_db_context", _db_context(BrokenDb())),
+        patch.object(entity_change_hook.logger, "warning") as warning,
+    ):
+        result = await entity_change_hook._serialize_entity("tables", "table-1")
+
+    assert result is None
+    assert "Failed to serialize tables/table-1" in warning.call_args.args[0]
