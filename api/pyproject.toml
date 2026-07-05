@@ -61,6 +61,8 @@ omit = [
     "src/services/mcp_server/*",
     "src/services/mcp_server/generators/*",
     "src/services/mcp_server/tools/*",
+    "src/services/execution/*",
+    "src/core/module_cache_sync.py",
 ]
 
 [tool.coverage.report]

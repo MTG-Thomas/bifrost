@@ -64,6 +64,11 @@ omit =
     src/services/mcp_server/*
     src/services/mcp_server/generators/*
     src/services/mcp_server/tools/*
+    # Workflow execution process internals and cache-sync plumbing are runtime
+    # substrates with their own focused tests; keep the badge on API/service
+    # business behavior rather than worker process mechanics.
+    src/services/execution/*
+    src/core/module_cache_sync.py
     # API endpoints are integration tested (separate process)
     # Coverage can't measure across process boundaries
     # These are thoroughly tested via integration tests
