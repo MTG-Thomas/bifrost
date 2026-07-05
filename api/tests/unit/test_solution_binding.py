@@ -63,6 +63,22 @@ def test_write_solution_binding_replaces_existing_solution_keys(tmp_path: Path) 
     assert text.count("BIFROST_SOLUTION_SCOPE=org\n") == 1
 
 
+def test_write_solution_binding_rejects_file_workspace(tmp_path: Path) -> None:
+    workspace_file = tmp_path / "workspace.txt"
+    workspace_file.write_text("not a directory")
+
+    with pytest.raises(SolutionBindingError, match="must be a directory"):
+        write_solution_binding(
+            workspace_file,
+            SolutionBinding(
+                solution_id="11111111-1111-1111-1111-111111111111",
+                slug="dispatch",
+                organization_id="22222222-2222-2222-2222-222222222222",
+                scope="org",
+            ),
+        )
+
+
 def test_read_solution_binding_returns_none_when_missing(tmp_path: Path) -> None:
     assert read_solution_binding(tmp_path) is None
 
