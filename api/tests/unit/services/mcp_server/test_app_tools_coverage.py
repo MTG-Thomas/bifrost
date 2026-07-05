@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from src.services.mcp_server.server import MCPContext
 from src.services.mcp_server.tools import apps
@@ -58,15 +59,39 @@ class _ScalarRowsResult:
         return self._rows
 
 
+class _FirstResult:
+    def __init__(self, value):
+        self._value = value
+
+    def first(self):
+        return self._value
+
+
+class _RowsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
 class _Db:
     def __init__(self, results):
         self._results = list(results)
         self.committed = False
+        self.added = []
+        self.flushed = False
 
     async def execute(self, _stmt):
         if not self._results:
             raise AssertionError("unexpected execute call")
         return self._results.pop(0)
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def flush(self):
+        self.flushed = True
 
     async def commit(self):
         self.committed = True
@@ -314,3 +339,277 @@ async def test_update_app_dependencies_rejects_invalid_inputs_and_managed_apps()
     assert "Invalid package name" in bad_name.structured_content["error"]
     assert "Invalid version" in bad_version.structured_content["error"]
     assert "Solution-managed" in managed.structured_content["error"]
+
+
+@pytest.mark.asyncio
+async def test_create_app_validates_scope_org_and_stale_source():
+    no_name = await apps.create_app(_context(), "")
+    bad_scope = await apps.create_app(_context(), "Portal", scope="tenant")
+    bad_org = await apps.create_app(
+        _context(org_id=None),
+        "Portal",
+        organization_id="not-a-uuid",
+    )
+    missing_org = await apps.create_app(
+        _context(org_id=None),
+        "Portal",
+        scope="organization",
+    )
+
+    db = _Db([_ScalarRowsResult([])])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch(
+            "src.routers.applications.ensure_no_stale_app_source",
+            new=AsyncMock(side_effect=ValueError("Source files already exist")),
+        ),
+    ):
+        stale = await apps.create_app(_context(), "Customer Portal")
+
+    assert no_name.structured_content["error"] == "name is required"
+    assert bad_scope.structured_content["error"] == "scope must be 'global' or 'organization'"
+    assert "not a valid UUID" in bad_org.structured_content["error"]
+    assert "organization_id is required" in missing_org.structured_content["error"]
+    assert stale.structured_content["error"] == "Source files already exist"
+
+
+@pytest.mark.asyncio
+async def test_create_app_scaffolds_global_app_and_detects_duplicates():
+    duplicate_db = _Db([_FirstResult(("existing-id",))])
+    with patch.object(apps, "get_tool_db", _tool_db(duplicate_db)):
+        duplicate = await apps.create_app(
+            _context(admin=True),
+            "Existing Portal",
+            slug="existing",
+            scope="global",
+        )
+
+    db = _Db([_RowsResult([])])
+    file_storage = MagicMock()
+    file_storage.write_file = AsyncMock()
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.routers.applications.ensure_no_stale_app_source", new=AsyncMock()),
+        patch("src.services.file_storage.FileStorageService", return_value=file_storage),
+    ):
+        created = await apps.create_app(
+            _context(admin=True),
+            "Customer Portal!",
+            description="Dashboards",
+            scope="global",
+        )
+
+    assert duplicate.structured_content["error"] == "Application with slug 'existing' already exists"
+    assert db.flushed is True
+    assert db.committed is True
+    assert db.added[0].organization_id is None
+    assert db.added[0].slug == "customer-portal"
+    assert created.structured_content["file_count"] == 2
+    assert file_storage.write_file.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_publish_app_reports_missing_invalid_guard_and_storage_errors():
+    bad_id = await apps.publish_app(_context(), "not-a-uuid")
+
+    missing_db = _Db([_ScalarResult(None)])
+    with patch.object(apps, "get_tool_db", _tool_db(missing_db)):
+        missing = await apps.publish_app(_context(), str(uuid4()))
+
+    managed_app = _app()
+    managed_db = _Db([_ScalarResult(managed_app)])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(managed_db)),
+        patch(
+            "src.services.solutions.guard.assert_not_solution_managed",
+            side_effect=HTTPException(status_code=409, detail="locked by solution"),
+        ),
+    ):
+        managed = await apps.publish_app(_context(admin=True), str(managed_app.id))
+
+    storage_app = _app()
+    storage_db = _Db([_ScalarResult(storage_app)])
+    storage = MagicMock()
+    storage.publish = AsyncMock(side_effect=RuntimeError("s3 offline"))
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(storage_db)),
+        patch("src.services.solutions.guard.assert_not_solution_managed"),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+    ):
+        failed = await apps.publish_app(_context(admin=True), str(storage_app.id))
+
+    assert "Invalid app_id format" in bad_id.structured_content["error"]
+    assert "Application not found" in missing.structured_content["error"]
+    assert managed.structured_content["error"] == "locked by solution"
+    assert "Error publishing app" in failed.structured_content["error"]
+    assert "s3 offline" in failed.structured_content["error"]
+
+
+@pytest.mark.asyncio
+async def test_replace_app_serializes_rest_success_and_errors():
+    missing_id = await apps.replace_app(_context(), "", "apps/new")
+    missing_path = await apps.replace_app(_context(), str(uuid4()), "")
+
+    with patch.object(apps, "call_rest", new=AsyncMock(return_value=(409, {"detail": "nested"}))) as call:
+        failed = await apps.replace_app(_context(), "app-1", "apps/new", force=True)
+
+    with patch.object(apps, "call_rest", new=AsyncMock(return_value=(200, "ok"))):
+        ok_text = await apps.replace_app(_context(), "app-1", "apps/new")
+
+    with patch.object(apps, "call_rest", new=AsyncMock(return_value=(200, {"repo_path": "apps/new"}))):
+        ok_dict = await apps.replace_app(_context(), "app-1", "apps/new")
+
+    assert missing_id.structured_content["error"] == "app_id is required"
+    assert missing_path.structured_content["error"] == "repo_path is required"
+    assert "replace_app failed: HTTP 409" in failed.structured_content["error"]
+    assert failed.structured_content["body"] == {"detail": "nested"}
+    call.assert_awaited_once_with(
+        call.call_args.args[0],
+        "POST",
+        "/api/applications/app-1/replace",
+        json_body={"repo_path": "apps/new", "force": True},
+    )
+    assert ok_text.structured_content == {"body": "ok"}
+    assert ok_dict.structured_content["repo_path"] == "apps/new"
+
+
+@pytest.mark.asyncio
+async def test_push_files_rejects_solution_managed_writes_and_delete_sweeps():
+    managed = _app(repo_path="apps/managed", solution_id=uuid4())
+    unmanaged = _app(repo_path="apps/open")
+
+    write_db = _Db([_ScalarRowsResult([managed, unmanaged])])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(write_db)),
+        patch("src.services.solutions.guard.is_solution_managed", side_effect=lambda app: app.solution_id is not None),
+    ):
+        blocked_write = await apps.push_files(
+            _context(),
+            {
+                "apps/open/pages/index.tsx": "export default function Open() {}",
+                "apps/managed/pages/index.tsx": "export default function Managed() {}",
+            },
+        )
+
+    delete_db = _Db([_ScalarRowsResult([managed, unmanaged])])
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(delete_db)),
+        patch("src.services.solutions.guard.is_solution_managed", side_effect=lambda app: app.solution_id is not None),
+    ):
+        blocked_delete = await apps.push_files(
+            _context(),
+            {"apps/open/pages/index.tsx": "export default function Open() {}"},
+            delete_missing_prefix="apps",
+        )
+
+    assert "Solution-managed" in blocked_write.structured_content["error"]
+    assert blocked_write.structured_content["blocked_paths"] == ["apps/managed/pages/index.tsx"]
+    assert "Solution-managed" in blocked_delete.structured_content["error"]
+    assert blocked_delete.structured_content["blocked_delete_prefix"] == "apps"
+
+
+@pytest.mark.asyncio
+async def test_push_files_counts_unchanged_created_deleted_and_compile_warnings():
+    app = _app(repo_path="apps/portal")
+    unchanged_hash = "hash-present"
+    db = _Db([
+        _ScalarRowsResult([app]),
+        _ScalarResult(unchanged_hash),
+        _ScalarResult(None),
+        _RowsResult([
+            ("apps/portal/pages/old.tsx",),
+            ("apps/portal/pages/index.tsx",),
+        ]),
+    ])
+    file_storage = MagicMock()
+    file_storage.write_file = AsyncMock()
+    file_storage.delete_file = AsyncMock()
+    app_storage = MagicMock()
+    app_storage.write_preview_file = AsyncMock()
+
+    compile_result = SimpleNamespace(
+        success=False,
+        compiled=None,
+        path="pages/new.tsx",
+        error="syntax error",
+    )
+    compiler = MagicMock()
+    compiler.compile_batch = AsyncMock(return_value=[compile_result])
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch("hashlib.sha256", return_value=SimpleNamespace(hexdigest=lambda: unchanged_hash)),
+        patch("src.services.file_storage.FileStorageService", return_value=file_storage),
+        patch("src.services.app_compiler.AppCompilerService", return_value=compiler),
+        patch("src.services.app_storage.AppStorageService", return_value=app_storage),
+    ):
+        result = await apps.push_files(
+            _context(),
+            {
+                "apps/portal/README.md": "same",
+                "apps/portal/pages/new.tsx": "export default function New() {}",
+            },
+            delete_missing_prefix="apps/portal",
+        )
+
+    assert db.committed is True
+    assert result.structured_content["unchanged"] == 1
+    assert result.structured_content["created"] == 1
+    assert result.structured_content["deleted"] == 2
+    assert result.structured_content["compile_warnings"] == ["✗ pages/new.tsx: syntax error"]
+    file_storage.write_file.assert_awaited_once()
+    assert file_storage.delete_file.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_and_update_app_dependencies_validate_missing_and_remove_all():
+    missing_selector = await apps.get_app_dependencies(_context())
+    bad_id = await apps.get_app_dependencies(_context(), app_id="not-a-uuid")
+
+    missing_db = _Db([_ScalarResult(None)])
+    with patch.object(apps, "get_tool_db", _tool_db(missing_db)):
+        missing_app = await apps.update_app_dependencies(_context(), str(uuid4()), {})
+
+    app = _app(dependencies={"dayjs": "^1.11.0"})
+    db = _Db([_ScalarResult(app)])
+    storage = MagicMock()
+    storage.invalidate_render_cache = AsyncMock()
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch("src.services.app_storage.AppStorageService", return_value=storage),
+    ):
+        removed = await apps.update_app_dependencies(_context(), str(app.id), {})
+
+    assert missing_selector.structured_content["error"] == "Either app_id or app_slug is required"
+    assert "Invalid app_id format" in bad_id.structured_content["error"]
+    assert "Application not found" in missing_app.structured_content["error"]
+    assert app.dependencies is None
+    assert removed.structured_content["dependencies"] == {}
+    assert "Removed all dependencies" in removed.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_get_app_schema_and_register_tools_expose_app_tool_metadata():
+    schema = await apps.get_app_schema(_context())
+
+    registered = []
+
+    def fake_register_tool_with_context(_mcp, func, tool_id, description, get_context_fn):
+        registered.append((func, tool_id, description, get_context_fn))
+
+    get_context = object()
+    with patch(
+        "src.services.mcp_server.generators.fastmcp_generator.register_tool_with_context",
+        side_effect=fake_register_tool_with_context,
+    ):
+        apps.register_tools(MagicMock(), get_context)
+
+    assert "App Builder Schema Documentation" in schema.structured_content["schema"]
+    assert "Application Models" in schema.structured_content["schema"]
+    registered_ids = [item[1] for item in registered]
+    assert registered_ids == [tool_id for tool_id, _name, _description in apps.TOOLS]
+    assert dict((tool_id, func) for func, tool_id, _description, _ctx in registered)["push_files"] is apps.push_files
+    assert all(item[3] is get_context for item in registered)
