@@ -4,7 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from src.services.github_sync import GitHubSyncService, SyncError
+from src.services.github_sync import (
+    GitHubSyncService,
+    SyncError,
+    _auto_resolve_manifest_conflicts,
+    _classify_conflict_type,
+    _deleted_paths_in_head,
+    _three_way_merge_dicts,
+    _walk_tree,
+)
 
 
 class _Head:
@@ -19,6 +27,182 @@ def _service() -> GitHubSyncService:
     service = object.__new__(GitHubSyncService)
     service.branch = "main"
     return service
+
+
+def test_walk_tree_returns_files_and_skips_git_internals(tmp_path: Path) -> None:
+    (tmp_path / ".git" / "objects").mkdir(parents=True)
+    (tmp_path / ".git" / "objects" / "ignored").write_bytes(b"git")
+    (tmp_path / "workflows").mkdir()
+    (tmp_path / "workflows" / "sync.py").write_bytes(b"print('sync')\n")
+    (tmp_path / "README.md").write_bytes(b"# docs\n")
+
+    assert _walk_tree(tmp_path) == {
+        "README.md": b"# docs\n",
+        "workflows/sync.py": b"print('sync')\n",
+    }
+
+
+def test_deleted_paths_in_head_returns_deleted_paths_and_handles_git_errors() -> None:
+    class Git:
+        def diff_tree(self, *args):
+            assert args == ("--no-commit-id", "--name-status", "-r", "HEAD")
+            return "\n".join(
+                [
+                    "D\tworkflows/old.py",
+                    "M\tworkflows/kept.py",
+                    "D\tapps/old/page.tsx",
+                ]
+            )
+
+    class Repo:
+        git = Git()
+
+    assert _deleted_paths_in_head(Repo()) == {
+        "workflows/old.py",
+        "apps/old/page.tsx",
+    }
+
+    class BrokenGit:
+        def diff_tree(self, *args):
+            raise RuntimeError("not a git repo")
+
+    class BrokenRepo:
+        git = BrokenGit()
+
+    assert _deleted_paths_in_head(BrokenRepo()) == set()
+
+
+def test_three_way_merge_preserves_independent_changes_and_honors_deletions() -> None:
+    base = {
+        "kept_by_ours": "same",
+        "modified_by_ours": "old",
+        "modified_by_theirs": "old",
+        "nested": {"ours": 1, "theirs": 1, "both": "base"},
+        "deleted_by_ours": "gone",
+        "deleted_by_theirs": "gone",
+    }
+    ours = {
+        "kept_by_ours": "same",
+        "modified_by_ours": "ours",
+        "modified_by_theirs": "old",
+        "nested": {"ours": 2, "theirs": 1, "both": "ours"},
+        "deleted_by_theirs": "gone",
+        "ours_added": "ours",
+    }
+    theirs = {
+        "kept_by_ours": "same",
+        "modified_by_ours": "old",
+        "modified_by_theirs": "theirs",
+        "nested": {"ours": 1, "theirs": 2, "both": "theirs"},
+        "deleted_by_ours": "gone",
+        "theirs_added": "theirs",
+    }
+
+    merged = _three_way_merge_dicts(base, ours, theirs)
+
+    assert merged["modified_by_ours"] == "old"
+    assert merged["modified_by_theirs"] == "theirs"
+    assert merged["nested"] == {"ours": 1, "theirs": 2, "both": "theirs"}
+    assert merged["ours_added"] == "ours"
+    assert merged["theirs_added"] == "theirs"
+    assert "deleted_by_ours" not in merged
+    assert "deleted_by_theirs" not in merged
+
+
+@pytest.mark.parametrize(
+    ("stages", "expected"),
+    [
+        ({1, 2, 3}, "both_modified"),
+        ({2, 3}, "both_added"),
+        ({1, 3}, "deleted_by_us"),
+        ({1, 2}, "deleted_by_them"),
+        ({2}, "both_modified"),
+    ],
+)
+def test_classify_conflict_type_from_unmerged_blob_stages(stages, expected) -> None:
+    unmerged = {"workflows/conflict.py": [(stage, object()) for stage in stages]}
+
+    assert _classify_conflict_type(unmerged, "workflows/conflict.py") == expected
+    assert _classify_conflict_type({}, "missing.py") == "both_modified"
+
+
+def test_auto_resolve_manifest_conflicts_merges_yaml_and_stages_result(
+    tmp_path: Path,
+) -> None:
+    class Git:
+        def __init__(self) -> None:
+            self.added = []
+
+        def show(self, ref):
+            return {
+                ":1:.bifrost/workflows.yaml": "workflows:\n  old:\n    name: Old\n",
+                ":2:.bifrost/workflows.yaml": (
+                    "workflows:\n"
+                    "  old:\n"
+                    "    name: Old Local\n"
+                    "  local:\n"
+                    "    name: Local\n"
+                ),
+                ":3:.bifrost/workflows.yaml": (
+                    "workflows:\n"
+                    "  old:\n"
+                    "    name: Old Remote\n"
+                    "  remote:\n"
+                    "    name: Remote\n"
+                ),
+            }[ref]
+
+        def add(self, path):
+            self.added.append(path)
+
+    class Repo:
+        git = Git()
+
+    resolved = _auto_resolve_manifest_conflicts(
+        Repo(),
+        tmp_path,
+        {".bifrost/workflows.yaml": [(1, object()), (2, object()), (3, object())]},
+    )
+
+    merged = (tmp_path / ".bifrost" / "workflows.yaml").read_text()
+    assert resolved == {".bifrost/workflows.yaml"}
+    assert Repo.git.added == [".bifrost/workflows.yaml"]
+    assert "name: Old Remote" in merged
+    assert "name: Local" in merged
+    assert "name: Remote" in merged
+
+
+def test_auto_resolve_manifest_conflicts_accepts_theirs_when_merge_fails(
+    tmp_path: Path,
+) -> None:
+    class Git:
+        def __init__(self) -> None:
+            self.added = []
+
+        def show(self, ref):
+            if ref == ":2:.bifrost/forms.yaml":
+                return "- not a dict"
+            if ref == ":3:.bifrost/forms.yaml":
+                return "forms:\n  remote:\n    name: Remote\n"
+            return "forms: {}\n"
+
+        def add(self, path):
+            self.added.append(path)
+
+    class Repo:
+        git = Git()
+
+    resolved = _auto_resolve_manifest_conflicts(
+        Repo(),
+        tmp_path,
+        {".bifrost/forms.yaml": [(1, object()), (2, object()), (3, object())]},
+    )
+
+    assert resolved == {".bifrost/forms.yaml"}
+    assert (tmp_path / ".bifrost" / "forms.yaml").read_text() == (
+        "forms:\n  remote:\n    name: Remote\n"
+    )
+    assert Repo.git.added == [".bifrost/forms.yaml"]
 
 
 def test_do_status_returns_conflicts_when_manifest_auto_resolve_fails(
