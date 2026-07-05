@@ -519,3 +519,206 @@ def test_handle_git_dispatches_to_git_commands(monkeypatch):
         ("diff", (client, "app.py")),
         ("discard", (client, ["app.py", "old.py"])),
     ]
+
+
+def test_push_sync_pull_and_watch_validate_help_and_paths(tmp_path, capsys):
+    missing = tmp_path / "missing"
+
+    assert cli.handle_push(["--help"]) == 0
+    assert "Usage: bifrost push" in capsys.readouterr().out
+    assert cli.handle_push(["--watch"]) == 1
+    assert "bifrost watch" in capsys.readouterr().err
+    assert cli.handle_push([str(missing)]) == 1
+    assert "not a valid file or directory" in capsys.readouterr().err
+
+    assert cli.handle_sync(["--help"]) == 0
+    assert "Usage: bifrost sync" in capsys.readouterr().out
+    assert cli.handle_sync([str(missing)]) == 1
+    assert "not a valid directory" in capsys.readouterr().err
+
+    assert cli.handle_watch(["--help"]) == 0
+    assert "Usage: bifrost watch" in capsys.readouterr().out
+    assert cli.handle_watch([str(missing)]) == 1
+    assert "not a valid directory" in capsys.readouterr().err
+
+    assert cli.handle_pull(["--help"]) == 0
+    assert "Usage: bifrost pull" in capsys.readouterr().out
+    assert cli.handle_pull(["--bad"]) == 1
+    assert "Unknown option" in capsys.readouterr().err
+    assert cli.handle_pull(["one", "two"]) == 1
+    assert "Unexpected argument" in capsys.readouterr().err
+    assert cli.handle_pull([str(missing)]) == 1
+    assert "not a valid directory" in capsys.readouterr().err
+
+
+def test_push_sync_pull_and_watch_report_lock_or_auth_errors(monkeypatch, tmp_path, capsys):
+    class RaisingLock:
+        def __init__(self, path, action):
+            self.path = path
+            self.action = action
+
+        def __enter__(self):
+            raise cli.WorkspaceLockError("busy")
+
+    path = tmp_path / "workspace"
+    path.mkdir()
+    monkeypatch.setattr(cli, "WorkspaceLock", RaisingLock)
+
+    assert cli.handle_push([str(path)]) == 1
+    assert "busy" in capsys.readouterr().err
+    assert cli.handle_sync([str(path)]) == 1
+    assert "busy" in capsys.readouterr().err
+    assert cli.handle_watch([str(path)]) == 1
+    assert "busy" in capsys.readouterr().err
+    assert cli.handle_pull([str(path)]) == 1
+    assert "busy" in capsys.readouterr().err
+
+    class Lock:
+        def __init__(self, path, action):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self):
+            pass
+
+    class ClientFactory:
+        @staticmethod
+        def get_instance(require_auth=True):
+            raise RuntimeError("login required")
+
+    monkeypatch.setattr(cli, "WorkspaceLock", Lock)
+    monkeypatch.setattr(cli, "BifrostClient", ClientFactory)
+
+    assert cli.handle_push([str(path)]) == 1
+    assert "login required" in capsys.readouterr().err
+    assert cli.handle_sync([str(path)]) == 1
+    assert "login required" in capsys.readouterr().err
+    assert cli.handle_watch([str(path)]) == 1
+    assert "login required" in capsys.readouterr().err
+    assert cli.handle_pull([str(path)]) == 1
+    assert "login required" in capsys.readouterr().err
+
+
+def test_push_sync_and_pull_dispatch_to_sync_files(monkeypatch, tmp_path):
+    calls = []
+    locks = []
+    client = object()
+
+    class Lock:
+        def __init__(self, path, action):
+            locks.append((path, action))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self):
+            locks.append(("exit", None))
+
+    class ClientFactory:
+        @staticmethod
+        def get_instance(require_auth=True):
+            assert require_auth is True
+            return client
+
+    async def sync_files(local_path, **kwargs):
+        calls.append(("sync_files", local_path, kwargs))
+        return len(calls) + 40
+
+    monkeypatch.setattr(cli, "WorkspaceLock", Lock)
+    monkeypatch.setattr(cli, "BifrostClient", ClientFactory)
+    monkeypatch.setattr(cli, "_warn_if_git_workspace", lambda path: None)
+    monkeypatch.setattr(cli, "_sync_files", sync_files)
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    file_path = root / "main.py"
+    file_path.write_text("print('ok')\n", encoding="utf-8")
+
+    assert cli.handle_push([str(file_path), "--mirror", "--validate", "--yes"]) == 41
+    assert calls[-1][0] == "sync_files"
+    assert calls[-1][1] == str(file_path)
+    assert calls[-1][2]["mirror"] is True
+    assert calls[-1][2]["validate"] is True
+    assert calls[-1][2]["force"] is True
+    assert calls[-1][2]["client"] is client
+    assert calls[-1][2]["single_file"] == str(file_path)
+    assert calls[-1][2]["one_way"] is False
+
+    assert cli.handle_sync([str(root), "--mirror", "--validate", "--yes"]) == 42
+    assert calls[-1][1] == str(root)
+    assert calls[-1][2]["mirror"] is True
+    assert calls[-1][2]["validate"] is True
+    assert calls[-1][2]["force"] is True
+    assert calls[-1][2]["client"] is client
+
+    assert cli.handle_pull([str(root), "--mirror", "--force"]) == 43
+    assert calls[-1][1] == str(root)
+    assert calls[-1][2]["mirror"] is True
+    assert calls[-1][2]["force"] is True
+    assert calls[-1][2]["client"] is client
+    assert {action for _, action in locks if isinstance(action, str)} == {
+        "push",
+        "sync",
+        "pull",
+    }
+
+
+def test_watch_dispatches_and_stops_server_on_interrupt(monkeypatch, tmp_path, capsys):
+    calls = []
+    root = tmp_path / "workspace"
+    root.mkdir()
+
+    class Lock:
+        def __init__(self, path, action):
+            calls.append(("lock", action, path))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self):
+            calls.append(("unlock",))
+
+    class Client:
+        api_url = "https://api.example.test"
+
+        def post_sync(self, path, json=None):
+            calls.append(("post_sync", path, json))
+
+    class ClientFactory:
+        @staticmethod
+        def get_instance(require_auth=True):
+            return Client()
+
+    async def push_with_precheck(local_path, **kwargs):
+        calls.append(("push_with_precheck", local_path, kwargs))
+        return 55
+
+    monkeypatch.setattr(cli, "WorkspaceLock", Lock)
+    monkeypatch.setattr(cli, "BifrostClient", ClientFactory)
+    monkeypatch.setattr(cli, "_warn_if_git_workspace", lambda path: None)
+    monkeypatch.setattr(cli, "_push_with_precheck", push_with_precheck)
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.handle_watch([str(root), "--mirror", "--validate", "--force"]) == 55
+    assert calls[-2][0] == "push_with_precheck"
+    assert calls[-2][1] == str(root)
+    assert calls[-2][2]["mirror"] is True
+    assert calls[-2][2]["validate"] is True
+    assert calls[-2][2]["watch"] is True
+    assert calls[-2][2]["force"] is True
+
+    async def interrupted(local_path, **kwargs):
+        raise KeyboardInterrupt
+
+    calls.clear()
+    monkeypatch.setattr(cli, "_push_with_precheck", interrupted)
+
+    assert cli.handle_watch([str(root)]) == 130
+    assert "Stopping watch" in capsys.readouterr().out
+    assert calls[-2] == (
+        "post_sync",
+        "/api/files/watch",
+        {"action": "stop", "prefix": "workspace"},
+    )
