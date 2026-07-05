@@ -195,7 +195,8 @@ class TestFormMutationValidation:
         result = await forms.get_form(_context(), form_id=None, form_name=None)
         assert "Either form_id or form_name is required" in result.structured_content["error"]
 
-        result = await forms.get_form(_context(), form_id="not-a-uuid")
+        with patch.object(forms, "get_tool_db", _fake_tool_db(AsyncMock())):
+            result = await forms.get_form(_context(), form_id="not-a-uuid")
         assert "'not-a-uuid' is not a valid UUID" in result.structured_content["error"]
 
     @pytest.mark.asyncio
