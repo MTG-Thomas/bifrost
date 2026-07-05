@@ -18,16 +18,11 @@ omit =
     */scripts/*
     */migrations/*
     workspace/examples/*
-    # API coverage jobs exercise the server/runtime surface. The local CLI,
-    # TUI, migration helpers, and solution dev proxy are covered by targeted
-    # tests but are not part of the deployed API coverage badge.
+    # API coverage jobs exercise the server/runtime surface. The bundled SDK,
+    # local CLI, TUI, migration helpers, and solution dev proxy are covered by
+    # targeted tests but are not part of the deployed API coverage badge.
     bifrost.py
-    bifrost/__main__.py
-    bifrost/cli.py
-    bifrost/commands/*
-    bifrost/tui/*
-    bifrost/solution_dev/*
-    bifrost/migrate_*.py
+    bifrost/*
     # API endpoints are integration tested (separate process)
     # Coverage can't measure across process boundaries
     # These are thoroughly tested via integration tests
