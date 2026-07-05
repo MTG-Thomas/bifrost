@@ -179,14 +179,14 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # =============================================================================
-  # E2E Tests - Sharded across 2 parallel runners. Each shard boots its own
+  # E2E Tests - Sharded across 4 parallel runners. Each shard boots its own
   # isolated test stack (no xdist, no shared services between shards).
   # scripts/e2e_shard.py deterministically allocates test files: heavies
   # bin-packed first, then round-robin in sorted order — adding a file only
   # moves files in shards downstream of the insertion point.
   #
   # The internal matrix job (test-e2e) uses shard names like
-  # "E2E Tests (shard 1/2)". The aggregate gate job below (test-e2e-gate)
+  # "E2E Tests (shard 1/4)". The aggregate gate job below (test-e2e-gate)
   # is named EXACTLY "E2E Tests" to match the required status check name —
   # no ruleset edits needed.
   # =============================================================================
@@ -194,13 +194,13 @@ jobs:
     # Skip on push: main — covered by the merge_group run.
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
-    name: E2E Tests (shard ${{ matrix.shard }}/2)
+    name: E2E Tests (shard ${{ matrix.shard }}/4)
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -229,18 +229,18 @@ jobs:
           cache-from: type=gha,scope=test-client-dev
           cache-to: type=gha,scope=test-client-dev,mode=max
 
-      - name: Run E2E tests (shard ${{ matrix.shard }}/2)
+      - name: Run E2E tests (shard ${{ matrix.shard }}/4)
         env:
           BIFROST_SKIP_BUILD: "1"
         run: |
           chmod +x test.sh
           ./test.sh stack up
-          mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id ${{ matrix.shard }} --total 2)
+          mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id ${{ matrix.shard }} --total 4)
           if [ ${#shard_files[@]} -eq 0 ]; then
             echo "ERROR: shard ${{ matrix.shard }} resolved to zero files" >&2
             exit 1
           fi
-          echo "Shard ${{ matrix.shard }}/2: ${#shard_files[@]} files"
+          echo "Shard ${{ matrix.shard }}/4: ${#shard_files[@]} files"
           ./test.sh "${shard_files[@]}" -v --durations=50
 
   # Aggregate gate — required check named "E2E Tests" (matches ruleset 15329014).
