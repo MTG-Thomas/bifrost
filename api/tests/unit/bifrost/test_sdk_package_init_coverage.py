@@ -98,7 +98,8 @@ def test_standalone_sdk_fallbacks_define_decorators_errors_and_enums(monkeypatch
     try:
         reloaded = importlib.reload(bifrost)
 
-        assert reloaded.workflow(lambda: None).__bifrost_metadata__.type == "workflow"
+        decorated = reloaded.workflow(lambda: None)
+        assert decorated._executable_metadata.type == "workflow"
         assert reloaded.UserError("bad").args == ("bad",)
         assert reloaded.WorkflowError("failed").args == ("failed",)
         assert reloaded.ValidationError("invalid").args == ("invalid",)
