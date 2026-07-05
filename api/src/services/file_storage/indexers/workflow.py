@@ -65,7 +65,11 @@ class WorkflowIndexer:
             return None
 
         # Fast regex check - if no decorator-like patterns, skip AST parsing
-        if "@workflow" not in content_str and "@data_provider" not in content_str:
+        if (
+            "@workflow" not in content_str
+            and "@data_provider" not in content_str
+            and "@tool" not in content_str
+        ):
             return None
 
         # AST verification - confirm decorators are actually used
