@@ -54,7 +54,9 @@ EMBED_ALLOWED_RULES = [
     EmbedRouteRule(frozenset({"GET"}), re.compile(r"^/health$"), None),
 
     # Form loading and execution
-    EmbedRouteRule(frozenset({"GET"}), re.compile(r"^/api/forms/([^/]+)$"), "form_id"),
+    # GET form reads are routed through forms.py, which returns 404 for
+    # unbound form/app embed tokens and allows same-org app embeds.
+    EmbedRouteRule(frozenset({"GET"}), re.compile(r"^/api/forms/([^/]+)$"), None),
     EmbedRouteRule(frozenset({"POST"}), re.compile(r"^/api/forms/([^/]+)/execute$"), "form_id"),
     EmbedRouteRule(frozenset({"POST"}), re.compile(r"^/api/forms/([^/]+)/startup$"), "form_id"),
     EmbedRouteRule(frozenset({"POST"}), re.compile(r"^/api/forms/([^/]+)/upload$"), "form_id"),

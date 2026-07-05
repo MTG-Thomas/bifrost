@@ -250,6 +250,53 @@ class ApplicationRepository(OrgScopedRepository[Application]):
         logger.info(f"Updated application '{log_safe(app_id)}'")
         return application
 
+    async def _update_slug(
+        self, application: Application, new_slug: str | None
+    ) -> None:
+        if new_slug is None or new_slug == application.slug:
+            return
+        existing = await self.get_by_slug_global(new_slug)
+        if existing and existing.id != application.id:
+            raise ValueError(f"Application with slug '{new_slug}' already exists")
+        application.slug = new_slug
+
+    @staticmethod
+    def _update_scope(
+        application: Application, scope: str | None, is_platform_admin: bool
+    ) -> None:
+        if scope is None or not is_platform_admin:
+            return
+        if scope == "global":
+            application.organization_id = None
+            return
+        try:
+            application.organization_id = UUID(scope)
+        except ValueError:
+            # Invalid non-global scopes leave the existing organization unchanged.
+            pass
+
+    async def _replace_role_associations(
+        self,
+        application: Application,
+        role_ids: list[UUID] | None,
+        updated_by: str,
+    ) -> None:
+        if role_ids is None:
+            return
+        existing_roles_query = select(AppRole).where(AppRole.app_id == application.id)
+        result = await self.session.execute(existing_roles_query)
+        for existing_role in result.scalars().all():
+            await self.session.delete(existing_role)
+
+        for role_id in set(role_ids):
+            self.session.add(
+                AppRole(
+                    app_id=application.id,
+                    role_id=role_id,
+                    assigned_by=updated_by,
+                )
+            )
+
     async def swap_slugs(self, app_a_id: UUID, app_b_id: UUID) -> tuple[Application, Application]:
         """Atomically exchange two apps' slugs (v1→v2 migration cutover).
 

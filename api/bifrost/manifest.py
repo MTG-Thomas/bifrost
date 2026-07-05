@@ -118,7 +118,7 @@ class ManifestWorkflow(EntityCodec, BaseModel):
         description="Role display names (used by portable bundles; resolved to UUIDs on import)",
         **classify(FieldClass.ENVIRONMENT, keep_on_portable=True),
     )
-    access_level: str = Field(default="authenticated", description="role_based | authenticated | everyone | public", **classify(FieldClass.CONTENT))
+    access_level: str = Field(default="role_based", description="role_based | authenticated | everyone | public", **classify(FieldClass.CONTENT))
     endpoint_enabled: bool = Field(default=False, description="Expose as HTTP API endpoint", **classify(FieldClass.CONTENT))
     timeout_seconds: int = Field(default=1800, description="Max execution time in seconds. 0 = no timeout. Default 1800 (30 min), max 86400 (24h).", **classify(FieldClass.CONTENT))
     public_endpoint: bool = Field(default=False, description="Allow unauthenticated API access", **classify(FieldClass.CONTENT))
@@ -144,7 +144,7 @@ class ManifestWorkflow(EntityCodec, BaseModel):
             tool_description=wf.tool_description,
             organization_id=str(wf.organization_id) if wf.organization_id else None,
             roles=roles or [],
-            access_level=wf.access_level or "authenticated",
+            access_level=wf.access_level or "role_based",
             endpoint_enabled=wf.endpoint_enabled or False,
             # NOT `or 1800` — 0 means "no timeout" and `or` would clobber it.
             timeout_seconds=wf.timeout_seconds if wf.timeout_seconds is not None else 1800,
@@ -568,7 +568,7 @@ class ManifestApp(EntityCodec, BaseModel):
 class ManifestIntegrationConfigSchema(EntityCodec, BaseModel):
     """Config schema item within an integration."""
     key: str = Field(description="Config key name", **classify(FieldClass.CONTENT, match_key=True))
-    type: str = Field(description="string | int | bool | json | secret", **classify(FieldClass.CONTENT))
+    type: Literal["string", "int", "bool", "json", "secret"] = Field(description="string | int | bool | json | secret", **classify(FieldClass.CONTENT))
     required: bool = Field(default=False, description="Whether this config must be set", **classify(FieldClass.CONTENT))
     description: str | None = Field(default=None, description="Human-readable description", **classify(FieldClass.CONTENT))
     options: list[str] | None = Field(default=None, description="Allowed values (for string type)", **classify(FieldClass.CONTENT))
@@ -607,6 +607,11 @@ class ManifestOAuthProvider(EntityCodec, BaseModel):
     token_url: str | None = Field(default=None, description="OAuth token endpoint", **classify(FieldClass.CONTENT))
     token_url_defaults: dict | None = Field(default=None, description="Default params for token request", **classify(FieldClass.CONTENT))
     scopes: list[str] = Field(default_factory=list, description="OAuth scopes", **classify(FieldClass.CONTENT))
+    provider_metadata: dict = Field(
+        default_factory=dict,
+        description="Provider-specific OAuth behavior flags and metadata",
+        **classify(FieldClass.CONTENT),
+    )
     redirect_uri: str | None = Field(default=None, description="OAuth redirect URI", **classify(FieldClass.CONTENT))
 
     @classmethod
@@ -624,6 +629,7 @@ class ManifestOAuthProvider(EntityCodec, BaseModel):
             token_url=op.token_url,
             token_url_defaults=op.token_url_defaults or None,
             scopes=op.scopes or [],
+            provider_metadata=op.provider_metadata or {},
             redirect_uri=op.redirect_uri,
         )
 
@@ -648,7 +654,7 @@ class ManifestIntegrationMapping(EntityCodec, BaseModel):
             organization_id=str(im.organization_id) if im.organization_id else None,
             entity_id=im.entity_id,
             entity_name=im.entity_name,
-            oauth_token_id=str(im.oauth_token_id) if im.oauth_token_id else None,
+            oauth_token_id=None,
         )
 
     def to_orm_values(self, dest: Destination) -> ImportFields:

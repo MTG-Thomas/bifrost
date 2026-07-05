@@ -358,6 +358,9 @@ services:
       - ./api/alembic.ini:/app/alembic.ini:ro
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
+      - ./api/pyrightconfig.json:/app/pyrightconfig.json:ro
+      - ./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro
+      - ./test.sh:/app/test.sh:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
       - ./.github:/app/.github:ro

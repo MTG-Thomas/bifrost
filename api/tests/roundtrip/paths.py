@@ -339,7 +339,8 @@ async def repo_import(db: AsyncSession, work_dir: Path) -> tuple[int, list]:
     diff found nothing to import (a zero-op import is a test failure).
     """
     service = make_repo_sync_service(db, work_dir)
-    return await service._import_all_entities(work_dir)
+    count, changes, _removed_entity_ids = await service._import_all_entities(work_dir)
+    return count, changes
 
 
 async def manifest_entry_for(

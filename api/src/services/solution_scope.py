@@ -222,7 +222,8 @@ async def file_read_tiers(
     requested_scope: str | None,
 ) -> list[FileTier]:
     """Return candidate storage tiers for file read/list/exists operations."""
-    if ctx.solution_id is None:
+    solution_id = parse_ctx_solution_id(ctx)
+    if solution_id is None:
         org_id = _file_org_id(ctx, location, requested_scope)
         return [
             FileTier(
@@ -236,9 +237,6 @@ async def file_read_tiers(
     if location == "workspace":
         raise ValueError("workspace is not available in solution file context")
 
-    solution_id = parse_ctx_solution_id(ctx)
-    if solution_id is None:
-        return []
     solution = await db.get(Solution, solution_id)
     if solution is None:
         return []
