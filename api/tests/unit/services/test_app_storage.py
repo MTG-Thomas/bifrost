@@ -83,6 +83,15 @@ async def test_read_file_maps_no_such_key_to_file_not_found() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_file_maps_404_error_to_file_not_found() -> None:
+    client = _FakeClient(read_error=RuntimeError("404 Not Found"))
+    service = _service(client)
+
+    with pytest.raises(FileNotFoundError, match=r"missing\.tsx"):
+        await service.read_file("app", "live", "missing.tsx")
+
+
+@pytest.mark.asyncio
 async def test_list_files_returns_relative_non_empty_paths() -> None:
     client = _FakeClient(
         list_pages=[
@@ -102,6 +111,92 @@ async def test_list_files_returns_relative_non_empty_paths() -> None:
         "index.tsx",
         "components/Button.tsx",
     ]
+
+
+@pytest.mark.asyncio
+async def test_write_preview_file_stores_content_and_invalidates_cache(
+    monkeypatch,
+) -> None:
+    client = _FakeClient()
+    service = _service(client)
+    invalidated: list[str] = []
+
+    async def invalidate(app_id: str) -> None:
+        invalidated.append(app_id)
+
+    monkeypatch.setattr(service, "invalidate_render_cache", invalidate)
+
+    await service.write_preview_file("app", "/pages/index.tsx", b"hello")
+
+    assert client.puts == [
+        {
+            "Bucket": "bucket",
+            "Key": "_apps/app/preview/pages/index.tsx",
+            "Body": b"hello",
+        }
+    ]
+    assert invalidated == ["app"]
+
+
+@pytest.mark.asyncio
+async def test_delete_preview_file_ignores_storage_error_and_invalidates_cache(
+    monkeypatch,
+) -> None:
+    client = _FakeClient(delete_error=RuntimeError("already gone"))
+    service = _service(client)
+    invalidated: list[str] = []
+
+    async def invalidate(app_id: str) -> None:
+        invalidated.append(app_id)
+
+    monkeypatch.setattr(service, "invalidate_render_cache", invalidate)
+
+    await service.delete_preview_file("app", "missing.tsx")
+
+    assert client.deleted == [
+        {"Bucket": "bucket", "Key": "_apps/app/preview/missing.tsx"}
+    ]
+    assert invalidated == ["app"]
+
+
+@pytest.mark.asyncio
+async def test_sync_preview_copies_repo_files_and_removes_stale_preview(
+    monkeypatch,
+) -> None:
+    client = _FakeClient(
+        list_pages=[
+            {
+                "Contents": [
+                    {"Key": "_repo/apps/demo/index.tsx"},
+                    {"Key": "_repo/apps/demo/components/Button.tsx"},
+                ],
+                "IsTruncated": False,
+            },
+            {
+                "Contents": [
+                    {"Key": "_apps/app/preview/index.tsx"},
+                    {"Key": "_apps/app/preview/old.tsx"},
+                ],
+                "IsTruncated": False,
+            },
+        ]
+    )
+    service = _service(client)
+    invalidated: list[str] = []
+
+    async def invalidate(app_id: str) -> None:
+        invalidated.append(app_id)
+
+    monkeypatch.setattr(service, "invalidate_render_cache", invalidate)
+
+    assert await service.sync_preview("app", "apps/demo/") == 2
+    assert {copy["Key"] for copy in client.copied} == {
+        "_apps/app/preview/index.tsx",
+        "_apps/app/preview/components/Button.tsx",
+    }
+    assert client.copied[0]["CopySource"]["Bucket"] == "bucket"
+    assert client.deleted == [{"Bucket": "bucket", "Key": "_apps/app/preview/old.tsx"}]
+    assert invalidated == ["app"]
 
 
 @pytest.mark.asyncio
@@ -165,12 +260,17 @@ class _FakeClient:
         *,
         list_pages: list[dict] | None = None,
         objects: dict[str, bytes] | None = None,
+        read_error: Exception | None = None,
+        delete_error: Exception | None = None,
     ) -> None:
         self.list_pages = list(list_pages or [])
         self.objects = objects or {}
+        self.read_error = read_error
+        self.delete_error = delete_error
         self.list_calls: list[dict] = []
         self.copied: list[dict] = []
         self.deleted: list[dict] = []
+        self.puts: list[dict] = []
         self.exceptions = SimpleNamespace(NoSuchKey=KeyError)
 
     async def list_objects_v2(self, **kwargs):
@@ -178,6 +278,8 @@ class _FakeClient:
         return self.list_pages.pop(0)
 
     async def get_object(self, *, Bucket: str, Key: str):
+        if self.read_error is not None:
+            raise self.read_error
         if Key not in self.objects:
             raise KeyError(Key)
         return {"Body": _Body(self.objects[Key])}
@@ -187,3 +289,8 @@ class _FakeClient:
 
     async def delete_object(self, **kwargs):
         self.deleted.append(kwargs)
+        if self.delete_error is not None:
+            raise self.delete_error
+
+    async def put_object(self, **kwargs):
+        self.puts.append(kwargs)
