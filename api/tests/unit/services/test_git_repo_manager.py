@@ -1,11 +1,13 @@
 """Tests for GitRepoManager — S3-backed persistent git working tree."""
 
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.services.git_repo_manager import GitRepoManager
+import src.services.git_repo_manager as git_repo_manager
 
 
 @pytest.fixture
@@ -97,6 +99,26 @@ class TestS3Uri:
         assert manager._s3_uri() == "s3://bifrost-local/_repo/"
 
 
+class TestPersistentWorkDir:
+    """Tests for persistent worktree helpers."""
+
+    def test_work_dir_creates_configured_persistent_path(self, manager, tmp_path, monkeypatch):
+        work_dir = tmp_path / "git-work"
+        monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
+
+        assert manager.work_dir == work_dir
+        assert work_dir.is_dir()
+
+    def test_is_initialized_requires_git_directory(self, manager, tmp_path, monkeypatch):
+        work_dir = tmp_path / "git-work"
+        monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
+
+        assert manager.is_initialized is False
+
+        (work_dir / ".git").mkdir(parents=True)
+        assert manager.is_initialized is True
+
+
 class TestHasGitDir:
     """Tests for has_git_dir existence check."""
 
@@ -131,6 +153,20 @@ class TestRunAwsCli:
             call_kwargs = mock_exec.call_args
             env = call_kwargs.kwargs["env"]
             assert env["AWS_ACCESS_KEY_ID"] == "bifrost"
+
+    @pytest.mark.asyncio
+    async def test_success_logs_stderr_at_debug(self, manager, caplog):
+        mock_process = AsyncMock()
+        mock_process.communicate = AsyncMock(return_value=(b"", b"warning text\n"))
+        mock_process.returncode = 0
+
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_process),
+            caplog.at_level(logging.DEBUG, logger="src.services.git_repo_manager"),
+        ):
+            await manager._run_aws_cli(["aws", "s3", "sync", "src", "dst"])
+
+        assert "aws s3 sync stderr: warning text" in caplog.text
 
     @pytest.mark.asyncio
     async def test_failure_raises_runtime_error(self, manager):
@@ -253,3 +289,115 @@ class TestCheckout:
                 async with manager.checkout():
                     pass  # pragma: no cover
             mock_up.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_readonly_checkout_skips_sync_up(self, manager, tmp_path, monkeypatch):
+        work_dir = tmp_path / "git-work"
+        monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
+
+        with (
+            patch.object(manager, "sync_down", new_callable=AsyncMock) as mock_down,
+            patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up,
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async with manager.checkout_readonly() as yielded:
+                assert yielded == work_dir
+
+        mock_down.assert_awaited_once_with(work_dir)
+        mock_up.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_lock_yields_work_dir_without_s3_sync(self, manager, tmp_path, monkeypatch):
+        work_dir = tmp_path / "git-work"
+        monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
+
+        with (
+            patch.object(manager, "sync_down", new_callable=AsyncMock) as mock_down,
+            patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up,
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async with manager.lock() as yielded:
+                assert yielded == work_dir
+
+        mock_down.assert_not_awaited()
+        mock_up.assert_not_awaited()
+
+
+class TestAcquireLock:
+    """Tests for Redis lock behavior."""
+
+    @pytest.mark.asyncio
+    async def test_skips_lock_when_redis_url_is_absent(self, manager):
+        with patch.object(git_repo_manager.redis, "from_url") as from_url:
+            async with manager._acquire_lock():
+                pass
+
+        from_url.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_acquires_releases_and_closes_redis_lock(self, mock_settings):
+        mock_settings.redis_url = "redis://redis:6379/0"
+        manager = GitRepoManager(settings=mock_settings)
+        lock = AsyncMock()
+        lock.acquire = AsyncMock(return_value=True)
+        lock.release = AsyncMock()
+        client = MagicMock()
+        client.lock.return_value = lock
+        client.aclose = AsyncMock()
+
+        with patch.object(git_repo_manager.redis, "from_url", return_value=client):
+            async with manager._acquire_lock():
+                pass
+
+        client.lock.assert_called_once_with(
+            git_repo_manager.GIT_LOCK_KEY,
+            timeout=git_repo_manager.GIT_LOCK_TIMEOUT,
+            blocking_timeout=git_repo_manager.GIT_LOCK_TIMEOUT,
+        )
+        lock.acquire.assert_awaited_once()
+        lock.release.assert_awaited_once()
+        client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_raises_when_redis_lock_is_busy_and_still_closes_client(
+        self, mock_settings
+    ):
+        mock_settings.redis_url = "redis://redis:6379/0"
+        manager = GitRepoManager(settings=mock_settings)
+        lock = AsyncMock()
+        lock.acquire = AsyncMock(return_value=False)
+        lock.release = AsyncMock()
+        client = MagicMock()
+        client.lock.return_value = lock
+        client.aclose = AsyncMock()
+
+        with patch.object(git_repo_manager.redis, "from_url", return_value=client):
+            with pytest.raises(RuntimeError, match="another git operation"):
+                async with manager._acquire_lock():
+                    pass  # pragma: no cover
+
+        lock.release.assert_awaited_once()
+        client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_expired_lock_release_error_is_ignored(self, mock_settings):
+        mock_settings.redis_url = "redis://redis:6379/0"
+        manager = GitRepoManager(settings=mock_settings)
+        lock = AsyncMock()
+        lock.acquire = AsyncMock(return_value=True)
+        lock.release = AsyncMock(side_effect=RuntimeError("expired"))
+        client = MagicMock()
+        client.lock.return_value = lock
+        client.aclose = AsyncMock()
+
+        with patch.object(git_repo_manager.redis, "from_url", return_value=client):
+            async with manager._acquire_lock():
+                pass
+
+        client.aclose.assert_awaited_once()
