@@ -26,7 +26,13 @@ class SolutionBindingError(ValueError):
 
 
 def _env_path(workspace: Path) -> Path:
-    return workspace / ".env"
+    workspace_root = workspace.resolve()
+    if workspace.exists() and not workspace_root.is_dir():
+        raise SolutionBindingError("Workspace path must be a directory")
+    env = (workspace_root / ".env").resolve()
+    if env.parent != workspace_root:
+        raise SolutionBindingError("Workspace .env path escaped workspace root")
+    return env
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:

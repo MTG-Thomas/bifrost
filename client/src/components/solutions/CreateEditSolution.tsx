@@ -357,7 +357,14 @@ export function UpgradeDiffView({ diff }: { diff: SolutionUpgradeDiff }) {
 
 /** Random 6-char suffix for suggested repository names. */
 function repoSuffix(): string {
-	return Math.random().toString(36).slice(2, 8);
+	const bytes = new Uint8Array(4);
+	globalThis.crypto?.getRandomValues(bytes);
+	if (bytes.some((byte) => byte !== 0)) {
+		return Array.from(bytes, (byte) => byte.toString(36).padStart(2, "0"))
+			.join("")
+			.slice(0, 6);
+	}
+	return Date.now().toString(36).slice(-6);
 }
 
 /**
