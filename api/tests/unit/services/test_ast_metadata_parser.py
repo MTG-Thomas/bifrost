@@ -43,6 +43,27 @@ class TestParseDecorator:
 
         assert parser.parse_decorator(decorator) is None
 
+    def test_rejects_unsupported_bare_decorator_and_dynamic_call(self) -> None:
+        parser = ASTMetadataParser()
+        unsupported = _function("@cached_property\ndef run():\n    pass").decorator_list[0]
+        dynamic = _function("@decorators[0]()\ndef run():\n    pass").decorator_list[0]
+
+        assert parser.parse_decorator(unsupported) is None
+        assert parser.parse_decorator(dynamic) is None
+
+    def test_decorator_keyword_values_preserve_nested_literal_shape(self) -> None:
+        parser = ASTMetadataParser()
+        decorator = _function(
+            "@workflow(name=NAME, enabled=True, metadata={'team': TEAM})\n"
+            "def run():\n"
+            "    pass"
+        ).decorator_list[0]
+
+        assert parser.parse_decorator(decorator) == (
+            "workflow",
+            {"enabled": True, "metadata": {"team": None}},
+        )
+
 
 class TestAstValueToPython:
     @pytest.mark.parametrize(
@@ -58,6 +79,13 @@ class TestAstValueToPython:
     )
     def test_converts_literal_ast_nodes(self, source: str, expected: object) -> None:
         assert ASTMetadataParser().ast_value_to_python(_expr(source)) == expected
+
+    def test_converts_legacy_name_constants_when_present(self) -> None:
+        parser = ASTMetadataParser()
+
+        assert parser.ast_value_to_python(ast.Name(id="True")) is True
+        assert parser.ast_value_to_python(ast.Name(id="False")) is False
+        assert parser.ast_value_to_python(ast.Name(id="None")) is None
 
 
 class TestAnnotationConversion:
@@ -84,10 +112,29 @@ class TestAnnotationConversion:
     @pytest.mark.parametrize(
         ("annotation", "expected"),
         [
+            ("Optional[CustomType]", "string"),
+            ("Literal[1, 2]", "int"),
+            ("Literal[1.5, 2.5]", "float"),
+            ("Literal[True, False]", "bool"),
+            ("Literal[{'bad': 'choice'}]", "string"),
+            ("tuple[str, int]", "json"),
+        ],
+    )
+    def test_annotation_to_ui_type_handles_fallbacks_and_literal_types(
+        self, annotation: str, expected: str
+    ) -> None:
+        func = _function(f"def run(value: {annotation}):\n    pass")
+
+        assert ASTMetadataParser().annotation_to_ui_type(func.args.args[0].annotation) == expected
+
+    @pytest.mark.parametrize(
+        ("annotation", "expected"),
+        [
             ("str", "str"),
             ("module.Type", "module.Type"),
             ("list[str]", "list[...]"),
             ("str | None", "str | None"),
+            ("'ForwardRef'", "ForwardRef"),
         ],
     )
     def test_annotation_to_string(self, annotation: str, expected: str) -> None:
@@ -121,6 +168,15 @@ class TestAnnotationConversion:
         func = _function("def run(status: str):\n    pass")
 
         assert ASTMetadataParser().extract_literal_options(func.args.args[0].annotation) is None
+
+    def test_extract_literal_options_handles_single_value_and_empty_literal(self) -> None:
+        single = _function("def run(status: Literal['open']):\n    pass")
+        empty = _function("def run(status: Literal[None]):\n    pass")
+
+        assert ASTMetadataParser().extract_literal_options(single.args.args[0].annotation) == [
+            {"label": "open", "value": "open"}
+        ]
+        assert ASTMetadataParser().extract_literal_options(empty.args.args[0].annotation) is None
 
 
 class TestExtractParametersFromAst:
@@ -176,4 +232,26 @@ class TestExtractParametersFromAst:
                 "required": True,
                 "label": "Value",
             }
+        ]
+
+    def test_extracts_async_function_parameters_and_omits_unknown_default(self) -> None:
+        node = ast.parse(
+            "async def run(cls, retry_count: int = DEFAULT_RETRY, payload = None):\n"
+            "    pass"
+        ).body[0]
+        assert isinstance(node, ast.AsyncFunctionDef)
+
+        assert ASTMetadataParser().extract_parameters_from_ast(node) == [
+            {
+                "name": "retry_count",
+                "type": "int",
+                "required": False,
+                "label": "Retry Count",
+            },
+            {
+                "name": "payload",
+                "type": "string",
+                "required": False,
+                "label": "Payload",
+            },
         ]
