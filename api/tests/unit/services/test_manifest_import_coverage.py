@@ -1214,6 +1214,67 @@ class _SequenceDb:
 
 
 @pytest.mark.asyncio
+async def test_prefetch_existing_entities_builds_all_resolver_caches():
+    integration_uuid = UUID(INTEGRATION_ID)
+    org_uuid = UUID(ORG_ID)
+    workflow_uuid = UUID(WORKFLOW_ID)
+    app_uuid = UUID(APP_ID)
+    table_uuid = UUID("abababab-abab-abab-abab-abababababab")
+    file_policy_uuid = UUID("bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc")
+    policy_rule_uuid = UUID("dededede-dede-dede-dede-dededededede")
+    claim_uuid = UUID("cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd")
+    schema = SimpleNamespace(integration_id=integration_uuid, key="api_url")
+    mapping = SimpleNamespace(
+        integration_id=integration_uuid,
+        organization_id=org_uuid,
+    )
+    db = _SequenceDb(
+        _RowsResult([(org_uuid, "Midtown")]),
+        _RowsResult([(UUID(ROLE_ID), "Operator")]),
+        _RowsResult([(workflow_uuid, "workflows/tickets.py", "run")]),
+        _RowsResult([(integration_uuid, "Halo")]),
+        _ScalarRowsResult([schema]),
+        _ScalarRowsResult([mapping]),
+        _RowsResult([(app_uuid, "portal")]),
+        _RowsResult([(table_uuid, "Tickets", org_uuid)]),
+        _RowsResult([(file_policy_uuid, org_uuid, "workspace", "docs/", UUID(APP_ID))]),
+        _RowsResult([(UUID(CONFIG_ID), "api_url", integration_uuid, org_uuid, "https://api", schema)]),
+        _RowsResult([(policy_rule_uuid, "Support read", "table", org_uuid)]),
+        _RowsResult([(claim_uuid, "allowed_campus_ids", org_uuid)]),
+    )
+
+    cache = await manifest_import.ManifestResolver(db)._prefetch_existing_entities()
+
+    assert cache["org_ids"] == {org_uuid}
+    assert cache["org_by_name"] == {"Midtown": org_uuid}
+    assert cache["role_ids"] == {UUID(ROLE_ID)}
+    assert cache["role_by_name"] == {"Operator": UUID(ROLE_ID)}
+    assert cache["wf_ids"] == {workflow_uuid}
+    assert cache["wf_by_natural"] == {("workflows/tickets.py", "run"): workflow_uuid}
+    assert cache["integ_ids"] == {integration_uuid}
+    assert cache["integ_by_name"] == {"Halo": integration_uuid}
+    assert cache["integ_cs"] == {integration_uuid: {"api_url": schema}}
+    assert cache["integ_mappings"] == {integration_uuid: {ORG_ID: mapping}}
+    assert cache["app_by_slug"] == {"portal": app_uuid}
+    assert cache["table_ids"] == {table_uuid}
+    assert cache["table_by_natural"] == {("Tickets", org_uuid): table_uuid}
+    assert cache["file_policy_ids"] == {file_policy_uuid}
+    assert cache["file_policy_by_natural"] == {
+        (org_uuid, "workspace", "docs/", UUID(APP_ID)): file_policy_uuid
+    }
+    assert cache["config_by_natural"] == {
+        ("api_url", integration_uuid, org_uuid): (UUID(CONFIG_ID), "https://api", schema)
+    }
+    assert cache["policy_rule_ids"] == {policy_rule_uuid}
+    assert cache["policy_rule_by_natural"] == {
+        ("Support read", "table", org_uuid): policy_rule_uuid
+    }
+    assert cache["claim_ids"] == {claim_uuid}
+    assert cache["claim_by_natural"] == {("allowed_campus_ids", org_uuid): claim_uuid}
+    assert len(db.statements) == 12
+
+
+@pytest.mark.asyncio
 async def test_resolve_deletions_requires_manifest_or_work_dir():
     resolver = manifest_import.ManifestResolver(_SequenceDb())
 
