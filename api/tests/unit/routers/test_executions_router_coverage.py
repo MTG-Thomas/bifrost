@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -373,6 +374,7 @@ async def test_get_execution_logs_reads_redis_and_filters_hidden_levels():
         )
 
     assert error is None
+    assert logs is not None
     assert [log.message for log in logs] == ["shown"]
     assert logs[0].level == "info"
     assert logs[0].data == {"step": 1}
@@ -461,7 +463,7 @@ async def test_cancel_execution_sets_cancel_flag_for_running_execution():
         patch.object(executions, "ExecutionRepository") as repo_cls,
     ):
         repo_cls.return_value.cancel_execution = AsyncMock(return_value=(running, None))
-        result = await executions.cancel_execution(execution_id, _ctx())
+        result = cast(dict[str, Any], await executions.cancel_execution(execution_id, _ctx()))
 
     assert result is running
     redis_client.set_cancel_flag.assert_awaited_once_with(str(execution_id))

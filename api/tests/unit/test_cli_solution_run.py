@@ -9,6 +9,7 @@ job and is covered by the table SDK tests; here we prove the import root.
 """
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import sys
 from types import SimpleNamespace
@@ -263,6 +264,190 @@ def test_handle_run_argument_and_file_validation(tmp_path, capsys):
 
     assert handle_run([str(plain), "--unknown"]) == 1
     assert "Unknown option" in capsys.readouterr().err
+
+
+class _SessionResponse:
+    def __init__(self, status_code: int, body=None, text: str = ""):
+        self.status_code = status_code
+        self._body = body or {}
+        self.text = text
+
+    def json(self):
+        return self._body
+
+
+class _SessionClient:
+    api_url = "https://bifrost.example"
+
+    def __init__(self, pending_responses):
+        self.pending_responses = list(pending_responses)
+        self.posts = []
+        self.gets = []
+
+    async def post(self, path, **kwargs):
+        self.posts.append((path, kwargs))
+        if path.endswith("/result"):
+            return _SessionResponse(200, {})
+        if path.endswith("/heartbeat"):
+            return _SessionResponse(204, {})
+        return _SessionResponse(201, {"ok": True})
+
+    async def get(self, path, **kwargs):
+        self.gets.append((path, kwargs))
+        if not self.pending_responses:
+            raise AssertionError("test exhausted pending responses")
+        return self.pending_responses.pop(0)
+
+
+def test_run_session_flow_executes_pending_workflow(monkeypatch, capsys):
+    async def sleep_now(_seconds):
+        return None
+
+    async def selected(name):
+        return {"hello": name}
+
+    client = _SessionClient(
+        [
+            _SessionResponse(
+                200,
+                {
+                    "execution_id": "exec-1",
+                    "workflow_name": "selected",
+                    "params": {"name": "Ada"},
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(cli.asyncio, "sleep", sleep_now)
+    monkeypatch.setattr(cli.time, "time", lambda: 100.0)
+    monkeypatch.setattr(cli.webbrowser, "open", lambda _url: True)
+
+    rc = asyncio.run(
+        cli._run_session_flow(
+            client=client,
+            session_id="session-1",
+            file_path="/tmp/workflow.py",
+            workflow_infos=[{"name": "selected"}],
+            workflows={"selected": selected},
+            selected_workflow="selected",
+            no_browser=False,
+        )
+    )
+
+    assert rc == 0
+    assert client.posts[0] == (
+        "/api/sdk/sessions",
+        {
+            "json": {
+                "session_id": "session-1",
+                "file_path": "/tmp/workflow.py",
+                "workflows": [{"name": "selected"}],
+                "selected_workflow": "selected",
+            }
+        },
+    )
+    result_post = client.posts[-1]
+    assert result_post[0] == "/api/sdk/sessions/session-1/executions/exec-1/result"
+    assert result_post[1]["json"]["status"] == "Success"
+    assert result_post[1]["json"]["result"] == {"hello": "Ada"}
+    assert "Executing workflow: selected" in capsys.readouterr().out
+
+
+def test_run_session_flow_posts_missing_workflow_failure(monkeypatch, capsys):
+    async def sleep_now(_seconds):
+        return None
+
+    client = _SessionClient(
+        [
+            _SessionResponse(
+                200,
+                {
+                    "execution_id": "exec-2",
+                    "workflow_name": "missing",
+                    "params": {},
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(cli.asyncio, "sleep", sleep_now)
+    monkeypatch.setattr(cli.time, "time", lambda: 100.0)
+
+    rc = asyncio.run(
+        cli._run_session_flow(
+            client=client,
+            session_id="session-2",
+            file_path="/tmp/workflow.py",
+            workflow_infos=[],
+            workflows={},
+            selected_workflow=None,
+            no_browser=True,
+        )
+    )
+
+    assert rc == 1
+    result_post = client.posts[-1]
+    assert result_post[1]["json"]["status"] == "Failed"
+    assert "not found in loaded module" in result_post[1]["json"]["error_message"]
+    assert "Workflow 'missing' not found" in capsys.readouterr().err
+
+
+def test_run_session_flow_reports_registration_and_poll_errors(capsys):
+    class RegisterFailureClient(_SessionClient):
+        async def post(self, path, **kwargs):
+            self.posts.append((path, kwargs))
+            return _SessionResponse(500, text="server down")
+
+    rc = asyncio.run(
+        cli._run_session_flow(
+            client=RegisterFailureClient([]),
+            session_id="session-3",
+            file_path="/tmp/workflow.py",
+            workflow_infos=[],
+            workflows={},
+            selected_workflow=None,
+            no_browser=True,
+        )
+    )
+    assert rc == 1
+    assert "Error registering session: 500 - server down" in capsys.readouterr().err
+
+    async def never_called():
+        return None
+
+    poll_404 = _SessionClient([_SessionResponse(404, {})])
+    rc = asyncio.run(
+        cli._run_session_flow(
+            client=poll_404,
+            session_id="session-4",
+            file_path="/tmp/workflow.py",
+            workflow_infos=[],
+            workflows={"never_called": never_called},
+            selected_workflow=None,
+            no_browser=True,
+        )
+    )
+    assert rc == 1
+    assert "Session expired or deleted" in capsys.readouterr().err
+
+
+def test_post_result_warns_but_does_not_raise(capsys):
+    class Client:
+        async def post(self, path, **kwargs):
+            raise RuntimeError("offline")
+
+    asyncio.run(
+        cli._post_result(
+            Client(),
+            "session-5",
+            "exec-5",
+            "Success",
+            {"ok": True},
+            None,
+            12,
+        )
+    )
+
+    assert "Failed to post result: offline" in capsys.readouterr().err
 
 
 def test_handle_run_requires_workflow_and_validates_selected_workflow(tmp_path, capsys):

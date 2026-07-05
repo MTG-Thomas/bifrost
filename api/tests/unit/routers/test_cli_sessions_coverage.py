@@ -41,6 +41,39 @@ def _scalar_result(value):
     return SimpleNamespace(scalar_one_or_none=lambda: value)
 
 
+def _session(**overrides):
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    values = {
+        "id": uuid4(),
+        "user_id": uuid4(),
+        "file_path": "workflows/session.py",
+        "workflows": [{"name": "sync", "description": "Sync data", "parameters": []}],
+        "selected_workflow": None,
+        "params": None,
+        "pending": False,
+        "last_seen": now,
+        "created_at": now,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_session_to_response_handles_unloaded_executions_and_empty_workflows() -> None:
+    session = _session(workflows=[])
+
+    class Inspection:
+        dict = {}
+
+    with patch("sqlalchemy.inspect", return_value=Inspection()):
+        response = cli._session_to_response(session, is_connected=False)
+
+    assert response.id == str(session.id)
+    assert response.user_id == str(session.user_id)
+    assert response.workflows == []
+    assert response.executions == []
+    assert response.is_connected is False
+
+
 class TestCLISessionHttpBranches:
     @pytest.mark.asyncio
     async def test_get_and_delete_reject_bad_session_ids(self) -> None:
@@ -84,6 +117,96 @@ class TestCLISessionHttpBranches:
                 assert exc.value.detail == expected_detail
 
     @pytest.mark.asyncio
+    async def test_get_returns_session_response_from_repository(self) -> None:
+        user = _user()
+        db = _db()
+        session = _session(user_id=user.user_id, pending=True)
+        repo = MagicMock()
+        repo.get_session_for_user = AsyncMock(return_value=session)
+        repo.is_connected.return_value = True
+
+        class Inspection:
+            dict = {}
+
+        with (
+            patch.object(cli, "CLISessionRepository", return_value=repo),
+            patch("sqlalchemy.inspect", return_value=Inspection()),
+        ):
+            result = await cli.get_cli_session(str(session.id), user, db)
+
+        assert result.id == str(session.id)
+        assert result.user_id == str(user.user_id)
+        assert result.pending is True
+        assert result.is_connected is True
+        repo.get_session_for_user.assert_awaited_once_with(session.id, user.user_id)
+        repo.is_connected.assert_called_once_with(session)
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_existing_session_and_commits(self) -> None:
+        user = _user()
+        db = _db()
+        session = _session(user_id=user.user_id)
+        repo = MagicMock()
+        repo.get_session_for_user = AsyncMock(return_value=session)
+        repo.delete = AsyncMock()
+
+        with patch.object(cli, "CLISessionRepository", return_value=repo):
+            result = await cli.delete_cli_session(str(session.id), user, db)
+
+        assert result is None
+        repo.get_session_for_user.assert_awaited_once_with(session.id, user.user_id)
+        repo.delete.assert_awaited_once_with(session)
+        db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_rejects_bad_session_id_before_repository_lookup(self) -> None:
+        user = _user()
+        db = _db()
+
+        with patch.object(cli, "CLISessionRepository") as repo_cls:
+            with pytest.raises(HTTPException) as exc:
+                await cli.session_heartbeat("not-a-uuid", user, db)
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc.value.detail == "Invalid session ID format"
+        repo_cls.return_value.get_session_for_user.assert_not_called()
+        db.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_missing_session_is_quiet_noop(self) -> None:
+        user = _user()
+        db = _db()
+        session_id = uuid4()
+        repo = MagicMock()
+        repo.get_session_for_user = AsyncMock(return_value=None)
+        repo.update_last_seen = AsyncMock()
+
+        with patch.object(cli, "CLISessionRepository", return_value=repo):
+            result = await cli.session_heartbeat(str(session_id), user, db)
+
+        assert result is None
+        repo.get_session_for_user.assert_awaited_once_with(session_id, user.user_id)
+        repo.update_last_seen.assert_not_awaited()
+        db.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_updates_existing_session_and_commits(self) -> None:
+        user = _user()
+        db = _db()
+        session = _session(user_id=user.user_id)
+        repo = MagicMock()
+        repo.get_session_for_user = AsyncMock(return_value=session)
+        repo.update_last_seen = AsyncMock()
+
+        with patch.object(cli, "CLISessionRepository", return_value=repo):
+            result = await cli.session_heartbeat(str(session.id), user, db)
+
+        assert result is None
+        repo.get_session_for_user.assert_awaited_once_with(session.id, user.user_id)
+        repo.update_last_seen.assert_awaited_once_with(session.id)
+        db.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_continue_rejects_unknown_workflow_before_creating_execution(self) -> None:
         user = _user()
         db = _db()
@@ -110,6 +233,20 @@ class TestCLISessionHttpBranches:
 
 
 class TestCLISessionPendingAndResult:
+    @pytest.mark.asyncio
+    async def test_pending_rejects_bad_session_id(self) -> None:
+        user = _user()
+        db = _db()
+
+        with patch.object(cli, "CLISessionRepository") as repo_cls:
+            with pytest.raises(HTTPException) as exc:
+                await cli.get_pending_execution("not-a-uuid", user, db)
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc.value.detail == "Invalid session ID format"
+        repo_cls.return_value.get_session_for_user.assert_not_called()
+        db.commit.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_pending_returns_204_when_session_missing_or_not_ready(self) -> None:
         user = _user()
