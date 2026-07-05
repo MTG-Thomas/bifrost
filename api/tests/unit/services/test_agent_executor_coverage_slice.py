@@ -8,7 +8,7 @@ import pytest
 
 from src.models.contracts.agents import ToolResult
 from src.models.enums import MessageRole
-from src.services.agent_executor import AgentExecutor
+from src.services.agent_executor import CONTEXT_MAX_TOKENS, AgentExecutor
 from src.services.llm import LLMMessage
 from src.services.llm.base import ToolCallRequest
 
@@ -628,3 +628,231 @@ async def test_chat_executes_tool_calls_and_remaps_duplicate_provider_ids(execut
     assert chunks[-1].content == "complete"
     assert chunks[-1].token_count_input == 13
     assert chunks[-1].token_count_output == 6
+
+
+@pytest.mark.asyncio
+async def test_chat_applies_mention_switch_before_saving_user_message(executor):
+    original_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Original",
+        organization_id=uuid4(),
+        llm_model=None,
+        llm_max_tokens=None,
+    )
+    mentioned_agent = SimpleNamespace(id=uuid4(), name="Mentioned")
+    switched_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Accessible Mentioned",
+        organization_id=uuid4(),
+        llm_model=None,
+        llm_max_tokens=None,
+    )
+    conversation = SimpleNamespace(id=uuid4(), user_id=uuid4())
+    user = SimpleNamespace(
+        user_id=uuid4(),
+        organization_id=uuid4(),
+        is_superuser=False,
+        is_external=False,
+    )
+    user_msg = SimpleNamespace(id=uuid4())
+    assistant_msg = SimpleNamespace(id=uuid4())
+    saved_messages = AsyncMock(side_effect=[user_msg, assistant_msg])
+    llm_client = SimpleNamespace(
+        model_name="test-model",
+        provider_name="test-provider",
+        stream=_stream(
+            SimpleNamespace(type="delta", content="ok", tool_call=None),
+            SimpleNamespace(
+                type="done",
+                content=None,
+                tool_call=None,
+                input_tokens=1,
+                output_tokens=1,
+            ),
+        ),
+    )
+    switch_chunk = SimpleNamespace(type="agent_switch")
+
+    with (
+        patch("src.services.agent_executor.get_llm_client", new=AsyncMock(return_value=llm_client)),
+        patch("src.services.agent_router.AgentRouter") as router_cls,
+        patch.object(
+            executor,
+            "_switch_agent",
+            new=AsyncMock(return_value=(switch_chunk, switched_agent)),
+        ) as switch_agent,
+        patch.object(executor, "_save_message", new=saved_messages),
+        patch.object(executor, "_get_agent_tools", new=AsyncMock(return_value=[])) as get_tools,
+        patch.object(
+            executor,
+            "_build_message_history",
+            new=AsyncMock(return_value=[LLMMessage(role="system", content="prompt")]),
+        ),
+        patch.object(executor, "_record_ai_usage", new=AsyncMock()),
+    ):
+        router = router_cls.return_value
+        router.parse_mention = AsyncMock(return_value=mentioned_agent)
+        router.strip_mention.return_value = "please help"
+        chunks = [
+            chunk
+            async for chunk in executor.chat(
+                agent=original_agent,
+                conversation=conversation,
+                user_message="@mentioned please help",
+                user=user,
+            )
+        ]
+
+    switch_agent.assert_awaited_once_with(
+        conversation,
+        mentioned_agent,
+        "@mention",
+        user=user,
+    )
+    get_tools.assert_awaited_once_with(switched_agent, caller_user_id=conversation.user_id)
+    assert chunks[0] is switch_chunk
+    assert chunks[1].type == "message_start"
+    assert saved_messages.await_args_list[0].kwargs["content"] == "please help"
+
+
+@pytest.mark.asyncio
+async def test_chat_routes_first_agentless_message(executor):
+    routed_agent = SimpleNamespace(
+        id=uuid4(),
+        name="Routed",
+        organization_id=uuid4(),
+        llm_model=None,
+        llm_max_tokens=None,
+    )
+    conversation = SimpleNamespace(id=uuid4(), user_id=uuid4())
+    user = SimpleNamespace(
+        user_id=uuid4(),
+        organization_id=uuid4(),
+        is_superuser=False,
+        is_external=False,
+    )
+    user_msg = SimpleNamespace(id=uuid4())
+    assistant_msg = SimpleNamespace(id=uuid4())
+    llm_client = SimpleNamespace(
+        model_name="test-model",
+        provider_name="test-provider",
+        stream=_stream(
+            SimpleNamespace(type="delta", content="routed", tool_call=None),
+            SimpleNamespace(
+                type="done",
+                content=None,
+                tool_call=None,
+                input_tokens=1,
+                output_tokens=1,
+            ),
+        ),
+    )
+    switch_chunk = SimpleNamespace(type="agent_switch")
+
+    with (
+        patch("src.services.agent_executor.get_llm_client", new=AsyncMock(return_value=llm_client)),
+        patch("src.services.agent_router.AgentRouter") as router_cls,
+        patch.object(executor, "_is_first_user_message", new=AsyncMock(return_value=True)),
+        patch.object(
+            executor,
+            "_switch_agent",
+            new=AsyncMock(return_value=(switch_chunk, routed_agent)),
+        ) as switch_agent,
+        patch.object(executor, "_save_message", new=AsyncMock(side_effect=[user_msg, assistant_msg])),
+        patch.object(executor, "_get_agent_tools", new=AsyncMock(return_value=[])),
+        patch.object(
+            executor,
+            "_build_message_history",
+            new=AsyncMock(return_value=[LLMMessage(role="system", content="prompt")]),
+        ),
+        patch.object(executor, "_record_ai_usage", new=AsyncMock()),
+    ):
+        router = router_cls.return_value
+        router.parse_mention = AsyncMock(return_value=None)
+        router.route_message = AsyncMock(return_value=routed_agent)
+        chunks = [
+            chunk
+            async for chunk in executor.chat(
+                agent=None,
+                conversation=conversation,
+                user_message="who should handle this?",
+                user=user,
+            )
+        ]
+
+    router.route_message.assert_awaited_once_with("who should handle this?")
+    switch_agent.assert_awaited_once_with(
+        conversation,
+        routed_agent,
+        "routed",
+        user=user,
+    )
+    assert chunks[0] is switch_chunk
+
+
+@pytest.mark.asyncio
+async def test_chat_yields_compaction_warning_when_context_exceeds_limit(executor):
+    agent = SimpleNamespace(
+        id=uuid4(),
+        name="Context Agent",
+        organization_id=uuid4(),
+        llm_model=None,
+        llm_max_tokens=None,
+    )
+    conversation = SimpleNamespace(id=uuid4(), user_id=uuid4())
+    user_msg = SimpleNamespace(id=uuid4())
+    assistant_msg = SimpleNamespace(id=uuid4())
+    compacted_messages = [LLMMessage(role="system", content="compacted")]
+    llm_client = SimpleNamespace(
+        model_name="test-model",
+        provider_name="test-provider",
+        stream=_stream(
+            SimpleNamespace(type="delta", content="after compact", tool_call=None),
+            SimpleNamespace(
+                type="done",
+                content=None,
+                tool_call=None,
+                input_tokens=2,
+                output_tokens=2,
+            ),
+        ),
+    )
+
+    with (
+        patch("src.services.agent_executor.get_llm_client", new=AsyncMock(return_value=llm_client)),
+        patch("src.services.agent_router.AgentRouter") as router_cls,
+        patch.object(executor, "_save_message", new=AsyncMock(side_effect=[user_msg, assistant_msg])),
+        patch.object(executor, "_get_agent_tools", new=AsyncMock(return_value=[])),
+        patch.object(
+            executor,
+            "_build_message_history",
+            new=AsyncMock(return_value=[LLMMessage(role="system", content="large")]),
+        ),
+        patch.object(
+            executor,
+            "_estimate_tokens",
+            side_effect=[CONTEXT_MAX_TOKENS + 1, 12],
+        ),
+        patch.object(
+            executor,
+            "_prune_context",
+            new=AsyncMock(return_value=(compacted_messages, CONTEXT_MAX_TOKENS + 1)),
+        ) as prune_context,
+        patch.object(executor, "_record_ai_usage", new=AsyncMock()),
+    ):
+        router_cls.return_value.parse_mention = AsyncMock(return_value=None)
+        chunks = [
+            chunk
+            async for chunk in executor.chat(
+                agent=agent,
+                conversation=conversation,
+                user_message="too much context",
+                enable_routing=False,
+            )
+        ]
+
+    prune_context.assert_awaited_once()
+    warning = next(chunk for chunk in chunks if chunk.type == "context_warning")
+    assert warning.context_warning.action == "compacted"
+    assert warning.context_warning.current_tokens == CONTEXT_MAX_TOKENS + 1
+    assert chunks[-1].content == "after compact"
