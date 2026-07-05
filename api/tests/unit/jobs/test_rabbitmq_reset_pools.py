@@ -40,6 +40,57 @@ def test_reset_pools_clears_both_pools(conn):
     assert conn._channel_pool is None
 
 
+def test_get_connection_requires_initialized_pool(conn):
+    conn._connection_pool = None
+
+    with pytest.raises(RuntimeError, match="Connection pool not initialized"):
+        conn.get_connection()
+
+
+def test_get_channel_requires_initialized_pool(conn):
+    conn._channel_pool = None
+
+    with pytest.raises(RuntimeError, match="Channel pool not initialized"):
+        conn.get_channel()
+
+
+@pytest.mark.asyncio
+async def test_init_pools_noops_when_connection_pool_exists(conn, monkeypatch):
+    sentinel = object()
+    conn._connection_pool = sentinel  # type: ignore[assignment]
+    conn._channel_pool = None
+
+    async def fail_if_called():
+        raise AssertionError("_init_pools should not run when pool exists")
+
+    monkeypatch.setattr(conn, "_init_pools", fail_if_called)
+
+    await conn.init_pools()
+
+    assert conn._connection_pool is sentinel
+    assert conn._channel_pool is None
+
+
+@pytest.mark.asyncio
+async def test_close_closes_existing_pools(conn):
+    class _Pool:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    connection_pool = _Pool()
+    channel_pool = _Pool()
+    conn._connection_pool = connection_pool  # type: ignore[assignment]
+    conn._channel_pool = channel_pool  # type: ignore[assignment]
+
+    await conn.close()
+
+    assert connection_pool.closed is True
+    assert channel_pool.closed is True
+
+
 def test_reset_pools_does_not_touch_stale_pool(conn):
     """reset_pools must be synchronous and must not call close().
 

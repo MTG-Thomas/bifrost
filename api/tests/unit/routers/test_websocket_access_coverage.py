@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -49,6 +49,19 @@ class _WebSocket:
     def __init__(self):
         self.state = SimpleNamespace()
         self.send_json = AsyncMock()
+
+
+class _QueuedWebSocket(_WebSocket):
+    def __init__(self, messages=None):
+        super().__init__()
+        self.messages = list(messages or [])
+        self.accept = AsyncMock()
+        self.close = AsyncMock()
+
+    async def receive_json(self):
+        if self.messages:
+            return self.messages.pop(0)
+        raise ws_mod.WebSocketDisconnect()
 
 
 def _db_context(db):
@@ -386,6 +399,184 @@ async def test_can_access_agent_run_rejects_bad_id_and_delegates_loader():
         assert await ws_mod.can_access_agent_run(user, str(uuid4()))
 
     loader.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_websocket_connect_filters_initial_channels_without_accepting_file_or_table_queries():
+    user = _user(is_superuser=True)
+    ws = _QueuedWebSocket()
+    manager = SimpleNamespace(
+        connections={},
+        connect=AsyncMock(),
+        disconnect=Mock(),
+    )
+    execution_id = str(uuid4())
+    app_id = str(uuid4())
+    run_id = str(uuid4())
+
+    with (
+        patch.object(ws_mod, "get_current_user_ws", AsyncMock(return_value=user)),
+        patch.object(ws_mod, "can_access_execution", AsyncMock(return_value=True)) as can_exec,
+        patch.object(ws_mod, "can_access_conversation", AsyncMock(return_value=(True, object()))),
+        patch.object(ws_mod, "can_access_app", AsyncMock(return_value=True)) as can_app,
+        patch.object(ws_mod, "can_access_agent_run", AsyncMock(return_value=True)) as can_run,
+        patch.object(ws_mod, "manager", manager),
+    ):
+        await ws_mod.websocket_connect(
+            ws,
+            channels=[
+                f"user:{user.user_id}",
+                "user:other",
+                f"execution:{execution_id}",
+                "package:install",
+                "git:job-secret",
+                f"notification:{user.user_id}",
+                "notification:admins",
+                "history:GLOBAL",
+                f"local-runner:{user.user_id}",
+                "local-runner:other",
+                f"devrun:{user.user_id}",
+                "cli-session:any",
+                f"cli-sessions:{user.user_id}",
+                "event-source:any",
+                "reindex:any",
+                f"app:draft:{app_id}",
+                f"app:live:{app_id}",
+                "file-activity",
+                "files:workspace:docs",
+                "table:customers",
+                "system",
+                f"agent-run:{run_id}",
+                "agent-runs",
+                "summary-backfill:job",
+                "platform_workers",
+            ],
+        )
+
+    manager.connect.assert_awaited_once()
+    connected_channels = manager.connect.await_args.args[1]
+    assert "files:workspace:docs" not in connected_channels
+    assert "table:customers" not in connected_channels
+    assert "user:other" not in connected_channels
+    assert "local-runner:other" not in connected_channels
+    assert f"execution:{execution_id}" in connected_channels
+    assert "notification:admins" in connected_channels
+    assert f"app:draft:{app_id}" in connected_channels
+    assert f"app:live:{app_id}" in connected_channels
+    assert f"agent-run:{run_id}" in connected_channels
+    assert "agent-runs:org:" in " ".join(connected_channels)
+    can_exec.assert_awaited_once_with(user, execution_id)
+    assert can_app.await_count == 2
+    can_run.assert_awaited_once_with(user, run_id)
+    ws.send_json.assert_any_await({
+        "type": "connected",
+        "channels": connected_channels,
+        "userId": str(user.user_id),
+    })
+    manager.disconnect.assert_called_once_with(ws)
+
+
+@pytest.mark.asyncio
+async def test_websocket_connect_handles_runtime_subscribe_errors_and_permission_denials():
+    user = _user(is_superuser=False)
+    ws = _QueuedWebSocket(
+        [
+            {
+                "type": "subscribe",
+                "channels": [{"name": "table:bad", "filter": {"unknown": []}}],
+            },
+            {
+                "type": "subscribe",
+                "channels": [
+                    "history:GLOBAL",
+                    "package:install",
+                    "agent-runs:all",
+                    "summary-backfill:job",
+                    "platform_workers",
+                    "git:job-secret",
+                ],
+            },
+        ]
+    )
+    manager = SimpleNamespace(
+        connections={},
+        connect=AsyncMock(),
+        disconnect=Mock(),
+    )
+
+    with (
+        patch.object(ws_mod, "get_current_user_ws", AsyncMock(return_value=user)),
+        patch.object(ws_mod, "manager", manager),
+    ):
+        await ws_mod.websocket_connect(ws, channels=[])
+
+    sent = [call.args[0] for call in ws.send_json.await_args_list]
+    assert any(
+        item.get("type") == "error"
+        and "channel" not in item
+        and item.get("message", "").startswith("invalid filter:")
+        for item in sent
+    )
+    assert {"type": "error", "channel": "history:GLOBAL", "message": "Access denied"} in sent
+    assert {"type": "error", "channel": "package:install", "message": "Access denied"} in sent
+    assert {"type": "error", "channel": "agent-runs:all", "message": "Access denied"} in sent
+    assert {"type": "error", "channel": "summary-backfill:job", "message": "Access denied"} in sent
+    assert {"type": "error", "channel": "platform_workers", "message": "Access denied"} in sent
+    assert manager.connections["git:job-secret"] == {ws}
+    assert {"type": "subscribed", "channel": "git:job-secret"} in sent
+    manager.disconnect.assert_called_once_with(ws)
+
+
+@pytest.mark.asyncio
+async def test_websocket_connect_unsubscribe_resolves_table_and_file_subscriptions():
+    user = _user()
+    table_id = str(uuid4())
+    ws = _QueuedWebSocket(
+        [
+            {"type": "unsubscribe", "channel": "table:customers"},
+            {"type": "unsubscribe", "channel": "files:repo:docs"},
+            {"type": "unsubscribe", "channel": "git:job-secret"},
+        ]
+    )
+    manager = SimpleNamespace(
+        connections={
+            f"table:{table_id}": {ws},
+            "files:repo:GLOBAL": {ws},
+            "git:job-secret": {ws},
+        },
+        connect=AsyncMock(),
+        disconnect=Mock(),
+    )
+
+    async def connect_without_reset(_websocket, _channels):
+        _websocket.state.table_subscriptions = {
+            table_id: {"channel_name": f"table:{table_id}"}
+        }
+        _websocket.state.file_subscriptions = {
+            "files:repo:GLOBAL:docs": {
+                "channel_name": "files:repo:GLOBAL",
+                "requested_channel": "files:repo:docs",
+                "location": "repo",
+                "prefix": "docs",
+            }
+        }
+        return None
+
+    with (
+        patch.object(ws_mod, "get_current_user_ws", AsyncMock(return_value=user)),
+        patch.object(ws_mod, "_resolve_table_id", AsyncMock(return_value=table_id)),
+        patch.object(ws_mod, "manager", manager),
+    ):
+        manager.connect = AsyncMock(side_effect=connect_without_reset)
+        await ws_mod.websocket_connect(ws, channels=[])
+
+    sent = [call.args[0] for call in ws.send_json.await_args_list]
+    assert {"type": "unsubscribed", "channel": f"table:{table_id}"} in sent
+    assert {"type": "unsubscribed", "channel": "files:repo:docs"} in sent
+    assert {"type": "unsubscribed", "channel": "git:job-secret"} in sent
+    assert ws not in manager.connections[f"table:{table_id}"]
+    assert ws not in manager.connections["files:repo:GLOBAL"]
+    assert ws not in manager.connections["git:job-secret"]
 
 
 @pytest.mark.asyncio
