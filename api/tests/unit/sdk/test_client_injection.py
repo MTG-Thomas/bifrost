@@ -4,9 +4,10 @@ Unit tests for bifrost.client module injection support.
 Tests the client injection pattern used for platform mode workflow execution.
 """
 
+import os
 from unittest.mock import patch
 
-import os
+import httpx
 import pytest
 
 
@@ -224,3 +225,186 @@ class TestEnvCredentialRefresh:
         assert os.environ["BIFROST_ACCESS_TOKEN"] == "new_access"
         assert os.environ["BIFROST_REFRESH_TOKEN"] == "new_refresh"
         assert dotenv_path.read_text() == dotenv_contents
+
+
+@pytest.mark.asyncio
+async def test_async_5xx_retry_only_retries_idempotent_methods(monkeypatch):
+    from bifrost import client as client_mod
+
+    sleeps = []
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(client_mod.asyncio, "sleep", sleep)
+
+    get_responses = iter([
+        httpx.Response(503),
+        httpx.Response(502),
+        httpx.Response(200),
+    ])
+    get_calls = 0
+
+    async def send_get():
+        nonlocal get_calls
+        get_calls += 1
+        return next(get_responses)
+
+    response = await client_mod._send_with_5xx_retry("GET", send_get)
+    assert response.status_code == 200
+    assert get_calls == 3
+    assert sleeps == [0.5, 1.5]
+
+    post_calls = 0
+
+    async def send_post():
+        nonlocal post_calls
+        post_calls += 1
+        return httpx.Response(503)
+
+    response = await client_mod._send_with_5xx_retry("POST", send_post)
+    assert response.status_code == 503
+    assert post_calls == 1
+
+
+def test_sync_5xx_retry_and_error_detail(monkeypatch):
+    from bifrost import client as client_mod
+
+    sleeps = []
+    monkeypatch.setattr(client_mod.time, "sleep", lambda delay: sleeps.append(delay))
+
+    responses = iter([httpx.Response(504), httpx.Response(200)])
+    response = client_mod._send_sync_with_5xx_retry("DELETE", lambda: next(responses))
+
+    assert response.status_code == 200
+    assert sleeps == [0.5]
+
+    request = httpx.Request("GET", "https://api.example.test/fail")
+    detailed = httpx.Response(
+        400,
+        json={"detail": "bad input"},
+        request=request,
+    )
+    with pytest.raises(httpx.HTTPStatusError, match="400 Bad Request: bad input"):
+        client_mod.raise_for_status_with_detail(detailed)
+
+    plain = httpx.Response(404, text="missing", request=request)
+    with pytest.raises(httpx.HTTPStatusError, match="404 Not Found"):
+        client_mod.raise_for_status_with_detail(plain)
+
+
+@pytest.mark.asyncio
+async def test_client_context_caches_and_properties(monkeypatch):
+    from bifrost import client as client_mod
+
+    calls = []
+
+    class SyncHTTP:
+        headers = {"Authorization": "Bearer token"}
+
+        def get(self, path):
+            calls.append(path)
+            return httpx.Response(
+                200,
+                json={
+                    "user": {"email": "dev@example.test"},
+                    "organization": {"id": "org-1"},
+                    "default_parameters": {"ticket_id": 123},
+                },
+                request=httpx.Request("GET", f"https://api.example.test{path}"),
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(client_mod.httpx, "Client", lambda **kwargs: SyncHTTP())
+
+    client = client_mod.BifrostClient("https://api.example.test/", "token")
+
+    assert client.context["user"]["email"] == "dev@example.test"
+    assert client.user == {"email": "dev@example.test"}
+    assert client.organization == {"id": "org-1"}
+    assert client.default_parameters == {"ticket_id": 123}
+    assert client.context["organization"]["id"] == "org-1"
+    assert calls == ["/api/sdk/context"]
+
+
+@pytest.mark.asyncio
+async def test_client_refreshes_once_after_401(monkeypatch):
+    from bifrost import client as client_mod
+
+    class AsyncHTTP:
+        def __init__(self, statuses):
+            self.statuses = list(statuses)
+            self.calls = []
+
+        async def get(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            return httpx.Response(self.statuses.pop(0))
+
+        async def aclose(self):
+            pass
+
+    clients = [AsyncHTTP([401]), AsyncHTTP([200])]
+
+    class SyncHTTP:
+        headers = {"Authorization": "Bearer old"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(client_mod.httpx, "Client", lambda **kwargs: SyncHTTP())
+    monkeypatch.setattr(client_mod.httpx, "AsyncClient", lambda **kwargs: clients.pop(0))
+    monkeypatch.setattr(client_mod, "refresh_tokens", lambda: _async_return(True))
+    monkeypatch.setattr(
+        client_mod,
+        "get_credentials",
+        lambda: {
+            "api_url": "https://api.example.test",
+            "access_token": "new",
+            "refresh_token": "refresh",
+            "expires_at": "later",
+        },
+    )
+
+    client = client_mod.BifrostClient("https://api.example.test", "old")
+    response = await client.get("/api/example", params={"q": "1"})
+
+    assert response.status_code == 200
+    assert client._access_token == "new"
+    assert client._sync_http.headers["Authorization"] == "Bearer new"
+
+
+def test_has_credentials_and_thread_local_instance(monkeypatch):
+    from bifrost import client as client_mod
+
+    if hasattr(client_mod._thread_local, "bifrost_client"):
+        delattr(client_mod._thread_local, "bifrost_client")
+
+    creds = {
+        "api_url": "https://api.example.test",
+        "access_token": "access",
+        "refresh_token": "refresh",
+        "expires_at": "later",
+    }
+
+    class SyncHTTP:
+        headers = {"Authorization": "Bearer access"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(client_mod.httpx, "Client", lambda **kwargs: SyncHTTP())
+    monkeypatch.setattr(client_mod, "get_credentials", lambda: creds)
+    monkeypatch.setattr(client_mod, "is_token_expired", lambda: False)
+
+    assert client_mod.has_credentials() is True
+    first = client_mod.BifrostClient.get_instance()
+    second = client_mod.BifrostClient.get_instance()
+
+    assert first is second
+    assert first.api_url == "https://api.example.test"
+
+
+async def _async_return(value):
+    return value
