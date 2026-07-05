@@ -246,6 +246,120 @@ async def test_publish_copies_preview_and_removes_stale_live(monkeypatch) -> Non
     assert invalidated == ["app"]
 
 
+@pytest.mark.asyncio
+async def test_sync_preview_compiled_writes_compiled_and_raw_files(monkeypatch) -> None:
+    client = _FakeClient(
+        list_pages=[
+            {
+                "Contents": [
+                    {"Key": "_repo/apps/demo/index.tsx"},
+                    {"Key": "_repo/apps/demo/styles.css"},
+                    {"Key": "_repo/apps/demo/broken.ts"},
+                ],
+                "IsTruncated": False,
+            },
+            {
+                "Contents": [
+                    {"Key": "_apps/app/preview/old.tsx"},
+                ],
+                "IsTruncated": False,
+            },
+        ],
+        objects={
+            "_repo/apps/demo/index.tsx": b"export default function App() {}",
+            "_repo/apps/demo/styles.css": b".app { color: red; }",
+            "_repo/apps/demo/broken.ts": b"const broken =",
+        },
+    )
+    service = _service(client)
+    invalidated: list[str] = []
+
+    class FakeCompiler:
+        async def compile_batch(self, batch):
+            assert batch == [
+                {
+                    "path": "index.tsx",
+                    "source": "export default function App() {}",
+                },
+                {"path": "broken.ts", "source": "const broken ="},
+            ]
+            return [
+                SimpleNamespace(
+                    path="index.tsx",
+                    success=True,
+                    compiled="export default 1;",
+                    error=None,
+                ),
+                SimpleNamespace(
+                    path="broken.ts",
+                    success=False,
+                    compiled=None,
+                    error="Unexpected end of input",
+                ),
+            ]
+
+    async def invalidate(app_id: str) -> None:
+        invalidated.append(app_id)
+
+    monkeypatch.setattr(
+        "src.services.app_compiler.AppCompilerService",
+        lambda: FakeCompiler(),
+    )
+    monkeypatch.setattr(service, "invalidate_render_cache", invalidate)
+
+    synced, errors = await service.sync_preview_compiled("app", "apps/demo/")
+
+    assert synced == 3
+    assert errors == ["broken.ts: Unexpected end of input"]
+    puts = {put["Key"]: put["Body"] for put in client.puts}
+    assert puts == {
+        "_apps/app/preview/index.tsx": b"export default 1;",
+        "_apps/app/preview/styles.css": b".app { color: red; }",
+        "_apps/app/preview/broken.ts": b"const broken =",
+    }
+    assert client.deleted == [{"Bucket": "bucket", "Key": "_apps/app/preview/old.tsx"}]
+    assert invalidated == ["app"]
+
+
+@pytest.mark.asyncio
+async def test_render_cache_get_set_and_invalidate_use_expected_redis_keys(monkeypatch):
+    redis = _FakeRedis()
+
+    async def get_shared_redis():
+        return redis
+
+    monkeypatch.setattr("src.core.cache.get_shared_redis", get_shared_redis)
+    service = _service()
+
+    assert await service.get_render_cache("app", "preview") is None
+    await service.set_render_cache("app", "preview", {"index.tsx": "code"})
+    assert redis.set_calls == [
+        ("bifrost:app_render:app:preview", '{"index.tsx": "code"}')
+    ]
+
+    assert await service.get_render_cache("app", "preview") == {"index.tsx": "code"}
+    await service.invalidate_render_cache("app")
+    assert redis.delete_calls == [
+        (
+            "bifrost:app_render:app:preview",
+            "bifrost:app_render:app:live",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_render_cache_methods_tolerate_redis_failures(monkeypatch):
+    async def get_shared_redis():
+        raise RuntimeError("redis offline")
+
+    monkeypatch.setattr("src.core.cache.get_shared_redis", get_shared_redis)
+    service = _service()
+
+    assert await service.get_render_cache("app", "live") is None
+    await service.set_render_cache("app", "live", {"index.tsx": "code"})
+    await service.invalidate_render_cache("app")
+
+
 class _Body:
     def __init__(self, data: bytes) -> None:
         self.data = data
@@ -294,3 +408,22 @@ class _FakeClient:
 
     async def put_object(self, **kwargs):
         self.puts.append(kwargs)
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.set_calls: list[tuple[str, str]] = []
+        self.delete_calls: list[tuple[str, ...]] = []
+
+    async def get(self, key: str):
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str):
+        self.values[key] = value
+        self.set_calls.append((key, value))
+
+    async def delete(self, *keys: str):
+        self.delete_calls.append(keys)
+        for key in keys:
+            self.values.pop(key, None)
