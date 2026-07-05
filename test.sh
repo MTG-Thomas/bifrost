@@ -164,7 +164,7 @@ stack_up() {
             echo "Stack already up."
             return 0
         fi
-        echo "Stack containers running but API not ready — see logs above." >&2
+        dump_stack_startup_logs "existing stack api readiness"
         exit 1
     fi
 
@@ -194,7 +194,10 @@ stack_up() {
     "$SCRIPT_DIR/scripts/stack_template_init.sh"
 
     echo "Starting API + Worker + Scheduler..."
-    docker compose -f "$COMPOSE_FILE" --profile e2e up -d "$build_flag"
+    if ! docker compose -f "$COMPOSE_FILE" --profile e2e up -d "$build_flag"; then
+        dump_stack_startup_logs "docker compose up"
+        exit 1
+    fi
     echo "Waiting for API to be serving traffic on /health/ready..."
     if ! wait_for_api_ready "$COMPOSE_FILE"; then
         dump_stack_startup_logs "api readiness"
