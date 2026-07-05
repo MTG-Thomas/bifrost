@@ -1475,6 +1475,69 @@ async def test_resolve_solution_files_decodes_sidecar_and_replaces_files(monkeyp
     assert writes == [(db, install_id, "shared", "docs/readme.md", b"hello", "replace")]
 
 
+def test_resolve_organization_uses_id_name_then_insert_paths():
+    resolver = manifest_import.ManifestResolver(_SequenceDb())
+    org_id = UUID(ORG_ID)
+    by_id = ManifestOrganization(id=ORG_ID, name="Renamed")
+    by_name = ManifestOrganization(id=OTHER_ORG_ID, name="Midtown")
+    new_org = ManifestOrganization(
+        id="edededed-eded-eded-eded-edededededed",
+        name="New org",
+    )
+
+    id_op = resolver._resolve_organization(
+        by_id,
+        {"org_ids": {org_id}, "org_by_name": {}},
+    )[0]
+    name_op = resolver._resolve_organization(
+        by_name,
+        {"org_ids": set(), "org_by_name": {"Midtown": org_id}},
+    )[0]
+    insert_op = resolver._resolve_organization(
+        new_org,
+        {"org_ids": set(), "org_by_name": {}},
+    )[0]
+
+    assert id_op.match_on == "id"
+    assert id_op.values == {"name": "Renamed", "is_active": True}
+    assert name_op.match_on == "name"
+    assert name_op.values["id"] == UUID(OTHER_ORG_ID)
+    assert name_op.values["name"] == "Midtown"
+    assert insert_op.match_on == "id"
+    assert insert_op.values["created_by"] == "git-sync"
+
+
+def test_resolve_role_uses_id_name_then_insert_paths():
+    resolver = manifest_import.ManifestResolver(_SequenceDb())
+    role_id = UUID(ROLE_ID)
+    by_id = ManifestRole(id=ROLE_ID, name="Renamed")
+    by_name = ManifestRole(id=EXISTING_ID, name="Operator")
+    new_role = ManifestRole(
+        id="edededed-eded-eded-eded-edededededed",
+        name="New role",
+    )
+
+    id_op = resolver._resolve_role(
+        by_id,
+        {"role_ids": {role_id}, "role_by_name": {}},
+    )[0]
+    name_op = resolver._resolve_role(
+        by_name,
+        {"role_ids": set(), "role_by_name": {"Operator": role_id}},
+    )[0]
+    insert_op = resolver._resolve_role(
+        new_role,
+        {"role_ids": set(), "role_by_name": {}},
+    )[0]
+
+    assert id_op.match_on == "id"
+    assert id_op.values == {"name": "Renamed"}
+    assert name_op.match_on == "name"
+    assert name_op.values == {"id": UUID(EXISTING_ID), "name": "Operator"}
+    assert insert_op.match_on == "id"
+    assert insert_op.values == {"name": "New role", "created_by": "git-sync"}
+
+
 @pytest.mark.asyncio
 async def test_resolve_deletions_requires_manifest_or_work_dir():
     resolver = manifest_import.ManifestResolver(_SequenceDb())
