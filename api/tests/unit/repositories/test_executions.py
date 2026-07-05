@@ -43,6 +43,9 @@ def _execution(**overrides):
         "started_at": now,
         "completed_at": now,
         "variables": {"secret": "hidden"},
+        "execution_context": None,
+        "peak_memory_bytes": None,
+        "cpu_total_seconds": None,
         "session_id": uuid4(),
         "time_saved": 7,
         "value": Decimal("12.50"),
@@ -259,6 +262,253 @@ class OneOrNoneResult:
 
     def one_or_none(self):
         return self.row
+
+
+class ScalarResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def all(self):
+        return self.rows
+
+
+class ExecuteResult:
+    def __init__(self, *, scalar=None, scalar_row=None, scalars=None, one=None):
+        self._scalar = scalar
+        self._scalar_row = scalar_row
+        self._scalars = scalars if scalars is not None else []
+        self._one = one
+
+    def scalar(self):
+        return self._scalar
+
+    def scalar_one_or_none(self):
+        return self._scalar_row
+
+    def scalars(self):
+        return ScalarResult(self._scalars)
+
+    def one(self):
+        return self._one
+
+    def one_or_none(self):
+        return self._one
+
+
+@pytest.mark.asyncio
+async def test_list_executions_paginates_and_maps_rows() -> None:
+    user = _user(is_superuser=True)
+    first = _execution(executed_by=user.user_id, workflow_name="sync_ticket")
+    second = _execution(executed_by=user.user_id, workflow_name="sync_ticket")
+    extra = _execution(executed_by=user.user_id, workflow_name="sync_ticket")
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=ExecuteResult(scalars=[first, second, extra]))
+    repo = ExecutionRepository(session)
+
+    rows, next_token = await repo.list_executions(
+        user,
+        org_id=first.organization_id,
+        workflow_name="sync_ticket",
+        status_filter=ExecutionStatus.SUCCESS.value,
+        start_date="not-a-date",
+        end_date="also-not-a-date",
+        limit=2,
+        offset=10,
+    )
+
+    assert [row.execution_id for row in rows] == [str(first.id), str(second.id)]
+    assert next_token == "12"
+    assert session.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_list_executions_scopes_regular_users_to_their_own_rows() -> None:
+    user = _user()
+    owned = _execution(executed_by=user.user_id, variables={"hidden": True})
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=ExecuteResult(scalars=[owned]))
+    repo = ExecutionRepository(session)
+
+    rows, next_token = await repo.list_executions(
+        user,
+        org_id=None,
+        start_date="2026-07-04T00:00:00Z",
+        end_date="2026-07-05T00:00:00Z",
+    )
+
+    assert next_token is None
+    assert len(rows) == 1
+    assert rows[0].executed_by == str(user.user_id)
+    assert rows[0].variables is None
+
+
+@pytest.mark.asyncio
+async def test_get_execution_returns_not_found_and_forbidden() -> None:
+    owner = _user()
+    other = _user()
+    execution = _execution(executed_by=owner.user_id)
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            ExecuteResult(scalar_row=None),
+            ExecuteResult(scalar_row=execution),
+        ]
+    )
+    repo = ExecutionRepository(session)
+
+    result, error = await repo.get_execution(uuid4(), owner)
+    assert result is None
+    assert error == "NotFound"
+
+    result, error = await repo.get_execution(execution.id, other)
+    assert result is None
+    assert error == "Forbidden"
+
+
+@pytest.mark.asyncio
+async def test_get_execution_includes_logs_ai_usage_totals_and_admin_fields() -> None:
+    admin = _user(is_superuser=True)
+    execution = _execution(executed_by=admin.user_id)
+    log = SimpleNamespace(
+        id=1,
+        timestamp=datetime(2026, 7, 4, 12, tzinfo=timezone.utc),
+        level="DEBUG",
+        message="debug detail",
+        log_metadata={"step": 1},
+        sequence=0,
+    )
+    ai_usage = SimpleNamespace(
+        provider="openai",
+        model="gpt-test",
+        input_tokens=11,
+        output_tokens=7,
+        cost=Decimal("0.1234"),
+        duration_ms=250,
+        timestamp=datetime(2026, 7, 4, 12, 1, tzinfo=timezone.utc),
+        sequence=2,
+    )
+    totals = SimpleNamespace(
+        total_input=11,
+        total_output=7,
+        total_cost=Decimal("0.1234"),
+        total_duration=250,
+        call_count=1,
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            ExecuteResult(scalar_row=execution),
+            ExecuteResult(scalars=[log]),
+            ExecuteResult(scalars=[ai_usage]),
+            ExecuteResult(one=totals),
+        ]
+    )
+    repo = ExecutionRepository(session)
+
+    result, error = await repo.get_execution(execution.id, admin)
+
+    assert error is None
+    assert result is not None
+    assert result.logs == [
+        {
+            "id": log.id,
+            "timestamp": "2026-07-04T12:00:00+00:00",
+            "level": "DEBUG",
+            "message": "debug detail",
+            "data": {"step": 1},
+            "sequence": 0,
+        }
+    ]
+    assert result.variables == {"secret": "hidden"}
+    assert result.execution_context is None
+    assert result.peak_memory_bytes is None
+    assert result.ai_usage is not None
+    assert result.ai_usage[0].provider == "openai"
+    assert result.ai_usage[0].cost == "0.1234"
+    assert result.ai_totals is not None
+    assert result.ai_totals.total_input_tokens == 11
+    assert result.ai_totals.total_cost == "0.1234"
+
+
+@pytest.mark.asyncio
+async def test_get_execution_logs_handles_access_and_filters_to_public_logs() -> None:
+    owner = _user()
+    other = _user()
+    log = SimpleNamespace(
+        id=2,
+        timestamp=None,
+        level=None,
+        message=None,
+        log_metadata={"visible": True},
+        sequence=None,
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            OneOrNoneResult(None),
+            OneOrNoneResult(SimpleNamespace(executed_by=owner.user_id)),
+            OneOrNoneResult(SimpleNamespace(executed_by=owner.user_id)),
+            ExecuteResult(scalars=[log]),
+        ]
+    )
+    repo = ExecutionRepository(session)
+
+    logs, error = await repo.get_execution_logs(uuid4(), owner)
+    assert logs is None
+    assert error == "NotFound"
+
+    logs, error = await repo.get_execution_logs(uuid4(), other)
+    assert logs is None
+    assert error == "Forbidden"
+
+    logs, error = await repo.get_execution_logs(uuid4(), owner)
+    assert error is None
+    assert logs is not None
+    assert len(logs) == 1
+    assert logs[0].timestamp == ""
+    assert logs[0].level == "info"
+    assert logs[0].message == ""
+    assert logs[0].sequence == 0
+
+
+@pytest.mark.asyncio
+async def test_get_execution_variables_forbidden_and_not_found() -> None:
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=OneOrNoneResult(None))
+    repo = ExecutionRepository(session)
+
+    variables, error = await repo.get_execution_variables(uuid4(), _user())
+    assert variables is None
+    assert error == "Forbidden"
+    session.execute.assert_not_called()
+
+    variables, error = await repo.get_execution_variables(uuid4(), _user(is_superuser=True))
+    assert variables is None
+    assert error == "NotFound"
+
+
+@pytest.mark.asyncio
+async def test_cancel_execution_handles_not_found_and_forbidden() -> None:
+    owner = _user()
+    other = _user()
+    execution = _execution(status=ExecutionStatus.RUNNING.value, executed_by=owner.user_id)
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            ExecuteResult(scalar_row=None),
+            ExecuteResult(scalar_row=execution),
+        ]
+    )
+    repo = ExecutionRepository(session)
+
+    result, error = await repo.cancel_execution(uuid4(), owner)
+    assert result is None
+    assert error == "NotFound"
+
+    result, error = await repo.cancel_execution(execution.id, other)
+    assert result is None
+    assert error == "Forbidden"
+    session.flush.assert_not_called()
 
 
 @pytest.mark.asyncio
