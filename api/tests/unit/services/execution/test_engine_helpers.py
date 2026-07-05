@@ -36,6 +36,7 @@ def test_coerce_params_to_type_hints_handles_scalars_optional_and_failures():
 
 def test_scrub_outputs_redacts_context_secret_values():
     context = ExecutionContext(
+        execution_id="exec-1",
         user_id="user-1",
         email="user@example.com",
         name="User One",
