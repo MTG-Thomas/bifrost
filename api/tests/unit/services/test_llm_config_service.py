@@ -525,6 +525,43 @@ class TestLLMConfigServiceTestConnection:
         assert result.message == "Unknown provider: bogus"
 
     @pytest.mark.asyncio
+    async def test_test_credentials_reports_missing_saved_key(
+        self, mock_session, mock_settings
+    ):
+        """Credential tests without explicit keys should fail with the saved-key error."""
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch.object(
+                LLMConfigService,
+                "_get_saved_api_key",
+                side_effect=ValueError("API key is required for connection test"),
+            ):
+                service = LLMConfigService(mock_session)
+                result = await service.test_credentials(provider="openai", api_key=None)
+
+        assert result.success is False
+        assert result.message == "API key is required for connection test"
+
+    @pytest.mark.asyncio
+    async def test_test_credentials_reports_provider_exception(
+        self, mock_session, mock_settings
+    ):
+        """Unexpected provider errors should be returned as credential-test failures."""
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch.object(
+                LLMConfigService,
+                "_list_anthropic",
+                side_effect=RuntimeError("transport down"),
+            ):
+                service = LLMConfigService(mock_session)
+                result = await service.test_credentials(
+                    provider="anthropic",
+                    api_key="sk-ant-test-key",
+                )
+
+        assert result.success is False
+        assert result.message == "Connection test failed: transport down"
+
+    @pytest.mark.asyncio
     async def test_get_saved_api_key_decrypts_config(
         self, mock_session, mock_settings, mock_system_config
     ):
@@ -687,6 +724,64 @@ class TestLLMConfigServiceTestConnection:
         mock_anthropic.assert_called_once_with(
             api_key="sk-ant-key", base_url="https://anthropic.example"
         )
+
+    @pytest.mark.asyncio
+    async def test_verify_completion_unknown_provider(self, mock_session, mock_settings):
+        """Saved configs with unsupported providers should fail without probing vendors."""
+        mock_llm_config = MagicMock()
+        mock_llm_config.provider = "other"
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch(
+                "src.services.llm.factory.get_llm_config",
+                return_value=mock_llm_config,
+            ):
+                service = LLMConfigService(mock_session)
+                result = await service.verify_completion()
+
+        assert result.success is False
+        assert result.message == "Unknown provider: other"
+
+    @pytest.mark.asyncio
+    async def test_verify_completion_reports_config_error(self, mock_session, mock_settings):
+        """Configuration lookup failures should be returned as completion-test failures."""
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch(
+                "src.services.llm.factory.get_llm_config",
+                side_effect=ValueError("LLM provider not configured"),
+            ):
+                service = LLMConfigService(mock_session)
+                result = await service.verify_completion()
+
+        assert result.success is False
+        assert result.message == "LLM provider not configured"
+
+    @pytest.mark.asyncio
+    async def test_verify_completion_reports_unexpected_error(
+        self, mock_session, mock_settings
+    ):
+        """Unexpected completion verification errors should not escape the router."""
+        mock_llm_config = MagicMock()
+        mock_llm_config.provider = "openai"
+        mock_llm_config.api_key = "sk-test-key"
+        mock_llm_config.model = "gpt-4o"
+        mock_llm_config.endpoint = None
+
+        with patch("src.services.llm_config_service.get_settings", return_value=mock_settings):
+            with patch(
+                "src.services.llm.factory.get_llm_config",
+                return_value=mock_llm_config,
+            ):
+                with patch.object(
+                    LLMConfigService,
+                    "_complete_openai",
+                    side_effect=RuntimeError("completion transport down"),
+                ):
+                    service = LLMConfigService(mock_session)
+                    result = await service.verify_completion()
+
+        assert result.success is False
+        assert result.message == "Completion test failed: completion transport down"
 
     @pytest.mark.asyncio
     async def test_complete_openai_uses_max_completion_tokens(self, mock_session):

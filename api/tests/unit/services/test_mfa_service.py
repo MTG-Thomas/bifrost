@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -68,6 +69,14 @@ def _async_return(value: Any):
     return inner
 
 
+class _FakeTotp:
+    def __init__(self, secret: str) -> None:
+        self.secret = secret
+
+    def provisioning_uri(self, name: str, issuer_name: str) -> str:
+        return f"otpauth://totp/{issuer_name}:{name}?secret={self.secret}"
+
+
 @pytest.mark.asyncio
 async def test_get_mfa_status_aggregates_methods_and_recovery_count(monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service()
@@ -96,6 +105,27 @@ def test_generate_device_fingerprint_is_deterministic_and_uses_additional_data()
     assert first == second
     assert first != different
     assert len(first) == 64
+
+
+@pytest.mark.asyncio
+async def test_setup_totp_reuses_recent_pending_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service()
+    user = SimpleNamespace(id=uuid4(), email="operator@example.test")
+    pending = SimpleNamespace(
+        encrypted_secret="encrypted-secret",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    monkeypatch.setattr(service, "_get_pending_totp", _async_return(pending))
+    monkeypatch.setattr(mfa_service, "decrypt_secret", lambda encrypted: "decoded-secret")
+    monkeypatch.setattr(mfa_service.pyotp, "TOTP", _FakeTotp)
+
+    result = await service.setup_totp(user)  # type: ignore[arg-type]
+
+    assert result["is_existing"] is True
+    assert result["secret"] == "decoded-secret"
+    assert result["account_name"] == "operator@example.test"
+    assert result["issuer"] == service.settings.mfa_totp_issuer
+    assert result["provisioning_uri"].startswith("otpauth://totp/")
 
 
 @pytest.mark.asyncio
@@ -137,12 +167,85 @@ async def test_verify_totp_enrollment_requires_pending_method(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+async def test_verify_totp_enrollment_requires_pending_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service()
+    monkeypatch.setattr(service, "_get_pending_totp", _async_return(SimpleNamespace(encrypted_secret=None)))
+
+    with pytest.raises(ValueError, match="MFA method has no encrypted secret"):
+        await service.verify_totp_enrollment(SimpleNamespace(id=uuid4()), "123456")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_verify_totp_enrollment_rejects_invalid_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        service,
+        "_get_pending_totp",
+        _async_return(SimpleNamespace(encrypted_secret="encrypted")),
+    )
+    monkeypatch.setattr(mfa_service, "decrypt_secret", lambda encrypted: "decoded-secret")
+
+    class RejectingTotp(_FakeTotp):
+        def verify(self, code: str, valid_window: int) -> bool:
+            assert code == "111111"
+            assert valid_window == service.settings.mfa_totp_enrollment_window
+            return False
+
+    monkeypatch.setattr(mfa_service.pyotp, "TOTP", RejectingTotp)
+
+    with pytest.raises(ValueError, match="Invalid TOTP code"):
+        await service.verify_totp_enrollment(SimpleNamespace(id=uuid4()), "111111")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_verify_totp_code_requires_active_method(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service()
+    monkeypatch.setattr(service, "_get_active_totp", _async_return(None))
+
+    with pytest.raises(ValueError, match="TOTP not configured"):
+        await service.verify_totp_code(uuid4(), "123456")
+
+
+@pytest.mark.asyncio
 async def test_verify_totp_code_requires_configured_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service()
     monkeypatch.setattr(service, "_get_active_totp", _async_return(SimpleNamespace(encrypted_secret=None)))
 
     with pytest.raises(ValueError, match="MFA method has no encrypted secret"):
         await service.verify_totp_code(uuid4(), "123456")
+
+
+@pytest.mark.asyncio
+async def test_remove_totp_deletes_methods_codes_and_disables_last_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = FakeDb([RowCountResult(1)])
+    service = _service(db)
+    user = SimpleNamespace(id=uuid4(), mfa_enabled=True)
+    monkeypatch.setattr(service, "_delete_recovery_codes", AsyncMock())
+    monkeypatch.setattr(service, "_count_active_methods", _async_return(0))
+
+    await service.remove_totp(user)  # type: ignore[arg-type]
+
+    assert len(db.executed) == 1
+    service._delete_recovery_codes.assert_awaited_once_with(user.id)  # type: ignore[attr-defined]
+    assert user.mfa_enabled is False
+    assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_get_recovery_codes_count_returns_total_and_remaining(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service()
+    user_id = uuid4()
+    monkeypatch.setattr(service, "_count_recovery_codes", _async_return(8))
+    monkeypatch.setattr(service, "_count_unused_recovery_codes", _async_return(3))
+
+    assert await service.get_recovery_codes_count(user_id) == {
+        "total": 8,
+        "remaining": 3,
+    }
 
 
 @pytest.mark.asyncio

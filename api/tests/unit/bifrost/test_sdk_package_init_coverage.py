@@ -1,6 +1,8 @@
 import subprocess
 import sys
 import types
+import importlib
+import importlib.util
 from types import SimpleNamespace
 
 import pytest
@@ -72,3 +74,42 @@ def test_all_exports_core_sdk_symbols() -> None:
     assert {"workflow", "data_provider", "tool", "ExecutionContext"}.issubset(
         set(bifrost.__all__)
     )
+
+
+def test_standalone_sdk_fallbacks_define_decorators_errors_and_enums(monkeypatch) -> None:
+    original_decorators = sys.modules.pop("src.sdk.decorators", None)
+    original_errors = sys.modules.pop("src.sdk.errors", None)
+    original_spec_from_file_location = importlib.util.spec_from_file_location
+    original_import = __import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name in {"src.sdk.decorators", "src.sdk.errors"}:
+            raise ImportError(name)
+        return original_import(name, *args, **kwargs)
+
+    def no_enum_spec(name, location, *args, **kwargs):
+        if str(location).endswith("src/models/enums.py"):
+            return None
+        return original_spec_from_file_location(name, location, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", guarded_import)
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", no_enum_spec)
+
+    try:
+        reloaded = importlib.reload(bifrost)
+
+        assert reloaded.workflow(lambda: None).__bifrost_metadata__.type == "workflow"
+        assert reloaded.UserError("bad").args == ("bad",)
+        assert reloaded.WorkflowError("failed").args == ("failed",)
+        assert reloaded.ValidationError("invalid").args == ("invalid",)
+        assert reloaded.IntegrationError("integration").args == ("integration",)
+        assert reloaded.ConfigurationError("config").args == ("config",)
+        assert reloaded.ExecutionStatus.CANCELLED.value == "Cancelled"
+        assert reloaded.ConfigType.SECRET.value == "secret"
+        assert reloaded.FormFieldType.FILE.value == "file"
+    finally:
+        if original_decorators is not None:
+            sys.modules["src.sdk.decorators"] = original_decorators
+        if original_errors is not None:
+            sys.modules["src.sdk.errors"] = original_errors
+        importlib.reload(bifrost)
