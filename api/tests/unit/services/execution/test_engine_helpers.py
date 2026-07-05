@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 from typing import Optional
+
+import pytest
 
 from src.models.enums import ExecutionStatus
 from src.sdk.context import ExecutionContext, Organization
@@ -76,3 +79,56 @@ def test_build_cached_result_normalizes_expiry_and_marks_cached():
     assert result.cached is True
     assert result.cache_expires_at == "2026-07-05T12:00:00Z"
     assert result.duration_ms >= 0
+
+
+def test_human_size_formats_units():
+    assert engine._human_size(512) == "512B"
+    assert engine._human_size(1536) == "1.5KB"
+    assert engine._human_size(5 * 1024 * 1024) == "5.0MB"
+
+
+@pytest.mark.asyncio
+async def test_script_to_callable_returns_result_and_exposes_parameters():
+    code = base64.b64encode(
+        b"result = {'user': context.user_id, 'value': amount + 1}"
+    ).decode()
+    func = engine._script_to_callable(code, "script_one")
+    context = ExecutionContext(
+        execution_id="exec-1",
+        user_id="user-1",
+        email="user@example.com",
+        name="User One",
+        scope="GLOBAL",
+        organization=None,
+        is_platform_admin=False,
+        is_function_key=False,
+    )
+
+    result = await func(context, amount=4)
+
+    assert result == {"user": "user-1", "value": 5}
+    assert func.__name__ == "script_one"
+    assert func.__module__ == "<script:script_one>"
+
+
+@pytest.mark.asyncio
+async def test_script_to_callable_returns_default_success_without_result():
+    code = base64.b64encode(b"x = 1").decode()
+    func = engine._script_to_callable(code, "script_without_result")
+    context = ExecutionContext(
+        execution_id="exec-1",
+        user_id="user-1",
+        email="user@example.com",
+        name="User One",
+        scope="GLOBAL",
+        organization=None,
+        is_platform_admin=False,
+        is_function_key=False,
+    )
+
+    result = await func(context)
+
+    assert result == {
+        "status": "completed",
+        "message": "Script executed successfully",
+    }

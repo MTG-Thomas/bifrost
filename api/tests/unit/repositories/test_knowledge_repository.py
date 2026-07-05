@@ -1,5 +1,7 @@
 """Tests for KnowledgeRepository chunked storage and search."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -341,3 +343,104 @@ def test_below_min_score_and_dedup_key_cover_edge_cases():
     )
     assert KnowledgeRepository._dedup_key(keyed, group_by_key=False) is None
     assert KnowledgeRepository._dedup_key(keyless, group_by_key=True) is None
+
+
+class _AllResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _ScalarsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        scalars = MagicMock()
+        scalars.all.return_value = self._rows
+        return scalars
+
+
+class _ScalarOneOrNoneResult:
+    def __init__(self, row):
+        self._row = row
+
+    def scalar_one_or_none(self):
+        return self._row
+
+
+@pytest.mark.asyncio
+async def test_list_namespaces_aggregates_global_and_org_counts():
+    session = AsyncMock()
+    session.execute.return_value = _AllResult(
+        [
+            ("alpha", None, 2),
+            ("alpha", UUID("00000000-0000-0000-0000-000000000001"), 3),
+            ("beta", UUID("00000000-0000-0000-0000-000000000001"), 1),
+        ]
+    )
+    repo = KnowledgeRepository(
+        session,
+        org_id=UUID("00000000-0000-0000-0000-000000000001"),
+        is_superuser=False,
+    )
+
+    namespaces = await repo.list_namespaces()
+
+    assert [(item.namespace, item.scopes) for item in namespaces] == [
+        ("alpha", {"global": 2, "org": 3, "total": 5}),
+        ("beta", {"global": 0, "org": 1, "total": 1}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_by_key_and_namespace_listing_convert_rows_to_documents():
+    doc_id = UUID("00000000-0000-0000-0000-000000000010")
+    org_id = UUID("00000000-0000-0000-0000-000000000011")
+    doc = SimpleNamespace(
+        id=doc_id,
+        namespace="docs",
+        content="body",
+        doc_metadata={"source": "test"},
+        organization_id=org_id,
+        key="handbook.md",
+        created_at=None,
+    )
+    session = AsyncMock()
+    session.execute.side_effect = [
+        _ScalarOneOrNoneResult(doc),
+        _ScalarsResult([doc, SimpleNamespace(**{**doc.__dict__, "key": None})]),
+    ]
+    repo = KnowledgeRepository(session, org_id=org_id, is_superuser=False)
+
+    by_key = await repo.get_by_key("handbook.md", "docs")
+    by_namespace = await repo.get_all_by_namespace("docs")
+
+    assert by_key == KnowledgeDocument(
+        id=str(doc_id),
+        namespace="docs",
+        content="body",
+        metadata={"source": "test"},
+        organization_id=str(org_id),
+        key="handbook.md",
+        created_at=None,
+    )
+    assert list(by_namespace) == ["handbook.md"]
+    assert by_namespace["handbook.md"].content == "body"
+
+
+@pytest.mark.asyncio
+async def test_delete_orphaned_docs_is_safe_on_empty_keys_and_returns_rowcount():
+    session = AsyncMock()
+    delete_result = MagicMock()
+    delete_result.rowcount = 4
+    session.execute.return_value = delete_result
+    repo = KnowledgeRepository(session, org_id=None, is_superuser=True)
+
+    assert await repo.delete_orphaned_docs("docs", valid_keys=set()) == 0
+    session.execute.assert_not_awaited()
+
+    assert await repo.delete_orphaned_docs("docs", valid_keys={"keep.md"}) == 4
+    session.execute.assert_awaited_once()

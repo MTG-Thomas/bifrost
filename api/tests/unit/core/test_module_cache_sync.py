@@ -1,4 +1,5 @@
 import importlib
+import json
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -213,4 +214,146 @@ def test_solution_has_submodules_uses_blob_when_configured(monkeypatch):
 
     client.list_blobs.assert_called_once_with(
         name_starts_with=f"_solutions/{solution_id}/modules/"
+    )
+
+
+def test_candidate_paths_respect_solution_context():
+    module_cache_sync = _module_cache_sync()
+    solution_id = uuid4()
+
+    assert module_cache_sync.candidate_module_paths("modules/a.py") == ["modules/a.py"]
+    assert module_cache_sync.candidate_index_prefixes("modules") == ["modules/"]
+
+    module_cache_sync.set_solution_context(solution_id, global_repo_access=False)
+    try:
+        assert module_cache_sync.candidate_module_paths("modules/a.py") == [
+            f"_solutions/{solution_id}/modules/a.py"
+        ]
+        assert module_cache_sync.candidate_index_prefixes("modules") == [
+            f"_solutions/{solution_id}/modules/"
+        ]
+    finally:
+        module_cache_sync.clear_solution_context()
+
+    module_cache_sync.set_solution_context(solution_id, global_repo_access=True)
+    try:
+        assert module_cache_sync.candidate_module_paths("/modules/a.py") == [
+            f"_solutions/{solution_id}/modules/a.py",
+            "/modules/a.py",
+        ]
+        assert module_cache_sync.candidate_index_prefixes("modules/") == [
+            f"_solutions/{solution_id}/modules/",
+            "modules/",
+        ]
+    finally:
+        module_cache_sync.clear_solution_context()
+
+
+def test_get_module_sync_returns_redis_hit_without_fallbacks(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    redis_client = MagicMock()
+    redis_client.get.return_value = json.dumps(
+        {"content": "print(1)", "path": "modules/a.py", "hash": "h"}
+    )
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    monkeypatch.setattr(
+        module_cache_sync,
+        "_fetch_module_from_api",
+        MagicMock(side_effect=AssertionError("should not fetch API")),
+    )
+
+    assert module_cache_sync.get_module_sync("modules/a.py") == {
+        "content": "print(1)",
+        "path": "modules/a.py",
+        "hash": "h",
+    }
+    redis_client.get.assert_called_once_with(
+        f"{module_cache_sync.MODULE_KEY_PREFIX}modules/a.py"
+    )
+
+
+def test_get_module_sync_recaches_api_fallback(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    redis_client = MagicMock()
+    redis_client.get.return_value = None
+    module = {"content": "print(2)", "path": "modules/a.py", "hash": "api"}
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    monkeypatch.setattr(module_cache_sync, "_fetch_module_from_api", lambda path: module)
+    monkeypatch.setattr(
+        module_cache_sync,
+        "_get_object_storage_module",
+        MagicMock(side_effect=AssertionError("API hit should stop fallback")),
+    )
+
+    assert module_cache_sync.get_module_sync("modules/a.py") == module
+    redis_client.setex.assert_called_once_with(
+        f"{module_cache_sync.MODULE_KEY_PREFIX}modules/a.py",
+        module_cache_sync.MODULE_CACHE_TTL,
+        json.dumps(module),
+    )
+    redis_client.sadd.assert_called_once_with(
+        module_cache_sync.MODULE_INDEX_KEY,
+        "modules/a.py",
+    )
+
+
+def test_get_module_sync_builds_module_from_object_storage(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    redis_client = MagicMock()
+    redis_client.get.return_value = None
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    monkeypatch.setattr(module_cache_sync, "_fetch_module_from_api", lambda path: None)
+    monkeypatch.setattr(
+        module_cache_sync,
+        "_get_object_storage_module",
+        lambda path: b"print('storage')",
+    )
+
+    result = module_cache_sync.get_module_sync("modules/a.py")
+
+    assert result["content"] == "print('storage')"
+    assert result["path"] == "modules/a.py"
+    assert len(result["hash"]) == 64
+    redis_client.setex.assert_called_once()
+    redis_client.sadd.assert_called_once_with(
+        module_cache_sync.MODULE_INDEX_KEY,
+        "modules/a.py",
+    )
+
+
+def test_get_module_index_sync_repopulates_from_api_then_storage(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    redis_client = MagicMock()
+    redis_client.smembers.return_value = set()
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    monkeypatch.setattr(
+        module_cache_sync,
+        "_fetch_module_index_from_api",
+        lambda: {"modules/a.py", "workflows/b.py"},
+    )
+
+    assert module_cache_sync.get_module_index_sync() == {
+        "modules/a.py",
+        "workflows/b.py",
+    }
+    redis_client.sadd.assert_called_once()
+    redis_client.expire.assert_called_once_with(
+        module_cache_sync.MODULE_INDEX_KEY,
+        module_cache_sync.MODULE_CACHE_TTL,
+    )
+
+    redis_client = MagicMock()
+    redis_client.smembers.return_value = set()
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    monkeypatch.setattr(module_cache_sync, "_fetch_module_index_from_api", lambda: set())
+    monkeypatch.setattr(
+        module_cache_sync,
+        "_list_object_storage_modules",
+        lambda: {"modules/storage.py"},
+    )
+
+    assert module_cache_sync.get_module_index_sync() == {"modules/storage.py"}
+    redis_client.sadd.assert_called_once_with(
+        module_cache_sync.MODULE_INDEX_KEY,
+        "modules/storage.py",
     )

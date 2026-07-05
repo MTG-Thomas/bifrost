@@ -28,6 +28,7 @@ from src.services.execution import process_pool  # noqa: E402
 from src.services.execution.process_pool import (
     ExecutionInfo,
     ProcessHandle,
+    ProcessPoolAdmissionRejected,
     ProcessPoolManager,
     ProcessState,
 )  # noqa: E402
@@ -260,3 +261,107 @@ def test_build_heartbeat_includes_admission_and_capacity(monkeypatch):
     assert heartbeat["admission"]["rejections"]["slot_timeout"] == 1
     assert heartbeat["processes"][0]["memory_mb"] == 2
     assert heartbeat["processes"][0]["execution"]["execution_id"] == "exec-1"
+
+
+@pytest.mark.asyncio
+async def test_route_execution_records_success_and_sends_execution_id(monkeypatch):
+    pool = ProcessPoolManager(max_workers=2, execution_timeout_seconds=33)
+    handle = _handle(execution_id=None)
+    sent: list[str] = []
+    handle.work_queue = SimpleNamespace(put_nowait=sent.append)
+
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.9),
+    )
+    monkeypatch.setattr(process_pool, "has_sufficient_memory_cgroup", lambda threshold: True)
+    pool._write_context_to_redis = AsyncMock()
+    pool._fork_process = lambda: handle
+
+    await pool.route_execution("exec-route", {"timeout_seconds": 12})
+
+    pool._write_context_to_redis.assert_awaited_once_with(
+        "exec-route",
+        {"timeout_seconds": 12},
+    )
+    assert sent == ["exec-route"]
+    assert handle.current_execution is not None
+    assert handle.current_execution.execution_id == "exec-route"
+    assert handle.current_execution.timeout_seconds == 12
+    assert pool._admission_attempts == 1
+    assert pool._admission_successes == 1
+    assert pool._admission_rejections == {"slot_timeout": 0, "memory_pressure": 0}
+
+
+@pytest.mark.asyncio
+async def test_route_execution_rejects_memory_pressure_and_deletes_context(monkeypatch):
+    deleted: list[str] = []
+    redis = SimpleNamespace(delete=AsyncMock(side_effect=lambda key: deleted.append(key)))
+    pool = ProcessPoolManager(max_workers=1)
+    pool._write_context_to_redis = AsyncMock()
+    pool._get_redis = AsyncMock(return_value=redis)
+    pool._fork_process = lambda: pytest.fail("route should reject before forking")
+
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.75),
+    )
+    monkeypatch.setattr(process_pool, "has_sufficient_memory_cgroup", lambda threshold: False)
+
+    with pytest.raises(MemoryError, match="memory pressure"):
+        await pool.route_execution("exec-memory", {})
+
+    pool._write_context_to_redis.assert_awaited_once_with("exec-memory", {})
+    redis.delete.assert_awaited_once_with("bifrost:exec:exec-memory:context")
+    assert deleted == ["bifrost:exec:exec-memory:context"]
+    assert pool._admission_attempts == 1
+    assert pool._admission_successes == 0
+    assert pool._admission_rejections["memory_pressure"] == 1
+
+
+@pytest.mark.asyncio
+async def test_route_execution_rejects_when_slot_wait_times_out(monkeypatch):
+    pool = ProcessPoolManager(max_workers=1)
+    pool.processes["busy"] = _handle(process_id="busy")
+    pool._write_context_to_redis = AsyncMock()
+    pool._wait_for_slot = AsyncMock(return_value=False)
+    pool._fork_process = lambda: pytest.fail("route should reject before forking")
+
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.9),
+    )
+    monkeypatch.setattr(process_pool, "has_sufficient_memory_cgroup", lambda threshold: True)
+
+    with pytest.raises(ProcessPoolAdmissionRejected, match="No worker slot"):
+        await pool.route_execution("exec-slot", {})
+
+    pool._wait_for_slot.assert_awaited_once()
+    assert pool._admission_attempts == 1
+    assert pool._admission_successes == 0
+    assert pool._admission_rejections["slot_timeout"] == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
+    pool = ProcessPoolManager()
+    process_commands: list[dict[str, object]] = []
+    all_commands: list[dict[str, object]] = []
+    pool._handle_recycle_process_command = AsyncMock(
+        side_effect=lambda command: process_commands.append(command)
+    )
+    pool._handle_recycle_all_command = AsyncMock(
+        side_effect=lambda command: all_commands.append(command)
+    )
+
+    recycle_process = {"action": "recycle_process", "pid": 123}
+    recycle_all = {"action": "recycle_all", "reason": "operator"}
+    await pool._handle_command(recycle_process)
+    await pool._handle_command(recycle_all)
+    await pool._handle_command({"action": "unknown"})
+
+    assert process_commands == [recycle_process]
+    assert all_commands == [recycle_all]
