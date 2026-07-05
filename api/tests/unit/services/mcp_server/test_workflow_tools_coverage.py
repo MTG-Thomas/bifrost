@@ -8,6 +8,13 @@ import pytest
 from src.services.mcp_server.tools import workflow
 
 
+def _content_text(result) -> str:
+    content = result.content
+    if isinstance(content, list):
+        return "\n".join(getattr(item, "text", str(item)) for item in content)
+    return str(content)
+
+
 def _context(*, admin: bool = False, org_id=None, user_id=None) -> SimpleNamespace:
     return SimpleNamespace(
         is_platform_admin=admin,
@@ -76,7 +83,7 @@ class TestWorkflowListAndGet:
         assert result.structured_content["count"] == 2
         assert result.structured_content["total_count"] == 12
         assert result.structured_content["workflows"][0]["name"] == "Ticket triage"
-        assert "Found 2 workflow" in result.content
+        assert "Found 2 workflow" in _content_text(result)
         repo.search.assert_awaited_once_with(
             query="ticket",
             category="support",
@@ -100,7 +107,7 @@ class TestWorkflowListAndGet:
             empty = await workflow.list_workflows(_context())
 
         assert empty.structured_content["workflows"] == []
-        assert "No workflows found" in empty.content
+        assert "No workflows found" in _content_text(empty)
 
         repo.search = AsyncMock(side_effect=RuntimeError("database down"))
         with (
@@ -133,7 +140,7 @@ class TestWorkflowListAndGet:
         assert result.structured_content["id"] == str(row.id)
         assert result.structured_content["tool_description"] == "Use this for triage"
         assert result.structured_content["parameters"] == {"type": "object"}
-        assert "Workflow: Ticket triage" in result.content
+        assert "Workflow: Ticket triage" in _content_text(result)
 
         repo.get = AsyncMock(side_effect=ValueError("bad id"))
         with (
@@ -180,7 +187,7 @@ class TestWorkflowExecuteAndValidate:
 
         assert ok.structured_content["success"] is True
         assert ok.structured_content["result"] == {"ok": True}
-        assert "completed successfully" in ok.content
+        assert "completed successfully" in _content_text(ok)
 
         async def execute_failure(**_kwargs):
             return SimpleNamespace(
@@ -201,7 +208,7 @@ class TestWorkflowExecuteAndValidate:
 
         assert failed.structured_content["success"] is False
         assert failed.structured_content["error"] == "boom"
-        assert "failed: boom" in failed.content
+        assert "failed: boom" in _content_text(failed)
 
     @pytest.mark.asyncio
     async def test_execute_workflow_requires_and_resolves_workflow(self):
