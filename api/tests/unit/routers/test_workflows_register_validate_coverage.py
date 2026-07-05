@@ -13,6 +13,7 @@ from src.models.contracts.workflows import (
     WorkflowValidationRequest,
     WorkflowValidationResponse,
 )
+from src.models.enums import ExecutionStatus
 from src.routers import workflows
 
 
@@ -62,6 +63,26 @@ class _Db:
         return None
 
 
+class _CancelDb:
+    def __init__(self, row, rowcount: int = 1):
+        self.row = row
+        self.rowcount = rowcount
+        self.committed = False
+        self.refreshed = False
+
+    async def get(self, _model, _execution_id):
+        return self.row
+
+    async def execute(self, _stmt):
+        return SimpleNamespace(rowcount=self.rowcount)
+
+    async def commit(self):
+        self.committed = True
+
+    async def refresh(self, _row):
+        self.refreshed = True
+
+
 def _admin(**overrides):
     data = {
         "email": "admin@example.com",
@@ -69,6 +90,10 @@ def _admin(**overrides):
     }
     data.update(overrides)
     return SimpleNamespace(**data)
+
+
+def _ctx(user, org_id=None):
+    return SimpleNamespace(user=user, org_id=org_id if org_id is not None else user.organization_id)
 
 
 @pytest.mark.asyncio
@@ -247,3 +272,83 @@ async def test_update_workflow_validates_name_access_and_methods() -> None:
         assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
         assert detail in exc.value.detail
         assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_scheduled_execution_returns_404_and_forbidden_branches() -> None:
+    execution_id = uuid4()
+    user = _admin(is_superuser=False, user_id=uuid4(), organization_id=uuid4())
+
+    with pytest.raises(HTTPException) as exc:
+        await workflows.cancel_scheduled_execution(execution_id, _ctx(user), _CancelDb(None), user)
+
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
+    assert exc.value.detail == "Execution not found"
+
+    other_org_row = SimpleNamespace(
+        organization_id=uuid4(),
+        executed_by=user.user_id,
+        status=ExecutionStatus.SCHEDULED,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await workflows.cancel_scheduled_execution(
+            execution_id,
+            _ctx(user),
+            _CancelDb(other_org_row),
+            user,
+        )
+
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
+    assert exc.value.detail == "Access denied"
+
+    other_owner_row = SimpleNamespace(
+        organization_id=user.organization_id,
+        executed_by=uuid4(),
+        status=ExecutionStatus.SCHEDULED,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await workflows.cancel_scheduled_execution(
+            execution_id,
+            _ctx(user),
+            _CancelDb(other_owner_row),
+            user,
+        )
+
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
+    assert exc.value.detail == "Only the submitter or an admin may cancel"
+
+
+@pytest.mark.asyncio
+async def test_cancel_scheduled_execution_handles_success_and_race_conflict() -> None:
+    execution_id = uuid4()
+    user = _admin(is_superuser=False, user_id=uuid4(), organization_id=uuid4())
+    row = SimpleNamespace(
+        organization_id=user.organization_id,
+        executed_by=user.user_id,
+        status=ExecutionStatus.SCHEDULED,
+    )
+    db = _CancelDb(row, rowcount=1)
+
+    result = await workflows.cancel_scheduled_execution(execution_id, _ctx(user), db, user)
+
+    assert result == {
+        "execution_id": str(execution_id),
+        "status": ExecutionStatus.CANCELLED.value,
+    }
+    assert db.committed is True
+    assert db.refreshed is False
+
+    row.status = ExecutionStatus.PENDING
+    conflict_db = _CancelDb(row, rowcount=0)
+    with pytest.raises(HTTPException) as exc:
+        await workflows.cancel_scheduled_execution(
+            execution_id,
+            _ctx(user),
+            conflict_db,
+            user,
+        )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert exc.value.detail == "Execution is not Scheduled (current status: Pending)"
+    assert conflict_db.committed is True
+    assert conflict_db.refreshed is True
