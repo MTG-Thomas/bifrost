@@ -384,11 +384,11 @@ async def test_api_request_prints_json_text_and_connection_errors(capsys):
             return self.response
 
     ok = Client(Response(200, body={"ok": True}))
-    assert await cli._api_request("GET", "/api/x", client=ok) == 0
+    assert await cli._api_request("GET", "/api/x", None, client=ok) == 0
     assert '"ok": true' in capsys.readouterr().out.lower()
 
     bad = Client(Response(404, body=ValueError("not json"), text="missing"))
-    assert await cli._api_request("GET", "/api/missing", client=bad) == 1
+    assert await cli._api_request("GET", "/api/missing", None, client=bad) == 1
     assert "missing" in capsys.readouterr().out
 
     posted = Client(Response(201, body={"created": True}))
@@ -396,9 +396,9 @@ async def test_api_request_prints_json_text_and_connection_errors(capsys):
     assert posted.calls == [("post", "/api/x", {"json": {"a": 1}})]
 
     connect_error = Client(exc=httpx.ConnectError("down"))
-    assert await cli._api_request("GET", "/api/x", client=connect_error) == 1
+    assert await cli._api_request("GET", "/api/x", None, client=connect_error) == 1
     assert "could not connect" in capsys.readouterr().err
 
     generic_error = Client(exc=RuntimeError("boom"))
-    assert await cli._api_request("GET", "/api/x", client=generic_error) == 1
+    assert await cli._api_request("GET", "/api/x", None, client=generic_error) == 1
     assert "boom" in capsys.readouterr().err
