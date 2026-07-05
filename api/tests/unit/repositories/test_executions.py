@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
+
+import pytest
 
 from src.core.principal import UserPrincipal
 from src.models.enums import ExecutionStatus
@@ -116,3 +119,198 @@ def test_to_pydantic_without_user_treats_request_as_non_admin() -> None:
     assert result.form_id is None
     assert result.session_id is None
     assert result.variables is None
+
+
+@pytest.mark.asyncio
+async def test_create_execution_updates_existing_scheduled_row() -> None:
+    execution_id = uuid4()
+    existing = _execution(id=execution_id, status=ExecutionStatus.SCHEDULED.value)
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.get = AsyncMock(return_value=existing)
+    repo = ExecutionRepository(session)
+
+    result = await repo.create_execution(
+        execution_id=str(execution_id),
+        workflow_name="scheduled_sync",
+        parameters={"ticket": 1},
+        org_id=f"ORG:{uuid4()}",
+        user_id=str(uuid4()),
+        user_name="Scheduler",
+        form_id=str(uuid4()),
+        api_key_id=str(uuid4()),
+        status=ExecutionStatus.RUNNING,
+        is_local_execution=True,
+        execution_model="process",
+        workflow_id=str(uuid4()),
+    )
+
+    assert result is existing
+    assert existing.workflow_name == "scheduled_sync"
+    assert existing.status == ExecutionStatus.RUNNING
+    assert existing.is_local_execution is True
+    session.add.assert_not_called()
+    session.flush.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(existing)
+
+
+@pytest.mark.asyncio
+async def test_create_execution_adds_new_global_execution() -> None:
+    execution_id = uuid4()
+    user_id = uuid4()
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.get = AsyncMock(return_value=None)
+    repo = ExecutionRepository(session)
+
+    result = await repo.create_execution(
+        execution_id=str(execution_id),
+        workflow_name="manual_sync",
+        parameters={"ok": True},
+        org_id="GLOBAL",
+        user_id=str(user_id),
+        user_name="Runner",
+    )
+
+    assert result.id == execution_id
+    assert result.organization_id is None
+    assert result.executed_by == user_id
+    session.add.assert_called_once_with(result)
+    session.flush.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(result)
+
+
+@pytest.mark.asyncio
+async def test_update_execution_sets_result_type_metrics_economics_and_logs() -> None:
+    execution_id = uuid4()
+    session = AsyncMock()
+    session.add = MagicMock()
+    repo = ExecutionRepository(session)
+
+    await repo.update_execution(
+        execution_id=str(execution_id),
+        status=ExecutionStatus.SUCCESS,
+        result="<p>done</p>",
+        error_message="ignored by clients for success",
+        duration_ms=42,
+        logs=[
+            {
+                "timestamp": "2026-07-04T12:00:00+00:00",
+                "level": "warning",
+                "message": "careful",
+                "data": {"step": 1},
+            },
+            {"level": "info", "message": "done"},
+        ],
+        variables={"when": datetime(2026, 7, 4, tzinfo=timezone.utc)},
+        execution_context={"run": uuid4()},
+        metrics={
+            "peak_memory_bytes": 100,
+            "process_rss_bytes": 80,
+            "cpu_user_seconds": 1.2,
+            "cpu_system_seconds": 0.3,
+            "cpu_total_seconds": 1.5,
+        },
+        time_saved=5,
+        value=12.25,
+    )
+
+    statement = session.execute.await_args.args[0]
+    values = statement.compile().params
+    assert values["status"] == ExecutionStatus.SUCCESS.value
+    assert values["result"] == "<p>done</p>"
+    assert values["result_type"] == "html"
+    assert values["duration_ms"] == 42
+    assert values["peak_memory_bytes"] == 100
+    assert values["process_rss_bytes"] == 80
+    assert values["cpu_total_seconds"] == 1.5
+    assert values["time_saved"] == 5
+    assert values["value"] == 12.25
+    assert session.add.call_count == 2
+    first_log = session.add.call_args_list[0].args[0]
+    second_log = session.add.call_args_list[1].args[0]
+    assert first_log.level == "WARNING"
+    assert first_log.log_metadata == {"step": 1}
+    assert second_log.sequence == 1
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_execution_classifies_json_text_and_default_result_types() -> None:
+    session = AsyncMock()
+    session.add = MagicMock()
+    repo = ExecutionRepository(session)
+
+    for result, expected in [
+        ({"ok": True}, "json"),
+        (["a"], "json"),
+        ("plain text", "text"),
+        (123, "json"),
+    ]:
+        await repo.update_execution(str(uuid4()), ExecutionStatus.SUCCESS, result=result)
+        statement = session.execute.await_args.args[0]
+        assert statement.compile().params["result_type"] == expected
+
+
+class OneOrNoneResult:
+    def __init__(self, row):
+        self.row = row
+
+    def one_or_none(self):
+        return self.row
+
+
+@pytest.mark.asyncio
+async def test_get_execution_result_and_variables_enforce_access() -> None:
+    owner = _user()
+    other = _user()
+    row = SimpleNamespace(result={"ok": True}, result_type="json", executed_by=owner.user_id)
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[
+        OneOrNoneResult(row),
+        OneOrNoneResult(row),
+        OneOrNoneResult((uuid4(), None)),
+    ])
+    repo = ExecutionRepository(session)
+
+    result, error = await repo.get_execution_result(uuid4(), owner)
+    assert error is None
+    assert result == {"result": {"ok": True}, "result_type": "json"}
+
+    result, error = await repo.get_execution_result(uuid4(), other)
+    assert result is None
+    assert error == "Forbidden"
+
+    variables, error = await repo.get_execution_variables(uuid4(), _user(is_superuser=True))
+    assert error is None
+    assert variables == {}
+
+
+@pytest.mark.asyncio
+async def test_cancel_execution_rejects_terminal_status_and_publishes_running_cancel() -> None:
+    owner = _user(is_superuser=True)
+    done = _execution(status=ExecutionStatus.SUCCESS.value, executed_by=owner.user_id)
+    running = _execution(status=ExecutionStatus.RUNNING.value, executed_by=owner.user_id)
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[
+        MagicMock(scalar_one_or_none=MagicMock(return_value=done)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=running)),
+    ])
+    repo = ExecutionRepository(session)
+
+    result, error = await repo.cancel_execution(done.id, owner)
+    assert result is None
+    assert error == "BadRequest"
+
+    publish = AsyncMock()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("src.core.pubsub.publish_execution_update", publish)
+        result, error = await repo.cancel_execution(running.id, owner)
+
+    assert error is None
+    assert result is not None
+    assert running.status == ExecutionStatus.CANCELLING.value
+    publish.assert_awaited_once_with(
+        execution_id=running.id,
+        status=ExecutionStatus.CANCELLING.value,
+    )
