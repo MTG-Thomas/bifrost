@@ -1,7 +1,10 @@
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+
+os.environ.setdefault("BIFROST_SECRET_KEY", "test-secret-key")
 
 from src import main
 
