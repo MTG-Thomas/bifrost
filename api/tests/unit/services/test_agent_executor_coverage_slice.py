@@ -455,11 +455,12 @@ async def test_chat_streams_final_text_and_records_usage(executor):
             ),
         ),
     )
+    saved_messages = AsyncMock(side_effect=[user_msg, assistant_msg])
 
     with (
         patch("src.services.agent_executor.get_llm_client", new=AsyncMock(return_value=llm_client)),
         patch("src.services.agent_router.AgentRouter") as router_cls,
-        patch.object(executor, "_save_message", new=AsyncMock(side_effect=[user_msg, assistant_msg])),
+        patch.object(executor, "_save_message", new=saved_messages),
         patch.object(
             executor,
             "_build_message_history",
@@ -486,7 +487,7 @@ async def test_chat_streams_final_text_and_records_usage(executor):
         "done",
     ]
     assert chunks[0].user_message_id == str(user_msg.id)
-    assert chunks[0].assistant_message_id == chunks[3].message_id
+    assert chunks[3].message_id == str(assistant_msg.id)
     assert chunks[0].local_id == "local-1"
     assert chunks[1].content == "hel"
     assert chunks[2].content == "lo"
@@ -499,6 +500,8 @@ async def test_chat_streams_final_text_and_records_usage(executor):
     assert usage_kwargs["model"] == "test-model"
     assert usage_kwargs["organization_id"] is None
     assert usage_kwargs["user_id"] == conversation.user_id
+    final_save_kwargs = saved_messages.await_args_list[-1].kwargs
+    assert str(final_save_kwargs["message_id"]) == chunks[0].assistant_message_id
 
 
 @pytest.mark.asyncio
