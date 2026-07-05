@@ -17,9 +17,15 @@ def _make_event(event_id: uuid.UUID | None = None) -> SimpleNamespace:
         event_type="ticket.created",
         organization_id=uuid.uuid4(),
         received_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        headers={},
+        data={},
         source_ip="10.0.0.5",
         status=EventStatus.PROCESSING,
-        event_source=SimpleNamespace(id=uuid.uuid4()),
+        event_source=SimpleNamespace(
+            id=uuid.uuid4(),
+            organization_id=None,
+            schedule_source=None,
+        ),
     )
 
 
@@ -29,16 +35,22 @@ def _make_delivery(
     event: SimpleNamespace | None = None,
     target_type: str = "workflow",
 ) -> SimpleNamespace:
+    workflow_id = uuid.uuid4()
     subscription = SimpleNamespace(
         target_type=target_type,
         agent_id=uuid.uuid4() if target_type == "agent" else None,
+        input_mapping=None,
+        agent=None,
     )
     return SimpleNamespace(
         id=uuid.uuid4(),
         event_id=event.id if event else uuid.uuid4(),
         event=event,
         subscription=subscription,
-        workflow_id=uuid.uuid4() if target_type == "workflow" else None,
+        workflow_id=workflow_id if target_type == "workflow" else None,
+        workflow=SimpleNamespace(id=workflow_id, organization_id=None)
+        if target_type == "workflow"
+        else None,
         execution_id=uuid.uuid4(),
         status=status,
         error_message=None,
@@ -93,6 +105,42 @@ async def test_queue_event_deliveries_marks_failed_when_queueing_raises():
         success_count=0,
         failed_count=1,
         queued_count=0,
+        pending_count=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_queue_event_deliveries_routes_pending_workflow_and_agent_deliveries():
+    event = _make_event()
+    workflow_delivery = _make_delivery(event=event, target_type="workflow")
+    agent_delivery = _make_delivery(event=event, target_type="agent")
+    already_done = _make_delivery(status=EventDeliveryStatus.SUCCESS, event=event)
+    processor, session = _make_processor(
+        event=event,
+        deliveries=[workflow_delivery, agent_delivery, already_done],
+    )
+    processor._queue_workflow_execution = AsyncMock()
+    processor._queue_agent_run = AsyncMock()
+
+    queued = await processor.queue_event_deliveries(event.id)
+
+    assert queued == 2
+    assert workflow_delivery.status == EventDeliveryStatus.QUEUED
+    assert agent_delivery.status == EventDeliveryStatus.QUEUED
+    assert already_done.status == EventDeliveryStatus.SUCCESS
+    processor._queue_workflow_execution.assert_awaited_once_with(
+        workflow_delivery,
+        event,
+    )
+    processor._queue_agent_run.assert_awaited_once_with(agent_delivery, event)
+    session.flush.assert_awaited_once()
+    processor._broadcast_event_update.assert_awaited_once_with(
+        event_source_id=event.event_source_id,
+        event=event,
+        update_type="deliveries_queued",
+        success_count=1,
+        failed_count=0,
+        queued_count=2,
         pending_count=0,
     )
 
@@ -299,6 +347,59 @@ async def test_broadcast_event_update_swallows_pubsub_failures(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_broadcast_event_status_update_noops_without_event_or_source(monkeypatch):
+    db = AsyncMock()
+    delivery = _make_delivery()
+    event_repo = MagicMock()
+    delivery_repo = MagicMock()
+    manager = SimpleNamespace(broadcast=AsyncMock())
+    monkeypatch.setattr(p, "EventRepository", MagicMock(return_value=event_repo))
+    monkeypatch.setattr("src.core.pubsub.manager", manager)
+
+    event_repo.get_by_id = AsyncMock(return_value=None)
+    await p._broadcast_event_status_update(db, delivery_repo, delivery)
+    manager.broadcast.assert_not_awaited()
+
+    event = _make_event(delivery.event_id)
+    event.event_source = None
+    event_repo.get_by_id = AsyncMock(return_value=event)
+    await p._broadcast_event_status_update(db, delivery_repo, delivery)
+    manager.broadcast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_event_status_update_counts_deliveries_and_tolerates_failure(
+    monkeypatch,
+):
+    db = AsyncMock()
+    event = _make_event()
+    event.event_source = SimpleNamespace(id=event.event_source_id)
+    delivery = _make_delivery(event=event)
+    delivery_repo = MagicMock()
+    delivery_repo.get_by_event = AsyncMock(
+        return_value=[
+            _make_delivery(status=EventDeliveryStatus.SUCCESS, event=event),
+            _make_delivery(status=EventDeliveryStatus.FAILED, event=event),
+            _make_delivery(status=EventDeliveryStatus.PENDING, event=event),
+        ]
+    )
+    event_repo = MagicMock()
+    event_repo.get_by_id = AsyncMock(return_value=event)
+    manager = SimpleNamespace(broadcast=AsyncMock(side_effect=RuntimeError("down")))
+    monkeypatch.setattr(p, "EventRepository", MagicMock(return_value=event_repo))
+    monkeypatch.setattr("src.core.pubsub.manager", manager)
+
+    await p._broadcast_event_status_update(db, delivery_repo, delivery)
+
+    manager.broadcast.assert_awaited_once()
+    channel, message = manager.broadcast.call_args[0]
+    assert channel == f"event-source:{event.event_source_id}"
+    assert message["event"]["success_count"] == 1
+    assert message["event"]["failed_count"] == 1
+    assert message["event"]["delivery_count"] == 3
+
+
+@pytest.mark.asyncio
 async def test_emit_delivery_retry_exhausted_loads_event_and_emits_builtin(monkeypatch):
     db = AsyncMock()
     event = _make_event()
@@ -428,3 +529,139 @@ async def test_update_delivery_from_execution_uses_session_factory(monkeypatch):
 
     assert calls == [(db, execution_id, EventDeliveryStatus.SUCCESS, "ignored")]
     db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_delivery_from_execution_uses_provided_session_without_commit(
+    monkeypatch,
+):
+    db = SimpleNamespace(commit=AsyncMock())
+    calls = []
+
+    async def run_update(session, execution_id, delivery_status, error_message):
+        calls.append((session, execution_id, delivery_status, error_message))
+
+    monkeypatch.setattr(p, "_run_delivery_execution_update", run_update)
+    execution_id = str(uuid.uuid4())
+
+    await p.update_delivery_from_execution(
+        execution_id,
+        "Cancelled",
+        "operator stopped it",
+        session=db,
+    )
+
+    assert calls == [
+        (db, execution_id, EventDeliveryStatus.FAILED, "operator stopped it")
+    ]
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_queue_workflow_execution_uses_mapping_event_context_and_source_org(
+    monkeypatch,
+):
+    event = _make_event()
+    event.data = {"ticket": {"id": 123}, "raw": "kept"}
+    event.headers = {"x-source": "halo"}
+    event.organization_id = None
+    event.event_source.organization_id = uuid.uuid4()
+    delivery = _make_delivery(event=event, target_type="workflow")
+    delivery.subscription.input_mapping = {
+        "ticket_id": "{{ payload.ticket.id }}",
+        "source": "{{ headers.x-source }}",
+    }
+    delivery.workflow.organization_id = None
+    execution_id = str(uuid.uuid4())
+    enqueue = AsyncMock(return_value=execution_id)
+    monkeypatch.setattr(
+        "src.services.execution.async_executor.enqueue_system_workflow_execution",
+        enqueue,
+    )
+
+    await p.EventProcessor(AsyncMock())._queue_workflow_execution(delivery, event)
+
+    enqueue.assert_awaited_once()
+    kwargs = enqueue.await_args.kwargs
+    assert kwargs["workflow_id"] == str(delivery.workflow.id)
+    assert kwargs["source"] == "Event System"
+    assert kwargs["org_id"] == str(event.event_source.organization_id)
+    assert kwargs["parameters"]["ticket_id"] == 123
+    assert kwargs["parameters"]["source"] == "halo"
+    assert kwargs["parameters"]["_event"]["body"] == event.data
+    assert kwargs["event"].id == str(event.id)
+    assert delivery.execution_id == uuid.UUID(execution_id)
+
+
+@pytest.mark.asyncio
+async def test_queue_workflow_execution_defaults_to_provider_org_for_global_event(
+    monkeypatch,
+):
+    event = _make_event()
+    event.data = {"ticket_id": 123}
+    event.organization_id = None
+    event.event_source.organization_id = None
+    delivery = _make_delivery(event=event, target_type="workflow")
+    enqueue = AsyncMock(return_value=str(uuid.uuid4()))
+    monkeypatch.setattr(
+        "src.services.execution.async_executor.enqueue_system_workflow_execution",
+        enqueue,
+    )
+
+    await p.EventProcessor(AsyncMock())._queue_workflow_execution(delivery, event)
+
+    kwargs = enqueue.await_args.kwargs
+    assert kwargs["org_id"] == "00000000-0000-0000-0000-000000000002"
+    assert kwargs["parameters"]["ticket_id"] == 123
+    assert kwargs["parameters"]["_event"]["id"] == str(event.id)
+
+
+@pytest.mark.asyncio
+async def test_queue_agent_run_uses_mapping_and_agent_org(monkeypatch):
+    event = _make_event()
+    event.data = {"ticket": {"id": 123}, "summary": "Cannot log in"}
+    event.headers = {"x-source": "halo"}
+    delivery = _make_delivery(event=event, target_type="agent")
+    agent = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4())
+    delivery.subscription.agent = agent
+    delivery.subscription.input_mapping = {
+        "ticket_id": "{{ payload.ticket.id }}",
+        "source": "{{ headers.x-source }}",
+    }
+    enqueue = AsyncMock(return_value=str(uuid.uuid4()))
+    monkeypatch.setattr(
+        "src.services.execution.agent_run_service.enqueue_agent_run",
+        enqueue,
+    )
+
+    await p.EventProcessor(AsyncMock())._queue_agent_run(delivery, event)
+
+    enqueue.assert_awaited_once_with(
+        agent_id=str(agent.id),
+        trigger_type="event",
+        trigger_source="event: ticket.created",
+        input_data={
+            "ticket_id": 123,
+            "source": "halo",
+            "_event": {
+                "id": str(event.id),
+                "type": event.event_type,
+                "body": event.data,
+                "headers": event.headers,
+                "received_at": event.received_at.isoformat(),
+                "source_ip": event.source_ip,
+            },
+        },
+        org_id=str(agent.organization_id),
+        event_delivery_id=str(delivery.id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_queue_agent_run_raises_when_subscription_agent_missing():
+    event = _make_event()
+    delivery = _make_delivery(event=event, target_type="agent")
+    delivery.subscription.agent = None
+
+    with pytest.raises(ValueError, match="subscription has no agent"):
+        await p.EventProcessor(AsyncMock())._queue_agent_run(delivery, event)
