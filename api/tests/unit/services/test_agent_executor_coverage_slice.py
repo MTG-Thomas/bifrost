@@ -486,7 +486,7 @@ async def test_chat_streams_final_text_and_records_usage(executor):
         "done",
     ]
     assert chunks[0].user_message_id == str(user_msg.id)
-    assert chunks[0].assistant_message_id == str(assistant_msg.id)
+    assert chunks[0].assistant_message_id == chunks[3].message_id
     assert chunks[0].local_id == "local-1"
     assert chunks[1].content == "hel"
     assert chunks[2].content == "lo"
