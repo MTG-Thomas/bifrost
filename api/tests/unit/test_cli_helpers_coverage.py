@@ -558,7 +558,7 @@ def test_push_sync_pull_and_watch_report_lock_or_auth_errors(monkeypatch, tmp_pa
             self.action = action
 
         def __enter__(self):
-            raise cli.WorkspaceLockError("busy")
+            raise cli.WorkspaceLockError("busy", "watch")
 
     path = tmp_path / "workspace"
     path.mkdir()
