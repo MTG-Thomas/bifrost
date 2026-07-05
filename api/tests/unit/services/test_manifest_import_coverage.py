@@ -18,11 +18,13 @@ from bifrost.manifest import (
     ManifestIntegrationConfigSchema,
     ManifestIntegrationMapping,
     ManifestMCPConnection,
+    ManifestFilePolicy,
     ManifestMCPConnectionTool,
     ManifestMCPServer,
     ManifestOAuthProvider,
     ManifestOrganization,
     ManifestPolicyRule,
+    ManifestPolicyRef,
     ManifestRole,
     ManifestTable,
     ManifestWorkflow,
@@ -1429,3 +1431,183 @@ async def test_resolve_integration_rekeys_dependent_cache_and_syncs_children(mon
     assert old_integration_id not in cache["integ_mappings"]
     assert ("api_url", new_integration_id, UUID(ORG_ID)) in cache["config_by_natural"]
     assert len(db.statements) == 8
+
+
+@pytest.mark.asyncio
+async def test_sync_role_assignments_adds_before_removing_stale_roles():
+    from src.models.orm.workflow_roles import WorkflowRole
+
+    current_role_id = UUID(ROLE_ID)
+    stale_role_id = UUID(EXISTING_ID)
+    new_role_id = UUID(DELEGATE_ID)
+    db = _SequenceDb(_RowsResult([(current_role_id,), (stale_role_id,)]))
+    resolver = manifest_import.ManifestResolver(db)
+
+    await resolver._sync_role_assignments(
+        UUID(WORKFLOW_ID),
+        [str(current_role_id), str(new_role_id)],
+        WorkflowRole,
+        "workflow_id",
+    )
+
+    assert len(db.statements) == 3
+    insert_params = db.statements[1].compile().params
+    assert insert_params["workflow_id"] == UUID(WORKFLOW_ID)
+    assert insert_params["role_id"] == new_role_id
+    assert insert_params["assigned_by"] == "git-sync"
+    delete_sql = str(db.statements[2].compile(compile_kwargs={"literal_binds": True}))
+    assert "DELETE FROM workflow_roles" in delete_sql
+
+
+@pytest.mark.asyncio
+async def test_resolve_table_realigns_existing_natural_key_and_seeds_access():
+    db = _SequenceDb()
+    resolver = manifest_import.ManifestResolver(db)
+    existing_table_id = UUID(EXISTING_ID)
+    table = ManifestTable(
+        id=CONFIG_ID,
+        name="Tickets",
+        organization_id=ORG_ID,
+        description="Ticket intake",
+        schema={"columns": [{"name": "summary", "type": "text"}]},
+        policies=None,
+    )
+
+    await resolver._resolve_table(
+        "Tickets",
+        table,
+        {
+            "table_by_natural": {("Tickets", UUID(ORG_ID)): existing_table_id},
+            "table_ids": set(),
+        },
+    )
+
+    assert len(db.statements) == 1
+    params = db.statements[0].compile().params
+    assert params["id"] == UUID(CONFIG_ID)
+    assert params["description"] == "Ticket intake"
+    assert params["schema"] == {"columns": [{"name": "summary", "type": "text"}]}
+    assert params["access"]["policies"][0]["name"] == "admin_bypass"
+
+
+@pytest.mark.asyncio
+async def test_resolve_table_validates_refs_but_preserves_manifest_ref(monkeypatch):
+    from shared.policy_rules import resolve_policy_refs
+
+    calls = []
+
+    async def fake_resolve_policy_refs(policy_model, *, repo, action_domain):
+        calls.append((policy_model, repo, action_domain))
+
+    monkeypatch.setattr(
+        "shared.policy_rules.resolve_policy_refs",
+        fake_resolve_policy_refs,
+    )
+    db = _SequenceDb()
+    resolver = manifest_import.ManifestResolver(db)
+    table = ManifestTable(
+        id=CONFIG_ID,
+        name="Tickets",
+        policies=[ManifestPolicyRef(**{"$ref": "support-read"})],
+    )
+
+    await resolver._resolve_table(
+        "Tickets",
+        table,
+        {
+            "table_by_natural": {},
+            "table_ids": {UUID(CONFIG_ID)},
+        },
+    )
+
+    assert resolve_policy_refs is not fake_resolve_policy_refs
+    assert calls[0][2] == "table"
+    params = db.statements[0].compile().params
+    assert params["access"] == {"policies": [{"$ref": "support-read"}]}
+
+
+@pytest.mark.asyncio
+async def test_resolve_file_policy_uses_solution_aware_natural_key(monkeypatch):
+    calls = []
+
+    async def fake_resolve_policy_refs(policy_model, *, repo, action_domain):
+        calls.append((policy_model, repo, action_domain))
+
+    monkeypatch.setattr(
+        "shared.policy_rules.resolve_policy_refs",
+        fake_resolve_policy_refs,
+    )
+    db = _SequenceDb()
+    resolver = manifest_import.ManifestResolver(db)
+    existing_policy_id = UUID(EXISTING_ID)
+    policy = ManifestFilePolicy(
+        id=CONFIG_ID,
+        organization_id=ORG_ID,
+        location="workspace",
+        path="docs/",
+        solution_id=APP_ID,
+        policies=[{"$ref": "docs-read"}],
+    )
+
+    await resolver._resolve_file_policy(
+        policy,
+        {
+            "file_policy_by_natural": {
+                (UUID(ORG_ID), "workspace", "docs/", UUID(APP_ID)): existing_policy_id
+            },
+            "file_policy_ids": set(),
+        },
+    )
+
+    assert calls[0][2] == "file"
+    assert len(db.statements) == 1
+    params = db.statements[0].compile().params
+    assert params["id"] == UUID(CONFIG_ID)
+    assert params["policies"] == {"policies": [{"$ref": "docs-read"}]}
+
+
+@pytest.mark.asyncio
+async def test_resolve_file_policy_falls_back_to_id_then_inserts(monkeypatch):
+    async def fake_resolve_policy_refs(_policy_model, *, repo, action_domain):
+        return None
+
+    monkeypatch.setattr(
+        "shared.policy_rules.resolve_policy_refs",
+        fake_resolve_policy_refs,
+    )
+    existing_id_db = _SequenceDb()
+    resolver = manifest_import.ManifestResolver(existing_id_db)
+    policy = ManifestFilePolicy(
+        id=CONFIG_ID,
+        organization_id=None,
+        location="shared",
+        path="",
+        policies=[],
+    )
+
+    await resolver._resolve_file_policy(
+        policy,
+        {
+            "file_policy_by_natural": {},
+            "file_policy_ids": {UUID(CONFIG_ID)},
+        },
+    )
+
+    update_params = existing_id_db.statements[0].compile().params
+    assert update_params["location"] == "shared"
+    assert update_params["path"] == ""
+    assert update_params["solution_id"] is None
+
+    insert_db = _SequenceDb()
+    await manifest_import.ManifestResolver(insert_db)._resolve_file_policy(
+        policy,
+        {
+            "file_policy_by_natural": {},
+            "file_policy_ids": set(),
+        },
+    )
+
+    insert_params = insert_db.statements[0].compile().params
+    assert insert_params["id"] == UUID(CONFIG_ID)
+    assert insert_params["location"] == "shared"
+    assert insert_params["created_by"] is None
