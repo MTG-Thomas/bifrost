@@ -232,15 +232,16 @@ jobs:
       - name: Run E2E tests (shard ${{ matrix.shard }}/4)
         env:
           BIFROST_SKIP_BUILD: "1"
+          SHARD_ID: ${{ matrix.shard }}
         run: |
           chmod +x test.sh
           ./test.sh stack up
-          mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id ${{ matrix.shard }} --total 4)
+          mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id "$SHARD_ID" --total 4)
           if [ ${#shard_files[@]} -eq 0 ]; then
-            echo "ERROR: shard ${{ matrix.shard }} resolved to zero files" >&2
+            echo "ERROR: shard $SHARD_ID resolved to zero files" >&2
             exit 1
           fi
-          echo "Shard ${{ matrix.shard }}/4: ${#shard_files[@]} files"
+          echo "Shard $SHARD_ID/4: ${#shard_files[@]} files"
           ./test.sh "${shard_files[@]}" -v --durations=50
 
   # Aggregate gate — required check named "E2E Tests" (matches ruleset 15329014).
