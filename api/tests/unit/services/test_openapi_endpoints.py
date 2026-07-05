@@ -8,12 +8,54 @@ including parameter mapping, method handling, and schema structure.
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
+from fastapi import FastAPI
+
 from src.services.openapi_endpoints import (
     generate_workflow_openapi_schema,
     _param_to_openapi_schema,
     get_endpoint_enabled_workflows,
+    register_workflow_endpoint,
+    register_workflow_endpoints,
+    refresh_workflow_endpoint,
+    remove_workflow_endpoint,
+    _install_custom_openapi,
     TYPE_TO_OPENAPI,
 )
+
+
+class MutableRoutesApp:
+    """Small app double for service code that assigns app.routes directly."""
+
+    def __init__(self):
+        self.routes = []
+        self.openapi_schema = {"cached": True}
+
+    def api_route(
+        self,
+        path,
+        methods,
+        response_model=None,
+        summary=None,
+        description=None,
+        operation_id=None,
+        tags=None,
+        name=None,
+    ):
+        def decorator(handler):
+            route = MagicMock()
+            route.path = path
+            route.methods = set(methods)
+            route.endpoint = handler
+            route.response_model = response_model
+            route.summary = summary
+            route.description = description
+            route.operation_id = operation_id
+            route.tags = tags
+            route.name = name
+            self.routes.append(route)
+            return handler
+
+        return decorator
 
 
 class TestParamToOpenAPISchema:
@@ -72,6 +114,18 @@ class TestParamToOpenAPISchema:
         schema = _param_to_openapi_schema(param)
         assert schema == {"type": "string"}
 
+    def test_missing_type_defaults_to_string(self):
+        """Parameters without an explicit type default to string."""
+        param = {"name": "message", "required": False}
+        schema = _param_to_openapi_schema(param)
+        assert schema == {"type": "string"}
+
+    def test_none_default_value_is_not_included(self):
+        """None defaults are omitted instead of advertised as default null."""
+        param = {"name": "message", "type": "string", "default_value": None}
+        schema = _param_to_openapi_schema(param)
+        assert schema == {"type": "string"}
+
 
 class TestGenerateWorkflowOpenAPISchema:
     """Tests for generating complete OpenAPI path schemas for workflows."""
@@ -86,7 +140,13 @@ class TestGenerateWorkflowOpenAPISchema:
         workflow.allowed_methods = ["GET", "POST"]
         workflow.parameters_schema = [
             {"name": "message", "type": "string", "required": True, "label": "Message"},
-            {"name": "count", "type": "int", "required": False, "label": "Count", "default_value": 1},
+            {
+                "name": "count",
+                "type": "int",
+                "required": False,
+                "label": "Count",
+                "default_value": 1,
+            },
         ]
         return workflow
 
@@ -236,6 +296,52 @@ class TestGenerateWorkflowOpenAPISchema:
 
         assert schema["get"]["description"] == "Execute no_desc_workflow workflow"
 
+    def test_none_parameters_schema_defaults_to_empty_list(self):
+        """Workflows with None parameters_schema generate valid empty schemas."""
+        workflow = MagicMock()
+        workflow.name = "no_params_workflow"
+        workflow.description = None
+        workflow.endpoint_enabled = True
+        workflow.allowed_methods = ["GET", "POST"]
+        workflow.parameters_schema = None
+
+        schema = generate_workflow_openapi_schema(workflow)
+
+        assert "parameters" not in schema["get"]
+        assert "parameters" not in schema["post"]
+        body_schema = schema["post"]["requestBody"]["content"]["application/json"]["schema"]
+        assert body_schema == {"type": "object", "properties": {}}
+
+    def test_put_and_patch_include_request_body_with_required_properties(self):
+        """PUT and PATCH operations include body schemas, like POST."""
+        workflow = MagicMock()
+        workflow.name = "update_workflow"
+        workflow.description = "Update workflow"
+        workflow.endpoint_enabled = True
+        workflow.allowed_methods = ["PUT", "PATCH"]
+        workflow.parameters_schema = [
+            {"name": "payload", "type": "json", "required": True},
+            {"name": "dry_run", "type": "bool", "required": False, "default_value": False},
+        ]
+
+        schema = generate_workflow_openapi_schema(workflow)
+
+        for method in ("put", "patch"):
+            body_schema = schema[method]["requestBody"]["content"]["application/json"]["schema"]
+            assert body_schema["properties"]["payload"] == {"type": "object"}
+            assert body_schema["properties"]["dry_run"] == {"type": "boolean", "default": False}
+            assert body_schema["required"] == ["payload"]
+
+    def test_parameter_without_label_has_no_description(self, mock_workflow):
+        """Parameter descriptions are only added when a label is present."""
+        mock_workflow.parameters_schema = [
+            {"name": "message", "type": "string", "required": True},
+        ]
+
+        schema = generate_workflow_openapi_schema(mock_workflow)
+
+        assert "description" not in schema["get"]["parameters"][0]
+
 
 class TestGetEndpointEnabledWorkflows:
     """Tests for querying endpoint-enabled workflows from database."""
@@ -258,6 +364,224 @@ class TestGetEndpointEnabledWorkflows:
 
             assert result == []
             mock_db.execute.assert_called_once()
+
+
+class TestWorkflowEndpointRegistration:
+    """Tests for registering, refreshing, and removing FastAPI workflow routes."""
+
+    @pytest.fixture
+    def mock_workflow(self):
+        """Create a mock workflow for route registration tests."""
+        workflow = MagicMock()
+        workflow.name = "route_workflow"
+        workflow.description = "Route workflow"
+        workflow.endpoint_enabled = True
+        workflow.allowed_methods = ["GET", "POST"]
+        workflow.parameters_schema = [
+            {"name": "message", "type": "string", "required": True, "label": "Message"},
+        ]
+        return workflow
+
+    def test_register_workflow_endpoint_adds_route_and_schema(self, mock_workflow):
+        """Registering a workflow adds a FastAPI route and workflow schema."""
+        app = MutableRoutesApp()
+
+        register_workflow_endpoint(app, mock_workflow)
+
+        route = next(
+            r for r in app.routes
+            if getattr(r, "path", None) == "/api/endpoints/route_workflow"
+        )
+        assert set(route.methods) == {"GET", "POST"}
+        assert route.name == "execute_route_workflow"
+        assert app.openapi_schema is None
+        assert app._workflow_schemas["route_workflow"]["get"]["parameters"][0]["name"] == "message"
+
+    def test_register_workflow_endpoint_replaces_existing_route(self, mock_workflow):
+        """Re-registering the same workflow replaces the old route definition."""
+        app = MutableRoutesApp()
+
+        register_workflow_endpoint(app, mock_workflow)
+        mock_workflow.allowed_methods = ["DELETE"]
+        register_workflow_endpoint(app, mock_workflow)
+
+        matching_routes = [
+            r for r in app.routes if getattr(r, "path", None) == "/api/endpoints/route_workflow"
+        ]
+        assert len(matching_routes) == 1
+        assert matching_routes[0].methods == {"DELETE"}
+
+    def test_remove_workflow_endpoint_removes_route_and_schema(self, mock_workflow):
+        """Removing an existing workflow clears its route and cached schema entry."""
+        app = MutableRoutesApp()
+        register_workflow_endpoint(app, mock_workflow)
+        app.openapi_schema = {"stale": True}
+
+        remove_workflow_endpoint(app, "route_workflow")
+
+        assert not any(
+            getattr(r, "path", None) == "/api/endpoints/route_workflow" for r in app.routes
+        )
+        assert app.openapi_schema is None
+        assert "route_workflow" not in app._workflow_schemas
+
+    def test_remove_missing_workflow_endpoint_leaves_cache_unchanged(self):
+        """Removing a missing route does not invalidate the OpenAPI cache."""
+        app = MutableRoutesApp()
+        app.openapi_schema = {"cached": True}
+        app._workflow_schemas = {"other": {"get": {}}}
+
+        remove_workflow_endpoint(app, "missing")
+
+        assert app.openapi_schema == {"cached": True}
+        assert app._workflow_schemas == {"other": {"get": {}}}
+
+    def test_refresh_enabled_workflow_registers_endpoint(self, mock_workflow):
+        """Refreshing an enabled workflow registers its endpoint."""
+        app = MutableRoutesApp()
+
+        refresh_workflow_endpoint(app, mock_workflow)
+
+        assert any(
+            getattr(r, "path", None) == "/api/endpoints/route_workflow" for r in app.routes
+        )
+
+    def test_refresh_disabled_workflow_removes_endpoint(self, mock_workflow):
+        """Refreshing a disabled workflow removes an existing endpoint."""
+        app = MutableRoutesApp()
+        register_workflow_endpoint(app, mock_workflow)
+        mock_workflow.endpoint_enabled = False
+
+        refresh_workflow_endpoint(app, mock_workflow)
+
+        assert not any(
+            getattr(r, "path", None) == "/api/endpoints/route_workflow" for r in app.routes
+        )
+
+
+class TestCustomOpenAPI:
+    """Tests for the custom OpenAPI generator installed by the service."""
+
+    @pytest.fixture
+    def app_with_workflow_schema(self):
+        """Create a FastAPI app with an endpoint route and detailed workflow schema."""
+        app = FastAPI()
+
+        @app.post("/api/endpoints/schema_workflow")
+        async def schema_workflow():
+            return {"ok": True}
+
+        app._workflow_schemas = {
+            "schema_workflow": {
+                "post": {
+                    "parameters": [
+                        {
+                            "name": "message",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "requestBody": {
+                        "description": "Workflow input parameters",
+                        "required": False,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {"message": {"type": "string"}},
+                                    "required": ["message"],
+                                }
+                            }
+                        },
+                    },
+                    "security": [{"BifrostApiKey": []}],
+                }
+            },
+            "missing_route": {
+                "post": {
+                    "parameters": [
+                        {
+                            "name": "ignored",
+                            "in": "query",
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                }
+            },
+        }
+        return app
+
+    def test_install_custom_openapi_adds_security_response_and_workflow_details(
+        self, app_with_workflow_schema
+    ):
+        """Custom OpenAPI adds shared components and injects workflow-specific details."""
+        _install_custom_openapi(app_with_workflow_schema)
+
+        schema = app_with_workflow_schema.openapi()
+
+        security = schema["components"]["securitySchemes"]["BifrostApiKey"]
+        assert security == {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-Bifrost-Key",
+            "description": "Workflow API key for endpoint access",
+        }
+        response_schema = schema["components"]["schemas"]["EndpointExecuteResponse"]
+        assert response_schema["required"] == ["execution_id", "status"]
+
+        operation = schema["paths"]["/api/endpoints/schema_workflow"]["post"]
+        assert operation["parameters"][0]["name"] == "message"
+        body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+        assert body_schema["required"] == ["message"]
+        assert operation["security"] == [{"BifrostApiKey": []}]
+        assert "/api/endpoints/missing_route" not in schema["paths"]
+
+    def test_custom_openapi_returns_cached_schema(self, app_with_workflow_schema):
+        """The custom generator returns an existing cached schema without regenerating."""
+        cached_schema = {"cached": True}
+        app_with_workflow_schema.openapi_schema = cached_schema
+
+        _install_custom_openapi(app_with_workflow_schema)
+
+        assert app_with_workflow_schema.openapi() is cached_schema
+
+
+class TestRegisterWorkflowEndpoints:
+    """Tests for startup registration of all endpoint-enabled workflows."""
+
+    @pytest.mark.asyncio
+    async def test_register_workflow_endpoints_registers_each_workflow_and_installs_openapi(self):
+        """Startup registration returns the count and installs the custom OpenAPI generator."""
+        app = MutableRoutesApp()
+        app.openapi = MagicMock(return_value={"components": {}, "paths": {}})
+        workflow_a = MagicMock()
+        workflow_a.name = "workflow_a"
+        workflow_a.description = None
+        workflow_a.endpoint_enabled = True
+        workflow_a.allowed_methods = ["POST"]
+        workflow_a.parameters_schema = []
+        workflow_b = MagicMock()
+        workflow_b.name = "workflow_b"
+        workflow_b.description = "Workflow B"
+        workflow_b.endpoint_enabled = True
+        workflow_b.allowed_methods = ["GET"]
+        workflow_b.parameters_schema = []
+        mock_db = AsyncMock()
+
+        with patch(
+            "src.services.openapi_endpoints.get_endpoint_enabled_workflows",
+            new=AsyncMock(return_value=[workflow_a, workflow_b]),
+        ) as mock_get:
+            count = await register_workflow_endpoints(app, mock_db)
+
+        assert count == 2
+        mock_get.assert_awaited_once_with(mock_db)
+        assert any(getattr(r, "path", None) == "/api/endpoints/workflow_a" for r in app.routes)
+        assert any(getattr(r, "path", None) == "/api/endpoints/workflow_b" for r in app.routes)
+
+        schema = app.openapi()
+        assert "BifrostApiKey" in schema["components"]["securitySchemes"]
 
 
 class TestTypeMapping:

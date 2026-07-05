@@ -1,5 +1,6 @@
 import pytest
 
+import src.services.cron_parser as cron_parser
 from src.services.cron_parser import (
     validate_cron_expression,
     is_cron_expression_valid,
@@ -37,6 +38,23 @@ class TestValidateCronExpression:
     def test_non_numeric_garbage(self):
         assert validate_cron_expression("a b c d e") is False
 
+    def test_croniter_validation_exception_returns_false(self, monkeypatch):
+        def raise_validation_error(expression):
+            raise ValueError(f"bad cron: {expression}")
+
+        monkeypatch.setattr(cron_parser.croniter, "is_valid", raise_validation_error)
+
+        assert validate_cron_expression("0 9 * * *") is False
+
+    @pytest.mark.parametrize("expression", [
+        "0 9 * JAN *",
+        "0 9 * * MON",
+        "15 9-17/2 * * MON-FRI",
+        "0 0 L * *",
+    ])
+    def test_croniter_supported_extended_tokens_are_accepted(self, expression):
+        assert validate_cron_expression(expression) is True
+
 
 class TestCronToHumanReadable:
 
@@ -58,6 +76,9 @@ class TestCronToHumanReadable:
     def test_every_2_hours(self):
         assert cron_to_human_readable("0 */2 * * *") == "Every 2 hours"
 
+    def test_hour_interval_with_nonzero_minute_uses_time_format(self):
+        assert cron_to_human_readable("15 */4 * * *") == "every day at */4:15"
+
     def test_daily_at_specific_time(self):
         assert cron_to_human_readable("0 9 * * *") == "every day at 09:00"
 
@@ -70,18 +91,35 @@ class TestCronToHumanReadable:
     def test_sunday_day_0(self):
         assert cron_to_human_readable("0 9 * * 0") == "every Sunday at 09:00"
 
+    def test_weekday_range_defaults_to_daily_frequency(self):
+        assert cron_to_human_readable("0 9 * * 1-5") == "daily at 09:00"
+
+    def test_named_weekday_defaults_to_daily_frequency(self):
+        assert cron_to_human_readable("0 9 * * MON") == "daily at 09:00"
+
     def test_monthly_first(self):
         result = cron_to_human_readable("0 0 1 * *")
         assert result == "on the 1st of every month at 00:00"
+
+    def test_first_day_rule_takes_precedence_over_specific_month(self):
+        result = cron_to_human_readable("0 0 1 6 *")
+        assert result == "on day 1 of month 6 at 00:00"
 
     def test_multiple_hours(self):
         result = cron_to_human_readable("0 9,17 * * *")
         assert "09:00" in result
         assert "17:00" in result
 
+    def test_multiple_nonzero_minutes_are_zero_padded_as_single_field(self):
+        result = cron_to_human_readable("5,35 9 * * *")
+        assert result == "every day at 09:5,35"
+
     def test_hour_range(self):
         result = cron_to_human_readable("0 9-17 * * *")
         assert "between" in result
+
+    def test_croniter_nth_weekday_defaults_to_daily_frequency(self):
+        assert cron_to_human_readable("0 9 * * 5#3") == "daily at 09:00"
 
     def test_invalid_expression_returns_message(self):
         assert cron_to_human_readable("invalid") == "Invalid CRON expression"
@@ -114,6 +152,13 @@ class TestCronToHumanReadable:
         assert "day 15" in result
         assert "every month" in result
 
+    def test_conversion_exception_returns_original_expression(self, monkeypatch):
+        monkeypatch.setattr(cron_parser, "validate_cron_expression", lambda expression: True)
+
+        result = cron_to_human_readable("0 9-17-20 * * *")
+
+        assert result == "CRON: 0 9-17-20 * * *"
+
 
 class TestIsCronExpressionValid:
 
@@ -143,3 +188,13 @@ class TestIsCronExpressionValid:
         assert is_cron_expression_valid("0 9 * * *") is True
         result = cron_to_human_readable("0 9 * * *")
         assert result not in ("Invalid CRON expression", "Invalid CRON expression format")
+
+    def test_rejects_validated_cron_when_human_readable_parser_rejects_it(self, monkeypatch):
+        monkeypatch.setattr(cron_parser, "validate_cron_expression", lambda expression: True)
+        monkeypatch.setattr(
+            cron_parser,
+            "cron_to_human_readable",
+            lambda expression: "Invalid CRON expression format",
+        )
+
+        assert cron_parser.is_cron_expression_valid("0 9 * * *") is False

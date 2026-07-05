@@ -10,6 +10,39 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
 
+def notification_payload(
+    notification_id="notif-123",
+    category=None,
+    title="Test notification",
+    status=None,
+    user_id="user-123",
+    created_at="2024-01-01T10:00:00+00:00",
+    **overrides,
+):
+    """Build a valid serialized notification payload for service tests."""
+    from src.models.contracts.notifications import (
+        NotificationCategory,
+        NotificationStatus,
+    )
+
+    payload = {
+        "id": notification_id,
+        "category": (category or NotificationCategory.SYSTEM).value,
+        "title": title,
+        "description": None,
+        "status": (status or NotificationStatus.PENDING).value,
+        "percent": None,
+        "error": None,
+        "result": None,
+        "metadata": None,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "user_id": user_id,
+    }
+    payload.update(overrides)
+    return payload
+
+
 class TestNotificationService:
     """Tests for NotificationService."""
 
@@ -288,6 +321,50 @@ class TestNotificationService:
         assert result.status == NotificationStatus.FAILED
         assert result.error == "Failed to clone repository: Authentication failed"
 
+    async def test_update_notification_running_keeps_active_ttl_and_admin_broadcast(
+        self, notification_service, mock_redis
+    ):
+        """Test active admin notification updates keep active TTL and notify admins."""
+        from src.models.contracts.notifications import (
+            NotificationStatus,
+            NotificationUpdate,
+        )
+        from src.services.notification_service import ACTIVE_NOTIFICATION_TTL
+
+        service, mock_pubsub = notification_service
+
+        existing = notification_payload(
+            notification_id="notif-admin",
+            title="Maintenance",
+            status=NotificationStatus.PENDING,
+            user_id="system-user",
+        )
+        mock_redis.get.return_value = json.dumps(existing)
+        mock_redis.sismember.return_value = True
+
+        update = NotificationUpdate(
+            status=NotificationStatus.RUNNING,
+            description="Maintenance in progress",
+            percent=10.0,
+        )
+
+        with patch("src.services.notification_service.pubsub_manager", mock_pubsub):
+            result = await service.update_notification("notif-admin", update)
+
+        assert result is not None
+        assert result.status == NotificationStatus.RUNNING
+        assert result.description == "Maintenance in progress"
+
+        mock_redis.setex.assert_called_once()
+        assert mock_redis.setex.call_args[0][1] == ACTIVE_NOTIFICATION_TTL
+
+        channels = [call[0][0] for call in mock_pubsub.broadcast.call_args_list]
+        assert channels == ["notification:system-user", "notification:admins"]
+        assert all(
+            call[0][1]["type"] == "notification_updated"
+            for call in mock_pubsub.broadcast.call_args_list
+        )
+
     async def test_update_notification_not_found(self, notification_service, mock_redis):
         """Test updating non-existent notification returns None."""
         from src.models.contracts.notifications import NotificationUpdate, NotificationStatus
@@ -422,6 +499,44 @@ class TestNotificationService:
         assert result is False
         mock_redis.delete.assert_not_called()
 
+    async def test_dismiss_admin_notification_allows_non_owner_and_cleans_sets(
+        self, notification_service, mock_redis
+    ):
+        """Test visible admin notifications can be dismissed by a non-owner admin."""
+        service, mock_pubsub = notification_service
+
+        existing = notification_payload(
+            notification_id="notif-admin",
+            title="System Alert",
+            user_id="system-user",
+        )
+        mock_redis.get.return_value = json.dumps(existing)
+        mock_redis.sismember.return_value = True
+
+        with patch("src.services.notification_service.pubsub_manager", mock_pubsub):
+            result = await service.dismiss_notification(
+                notification_id="notif-admin",
+                user_id="admin-user",
+            )
+
+        assert result is True
+        mock_redis.delete.assert_called_once_with(
+            "bifrost:notification:notif-admin"
+        )
+        mock_redis.srem.assert_any_call(
+            "bifrost:notifications:user:system-user", "notif-admin"
+        )
+        mock_redis.srem.assert_any_call(
+            "bifrost:notifications:admins", "notif-admin"
+        )
+        mock_pubsub.broadcast.assert_called_once_with(
+            "notification:system-user",
+            {
+                "type": "notification_dismissed",
+                "notification_id": "notif-admin",
+            },
+        )
+
     async def test_dismiss_notification_not_found(self, notification_service, mock_redis):
         """Test dismissing non-existent notification returns False."""
         service, mock_pubsub = notification_service
@@ -494,6 +609,36 @@ class TestNotificationService:
         assert result[0].id == "notif-2"
         assert result[1].id == "notif-1"
 
+    async def test_get_user_notifications_cleans_expired_ids_and_ignores_bad_json(
+        self, notification_service, mock_redis
+    ):
+        """Test expired and malformed notifications do not reach callers."""
+        service, _ = notification_service
+
+        mock_redis.smembers.return_value = {"notif-good", "notif-expired", "notif-bad"}
+
+        good = notification_payload(
+            notification_id="notif-good",
+            title="Good notification",
+            created_at="2024-01-01T12:00:00+00:00",
+        )
+
+        async def get_side_effect(key):
+            if "notif-good" in key:
+                return json.dumps(good)
+            if "notif-bad" in key:
+                return "{not-json"
+            return None
+
+        mock_redis.get.side_effect = get_side_effect
+
+        result = await service.get_user_notifications("user-123")
+
+        assert [notification.id for notification in result] == ["notif-good"]
+        mock_redis.srem.assert_called_once_with(
+            "bifrost:notifications:user:user-123", "notif-expired"
+        )
+
     async def test_get_user_notifications_includes_admin(self, notification_service, mock_redis):
         """Test getting notifications includes admin notifications when requested."""
         from src.models.contracts.notifications import (
@@ -556,6 +701,80 @@ class TestNotificationService:
         ids = [n.id for n in result]
         assert "notif-user" in ids
         assert "notif-admin" in ids
+
+    async def test_find_admin_notification_by_title_matches_title_and_category(
+        self, notification_service, mock_redis
+    ):
+        """Test admin notification lookup returns the requested category match."""
+        from src.models.contracts.notifications import NotificationCategory
+
+        service, _ = notification_service
+
+        mock_redis.smembers.return_value = {
+            "notif-system",
+            "notif-upload",
+            "notif-invalid",
+            "notif-expired",
+        }
+        system = notification_payload(
+            notification_id="notif-system",
+            category=NotificationCategory.SYSTEM,
+            title="Duplicate title",
+        )
+        upload = notification_payload(
+            notification_id="notif-upload",
+            category=NotificationCategory.FILE_UPLOAD,
+            title="Duplicate title",
+        )
+
+        async def get_side_effect(key):
+            if "notif-system" in key:
+                return json.dumps(system)
+            if "notif-upload" in key:
+                return json.dumps(upload)
+            if "notif-invalid" in key:
+                return "{not-json"
+            return None
+
+        mock_redis.get.side_effect = get_side_effect
+
+        result = await service.find_admin_notification_by_title(
+            "Duplicate title",
+            category=NotificationCategory.FILE_UPLOAD,
+        )
+
+        assert result is not None
+        assert result.id == "notif-upload"
+        assert result.category == NotificationCategory.FILE_UPLOAD
+
+    async def test_find_admin_notification_by_title_returns_none_without_match(
+        self, notification_service, mock_redis
+    ):
+        """Test admin lookup returns None when live admin notifications do not match."""
+        from src.models.contracts.notifications import NotificationCategory
+
+        service, _ = notification_service
+
+        mock_redis.smembers.return_value = {"notif-system", "notif-expired"}
+        system = notification_payload(
+            notification_id="notif-system",
+            category=NotificationCategory.SYSTEM,
+            title="Different title",
+        )
+
+        async def get_side_effect(key):
+            if "notif-system" in key:
+                return json.dumps(system)
+            return None
+
+        mock_redis.get.side_effect = get_side_effect
+
+        result = await service.find_admin_notification_by_title(
+            "Missing title",
+            category=NotificationCategory.SYSTEM,
+        )
+
+        assert result is None
 
     async def test_close(self, notification_service, mock_redis):
         """Test closing Redis connection."""
