@@ -218,11 +218,11 @@ def test_solution_init_writes_descriptor_binds_remote_and_refuses_overwrite(
         return None
 
     class Response:
-        status_code = 202
+        status_code = 201
         text = ""
 
         def json(self):
-            return {"deploy_job_id": "job-1"}
+            return {"id": "sol-1", "slug": "desk"}
 
     class Client:
         async def post(self, path, json=None, **kwargs):
@@ -241,11 +241,6 @@ def test_solution_init_writes_descriptor_binds_remote_and_refuses_overwrite(
         "bifrost.commands.solution._resolve_install_org",
         fake_resolve_install_org,
     )
-    monkeypatch.setattr(
-        "bifrost.commands.solution._poll_deploy_job",
-        AsyncMock(return_value=0),
-    )
-
     result = runner.invoke(
         solution_group,
         [
@@ -436,11 +431,11 @@ def test_solution_install_posts_zip_config_and_replace_flags(tmp_path, monkeypat
         return "org-1"
 
     class Response:
-        status_code = 201
+        status_code = 202
         text = ""
 
         def json(self):
-            return {"id": "sol-1", "slug": "desk"}
+            return {"deploy_job_id": "job-1"}
 
     class Client:
         def __init__(self):
@@ -458,6 +453,10 @@ def test_solution_install_posts_zip_config_and_replace_flags(tmp_path, monkeypat
     monkeypatch.setattr(
         "bifrost.commands.solution._resolve_install_org",
         fake_resolve_install_org,
+    )
+    monkeypatch.setattr(
+        "bifrost.commands.solution._poll_deploy_job",
+        AsyncMock(return_value=0),
     )
 
     result = CliRunner().invoke(
