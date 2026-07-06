@@ -34,7 +34,7 @@ def compute_token_exchange_scopes(provider: "OAuthProvider") -> str | None:
 
 def compute_authorization_request_scopes(provider: "OAuthProvider") -> str | None:
     """Return scopes to send during authorization URL generation."""
-    provider_metadata = provider.provider_metadata or {}
+    provider_metadata = getattr(provider, "provider_metadata", None) or {}
     if provider_metadata.get("omit_authorization_scope") is True:
         return None
 
