@@ -5,6 +5,8 @@ Tests the functions that convert workflow names to MCP-compatible tool names,
 handle duplicate detection, and manage tool name <-> workflow ID mappings.
 """
 
+from uuid import UUID, uuid4
+
 
 class TestNormalizeToolName:
     """Tests for _normalize_tool_name()."""
@@ -104,6 +106,12 @@ class TestGenerateShortSuffix:
             assert suffix.isalnum()
             assert suffix.islower() or suffix.isdigit()
 
+    def test_zero_length(self):
+        """Should allow zero-length suffixes for callers that disable disambiguation."""
+        from src.services.mcp_server.server import _generate_short_suffix
+
+        assert _generate_short_suffix(0) == ""
+
     def test_randomness(self):
         """Should generate different suffixes each time."""
         from src.services.mcp_server.server import _generate_short_suffix
@@ -147,6 +155,47 @@ class TestToolNameMappings:
             server._TOOL_NAME_TO_WORKFLOW_ID.update(original_name_to_id)
             server._WORKFLOW_ID_TO_TOOL_NAME.clear()
             server._WORKFLOW_ID_TO_TOOL_NAME.update(original_id_to_name)
+
+
+class TestMCPContext:
+    """Tests for MCPContext claim normalization."""
+
+    def test_normalizes_string_uuid_claims(self):
+        from src.services.mcp_server.server import MCPContext
+
+        user_id = str(uuid4())
+        org_id = str(uuid4())
+
+        context = MCPContext(
+            user_id=user_id,
+            org_id=org_id,
+            is_platform_admin=False,
+            is_external=True,
+            user_email="user@example.com",
+            user_name="User",
+            enabled_system_tools=["list_workflows"],
+            accessible_namespaces=["docs"],
+            session=object(),
+        )
+
+        assert context.user_id == UUID(user_id)
+        assert context.org_id == UUID(org_id)
+        assert context.is_external is True
+        assert context.enabled_system_tools == ["list_workflows"]
+        assert context.accessible_namespaces == ["docs"]
+        assert context.session is not None
+
+    def test_preserves_uuid_and_empty_optional_claims(self):
+        from src.services.mcp_server.server import MCPContext
+
+        user_id = uuid4()
+
+        context = MCPContext(user_id=user_id, org_id=None)
+
+        assert context.user_id == user_id
+        assert context.org_id is None
+        assert context.enabled_system_tools == []
+        assert context.accessible_namespaces == []
 
 
 class TestDuplicateDetection:

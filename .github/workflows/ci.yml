@@ -358,7 +358,17 @@ jobs:
             exit 1
           fi
           echo "Shard $SHARD_ID/4: ${#shard_files[@]} files"
-          ./test.sh "${shard_files[@]}" -v --durations=50
+          ./test.sh "${shard_files[@]}" -v --durations=50 \
+            --cov=. --cov-report=xml:/coverage/coverage-e2e-${{ matrix.shard }}.xml
+          ./test.sh coverage coverage-e2e-${{ matrix.shard }}.xml
+
+      - name: Upload E2E coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: ./coverage-e2e-${{ matrix.shard }}.xml
+          flags: api-e2e
+          name: api-e2e-coverage-${{ matrix.shard }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   # Aggregate gate — required check named "E2E Tests" (matches ruleset 15329014).
   # Fails if any shard failed or was cancelled. Runs even when shards fail

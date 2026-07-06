@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -169,6 +170,97 @@ def _principal(user: User) -> UserPrincipal:
         is_superuser=user.is_superuser,
         is_verified=user.is_verified,
     )
+
+
+def _agent_double(
+    name: str,
+    *,
+    description: str | None = None,
+    tools: list[object] | None = None,
+    knowledge_sources: list[str] | None = None,
+):
+    return SimpleNamespace(
+        name=name,
+        description=description,
+        tools=tools or [],
+        knowledge_sources=knowledge_sources or [],
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_returns_no_agents_without_user_context():
+    router = AgentRouter(lambda: None)  # type: ignore[arg-type]
+
+    assert await router.get_available_agents() == []
+    assert await router.parse_mention("@[Helpdesk] reset password") is None
+    assert await router.route_message("reset password") is None
+
+
+@pytest.mark.asyncio
+async def test_router_describes_agent_tools_and_knowledge_for_llm_prompt():
+    agent = _agent_double(
+        "Helpdesk",
+        description=None,
+        tools=[
+            SimpleNamespace(name="reset_password", type="tool", is_active=True),
+            SimpleNamespace(name="draft_reply", type="workflow", is_active=True),
+            SimpleNamespace(name="disabled_tool", type="tool", is_active=False),
+        ],
+        knowledge_sources=["halopsa-tickets", "runbooks"],
+    )
+    router = AgentRouter(lambda: None)  # type: ignore[arg-type]
+
+    description = router._build_agent_description(agent)  # type: ignore[arg-type]
+
+    assert description == (
+        "- Helpdesk: General assistant "
+        "(Tools: reset_password; Knowledge: halopsa-tickets, runbooks)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_route_message_handles_direct_empty_unknown_and_matched_llm_responses():
+    session = object()
+    agent = _agent_double("Helpdesk", description="Ticket triage")
+    router = SessionBoundAgentRouter(
+        session,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        org_id=uuid4(),
+    )
+    llm_client = AsyncMock()
+
+    with patch("src.services.agent_router.get_llm_client", return_value=llm_client):
+        llm_client.complete = AsyncMock(return_value=LLMResponse(content="DIRECT"))
+        assert await router.route_message("hello", [agent]) is None  # type: ignore[list-item]
+
+        llm_client.complete = AsyncMock(return_value=LLMResponse(content=""))
+        assert await router.route_message("hello", [agent]) is None  # type: ignore[list-item]
+
+        llm_client.complete = AsyncMock(return_value=LLMResponse(content="Payroll"))
+        assert await router.route_message("payroll question", [agent]) is None  # type: ignore[list-item]
+
+        llm_client.complete = AsyncMock(return_value=LLMResponse(content="helpdesk"))
+        assert await router.route_message("ticket help", [agent]) is agent  # type: ignore[list-item]
+
+
+@pytest.mark.asyncio
+async def test_route_message_falls_back_to_direct_when_llm_lookup_fails():
+    agent = _agent_double("Helpdesk", description="Ticket triage")
+    router = SessionBoundAgentRouter(
+        object(),  # type: ignore[arg-type]
+        user_id=uuid4(),
+        org_id=uuid4(),
+    )
+
+    with patch("src.services.agent_router.get_llm_client", side_effect=RuntimeError("offline")):
+        assert await router.route_message("ticket help", [agent]) is None  # type: ignore[list-item]
+
+
+def test_strip_mention_removes_bracketed_mentions_and_trims_message():
+    router = AgentRouter(lambda: None)  # type: ignore[arg-type]
+
+    assert router.strip_mention("  @[Helpdesk] please triage this  ") == "please triage this"
+    assert router.strip_mention("@[One] ask @[Two]") == "ask"
 
 
 @pytest.mark.asyncio

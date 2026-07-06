@@ -120,6 +120,66 @@ class TestS3BackendPathHandling:
 
         backend.storage.file_exists.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_read_non_workspace_uses_resolved_s3_path(self):
+        backend = self._make_backend()
+        backend.storage.read_uploaded_file = AsyncMock(return_value=b"uploaded")
+
+        assert await backend.read("docs/readme.txt", "uploads", "global") == b"uploaded"
+
+        backend.storage.read_uploaded_file.assert_awaited_once_with(
+            "uploads/global/docs/readme.txt"
+        )
+
+    @pytest.mark.asyncio
+    async def test_read_non_workspace_maps_not_found_error(self):
+        backend = self._make_backend()
+        backend.storage.read_uploaded_file = AsyncMock(
+            side_effect=RuntimeError("NoSuchKey")
+        )
+
+        with pytest.raises(FileNotFoundError, match="missing.txt"):
+            await backend.read("missing.txt", "uploads", "global")
+
+    @pytest.mark.asyncio
+    async def test_read_non_workspace_maps_invalid_error(self):
+        backend = self._make_backend()
+        backend.storage.read_uploaded_file = AsyncMock(
+            side_effect=RuntimeError("bad components in key")
+        )
+
+        with pytest.raises(ValueError, match="Invalid path: bad.txt"):
+            await backend.read("bad.txt", "uploads", "global")
+
+    @pytest.mark.asyncio
+    async def test_write_delete_list_and_exists_non_workspace_use_resolved_paths(self):
+        backend = self._make_backend()
+        backend.storage.write_raw_to_s3 = AsyncMock()
+        backend.storage.delete_raw_from_s3 = AsyncMock()
+        backend.storage.list_raw_s3 = AsyncMock(
+            return_value=[
+                "reports/global/q1/a.txt",
+                "reports/global/q1/nested/b.txt",
+            ]
+        )
+        backend.storage.file_exists = AsyncMock(return_value=False)
+
+        await backend.write("q1/a.txt", b"a", "reports", scope="global")
+        await backend.delete("q1/a.txt", "reports", scope="global")
+        listed = await backend.list("q1", "reports", scope="global")
+        exists = await backend.exists("q1/a.txt", "reports", scope="global")
+
+        backend.storage.write_raw_to_s3.assert_awaited_once_with(
+            "reports/global/q1/a.txt", b"a"
+        )
+        backend.storage.delete_raw_from_s3.assert_awaited_once_with(
+            "reports/global/q1/a.txt"
+        )
+        backend.storage.list_raw_s3.assert_awaited_once_with("reports/global/q1/")
+        assert listed == ["q1/a.txt", "q1/nested/b.txt"]
+        backend.storage.file_exists.assert_awaited_once_with("reports/global/q1/a.txt")
+        assert exists is False
+
 
 class TestLocalBackendSandbox:
     """Verify LocalBackend._resolve_path enforces a real containment check.
@@ -175,3 +235,43 @@ class TestLocalBackendSandbox:
         resolved = backend._resolve_path("q1.txt", "reports")
 
         assert resolved == (backend.workspace_root.parent / "reports/q1.txt").resolve()
+
+    @pytest.mark.asyncio
+    async def test_write_read_list_exists_and_delete_round_trip(self, tmp_path: Path):
+        backend = self._make_backend(tmp_path)
+
+        await backend.write("nested/report.txt", b"hello", "workspace")
+
+        assert await backend.read("nested/report.txt", "workspace") == b"hello"
+        assert await backend.exists("nested/report.txt", "workspace") is True
+        assert await backend.list("nested", "workspace") == ["nested/report.txt"]
+
+        await backend.delete("nested/report.txt", "workspace")
+
+        assert await backend.exists("nested/report.txt", "workspace") is False
+
+    @pytest.mark.asyncio
+    async def test_read_missing_file_raises_file_not_found(self, tmp_path: Path):
+        backend = self._make_backend(tmp_path)
+
+        with pytest.raises(FileNotFoundError, match="missing.txt"):
+            await backend.read("missing.txt", "workspace")
+
+    @pytest.mark.asyncio
+    async def test_list_missing_directory_returns_empty_list(self, tmp_path: Path):
+        backend = self._make_backend(tmp_path)
+
+        assert await backend.list("missing", "workspace") == []
+
+
+def test_get_backend_requires_db_for_cloud_mode() -> None:
+    from src.services.file_backend import get_backend
+
+    with pytest.raises(ValueError, match="Database session required"):
+        get_backend("cloud")
+
+
+def test_get_backend_returns_local_backend_for_local_mode() -> None:
+    from src.services.file_backend import get_backend
+
+    assert isinstance(get_backend("local"), LocalBackend)

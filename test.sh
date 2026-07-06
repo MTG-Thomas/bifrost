@@ -298,8 +298,24 @@ cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
 cmd_all()  { run_pytest tests/ -v "$@"; }
 cmd_coverage() {
     local target="${1:-coverage.xml}"
+    local basename_target
+    basename_target="$(basename "$target")"
+    local source="/coverage/$(basename "$target")"
+
+    # E2E exercises API/worker/scheduler in sibling containers. Stop those
+    # processes before materializing the report so coverage.py flushes their
+    # parallel data files into the shared coverage volume.
+    docker compose -f "$COMPOSE_FILE" stop api worker scheduler >/dev/null 2>&1 || true
+
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
-        sh -lc 'cat /coverage/coverage.xml' > "$target"
+        sh -lc "backup=/tmp/$(basename '$source').pre-combine
+if [ -f '$source' ]; then cp '$source' \"\$backup\"; fi
+coverage combine --append --keep /coverage >/dev/null 2>&1 || true
+case '$basename_target' in
+  *.json) coverage json -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
+  *.xml) coverage xml -i -o '$source' >/dev/null || { [ -f \"\$backup\" ] && cp \"\$backup\" '$source'; } ;;
+esac
+cat '$source'" > "$target"
 }
 
 cmd_quality() {

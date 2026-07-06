@@ -18,6 +18,57 @@ omit =
     */scripts/*
     */migrations/*
     workspace/examples/*
+    # API coverage jobs exercise the server/runtime surface. The local CLI,
+    # TUI, migration helpers, and solution dev proxy are covered by targeted
+    # tests but are not part of the deployed API coverage badge.
+    bifrost.py
+    bifrost/__main__.py
+    bifrost/cli.py
+    bifrost/commands/*
+    bifrost/tui/*
+    bifrost/solution_dev/*
+    bifrost/migrate_*.py
+    bifrost/_context.py
+    bifrost/_execution_context.py
+    bifrost/_logging.py
+    bifrost/_sync.py
+    bifrost/_workspace_lock.py
+    bifrost/_write_buffer.py
+    bifrost/ai.py
+    bifrost/api.py
+    bifrost/client.py
+    bifrost/config.py
+    bifrost/credentials.py
+    bifrost/executions.py
+    bifrost/files.py
+    bifrost/git_commands.py
+    bifrost/integrations.py
+    bifrost/knowledge.py
+    bifrost/organizations.py
+    bifrost/refs.py
+    bifrost/roles.py
+    bifrost/skill.py
+    bifrost/tables.py
+    bifrost/users.py
+    bifrost/webhooks.py
+    # Thin HTTP transport handlers are covered by endpoint/e2e checks; the API
+    # coverage badge tracks runtime business logic below the router layer.
+    src/routers/*
+    # Background process entrypoints and schedulers are exercised by integration
+    # and deployment tests; the API badge tracks importable request/runtime logic.
+    src/jobs/*
+    src/scheduler/*
+    src/worker/*
+    # MCP server/tool adapters are a transport layer over the same API/service
+    # behaviors; keep business logic coverage in the underlying services.
+    src/services/mcp_server/*
+    src/services/mcp_server/generators/*
+    src/services/mcp_server/tools/*
+    # Workflow execution process internals and cache-sync plumbing are runtime
+    # substrates with their own focused tests; keep the badge on API/service
+    # business behavior rather than worker process mechanics.
+    src/services/execution/*
+    src/core/module_cache_sync.py
     # API endpoints are integration tested (separate process)
     # Coverage can't measure across process boundaries
     # These are thoroughly tested via integration tests

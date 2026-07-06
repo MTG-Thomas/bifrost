@@ -11,15 +11,42 @@ from uuid import uuid4
 
 import pytest
 
+from bifrost import _logging
 from bifrost._logging import (
     append_log_to_stream,
     publish_log_to_pubsub,
     log_and_broadcast,
     append_log_to_stream_async,
+    publish_log_to_pubsub_async,
+    log_and_broadcast_async,
     read_logs_from_stream,
     flush_logs_to_postgres,
     close_thread_redis,
+    clear_sequence_counter,
 )
+
+
+class TestMetadataSerialization:
+    def test_serialize_metadata_converts_nested_datetimes(self):
+        ts = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+        result = _logging._serialize_metadata(
+            {"outer": {"ts": ts}, "items": [ts, {"inner": ts}], "plain": "x"}
+        )
+
+        assert result == {
+            "outer": {"ts": ts.isoformat()},
+            "items": [ts.isoformat(), {"inner": ts.isoformat()}],
+            "plain": "x",
+        }
+
+    def test_clear_sequence_counter_removes_stringified_execution_id(self):
+        exec_id = str(uuid4())
+        _logging._async_sequence_counters[exec_id] = 3
+
+        clear_sequence_counter(exec_id)
+
+        assert exec_id not in _logging._async_sequence_counters
 
 
 class TestAppendLogToStream:
@@ -317,6 +344,96 @@ class TestAsyncLogFunctions:
 
             assert logs == []
 
+    @pytest.mark.asyncio
+    async def test_read_logs_from_stream_returns_empty_on_error(self):
+        with patch("src.core.cache.get_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_redis.xrange.side_effect = Exception("redis down")
+            mock_get_redis.return_value.__aenter__.return_value = mock_redis
+
+            logs = await read_logs_from_stream("exec-123")
+
+            assert logs == []
+
+    @pytest.mark.asyncio
+    async def test_publish_log_to_pubsub_async_includes_sequence_and_metadata(self):
+        exec_id = str(uuid4())
+        timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+        with patch("src.core.cache.get_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_get_redis.return_value.__aenter__.return_value = mock_redis
+
+            await publish_log_to_pubsub_async(
+                execution_id=exec_id,
+                level="warning",
+                message="async message",
+                metadata={"seen": True},
+                timestamp=timestamp,
+                sequence=7,
+            )
+
+            mock_redis.publish.assert_awaited_once()
+            channel, payload = mock_redis.publish.await_args.args
+            message = json.loads(payload)
+            assert channel == f"bifrost:execution:{exec_id}"
+            assert message == {
+                "type": "execution_log",
+                "executionId": exec_id,
+                "level": "WARNING",
+                "message": "async message",
+                "metadata": {"seen": True},
+                "timestamp": timestamp.isoformat(),
+                "sequence": 7,
+            }
+
+    @pytest.mark.asyncio
+    async def test_publish_log_to_pubsub_async_handles_error(self):
+        with patch("src.core.cache.get_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_redis.publish.side_effect = Exception("publish failed")
+            mock_get_redis.return_value.__aenter__.return_value = mock_redis
+
+            await publish_log_to_pubsub_async("exec-123", "INFO", "message")
+
+    @pytest.mark.asyncio
+    async def test_log_and_broadcast_async_calls_stream_and_pubsub_with_sequence(
+        self,
+    ):
+        exec_id = str(uuid4())
+        timestamp = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        _logging._async_sequence_counters.pop(exec_id, None)
+
+        with patch("bifrost._logging.append_log_to_stream_async") as mock_append:
+            with patch("bifrost._logging.publish_log_to_pubsub_async") as mock_publish:
+                mock_append.return_value = "entry-1"
+
+                entry_id = await log_and_broadcast_async(
+                    exec_id,
+                    "INFO",
+                    "message",
+                    metadata={"x": 1},
+                    timestamp=timestamp,
+                )
+
+        assert entry_id == "entry-1"
+        mock_append.assert_awaited_once_with(
+            execution_id=exec_id,
+            level="INFO",
+            message="message",
+            metadata={"x": 1},
+            timestamp=timestamp,
+        )
+        mock_publish.assert_awaited_once_with(
+            execution_id=exec_id,
+            level="INFO",
+            message="message",
+            metadata={"x": 1},
+            timestamp=timestamp,
+            sequence=0,
+        )
+        assert _logging._async_sequence_counters[exec_id] == 1
+
 
 class TestFlushLogsToPostgres:
     """Tests for flush_logs_to_postgres function."""
@@ -371,6 +488,74 @@ class TestFlushLogsToPostgres:
                 mock_db.commit.assert_called_once()
                 mock_redis.delete.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_flush_logs_with_provided_session_skips_bad_entries(self):
+        exec_id = str(uuid4())
+        session = MagicMock()
+
+        with patch("src.core.cache.get_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_redis.xrange.return_value = [
+                (
+                    "bad-0",
+                    {
+                        "level": "INFO",
+                        "message": "Bad log",
+                        "metadata": "{bad json",
+                        "timestamp": "2025-01-01T00:00:00",
+                    },
+                ),
+                (
+                    "good-0",
+                    {
+                        "level": "ERROR",
+                        "message": "Good log",
+                        "metadata": '{"ok": true}',
+                        "timestamp": "2025-01-01T00:00:01+00:00",
+                    },
+                ),
+            ]
+            mock_get_redis.return_value.__aenter__.return_value = mock_redis
+
+            count = await flush_logs_to_postgres(exec_id, session=session)
+
+        assert count == 1
+        session.add_all.assert_called_once()
+        added = session.add_all.call_args.args[0]
+        assert len(added) == 1
+        assert added[0].message == "Good log"
+        assert added[0].timestamp.tzinfo is None
+        mock_redis.delete.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_flush_logs_returns_zero_when_all_entries_fail_to_parse(self):
+        exec_id = str(uuid4())
+        session = MagicMock()
+
+        with patch("src.core.cache.get_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_redis.xrange.return_value = [
+                ("bad-0", {"metadata": "{bad json", "timestamp": "not-a-date"}),
+            ]
+            mock_get_redis.return_value.__aenter__.return_value = mock_redis
+
+            count = await flush_logs_to_postgres(exec_id, session=session)
+
+        assert count == 0
+        session.add_all.assert_not_called()
+        mock_redis.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_flush_logs_returns_zero_on_outer_error(self):
+        exec_id = str(uuid4())
+
+        with patch("src.core.cache.get_redis") as mock_get_redis:
+            mock_get_redis.return_value.__aenter__.side_effect = Exception("redis down")
+
+            count = await flush_logs_to_postgres(exec_id)
+
+        assert count == 0
+
 
 class TestCloseThreadRedis:
     """Tests for close_thread_redis function."""
@@ -392,3 +577,39 @@ class TestCloseThreadRedis:
 
             # Should not raise
             close_thread_redis()
+
+    def test_close_thread_redis_ignores_close_error_and_clears_sequence_counters(self):
+        with patch("bifrost._logging._local") as mock_local:
+            mock_redis = MagicMock()
+            mock_redis.close.side_effect = Exception("already closed")
+            mock_local.redis = mock_redis
+            mock_local.sequence_counters = {"exec": 4}
+
+            close_thread_redis()
+
+            mock_redis.close.assert_called_once()
+            assert mock_local.redis is None
+            assert mock_local.sequence_counters == {}
+
+
+class TestSyncRedisConnection:
+    def test_get_sync_redis_reuses_thread_local_connection(self):
+        with patch("bifrost._logging._local") as mock_local:
+            mock_redis = MagicMock()
+            mock_local.redis = mock_redis
+
+            assert _logging._get_sync_redis() is mock_redis
+
+    def test_get_sync_redis_creates_connection_from_settings(self):
+        with patch("bifrost._logging._local") as mock_local:
+            if hasattr(mock_local, "redis"):
+                del mock_local.redis
+            with patch("src.config.get_settings") as mock_settings:
+                with patch("bifrost._logging.redis_sync.from_url") as mock_from_url:
+                    mock_settings.return_value.redis_url = "redis://example"
+                    mock_redis = MagicMock()
+                    mock_from_url.return_value = mock_redis
+
+                    assert _logging._get_sync_redis() is mock_redis
+
+        mock_from_url.assert_called_once_with("redis://example", decode_responses=True)

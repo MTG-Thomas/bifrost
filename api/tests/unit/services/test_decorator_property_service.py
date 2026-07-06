@@ -205,6 +205,41 @@ async def my_workflow():
 
         assert decorators[0].properties == {"timeout_seconds": 3600}
 
+    def test_read_float_none_dict_and_concatenated_string_properties(self):
+        """Test reading less common literal property values."""
+        content = '''
+@workflow(
+    ratio=0.75,
+    owner=None,
+    labels={"team": "ops", "priority": 1},
+    description="hello " "world",
+)
+async def my_workflow():
+    pass
+'''
+        service = get_service()
+        decorators = service.read_decorators(content)
+
+        assert decorators[0].properties == {
+            "ratio": 0.75,
+            "owner": None,
+            "labels": {"team": "ops", "priority": 1},
+            "description": "hello world",
+        }
+
+    def test_read_triple_quoted_property(self):
+        """Test reading triple-quoted string properties."""
+        content = '''
+@workflow(description="""line one
+line two""")
+async def my_workflow():
+    pass
+'''
+        service = get_service()
+        decorators = service.read_decorators(content)
+
+        assert decorators[0].properties == {"description": "line one\nline two"}
+
     def test_ignores_non_supported_decorators(self):
         """Test that non-workflow/data_provider decorators are ignored."""
         content = '''
@@ -358,6 +393,46 @@ async def my_workflow():
         assert "endpoint_enabled" in result.new_content
         assert "True" in result.new_content
 
+    def test_write_numeric_none_and_fallback_properties(self):
+        """Test writing less common property value types."""
+        content = '''@workflow
+async def my_workflow():
+    pass
+'''
+        service = get_service()
+        result = service.write_properties(
+            content,
+            "my_workflow",
+            {
+                "retries": 3,
+                "ratio": 0.5,
+                "owner": None,
+                "metadata": {"team": "ops"},
+            },
+        )
+
+        assert result.modified is True
+        decorators = service.read_decorators(result.new_content)
+        assert decorators[0].properties == {
+            "retries": 3,
+            "ratio": 0.5,
+            "owner": None,
+            "metadata": "{'team': 'ops'}",
+        }
+
+    def test_write_empty_properties_to_call_is_noop(self):
+        """Test that writing no properties leaves an existing call unchanged."""
+        content = '''@workflow(name="Original")
+async def my_workflow():
+    pass
+'''
+        service = get_service()
+        result = service.write_properties(content, "my_workflow", {})
+
+        assert result.modified is False
+        assert result.new_content == content
+        assert result.changes == []
+
     def test_handles_parse_error_in_write(self):
         """Test that parse errors don't crash write operations."""
         content = '''@workflow(
@@ -442,6 +517,28 @@ async def my_workflow():
         # Should recognize bifrost.workflow as workflow
         assert len(decorators) == 1
         assert decorators[0].decorator_type == "workflow"
+
+    def test_write_module_prefixed_decorator(self):
+        """Test writing properties to module-prefixed decorators."""
+        content = '''import bifrost
+
+@bifrost.workflow(name="Original")
+def my_workflow():
+    pass
+'''
+        service = get_service()
+        result = service.write_properties(
+            content,
+            "my_workflow",
+            {"category": "Admin"},
+        )
+
+        assert result.modified is True
+        decorators = service.read_decorators(result.new_content)
+        assert decorators[0].properties == {
+            "name": "Original",
+            "category": "Admin",
+        }
 
 
 class TestStripIds:
@@ -542,6 +639,20 @@ class TestStripIds:
         assert "tool-id" not in result.new_content
         assert 'name="My Tool"' in result.new_content
 
+    def test_strip_module_prefixed_decorator(self):
+        source = (
+            'import bifrost\n\n'
+            '@bifrost.workflow(id="abc", name="test")\n'
+            'def f():\n'
+            '    pass\n'
+        )
+        service = get_service()
+        result = service.strip_ids(source)
+
+        assert result.modified is True
+        assert "abc" not in result.new_content
+        assert 'name="test"' in result.new_content
+
 
 class TestInjectSpecificIds:
 
@@ -639,6 +750,23 @@ class TestInjectSpecificIds:
         result = service.inject_specific_ids(source, {"my_func": "some-id"})
 
         assert result.modified is False
+
+    def test_inject_into_module_prefixed_decorator_with_args(self):
+        source = (
+            'import bifrost\n\n'
+            '@bifrost.workflow(name="test")\n'
+            'def my_func():\n'
+            '    pass\n'
+        )
+        service = get_service()
+        result = service.inject_specific_ids(source, {"my_func": "module-id"})
+
+        assert result.modified is True
+        decorators = service.read_decorators(result.new_content)
+        assert decorators[0].properties == {
+            "id": "module-id",
+            "name": "test",
+        }
 
 
 class TestWritePropertyResult:

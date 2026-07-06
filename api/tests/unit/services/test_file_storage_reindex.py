@@ -13,6 +13,52 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 
+class _FakeS3Body:
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+
+    async def read(self) -> bytes:
+        return self._content
+
+
+class _FakeS3Paginator:
+    async def paginate(self, Bucket: str):  # noqa: N803 - boto3 style
+        assert Bucket == "workspace-bucket"
+        yield {"Contents": [{"Key": "flows/a.py"}, {"Key": ""}, {}]}
+        yield {"Contents": [{"Key": "docs/readme.md"}]}
+
+
+class _FakeS3:
+    def __init__(self) -> None:
+        self.requested_keys: list[str] = []
+
+    def get_paginator(self, name: str) -> _FakeS3Paginator:
+        assert name == "list_objects_v2"
+        return _FakeS3Paginator()
+
+    async def get_object(self, Bucket: str, Key: str):  # noqa: N803 - boto3 style
+        assert Bucket == "workspace-bucket"
+        self.requested_keys.append(Key)
+        return {"Body": _FakeS3Body(f"content for {Key}".encode())}
+
+
+class _FakeS3Client:
+    def __init__(self, s3: _FakeS3) -> None:
+        self.s3 = s3
+
+    def get_client(self):
+        client = self
+
+        class _Context:
+            async def __aenter__(self):
+                return client.s3
+
+            async def __aexit__(self, *_exc):
+                return None
+
+        return _Context()
+
+
 def clear_libcst_modules():
     """
     Clear libcst and dependent modules from sys.modules to get fresh parser state.
@@ -312,3 +358,57 @@ class TestReindexWorkspaceFiles:
 
         # Should have only indexed 2 files (skipped the one with error)
         assert counts["files_indexed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_sync_index_from_s3_indexes_bucket_objects_and_skips_empty_keys():
+    from src.services.file_storage.reindex import WorkspaceReindexService
+
+    db = AsyncMock()
+    db.execute = AsyncMock()
+    extracted: list[tuple[str, bytes]] = []
+    s3 = _FakeS3()
+    settings = MagicMock(s3_configured=True, s3_bucket="workspace-bucket")
+
+    async def extract_metadata(path: str, content: bytes) -> None:
+        extracted.append((path, content))
+
+    service = WorkspaceReindexService(
+        db=db,
+        settings=settings,
+        s3_client=_FakeS3Client(s3),
+        entity_resolution=object(),
+        file_hash_fn=lambda content: f"hash:{content.decode()}",
+        content_type_fn=lambda _path: "text/plain",
+        extract_metadata_fn=extract_metadata,
+        index_python_file_fn=AsyncMock(),
+    )
+
+    count = await service.sync_index_from_s3()
+
+    assert count == 2
+    assert s3.requested_keys == ["flows/a.py", "docs/readme.md"]
+    assert extracted == [
+        ("flows/a.py", b"content for flows/a.py"),
+        ("docs/readme.md", b"content for docs/readme.md"),
+    ]
+    assert db.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_sync_index_from_s3_requires_configured_storage():
+    from src.services.file_storage.reindex import WorkspaceReindexService
+
+    service = WorkspaceReindexService(
+        db=AsyncMock(),
+        settings=MagicMock(s3_configured=False),
+        s3_client=_FakeS3Client(_FakeS3()),
+        entity_resolution=object(),
+        file_hash_fn=lambda content: "hash",
+        content_type_fn=lambda _path: "text/plain",
+        extract_metadata_fn=AsyncMock(),
+        index_python_file_fn=AsyncMock(),
+    )
+
+    with pytest.raises(RuntimeError, match="S3 storage not configured"):
+        await service.sync_index_from_s3()

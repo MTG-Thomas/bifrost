@@ -13,9 +13,15 @@ import pytest
 
 from src.services.ai_usage_service import (
     PRICING_KEY_PREFIX,
+    PRICING_NOTIFIED_KEY_PREFIX,
+    PRICING_NOTIFIED_TTL,
     USED_MODELS_KEY,
     USAGE_TOTALS_CONV_KEY_PREFIX,
     USAGE_TOTALS_KEY_PREFIX,
+    USAGE_TOTALS_RUN_KEY_PREFIX,
+    _add_used_model,
+    _invalidate_all_usage_caches,
+    _notify_missing_pricing,
     backfill_model_costs,
     calculate_cost,
     get_cached_price,
@@ -270,6 +276,31 @@ class TestGetUsageTotals:
         )
 
     @pytest.mark.asyncio
+    async def test_returns_cached_totals_for_agent_run(self, mock_redis, mock_session):
+        """Test returns cached totals for an autonomous agent run."""
+        agent_run_id = uuid4()
+        mock_redis.get.return_value = json.dumps({
+            "input_tokens": 3000,
+            "output_tokens": 1250,
+            "total_cost": None,
+            "call_count": 4,
+        })
+
+        result = await get_usage_totals(
+            mock_redis, mock_session, agent_run_id=agent_run_id
+        )
+
+        assert result == {
+            "input_tokens": 3000,
+            "output_tokens": 1250,
+            "total_cost": None,
+            "call_count": 4,
+        }
+        mock_redis.get.assert_called_once_with(
+            f"{USAGE_TOTALS_RUN_KEY_PREFIX}{agent_run_id}"
+        )
+
+    @pytest.mark.asyncio
     async def test_queries_db_on_cache_miss(self, mock_redis, mock_session):
         """Test queries database when cache misses."""
         execution_id = uuid4()
@@ -293,6 +324,30 @@ class TestGetUsageTotals:
         assert result["call_count"] == 3
         mock_session.execute.assert_called_once()
         mock_redis.set.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_totals_when_db_has_no_rows(self, mock_redis, mock_session):
+        """Test cache miss with no aggregate row stores a zero totals payload."""
+        agent_run_id = uuid4()
+        mock_redis.get.return_value = None
+        mock_result = MagicMock()
+        mock_result.one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        result = await get_usage_totals(
+            mock_redis, mock_session, agent_run_id=agent_run_id
+        )
+
+        assert result == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_cost": None,
+            "call_count": 0,
+        }
+        mock_redis.set.assert_called_once()
+        assert mock_redis.set.call_args[0][0] == (
+            f"{USAGE_TOTALS_RUN_KEY_PREFIX}{agent_run_id}"
+        )
 
 
 class TestInvalidateUsageCache:
@@ -336,6 +391,17 @@ class TestInvalidateUsageCache:
         )
 
         assert mock_redis.delete.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_deletes_agent_run_cache(self, mock_redis):
+        """Test deletes cache for autonomous agent runs."""
+        agent_run_id = uuid4()
+
+        await invalidate_usage_cache(mock_redis, agent_run_id=agent_run_id)
+
+        mock_redis.delete.assert_called_once_with(
+            f"{USAGE_TOTALS_RUN_KEY_PREFIX}{agent_run_id}"
+        )
 
     @pytest.mark.asyncio
     async def test_handles_redis_error_gracefully(self, mock_redis):
@@ -446,6 +512,16 @@ class TestGetUsedModels:
 
         assert len(result) == 1
         assert result[0]["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_ignores_malformed_used_model_members(self, mock_redis, mock_session):
+        """Test malformed Redis set members are ignored without a DB fallback."""
+        mock_redis.smembers.return_value = {"openai:gpt-4o", "missing_separator"}
+
+        result = await get_used_models(mock_redis, mock_session)
+
+        assert result == [{"provider": "openai", "model": "gpt-4o"}]
+        mock_session.execute.assert_not_called()
 
 
 class TestRecordAIUsage:
@@ -768,3 +844,76 @@ class TestBackfillModelCosts:
                 input_price_per_million=Decimal("5.00"),
                 output_price_per_million=Decimal("15.00"),
             )
+
+
+class TestMissingPricingNotification:
+    @pytest.fixture
+    def mock_redis(self):
+        redis = AsyncMock()
+        redis.exists.return_value = False
+        return redis
+
+    @pytest.mark.asyncio
+    async def test_skips_missing_pricing_notification_when_already_deduped(
+        self,
+        mock_redis,
+    ):
+        mock_redis.exists.return_value = True
+
+        await _notify_missing_pricing(mock_redis, "openai", "gpt-4o")
+
+        mock_redis.exists.assert_called_once_with(
+            f"{PRICING_NOTIFIED_KEY_PREFIX}openai:gpt-4o"
+        )
+        mock_redis.setex.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_creates_missing_pricing_notification_once(
+        self,
+        mock_redis,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        notification_service = AsyncMock()
+
+        monkeypatch.setattr(
+            "src.services.notification_service.get_notification_service",
+            lambda: notification_service,
+        )
+
+        await _notify_missing_pricing(mock_redis, "anthropic", "claude-sonnet")
+
+        mock_redis.setex.assert_called_once_with(
+            f"{PRICING_NOTIFIED_KEY_PREFIX}anthropic:claude-sonnet",
+            PRICING_NOTIFIED_TTL,
+            "1",
+        )
+        notification_service.create_notification.assert_called_once()
+        request = notification_service.create_notification.call_args.kwargs["request"]
+        assert request.title == "AI Model Missing Pricing"
+        assert request.metadata["provider"] == "anthropic"
+        assert request.metadata["model"] == "claude-sonnet"
+
+    @pytest.mark.asyncio
+    async def test_add_used_model_swallows_redis_errors(self):
+        redis_client = AsyncMock()
+        redis_client.sadd.side_effect = Exception("redis down")
+
+        await _add_used_model(redis_client, "openai", "gpt-4o")
+
+        redis_client.sadd.assert_called_once_with(USED_MODELS_KEY, "openai:gpt-4o")
+
+    @pytest.mark.asyncio
+    async def test_invalidate_all_usage_caches_scans_execution_and_conversation_keys(self):
+        redis_client = AsyncMock()
+        redis_client.scan.side_effect = [
+            (7, [f"{USAGE_TOTALS_KEY_PREFIX}exec1"]),
+            (0, [f"{USAGE_TOTALS_KEY_PREFIX}exec2"]),
+            (0, [f"{USAGE_TOTALS_CONV_KEY_PREFIX}conv1"]),
+        ]
+
+        await _invalidate_all_usage_caches(redis_client)
+
+        assert redis_client.scan.call_count == 3
+        redis_client.delete.assert_any_call(f"{USAGE_TOTALS_KEY_PREFIX}exec1")
+        redis_client.delete.assert_any_call(f"{USAGE_TOTALS_KEY_PREFIX}exec2")
+        redis_client.delete.assert_any_call(f"{USAGE_TOTALS_CONV_KEY_PREFIX}conv1")

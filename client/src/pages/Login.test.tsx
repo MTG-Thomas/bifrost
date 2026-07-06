@@ -82,9 +82,11 @@ describe("Login OAuth flow", () => {
 				"http://localhost:3000/auth/callback/microsoft",
 			);
 		});
-		expect(window.location.assign).toHaveBeenCalledWith(
-			"https://login.example.test/authorize",
-		);
+		await waitFor(() => {
+			expect(window.location.assign).toHaveBeenCalledWith(
+				"https://login.example.test/authorize",
+			);
+		});
 		expect(setItem).not.toHaveBeenCalledWith(
 			"oauth_provider",
 			expect.any(String),

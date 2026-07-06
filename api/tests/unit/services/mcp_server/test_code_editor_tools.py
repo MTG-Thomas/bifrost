@@ -220,6 +220,36 @@ class TestListContent:
         data = get_result_data(result)
         assert "Platform administrator privileges are required" in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_list_content_rejects_invalid_organization_id(self, platform_admin_context):
+        """Should validate organization_id before touching storage."""
+        from src.services.mcp_server.tools.code_editor import list_content
+
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            result = await list_content(
+                context=platform_admin_context,
+                organization_id="not-a-uuid",
+            )
+
+        assert is_error_result(result)
+        assert "valid UUID" in get_result_data(result)["error"]
+        mock_repo_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_content_reports_repo_storage_errors(self, platform_admin_context):
+        """Should return a structured error if listing storage fails."""
+        from src.services.mcp_server.tools.code_editor import list_content
+
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.list = AsyncMock(side_effect=RuntimeError("storage unavailable"))
+            mock_repo_cls.return_value = mock_repo
+
+            result = await list_content(context=platform_admin_context)
+
+        assert is_error_result(result)
+        assert "List failed: storage unavailable" in get_result_data(result)["error"]
+
 
 class TestSearchContent:
     """Tests for the search_content MCP tool."""
@@ -292,6 +322,55 @@ async def sync_tickets(client_id: str) -> dict:
         data = get_result_data(result)
         assert "error" in data
 
+    @pytest.mark.asyncio
+    async def test_search_rejects_requested_org_outside_context(self, platform_admin_context):
+        """Org-scoped admins must not search another organization."""
+        from src.services.mcp_server.tools.code_editor import search_content
+
+        platform_admin_context.org_id = uuid4()
+        with patch("src.services.mcp_server.tools.code_editor.get_tool_db") as mock_db:
+            result = await search_content(
+                context=platform_admin_context,
+                pattern="needle",
+                organization_id=str(uuid4()),
+            )
+
+        assert is_error_result(result)
+        assert "not authorized" in get_result_data(result)["error"].lower()
+        mock_db.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_search_honors_path_filter_and_max_results(self, platform_admin_context):
+        """Should pass the path filter into the DB query and mark truncated max results."""
+        from src.services.mcp_server.tools.code_editor import search_content
+
+        rows = [
+            SimpleNamespace(path="workflows/a.py", content="needle\nneedle"),
+            SimpleNamespace(path="workflows/b.py", content="needle"),
+        ]
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=_RowsResult(rows))
+
+        @asynccontextmanager
+        async def fake_get_tool_db(_context):
+            yield mock_session
+
+        with patch("src.services.mcp_server.tools.code_editor.get_tool_db", fake_get_tool_db):
+            result = await search_content(
+                context=platform_admin_context,
+                pattern="needle",
+                path="workflows/a.py",
+                max_results=1,
+            )
+
+        assert not is_error_result(result)
+        data = get_result_data(result)
+        assert data["total_matches"] == 1
+        assert data["truncated"] is True
+        assert data["matches"][0]["path"] == "workflows/a.py"
+        executed_query = mock_session.execute.await_args.args[0]
+        assert "workflows/a.py" in str(executed_query.compile(compile_kwargs={"literal_binds": True}))
+
 
 class TestReadContentLines:
     """Tests for the read_content_lines MCP tool."""
@@ -339,6 +418,29 @@ class TestReadContentLines:
         data = get_result_data(result)
         assert "error" in data
         assert "path" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_read_line_range_clamps_bounds_and_defaults_end(self, platform_admin_context):
+        """Should normalize invalid start_line and cap the default end_line at EOF."""
+        from src.services.mcp_server.tools.code_editor import read_content_lines
+
+        with patch(
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
+            new_callable=AsyncMock,
+            return_value="first\nsecond\nthird",
+        ):
+            result = await read_content_lines(
+                context=platform_admin_context,
+                path="modules/helpers.py",
+                start_line=-50,
+                end_line=None,
+            )
+
+        assert not is_error_result(result)
+        data = get_result_data(result)
+        assert data["start_line"] == 1
+        assert data["end_line"] == 3
+        assert data["content"] == "1: first\n2: second\n3: third"
 
 
 class TestGetContent:
@@ -419,6 +521,207 @@ class TestGetContent:
         assert is_error_result(result)
         assert "not authorized" in get_result_data(result)["error"].lower()
         mock_read.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_content_truncates_large_files(self, platform_admin_context):
+        """Should return a warning and truncated flag for oversized content."""
+        import src.services.mcp_server.tools.code_editor as code_editor
+
+        original_limit = code_editor.MAX_CONTENT_CHARS
+        code_editor.MAX_CONTENT_CHARS = 12
+        try:
+            with patch(
+                "src.services.mcp_server.tools.code_editor._read_from_s3",
+                new_callable=AsyncMock,
+                return_value="alpha\nbeta\ngamma\n",
+            ):
+                result = await code_editor.get_content(
+                    context=platform_admin_context,
+                    path="docs/large.md",
+                )
+        finally:
+            code_editor.MAX_CONTENT_CHARS = original_limit
+
+        assert not is_error_result(result)
+        data = get_result_data(result)
+        assert data["truncated"] is True
+        assert "Content truncated" in data["warning"]
+        assert data["content"] == "alpha\nbeta"
+
+
+class TestReadFromS3:
+    """Tests for direct S3 read helper behavior."""
+
+    @pytest.mark.asyncio
+    async def test_read_from_s3_decodes_utf8_bytes(self):
+        """Should decode UTF-8 bytes returned by RepoStorage."""
+        from src.services.mcp_server.tools.code_editor import _read_from_s3
+
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.read = AsyncMock(return_value="hello".encode())
+            mock_repo_cls.return_value = mock_repo
+
+            result = await _read_from_s3("docs/readme.md")
+
+        assert result == "hello"
+        mock_repo.read.assert_awaited_once_with("docs/readme.md")
+
+    @pytest.mark.asyncio
+    async def test_read_from_s3_returns_none_for_binary_or_storage_failure(self):
+        """Should treat unreadable storage values as missing content."""
+        from src.services.mcp_server.tools.code_editor import _read_from_s3
+
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.read = AsyncMock(return_value=b"\xff\xfe")
+            mock_repo_cls.return_value = mock_repo
+
+            binary_result = await _read_from_s3("assets/icon.bin")
+
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls:
+            mock_repo = MagicMock()
+            mock_repo.read = AsyncMock(side_effect=FileNotFoundError("missing"))
+            mock_repo_cls.return_value = mock_repo
+
+            missing_result = await _read_from_s3("missing.py")
+
+        assert binary_result is None
+        assert missing_result is None
+
+
+class TestReplaceWorkspaceFile:
+    """Tests for the FileStorageService write boundary wrapper."""
+
+    @pytest.mark.asyncio
+    async def test_replace_workspace_file_updates_existing_file(self, platform_admin_context):
+        """Should mark existing files as updated and pass encoded content to storage."""
+        from src.services.mcp_server.tools.code_editor import _replace_workspace_file
+
+        mock_session = AsyncMock()
+        service = MagicMock()
+        service.read_file = AsyncMock(return_value=b"old")
+        service.write_file = AsyncMock(
+            return_value=SimpleNamespace(pending_deactivations=[], available_replacements=None)
+        )
+
+        @asynccontextmanager
+        async def fake_get_tool_db(_context):
+            yield mock_session
+
+        with patch("src.services.mcp_server.tools.code_editor.get_tool_db", fake_get_tool_db), patch(
+            "src.services.mcp_server.tools.code_editor.FileStorageService",
+            return_value=service,
+        ) as mock_service_cls:
+            result = await _replace_workspace_file(
+                platform_admin_context,
+                "modules/helpers.py",
+                "print('new')",
+                force_deactivation=True,
+                replacements={"old-id": "new_name"},
+            )
+
+        assert result.created is False
+        mock_service_cls.assert_called_once_with(mock_session)
+        service.read_file.assert_awaited_once_with("modules/helpers.py")
+        service.write_file.assert_awaited_once_with(
+            path="modules/helpers.py",
+            content=b"print('new')",
+            updated_by="admin@platform.local",
+            force_deactivation=True,
+            replacements={"old-id": "new_name"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_replace_workspace_file_creates_missing_file_with_default_user(self, platform_admin_context):
+        """Should mark missing files as created and fall back to mcp user label."""
+        from src.services.mcp_server.tools.code_editor import _replace_workspace_file
+
+        platform_admin_context.user_email = None
+        service = MagicMock()
+        service.read_file = AsyncMock(side_effect=FileNotFoundError("missing"))
+        service.write_file = AsyncMock(
+            return_value=SimpleNamespace(pending_deactivations=[], available_replacements=None)
+        )
+
+        @asynccontextmanager
+        async def fake_get_tool_db(_context):
+            yield AsyncMock()
+
+        with patch("src.services.mcp_server.tools.code_editor.get_tool_db", fake_get_tool_db), patch(
+            "src.services.mcp_server.tools.code_editor.FileStorageService",
+            return_value=service,
+        ):
+            result = await _replace_workspace_file(platform_admin_context, "docs/new.md", "# New")
+
+        assert result.created is True
+        assert service.write_file.await_args.kwargs["updated_by"] == "mcp"
+
+    @pytest.mark.asyncio
+    async def test_replace_workspace_file_maps_pending_deactivations(self, platform_admin_context):
+        """Should convert storage deactivation objects into structured dictionaries."""
+        from src.services.mcp_server.tools.code_editor import _replace_workspace_file
+
+        pending = SimpleNamespace(
+            id="wf-1",
+            name="Old Workflow",
+            function_name="old_workflow",
+            path="workflows/old.py",
+            description="Old description",
+            decorator_type="workflow",
+            has_executions=True,
+            last_execution_at="2026-07-01T12:00:00Z",
+            endpoint_enabled=True,
+            affected_entities=[{"entity_type": "form", "name": "Form", "reference_type": "workflow_id"}],
+        )
+        replacement = SimpleNamespace(
+            function_name="new_workflow",
+            name="New Workflow",
+            decorator_type="workflow",
+            similarity_score=0.87,
+        )
+        service = MagicMock()
+        service.read_file = AsyncMock(return_value=b"old")
+        service.write_file = AsyncMock(
+            return_value=SimpleNamespace(
+                pending_deactivations=[pending],
+                available_replacements=[replacement],
+            )
+        )
+
+        @asynccontextmanager
+        async def fake_get_tool_db(_context):
+            yield AsyncMock()
+
+        with patch("src.services.mcp_server.tools.code_editor.get_tool_db", fake_get_tool_db), patch(
+            "src.services.mcp_server.tools.code_editor.FileStorageService",
+            return_value=service,
+        ):
+            result = await _replace_workspace_file(platform_admin_context, "workflows/old.py", "new")
+
+        assert result.created is False
+        assert result.pending_deactivations == [
+            {
+                "id": "wf-1",
+                "name": "Old Workflow",
+                "function_name": "old_workflow",
+                "path": "workflows/old.py",
+                "description": "Old description",
+                "decorator_type": "workflow",
+                "has_executions": True,
+                "last_execution_at": "2026-07-01T12:00:00Z",
+                "endpoint_enabled": True,
+                "affected_entities": [{"entity_type": "form", "name": "Form", "reference_type": "workflow_id"}],
+            }
+        ]
+        assert result.available_replacements == [
+            {
+                "function_name": "new_workflow",
+                "name": "New Workflow",
+                "decorator_type": "workflow",
+                "similarity_score": 0.87,
+            }
+        ]
 
 
 class TestPatchContent:
@@ -560,6 +863,105 @@ def func2():
         assert "not authorized" in get_result_data(result)["error"].lower()
         mock_write.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_patch_passes_normalized_content_and_deactivation_options(self, platform_admin_context):
+        """Should normalize line endings and pass write options through to storage."""
+        from src.services.mcp_server.tools.code_editor import WorkspaceWriteResult, patch_content
+
+        replacements = {str(uuid4()): "renamed_workflow"}
+        with patch(
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
+            new_callable=AsyncMock,
+            return_value="before\r\nold\r\nafter",
+        ), patch(
+            "src.services.mcp_server.tools.code_editor._replace_workspace_file",
+            new_callable=AsyncMock,
+            return_value=WorkspaceWriteResult(created=False),
+        ) as mock_write:
+            result = await patch_content(
+                context=platform_admin_context,
+                path="workflows/test.py",
+                old_string="old\r\n",
+                new_string="new\r\n",
+                force_deactivation=True,
+                replacements=replacements,
+            )
+
+        assert not is_error_result(result)
+        mock_write.assert_awaited_once_with(
+            platform_admin_context,
+            "workflows/test.py",
+            "before\nnew\nafter",
+            force_deactivation=True,
+            replacements=replacements,
+        )
+
+    @pytest.mark.asyncio
+    async def test_patch_returns_pending_deactivation_without_success(self, platform_admin_context):
+        """Should surface deactivation protection details instead of reporting success."""
+        from src.services.mcp_server.tools.code_editor import WorkspaceWriteResult, patch_content
+
+        pending = [
+            {
+                "function_name": "old_workflow",
+                "decorator_type": "workflow",
+                "has_executions": False,
+                "last_execution_at": None,
+                "endpoint_enabled": False,
+                "affected_entities": [],
+            }
+        ]
+        available = [{"function_name": "new_workflow", "name": "New", "decorator_type": "workflow", "similarity_score": 0.92}]
+
+        with patch(
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
+            new_callable=AsyncMock,
+            return_value="old_workflow()",
+        ), patch(
+            "src.services.mcp_server.tools.code_editor._replace_workspace_file",
+            new_callable=AsyncMock,
+            return_value=WorkspaceWriteResult(
+                created=False,
+                pending_deactivations=pending,
+                available_replacements=available,
+            ),
+        ):
+            result = await patch_content(
+                context=platform_admin_context,
+                path="workflows/test.py",
+                old_string="old_workflow",
+                new_string="new_workflow",
+            )
+
+        data = get_result_data(result)
+        assert data["status"] == "pending_deactivations"
+        assert data["pending_deactivations"] == pending
+        assert data["available_replacements"] == available
+
+    @pytest.mark.asyncio
+    async def test_patch_reports_write_errors(self, platform_admin_context):
+        """Should convert persistence errors into structured error results."""
+        from src.services.mcp_server.tools.code_editor import patch_content
+
+        with patch(
+            "src.services.mcp_server.tools.code_editor._read_from_s3",
+            new_callable=AsyncMock,
+            return_value="old",
+        ), patch(
+            "src.services.mcp_server.tools.code_editor._replace_workspace_file",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("write failed"),
+        ):
+            result = await patch_content(
+                context=platform_admin_context,
+                path="modules/test.py",
+                old_string="old",
+                new_string="new",
+            )
+
+        assert is_error_result(result)
+        assert "Failed to save changes: write failed" in get_result_data(result)["error"]
+
 
 class TestReplaceContent:
     """Tests for the replace_content MCP tool."""
@@ -675,6 +1077,85 @@ async def sync():
             assert data["success"] is True
             assert data["created"] is True
             assert data["path"] == "apps/test-app/pages/new.tsx"
+
+    @pytest.mark.asyncio
+    async def test_replace_normalizes_content_and_passes_write_options(self, platform_admin_context):
+        """Should normalize line endings and forward deactivation controls."""
+        from src.services.mcp_server.tools.code_editor import WorkspaceWriteResult, replace_content
+
+        replacements = {str(uuid4()): "renamed_workflow"}
+        with patch(
+            "src.services.mcp_server.tools.code_editor._replace_workspace_file",
+            new_callable=AsyncMock,
+            return_value=WorkspaceWriteResult(created=False),
+        ) as mock_write:
+            result = await replace_content(
+                context=platform_admin_context,
+                path="workflows/test.py",
+                content="line 1\r\nline 2\r",
+                force_deactivation=True,
+                replacements=replacements,
+            )
+
+        assert not is_error_result(result)
+        mock_write.assert_awaited_once_with(
+            platform_admin_context,
+            "workflows/test.py",
+            "line 1\nline 2\n",
+            force_deactivation=True,
+            replacements=replacements,
+        )
+
+    @pytest.mark.asyncio
+    async def test_replace_returns_pending_deactivation_result(self, platform_admin_context):
+        """Should surface workflow deactivation protection from storage."""
+        from src.services.mcp_server.tools.code_editor import WorkspaceWriteResult, replace_content
+
+        pending = [
+            {
+                "function_name": "removed_workflow",
+                "decorator_type": "workflow",
+                "has_executions": True,
+                "last_execution_at": "2026-07-01T12:00:00Z",
+                "endpoint_enabled": True,
+                "affected_entities": [{"entity_type": "form", "name": "Form", "reference_type": "workflow_id"}],
+            }
+        ]
+
+        with patch(
+            "src.services.mcp_server.tools.code_editor._replace_workspace_file",
+            new_callable=AsyncMock,
+            return_value=WorkspaceWriteResult(created=False, pending_deactivations=pending),
+        ):
+            result = await replace_content(
+                context=platform_admin_context,
+                path="workflows/test.py",
+                content="def replacement(): pass",
+            )
+
+        data = get_result_data(result)
+        assert data["status"] == "pending_deactivations"
+        assert data["path"] == "workflows/test.py"
+        assert data["pending_deactivations"] == pending
+
+    @pytest.mark.asyncio
+    async def test_replace_reports_storage_errors(self, platform_admin_context):
+        """Should return storage exceptions as structured error responses."""
+        from src.services.mcp_server.tools.code_editor import replace_content
+
+        with patch(
+            "src.services.mcp_server.tools.code_editor._replace_workspace_file",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("write denied"),
+        ):
+            result = await replace_content(
+                context=platform_admin_context,
+                path="modules/test.py",
+                content="x = 1",
+            )
+
+        assert is_error_result(result)
+        assert get_result_data(result)["error"] == "write denied"
 
 
 class TestDeleteContent:
@@ -866,6 +1347,31 @@ class TestDeleteContent:
         assert is_error_result(result)
         assert "not authorized" in get_result_data(result)["error"].lower()
         mock_fs_instance.delete_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_reports_storage_errors(self, platform_admin_context):
+        """Should convert delete failures into structured error results."""
+        from src.services.mcp_server.tools.code_editor import delete_content
+
+        with patch("src.services.mcp_server.tools.code_editor.RepoStorage") as mock_repo_cls, patch(
+            "src.services.mcp_server.tools.code_editor.get_tool_db"
+        ) as mock_db, patch("src.services.mcp_server.tools.code_editor.FileStorageService") as mock_fs_cls:
+            mock_repo = MagicMock()
+            mock_repo.exists = AsyncMock(return_value=True)
+            mock_repo_cls.return_value = mock_repo
+            mock_session = AsyncMock()
+            mock_db.return_value.__aenter__.return_value = mock_session
+            mock_fs_instance = MagicMock()
+            mock_fs_instance.delete_file = AsyncMock(side_effect=RuntimeError("delete failed"))
+            mock_fs_cls.return_value = mock_fs_instance
+
+            result = await delete_content(
+                context=platform_admin_context,
+                path="modules/test.py",
+            )
+
+        assert is_error_result(result)
+        assert get_result_data(result)["error"] == "delete failed"
 
 
 class TestCodeEditorAuthorization:
@@ -1107,3 +1613,25 @@ class TestFormatDeactivationResult:
         assert "execution history" in text
         assert "API endpoint" in text
         assert "Ticket Sync Form" in text
+
+
+class TestToolRegistration:
+    """Tests for code editor FastMCP tool registration."""
+
+    def test_register_tools_registers_each_code_editor_tool(self):
+        """Should register all declared code editor tools with context injection."""
+        from src.services.mcp_server.tools import code_editor
+
+        mcp = MagicMock()
+        get_context_fn = MagicMock()
+
+        with patch(
+            "src.services.mcp_server.generators.fastmcp_generator.register_tool_with_context"
+        ) as mock_register:
+            code_editor.register_tools(mcp, get_context_fn)
+
+        assert mock_register.call_count == len(code_editor.TOOLS)
+        registered_ids = [call.args[2] for call in mock_register.call_args_list]
+        assert registered_ids == [tool_id for tool_id, _name, _description in code_editor.TOOLS]
+        assert all(call.args[0] is mcp for call in mock_register.call_args_list)
+        assert all(call.args[4] is get_context_fn for call in mock_register.call_args_list)

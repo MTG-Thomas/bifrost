@@ -3,6 +3,7 @@ Unit tests for WorkspacePackageManager
 """
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -104,6 +105,42 @@ class TestWorkspacePackageManager:
             assert packages[1]["version"] == "2.0.3"
 
     @pytest.mark.asyncio
+    async def test_list_installed_packages_returns_empty_on_pip_failure(self, pkg_manager):
+        """Failed pip list should be treated as an empty package list."""
+        mock_process = AsyncMock()
+        mock_process.returncode = 1
+        mock_process.communicate = AsyncMock(return_value=(b"", b"pip failed"))
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+            assert await pkg_manager.list_installed_packages() == []
+
+    @pytest.mark.asyncio
+    async def test_check_for_updates_reports_version_mismatches(self, pkg_manager):
+        """Update checks should ignore provider failures and return changed versions."""
+        pkg_manager.list_installed_packages = AsyncMock(return_value=[
+            {"name": "requests", "version": "2.30.0"},
+            {"name": "missing", "version": "1.0.0"},
+            {"name": "current", "version": "1.0.0"},
+        ])
+
+        async def get_info(name):
+            if name == "missing":
+                raise PackageNotFoundError("missing")
+            if name == "current":
+                return PackageInfo("current", "1.0.0", "Current")
+            return PackageInfo("requests", "2.31.0", "Requests")
+
+        pkg_manager.get_package_info = get_info
+
+        assert await pkg_manager.check_for_updates() == [
+            {
+                "name": "requests",
+                "current_version": "2.30.0",
+                "latest_version": "2.31.0",
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_append_to_requirements_new_file(self, pkg_manager):
         """Test appending to requirements.txt when file doesn't exist"""
         await pkg_manager._append_to_requirements("requests", "2.31.0")
@@ -143,3 +180,196 @@ class TestWorkspacePackageManager:
         assert "pandas==2.0.3" in lines
         # Old version should not be present
         assert "requests==2.30.0" not in lines
+
+    @pytest.mark.asyncio
+    async def test_append_to_requirements_preserves_comments_and_updates_specifier(
+        self,
+        pkg_manager,
+    ):
+        """Existing package lines should update across common version operators."""
+        pkg_manager.requirements_file.parent.mkdir(parents=True, exist_ok=True)
+        pkg_manager.requirements_file.write_text(
+            "# base deps\n\nrequests>=2.30.0\npandas~=2.0\n"
+        )
+
+        await pkg_manager._append_to_requirements("requests", "2.31.0")
+
+        assert pkg_manager.requirements_file.read_text().splitlines() == [
+            "# base deps",
+            "",
+            "requests==2.31.0",
+            "pandas~=2.0",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_install_package_returns_when_requested_version_already_installed(
+        self,
+        pkg_manager,
+    ):
+        """Exact installed version should short-circuit before invoking pip."""
+        logs = []
+
+        async def capture_log(message: str) -> None:
+            logs.append(message)
+
+        pkg_manager.get_package_info = AsyncMock(
+            return_value=PackageInfo("requests", "2.31.0", "Requests")
+        )
+        pkg_manager.list_installed_packages = AsyncMock(
+            return_value=[{"name": "Requests", "version": "2.31.0"}]
+        )
+
+        await pkg_manager.install_package(
+            "requests",
+            version="2.31.0",
+            log_callback=capture_log,
+        )
+
+        assert any("already installed" in item for item in logs)
+
+    @pytest.mark.asyncio
+    async def test_install_package_streams_pip_output_and_updates_requirements(
+        self,
+        pkg_manager,
+    ):
+        """Successful installs should stream output and append changed specs."""
+        logs = []
+
+        async def capture_log(message: str) -> None:
+            logs.append(message)
+
+        pkg_manager.get_package_info = AsyncMock(
+            return_value=PackageInfo("requests", "2.31.0", "Requests")
+        )
+        pkg_manager.list_installed_packages = AsyncMock(return_value=[])
+        pkg_manager._append_to_requirements = AsyncMock()
+
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter([b"Collecting requests\n", b"\n", b"Installed\n"])
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration as exc:
+                    raise StopAsyncIteration from exc
+
+        fake_process = SimpleNamespace(
+            stdout=FakeStdout(),
+            returncode=0,
+            wait=AsyncMock(),
+        )
+
+        with patch("asyncio.create_subprocess_exec", return_value=fake_process) as create:
+            await pkg_manager.install_package(
+                "requests",
+                version="2.31.0",
+                log_callback=capture_log,
+            )
+
+        assert create.call_args.args[:4] == (__import__("sys").executable, "-m", "pip", "install")
+        assert "requests==2.31.0" in create.call_args.args
+        assert "Collecting requests" in logs
+        assert "Installed" in logs
+        pkg_manager._append_to_requirements.assert_awaited_once_with("requests", "2.31.0")
+
+    @pytest.mark.asyncio
+    async def test_install_package_raises_on_pip_failure(self, pkg_manager):
+        """Non-zero pip exit should raise after logging failure."""
+        logs = []
+
+        async def capture_log(message: str) -> None:
+            logs.append(message)
+
+        pkg_manager.get_package_info = AsyncMock(
+            return_value=PackageInfo("broken", "1.0.0", "Broken")
+        )
+        pkg_manager.list_installed_packages = AsyncMock(return_value=[])
+
+        fake_process = SimpleNamespace(
+            stdout=None,
+            returncode=1,
+            wait=AsyncMock(),
+        )
+
+        with patch("asyncio.create_subprocess_exec", return_value=fake_process):
+            with pytest.raises(Exception, match="Package installation failed"):
+                await pkg_manager.install_package("broken", log_callback=capture_log)
+
+        assert "✗ Installation failed" in logs
+
+    @pytest.mark.asyncio
+    async def test_install_requirements_streaming_missing_file(self, pkg_manager):
+        """Missing requirements files should fail before invoking pip."""
+        logs = []
+
+        async def capture_log(message: str) -> None:
+            logs.append(message)
+
+        with pytest.raises(FileNotFoundError):
+            await pkg_manager.install_requirements_streaming(log_callback=capture_log)
+
+        assert logs[-1].endswith("requirements.txt not found")
+
+    @pytest.mark.asyncio
+    async def test_install_requirements_streaming_success(self, pkg_manager):
+        """Requirements installs should stream pip output and report success."""
+        logs = []
+
+        async def capture_log(message: str) -> None:
+            logs.append(message)
+
+        pkg_manager.requirements_file.parent.mkdir(parents=True, exist_ok=True)
+        pkg_manager.requirements_file.write_text("requests==2.31.0\n")
+
+        class FakeStdout:
+            def __aiter__(self):
+                self._lines = iter([b"Installing deps\n"])
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._lines)
+                except StopIteration as exc:
+                    raise StopAsyncIteration from exc
+
+        fake_process = SimpleNamespace(
+            stdout=FakeStdout(),
+            returncode=0,
+            wait=AsyncMock(),
+        )
+
+        with patch("asyncio.create_subprocess_exec", return_value=fake_process):
+            await pkg_manager.install_requirements_streaming(log_callback=capture_log)
+
+        assert logs == [
+            "Reading requirements from requirements.txt...",
+            "Installing deps",
+            "✓ Packages installed successfully",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_install_requirements_streaming_raises_on_pip_failure(
+        self,
+        pkg_manager,
+    ):
+        """Requirements install should raise on non-zero pip exit."""
+        logs = []
+
+        async def capture_log(message: str) -> None:
+            logs.append(message)
+
+        pkg_manager.requirements_file.parent.mkdir(parents=True, exist_ok=True)
+        pkg_manager.requirements_file.write_text("broken==1.0.0\n")
+        fake_process = SimpleNamespace(
+            stdout=None,
+            returncode=1,
+            wait=AsyncMock(),
+        )
+
+        with patch("asyncio.create_subprocess_exec", return_value=fake_process):
+            with pytest.raises(Exception, match="Package installation failed"):
+                await pkg_manager.install_requirements_streaming(log_callback=capture_log)
+
+        assert "✗ Installation failed" in logs

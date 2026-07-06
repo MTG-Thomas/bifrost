@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
-from bifrost.commands.solution import handle_solution, solution_group
+from bifrost.commands.solution import handle_deploy, handle_solution, solution_group
 
 
 def test_solution_init_creates_remote_install_and_env(tmp_path, monkeypatch):
@@ -580,3 +580,23 @@ def test_handle_solution_renders_clickexception_not_traceback(tmp_path, monkeypa
     # Rendered as a one-line error, not a Python traceback.
     assert "Traceback" not in out.err and "Traceback" not in out.out
     assert "Multiple apps" in out.err or "Multiple apps" in out.out
+
+
+def test_handle_deploy_renders_usage_error_not_traceback(capsys):
+    rc = handle_deploy(["--definitely-not-an-option"])
+
+    out = capsys.readouterr()
+    assert rc != 0
+    assert "No such option" in out.err or "No such option" in out.out
+    assert "Traceback" not in out.err and "Traceback" not in out.out
+
+
+def test_handle_deploy_renders_clickexception_not_traceback(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    rc = handle_deploy([])
+
+    out = capsys.readouterr()
+    assert rc != 0
+    assert "not a Solution workspace" in out.err or "not a Solution workspace" in out.out
+    assert "Traceback" not in out.err and "Traceback" not in out.out

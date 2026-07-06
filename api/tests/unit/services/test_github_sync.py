@@ -4,6 +4,11 @@ Unit tests for GitHub Sync Service.
 Tests the GitHubSyncService data models and exceptions.
 """
 
+import sys
+from pathlib import Path
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from src.models.contracts.github import (
@@ -13,6 +18,1006 @@ from src.models.contracts.github import (
     WorkflowReference,
 )
 from src.services.github_sync import SyncError
+
+
+class _Head:
+    def __init__(self, valid: bool = True, hexsha: str = "abcdef123456") -> None:
+        self._valid = valid
+        self.commit = type("Commit", (), {"hexsha": hexsha})()
+
+    def is_valid(self) -> bool:
+        return self._valid
+
+
+def test_content_hash_is_stable_sha256():
+    from src.services.github_sync import _content_hash
+
+    assert _content_hash(b"bifrost") == (
+        "0dbe5eed7bf15a420a2a6a7356654aea49eb6c506d544ae1460ff41dc840a100"
+    )
+
+
+def test_walk_tree_reads_files_and_skips_git_internals(tmp_path):
+    from src.services.github_sync import _walk_tree
+
+    (tmp_path / "workflows").mkdir()
+    (tmp_path / "workflows" / "daily.py").write_bytes(b"print('ok')\n")
+    (tmp_path / ".git" / "objects").mkdir(parents=True)
+    (tmp_path / ".git" / "config").write_bytes(b"[core]\n")
+
+    assert _walk_tree(tmp_path) == {"workflows/daily.py": b"print('ok')\n"}
+
+
+class TestDeletedPathsInHead:
+    def test_returns_deleted_paths_from_diff_tree(self):
+        from src.services.github_sync import _deleted_paths_in_head
+
+        class Git:
+            def diff_tree(self, *args):
+                assert args == ("--no-commit-id", "--name-status", "-r", "HEAD")
+                return "D\tworkflows/old.py\nM\tworkflows/current.py\nD\tforms/old.form.yaml"
+
+        class Repo:
+            git = Git()
+
+        assert _deleted_paths_in_head(Repo()) == {
+            "workflows/old.py",
+            "forms/old.form.yaml",
+        }
+
+    def test_returns_empty_set_when_git_inspection_fails(self):
+        from src.services.github_sync import _deleted_paths_in_head
+
+        class Git:
+            def diff_tree(self, *args):
+                raise RuntimeError("no head")
+
+        class Repo:
+            git = Git()
+
+        assert _deleted_paths_in_head(Repo()) == set()
+
+
+class TestManifestConflictAutoResolve:
+    def test_auto_resolves_dict_yaml_conflict(self, tmp_path):
+        from src.services.github_sync import _auto_resolve_manifest_conflicts
+
+        class Git:
+            added = []
+
+            def show(self, ref):
+                return {
+                    ":1:.bifrost/workflows.yaml": "wf:\n  name: old\n  local: keep\n",
+                    ":2:.bifrost/workflows.yaml": "wf:\n  name: ours\n  local: keep\n",
+                    ":3:.bifrost/workflows.yaml": "wf:\n  name: theirs\n  remote: add\n",
+                }[ref]
+
+            def add(self, path):
+                self.added.append(path)
+
+        class Repo:
+            git = Git()
+
+        resolved = _auto_resolve_manifest_conflicts(
+            Repo(),
+            tmp_path,
+            {".bifrost/workflows.yaml": [(1, object()), (2, object()), (3, object())]},
+        )
+
+        assert resolved == {".bifrost/workflows.yaml"}
+        merged = (tmp_path / ".bifrost" / "workflows.yaml").read_text()
+        assert "name: theirs" in merged
+        assert "remote: add" in merged
+        assert Repo.git.added == [".bifrost/workflows.yaml"]
+
+    def test_auto_resolve_falls_back_to_theirs_on_bad_yaml(self, tmp_path):
+        from src.services.github_sync import _auto_resolve_manifest_conflicts
+
+        class Git:
+            added = []
+
+            def show(self, ref):
+                if ref == ":3:.bifrost/apps.yaml":
+                    return "apps:\n- theirs\n"
+                return "- not\n- a\n- dict\n"
+
+            def add(self, path):
+                self.added.append(path)
+
+        class Repo:
+            git = Git()
+
+        resolved = _auto_resolve_manifest_conflicts(
+            Repo(),
+            tmp_path,
+            {".bifrost/apps.yaml": [(1, object()), (2, object()), (3, object())]},
+        )
+
+        assert resolved == {".bifrost/apps.yaml"}
+        assert (tmp_path / ".bifrost" / "apps.yaml").read_text() == "apps:\n- theirs\n"
+
+    def test_auto_resolve_ignores_non_manifest_conflicts(self, tmp_path):
+        from src.services.github_sync import _auto_resolve_manifest_conflicts
+
+        resolved = _auto_resolve_manifest_conflicts(
+            object(),
+            tmp_path,
+            {"workflows/conflict.py": [(1, object()), (2, object()), (3, object())]},
+        )
+
+        assert resolved == set()
+
+
+class TestGitHubSyncFetchAndPush:
+    def test_do_fetch_marks_missing_remote_branch(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Origin:
+            def fetch(self, branch):
+                raise RuntimeError("couldn't find remote ref main")
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_fetch(tmp_path, Repo())
+
+        assert result.success is True
+        assert result.remote_branch_exists is False
+        assert result.commits_ahead == 0
+        assert result.commits_behind == 0
+
+    def test_do_fetch_counts_ahead_and_behind(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def rev_list(self, *args):
+                if args[-1] == "origin/main..HEAD":
+                    return "2"
+                if args[-1] == "HEAD..origin/main":
+                    return "3"
+                raise AssertionError(args)
+
+        class Origin:
+            def fetch(self, branch):
+                return None
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True)
+            git = Git()
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_fetch(tmp_path, Repo())
+
+        assert result.commits_ahead == 2
+        assert result.commits_behind == 3
+        assert result.remote_branch_exists is True
+
+    def test_do_push_returns_zero_when_head_invalid(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Repo:
+            head = _Head(valid=False)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_push(tmp_path, Repo())
+
+        assert result.success is True
+        assert result.pushed_commits == 0
+
+    def test_do_push_uses_head_count_when_fetch_fails(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def rev_list(self, *args):
+                assert args == ("--count", "HEAD")
+                return "4"
+
+        class Origin:
+            pushed = []
+
+            def fetch(self, branch):
+                raise RuntimeError("offline")
+
+            def push(self, refspec):
+                self.pushed.append(refspec)
+                return []
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True, hexsha="feedface1234")
+            git = Git()
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_push(tmp_path, Repo())
+
+        assert result.success is True
+        assert result.commit_sha == "feedface1234"
+        assert result.pushed_commits == 4
+        assert cast(Any, Repo.remotes).origin.pushed == ["HEAD:main"]
+
+    @pytest.mark.parametrize(
+        ("flag_name", "summary", "expected_error"),
+        [
+            ("ERROR", "auth failed\n", "auth failed"),
+            (
+                "REJECTED",
+                "fetch first",
+                "Push rejected (non-fast-forward): fetch first",
+            ),
+            (
+                "REMOTE_REJECTED",
+                "protected branch",
+                "Push remote-rejected: protected branch",
+            ),
+        ],
+    )
+    def test_do_push_reports_rejected_push_info(
+        self,
+        tmp_path,
+        flag_name,
+        summary,
+        expected_error,
+    ):
+        from git.remote import PushInfo
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def rev_list(self, *args):
+                assert args == ("--count", "origin/main..HEAD")
+                return "1"
+
+        class PushResult:
+            flags = getattr(PushInfo, flag_name)
+
+            def __init__(self, summary):
+                self.summary = summary
+
+        class Origin:
+            def fetch(self, branch):
+                return None
+
+            def push(self, refspec):
+                assert refspec == "HEAD:main"
+                return [PushResult(summary)]
+
+        class Repo:
+            remotes = type("Remotes", (), {"origin": Origin()})()
+            head = _Head(valid=True, hexsha="feedface1234")
+            git = Git()
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_push(tmp_path, Repo())
+
+        assert result.success is False
+        assert result.error == expected_error
+
+
+class TestGitHubSyncCommit:
+    @pytest.mark.asyncio
+    async def test_do_commit_returns_noop_when_head_has_no_changes(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            added = []
+
+            def add(self, **kwargs):
+                self.added.append(kwargs)
+
+        class Index:
+            committed = False
+
+            def diff(self, ref):
+                assert ref == "HEAD"
+                return []
+
+            def commit(self, message):
+                self.committed = True
+                raise AssertionError("no-op commit should not call commit")
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+            untracked_files = []
+
+        service = object.__new__(GitHubSyncService)
+        service.db = object()
+        service._regenerate_manifest_to_dir = AsyncMock()
+        service._run_preflight = AsyncMock()
+
+        result = await service._do_commit(tmp_path, Repo(), "Sync changes")
+
+        assert result.success is True
+        assert result.files_committed == 0
+        service._regenerate_manifest_to_dir.assert_awaited_once_with(service.db, tmp_path)
+        service._run_preflight.assert_not_called()
+        assert Repo.git.added == [{"A": True}]
+
+    @pytest.mark.asyncio
+    async def test_do_commit_returns_preflight_failure_without_committing(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        preflight = PreflightResult(
+            valid=False,
+            issues=[
+                PreflightIssue(
+                    path="workflows/bad.py",
+                    message="syntax error",
+                    severity="error",
+                    category="syntax",
+                )
+            ],
+        )
+
+        class Git:
+            def add(self, **kwargs):
+                return None
+
+        class Index:
+            def diff(self, ref):
+                return [object()]
+
+            def commit(self, message):
+                raise AssertionError("preflight failure should not commit")
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+            untracked_files = []
+
+        service = object.__new__(GitHubSyncService)
+        service.db = object()
+        service._regenerate_manifest_to_dir = AsyncMock()
+        service._run_preflight = AsyncMock(return_value=preflight)
+
+        result = await service._do_commit(tmp_path, Repo(), "Sync changes")
+
+        assert result.success is False
+        assert result.error == "Preflight validation failed"
+        assert result.preflight == preflight
+
+    @pytest.mark.asyncio
+    async def test_do_commit_counts_initial_index_and_untracked_changes(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        preflight = PreflightResult(valid=True, issues=[])
+
+        class Git:
+            def add(self, **kwargs):
+                return None
+
+        class Index:
+            def diff(self, ref):
+                assert ref is None
+                return [object(), object()]
+
+            def commit(self, message):
+                assert message == "Initial sync"
+                return type("Commit", (), {"hexsha": "abc123def456"})()
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=False)
+            untracked_files = ["workflows/new.py"]
+
+        service = object.__new__(GitHubSyncService)
+        service.db = object()
+        service._regenerate_manifest_to_dir = AsyncMock()
+        service._run_preflight = AsyncMock(return_value=preflight)
+
+        result = await service._do_commit(tmp_path, Repo(), "Initial sync")
+
+        assert result.success is True
+        assert result.commit_sha == "abc123def456"
+        assert result.files_committed == 3
+        assert result.preflight == preflight
+
+
+class TestGitHubSyncPreflight:
+    @pytest.mark.asyncio
+    async def test_run_preflight_reports_syntax_and_lint_issues(self, tmp_path, monkeypatch):
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / "workflows").mkdir()
+        bad_file = tmp_path / "workflows" / "bad.py"
+        bad_file.write_text("def broken(:\n")
+
+        def fake_run(*args, **kwargs):
+            assert kwargs["cwd"] == str(tmp_path)
+            return type(
+                "Result",
+                (),
+                {
+                    "stdout": (
+                        '[{"filename": "'
+                        + str(bad_file).replace("\\", "\\\\")
+                        + '", "location": {"row": 1}, "code": "F401", '
+                        '"message": "unused import"}]'
+                    )
+                },
+            )()
+
+        monkeypatch.setattr("src.services.github_sync.subprocess.run", fake_run)
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        assert result.valid is False
+        assert [(issue.category, issue.severity) for issue in result.issues] == [
+            ("syntax", "error"),
+            ("lint", "warning"),
+        ]
+        assert Path(result.issues[0].path).parts[-2:] == ("workflows", "bad.py")
+
+    @pytest.mark.asyncio
+    async def test_run_preflight_ignores_missing_ruff(self, tmp_path, monkeypatch):
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / "workflows").mkdir()
+        (tmp_path / "workflows" / "ok.py").write_text("x = 1\n")
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("ruff")
+
+        monkeypatch.setattr("src.services.github_sync.subprocess.run", fake_run)
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        assert result.valid is True
+        assert result.issues == []
+
+    @pytest.mark.asyncio
+    async def test_run_preflight_reports_manifest_ref_and_health_issues(
+        self, tmp_path, monkeypatch
+    ):
+        from bifrost.manifest import (
+            Manifest,
+            ManifestConfig,
+            ManifestEventSource,
+            ManifestForm,
+            ManifestIntegration,
+            ManifestOAuthProvider,
+        )
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / ".bifrost").mkdir()
+        manifest = Manifest(
+            forms={
+                "form-id": ManifestForm(
+                    id="form-id",
+                    name="Needs Workflow",
+                    workflow_id="missing-workflow",
+                    launch_workflow_id="missing-launch",
+                )
+            },
+            configs={
+                "secret": ManifestConfig(
+                    id="config-id",
+                    key="secret",
+                    config_type="secret",
+                    value=None,
+                )
+            },
+            integrations={
+                "oauth": ManifestIntegration(
+                    id="integration-id",
+                    name="OAuth",
+                    oauth_provider=ManifestOAuthProvider(
+                        provider_name="github",
+                        client_id="__NEEDS_SETUP__",
+                    ),
+                )
+            },
+            events={
+                "webhook": ManifestEventSource(
+                    id="event-id",
+                    name="Webhook",
+                    source_type="webhook",
+                )
+            },
+        )
+
+        monkeypatch.setattr(
+            "src.services.github_sync.read_manifest_from_dir",
+            lambda _: manifest,
+        )
+        monkeypatch.setattr(
+            "src.services.github_sync.subprocess.run",
+            lambda *_, **__: type("Result", (), {"stdout": ""})(),
+        )
+        monkeypatch.setattr("bifrost.manifest.get_all_paths", lambda _: ["workflows/missing.py"])
+        monkeypatch.setattr("bifrost.manifest.validate_manifest", lambda _: ["bad cross ref"])
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        messages = [issue.message for issue in result.issues]
+        assert result.valid is False
+        assert any("Manifest references missing file" in message for message in messages)
+        assert any("unknown workflow UUID" in message for message in messages)
+        assert any("unknown launch workflow UUID" in message for message in messages)
+        assert any("will be orphaned" in message for message in messages)
+        assert any("bad cross ref" in message for message in messages)
+        assert any("needs a value" in message for message in messages)
+        assert any("OAuth provider needs" in message for message in messages)
+        assert any("will need external registration" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_run_preflight_uses_legacy_form_file_refs(self, tmp_path, monkeypatch):
+        from bifrost.manifest import Manifest, ManifestForm
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / ".bifrost").mkdir()
+        (tmp_path / "forms").mkdir()
+        (tmp_path / "forms" / "legacy.yaml").write_text(
+            "workflow: missing-workflow\nlaunch_workflow: missing-launch\n"
+        )
+        manifest = Manifest(
+            forms={
+                "form-id": ManifestForm(
+                    id="form-id",
+                    name="Legacy",
+                    path="forms/legacy.yaml",
+                )
+            }
+        )
+
+        monkeypatch.setattr(
+            "src.services.github_sync.read_manifest_from_dir",
+            lambda _: manifest,
+        )
+        monkeypatch.setattr(
+            "src.services.github_sync.subprocess.run",
+            lambda *_, **__: type("Result", (), {"stdout": ""})(),
+        )
+        monkeypatch.setattr("bifrost.manifest.get_all_paths", lambda _: [])
+        monkeypatch.setattr("bifrost.manifest.validate_manifest", lambda _: [])
+
+        service = object.__new__(GitHubSyncService)
+        result = await service._run_preflight(tmp_path)
+
+        assert result.valid is False
+        assert [issue.category for issue in result.issues] == ["ref", "ref", "orphan"]
+
+
+class TestGitHubSyncAppPreviews:
+    @pytest.mark.asyncio
+    async def test_sync_app_previews_returns_when_manifest_has_no_apps(
+        self, tmp_path, monkeypatch
+    ):
+        from bifrost.manifest import Manifest
+        from src.services.github_sync import GitHubSyncService
+
+        monkeypatch.setattr("src.services.github_sync.read_manifest_from_dir", lambda _: Manifest())
+
+        service = object.__new__(GitHubSyncService)
+        await service._sync_app_previews(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_sync_app_previews_syncs_valid_apps_and_skips_bad_paths(
+        self, tmp_path, monkeypatch
+    ):
+        from bifrost.manifest import Manifest, ManifestApp
+        from src.services.github_sync import GitHubSyncService
+
+        calls: list[tuple[str, str]] = []
+
+        class FakeAppStorage:
+            def __init__(self, settings):
+                self.settings = settings
+
+            async def sync_preview_compiled(self, app_id, source_dir):
+                calls.append((app_id, source_dir))
+                if app_id == "app-error":
+                    raise RuntimeError("storage down")
+                return 2, ["compile warning"] if app_id == "app-warning" else []
+
+        manifest = Manifest(
+            apps={
+                "app-ok": ManifestApp(
+                    id="app-ok",
+                    name="OK",
+                    slug="ok",
+                    path="apps/ok",
+                ),
+                "app-warning": ManifestApp(
+                    id="app-warning",
+                    name="Warning",
+                    slug="warning",
+                    path="apps/warning",
+                ),
+                "app-error": ManifestApp(
+                    id="app-error",
+                    name="Error",
+                    slug="error",
+                    path="apps/error",
+                ),
+                "app-bad": ManifestApp(
+                    id="app-bad",
+                    name="Bad",
+                    slug="bad",
+                    path="../outside",
+                ),
+            }
+        )
+
+        fake_module = type("Module", (), {"AppStorageService": FakeAppStorage})
+        monkeypatch.setitem(sys.modules, "src.services.app_storage", fake_module)
+        monkeypatch.setattr("src.services.github_sync.read_manifest_from_dir", lambda _: manifest)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_manager = type("RepoManager", (), {"_settings": object()})()
+
+        await service._sync_app_previews(tmp_path)
+
+        assert calls == [
+            ("app-ok", "apps/ok"),
+            ("app-warning", "apps/warning"),
+            ("app-error", "apps/error"),
+        ]
+
+
+class TestGitHubSyncCloneOrInit:
+    def test_clone_or_init_copies_remote_tree_without_overwriting_existing_files(
+        self, tmp_path, monkeypatch
+    ):
+        from src.services.github_sync import GitHubSyncService
+
+        clone_root = tmp_path / "clone"
+        clone_root.mkdir()
+        (clone_root / ".git").mkdir()
+        (clone_root / "remote.txt").write_text("remote")
+        (clone_root / "dir").mkdir()
+        (clone_root / "dir" / "nested.txt").write_text("nested")
+        (clone_root / "existing.txt").write_text("from remote")
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "existing.txt").write_text("keep local")
+
+        class FakeGitRepo:
+            cloned = []
+
+            def __init__(self, path):
+                self.path = path
+
+            @classmethod
+            def clone_from(cls, repo_url, clone_dir, branch):
+                cls.cloned.append((repo_url, branch))
+                clone_dir_path = Path(clone_dir)
+                for item in clone_root.iterdir():
+                    if item.is_dir():
+                        import shutil
+
+                        shutil.copytree(item, clone_dir_path / item.name)
+                    else:
+                        import shutil
+
+                        shutil.copy2(item, clone_dir_path / item.name)
+
+        monkeypatch.setattr("src.services.github_sync.GitRepo", FakeGitRepo)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_url = "https://example.invalid/repo.git"
+        service.branch = "main"
+
+        repo = service._clone_or_init(target)
+
+        assert isinstance(repo, FakeGitRepo)
+        assert FakeGitRepo.cloned == [("https://example.invalid/repo.git", "main")]
+        assert (target / ".git").exists()
+        assert (target / "remote.txt").read_text() == "remote"
+        assert (target / "dir" / "nested.txt").read_text() == "nested"
+        assert (target / "existing.txt").read_text() == "keep local"
+
+    def test_clone_or_init_initializes_empty_remote_on_missing_branch(
+        self, tmp_path, monkeypatch
+    ):
+        from src.services.github_sync import GitHubSyncService
+
+        class FakeRepoInstance:
+            def __init__(self):
+                self.remotes = []
+
+            def create_remote(self, name, url):
+                self.remotes.append((name, url))
+
+        class FakeGitRepo:
+            initialized = None
+
+            @classmethod
+            def clone_from(cls, *args, **kwargs):
+                raise RuntimeError("could not find remote branch main")
+
+            @classmethod
+            def init(cls, path):
+                cls.initialized = path
+                return FakeRepoInstance()
+
+        monkeypatch.setattr("src.services.github_sync.GitRepo", FakeGitRepo)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_url = "https://example.invalid/repo.git"
+        service.branch = "main"
+
+        repo = service._clone_or_init(tmp_path)
+
+        assert FakeGitRepo.initialized == str(tmp_path)
+        assert repo.remotes == [("origin", "https://example.invalid/repo.git")]
+
+    def test_clone_or_init_wraps_unexpected_clone_errors(self, tmp_path, monkeypatch):
+        from src.services.github_sync import GitHubSyncService, SyncError
+
+        class FakeGitRepo:
+            @classmethod
+            def clone_from(cls, *args, **kwargs):
+                raise RuntimeError("permission denied")
+
+        monkeypatch.setattr("src.services.github_sync.GitRepo", FakeGitRepo)
+
+        service = object.__new__(GitHubSyncService)
+        service.repo_url = "https://example.invalid/repo.git"
+        service.branch = "main"
+
+        with pytest.raises(SyncError, match="Failed to clone"):
+            service._clone_or_init(tmp_path)
+
+
+class TestGitHubSyncStatusAndResolve:
+    def test_do_status_reports_conflicts_with_stage_content(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def show(self, ref):
+                return {
+                    ":2:workflows/conflict.py": "ours",
+                    ":3:workflows/conflict.py": "theirs",
+                }[ref]
+
+            def rev_list(self, *args):
+                if args[-1] == "origin/main..HEAD":
+                    return "1"
+                if args[-1] == "HEAD..origin/main":
+                    return "2"
+                raise AssertionError(args)
+
+        class Index:
+            def unmerged_blobs(self):
+                return {"workflows/conflict.py": [(1, object()), (2, object()), (3, object())]}
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_status(tmp_path, Repo())
+
+        assert result.total_changes == 0
+        assert result.commits_ahead == 1
+        assert result.commits_behind == 2
+        assert result.conflicts is not None
+        assert result.conflicts[0].path == "workflows/conflict.py"
+        assert result.conflicts[0].ours_content == "ours"
+        assert result.conflicts[0].theirs_content == "theirs"
+        assert result.conflicts[0].conflict_type == "both_modified"
+
+    def test_do_status_classifies_porcelain_and_resets_index(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            calls = []
+
+            def add(self, **kwargs):
+                self.calls.append(("add", kwargs))
+
+            def status(self, *args):
+                assert args == ("--porcelain",)
+                return "\n".join([
+                    "M  workflows/changed.py",
+                    "A  forms/new.yaml",
+                    "D  workflows/old.py",
+                    "R  workflows/old_name.py -> workflows/new_name.py",
+                    "?? apps/new/file.tsx",
+                ])
+
+            def reset(self, *args):
+                self.calls.append(("reset", args))
+
+            def rev_list(self, *args):
+                raise RuntimeError("no origin")
+
+        class Index:
+            def unmerged_blobs(self):
+                return {}
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=True)
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_status(tmp_path, Repo())
+
+        assert [(f.path, f.change_type) for f in result.changed_files] == [
+            ("workflows/changed.py", "modified"),
+            ("forms/new.yaml", "added"),
+            ("workflows/old.py", "deleted"),
+            ("workflows/new_name.py", "renamed"),
+            ("apps/new/file.tsx", "added"),
+        ]
+        assert result.total_changes == 5
+        assert ("add", {"A": True}) in Repo.git.calls
+        assert ("reset", ("HEAD",)) in Repo.git.calls
+
+    def test_do_status_lists_untracked_files_when_head_invalid(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        class Git:
+            def add(self, **kwargs):
+                return None
+
+        class Index:
+            def unmerged_blobs(self):
+                return {}
+
+        class Repo:
+            git = Git()
+            index = Index()
+            head = _Head(valid=False)
+            untracked_files = ["workflows/new.py"]
+
+        service = object.__new__(GitHubSyncService)
+        service.branch = "main"
+
+        result = service._do_status(tmp_path, Repo())
+
+        assert result.changed_files[0].path == "workflows/new.py"
+        assert result.changed_files[0].change_type == "added"
+        assert result.total_changes == 1
+
+    def test_do_resolve_rejects_when_no_merge_or_unmerged_entries(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        repo = type(
+            "Repo",
+            (),
+            {"index": type("Index", (), {"unmerged_blobs": lambda self: {}})()},
+        )()
+        service = object.__new__(GitHubSyncService)
+
+        result = service._do_resolve(tmp_path, repo, {"x.py": "ours"})
+
+        assert result.success is False
+        assert result.error == "No conflicts to resolve"
+
+    def test_do_resolve_applies_checkout_and_delete_modify_fallback(self, tmp_path):
+        from src.services.github_sync import GitHubSyncService
+
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "MERGE_HEAD").write_text("merge")
+
+        class Git:
+            def __init__(self):
+                self.checkout = MagicMock(side_effect=[None, RuntimeError("missing side")])
+                self.add = MagicMock()
+                self.rm = MagicMock()
+
+        class Index:
+            def __init__(self):
+                self.commit = MagicMock()
+
+            def unmerged_blobs(self):
+                return {"workflows/a.py": [(1, object()), (2, object()), (3, object())]}
+
+        class Repo:
+            git = Git()
+            index = Index()
+
+        service = object.__new__(GitHubSyncService)
+
+        result = service._do_resolve(
+            tmp_path,
+            Repo(),
+            {"workflows/a.py": "ours", "workflows/deleted.py": "theirs"},
+        )
+
+        assert result.success is True
+        Repo.git.checkout.assert_any_call("--ours", "workflows/a.py")
+        Repo.git.checkout.assert_any_call("--theirs", "workflows/deleted.py")
+        Repo.git.add.assert_any_call("workflows/a.py")
+        Repo.git.rm.assert_called_once_with("workflows/deleted.py")
+        Repo.index.commit.assert_called_once_with("Merge with conflict resolution")
+
+
+class TestThreeWayMergeDicts:
+    def test_theirs_wins_when_both_modify_scalar(self):
+        from src.services.github_sync import _three_way_merge_dicts
+
+        assert _three_way_merge_dicts(
+            {"name": "Old"},
+            {"name": "Ours"},
+            {"name": "Theirs"},
+        ) == {"name": "Theirs"}
+
+    def test_preserves_ours_when_theirs_deletes_modified_value(self):
+        from src.services.github_sync import _three_way_merge_dicts
+
+        assert _three_way_merge_dicts(
+            {"settings": {"enabled": False}},
+            {"settings": {"enabled": True}},
+            {},
+        ) == {"settings": {"enabled": True}}
+
+    def test_honors_theirs_delete_when_ours_unchanged(self):
+        from src.services.github_sync import _three_way_merge_dicts
+
+        assert _three_way_merge_dicts(
+            {"settings": {"enabled": False}},
+            {"settings": {"enabled": False}},
+            {},
+        ) == {}
+
+    def test_merges_nested_dicts_and_additions(self):
+        from src.services.github_sync import _three_way_merge_dicts
+
+        assert _three_way_merge_dicts(
+            {"access": {"level": "private"}},
+            {"access": {"level": "private"}, "local": True},
+            {"access": {"level": "public"}, "remote": True},
+        ) == {
+            "access": {"level": "public"},
+            "local": True,
+            "remote": True,
+        }
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        ({1: object(), 2: object(), 3: object()}, "both_modified"),
+        ({2: object(), 3: object()}, "both_added"),
+        ({1: object(), 3: object()}, "deleted_by_us"),
+        ({1: object(), 2: object()}, "deleted_by_them"),
+        ({2: object()}, "both_modified"),
+    ],
+)
+def test_classify_conflict_type(entries, expected):
+    from src.services.github_sync import _classify_conflict_type
+
+    assert (
+        _classify_conflict_type(
+            {"workflows/conflict.py": list(entries.items())},
+            "workflows/conflict.py",
+        )
+        == expected
+    )
+
+
+def test_classify_conflict_type_defaults_when_path_missing():
+    from src.services.github_sync import _classify_conflict_type
+
+    assert _classify_conflict_type({}, "missing.py") == "both_modified"
 
 
 def test_manifest_regeneration_filters_inline_forms_and_agents_to_repo_scope(tmp_path):

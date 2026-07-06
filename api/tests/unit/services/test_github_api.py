@@ -1075,3 +1075,184 @@ class TestPathSegmentValidators:
                 f"{name} final return must call quote() — see #217 for why "
                 f"raw value passthrough re-opens py/partial-ssrf. Got: {callee}"
             )
+
+
+class TestGitHubAPIClientRemainingBranches:
+    @pytest.fixture
+    def client(self):
+        return GitHubAPIClient(token="test-token")
+
+    @pytest.mark.asyncio
+    async def test_request_wraps_non_json_http_errors_timeouts_and_request_errors(self, client):
+        request = httpx.Request("GET", "https://api.github.com/repos/o/r")
+        response = httpx.Response(500, text="server down", request=request)
+        http_error = httpx.HTTPStatusError("bad", request=request, response=response)
+
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.raise_for_status.side_effect = http_error
+            mock_response.json.side_effect = ValueError("not json")
+            mock_client.request.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            MockClient.return_value = mock_client
+
+            with pytest.raises(GitHubAPIError) as exc:
+                await client._request("GET", "/repos/o/r")
+
+        assert exc.value.status_code == 500
+        assert exc.value.response_body == {}
+
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.request.side_effect = httpx.TimeoutException("slow")
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            MockClient.return_value = mock_client
+
+            with pytest.raises(GitHubAPIError, match="Request timed out"):
+                await client._request("GET", "/repos/o/r")
+
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.request.side_effect = httpx.RequestError("offline")
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            MockClient.return_value = mock_client
+
+            with pytest.raises(GitHubAPIError, match="Request failed"):
+                await client._request("GET", "/repos/o/r")
+
+    @pytest.mark.asyncio
+    async def test_blob_tree_commit_and_ref_helpers_cover_fallback_branches(self, client):
+        blob_payload = {
+            "sha": "blob-sha",
+            "content": "hello",
+            "encoding": "utf-8",
+            "size": 5,
+            "url": "https://api.github.com/blob",
+        }
+        with patch.object(client, "_request", AsyncMock(return_value=blob_payload)) as request:
+            assert await client.get_blob_content("owner/repo", "abc1234") == b"hello"
+        request.assert_awaited_once_with("GET", "/repos/owner/repo/git/blobs/abc1234")
+
+        with patch.object(
+            client,
+            "_request",
+            AsyncMock(return_value={"sha": "blob-sha", "url": "https://api.github.com/blob"}),
+        ) as request:
+            assert await client.create_blob("owner/repo", b"hello") == "blob-sha"
+        request.assert_awaited_once()
+        assert request.await_args.kwargs["json_data"]["encoding"] == "base64"
+
+        commit_payload = {
+            "sha": "commit-sha",
+            "url": "https://api.github.com/commit",
+            "tree": {"sha": "tree-sha", "url": "https://api.github.com/tree"},
+            "parents": [],
+            "author": {"name": "A", "email": "a@example.com", "date": "2026-01-01T00:00:00Z"},
+            "committer": {"name": "C", "email": "c@example.com", "date": "2026-01-01T00:00:00Z"},
+            "message": "sync",
+        }
+        with patch.object(client, "_request", AsyncMock(return_value=commit_payload)) as request:
+            assert await client.create_commit(
+                "owner/repo",
+                message="sync",
+                tree="tree-sha",
+                parents=["parent"],
+                author={"name": "A"},
+                committer={"name": "C"},
+            ) == "commit-sha"
+        payload = request.await_args.kwargs["json_data"]
+        assert payload["author"] == {"name": "A"}
+        assert payload["committer"] == {"name": "C"}
+
+    @pytest.mark.asyncio
+    async def test_list_repositories_paginates_limits_and_maps_fields(self, client):
+        page = [
+            {
+                "name": "one",
+                "full_name": "owner/one",
+                "description": None,
+                "html_url": "https://github.com/owner/one",
+                "private": True,
+            },
+            {
+                "name": "two",
+                "full_name": "owner/two",
+                "description": "Two",
+                "html_url": "https://github.com/owner/two",
+                "private": False,
+            },
+        ]
+
+        with patch.object(client, "_request", AsyncMock(return_value=page)) as request:
+            repos = await client.list_repositories(max_repos=2)
+
+        assert repos == [
+            {
+                "name": "one",
+                "full_name": "owner/one",
+                "description": None,
+                "url": "https://github.com/owner/one",
+                "private": True,
+            },
+            {
+                "name": "two",
+                "full_name": "owner/two",
+                "description": "Two",
+                "url": "https://github.com/owner/two",
+                "private": False,
+            },
+        ]
+        assert request.await_args_list[0].args == ("GET", "/user/repos?per_page=100&page=1&sort=updated")
+
+        with patch.object(client, "_request", AsyncMock(return_value=[])) as request:
+            assert await client.list_repositories(max_repos=10) == []
+        request.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_list_branches_and_create_repository_map_api_payloads(self, client):
+        branch_data = [
+            {"name": "main", "protected": True, "commit": {"sha": "abc"}},
+            {"name": "dev", "commit": {"sha": "def"}},
+        ]
+        with patch.object(client, "_request", AsyncMock(return_value=branch_data)) as request:
+            branches = await client.list_branches("owner/repo")
+
+        assert branches == [
+            {"name": "main", "protected": True, "commit_sha": "abc"},
+            {"name": "dev", "protected": False, "commit_sha": "def"},
+        ]
+        request.assert_awaited_once_with("GET", "/repos/owner/repo/branches?per_page=100")
+
+        create_response = {
+            "full_name": "owner/new-repo",
+            "html_url": "https://github.com/owner/new-repo",
+            "clone_url": "https://github.com/owner/new-repo.git",
+        }
+        with patch.object(client, "_request", AsyncMock(return_value=create_response)) as request:
+            result = await client.create_repository(
+                "new-repo",
+                description=None,
+                private=False,
+            )
+        assert result == {
+            "full_name": "owner/new-repo",
+            "url": "https://github.com/owner/new-repo",
+            "clone_url": "https://github.com/owner/new-repo.git",
+        }
+        request.assert_awaited_once_with(
+            "POST",
+            "/user/repos",
+            json_data={"name": "new-repo", "description": "", "private": False},
+        )
+
+        with patch.object(client, "_request", AsyncMock(return_value=create_response)) as request:
+            await client.create_repository("new-repo", organization="octocat")
+        request.assert_awaited_once_with(
+            "POST",
+            "/orgs/octocat/repos",
+            json_data={"name": "new-repo", "description": "", "private": True},
+        )

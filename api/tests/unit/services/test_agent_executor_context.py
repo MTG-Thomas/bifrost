@@ -7,6 +7,7 @@ Tests token estimation, context pruning, and warning generation.
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from src.services.agent_executor import (
     CONTEXT_KEEP_RECENT,
@@ -14,6 +15,7 @@ from src.services.agent_executor import (
     CONTEXT_WARNING_TOKENS,
     TOOL_OUTPUT_PROTECT_TOKENS,
     AgentExecutor,
+    _serialize_for_json,
 )
 from src.services.llm import LLMMessage, ToolCallRequest
 
@@ -94,6 +96,42 @@ class TestTokenEstimation:
         messages = [LLMMessage(role="user", content=large_content)]
         result = executor._estimate_tokens(messages)
         assert result == 25_000  # 100000 // 4
+
+
+class TestSerializeForJson:
+    """Test tool-result JSON serialization helper."""
+
+    def test_returns_empty_string_for_none(self):
+        assert _serialize_for_json(None) == ""
+
+    def test_returns_strings_unchanged(self):
+        assert _serialize_for_json("already serialized") == "already serialized"
+
+    def test_serializes_nested_pydantic_models(self):
+        class Inner(BaseModel):
+            value: int
+
+        class Outer(BaseModel):
+            name: str
+            inner: Inner
+
+        assert _serialize_for_json(Outer(name="test", inner=Inner(value=3))) == (
+            '{"name":"test","inner":{"value":3}}'
+        )
+
+    def test_serializes_plain_json_values(self):
+        assert _serialize_for_json({"ok": True, "items": [1, 2]}) == (
+            '{"ok":true,"items":[1,2]}'
+        )
+
+    def test_falls_back_to_string_for_unknown_objects(self):
+        class CustomValue:
+            def __str__(self):
+                return "custom-value"
+
+        assert _serialize_for_json({"value": CustomValue()}) == (
+            '{"value":"custom-value"}'
+        )
 
 
 class TestContextThresholds:

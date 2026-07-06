@@ -309,10 +309,10 @@ def remove_workflow_endpoint(app: FastAPI, workflow_name: str) -> None:
         workflow_name: Name of workflow to remove
     """
     path = f"/api/endpoints/{workflow_name}"
-    original_count = len(app.routes)
-    app.routes = [r for r in app.routes if getattr(r, "path", None) != path]
+    original_count = len(app.router.routes)
+    app.router.routes = [r for r in app.router.routes if getattr(r, "path", None) != path]
 
-    if len(app.routes) < original_count:
+    if len(app.router.routes) < original_count:
         # Force regeneration of OpenAPI schema
         app.openapi_schema = None
 

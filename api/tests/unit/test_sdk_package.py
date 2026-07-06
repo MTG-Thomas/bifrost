@@ -17,29 +17,17 @@ import json
 import shutil
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
-_SDK_SERVICE = Path("/app/src/services/sdk_package")
-_SRC_FILES = [
-    "provider.tsx",
-    "tables.ts",
-    "transport.ts",
-    "use-table.ts",
-    "use-infinite-table.ts",
-    "ws-client.ts",
-    "use-workflow.ts",
-    "use-workflow-hooks.ts",
-    "files.ts",
-    "use-files.ts",
-    "bifrost-header.tsx",
-]
 
 
 def _ensure_sdk_src() -> bool:
     """Make sure sdk_src/ holds the SDK source + index.ts barrel. Returns False
     if neither the image copy nor the client tree is available (skip)."""
-    dst = _SDK_SERVICE / "sdk_src"
+    import src.services.sdk_package as sdkpkg
+
+    dst = sdkpkg._SDK_SRC
     if (dst / "index.ts").is_file():
         return True
     # stage from the client tree (mirrors the Dockerfile COPY)
@@ -51,10 +39,90 @@ def _ensure_sdk_src() -> bool:
     if client is None:
         return False
     dst.mkdir(parents=True, exist_ok=True)
-    for f in _SRC_FILES:
+    for f in sdkpkg._SDK_SOURCE_FILES:
         shutil.copy(client / f, dst / f)
     shutil.copy(client / "index.v2.ts", dst / "index.ts")
     return True
+
+
+def test_pep440ish_coerces_git_describe_versions():
+    import src.services.sdk_package as sdkpkg
+
+    assert sdkpkg._pep440ish("v1.2-3-gabc1234") == "1.2.0"
+    assert sdkpkg._pep440ish("2.3.4-dirty") == "2.3.4"
+    assert sdkpkg._pep440ish("unknown") == "0.0.0"
+
+
+def test_materialize_sdk_src_prefers_baked_source(tmp_path, monkeypatch):
+    import src.services.sdk_package as sdkpkg
+
+    baked = tmp_path / "baked"
+    baked.mkdir()
+    (baked / "index.ts").write_text("export const baked = true")
+    monkeypatch.setattr(sdkpkg, "_SDK_SRC", baked)
+
+    assert sdkpkg._materialize_sdk_src(tmp_path / "work") == baked
+
+
+def test_materialize_sdk_src_stages_client_fallback(tmp_path, monkeypatch):
+    import src.services.sdk_package as sdkpkg
+
+    client_src = tmp_path / "api" / "client" / "src" / "lib" / "app-sdk"
+    client_src.mkdir(parents=True)
+    for name in sdkpkg._SDK_SOURCE_FILES:
+        (client_src / name).write_text(f"// {name}")
+    (client_src / "index.v2.ts").write_text("export const v2 = true")
+
+    monkeypatch.setattr(sdkpkg, "_client_sdk_candidates", lambda: [client_src])
+    monkeypatch.setattr(sdkpkg, "_SDK_SRC", tmp_path / "missing")
+
+    staged = sdkpkg._materialize_sdk_src(tmp_path / "work")
+
+    assert staged == tmp_path / "work" / "sdk_src"
+    assert (staged / "provider.tsx").read_text() == "// provider.tsx"
+    assert (staged / "index.ts").read_text() == "export const v2 = true"
+
+
+def test_materialize_sdk_src_returns_baked_path_when_no_source_available(
+    tmp_path, monkeypatch
+):
+    import src.services.sdk_package as sdkpkg
+
+    missing = tmp_path / "missing"
+
+    monkeypatch.setattr(sdkpkg, "_client_sdk_candidates", lambda: [])
+    monkeypatch.setattr(sdkpkg, "_SDK_SRC", missing)
+
+    assert sdkpkg._materialize_sdk_src(tmp_path / "work") == missing
+
+
+def test_bundle_invokes_node_builder_with_materialized_source(tmp_path, monkeypatch):
+    import src.services.sdk_package as sdkpkg
+
+    src = tmp_path / "sdk_src"
+    src.mkdir()
+    calls = []
+
+    def fake_materialize(workdir):
+        assert workdir == tmp_path
+        return src
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        Path(argv[3]).write_bytes(b"// bundled sdk")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(sdkpkg, "_materialize_sdk_src", fake_materialize)
+    monkeypatch.setattr(sdkpkg.subprocess, "run", fake_run)
+
+    assert sdkpkg._bundle(tmp_path) == b"// bundled sdk"
+    argv, kwargs = calls[0]
+    assert argv[:2] == ["node", str(sdkpkg._BUILDER)]
+    assert argv[2] == str(src)
+    assert kwargs["cwd"] == str(tmp_path)
+    assert kwargs["check"] is True
+    assert kwargs["timeout"] == 120
+    assert kwargs["env"]["NODE_PATH"] == str(sdkpkg._NODE_MODULES)
 
 
 @pytest.mark.e2e
@@ -87,13 +155,12 @@ def test_build_sdk_tarball_cached_per_version(monkeypatch):
 def test_build_sdk_tarball_shape_and_exports():
     if not _ensure_sdk_src():
         pytest.skip("SDK source not available (no image copy, no client tree)")
-    # esbuild must be installed (app_bundler node_modules) — skip if not present.
-    if not (_SDK_SERVICE.parent / "app_bundler" / "node_modules" / "esbuild").exists():
-        pytest.skip("esbuild not installed in this environment")
 
     import src.services.sdk_package as sdkpkg
 
     sdkpkg.build_sdk_tarball.cache_clear()  # never serve another test's stubbed bundle
+    if not (sdkpkg._NODE_MODULES / "esbuild").exists():
+        pytest.skip("esbuild not installed in this environment")
     data = sdkpkg.build_sdk_tarball("v1.2-3-gabc1234")
     assert data[:2] == b"\x1f\x8b", "not a gzip tarball"
 

@@ -140,4 +140,3 @@ class TestLoadPoliciesForTableByName:
 
         policies = await ws_mod._load_policies_for_table(name)
         assert policies == TablePolicies()
-

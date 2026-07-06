@@ -327,3 +327,83 @@ class TestWorkflowRepository:
         assert result == mock_workflow
         assert mock_workflow.api_key_enabled is False
         mock_session.flush.assert_called_once()
+
+    async def test_set_and_revoke_api_key_return_none_when_workflow_missing(
+        self, repository, mock_session
+    ):
+        """Missing workflows leave API key state unchanged."""
+        with patch.object(repository, "get", return_value=None):
+            set_result = await repository.set_api_key(
+                workflow_id=uuid4(),
+                key_hash="new_hash",
+                description="Test key",
+                created_by="admin",
+            )
+            revoke_result = await repository.revoke_api_key(uuid4())
+
+        assert set_result is None
+        assert revoke_result is None
+        mock_session.flush.assert_not_called()
+
+    async def test_update_api_key_last_used_flushes_only_when_found(
+        self, repository, mock_session, mock_workflow
+    ):
+        """Last-used timestamps are updated only for visible workflows."""
+        with patch.object(repository, "get", return_value=mock_workflow):
+            await repository.update_api_key_last_used(mock_workflow.id)
+
+        assert mock_workflow.api_key_last_used_at is not None
+        mock_session.flush.assert_called_once()
+
+        mock_session.flush.reset_mock()
+        with patch.object(repository, "get", return_value=None):
+            await repository.update_api_key_last_used(uuid4())
+
+        mock_session.flush.assert_not_called()
+
+    async def test_get_endpoint_workflow_by_name_handles_missing_and_duplicates(
+        self, repository, mock_session, mock_workflow
+    ):
+        """Endpoint name routing returns one match and rejects ambiguity."""
+        no_match = MagicMock()
+        no_match.scalars.return_value.all.return_value = []
+        mock_session.execute.return_value = no_match
+        assert await repository.get_endpoint_workflow_by_name("missing") is None
+
+        duplicate = MagicMock()
+        other = MagicMock()
+        other.path = "workflows/other.py"
+        mock_workflow.path = "workflows/main.py"
+        duplicate.scalars.return_value.all.return_value = [mock_workflow, other]
+        mock_session.execute.return_value = duplicate
+
+        with pytest.raises(ValueError, match="Multiple endpoint-enabled workflows"):
+            await repository.get_endpoint_workflow_by_name("duplicate")
+
+        single = MagicMock()
+        single.scalars.return_value.all.return_value = [mock_workflow]
+        mock_session.execute.return_value = single
+        assert (
+            await repository.get_endpoint_workflow_by_name("test-workflow")
+            is mock_workflow
+        )
+
+    async def test_type_helpers_delegate_to_get_by_type(
+        self, repository, mock_workflow
+    ):
+        """Convenience helpers preserve the workflow type filters."""
+        with patch.object(
+            repository, "get_by_type", return_value=[mock_workflow]
+        ) as get_by_type:
+            assert await repository.get_data_providers(active_only=False) == [
+                mock_workflow
+            ]
+            assert await repository.get_tools() == [mock_workflow]
+            assert await repository.get_workflows_only() == [mock_workflow]
+
+        assert get_by_type.call_args_list[0].args == ("data_provider",)
+        assert get_by_type.call_args_list[0].kwargs == {"active_only": False}
+        assert get_by_type.call_args_list[1].args == ("tool",)
+        assert get_by_type.call_args_list[1].kwargs == {"active_only": True}
+        assert get_by_type.call_args_list[2].args == ("workflow",)
+        assert get_by_type.call_args_list[2].kwargs == {"active_only": True}

@@ -620,5 +620,3 @@ def _convert_parameters(params: list) -> list[WorkflowParameter]:
                 default_value=getattr(p, 'default_value', None),
             ))
     return result
-
-

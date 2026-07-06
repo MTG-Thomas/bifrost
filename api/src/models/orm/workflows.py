@@ -168,4 +168,3 @@ class Workflow(Base):
             postgresql_where=text("solution_id IS NOT NULL"),
         ),
     )
-

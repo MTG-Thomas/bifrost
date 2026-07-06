@@ -368,7 +368,9 @@ class Scheduler:
 
         # Extract owner/repo from URL
         if repo_url.startswith("https://github.com/"):
-            repo = repo_url.replace("https://github.com/", "").rstrip(".git")
+            repo = repo_url.replace("https://github.com/", "")
+            if repo.endswith(".git"):
+                repo = repo[:-4]
         else:
             repo = repo_url
 

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+from src.repositories import execution_logs
 from src.repositories.execution_logs import ExecutionLogRepository
 
 
@@ -243,3 +244,153 @@ class TestExecutionLogRepositoryListLogs:
         assert len(logs) == 1
         assert logs[0]["organization_name"] is None
         assert logs[0]["workflow_name"] == "test-workflow"
+
+
+class TestExecutionLogRepositoryCore:
+    @pytest.fixture
+    def mock_session(self):
+        session = AsyncMock()
+        session.add = MagicMock()
+        session.flush = AsyncMock()
+        session.execute = AsyncMock()
+        return session
+
+    @pytest.fixture
+    def repository(self, mock_session):
+        return ExecutionLogRepository(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_append_log_uppercases_level_and_flushes(self, repository, mock_session):
+        execution_id = uuid4()
+        timestamp = datetime(2026, 7, 4, tzinfo=timezone.utc)
+
+        log = await repository.append_log(
+            execution_id,
+            "warning",
+            "careful",
+            metadata={"source": "worker"},
+            timestamp=timestamp,
+        )
+
+        assert log.execution_id == execution_id
+        assert log.level == "WARNING"
+        assert log.message == "careful"
+        assert log.log_metadata == {"source": "worker"}
+        assert log.timestamp == timestamp
+        mock_session.add.assert_called_once_with(log)
+        mock_session.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_append_logs_batch_defaults_missing_values(self, repository, mock_session):
+        execution_id = uuid4()
+        timestamp = datetime(2026, 7, 4, 12, tzinfo=timezone.utc)
+
+        logs = await repository.append_logs_batch(
+            execution_id,
+            [
+                {"level": "debug", "message": "one", "data": {"n": 1}, "timestamp": timestamp},
+                {},
+            ],
+        )
+
+        assert [log.level for log in logs] == ["DEBUG", "INFO"]
+        assert logs[0].message == "one"
+        assert logs[0].log_metadata == {"n": 1}
+        assert logs[1].message == ""
+        assert mock_session.add.call_count == 2
+        mock_session.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_logs_applies_filters_and_returns_scalars(self, repository, mock_session):
+        log = MagicMock()
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = [log]
+        mock_session.execute.return_value = result
+
+        logs = await repository.get_logs(
+            uuid4(),
+            since_timestamp=datetime(2026, 7, 4, tzinfo=timezone.utc),
+            level_filter=["warning", "error"],
+            limit=25,
+        )
+
+        assert logs == [log]
+        mock_session.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_logs_as_dicts_formats_timestamp_and_metadata(self, repository, mock_session):
+        timestamp = datetime(2026, 7, 4, 12, 30, tzinfo=timezone.utc)
+        log = MagicMock()
+        log.id = 123
+        log.timestamp = timestamp
+        log.level = "INFO"
+        log.message = "hello"
+        log.log_metadata = {"a": 1}
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = [log]
+        mock_session.execute.return_value = result
+
+        logs = await repository.get_logs_as_dicts(
+            uuid4(),
+            since_timestamp=timestamp,
+            exclude_levels=["debug"],
+            limit=10,
+        )
+
+        assert logs == [
+            {
+                "id": 123,
+                "timestamp": timestamp.isoformat(),
+                "level": "INFO",
+                "message": "hello",
+                "data": {"a": 1},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_count_and_delete_logs(self, repository, mock_session):
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 4
+        delete_result = MagicMock()
+        delete_result.rowcount = 3
+        mock_session.execute.side_effect = [count_result, delete_result]
+        execution_id = uuid4()
+
+        assert await repository.count_logs(execution_id) == 4
+        assert await repository.delete_logs(execution_id) == 3
+        assert mock_session.execute.await_count == 2
+        mock_session.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_compat_repository_reuses_session_and_merges_source_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        session = AsyncMock()
+        session.add = MagicMock()
+        session.flush = AsyncMock()
+        session.execute = AsyncMock()
+        session.close = AsyncMock()
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = []
+        session.execute.return_value = result
+        monkeypatch.setattr("src.core.database.get_session_factory", lambda: lambda: session)
+
+        compat = execution_logs.get_execution_logs_repository()
+        execution_id = uuid4()
+
+        await compat.append_log(
+            str(execution_id),
+            "info",
+            "started",
+            metadata={"job": "sync"},
+            source="worker",
+        )
+        await compat.get_logs(str(execution_id), level_filter=["info"], limit=5)
+        await compat.get_logs_as_dicts(str(execution_id), exclude_levels=["debug"], limit=5)
+        await compat.close()
+
+        added_log = session.add.call_args.args[0]
+        assert added_log.execution_id == execution_id
+        assert added_log.log_metadata == {"job": "sync", "source": "worker"}
+        assert session.close.await_count == 1

@@ -307,6 +307,101 @@ async def test_run_reindex_partial_failure_completes_with_failed_batch_count():
 
 
 @pytest.mark.asyncio
+async def test_run_reindex_updates_keyless_rows_and_reports_completion():
+    """Rows without a document key are updated in place with embed_single."""
+    notif_service = MagicMock()
+    notif_service.update_notification = AsyncMock()
+
+    db = AsyncMock()
+    groups_result = MagicMock()
+    groups_result.all = MagicMock(return_value=[])
+    row = MagicMock()
+    row.id = "row-1"
+    row.content = "standalone knowledge"
+    keyless_result = MagicMock()
+    keyless_result.all = MagicMock(return_value=[row])
+    db.execute = AsyncMock(side_effect=[groups_result, keyless_result, MagicMock()])
+
+    db_ctx = AsyncMock()
+    db_ctx.__aenter__ = AsyncMock(return_value=db)
+    db_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    embedding_client = MagicMock()
+    embedding_client.embed_single = AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+    with (
+        patch.object(reindex, "get_notification_service", return_value=notif_service),
+        patch.object(reindex, "get_db_context", return_value=db_ctx),
+        patch.object(reindex, "clear_cancel_flag", AsyncMock()),
+        patch.object(reindex, "is_cancelled", AsyncMock(return_value=False)),
+        patch.object(
+            reindex, "get_embedding_client", AsyncMock(return_value=embedding_client)
+        ),
+    ):
+        await reindex.run_reindex("nid")
+
+    embedding_client.embed_single.assert_awaited_once_with("standalone knowledge")
+    assert db.commit.await_count == 1
+
+    update_stmt = db.execute.await_args_list[2].args[0]
+    compiled = str(update_stmt.compile())
+    assert "UPDATE knowledge_store" in compiled
+
+    final_update = notif_service.update_notification.await_args_list[-1].args[1]
+    assert final_update.status.value == "completed"
+    assert final_update.result == {
+        "processed": 1,
+        "total": 1,
+        "failed_batches": 0,
+        "total_batches": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_reindex_keyless_failure_rolls_back_and_reports_failed():
+    """A failed keyless row keeps old state and marks the job failed."""
+    notif_service = MagicMock()
+    notif_service.update_notification = AsyncMock()
+
+    db = AsyncMock()
+    groups_result = MagicMock()
+    groups_result.all = MagicMock(return_value=[])
+    row = MagicMock()
+    row.id = "row-1"
+    row.content = "bad knowledge"
+    keyless_result = MagicMock()
+    keyless_result.all = MagicMock(return_value=[row])
+    db.execute = AsyncMock(side_effect=[groups_result, keyless_result])
+
+    db_ctx = AsyncMock()
+    db_ctx.__aenter__ = AsyncMock(return_value=db)
+    db_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    embedding_client = MagicMock()
+    embedding_client.embed_single = AsyncMock(side_effect=RuntimeError("embed down"))
+
+    with (
+        patch.object(reindex, "get_notification_service", return_value=notif_service),
+        patch.object(reindex, "get_db_context", return_value=db_ctx),
+        patch.object(reindex, "clear_cancel_flag", AsyncMock()),
+        patch.object(reindex, "is_cancelled", AsyncMock(return_value=False)),
+        patch.object(
+            reindex, "get_embedding_client", AsyncMock(return_value=embedding_client)
+        ),
+    ):
+        await reindex.run_reindex("nid")
+
+    db.rollback.assert_awaited_once()
+    db.commit.assert_not_awaited()
+
+    final_update = notif_service.update_notification.await_args_list[-1].args[1]
+    assert final_update.status.value == "failed"
+    assert final_update.result["processed"] == 0
+    assert final_update.result["failed_batches"] == 1
+    assert final_update.result["total_batches"] == 1
+
+
+@pytest.mark.asyncio
 async def test_count_knowledge_rows_at_other_dims_uses_vector_dims_filter():
     """Sanity-check the helper: it should grow the WHERE clause with
     `vector_dims(embedding) <> :td` and bind target_dim."""

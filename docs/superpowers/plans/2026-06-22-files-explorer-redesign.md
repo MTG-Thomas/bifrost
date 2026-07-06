@@ -1362,7 +1362,7 @@ Today there is no notion of a *named, reusable* policy. The same rule (e.g. `adm
 
 This is the decision the whole feature hinges on — brainstorm it first.
 
-1. **Insert-time snapshot (copy).** "Apply template X" deep-copies its rules into the target's inline doc (what the client does now, but promote the catalog to the server so it's shared/named/governed). 
+1. **Insert-time snapshot (copy).** "Apply template X" deep-copies its rules into the target's inline doc (what the client does now, but promote the catalog to the server so it's shared/named/governed).
    - **Pros:** zero change to evaluation (rules stay inline; the cascade/longest-prefix engine is untouched); no new resolution path; trivially safe.
    - **Cons:** editing the canonical template does NOT propagate — you'd "re-apply" to update, and drift is invisible. Doesn't fully satisfy "edit once, applies everywhere."
 2. **Live reference (named policy resolved at evaluation).** The target stores a *reference* (e.g. a rule of the form `{template: "admin_bypass"}` or a separate binding row), resolved against a `PolicyTemplate` catalog when access is evaluated.

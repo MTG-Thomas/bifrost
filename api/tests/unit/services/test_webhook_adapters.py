@@ -12,8 +12,18 @@ from types import SimpleNamespace
 import pytest
 
 from src.services.webhooks.adapters.generic import GenericWebhookAdapter
-from src.services.webhooks.adapters.microsoft_graph import MicrosoftGraphAdapter
-from src.services.webhooks.protocol import Deliver, Rejected, ValidationResponse, WebhookAdapter, WebhookRequest
+from src.services.webhooks.adapters.microsoft_graph import (
+    MicrosoftGraphAdapter,
+    _get_access_token,
+)
+from src.services.webhooks.protocol import (
+    Deliver,
+    Rejected,
+    RenewResult,
+    ValidationResponse,
+    WebhookAdapter,
+    WebhookRequest,
+)
 
 
 def _sign(body: bytes, secret: str, prefix: str = "sha256=") -> str:
@@ -279,6 +289,31 @@ class TestMicrosoftGraphAdapter:
     def adapter(self):
         return MicrosoftGraphAdapter()
 
+    def test_get_access_token_reads_sdk_oauth(self):
+        integration = SimpleNamespace(
+            oauth=SimpleNamespace(access_token="sdk-token"),
+        )
+
+        assert _get_access_token(integration) == "sdk-token"
+
+    def test_get_access_token_decrypts_orm_token(self, monkeypatch):
+        monkeypatch.setattr(
+            "src.services.webhooks.adapters.microsoft_graph.decrypt_secret",
+            lambda value: f"decrypted:{value}",
+        )
+        integration = SimpleNamespace(
+            oauth_provider=SimpleNamespace(
+                tokens=[SimpleNamespace(encrypted_access_token=b"encrypted")]
+            )
+        )
+
+        assert _get_access_token(integration) == "decrypted:encrypted"
+
+    @pytest.mark.parametrize("integration", [None, SimpleNamespace()])
+    def test_get_access_token_requires_integration_and_token(self, integration):
+        with pytest.raises(ValueError):
+            _get_access_token(integration)
+
     @pytest.mark.asyncio
     async def test_validation_token_returns_plain_text_response(self, adapter):
         request = WebhookRequest(
@@ -355,3 +390,322 @@ class TestMicrosoftGraphAdapter:
         assert result.state["client_state"]
         assert calls[0]["headers"]["Authorization"] == "Bearer decrypted-access-token"
         assert calls[0]["json"]["notificationUrl"] == "https://bifrost.example.com/api/hooks/source-id"
+
+    @pytest.mark.asyncio
+    async def test_dynamic_values_lists_users(self, adapter, monkeypatch):
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "value": [
+                        {
+                            "id": "user-1",
+                            "displayName": "Ada",
+                            "mail": "ada@example.com",
+                            "userPrincipalName": "ada@tenant.example",
+                        },
+                        {
+                            "id": "user-2",
+                            "displayName": None,
+                            "mail": None,
+                            "userPrincipalName": "grace@tenant.example",
+                        },
+                    ]
+                }
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, headers, params, timeout):
+                assert url == "https://graph.microsoft.com/v1.0/users"
+                assert headers == {"Authorization": "Bearer sdk-token"}
+                assert params["$top"] == "100"
+                assert timeout == 30.0
+                return FakeResponse()
+
+        monkeypatch.setattr(
+            "src.services.webhooks.adapters.microsoft_graph.httpx.AsyncClient",
+            FakeClient,
+        )
+
+        users = await adapter.get_dynamic_values(
+            "list_users",
+            SimpleNamespace(oauth=SimpleNamespace(access_token="sdk-token")),
+            {},
+        )
+
+        assert users == [
+            {"id": "user-1", "displayName": "Ada", "mail": "ada@example.com"},
+            {"id": "user-2", "displayName": "grace@tenant.example", "mail": None},
+        ]
+
+    async def test_dynamic_values_list_users_surfaces_graph_error(
+        self, adapter, monkeypatch
+    ):
+        class FakeResponse:
+            status_code = 400
+            text = "bad request"
+
+            def json(self):
+                return {"error": {"message": "permission denied"}}
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        monkeypatch.setattr(
+            "src.services.webhooks.adapters.microsoft_graph.httpx.AsyncClient",
+            FakeClient,
+        )
+
+        with pytest.raises(ValueError, match="permission denied"):
+            await adapter.get_dynamic_values(
+                "list_users",
+                SimpleNamespace(oauth=SimpleNamespace(access_token="sdk-token")),
+                {},
+            )
+
+    async def test_dynamic_values_lists_resources_and_rejects_unknown_operation(
+        self, adapter
+    ):
+        resources = await adapter.get_dynamic_values(
+            "list_resources",
+            integration=None,
+            current_config={"user_id": "user-1"},
+        )
+
+        assert resources[0]["value"] == "/users/user-1/messages"
+        assert any(r["value"] == "/communications/callRecords" for r in resources)
+
+        with pytest.raises(NotImplementedError):
+            await adapter.get_dynamic_values("missing", None, {})
+
+    @pytest.mark.asyncio
+    async def test_subscribe_includes_resource_data_and_surfaces_error(
+        self, adapter, monkeypatch
+    ):
+        class FakeResponse:
+            status_code = 400
+            text = "raw graph error"
+
+            def json(self):
+                return {"error": {"message": "subscription rejected"}}
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, url, headers, json, timeout):
+                assert json["includeResourceData"] is True
+                return FakeResponse()
+
+        monkeypatch.setattr(
+            "src.services.webhooks.adapters.microsoft_graph.httpx.AsyncClient",
+            FakeClient,
+        )
+
+        with pytest.raises(ValueError, match="subscription rejected"):
+            await adapter.subscribe(
+                callback_url="https://example.com/hook",
+                config={
+                    "resource": "/users/user-1/messages",
+                    "change_types": ["created", "updated"],
+                    "include_resource_data": True,
+                },
+                integration=SimpleNamespace(oauth=SimpleNamespace(access_token="token")),
+            )
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_is_best_effort(self, adapter, monkeypatch):
+        calls = []
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def delete(self, url, headers, timeout):
+                calls.append((url, headers, timeout))
+                raise RuntimeError("already gone")
+
+        monkeypatch.setattr(
+            "src.services.webhooks.adapters.microsoft_graph.httpx.AsyncClient",
+            FakeClient,
+        )
+
+        await adapter.unsubscribe(
+            "sub-1",
+            {},
+            SimpleNamespace(oauth=SimpleNamespace(access_token="token")),
+        )
+        await adapter.unsubscribe(None, {}, SimpleNamespace())
+        await adapter.unsubscribe("sub-2", {}, None)
+
+        assert calls == [
+            (
+                "https://graph.microsoft.com/v1.0/subscriptions/sub-1",
+                {"Authorization": "Bearer token"},
+                30.0,
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_renew_success_failure_and_missing_inputs(self, adapter, monkeypatch):
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def patch(self, url, headers, json, timeout):
+                return SimpleNamespace(
+                    status_code=200,
+                    json=lambda: {"expirationDateTime": "2026-05-16T12:00:00Z"},
+                )
+
+        monkeypatch.setattr(
+            "src.services.webhooks.adapters.microsoft_graph.httpx.AsyncClient",
+            FakeClient,
+        )
+
+        renewed = await adapter.renew(
+            "sub-1",
+            {},
+            SimpleNamespace(oauth=SimpleNamespace(access_token="token")),
+        )
+        assert isinstance(renewed, RenewResult)
+        assert renewed.expires_at is not None
+        assert renewed.expires_at.isoformat().startswith("2026-05-16T12:00:00")
+
+        assert await adapter.renew(None, {}, SimpleNamespace()) is None
+        assert await adapter.renew("sub-2", {}, None) is None
+
+    @pytest.mark.asyncio
+    async def test_renew_returns_none_on_graph_failure(self, adapter, monkeypatch):
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def patch(self, *args, **kwargs):
+                return SimpleNamespace(status_code=404, json=lambda: {})
+
+        monkeypatch.setattr(
+            "src.services.webhooks.adapters.microsoft_graph.httpx.AsyncClient",
+            FakeClient,
+        )
+
+        assert (
+            await adapter.renew(
+                "sub-1",
+                {},
+                SimpleNamespace(oauth=SimpleNamespace(access_token="token")),
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_request_rejects_invalid_notifications(self, adapter):
+        invalid_payload = await adapter.handle_request(
+            WebhookRequest(
+                method="POST",
+                path="/hook",
+                headers={},
+                query_params={},
+                body=b"",
+            ),
+            config={},
+            state={},
+        )
+        assert isinstance(invalid_payload, Rejected)
+        assert invalid_payload.status_code == 400
+
+        no_notifications = await adapter.handle_request(
+            WebhookRequest(
+                method="POST",
+                path="/hook",
+                headers={},
+                query_params={},
+                body=b'{"value": []}',
+            ),
+            config={},
+            state={},
+        )
+        assert isinstance(no_notifications, Rejected)
+        assert no_notifications.status_code == 400
+
+        bad_state = await adapter.handle_request(
+            WebhookRequest(
+                method="POST",
+                path="/hook",
+                headers={},
+                query_params={},
+                body=b'{"value": [{"clientState": "bad"}]}',
+            ),
+            config={},
+            state={"client_state": "expected"},
+        )
+        assert isinstance(bad_state, Rejected)
+        assert bad_state.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_handle_request_delivers_first_notification(self, adapter):
+        result = await adapter.handle_request(
+            WebhookRequest(
+                method="POST",
+                path="/hook",
+                headers={"x-ms-signature": "sig"},
+                query_params={},
+                body=(
+                    b'{'
+                    b'"value": [{'
+                    b'"subscriptionId": "sub-1",'
+                    b'"resource": "/users/user-1/messages",'
+                    b'"changeType": "created",'
+                    b'"clientState": "expected",'
+                    b'"tenantId": "tenant-1",'
+                    b'"resourceData": {"id": "message-1"}'
+                    b"}]"
+                    b"}"
+                ),
+                _json_cache={
+                    "value": [
+                        {
+                            "subscriptionId": "sub-1",
+                            "resource": "/users/user-1/messages",
+                            "changeType": "created",
+                            "clientState": "expected",
+                            "tenantId": "tenant-1",
+                            "resourceData": {"id": "message-1"},
+                        }
+                    ]
+                },
+            ),
+            config={},
+            state={"client_state": "expected"},
+        )
+
+        assert isinstance(result, Deliver)
+        assert result.event_type == "messages.created"
+        assert result.data["subscription_id"] == "sub-1"
+        assert result.data["resource_data"] == {"id": "message-1"}
+        assert result.raw_headers == {"x-ms-signature": "sig"}

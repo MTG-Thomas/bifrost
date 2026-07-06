@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -146,6 +147,28 @@ def test_run_in_worker_flushes_opentelemetry_after_error(monkeypatch):
     assert calls == ["configure", "run", "flush"]
 
 
+def test_run_in_worker_preserves_worker_error_when_telemetry_flush_fails(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "src.core.telemetry.configure_opentelemetry",
+        lambda service_name, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "src.core.telemetry.flush_opentelemetry",
+        lambda: (_ for _ in ()).throw(RuntimeError("flush boom")),
+    )
+    monkeypatch.setattr(worker, "worker_main", lambda execution_id: ("worker-main", execution_id))
+
+    def _raise(_coroutine):
+        raise ValueError("worker boom")
+
+    monkeypatch.setattr(worker.asyncio, "run", _raise)
+
+    with pytest.raises(ValueError, match="worker boom"):
+        worker.run_in_worker("exec-otel")
+
+    assert "OpenTelemetry worker flush failed: flush boom" in caplog.text
+
+
 def test_simple_worker_execute_sync_configures_opentelemetry(monkeypatch):
     from src.services.execution import simple_worker
 
@@ -188,3 +211,37 @@ def test_template_child_exit_flushes_opentelemetry(monkeypatch):
     template_process._flush_child_telemetry()
 
     assert calls == ["flush"]
+
+
+def test_queue_wait_ms_handles_missing_invalid_naive_and_future_times():
+    now = datetime(2026, 7, 5, 12, 0, 0, tzinfo=timezone.utc)
+
+    assert worker._queue_wait_ms(None, now=now) is None
+    assert worker._queue_wait_ms("not-a-date", now=now) is None
+    assert worker._queue_wait_ms("2026-07-05T11:59:58", now=now) == 2000
+    assert worker._queue_wait_ms("2026-07-05T12:00:01Z", now=now) == 0
+
+
+def test_annotate_worker_span_sets_error_and_metric_attributes():
+    span = SimpleNamespace(attributes={}, set_attribute=lambda key, value: span.attributes.__setitem__(key, value))
+
+    worker._annotate_worker_span(
+        span,
+        {
+            "status": "Failed",
+            "duration_ms": 25,
+            "error_type": "RuntimeError",
+            "metrics": {
+                "peak_memory_bytes": 4096,
+                "cpu_total_seconds": 1.25,
+            },
+        },
+    )
+
+    assert span.attributes == {
+        "bifrost.worker.status": "Failed",
+        "bifrost.worker.duration_ms": 25,
+        "bifrost.worker.error_type": "RuntimeError",
+        "bifrost.worker.peak_memory_bytes": 4096,
+        "bifrost.worker.cpu_total_seconds": 1.25,
+    }

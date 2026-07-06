@@ -85,9 +85,10 @@ def _extract_entity_key(instance: Any) -> tuple[str, str, str] | None:
     if entry is None:
         return None
     entity_type, id_attr = entry
-    entity_id = str(getattr(instance, id_attr, ""))
-    if not entity_id:
+    raw_entity_id = getattr(instance, id_attr, "")
+    if raw_entity_id is None or raw_entity_id == "":
         return None
+    entity_id = str(raw_entity_id)
     return (entity_type, entity_id, "")  # action filled by caller
 
 

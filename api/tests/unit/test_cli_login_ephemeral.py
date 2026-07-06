@@ -11,6 +11,12 @@ Three login modes:
     CWD .env. Refuses MFA-enabled instances.
 """
 
+import asyncio
+import urllib.error
+import urllib.request
+
+import pytest
+
 from bifrost import cli
 
 
@@ -143,6 +149,36 @@ class TestPasswordLoginSuccess:
 
 
 class TestPasswordLoginMfaRefusal:
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"error": "bad"}, "returned HTTP 401"),
+            ({"access_token": "only-access"}, "missing access_token/refresh_token"),
+        ],
+    )
+    def test_password_login_reports_http_and_payload_errors(
+        self,
+        capsys,
+        monkeypatch,
+        payload,
+        expected,
+    ):
+        status_code = 401 if "error" in payload else 200
+        stub = _stub_post(payload, status_code=status_code)
+        monkeypatch.setattr("httpx.AsyncClient", stub)
+
+        rc, result = asyncio.run(
+            cli.password_login_flow(
+                "http://localhost:38421",
+                "dev@gobifrost.com",
+                "password",
+            )
+        )
+
+        assert rc == 1
+        assert result is None
+        assert expected in capsys.readouterr().err
+
     def test_mfa_required_returns_exit_2(self, capsys, monkeypatch):
         stub = _stub_post({"mfa_required": True, "mfa_token": "mt", "expires_in": 300})
         monkeypatch.setattr("httpx.AsyncClient", stub)
@@ -360,7 +396,642 @@ class TestBrowserLoginWritesEnv:
         assert "BIFROST_API_URL=https://prod.example.com" in (tmp_path / ".env").read_text()
 
 
+class TestNativeLoginFlow:
+    @pytest.mark.asyncio
+    async def test_callback_server_accepts_valid_callback(self):
+        server, future, redirect_uri = cli._open_cli_callback_server("state-1")
+        try:
+            with urllib.request.urlopen(  # noqa: S310 - localhost test callback
+                f"{redirect_uri}?state=state-1&code=code-1&transaction_id=txn-1",
+                timeout=5,
+            ) as response:
+                body = response.read().decode("utf-8")
+
+            assert response.status == 200
+            assert "login complete" in body
+            assert await asyncio.wait_for(future, timeout=5) == {
+                "state": "state-1",
+                "code": "code-1",
+                "transaction_id": "txn-1",
+            }
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("query", "expected_error"),
+        [
+            ("state=wrong&code=code-1&transaction_id=txn-1", "Invalid OAuth state"),
+            ("state=state-1&code=code-1", "Missing code or transaction_id"),
+        ],
+    )
+    async def test_callback_server_rejects_bad_callback(self, query, expected_error):
+        server, future, redirect_uri = cli._open_cli_callback_server("state-1")
+        try:
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(f"{redirect_uri}?{query}", timeout=5)  # noqa: S310
+
+            assert exc.value.code == 400
+            with pytest.raises(RuntimeError, match=expected_error):
+                await asyncio.wait_for(future, timeout=5)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.asyncio
+    async def test_callback_server_returns_404_for_other_paths(self):
+        server, _future, redirect_uri = cli._open_cli_callback_server("state-1")
+        try:
+            other_uri = redirect_uri.replace("/callback", "/elsewhere")
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(other_uri, timeout=5)  # noqa: S310
+
+            assert exc.value.code == 404
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.asyncio
+    async def test_native_login_saves_tokens_and_reports_user(self, monkeypatch, capsys):
+        saved: list[dict[str, str]] = []
+        opened_urls: list[str] = []
+
+        class FakeServer:
+            def __init__(self):
+                self.shutdown_called = False
+                self.close_called = False
+
+            def shutdown(self):
+                self.shutdown_called = True
+
+            def server_close(self):
+                self.close_called = True
+
+        server = FakeServer()
+
+        def open_callback_server(expected_state):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            future.set_result(
+                {
+                    "transaction_id": "txn-1",
+                    "code": "code-1",
+                    "state": expected_state,
+                }
+            )
+            return server, future, "http://127.0.0.1:12345/callback"
+
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                self.base_url = kwargs["base_url"]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/cli/start":
+                    assert json["redirect_uri"] == "http://127.0.0.1:12345/callback"
+                    assert json["code_challenge_method"] == "S256"
+                    return Response(
+                        200,
+                        {
+                            "authorization_url": "/auth/cli/authorize?transaction_id=txn-1",
+                            "expires_in": 30,
+                        },
+                    )
+                if path == "/auth/cli/token":
+                    assert json["transaction_id"] == "txn-1"
+                    assert json["code"] == "code-1"
+                    assert json["code_verifier"]
+                    return Response(
+                        200,
+                        {
+                            "access_token": "access-1",
+                            "refresh_token": "refresh-1",
+                            "expires_in": 1800,
+                        },
+                    )
+                raise AssertionError(f"unexpected POST {path}")
+
+            async def get(self, path, headers=None):
+                assert path == "/auth/me"
+                assert headers == {"Authorization": "Bearer access-1"}
+                return Response(200, {"email": "dev@example.test"})
+
+        monkeypatch.setattr(cli, "_open_cli_callback_server", open_callback_server)
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened_urls.append(url))
+        monkeypatch.setattr(
+            cli.credentials,
+            "save_credentials",
+            lambda **kwargs: saved.append(kwargs),
+        )
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.native_login_flow("https://api.example.test/", auto_open=True)
+
+        assert opened_urls == [
+            "https://api.example.test/auth/cli/authorize?transaction_id=txn-1"
+        ]
+        assert saved[0]["api_url"] == "https://api.example.test"
+        assert saved[0]["access_token"] == "access-1"
+        assert saved[0]["refresh_token"] == "refresh-1"
+        assert server.shutdown_called is True
+        assert server.close_called is True
+        assert "Logged in as dev@example.test" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    async def test_native_login_reports_start_error(self, monkeypatch, capsys):
+        class FakeServer:
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def open_callback_server(_expected_state):
+            loop = asyncio.get_running_loop()
+            return FakeServer(), loop.create_future(), "http://127.0.0.1/callback"
+
+        class Response:
+            status_code = 503
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                assert path == "/auth/cli/start"
+                return Response()
+
+        monkeypatch.setattr(cli, "_open_cli_callback_server", open_callback_server)
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.native_login_flow("https://api.example.test") is False
+        assert "Error starting native OAuth login: 503" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_native_login_reports_token_exchange_error(self, monkeypatch, capsys):
+        class FakeServer:
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def open_callback_server(expected_state):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            future.set_result(
+                {
+                    "transaction_id": "txn-1",
+                    "code": "code-1",
+                    "state": expected_state,
+                }
+            )
+            return FakeServer(), future, "http://127.0.0.1/callback"
+
+        class Response:
+            def __init__(self, status_code, payload=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/cli/start":
+                    return Response(
+                        200,
+                        {
+                            "authorization_url": "/auth/cli/authorize",
+                            "expires_in": 30,
+                        },
+                    )
+                if path == "/auth/cli/token":
+                    return Response(401)
+                raise AssertionError(f"unexpected POST {path}")
+
+        monkeypatch.setattr(cli, "_open_cli_callback_server", open_callback_server)
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.native_login_flow("https://api.example.test", auto_open=False) is False
+        captured = capsys.readouterr()
+        assert "Open this URL to continue" in captured.out
+        assert "Error exchanging native OAuth token: 401" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_native_login_falls_back_when_user_info_fails(self, monkeypatch, capsys):
+        saved: list[dict[str, str]] = []
+
+        class FakeServer:
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def open_callback_server(expected_state):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            future.set_result(
+                {
+                    "transaction_id": "txn-1",
+                    "code": "code-1",
+                    "state": expected_state,
+                }
+            )
+            return FakeServer(), future, "http://127.0.0.1/callback"
+
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/cli/start":
+                    return Response(
+                        200,
+                        {
+                            "authorization_url": "/auth/cli/authorize",
+                            "expires_in": 30,
+                        },
+                    )
+                if path == "/auth/cli/token":
+                    return Response(
+                        200,
+                        {
+                            "access_token": "access-1",
+                            "refresh_token": "refresh-1",
+                            "expires_in": 1800,
+                        },
+                    )
+                raise AssertionError(f"unexpected POST {path}")
+
+            async def get(self, path, headers=None):
+                raise RuntimeError("profile unavailable")
+
+        monkeypatch.setattr(cli, "_open_cli_callback_server", open_callback_server)
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(
+            cli.credentials,
+            "save_credentials",
+            lambda **kwargs: saved.append(kwargs),
+        )
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.native_login_flow("https://api.example.test", auto_open=False)
+        assert saved[0]["access_token"] == "access-1"
+        assert "Logged in successfully" in capsys.readouterr().out
+
+
+class TestDeviceLoginFlow:
+    @pytest.mark.asyncio
+    async def test_device_login_uses_env_default_and_reports_code_request_error(
+        self,
+        monkeypatch,
+        capsys,
+    ):
+        class Response:
+            status_code = 503
+
+            def json(self):
+                return {}
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                assert kwargs["base_url"] == "https://env.example.test"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                assert path == "/auth/device/code"
+                return Response()
+
+        monkeypatch.setenv("BIFROST_DEV_URL", "https://env.example.test/")
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.device_login_flow(api_url=None, auto_open=False) is False
+        assert "Error requesting device code: 503" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_device_login_polls_until_token_and_saves_credentials(
+        self,
+        monkeypatch,
+        capsys,
+    ):
+        saved: list[dict[str, str]] = []
+        sleeps: list[int] = []
+
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class Client:
+            token_polls = 0
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/device/code":
+                    return Response(
+                        200,
+                        {
+                            "device_code": "device-1",
+                            "user_code": "ABCD-1234",
+                            "verification_url": "/device",
+                            "interval": 2,
+                        },
+                    )
+                if path == "/auth/device/token":
+                    assert json == {"device_code": "device-1"}
+                    self.token_polls += 1
+                    if self.token_polls == 1:
+                        return Response(200, {"error": "authorization_pending"})
+                    return Response(
+                        200,
+                        {
+                            "access_token": "access-2",
+                            "refresh_token": "refresh-2",
+                            "expires_in": 1800,
+                        },
+                    )
+                raise AssertionError(f"unexpected POST {path}")
+
+            async def get(self, path, headers=None):
+                assert path == "/auth/me"
+                assert headers == {"Authorization": "Bearer access-2"}
+                return Response(200, {"email": "device@example.test"})
+
+        async def sleep(delay):
+            sleeps.append(delay)
+
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(cli.asyncio, "sleep", sleep)
+        monkeypatch.setattr(
+            cli.credentials,
+            "save_credentials",
+            lambda **kwargs: saved.append(kwargs),
+        )
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.device_login_flow("https://api.example.test", auto_open=False)
+
+        assert sleeps == [2, 2]
+        assert saved[0]["api_url"] == "https://api.example.test"
+        assert saved[0]["access_token"] == "access-2"
+        assert saved[0]["refresh_token"] == "refresh-2"
+        out = capsys.readouterr().out
+        assert "Enter this code: ABCD-1234" in out
+        assert "Logged in as device@example.test" in out
+
+    @pytest.mark.asyncio
+    async def test_device_login_reports_poll_http_error_and_auth_me_fallback(
+        self,
+        monkeypatch,
+        capsys,
+    ):
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class PollErrorClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/device/code":
+                    return Response(
+                        200,
+                        {
+                            "device_code": "device-1",
+                            "user_code": "ABCD-1234",
+                            "verification_url": "/device",
+                            "interval": 1,
+                        },
+                    )
+                if path == "/auth/device/token":
+                    return Response(500, {})
+                raise AssertionError(f"unexpected POST {path}")
+
+        class SuccessClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/device/code":
+                    return Response(
+                        200,
+                        {
+                            "device_code": "device-1",
+                            "user_code": "ABCD-1234",
+                            "verification_url": "/device",
+                            "interval": 1,
+                        },
+                    )
+                if path == "/auth/device/token":
+                    return Response(
+                        200,
+                        {
+                            "access_token": "access-2",
+                            "refresh_token": "refresh-2",
+                            "expires_in": 1800,
+                        },
+                    )
+                raise AssertionError(f"unexpected POST {path}")
+
+            async def get(self, path, headers=None):
+                raise RuntimeError("profile unavailable")
+
+        async def sleep(_delay):
+            return None
+
+        monkeypatch.setattr(cli.httpx, "AsyncClient", PollErrorClient)
+        monkeypatch.setattr(cli.asyncio, "sleep", sleep)
+        monkeypatch.setattr(
+            cli.credentials,
+            "save_credentials",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.device_login_flow("https://api.example.test", auto_open=False) is False
+        assert "Error polling for token: 500" in capsys.readouterr().err
+
+        monkeypatch.setattr(cli.httpx, "AsyncClient", SuccessClient)
+        assert await cli.device_login_flow("https://api.example.test", auto_open=False)
+        assert "Logged in successfully" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            ("expired_token", "Device code expired"),
+            ("access_denied", "Authorization denied"),
+            ("slow_down", "Unknown error: slow_down"),
+        ],
+    )
+    async def test_device_login_reports_terminal_poll_errors(
+        self,
+        monkeypatch,
+        capsys,
+        error,
+        expected,
+    ):
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, json=None):
+                if path == "/auth/device/code":
+                    return Response(
+                        200,
+                        {
+                            "device_code": "device-1",
+                            "user_code": "ABCD-1234",
+                            "verification_url": "/device",
+                            "interval": 1,
+                        },
+                    )
+                if path == "/auth/device/token":
+                    return Response(200, {"error": error})
+                raise AssertionError(f"unexpected POST {path}")
+
+        async def sleep(_delay):
+            return None
+
+        monkeypatch.setattr(cli.httpx, "AsyncClient", Client)
+        monkeypatch.setattr(cli.asyncio, "sleep", sleep)
+        monkeypatch.setattr(
+            "bifrost.credentials.warn_if_keyring_fallback",
+            lambda: None,
+        )
+
+        assert await cli.device_login_flow("https://api.example.test", auto_open=False) is False
+        assert expected in capsys.readouterr().err
+
+
 class TestLogoutClearsKeychainAndPromptsEnv:
+    def test_logout_help_and_unknown_option(self, capsys):
+        assert cli.handle_logout(["--help"]) == 0
+        assert "Usage: bifrost logout" in capsys.readouterr().out
+
+        assert cli.handle_logout(["--url"]) == 1
+        assert "--url requires a value" in capsys.readouterr().err
+
+        assert cli.handle_logout(["--bogus"]) == 1
+        assert "Unknown option: --bogus" in capsys.readouterr().err
+
     def test_logout_clears_specific_url(self, monkeypatch, tmp_path):
         from bifrost import credentials as creds_mod
 
@@ -513,8 +1184,38 @@ class TestLogoutClearsKeychainAndPromptsEnv:
         assert rc == 0
         assert (tmp_path / ".env").read_text() == env_before
 
+    def test_logout_prompt_decline_or_eof_leaves_env_alone(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("BIFROST_API_URL=https://prod.example.com\n")
+        monkeypatch.setattr(
+            cli,
+            "logout_flow",
+            lambda api_url=None: (True, "https://prod.example.com"),
+        )
+
+        monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+        assert cli.handle_logout([]) == 0
+        assert (tmp_path / ".env").read_text() == "BIFROST_API_URL=https://prod.example.com\n"
+
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _prompt: (_ for _ in ()).throw(EOFError()),
+        )
+        assert cli.handle_logout([]) == 0
+        assert (tmp_path / ".env").read_text() == "BIFROST_API_URL=https://prod.example.com\n"
+
 
 class TestAuthList:
+    def test_auth_help_and_unknown_subcommand(self, capsys):
+        assert cli.handle_auth([]) == 1
+        assert "Usage: bifrost auth" in capsys.readouterr().out
+
+        assert cli.handle_auth(["--help"]) == 0
+        assert "Usage: bifrost auth" in capsys.readouterr().out
+
+        assert cli.handle_auth(["wat"]) == 1
+        assert "Unknown auth subcommand: wat" in capsys.readouterr().err
+
     def test_auth_list_with_no_credentials(self, monkeypatch, tmp_path, capsys):
         from bifrost import credentials as creds_mod
 

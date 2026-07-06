@@ -541,6 +541,9 @@ class LLMConfigService:
             except Exception:
                 continue
 
+            if not input_pm.is_finite() or not output_pm.is_finite():
+                continue
+
             if input_pm > max_price or output_pm > max_price:
                 continue
 

@@ -5,15 +5,20 @@ build. The COMMIT path is covered by the e2e test (it needs a live deployer)."""
 from __future__ import annotations
 
 import io
+import logging
 import zipfile
+from pathlib import Path
 
 import pytest
 
-from pathlib import Path
-
+from src.models.enums import ConfigType
 from src.services.solutions.zip_install import (
     BadExportPassword,
+    ContentCollision,
     PreviewResult,
+    _build_bundle,
+    _config_type,
+    _safe_extract_path,
     preview_zip,
     validate_install_zip,
 )
@@ -131,6 +136,139 @@ def test_preview_requires_password_true_for_full_backup_zip() -> None:
         _make_workspace_zip(extra={".bifrost/secrets.enc": "encrypted-blob-placeholder"})
     )
     assert result.requires_password is True
+
+
+def test_safe_extract_path_rejects_zip_slip_member(tmp_path) -> None:
+    zip_path = tmp_path / "evil.zip"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("bifrost.solution.yaml", "slug: ok\nname: OK\n")
+        z.writestr("../evil.txt", "pwned")
+
+    with pytest.raises(ValueError, match="unsafe path"):
+        _safe_extract_path(zip_path, str(dest))
+
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_safe_extract_path_extracts_normal_zip(tmp_path) -> None:
+    zip_path = tmp_path / "ok.zip"
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("nested/file.txt", "ok")
+
+    _safe_extract_path(zip_path, str(dest))
+
+    assert (dest / "nested" / "file.txt").read_text() == "ok"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, ConfigType.STRING),
+        ("", ConfigType.STRING),
+        ("string", ConfigType.STRING),
+        ("SECRET", ConfigType.SECRET),
+    ],
+)
+def test_config_type_maps_known_values(raw: str | None, expected: ConfigType) -> None:
+    assert _config_type(raw, key="API_KEY") is expected
+
+
+def test_config_type_logs_and_defaults_unknown_value(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="src.services.solutions.zip_install"):
+        resolved = _config_type("sekret", key="API_KEY")
+
+    assert resolved is ConfigType.STRING
+    assert "unrecognized type" in caplog.text
+    assert "API_KEY" in caplog.text
+
+
+def test_content_collision_message_lists_sorted_keys_and_tables() -> None:
+    collision = ContentCollision(keys=["Z_KEY", "A_KEY"], tables=["tickets"])
+
+    assert collision.keys == ["Z_KEY", "A_KEY"]
+    assert collision.tables == ["tickets"]
+    assert str(collision) == (
+        "Import would overwrite existing config values: A_KEY, Z_KEY; "
+        "table data: tickets. Re-run with replace to overwrite."
+    )
+
+
+def test_build_bundle_carries_preview_sections_and_collects_python(tmp_path, monkeypatch):
+    solution = object()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "workflows").mkdir()
+    (workspace / "workflows" / "main.py").write_text("def run(): return 'ok'\n")
+    (workspace / "logo.png").write_bytes(b"png-bytes")
+    preview = PreviewResult(
+        slug="zip-demo",
+        version="1.2.3",
+        logo="logo.png",
+        workflows=[{"id": "wf", "name": "main"}],
+        tables=[{"id": "table", "name": "Tickets"}],
+        apps=[{"id": "app", "name": "Desk"}],
+        forms=[{"id": "form", "name": "Intake"}],
+        agents=[{"id": "agent", "name": "Helper"}],
+        claims=[{"id": "claim", "name": "tenant_ids"}],
+        config_schemas=[{"key": "API_KEY", "type": "secret"}],
+        file_locations=["workspace"],
+        connection_schemas=[{"integration_name": "Halo", "template": {}}],
+        events=[{"id": "event", "name": "Ticket Created"}],
+        readme="# Demo\n",
+    )
+
+    monkeypatch.setattr(
+        "bifrost.commands.solution._collect_python_files",
+        lambda root: {"workflows/main.py": (root / "workflows" / "main.py").read_text()},
+    )
+
+    bundle = _build_bundle(solution, preview, workspace)
+
+    assert bundle.solution is solution
+    assert bundle.python_files == {"workflows/main.py": "def run(): return 'ok'\n"}
+    assert bundle.workflows is preview.workflows
+    assert bundle.tables is preview.tables
+    assert bundle.apps is preview.apps
+    assert bundle.forms is preview.forms
+    assert bundle.agents is preview.agents
+    assert bundle.claims is preview.claims
+    assert bundle.config_schemas is preview.config_schemas
+    assert bundle.file_locations == ["workspace"]
+    assert bundle.connection_schemas == [{"integration_name": "Halo", "template": {}}]
+    assert bundle.events == [{"id": "event", "name": "Ticket Created"}]
+    assert bundle.version == "1.2.3"
+    assert bundle.logo_b64 == "cG5nLWJ5dGVz"
+    assert bundle.logo_content_type == "image/png"
+    assert bundle.readme == "# Demo\n"
+
+
+def test_build_bundle_omits_logo_when_not_declared(tmp_path, monkeypatch):
+    solution = object()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    preview = PreviewResult(slug="zip-demo")
+    monkeypatch.setattr("bifrost.commands.solution._collect_python_files", lambda root: {})
+
+    bundle = _build_bundle(solution, preview, workspace)
+
+    assert bundle.logo_b64 is None
+    assert bundle.logo_content_type is None
+
+
+def test_build_bundle_rejects_missing_declared_logo(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    preview = PreviewResult(slug="zip-demo", logo="missing.svg")
+    monkeypatch.setattr("bifrost.commands.solution._collect_python_files", lambda root: {})
+
+    with pytest.raises(ValueError, match="solution logo file not found"):
+        _build_bundle(object(), preview, workspace)
 
 
 def _write_zip(tmp_path: Path, data: bytes) -> Path:

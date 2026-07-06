@@ -1,334 +1,321 @@
-"""
-Unit tests for ResilientPubSubListener.
+from __future__ import annotations
 
-Tests automatic reconnection with exponential backoff for Redis pub/sub.
-These tests use synchronous verification where possible to avoid async loop issues.
-"""
-
-import pytest
+import asyncio
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
+from src.core import redis_reconnect
 from src.core.redis_reconnect import ResilientPubSubListener
 
 
-class TestResilientPubSubListenerConfig:
-    """Tests for ResilientPubSubListener configuration and initialization."""
+class _FakePubSub:
+    def __init__(self, messages: list[dict] | None = None) -> None:
+        self.subscribed: list[str] = []
+        self.psubscribed: list[str] = []
+        self.closed = False
+        self._messages = list(messages or [])
 
-    def test_default_configuration(self):
-        """Test default configuration values."""
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-        )
+    async def subscribe(self, channel: str) -> None:
+        self.subscribed.append(channel)
 
-        assert listener.redis_url == "redis://localhost:6379"
-        assert listener.channels == ["test:channel"]
-        assert listener.patterns == []
-        assert listener.initial_backoff == 1.0
-        assert listener.max_backoff == 30.0
-        assert listener.backoff_multiplier == 2.0
-        assert listener.extended_failure_threshold == 5
-        assert not listener._running
-        assert listener._redis is None
-        assert listener._pubsub is None
-        assert listener._listener_task is None
-        assert listener._consecutive_failures == 0
+    async def psubscribe(self, pattern: str) -> None:
+        self.psubscribed.append(pattern)
 
-    def test_custom_configuration(self):
-        """Test custom configuration values."""
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://custom:9999",
-            channels=["channel:1", "channel:2"],
-            patterns=["pattern:*"],
-            on_message=callback,
-            initial_backoff=2.0,
-            max_backoff=60.0,
-            backoff_multiplier=3.0,
-            extended_failure_threshold=10,
-        )
+    async def close(self) -> None:
+        self.closed = True
 
-        assert listener.redis_url == "redis://custom:9999"
-        assert listener.channels == ["channel:1", "channel:2"]
-        assert listener.patterns == ["pattern:*"]
-        assert listener.initial_backoff == 2.0
-        assert listener.max_backoff == 60.0
-        assert listener.backoff_multiplier == 3.0
-        assert listener.extended_failure_threshold == 10
-
-    def test_is_healthy_false_when_not_running(self):
-        """Test is_healthy returns False when not running."""
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-        )
-
-        assert not listener.is_healthy()
-
-    def test_is_healthy_false_with_many_failures(self):
-        """Test is_healthy returns False when consecutive failures exceed threshold."""
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-            extended_failure_threshold=3,
-        )
-
-        # Simulate running state with failures
-        listener._running = True
-        listener._consecutive_failures = 5
-
-        assert not listener.is_healthy()
-
-    def test_backoff_calculation(self):
-        """Test that backoff calculation follows exponential pattern with cap."""
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-            initial_backoff=1.0,
-            max_backoff=10.0,
-            backoff_multiplier=2.0,
-        )
-
-        # Simulate backoff progression
-        backoff = listener.initial_backoff
-        expected_sequence = [1.0, 2.0, 4.0, 8.0, 10.0, 10.0]  # Caps at 10
-
-        for expected in expected_sequence:
-            assert backoff == expected, f"Expected {expected}, got {backoff}"
-            backoff = min(backoff * listener.backoff_multiplier, listener.max_backoff)
+    async def get_message(self, *, ignore_subscribe_messages: bool, timeout: float):
+        assert ignore_subscribe_messages is True
+        assert timeout == 0.5
+        if self._messages:
+            return self._messages.pop(0)
+        return None
 
 
-class TestResilientPubSubListenerAsync:
-    """Async tests that verify actual behavior with mocked Redis."""
+class _FakeRedis:
+    def __init__(self, pubsub: _FakePubSub) -> None:
+        self._pubsub = pubsub
+        self.closed = False
 
-    @pytest.fixture
-    def mock_pubsub(self):
-        """Create a mock Redis PubSub instance."""
-        from unittest.mock import MagicMock
-        pubsub = MagicMock()
-        pubsub.subscribe = AsyncMock()
-        pubsub.psubscribe = AsyncMock()
-        pubsub.get_message = AsyncMock(return_value=None)
-        pubsub.close = AsyncMock()
-        return pubsub
+    def pubsub(self) -> _FakePubSub:
+        return self._pubsub
 
-    @pytest.fixture
-    def mock_redis(self, mock_pubsub):
-        """Create a mock Redis instance."""
-        from unittest.mock import MagicMock
-        redis_instance = MagicMock()
-        redis_instance.pubsub = MagicMock(return_value=mock_pubsub)
-        redis_instance.close = AsyncMock()
-        return redis_instance
+    async def close(self) -> None:
+        self.closed = True
 
-    async def test_connect_subscribes_to_channels(self, mock_redis, mock_pubsub):
-        """Test that _connect subscribes to specified channels."""
-        from unittest.mock import patch
 
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["channel:one", "channel:two"],
-            on_message=callback,
-        )
+async def _record_message(
+    sink: list[tuple[str, dict]], channel: str, payload: dict
+) -> None:
+    sink.append((channel, payload))
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url", return_value=mock_redis
-        ):
-            result = await listener._connect()
 
-            assert result is True
-            assert mock_pubsub.subscribe.call_count == 2
-            mock_pubsub.subscribe.assert_any_call("channel:one")
-            mock_pubsub.subscribe.assert_any_call("channel:two")
+@pytest.mark.asyncio
+async def test_connect_cleans_existing_connection_and_subscribes_channels(monkeypatch) -> None:
+    old_pubsub = _FakePubSub()
+    old_redis = _FakeRedis(old_pubsub)
+    new_pubsub = _FakePubSub()
+    new_redis = _FakeRedis(new_pubsub)
+    created_urls: list[str] = []
 
-        await listener._cleanup()
+    def fake_from_url(url: str) -> _FakeRedis:
+        created_urls.append(url)
+        return new_redis
 
-    async def test_connect_subscribes_to_patterns(self, mock_redis, mock_pubsub):
-        """Test that _connect subscribes to specified patterns."""
-        from unittest.mock import patch
+    monkeypatch.setattr(redis_reconnect.Redis, "from_url", fake_from_url)
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        channels=["jobs", "events"],
+        patterns=["bifrost:*"],
+        on_message=AsyncMock(),
+    )
+    listener._pubsub = old_pubsub
+    listener._redis = old_redis
 
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            patterns=["bifrost:*", "events:*"],
-            on_message=callback,
-        )
+    assert await listener._connect() is True
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url", return_value=mock_redis
-        ):
-            result = await listener._connect()
+    assert created_urls == ["redis://example"]
+    assert old_pubsub.closed is True
+    assert old_redis.closed is True
+    assert new_pubsub.subscribed == ["jobs", "events"]
+    assert new_pubsub.psubscribed == ["bifrost:*"]
+    assert listener._redis is new_redis
+    assert listener._pubsub is new_pubsub
 
-            assert result is True
-            assert mock_pubsub.psubscribe.call_count == 2
-            mock_pubsub.psubscribe.assert_any_call("bifrost:*")
-            mock_pubsub.psubscribe.assert_any_call("events:*")
 
-        await listener._cleanup()
+@pytest.mark.asyncio
+async def test_connect_returns_false_when_subscription_setup_fails(monkeypatch) -> None:
+    class BrokenPubSub(_FakePubSub):
+        async def subscribe(self, channel: str) -> None:
+            raise RuntimeError(f"cannot subscribe {channel}")
 
-    async def test_connect_returns_false_on_error(self):
-        """Test that _connect returns False when connection fails."""
-        from unittest.mock import patch
+    monkeypatch.setattr(
+        redis_reconnect.Redis,
+        "from_url",
+        lambda _url: _FakeRedis(BrokenPubSub()),
+    )
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        channels=["jobs"],
+        on_message=AsyncMock(),
+    )
 
-        callback = AsyncMock()
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-        )
+    assert await listener._connect() is False
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url",
-            side_effect=ConnectionError("Cannot connect"),
-        ):
-            result = await listener._connect()
 
-            assert result is False
+@pytest.mark.asyncio
+async def test_cleanup_best_effort_closes_and_clears_connections() -> None:
+    class BrokenClose:
+        async def close(self) -> None:
+            raise RuntimeError("already closed")
 
-    async def test_handle_message_dispatches_channel_message(self, mock_redis, mock_pubsub):
-        """Test that _handle_message correctly dispatches channel messages."""
-        import json
-        from unittest.mock import patch
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=AsyncMock(),
+    )
+    listener._pubsub = BrokenClose()  # type: ignore[assignment]
+    listener._redis = BrokenClose()  # type: ignore[assignment]
 
-        callback = AsyncMock()
-        test_data = {"key": "value"}
+    await listener._cleanup()
 
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-        )
+    assert listener._pubsub is None
+    assert listener._redis is None
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url", return_value=mock_redis
-        ):
-            await listener._connect()
 
-            message = {
-                "type": "message",
-                "channel": b"test:channel",
-                "data": json.dumps(test_data),
-            }
-            await listener._handle_message(message)
+@pytest.mark.asyncio
+async def test_handle_message_decodes_channel_messages_and_patterns() -> None:
+    seen: list[tuple[str, dict]] = []
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=lambda channel, payload: _record_message(seen, channel, payload),
+    )
 
-            callback.assert_called_once_with("test:channel", test_data)
+    await listener._handle_message({
+        "type": "message",
+        "channel": b"jobs",
+        "data": json.dumps({"id": 1}),
+    })
+    await listener._handle_message({
+        "type": "pmessage",
+        "channel": "bifrost:events",
+        "data": json.dumps({"event": "ready"}),
+    })
 
-        await listener._cleanup()
+    assert seen == [
+        ("jobs", {"id": 1}),
+        ("bifrost:events", {"event": "ready"}),
+    ]
 
-    async def test_handle_message_dispatches_pattern_message(self, mock_redis, mock_pubsub):
-        """Test that _handle_message correctly dispatches pattern messages."""
-        import json
-        from unittest.mock import patch
 
-        callback = AsyncMock()
-        test_data = {"event": "test"}
+@pytest.mark.asyncio
+async def test_handle_message_decodes_byte_pattern_channels() -> None:
+    seen: list[tuple[str, dict]] = []
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=lambda channel, payload: _record_message(seen, channel, payload),
+    )
 
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            patterns=["bifrost:*"],
-            on_message=callback,
-        )
+    await listener._handle_message({
+        "type": "pmessage",
+        "channel": b"bifrost:events",
+        "data": json.dumps({"event": "ready"}),
+    })
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url", return_value=mock_redis
-        ):
-            await listener._connect()
+    assert seen == [("bifrost:events", {"event": "ready"})]
 
-            message = {
-                "type": "pmessage",
-                "pattern": b"bifrost:*",
-                "channel": b"bifrost:scheduler:reindex",
-                "data": json.dumps(test_data),
-            }
-            await listener._handle_message(message)
 
-            callback.assert_called_once_with("bifrost:scheduler:reindex", test_data)
+@pytest.mark.asyncio
+async def test_listen_dispatches_messages_until_stopped(monkeypatch) -> None:
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=AsyncMock(),
+    )
+    listener._running = True
+    listener._pubsub = _FakePubSub([
+        {"type": "message", "channel": "jobs", "data": json.dumps({"id": 1})}
+    ])  # type: ignore[assignment]
+    handled: list[dict] = []
 
-        await listener._cleanup()
+    async def handle_once(message: dict) -> None:
+        handled.append(message)
+        listener._running = False
 
-    async def test_handle_message_handles_invalid_json(self, mock_redis, mock_pubsub):
-        """Test that _handle_message handles invalid JSON without crashing."""
-        from unittest.mock import patch
+    monkeypatch.setattr(listener, "_handle_message", handle_once)
 
-        callback = AsyncMock()
+    await listener._listen()
 
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-        )
+    assert handled == [{"type": "message", "channel": "jobs", "data": '{"id": 1}'}]
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url", return_value=mock_redis
-        ):
-            await listener._connect()
 
-            message = {
-                "type": "message",
-                "channel": b"test:channel",
-                "data": "not valid json {",
-            }
-            # Should not raise
-            await listener._handle_message(message)
+@pytest.mark.asyncio
+async def test_listen_returns_when_no_pubsub() -> None:
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=AsyncMock(),
+    )
+    listener._running = True
 
-            # Callback should not be called for invalid JSON
-            callback.assert_not_called()
+    await listener._listen()
 
-        await listener._cleanup()
+    assert listener._running is True
 
-    async def test_cleanup_closes_connections(self, mock_redis, mock_pubsub):
-        """Test that _cleanup properly closes Redis connections."""
-        from unittest.mock import patch
 
-        callback = AsyncMock()
+@pytest.mark.asyncio
+async def test_handle_message_logs_and_swallows_bad_payloads(caplog) -> None:
+    failing_callback = AsyncMock(side_effect=RuntimeError("handler failed"))
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=failing_callback,
+    )
 
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-        )
+    await listener._handle_message({
+        "type": "message",
+        "channel": "jobs",
+        "data": "{not-json",
+    })
+    await listener._handle_message({
+        "type": "message",
+        "channel": "jobs",
+        "data": json.dumps({"id": 1}),
+    })
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url", return_value=mock_redis
-        ):
-            await listener._connect()
-            assert listener._redis is not None
-            assert listener._pubsub is not None
+    assert "Invalid JSON in pub/sub message" in caplog.text
+    assert "Error handling pub/sub message" in caplog.text
 
-            await listener._cleanup()
 
-            mock_pubsub.close.assert_called_once()
-            mock_redis.close.assert_called_once()
-            assert listener._redis is None
-            assert listener._pubsub is None
+@pytest.mark.asyncio
+async def test_start_rejects_duplicate_start_and_stop_cancels_task(monkeypatch) -> None:
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=AsyncMock(),
+    )
 
-    async def test_start_raises_if_already_running(self, mock_redis, mock_pubsub):
-        """Test that start raises RuntimeError if already running."""
-        from unittest.mock import patch
+    async def wait_until_cancelled() -> None:
+        await asyncio.Event().wait()
 
-        callback = AsyncMock()
+    monkeypatch.setattr(listener, "_listener_loop", wait_until_cancelled)
+    task = await listener.start()
 
-        listener = ResilientPubSubListener(
-            redis_url="redis://localhost:6379",
-            channels=["test:channel"],
-            on_message=callback,
-        )
+    with pytest.raises(RuntimeError, match="already running"):
+        await listener.start()
 
-        with patch(
-            "src.core.redis_reconnect.Redis.from_url", return_value=mock_redis
-        ):
-            await listener.start()
+    assert listener.is_healthy() is True
 
-            with pytest.raises(RuntimeError, match="already running"):
-                await listener.start()
+    await listener.stop()
 
-            await listener.stop()
+    assert task.cancelled()
+    assert listener.is_healthy() is False
+
+
+@pytest.mark.asyncio
+async def test_listener_loop_backs_off_and_recovers_after_failed_connects(monkeypatch) -> None:
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=AsyncMock(),
+        initial_backoff=0.25,
+        max_backoff=0.5,
+        backoff_multiplier=2,
+    )
+    listener._running = True
+    listener._consecutive_failures = 1
+    connect = AsyncMock(side_effect=[False, True])
+    monkeypatch.setattr(listener, "_connect", connect)
+    monkeypatch.setattr(listener, "_listen", AsyncMock(side_effect=asyncio.CancelledError))
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(redis_reconnect.asyncio, "sleep", fake_sleep)
+
+    await listener._listener_loop()
+
+    assert connect.await_count == 2
+    assert sleeps == [0.25]
+    assert listener._consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_listener_loop_records_lost_connection_and_stops_after_sleep(monkeypatch) -> None:
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=AsyncMock(),
+        initial_backoff=1,
+        extended_failure_threshold=1,
+    )
+    listener._running = True
+    monkeypatch.setattr(listener, "_connect", AsyncMock(return_value=True))
+    monkeypatch.setattr(listener, "_listen", AsyncMock(side_effect=RuntimeError("redis lost")))
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        listener._running = False
+
+    monkeypatch.setattr(redis_reconnect.asyncio, "sleep", fake_sleep)
+
+    await listener._listener_loop()
+
+    assert sleeps == [1]
+    assert listener._consecutive_failures == 1
+
+
+def test_is_healthy_requires_running_task_below_failure_threshold() -> None:
+    listener = ResilientPubSubListener(
+        redis_url="redis://example",
+        on_message=AsyncMock(),
+        extended_failure_threshold=2,
+    )
+
+    assert listener.is_healthy() is False
+
+    listener._running = True
+    listener._listener_task = SimpleNamespace(done=lambda: False)  # type: ignore[assignment]
+    listener._consecutive_failures = 1
+    assert listener.is_healthy() is True
+
+    listener._consecutive_failures = 2
+    assert listener.is_healthy() is False

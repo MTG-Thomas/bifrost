@@ -136,7 +136,7 @@ class LocalBackend(FileBackend):
         def _list_dir():
             items = []
             for item in resolved.iterdir():
-                rel_path = str(item.relative_to(self._resolve_path("", location)))
+                rel_path = item.relative_to(self._resolve_path("", location)).as_posix()
                 if item.is_dir():
                     rel_path += "/"
                 items.append(rel_path)

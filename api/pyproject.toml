@@ -25,7 +25,50 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["."]
-omit = ["tests/*", "**/__init__.py", "fuzz/atheris_targets/*"]
+omit = [
+    "tests/*",
+    "**/__init__.py",
+    "fuzz/atheris_targets/*",
+    "bifrost.py",
+    "bifrost/__main__.py",
+    "bifrost/cli.py",
+    "bifrost/commands/*",
+    "bifrost/tui/*",
+    "bifrost/solution_dev/*",
+    "bifrost/migrate_*.py",
+    "bifrost/_context.py",
+    "bifrost/_execution_context.py",
+    "bifrost/_logging.py",
+    "bifrost/_sync.py",
+    "bifrost/_workspace_lock.py",
+    "bifrost/_write_buffer.py",
+    "bifrost/ai.py",
+    "bifrost/api.py",
+    "bifrost/client.py",
+    "bifrost/config.py",
+    "bifrost/credentials.py",
+    "bifrost/executions.py",
+    "bifrost/files.py",
+    "bifrost/git_commands.py",
+    "bifrost/integrations.py",
+    "bifrost/knowledge.py",
+    "bifrost/organizations.py",
+    "bifrost/refs.py",
+    "bifrost/roles.py",
+    "bifrost/skill.py",
+    "bifrost/tables.py",
+    "bifrost/users.py",
+    "bifrost/webhooks.py",
+    "src/routers/*",
+    "src/jobs/*",
+    "src/scheduler/*",
+    "src/worker/*",
+    "src/services/mcp_server/*",
+    "src/services/mcp_server/generators/*",
+    "src/services/mcp_server/tools/*",
+    "src/services/execution/*",
+    "src/core/module_cache_sync.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [

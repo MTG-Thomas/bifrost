@@ -5,11 +5,22 @@ Tests the consumer that pip installs packages on the worker,
 recycles processes, and updates the package list in Redis.
 """
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.jobs.consumers.package_install import PackageInstallConsumer
+sys.modules.setdefault(
+    "resource",
+    SimpleNamespace(
+        RUSAGE_SELF=0,
+        getrusage=lambda _who: SimpleNamespace(ru_maxrss=0),
+    ),
+)
+
+from src.jobs.consumers import package_install  # noqa: E402
+from src.jobs.consumers.package_install import PackageInstallConsumer  # noqa: E402
 
 
 class TestProcessMessage:
@@ -252,3 +263,40 @@ class TestUpdatePoolPackages:
         ):
             # Should not raise
             await consumer._update_pool_packages()
+
+
+class TestPipHelpers:
+    """Tests for subprocess-facing pip helpers with mocked processes."""
+
+    @pytest.fixture
+    def consumer(self) -> PackageInstallConsumer:
+        return PackageInstallConsumer()
+
+    @pytest.mark.asyncio
+    async def test_pip_uninstall_treats_missing_package_as_success(
+        self, consumer: PackageInstallConsumer
+    ):
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.communicate = AsyncMock(return_value=(b"", b"WARNING: Skipping demo as it is not installed."))
+
+        with patch.object(package_install.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
+            assert await consumer._pip_uninstall("demo") is None
+
+    @pytest.mark.asyncio
+    async def test_pip_install_returns_stderr_on_failure(
+        self, consumer: PackageInstallConsumer
+    ):
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.communicate = AsyncMock(return_value=(b"", b"resolver failed"))
+
+        with patch.object(package_install.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
+            assert await consumer._pip_install("demo", "1.2.3") == "resolver failed"
+
+    @pytest.mark.asyncio
+    async def test_pip_install_requirements_skips_empty_cache(
+        self, consumer: PackageInstallConsumer
+    ):
+        with patch("src.core.requirements_cache.get_requirements", AsyncMock(return_value={"content": "   "})):
+            assert await consumer._pip_install_requirements() is None

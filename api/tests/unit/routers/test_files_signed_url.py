@@ -12,9 +12,13 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 from src.core.principal import UserPrincipal
 from src.routers.files import (
+    SignedUrlBatchRequest,
+    SignedUploadCompleteRequest,
     SignedUrlRequest,
     SignedUrlResponse,
+    complete_signed_upload,
     get_signed_url,
+    get_signed_urls,
 )
 
 # A concrete org UUID — scope resolution (`resolve_target_org`) validates that a
@@ -264,3 +268,190 @@ class TestPresignedUrlGeneration:
         mock_fss.generate_presigned_download_url.assert_awaited_once_with(
             path=f"uploads/{ORG_A}/file.pdf",
         )
+
+
+class TestSignedUrlBatch:
+    """Batch endpoint returns per-item success/error results without aborting."""
+
+    @pytest.mark.asyncio
+    async def test_batch_mixes_success_forbidden_and_bad_request(self, monkeypatch):
+        from fastapi import HTTPException
+
+        async def fake_build_signed_url(item, ctx, db):
+            if item.path == "ok.pdf":
+                return SignedUrlResponse(
+                    url="https://s3/ok",
+                    path=f"uploads/{ORG_A}/ok.pdf",
+                )
+            if item.path == "denied.pdf":
+                raise HTTPException(status_code=403, detail="policy details hidden")
+            raise HTTPException(status_code=400, detail="bad path")
+
+        monkeypatch.setattr(
+            "src.routers.files._build_signed_url",
+            fake_build_signed_url,
+        )
+
+        response = await get_signed_urls(
+            SignedUrlBatchRequest(
+                requests=[
+                    SignedUrlRequest(path="ok.pdf", method="GET", scope=str(ORG_A)),
+                    SignedUrlRequest(path="denied.pdf", method="GET", scope=str(ORG_A)),
+                    SignedUrlRequest(path="../bad.pdf", method="PUT", scope=str(ORG_A)),
+                ]
+            ),
+            _ctx(),
+            MagicMock(),
+            AsyncMock(),
+        )
+
+        assert [result.path for result in response.results] == [
+            "ok.pdf",
+            "denied.pdf",
+            "../bad.pdf",
+        ]
+        assert response.results[0].status_code == 200
+        assert response.results[0].resolved_path == f"uploads/{ORG_A}/ok.pdf"
+        assert response.results[0].url == "https://s3/ok"
+        assert response.results[0].expires_in == 600
+
+        assert response.results[1].status_code == 403
+        assert response.results[1].error == "forbidden"
+        assert response.results[1].url is None
+
+        assert response.results[2].status_code == 400
+        assert response.results[2].error == "bad path"
+        assert response.results[2].method == "PUT"
+
+
+class TestSignedUploadCompletion:
+    """Completing a browser PUT records metadata and publishes file changes."""
+
+    @pytest.mark.asyncio
+    async def test_complete_upload_records_metadata_and_publishes(self, monkeypatch):
+        metadata_calls = []
+        publish_calls = []
+
+        class FakeStorage:
+            def __init__(self, db):
+                self.db = db
+
+            async def file_exists(self, s3_path):
+                assert s3_path == f"uploads/{ORG_A}/report.pdf"
+                return True
+
+            async def record_signed_upload_metadata(self, **kwargs):
+                metadata_calls.append(kwargs)
+
+        class Db:
+            def __init__(self):
+                self.commits = 0
+
+            async def commit(self):
+                self.commits += 1
+
+        async def fake_publish_file_change(**kwargs):
+            publish_calls.append(kwargs)
+
+        db = Db()
+        monkeypatch.setattr(
+            "src.routers.files.FileStorageService",
+            FakeStorage,
+        )
+        monkeypatch.setattr(
+            "src.routers.files._require_declared_solution_file_location",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "src.routers.files._require_file_policy",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "src.routers.files._install_org_id",
+            AsyncMock(return_value=ORG_A),
+        )
+        monkeypatch.setattr(
+            "src.core.pubsub.publish_file_change",
+            fake_publish_file_change,
+        )
+
+        await complete_signed_upload(
+            SignedUploadCompleteRequest(
+                path="report.pdf",
+                location="uploads",
+                scope=str(ORG_A),
+                content_type="application/pdf",
+                size_bytes=123,
+                sha256="a" * 64,
+            ),
+            _ctx(),
+            MagicMock(),
+            db,
+        )
+
+        assert db.commits == 1
+        assert metadata_calls == [
+            {
+                "location": "uploads",
+                "scope": str(ORG_A),
+                "path": "report.pdf",
+                "s3_path": f"uploads/{ORG_A}/report.pdf",
+                "content_type": "application/pdf",
+                "size_bytes": 123,
+                "sha256": "a" * 64,
+                "updated_by": "admin@example.com",
+                "user_id": "11111111-1111-1111-1111-111111111111",
+                "solution_id": None,
+                "org_id": ORG_A,
+            }
+        ]
+        assert publish_calls == [
+            {
+                "location": "uploads",
+                "scope": str(ORG_A),
+                "path": "report.pdf",
+                "action": "upload",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_complete_upload_404s_when_object_is_missing(self, monkeypatch):
+        class FakeStorage:
+            def __init__(self, db):
+                self.db = db
+
+            async def file_exists(self, s3_path):
+                return False
+
+            async def record_signed_upload_metadata(self, **_kwargs):
+                raise AssertionError("metadata should not be recorded")
+
+        monkeypatch.setattr(
+            "src.routers.files.FileStorageService",
+            FakeStorage,
+        )
+        monkeypatch.setattr(
+            "src.routers.files._require_declared_solution_file_location",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "src.routers.files._require_file_policy",
+            AsyncMock(return_value=None),
+        )
+
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc_info:
+            await complete_signed_upload(
+                SignedUploadCompleteRequest(
+                    path="missing.pdf",
+                    location="uploads",
+                    scope=str(ORG_A),
+                ),
+                _ctx(),
+                MagicMock(),
+                MagicMock(),
+            )
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Uploaded object not found"

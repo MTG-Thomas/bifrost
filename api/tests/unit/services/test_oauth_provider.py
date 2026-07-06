@@ -6,6 +6,7 @@ Mocks HTTP requests to OAuth providers.
 
 import pytest
 import asyncio
+import aiohttp
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -290,6 +291,32 @@ class TestOAuthProviderTokenExchange:
             data = mock_session.post.call_args[1]["data"]
             assert "scope" not in data
 
+    @pytest.mark.asyncio
+    async def test_exchange_includes_audience_when_provided(self, oauth_client):
+        """Should include provider audience in auth code exchange payload."""
+        with patch.object(
+            oauth_client,
+            "_make_token_request",
+            new=AsyncMock(return_value=(True, {"access_token": "token"})),
+        ) as make_request:
+            success, _result = await oauth_client.exchange_code_for_token(
+                token_url="https://oauth.example.com/token",
+                code="authorization_code_123",
+                client_id="client-id",
+                client_secret=None,
+                redirect_uri="https://app.example.com/callback",
+                audience="api://resource",
+            )
+
+        assert success is True
+        assert make_request.await_args.args[1] == {
+            "grant_type": "authorization_code",
+            "code": "authorization_code_123",
+            "client_id": "client-id",
+            "redirect_uri": "https://app.example.com/callback",
+            "audience": "api://resource",
+        }
+
 
 class TestOAuthProviderTokenRefresh:
     """Test access token refresh flow"""
@@ -445,6 +472,30 @@ class TestOAuthProviderTokenRefresh:
             data = mock_session.post.call_args[1]["data"]
             assert "scope" not in data
 
+    @pytest.mark.asyncio
+    async def test_refresh_pkce_includes_audience_without_client_secret(self, oauth_client):
+        """PKCE refresh should preserve audience and omit absent client_secret."""
+        with patch.object(
+            oauth_client,
+            "_make_token_request",
+            new=AsyncMock(return_value=(True, {"access_token": "token"})),
+        ) as make_request:
+            success, _result = await oauth_client.refresh_access_token(
+                token_url="https://oauth.example.com/token",
+                refresh_token="refresh-token",
+                client_id="client-id",
+                client_secret=None,
+                audience="api://resource",
+            )
+
+        assert success is True
+        assert make_request.await_args.args[1] == {
+            "grant_type": "refresh_token",
+            "refresh_token": "refresh-token",
+            "client_id": "client-id",
+            "audience": "api://resource",
+        }
+
 
 class TestOAuthProviderScopes:
     """Test scope validation and handling"""
@@ -491,6 +542,30 @@ class TestOAuthProviderScopes:
             data = call_args[1].get("data")
             assert "scope" in data
             assert "api://app/read" in data["scope"]
+
+    @pytest.mark.asyncio
+    async def test_client_credentials_omits_empty_scope_and_includes_audience(self, oauth_client):
+        """Empty scope should not send scope, but audience still should be preserved."""
+        with patch.object(
+            oauth_client,
+            "_make_token_request",
+            new=AsyncMock(return_value=(True, {"access_token": "token"})),
+        ) as make_request:
+            success, _result = await oauth_client.get_client_credentials_token(
+                token_url="https://oauth.example.com/token",
+                client_id="client-id",
+                client_secret="client-secret",
+                scopes="",
+                audience="api://resource",
+            )
+
+        assert success is True
+        assert make_request.await_args.args[1] == {
+            "grant_type": "client_credentials",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "audience": "api://resource",
+        }
 
 
 class TestOAuthProviderMetadata:
@@ -548,6 +623,24 @@ class TestOAuthProviderMetadata:
 
         assert result["access_token"] == "token_789"
         assert result["refresh_token"] is None
+
+    def test_parse_token_response_preserves_provider_specific_fields(self, oauth_client):
+        """Provider-specific fields must survive for entity-id extraction."""
+        response_data = {
+            "access_token": "token_789",
+            "expires_in": 3600,
+            "realmId": "quickbooks-realm",
+            "team": {"id": "slack-team"},
+            "id_token": "jwt",
+        }
+
+        result = oauth_client._parse_token_response(response_data)
+
+        assert result["token_type"] == "Bearer"
+        assert result["scope"] == ""
+        assert result["realmId"] == "quickbooks-realm"
+        assert result["team"] == {"id": "slack-team"}
+        assert result["id_token"] == "jwt"
 
 
 class TestOAuthProviderRetry:
@@ -665,6 +758,53 @@ class TestOAuthProviderRetry:
             # After max_retries, should fail
             assert success is False
             assert "max_retries_exceeded" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_network_error_retries_then_reports_last_error(self, oauth_client):
+        """Network errors should retry and surface max_retries_exceeded."""
+        with patch('aiohttp.ClientSession') as mock_session_class:
+            class NetworkErrorContext:
+                async def __aenter__(self):
+                    raise aiohttp.ClientError("socket closed")
+
+                async def __aexit__(self, *args):
+                    pass
+
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=NetworkErrorContext())
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=None)
+            mock_session_class.return_value = mock_session
+
+            with patch('asyncio.sleep', new_callable=AsyncMock) as sleep:
+                success, result = await oauth_client.refresh_access_token(
+                    token_url="https://oauth.example.com/token",
+                    refresh_token="refresh_token",
+                    client_id="client-id",
+                    client_secret="client-secret",
+                )
+
+        assert success is False
+        assert result["error"] == "max_retries_exceeded"
+        assert "socket closed" in result["error_description"]
+        assert sleep.await_count == oauth_client.max_retries - 1
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_returns_without_retry(self, oauth_client):
+        """Unexpected request construction errors should not be retried."""
+        with patch('aiohttp.ClientSession', side_effect=RuntimeError("bad session")):
+            success, result = await oauth_client.refresh_access_token(
+                token_url="https://oauth.example.com/token",
+                refresh_token="refresh_token",
+                client_id="client-id",
+                client_secret="client-secret",
+            )
+
+        assert success is False
+        assert result == {
+            "error": "unexpected_error",
+            "error_description": "bad session",
+        }
 
 
 class TestAppendQueryParams:

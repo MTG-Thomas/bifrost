@@ -9,6 +9,8 @@ NOTE: These tests use mocks to avoid spawning real processes.
 """
 
 import asyncio
+import signal
+import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -739,9 +741,13 @@ class TestAdmissionControl:
             "src.services.execution.process_pool.has_sufficient_memory_cgroup",
             return_value=False,
         ):
+            fake_redis = AsyncMock()
             with patch.object(pool, '_write_context_to_redis', new_callable=AsyncMock):
-                with pytest.raises(MemoryError, match="memory pressure"):
-                    await pool.route_execution("exec-123", {"timeout_seconds": 300})
+                with patch.object(pool, "_get_redis", new_callable=AsyncMock, return_value=fake_redis):
+                    with pytest.raises(MemoryError, match="memory pressure"):
+                        await pool.route_execution("exec-123", {"timeout_seconds": 300})
+
+            fake_redis.delete.assert_awaited_once_with("bifrost:exec:exec-123:context")
 
         assert pool._admission_attempts == 1
         assert pool._admission_rejections["memory_pressure"] == 1
@@ -1092,6 +1098,64 @@ async def test_successful_install_does_not_notify():
     get_svc.assert_not_called()
 
 
+def test_get_installed_packages_returns_pip_json():
+    from src.services.execution.process_pool import _get_installed_packages
+
+    completed = subprocess.CompletedProcess(
+        args=["pip", "list", "--format=json"],
+        returncode=0,
+        stdout='[{"name": "fastapi", "version": "1.0.0"}]',
+        stderr="",
+    )
+
+    with patch("src.services.execution.process_pool.subprocess.run", return_value=completed) as run:
+        packages = _get_installed_packages()
+
+    assert packages == [{"name": "fastapi", "version": "1.0.0"}]
+    run.assert_called_once_with(
+        ["pip", "list", "--format=json"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_get_installed_packages_returns_empty_on_failure():
+    from src.services.execution.process_pool import _get_installed_packages
+
+    with patch("src.services.execution.process_pool.subprocess.run", side_effect=RuntimeError("pip failed")):
+        assert _get_installed_packages() == []
+
+    completed = subprocess.CompletedProcess(
+        args=["pip", "list", "--format=json"],
+        returncode=1,
+        stdout="not-json",
+        stderr="boom",
+    )
+    with patch("src.services.execution.process_pool.subprocess.run", return_value=completed):
+        assert _get_installed_packages() == []
+
+
+@pytest.mark.asyncio
+async def test_failed_install_notification_error_is_swallowed():
+    from src.services.execution.process_pool import _notify_requirements_failures
+
+    result = RequirementsInstallResult(
+        attempted=["badpkg"],
+        installed=[],
+        failed=[FailedPackage(package="badpkg", error="boom")],
+    )
+    svc = AsyncMock()
+    svc.find_admin_notification_by_title.side_effect = RuntimeError("db down")
+    with patch(
+        "src.services.execution.process_pool.get_notification_service",
+        return_value=svc,
+    ):
+        await _notify_requirements_failures(result)
+
+    svc.create_notification.assert_not_awaited()
+
+
 class TestBurstRaceRegression:
     """Regression tests for issue #316 follow-up:
 
@@ -1228,3 +1292,191 @@ class TestBurstRaceRegression:
             "waiter never woke — _notify_slot_free was skipped because "
             "cleanup aborted with KeyError"
         )
+
+
+class TestProcessPoolCoverageBranches:
+    @pytest.mark.asyncio
+    async def test_write_context_to_redis_serializes_default_values(self):
+        pool = ProcessPoolManager()
+        redis = AsyncMock()
+        pool._get_redis = AsyncMock(return_value=redis)  # type: ignore[method-assign]
+
+        now = datetime(2026, 7, 5, tzinfo=timezone.utc)
+        await pool._write_context_to_redis(
+            "exec-json",
+            {"started_at": now, "payload": {"ok": True}},
+        )
+
+        redis.setex.assert_awaited_once()
+        key, ttl, payload = redis.setex.await_args.args
+        assert key == "bifrost:exec:exec-json:context"
+        assert ttl == 3600
+        assert '"2026-07-05 00:00:00+00:00"' in payload
+        assert '"ok": true' in payload
+
+    @pytest.mark.asyncio
+    async def test_route_execution_rejects_memory_pressure_and_deletes_context(self):
+        pool = ProcessPoolManager(max_workers=1)
+        redis = AsyncMock()
+        pool._get_redis = AsyncMock(return_value=redis)  # type: ignore[method-assign]
+        pool._write_context_to_redis = AsyncMock()  # type: ignore[method-assign]
+        pool._fork_process = MagicMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("must not fork")
+        )
+
+        settings = MagicMock(memory_pressure_threshold=0.75)
+        with patch("src.services.execution.process_pool.get_settings", return_value=settings), \
+             patch(
+                 "src.services.execution.process_pool.has_sufficient_memory_cgroup",
+                 return_value=False,
+             ):
+            with pytest.raises(MemoryError) as exc:
+                await pool.route_execution("exec-memory", {"timeout_seconds": 10})
+
+        assert "memory pressure" in str(exc.value)
+        redis.delete.assert_awaited_once_with("bifrost:exec:exec-memory:context")
+        assert pool._admission_rejections["memory_pressure"] == 1
+        pool._fork_process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_route_execution_slot_timeout_updates_metrics(self):
+        pool = ProcessPoolManager(max_workers=1)
+        pool.processes["busy"] = MagicMock()
+        pool._write_context_to_redis = AsyncMock()  # type: ignore[method-assign]
+        pool._wait_for_slot = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        with patch(
+            "src.services.execution.process_pool.has_sufficient_memory_cgroup",
+            return_value=True,
+        ):
+            with pytest.raises(ProcessPoolAdmissionRejected):
+                await pool.route_execution("exec-timeout", {})
+
+        assert pool._admission_rejections["slot_timeout"] == 1
+        pool._wait_for_slot.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_terminate_process_marks_killed_and_handles_missing_process(self):
+        pool = ProcessPoolManager(graceful_shutdown_seconds=0)
+
+        process = MagicMock()
+        process.is_alive.side_effect = [True, True]
+        handle = ProcessHandle(
+            id="proc-1",
+            process=process,
+            pid=12345,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=MagicMock(),
+            started_at=datetime.now(timezone.utc),
+        )
+
+        calls: list[tuple[int, int]] = []
+
+        def kill(pid, sig):
+            calls.append((pid, sig))
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError
+
+        with patch("src.services.execution.process_pool.os.kill", side_effect=kill):
+            await pool._terminate_process(handle)
+
+        assert handle.state == ProcessState.KILLED
+        assert handle.killed_at is not None
+        assert calls == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+
+    @pytest.mark.asyncio
+    async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown(self):
+        pool = ProcessPoolManager()
+        pool._handle_recycle_process_command = AsyncMock()  # type: ignore[method-assign]
+        pool._handle_recycle_all_command = AsyncMock()  # type: ignore[method-assign]
+
+        await pool._handle_command({"action": "recycle_process", "pid": 10})
+        await pool._handle_command({"action": "recycle_all"})
+        await pool._handle_command({"action": "resize"})
+
+        pool._handle_recycle_process_command.assert_awaited_once_with(
+            {"action": "recycle_process", "pid": 10}
+        )
+        pool._handle_recycle_all_command.assert_awaited_once_with(
+            {"action": "recycle_all"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_recycle_commands_delegate_to_drain_with_default_and_custom_reason(self):
+        pool = ProcessPoolManager()
+        pool._recycle_via_drain = AsyncMock()  # type: ignore[method-assign]
+
+        await pool._handle_recycle_process_command({"pid": 99})
+        await pool._handle_recycle_all_command({"reason": "operator"})
+
+        assert pool._recycle_via_drain.await_args_list[0].kwargs == {
+            "reason": "API request"
+        }
+        assert pool._recycle_via_drain.await_args_list[1].kwargs == {
+            "reason": "operator"
+        }
+
+    @pytest.mark.asyncio
+    async def test_handle_cancel_request_kills_reports_removes_and_notifies(self):
+        callback = AsyncMock()
+        pool = ProcessPoolManager(on_result=callback)
+        pool._kill_process = AsyncMock()  # type: ignore[method-assign]
+        pool._notify_slot_free = AsyncMock()  # type: ignore[method-assign]
+
+        process = MagicMock()
+        process.is_alive.return_value = True
+        handle = ProcessHandle(
+            id="proc-cancel",
+            process=process,
+            pid=12345,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=MagicMock(),
+            started_at=datetime.now(timezone.utc),
+            current_execution=ExecutionInfo(
+                execution_id="exec-cancel",
+                started_at=datetime.now(timezone.utc) - timedelta(seconds=2),
+                timeout_seconds=300,
+            ),
+        )
+        pool.processes[handle.id] = handle
+
+        await pool._handle_cancel_request("exec-cancel")
+
+        pool._kill_process.assert_awaited_once_with(handle)
+        callback.assert_awaited_once()
+        payload = callback.await_args.args[0]
+        assert payload["execution_id"] == "exec-cancel"
+        assert payload["error_type"] == "CancelledError"
+        assert handle.id not in pool.processes
+        pool._notify_slot_free.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_report_cancellation_noops_and_swallows_callback_errors(self):
+        pool = ProcessPoolManager(on_result=None)
+        handle = ProcessHandle(
+            id="proc-noop",
+            process=MagicMock(),
+            pid=1,
+            state=ProcessState.BUSY,
+            work_queue=MagicMock(),
+            result_queue=MagicMock(),
+            started_at=datetime.now(timezone.utc),
+        )
+
+        await pool._report_cancellation(handle)
+        assert handle.result_reported is False
+
+        callback = AsyncMock(side_effect=RuntimeError("observer down"))
+        pool = ProcessPoolManager(on_result=callback)
+        handle.current_execution = ExecutionInfo(
+            execution_id="exec-error",
+            started_at=datetime.now(timezone.utc),
+            timeout_seconds=10,
+        )
+
+        await pool._report_cancellation(handle)
+
+        callback.assert_awaited_once()
+        assert handle.result_reported is True

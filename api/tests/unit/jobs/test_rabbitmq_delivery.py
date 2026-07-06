@@ -8,6 +8,7 @@ import pytest
 
 from src.jobs.rabbitmq import (
     BaseConsumer,
+    DomainFailureHandled,
     DuplicateMessage,
     PermanentConsumerError,
     RetryableConsumerError,
@@ -56,6 +57,8 @@ class UnitConsumer(BaseConsumer):
     async def process_message(self, body: dict[str, Any]) -> None:
         if self.outcome == "duplicate":
             raise DuplicateMessage("already handled")
+        if self.outcome == "domain_failure":
+            raise DomainFailureHandled("recorded elsewhere")
         if self.outcome == "retry":
             raise RetryableConsumerError("temporarily broken")
         if self.outcome == "permanent":
@@ -99,6 +102,19 @@ async def test_success_acks_message() -> None:
 @pytest.mark.asyncio
 async def test_duplicate_acks_message_without_retry() -> None:
     consumer = UnitConsumer("duplicate")
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    await consumer._process_message_with_ack(message)
+
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+    assert consumer.retry_payloads == []
+    assert consumer.poison_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_domain_failure_handled_acks_message_without_retry() -> None:
+    consumer = UnitConsumer("domain_failure")
     message = FakeMessage(json.dumps({"ok": True}))
 
     await consumer._process_message_with_ack(message)
@@ -184,6 +200,53 @@ async def test_malformed_json_publishes_poison_then_acks_original() -> None:
     assert consumer.poison_payloads
     assert "malformed JSON" in consumer.poison_payloads[0][1]
     message.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_object_json_body_without_context_rejects_original() -> None:
+    consumer = UnitConsumer()
+    message = FakeMessage(json.dumps(["not", "an", "object"]))
+
+    await consumer._process_message_with_ack(message)
+
+    assert consumer.poison_payloads == []
+    message.reject.assert_awaited_once_with(requeue=False)
+    message.ack.assert_not_awaited()
+    message.nack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_poison_publish_failure_requeues_original() -> None:
+    consumer = UnitConsumer("permanent")
+    consumer._publish_poison = AsyncMock(side_effect=RuntimeError("poison publish failed"))  # type: ignore[method-assign]
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    await consumer._process_message_with_ack(message)
+
+    message.ack.assert_not_awaited()
+    message.nack.assert_awaited_once_with(requeue=True)
+
+
+@pytest.mark.asyncio
+async def test_retry_without_context_requeues_original() -> None:
+    consumer = UnitConsumer()
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    await consumer._retry_or_poison(message, None, reason="no context", started=0.0)
+
+    message.nack.assert_awaited_once_with(requeue=True)
+    message.ack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_without_context_rejects_original() -> None:
+    consumer = UnitConsumer()
+    message = FakeMessage(json.dumps({"ok": True}))
+
+    await consumer._dead_letter_and_ack(message, None, reason="no context", started=0.0)
+
+    message.reject.assert_awaited_once_with(requeue=False)
+    message.ack.assert_not_awaited()
 
 
 @pytest.mark.asyncio

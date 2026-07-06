@@ -155,11 +155,9 @@ async def _apply_role_change(db: "AsyncSession", change: dict[str, Any]) -> None
     operation = change.get("operation")
     role_id = change.get("entity_id")
     entity_key = change.get("entity_key")
-    org_id = change.get("org_id")
     data = change.get("data", {})
     user_id = change.get("user_id") or "system"
 
-    org_uuid = UUID(org_id) if org_id and org_id != "GLOBAL" else None
     role_uuid = UUID(role_id) if role_id else UUID(entity_key)
 
     if operation == "delete":
@@ -177,10 +175,8 @@ async def _apply_role_change(db: "AsyncSession", change: dict[str, Any]) -> None
     elif operation == "create":
         db.add(Role(
             id=role_uuid,
-            organization_id=org_uuid,
             name=data.get("name", ""),
             description=data.get("description", ""),
-            is_active=True,
             created_by=user_id
         ))
 

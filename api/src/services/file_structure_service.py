@@ -62,7 +62,7 @@ class FileStructureService:
             if not rel:
                 continue
             head, _, tail = rel.partition("/")
-            if tail:  # nested → folder
+            if tail or rel.endswith("/"):  # nested or explicit marker → folder
                 folders[head] = StructureEntry(
                     name=head, kind="folder", path=f"{rel_prefix}{head}"
                 )

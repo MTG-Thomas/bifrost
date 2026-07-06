@@ -6,6 +6,8 @@ workflow validation, execution tracking, and knowledge search.
 """
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any, cast
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -144,6 +146,14 @@ class _FirstResult:
         return self._value
 
 
+class _ScalarsFirstResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalars(self):
+        return _FirstResult(self._value)
+
+
 class _CreateAppDb:
     def __init__(self, *, stale_source: bool):
         self._stale_source = stale_source
@@ -171,6 +181,53 @@ class _CreateAppDb:
 
 
 class TestAppToolImpl:
+    def test_pick_slug_row_prefers_org_global_then_lowest_id(self):
+        from src.services.mcp_server.tools.apps import _pick_slug_row
+
+        org_id = uuid4()
+        global_row = SimpleNamespace(id="2", organization_id=None)
+        org_row = SimpleNamespace(id="3", organization_id=org_id)
+        other_row = SimpleNamespace(id="1", organization_id=uuid4())
+
+        assert _pick_slug_row([], org_id) is None
+        assert _pick_slug_row([other_row], org_id) is other_row
+        assert _pick_slug_row([global_row, org_row, other_row], org_id) is org_row
+        assert _pick_slug_row([other_row, global_row], org_id) is global_row
+        lowest_row = _pick_slug_row([other_row, SimpleNamespace(id="0", organization_id=uuid4())], org_id)
+        assert cast(Any, lowest_row).id == "0"
+
+    def test_guard_message_and_first_row_helpers(self):
+        from fastapi import HTTPException
+
+        from src.services.mcp_server.tools.apps import _first_row, _guard_message
+
+        assert _guard_message(HTTPException(status_code=409, detail="locked")) == "locked"
+        assert _guard_message(RuntimeError("plain")) == "plain"
+        assert _first_row(_FirstResult("first")) == "first"
+        assert _first_row(_ScalarsFirstResult("scalar")) == "scalar"
+        assert _first_row(object()) is None
+
+    @pytest.mark.asyncio
+    async def test_create_app_validates_required_inputs(self, context):
+        from src.services.mcp_server.tools.apps import create_app
+
+        missing_name = await create_app(context, "")
+        bad_scope = await create_app(context, "App", scope="tenant")
+        bad_org = await create_app(context, "App", organization_id="not-a-uuid")
+        context_without_org = MCPContext(
+            user_id=str(uuid4()),
+            org_id=None,
+            is_platform_admin=False,
+            user_email="test@example.com",
+            user_name="Test User",
+        )
+        missing_org = await create_app(context_without_org, "App")
+
+        assert missing_name.structured_content["error"] == "name is required"
+        assert bad_scope.structured_content["error"] == "scope must be 'global' or 'organization'"
+        assert "not a valid UUID" in bad_org.structured_content["error"]
+        assert "organization_id is required" in missing_org.structured_content["error"]
+
     @pytest.mark.asyncio
     async def test_create_app_rejects_unclaimed_existing_source(self, context):
         """MCP app creation must not adopt stale source under apps/<slug>/."""
@@ -190,6 +247,47 @@ class TestAppToolImpl:
         assert "Source files already exist" in result.structured_content["error"]
         assert db.added == []
         assert db.flushed is False
+
+    @pytest.mark.asyncio
+    async def test_get_update_publish_and_replace_validate_inputs(self, context):
+        from src.services.mcp_server.tools import apps
+
+        missing_lookup = await apps.get_app(context)
+        bad_get_id = await apps.get_app(context, app_id="not-a-uuid")
+        bad_update_id = await apps.update_app(context, app_id="not-a-uuid", name="New")
+        bad_publish_id = await apps.publish_app(context, app_id="not-a-uuid")
+        missing_replace_id = await apps.replace_app(context, "", repo_path="apps/new")
+        missing_replace_path = await apps.replace_app(context, "app-1", repo_path="")
+
+        async def fake_call_rest(_context, _method, _path, json_body=None):
+            return 409, {"detail": "conflict", "body": json_body}
+
+        with patch("src.services.mcp_server.tools.apps.call_rest", fake_call_rest):
+            failed_replace = await apps.replace_app(context, "app-1", repo_path="apps/new", force=True)
+
+        assert "Either app_id or app_slug is required" in missing_lookup.structured_content["error"]
+        assert "Invalid app_id format" in bad_get_id.structured_content["error"]
+        assert "Invalid app_id format" in bad_update_id.structured_content["error"]
+        assert "Invalid app_id format" in bad_publish_id.structured_content["error"]
+        assert missing_replace_id.structured_content["error"] == "app_id is required"
+        assert missing_replace_path.structured_content["error"] == "repo_path is required"
+        assert "replace_app failed: HTTP 409" in failed_replace.structured_content["error"]
+
+    @pytest.mark.asyncio
+    async def test_replace_app_success_returns_rest_body(self, context):
+        from src.services.mcp_server.tools.apps import replace_app
+
+        async def fake_call_rest(_context, method, path, json_body=None):
+            assert method == "POST"
+            assert path == "/api/applications/app-1/replace"
+            assert json_body == {"repo_path": "apps/new", "force": True}
+            return 200, {"success": True, "repo_path": "apps/new"}
+
+        with patch("src.services.mcp_server.tools.apps.call_rest", fake_call_rest):
+            result = await replace_app(context, "app-1", "apps/new", force=True)
+
+        assert not is_error_result(result)
+        assert result.structured_content["repo_path"] == "apps/new"
 
 
 # ==================== Get Workflow Tool Tests ====================

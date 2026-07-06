@@ -279,4 +279,3 @@ async def test_data_collision_refuses_without_replace_data(
     doc_items = docs.get("documents", [])
     assert len(doc_items) == 1, f"expected 1 row after replace, got {len(doc_items)}: {docs}"
     assert doc_items[0]["data"].get("name") == "bundled", f"wrong data after replace: {doc_items[0]}"
-
