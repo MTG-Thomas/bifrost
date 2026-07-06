@@ -21,26 +21,13 @@ from types import SimpleNamespace
 
 import pytest
 
-_SDK_SERVICE = Path("/app/src/services/sdk_package")
-_SRC_FILES = [
-    "provider.tsx",
-    "tables.ts",
-    "transport.ts",
-    "use-table.ts",
-    "use-infinite-table.ts",
-    "ws-client.ts",
-    "use-workflow.ts",
-    "use-workflow-hooks.ts",
-    "files.ts",
-    "use-files.ts",
-    "bifrost-header.tsx",
-]
-
 
 def _ensure_sdk_src() -> bool:
     """Make sure sdk_src/ holds the SDK source + index.ts barrel. Returns False
     if neither the image copy nor the client tree is available (skip)."""
-    dst = _SDK_SERVICE / "sdk_src"
+    import src.services.sdk_package as sdkpkg
+
+    dst = sdkpkg._SDK_SRC
     if (dst / "index.ts").is_file():
         return True
     # stage from the client tree (mirrors the Dockerfile COPY)
@@ -52,7 +39,7 @@ def _ensure_sdk_src() -> bool:
     if client is None:
         return False
     dst.mkdir(parents=True, exist_ok=True)
-    for f in _SRC_FILES:
+    for f in sdkpkg._SDK_SOURCE_FILES:
         shutil.copy(client / f, dst / f)
     shutil.copy(client / "index.v2.ts", dst / "index.ts")
     return True
@@ -168,13 +155,12 @@ def test_build_sdk_tarball_cached_per_version(monkeypatch):
 def test_build_sdk_tarball_shape_and_exports():
     if not _ensure_sdk_src():
         pytest.skip("SDK source not available (no image copy, no client tree)")
-    # esbuild must be installed (app_bundler node_modules) — skip if not present.
-    if not (_SDK_SERVICE.parent / "app_bundler" / "node_modules" / "esbuild").exists():
-        pytest.skip("esbuild not installed in this environment")
 
     import src.services.sdk_package as sdkpkg
 
     sdkpkg.build_sdk_tarball.cache_clear()  # never serve another test's stubbed bundle
+    if not (sdkpkg._NODE_MODULES / "esbuild").exists():
+        pytest.skip("esbuild not installed in this environment")
     data = sdkpkg.build_sdk_tarball("v1.2-3-gabc1234")
     assert data[:2] == b"\x1f\x8b", "not a gzip tarball"
 

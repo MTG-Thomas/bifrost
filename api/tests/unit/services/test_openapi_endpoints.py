@@ -386,7 +386,7 @@ class TestWorkflowEndpointRegistration:
 
     def test_register_workflow_endpoint_adds_route_and_schema(self, mock_workflow):
         """Registering a workflow adds a FastAPI route and workflow schema."""
-        app = MutableRoutesApp()
+        app = FastAPI()
 
         register_workflow_endpoint(app, mock_workflow)
 
@@ -401,7 +401,7 @@ class TestWorkflowEndpointRegistration:
 
     def test_register_workflow_endpoint_replaces_existing_route(self, mock_workflow):
         """Re-registering the same workflow replaces the old route definition."""
-        app = MutableRoutesApp()
+        app = FastAPI()
 
         register_workflow_endpoint(app, mock_workflow)
         mock_workflow.allowed_methods = ["DELETE"]
@@ -415,7 +415,7 @@ class TestWorkflowEndpointRegistration:
 
     def test_remove_workflow_endpoint_removes_route_and_schema(self, mock_workflow):
         """Removing an existing workflow clears its route and cached schema entry."""
-        app = MutableRoutesApp()
+        app = FastAPI()
         register_workflow_endpoint(app, mock_workflow)
         app.openapi_schema = {"stale": True}
 
@@ -429,7 +429,7 @@ class TestWorkflowEndpointRegistration:
 
     def test_remove_missing_workflow_endpoint_leaves_cache_unchanged(self):
         """Removing a missing route does not invalidate the OpenAPI cache."""
-        app = MutableRoutesApp()
+        app = FastAPI()
         app.openapi_schema = {"cached": True}
         app._workflow_schemas = {"other": {"get": {}}}
 
@@ -440,7 +440,7 @@ class TestWorkflowEndpointRegistration:
 
     def test_refresh_enabled_workflow_registers_endpoint(self, mock_workflow):
         """Refreshing an enabled workflow registers its endpoint."""
-        app = MutableRoutesApp()
+        app = FastAPI()
 
         refresh_workflow_endpoint(app, mock_workflow)
 
@@ -450,7 +450,7 @@ class TestWorkflowEndpointRegistration:
 
     def test_refresh_disabled_workflow_removes_endpoint(self, mock_workflow):
         """Refreshing a disabled workflow removes an existing endpoint."""
-        app = MutableRoutesApp()
+        app = FastAPI()
         register_workflow_endpoint(app, mock_workflow)
         mock_workflow.endpoint_enabled = False
 
@@ -555,8 +555,7 @@ class TestRegisterWorkflowEndpoints:
     @pytest.mark.asyncio
     async def test_register_workflow_endpoints_registers_each_workflow_and_installs_openapi(self):
         """Startup registration returns the count and installs the custom OpenAPI generator."""
-        app = MutableRoutesApp()
-        app.openapi = MagicMock(return_value={"components": {}, "paths": {}})
+        app = FastAPI()
         workflow_a = MagicMock()
         workflow_a.name = "workflow_a"
         workflow_a.description = None
