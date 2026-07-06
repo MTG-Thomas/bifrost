@@ -34,6 +34,7 @@ from src.services.oauth_entity_id import extract_entity_id
 from src.services.oauth_provider import (
     append_query_params,
     build_token_refresh_context,
+    compute_authorization_request_scopes,
     get_url_resolution_defaults,
     refresh_oauth_token_http,
     resolve_url_template,
@@ -335,16 +336,15 @@ async def authorize_connection(
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
 
-    # Build authorization URL
-    # Convert scopes list to space-separated string (OAuth standard format)
-    scopes_str = " ".join(provider.scopes) if provider.scopes else ""
     params = {
         "client_id": provider.client_id,
         "response_type": "code",
         "state": state,
-        "scope": scopes_str,
         "redirect_uri": redirect_uri,
     }
+    scopes_str = compute_authorization_request_scopes(provider)
+    if scopes_str:
+        params["scope"] = scopes_str
 
     authorization_url = append_query_params(resolved_authorization_url, params)
 

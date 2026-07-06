@@ -47,6 +47,7 @@ from src.models.orm import IntegrationConfigSchema
 from src.models.orm import OAuthToken
 from src.services.oauth_provider import (
     append_query_params,
+    compute_authorization_request_scopes,
     get_url_resolution_defaults,
     resolve_url_template,
 )
@@ -1311,9 +1312,11 @@ async def authorize_mapping(
         "client_id": provider.client_id,
         "response_type": "code",
         "state": state,
-        "scope": " ".join(provider.scopes) if provider.scopes else "",
         "redirect_uri": request.redirect_uri,
     }
+    scopes_str = compute_authorization_request_scopes(provider)
+    if scopes_str:
+        params["scope"] = scopes_str
 
     logger.info(
         f"Generated per-mapping OAuth authorization URL for mapping {log_safe(mapping_id)}, "
@@ -1617,16 +1620,15 @@ async def get_oauth_authorization_url(
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
 
-    # Build authorization URL
-    # Convert scopes list to space-separated string (OAuth 2.0 standard format)
-    scopes_str = " ".join(oauth_provider.scopes) if oauth_provider.scopes else ""
     params = {
         "client_id": oauth_provider.client_id,
         "response_type": "code",
         "state": state,
-        "scope": scopes_str,
         "redirect_uri": redirect_uri,
     }
+    scopes_str = compute_authorization_request_scopes(oauth_provider)
+    if scopes_str:
+        params["scope"] = scopes_str
 
     authorization_url = append_query_params(oauth_provider.authorization_url, params)
 
