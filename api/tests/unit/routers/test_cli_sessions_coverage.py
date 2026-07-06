@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -81,12 +82,12 @@ class TestCLISessionHttpBranches:
         db = _db()
 
         with patch.object(cli, "CLISessionRepository"):
-            for call in (
-                cli.get_cli_session("not-a-uuid", user, db),
-                cli.delete_cli_session("not-a-uuid", user, db),
+            for make_call in (
+                partial(cli.get_cli_session, "not-a-uuid", user, db),
+                partial(cli.delete_cli_session, "not-a-uuid", user, db),
             ):
                 with pytest.raises(HTTPException) as exc:
-                    await call
+                    await make_call()
                 assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
                 assert exc.value.detail == "Invalid session ID format"
 
@@ -98,11 +99,12 @@ class TestCLISessionHttpBranches:
         repo.get_session_for_user = AsyncMock(return_value=None)
 
         with patch.object(cli, "CLISessionRepository", return_value=repo):
-            for call, expected_detail in (
-                (cli.get_cli_session(str(uuid4()), user, db), "Session not found"),
-                (cli.delete_cli_session(str(uuid4()), user, db), "Session not found"),
+            for make_call, expected_detail in (
+                (partial(cli.get_cli_session, str(uuid4()), user, db), "Session not found"),
+                (partial(cli.delete_cli_session, str(uuid4()), user, db), "Session not found"),
                 (
-                    cli.continue_cli_session(
+                    partial(
+                        cli.continue_cli_session,
                         str(uuid4()),
                         CLISessionContinueRequest(workflow_name="sync", params={}),
                         user,
@@ -112,7 +114,7 @@ class TestCLISessionHttpBranches:
                 ),
             ):
                 with pytest.raises(HTTPException) as exc:
-                    await call
+                    await make_call()
                 assert exc.value.status_code == status.HTTP_404_NOT_FOUND
                 assert exc.value.detail == expected_detail
 

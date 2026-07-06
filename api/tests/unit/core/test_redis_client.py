@@ -670,10 +670,14 @@ class TestRedisClient:
         client = RedisClient()
         client._redis = mock_redis
 
-        assert await client.get("key") == "value"
+        get_result = await client.get("key")
         await client.setex("key", 10, "value")
-        assert await client.delete("key") == 2
-        assert await client.scan(0, match="prefix:*", count=25) == (0, ["a"])
+        delete_result = await client.delete("key")
+        scan_result = await client.scan(0, match="prefix:*", count=25)
+
+        assert get_result == "value"
+        assert delete_result == 2
+        assert scan_result == (0, ["a"])
 
         mock_redis.setex.assert_called_with("key", 10, "value")
         mock_redis.scan.assert_called_with(0, match="prefix:*", count=25)

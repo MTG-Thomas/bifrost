@@ -345,7 +345,7 @@ def test_get_module_index_sync_repopulates_from_api_then_storage(monkeypatch):
     redis_client = MagicMock()
     redis_client.smembers.return_value = set()
     monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
-    monkeypatch.setattr(module_cache_sync, "_fetch_module_index_from_api", lambda: set())
+    monkeypatch.setattr(module_cache_sync, "_fetch_module_index_from_api", set)
     monkeypatch.setattr(
         module_cache_sync,
         "_list_object_storage_modules",

@@ -23,6 +23,7 @@ async def test_cancel_watcher_cancels_task_when_redis_flag_exists(monkeypatch):
     try:
         await task
     except asyncio.CancelledError:
+        # Expected: the watcher cancels the task after seeing the Redis flag.
         pass
 
     assert task.cancelled()

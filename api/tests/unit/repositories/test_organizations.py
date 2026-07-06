@@ -210,7 +210,7 @@ async def test_get_by_domain_lowercases_domain_and_get_active_returns_list():
     assert await repo.get_active(limit=10, offset=20) == [active_org]
 
     assert len(session.statements) == 2
-    assert "midtowntg.com" in session.statements[0].compile().params.values()
+    assert list(session.statements[0].compile().params.values()) == ["midtowntg.com"]
 
 
 @pytest.mark.asyncio

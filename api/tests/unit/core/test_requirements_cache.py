@@ -274,7 +274,7 @@ class TestReadRequirementsFromObjectStorage:
 
     def test_s3_returns_none_without_bucket_or_client(self):
         with patch.dict("os.environ", {}, clear=True):
-            assert _read_requirements_from_s3(lambda: Mock()) is None
+            assert _read_requirements_from_s3(Mock) is None
 
         with patch.dict("os.environ", {"BIFROST_S3_BUCKET": "bucket"}):
             assert _read_requirements_from_s3(lambda: None) is None
