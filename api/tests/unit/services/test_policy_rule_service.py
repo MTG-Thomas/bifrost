@@ -14,7 +14,6 @@ from src.services.policy_rule_service import (
     PolicyRuleInUse,
     PolicyRuleNotFoundError,
     PolicyRuleService,
-    _rewrite_ref,
 )
 
 
@@ -35,36 +34,6 @@ def _db_with_execute_results(*rows):
     db.flush = AsyncMock()
     db.execute = AsyncMock(side_effect=[_ScalarResult(row) for row in rows])
     return db
-
-
-def test_rewrite_ref_replaces_only_matching_policy_references() -> None:
-    doc = {
-        "version": 1,
-        "policies": [
-            {"$ref": "ops"},
-            {"$ref": "unchanged"},
-            {"name": "inline", "actions": ["read"], "when": None},
-            "legacy-string",
-        ],
-    }
-
-    rewritten = _rewrite_ref(doc, "ops", "operations")
-
-    assert rewritten == {
-        "version": 1,
-        "policies": [
-            {"$ref": "operations"},
-            {"$ref": "unchanged"},
-            {"name": "inline", "actions": ["read"], "when": None},
-            "legacy-string",
-        ],
-    }
-    assert doc["policies"][0] == {"$ref": "ops"}
-
-
-def test_rewrite_ref_normalizes_missing_policy_list() -> None:
-    assert _rewrite_ref({}, "old", "new") == {"policies": []}
-    assert _rewrite_ref(None, "old", "new") == {"policies": []}
 
 
 @pytest.mark.asyncio

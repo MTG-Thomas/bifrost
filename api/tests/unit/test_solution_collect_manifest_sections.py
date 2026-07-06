@@ -32,7 +32,6 @@ from bifrost.commands.solution import (
     resolve_install_id_for_workspace,
     solution_group,
     summarize_bundle,
-    _workspace_child_file,
 )
 
 
@@ -204,18 +203,6 @@ def test_collect_inline_manifest_entities_for_forms_agents_and_events(tmp_path):
     assert _collect_events(tmp_path) == [
         {"id": "ticket-created", "name": "Ticket Created", "source_type": "webhook"}
     ]
-
-
-def test_workspace_child_file_confines_descriptor_paths(tmp_path):
-    _write(tmp_path / "logo.svg", "<svg />\n")
-
-    assert _workspace_child_file(tmp_path, "logo.svg", "logo") == tmp_path / "logo.svg"
-
-    with pytest.raises(click.ClickException, match="escapes the workspace"):
-        _workspace_child_file(tmp_path, "../logo.svg", "logo")
-
-    with pytest.raises(click.ClickException, match="file not found"):
-        _workspace_child_file(tmp_path, "missing.svg", "logo")
 
 
 def test_solution_init_writes_descriptor_and_refuses_overwrite(tmp_path):
@@ -758,6 +745,16 @@ def test_collect_apps_rejects_escaping_app_and_logo_paths(tmp_path):
     )
     _write(tmp_path / "apps" / "dash" / "App.tsx", "export {}\n")
     with pytest.raises(click.ClickException, match="escapes the app dir"):
+        _collect_apps(tmp_path)
+
+    _write(
+        tmp_path / ".bifrost" / "apps.yaml",
+        "apps:\n"
+        "  missing-logo:\n"
+        "    path: apps/dash\n"
+        "    logo: missing.svg\n",
+    )
+    with pytest.raises(click.ClickException, match="logo file not found"):
         _collect_apps(tmp_path)
 
 
