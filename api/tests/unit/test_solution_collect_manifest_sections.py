@@ -205,8 +205,41 @@ def test_collect_inline_manifest_entities_for_forms_agents_and_events(tmp_path):
     ]
 
 
-def test_solution_init_writes_descriptor_and_refuses_overwrite(tmp_path):
+def test_solution_init_writes_descriptor_binds_remote_and_refuses_overwrite(
+    tmp_path, monkeypatch
+):
     runner = CliRunner()
+
+    async def fake_resolve_install_org(client, org, is_global):
+        assert client is fake_client
+        assert org is None
+        assert is_global is False
+        return None
+
+    class Response:
+        status_code = 201
+        text = ""
+
+        def json(self):
+            return {"id": "sol-1", "slug": "desk"}
+
+    class Client:
+        async def post(self, path, json=None, **kwargs):
+            assert path == "/api/solutions"
+            assert json["slug"] == "desk"
+            assert json["global_repo_access"] is True
+            assert kwargs == {}
+            return Response()
+
+    fake_client = Client()
+    monkeypatch.setattr(
+        "bifrost.commands.solution.BifrostClient.get_instance",
+        staticmethod(lambda **kwargs: fake_client),
+    )
+    monkeypatch.setattr(
+        "bifrost.commands.solution._resolve_install_org",
+        fake_resolve_install_org,
+    )
 
     result = runner.invoke(
         solution_group,
@@ -231,6 +264,7 @@ def test_solution_init_writes_descriptor_and_refuses_overwrite(tmp_path):
         "version": "1.2.3",
         "global_repo_access": True,
     }
+    assert "BIFROST_SOLUTION_ID=sol-1" in (tmp_path / ".env").read_text()
 
     duplicate = runner.invoke(solution_group, ["init", str(tmp_path), "--slug", "desk"])
     assert duplicate.exit_code != 0
@@ -407,7 +441,7 @@ def test_solution_install_posts_zip_config_and_replace_flags(tmp_path, monkeypat
         def __init__(self):
             self.posts: list[tuple[str, dict, dict]] = []
 
-        async def post(self, path, files=None, data=None):
+        async def post(self, path, files=None, data=None, **kwargs):
             self.posts.append((path, files, data))
             return Response()
 
@@ -497,7 +531,7 @@ def test_solution_install_reports_collision_rejection_and_server_errors(tmp_path
         def __init__(self, response):
             self.response = response
 
-        async def post(self, path, files=None, data=None):
+        async def post(self, path, files=None, data=None, **kwargs):
             return self.response
 
     monkeypatch.setattr(

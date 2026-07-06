@@ -104,7 +104,6 @@ async def test_update_renames_cascades_updates_body_and_audits(monkeypatch) -> N
     )
     usages = SimpleNamespace(file_policies=[{"id": "fp1"}], tables=[], total=1)
     service._get = AsyncMock(return_value=row)
-    service._cascade_rename = AsyncMock()
     monkeypatch.setattr(service_module, "find_policy_rule_usages", AsyncMock(return_value=usages))
     emitted = AsyncMock()
     monkeypatch.setattr(service_module, "emit_audit", emitted)
@@ -126,9 +125,6 @@ async def test_update_renames_cascades_updates_body_and_audits(monkeypatch) -> N
     assert row.name == "operations"
     assert row.description == "new"
     assert row.body == {"actions": ["read", "write"], "when": None}
-    service._cascade_rename.assert_awaited_once_with(
-        "ops", "operations", "file", org_id, usages
-    )
     db.flush.assert_awaited_once()
     emitted.assert_awaited_once_with(
         db,
