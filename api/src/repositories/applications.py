@@ -260,48 +260,6 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             raise ValueError(f"Application with slug '{new_slug}' already exists")
         application.slug = new_slug
 
-    async def swap_slugs(
-        self,
-        first_app_id: UUID,
-        second_app_id: UUID,
-    ) -> tuple[Application, Application]:
-        """Atomically exchange slugs between two applications."""
-        if first_app_id == second_app_id:
-            raise ValueError("Application cannot swap slugs with itself")
-
-        for app_id in sorted((str(first_app_id), str(second_app_id))):
-            await self.session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext('bifrost:appid:' || :s))"),
-                {"s": app_id},
-            )
-
-        result = await self.session.execute(
-            select(self.model).where(self.model.id.in_([first_app_id, second_app_id]))
-        )
-        apps_by_id = {app.id: app for app in result.scalars().all()}
-        first = apps_by_id.get(first_app_id)
-        second = apps_by_id.get(second_app_id)
-        if first is None or second is None:
-            raise ValueError("Application not found")
-
-        first_slug, second_slug = first.slug, second.slug
-        for slug in sorted((first_slug, second_slug)):
-            await self.session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext('bifrost:appslug:' || :s))"),
-                {"s": slug},
-            )
-
-        placeholder = f"__swap-{first_app_id}-{second_app_id}"
-        first.slug = placeholder
-        await self.session.flush()
-        second.slug = first_slug
-        await self.session.flush()
-        first.slug = second_slug
-        await self.session.flush()
-        await self.session.refresh(first)
-        await self.session.refresh(second)
-        return first, second
-
     @staticmethod
     def _update_scope(
         application: Application, scope: str | None, is_platform_admin: bool
@@ -338,6 +296,74 @@ class ApplicationRepository(OrgScopedRepository[Application]):
                     assigned_by=updated_by,
                 )
             )
+
+    async def swap_slugs(self, app_a_id: UUID, app_b_id: UUID) -> tuple[Application, Application]:
+        """Atomically exchange two apps' slugs (v1→v2 migration cutover).
+
+        Locking order (Codex): lock by **app id** FIRST, then read the slugs
+        UNDER those locks, then lock the current slug strings too. Locking the
+        slug values without first serializing on app identity is unsafe — two
+        swaps that share an app (A↔B and A↔C) could each read A's slug before the
+        other commits, then lock stale slug strings that no longer cover A's
+        current slug and trip the unique index. The id locks (stable, sorted by
+        id to avoid deadlock) serialize any two swaps touching the same app; the
+        slug locks (the same ``bifrost:appslug:`` lock ``create``/deploy take)
+        serialize a swap against a same-slug deploy. Reading the slugs only after
+        the id locks means we never act on a slug another swap already moved.
+
+        The swap goes through a temporary placeholder slug on ``app_a`` to clear
+        the unique index before assigning ``app_a``'s old slug to ``app_b`` —
+        otherwise the two rows would momentarily share a slug and trip the
+        constraint at flush.
+
+        Both apps must exist and be visible in this repo's scope. Solution-managed
+        apps are rejected by the router guard before this is called (slug is a
+        deploy-owned property for those).
+        """
+        if app_a_id == app_b_id:
+            raise ValueError("Cannot swap an application's slug with itself")
+
+        # 1) Serialize on app IDENTITY first (stable key, sorted → no deadlock).
+        for aid in sorted((app_a_id, app_b_id), key=str):
+            await self.session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('bifrost:appid:' || :s))"),
+                {"s": str(aid)},
+            )
+
+        # 2) Read the rows UNDER the id locks, so the slugs are current (a
+        #    concurrent swap sharing an app has already committed or is blocked).
+        app_a = await self.get(id=app_a_id)
+        app_b = await self.get(id=app_b_id)
+        if app_a is None or app_b is None:
+            missing = app_a_id if app_a is None else app_b_id
+            raise ValueError(f"Application '{missing}' not found")
+
+        slug_a, slug_b = app_a.slug, app_b.slug
+        # 3) Also lock the current slug strings, to serialize against a same-slug
+        #    create/deploy (which lock on this exact key).
+        for slug in sorted((slug_a, slug_b)):
+            await self.session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('bifrost:appslug:' || :s))"),
+                {"s": slug},
+            )
+
+        # A placeholder slug that can't collide with a real one (slugs are
+        # lowercase kebab; the leading marker + app id keeps it globally unique).
+        placeholder = f"__swap-{app_a.id}"
+        app_a.slug = placeholder
+        await self.session.flush()
+        app_b.slug = slug_a
+        await self.session.flush()
+        app_a.slug = slug_b
+        await self.session.flush()
+
+        await self.session.refresh(app_a)
+        await self.session.refresh(app_b)
+        logger.info(
+            f"Swapped slugs: app {log_safe(app_a.id)} now '{log_safe(app_a.slug)}', "
+            f"app {log_safe(app_b.id)} now '{log_safe(app_b.slug)}'"
+        )
+        return app_a, app_b
 
     async def replace_application(
         self,

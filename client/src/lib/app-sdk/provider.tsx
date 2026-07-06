@@ -180,6 +180,12 @@ export function BifrostProvider({
       if (orgScope && !headers.has("X-Bifrost-Org")) {
         headers.set("X-Bifrost-Org", orgScope);
       }
+      // Same context signal the tables/files transport sends: the server's
+      // auth layer resolves it to the install scope (ctx.solution_id), so a
+      // workflow path::fn ref scopes to THIS install without body plumbing.
+      if (appId && !headers.has("X-Bifrost-App")) {
+        headers.set("X-Bifrost-App", appId);
+      }
       return baseFetch(joinUrl(baseUrl, input), { ...init, headers });
     };
     const logout = () => onLogout?.();
@@ -208,9 +214,9 @@ export function BifrostProvider({
   // go out on the default same-origin transport with no token / app header.
   // Render-time assignment is idempotent (same-inputs skip), so StrictMode's
   // double render installs once.
-  // Deliberate render-phase install: the transport is a module-global external
-  // store that child mount effects read synchronously, so it must be written
-  // during render. An effect-time install is too late by definition here.
+  // The transport is a module-global external store that child MOUNT EFFECTS
+  // read synchronously, so it must be written during render (guarded by a
+  // same-key skip for idempotence under StrictMode/re-renders).
   const installKey = `${baseUrl}|${token}|${orgScope ?? ""}|${appId ?? ""}`;
   const installedRef = useRef<{
     key: string;

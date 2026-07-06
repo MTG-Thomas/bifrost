@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import logging
-import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,16 +38,6 @@ def _unlink_best_effort(path: Path) -> None:
         path.unlink(missing_ok=True)
     except Exception:
         logger.warning("Failed to remove temporary export file %s", path, exc_info=True)
-
-
-def _named_temp_path(*, prefix: str, suffix: str) -> Path:
-    fd, name = tempfile.mkstemp(prefix=prefix, suffix=suffix)
-    os.close(fd)
-    return Path(name)
-
-
-def _open_binary(path: Path):
-    return open(path, "rb")
 
 
 def encrypt_export_options(options: SolutionExportOptions) -> str:
@@ -100,25 +88,21 @@ async def create_export_job(
     requested_by_id: UUID | None,
     options: SolutionExportOptions,
     *,
-    job_id: UUID | None = None,
     notification_id: UUID | None = None,
 ) -> SolutionExportJobPublic:
     """Create a pending scheduler-owned Solution export job without building it."""
     validate_export_options_password(options)
-    values = {
-        "solution_id": solution.id,
-        "organization_id": solution.organization_id,
-        "requested_by_id": requested_by_id,
-        "notification_id": notification_id,
-        "status": "pending",
-        "progress_percent": 0,
-        "message": "queued",
-        "encrypted_options": encrypt_export_options(options),
-        "artifact_filename": export_artifact_filename(solution),
-    }
-    if job_id is not None:
-        values["id"] = job_id
-    row = SolutionExportJob(**values)
+    row = SolutionExportJob(
+        solution_id=solution.id,
+        organization_id=solution.organization_id,
+        requested_by_id=requested_by_id,
+        notification_id=notification_id,
+        status="pending",
+        progress_percent=0,
+        message="queued",
+        encrypted_options=encrypt_export_options(options),
+        artifact_filename=export_artifact_filename(solution),
+    )
     db.add(row)
     await db.flush()
     await db.refresh(row)
@@ -233,11 +217,13 @@ async def build_solution_backup_zip_to_path(
     """
     validate_export_options_password(options)
 
-    source_path = await asyncio.to_thread(
-        _named_temp_path,
+    source_tmp = tempfile.NamedTemporaryFile(  # NOSONAR - async export job uses a local temporary zip boundary for source artifacts.
         prefix=f"bifrost-solution-source-{solution.id}-",
         suffix=".zip",
+        delete=False,
     )
+    source_path = Path(source_tmp.name)
+    source_tmp.close()
     try:
         artifact = SolutionSourceArtifactStorage(solution.id)
         has_stored_source = await artifact.copy_to_path(source_path)
@@ -279,22 +265,21 @@ async def build_solution_backup_zip_tempfile(
     options: SolutionExportOptions,
 ) -> Path:
     """Build a durable backup export zip in a caller-owned temporary file."""
-    out_path = await asyncio.to_thread(
-        _named_temp_path,
+    tmp = tempfile.NamedTemporaryFile(  # NOSONAR - async export job returns a caller-owned local temporary zip.
         prefix=f"bifrost-solution-export-{solution.id}-",
         suffix=".zip",
+        delete=False,
     )
+    out_path = Path(tmp.name)
+    tmp.close()
     await build_solution_backup_zip_to_path(db, solution, options, out_path)
     return out_path
 
 
 async def _path_chunks(path: Path, chunk_size: int = 8 * 1024 * 1024) -> AsyncIterator[bytes]:
-    f = await asyncio.to_thread(_open_binary, path)
-    try:
-        while chunk := await asyncio.to_thread(f.read, chunk_size):
+    with path.open("rb") as f:  # NOSONAR - async iterator streams bounded artifact chunks from local disk.
+        while chunk := f.read(chunk_size):
             yield chunk
-    finally:
-        await asyncio.to_thread(f.close)
 
 
 async def upload_solution_export_artifact(

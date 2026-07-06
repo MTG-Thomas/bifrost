@@ -54,7 +54,9 @@ EMBED_ALLOWED_RULES = [
     EmbedRouteRule(frozenset({"GET"}), re.compile(r"^/health$"), None),
 
     # Form loading and execution
-    EmbedRouteRule(frozenset({"GET"}), re.compile(r"^/api/forms/([^/]+)$"), "form_id"),
+    # GET reads fall through to the routers for bound-resource 404 semantics,
+    # while still rejecting form-token replay against another form here.
+    EmbedRouteRule(frozenset({"GET"}), re.compile(r"^/api/forms/([^/]+)$"), "form_read"),
     EmbedRouteRule(frozenset({"POST"}), re.compile(r"^/api/forms/([^/]+)/execute$"), "form_id"),
     EmbedRouteRule(frozenset({"POST"}), re.compile(r"^/api/forms/([^/]+)/startup$"), "form_id"),
     EmbedRouteRule(frozenset({"POST"}), re.compile(r"^/api/forms/([^/]+)/upload$"), "form_id"),
@@ -75,9 +77,10 @@ def _get_embed_payload(request: Request) -> dict | None:
     """
     token = None
     auth_header = request.headers.get("authorization", "")
-    token = None
     if auth_header.lower().startswith("bearer "):
-        token = auth_header[7:]
+        token = auth_header[7:]  # Strip "Bearer "
+    elif "access_token" in request.cookies:
+        token = request.cookies["access_token"]
     elif "embed_token" in request.cookies:
         token = request.cookies["embed_token"]
 
@@ -102,15 +105,20 @@ def _scope_allowed(scope: str | None, match: re.Match[str], payload: dict) -> bo
         return bool(payload.get("app_id")) and not payload.get("form_id")
 
     if scope == "app_id":
-        return match.group(1) == payload.get("app_id")
+        # Let app routers normalize unbound app reads/renders to 404. The
+        # middleware still keeps form tokens out of app routes entirely.
+        return bool(payload.get("app_id")) and not payload.get("form_id")
 
     if scope == "app_ref":
-        allowed_refs = {payload.get("app_id"), payload.get("app_slug")}
-        allowed_refs.discard(None)
-        return match.group(1) in allowed_refs
+        return bool(payload.get("app_id")) and not payload.get("form_id")
 
     if scope == "form_id":
         return match.group(1) == payload.get("form_id")
+
+    if scope == "form_read":
+        # Let form routers normalize wrong-form and cross-tenant reads to 404.
+        # Mutating form routes still require an exact form_id match above.
+        return bool(payload.get("form_id") or payload.get("app_id"))
 
     return False
 

@@ -182,6 +182,7 @@ async def get_current_user_optional(
         is_superuser=is_superuser,
         is_verified=True,
         is_external=payload.get("is_external", False),
+        is_provider_org=payload.get("is_provider_org", False),
         roles=payload.get("roles", []),
         embed=payload.get("embed", False),
         jti=payload.get("jti"),
@@ -375,8 +376,6 @@ async def get_execution_context(
         db=db,
         # Set by the v2 SDK provider for Solution apps; harmless/None otherwise.
         app_id=app_id_header,
-        # Appended by the SDK (?solution=) when a solution workflow is executing;
-        # None otherwise. Lets a workflow resolve its own install's table by name.
         solution_id=effective_solution_id,
     )
 
@@ -528,6 +527,7 @@ async def get_current_user_ws(websocket) -> UserPrincipal | None:
         is_superuser=is_superuser,
         is_verified=True,
         is_external=payload.get("is_external", False),
+        is_provider_org=payload.get("is_provider_org", False),
         roles=payload.get("roles", []),
         embed=payload.get("embed", False),
         jti=payload.get("jti"),

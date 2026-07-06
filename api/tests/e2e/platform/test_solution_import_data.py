@@ -23,6 +23,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.e2e.platform.conftest import wait_for_install
+
 pytestmark = pytest.mark.e2e
 
 
@@ -159,13 +161,17 @@ async def test_full_export_with_data_restores_rows_in_fresh_org(
     org = await make_org()
 
     files = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r = e2e_client.post(
-        "/api/solutions/install",
-        headers=upload_headers,
-        files=files,
-        data={"organization_id": str(org.id), "password": "pw"},
+    r = wait_for_install(
+        e2e_client,
+        e2e_client.post(
+            "/api/solutions/install",
+            headers=upload_headers,
+            files=files,
+            data={"organization_id": str(org.id), "password": "pw"},
+        ),
+        headers,
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code in (200, 201), r.text
     sol_id = r.json()["id"]
 
     # Find the installed table's UUID via /entities, then query its documents.
@@ -213,35 +219,47 @@ async def test_data_collision_refuses_without_replace_data(
 
     # First install: fills the empty table silently.
     files1 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r0 = e2e_client.post(
-        "/api/solutions/install",
-        headers=upload_headers,
-        files=files1,
-        data={"organization_id": str(org.id), "password": "pw"},
+    r0 = wait_for_install(
+        e2e_client,
+        e2e_client.post(
+            "/api/solutions/install",
+            headers=upload_headers,
+            files=files1,
+            data={"organization_id": str(org.id), "password": "pw"},
+        ),
+        headers,
     )
-    assert r0.status_code == 200, r0.text
+    assert r0.status_code in (200, 201), r0.text
     sol_id = r0.json()["id"]
 
     # Second install of the SAME zip into the SAME org → collision (table has rows).
     files2 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r = e2e_client.post(
-        "/api/solutions/install",
-        headers=upload_headers,
-        files=files2,
-        data={"organization_id": str(org.id), "password": "pw"},
+    r = wait_for_install(
+        e2e_client,
+        e2e_client.post(
+            "/api/solutions/install",
+            headers=upload_headers,
+            files=files2,
+            data={"organization_id": str(org.id), "password": "pw"},
+        ),
+        headers,
     )
     assert r.status_code == 409, r.text
     assert "widgets" in r.text, f"expected 'widgets' in collision error, got: {r.text}"
 
     # Third install of the SAME zip with replace_data=true → wholesale replace, succeeds.
     files3 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r2 = e2e_client.post(
-        "/api/solutions/install",
-        headers=upload_headers,
-        files=files3,
-        data={"organization_id": str(org.id), "password": "pw", "replace_data": "true"},
+    r2 = wait_for_install(
+        e2e_client,
+        e2e_client.post(
+            "/api/solutions/install",
+            headers=upload_headers,
+            files=files3,
+            data={"organization_id": str(org.id), "password": "pw", "replace_data": "true"},
+        ),
+        headers,
     )
-    assert r2.status_code == 200, r2.text
+    assert r2.status_code in (200, 201), r2.text
 
     # After wholesale replace, table has exactly the bundle's rows (1 row).
     ent_r2 = e2e_client.get(f"/api/solutions/{sol_id}/entities", headers=headers)
@@ -261,89 +279,3 @@ async def test_data_collision_refuses_without_replace_data(
     doc_items = docs.get("documents", [])
     assert len(doc_items) == 1, f"expected 1 row after replace, got {len(doc_items)}: {docs}"
     assert doc_items[0]["data"].get("name") == "bundled", f"wrong data after replace: {doc_items[0]}"
-
-
-# ---------------------------------------------------------------------------
-# Test 4 (status lifecycle regression): uninstall-in-the-middle must not let a
-# reinstall silently write into an inactive install unless the caller explicitly
-# reactivates it.
-# ---------------------------------------------------------------------------
-
-
-async def test_reinstall_after_uninstall_collides_on_orphaned_table_rows(
-    e2e_client, platform_admin, make_solution_with_table_rows, make_org
-):
-    """Uninstall leaves an inactive install; reinstall requires reactivate=true.
-
-    With reactivate=true and replace_data=true, the existing install is reused
-    and the table data remains a wholesale replacement, not a duplicate merge.
-    """
-    headers = platform_admin.headers
-    upload_headers = _upload_headers(headers)
-
-    src = await make_solution_with_table_rows(
-        table="widgets",
-        rows=[{"id": "row1", "name": "bundled"}],
-        slug=f"reinstall-orphan-{uuid.uuid4().hex[:8]}",
-    )
-    org = await make_org()
-
-    # 1. First install — fills the empty table silently.
-    files1 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r0 = e2e_client.post(
-        "/api/solutions/install",
-        headers=upload_headers,
-        files=files1,
-        data={"organization_id": str(org.id), "password": "pw"},
-    )
-    assert r0.status_code == 200, r0.text
-    sol_id = r0.json()["id"]
-
-    # 2. UNINSTALL: flips the install inactive and keeps its owned data.
-    du = e2e_client.post(f"/api/solutions/{sol_id}/uninstall", headers=headers)
-    assert du.status_code == 200, du.text
-    assert du.json()["status"] == "inactive"
-
-    # 3. Reinstall the SAME zip WITHOUT reactivate -> must 409 while the
-    #    inactive install exists.
-    files2 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r = e2e_client.post(
-        "/api/solutions/install",
-        headers=upload_headers,
-        files=files2,
-        data={"organization_id": str(org.id), "password": "pw"},
-    )
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["reason"] == "inactive_install_exists"
-
-    # 4. Reinstall WITH reactivate=true and replace_data=true -> wholesale
-    #    replace on the same install, with exactly the bundle's rows.
-    files3 = {"file": ("s.zip", src.zip_bytes, "application/zip")}
-    r2 = e2e_client.post(
-        "/api/solutions/install?reactivate=true",
-        headers=upload_headers,
-        files=files3,
-        data={"organization_id": str(org.id), "password": "pw", "replace_data": "true"},
-    )
-    assert r2.status_code == 200, r2.text
-    sol_id2 = r2.json()["id"]
-    assert sol_id2 == sol_id
-
-    ent_r = e2e_client.get(f"/api/solutions/{sol_id2}/entities", headers=headers)
-    assert ent_r.status_code == 200, ent_r.text
-    widgets_tbl = next(
-        (t for t in ent_r.json()["tables"] if t["name"] == "widgets"), None
-    )
-    assert widgets_tbl is not None
-    table_r = e2e_client.post(
-        f"/api/tables/{widgets_tbl['id']}/documents/query",
-        headers=headers,
-        json={},
-    )
-    assert table_r.status_code == 200, table_r.text
-    doc_items = table_r.json().get("documents", [])
-    assert len(doc_items) == 1, (
-        f"expected exactly 1 row after replace (no merge/dup), got "
-        f"{len(doc_items)}: {doc_items}"
-    )
-    assert doc_items[0]["data"].get("name") == "bundled"

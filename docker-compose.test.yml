@@ -359,13 +359,18 @@ services:
       - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
+      - ./api/fuzz:/app/fuzz:ro
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
       - ./api/tests:/app/tests:ro
+      - ./scripts:/repo/scripts:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro
       - ./api/.coveragerc:/app/.coveragerc:ro
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
+      - ./api/pyrightconfig.json:/app/pyrightconfig.json:ro
+      - ./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro
+      - ./test.sh:/app/test.sh:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
       - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
       - ./.github:/app/.github:ro

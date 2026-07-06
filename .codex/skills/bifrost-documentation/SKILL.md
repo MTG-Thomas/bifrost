@@ -27,24 +27,6 @@ Run this sequence (fan out the per-page work with `Workflow` — one agent per p
 
 The named modes below are the surgical primitives this default orchestrates. Reach for a single mode only when you explicitly want just that slice (e.g. `lint` after hand-editing). The default path is what a release or a monthly catch-up should use.
 
-## Default behavior — "catch up everything since the last documented commit"
-
-**When invoked with no mode, do the whole job in one pass — both existing and net-new surface.** The user's expectation: *"run it, figure it all out — all new features, all existing features. Know the last commit it fully documented, document all changes and features since, and update it with screenshots."* Don't ask which mode; just bring the docs current.
-
-The watermark already lives in the manifest: each entry carries `captured_at.bifrost_sha`. The **lowest** sha across all entries is the "fully documented through" commit. Net-new surface is discovered by **router-walk ∖ manifest**.
-
-Run this sequence (fan out the per-page work with `Workflow` — one agent per page — when there's more than a handful):
-
-1. **Establish the watermark.** `WATERMARK=$(min captured_at.bifrost_sha across screenshots.yaml entries)`. Everything in `git log $WATERMARK..HEAD` (bifrost) is in scope.
-2. **Discover undocumented routes.** Enumerate client routes from `client/src/App.tsx` (`grep -oE 'path="[^"]+"'`), normalize, and subtract every `route:` already in `screenshots.yaml`. The remainder is net-new surface needing **MDX + a manifest entry + fixtures**. (Skip non-visual routes: `*/callback*`, `device`, `mfa-setup`, `auth/*`, param-only redirects.)
-3. **Discover stale existing entries.** Entries whose `source_globs` changed in `$WATERMARK..HEAD`, or whose `captured_at.bifrost_sha` is behind HEAD — these need a re-capture (and a prose check if the feature changed, not just pixels).
-4. **Author (fan out).** For each net-new route: pick the Diátaxis quadrant, write the MDX page, add the sidebar entry, and add a `screenshots.yaml` entry (`id`, `route`, `seed`, `diataxis.{page,type}`, per-entry `mocks`/fixtures). For each stale page: update prose if the feature changed. Apply the anti-bloat self-review. **MDX comments are `{/* */}`, never `<!-- -->`.**
-5. **Capture in one loop.** `scripts/docs/run-pipeline.sh --docs-repo $DOCS --bifrost-repo $BIFROST --full` (or `--ids <new+stale ids>`). Runs headless in the playwright-runner container **on this host** — no external browser. Pixel-diff gates commits.
-6. **Stamp the watermark forward.** Every captured entry's `captured_at.bifrost_sha` is set to the bifrost HEAD it was captured against. That advances the watermark so the next run starts exactly here.
-7. **Build + lint + PR.** `npm run lint:manifest` and `npm run build` must pass; commit; open the docs PR with the TL;DR.
-
-The named modes below are the surgical primitives this default orchestrates. Reach for a single mode only when you explicitly want just that slice (e.g. `lint` after hand-editing). The default path is what a release or a monthly catch-up should use.
-
 ## Modes
 
 | Mode | When | What it does |
@@ -158,7 +140,7 @@ If the user asks for a doc and you can't pick a quadrant in one sentence, ask th
 When you've written a new MDX page and need a screenshot:
 
 1. **Identify the route** in `client/src/App.tsx`. Confirm the route renders empty-state-free with mocked data.
-2. **Find the API endpoints** the page calls. `grep -nE 'apiClient|useQuery' <component>` then look at the route names. For each, write a fixture under `bifrost-integrations-docs/fixtures/`.
+2. **Find the API endpoints** the page calls. `grep -nE 'apiClient|useQuery' <component>` then look at the route names. For each, write a fixture under `gobifrost/fixtures/`.
 3. **Add a manifest entry** to `screenshots.yaml`. **`mocks`, `actions`, `crop`, `callouts`, `fullPage`, `settle_ms` MUST be nested under a `capture:` key — NOT at the entry top level.** The capture spec reads `entry.capture.actions` / `effectiveMocks(entry)` from `capture`; top-level `mocks`/`actions` are silently ignored, which produces a premature screenshot of an empty/loading state that still "passes" (no action ran to fail). Top-level keys are only `id`, `image`, `route`, `auth_as`, `seed`, `external`, `diataxis`, `captured_at`. Always end actions with `wait_for: text="<exact on-page label that only appears once data renders>"` so capture can't fire on the empty state. Mock URLs use playwright glob — include BOTH `**/api/foo` and `**/api/foo?**`. **After capturing, open the PNG and confirm it shows real data, not an empty state** — a passing test does not prove the mock matched.
 4. **Vite proxy collisions:** if the route shares a prefix with a `vite.config.ts` proxy rule (e.g. `/mcp-servers` collides with the `/mcp` rule because of prefix match in dev), use `nav_via: { from: "/", click: "<sidebar-link-text>" }` so the test stack reaches the page via in-app routing instead of hard navigation. For deeper paths after `nav_via`, use the `goto_spa: <path>` action to push the path via the SPA's history without re-triggering proxy rules.
 5. **Capture only the new ids**: `scripts/docs/run-pipeline.sh --ids id1,id2 ...` so existing entries aren't re-run.

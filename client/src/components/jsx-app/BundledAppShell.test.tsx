@@ -265,7 +265,8 @@ describe("BundledAppShell — app_model render branch", () => {
 		const { rerender } = renderWithProviders(
 			<BundledAppShell appId="app-A" appSlug="aaa" isPreview />,
 		);
-		expect(await screen.findByTestId("solution-v2-app-root")).toBeInTheDocument();
+		const rootA = await screen.findByTestId("solution-v2-app-root");
+		await waitFor(() => expect(rootA.dataset.bifrostEntry).toContain("A-entry.js"));
 
 		// Navigate to app B; B's manifest fetch is PENDING (never resolves here).
 		mockAuthFetch.mockImplementationOnce(() => new Promise<Response>(() => {}));

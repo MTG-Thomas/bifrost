@@ -60,7 +60,7 @@ describe("AuthCallback", () => {
 		});
 		expect(navigate).toHaveBeenCalledWith("/", { replace: true });
 		expect(getItem).toHaveBeenCalledWith("oauth_state");
-		expect(removeItem).not.toHaveBeenCalledWith("oauth_state");
+		expect(removeItem).toHaveBeenCalledWith("oauth_state");
 		expect(removeItem).not.toHaveBeenCalledWith("oauth_provider");
 	});
 

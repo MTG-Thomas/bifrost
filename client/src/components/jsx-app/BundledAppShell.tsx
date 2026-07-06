@@ -374,8 +374,8 @@ export function BundledAppShell({ appId, appSlug, isPreview }: BundledAppShellPr
 		// standalone_v2 apps are deploy-driven (no hot-reload bundle), so they
 		// never subscribe — we gate on the model the first load resolved.
 		let unsub: (() => void) | null = null;
-		const initialLoad = loadBundle();
 		let disposed = false;
+		const initialLoad = loadBundle();
 		if (isPreview) {
 			void (async () => {
 				try {

@@ -17,11 +17,11 @@ from __future__ import annotations
 import functools
 import io
 import json
+import shutil
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
-import shutil
 
 _HERE = Path(__file__).resolve().parent
 _SDK_SRC = _HERE / "sdk_src"

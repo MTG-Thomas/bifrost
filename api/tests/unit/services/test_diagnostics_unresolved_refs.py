@@ -99,6 +99,33 @@ class TestUnresolvedRefNotifications:
             )
 
     @pytest.mark.asyncio
+    async def test_clearing_notification_logs_sanitized_path(
+        self, diagnostics_service, caplog
+    ):
+        """User-controlled paths are escaped before they enter log records."""
+        with patch(
+            "src.services.file_storage.diagnostics.get_notification_service"
+        ) as mock_get_service:
+            mock_notification = MagicMock()
+            mock_notification.id = "notif-123"
+
+            mock_service = MagicMock()
+            mock_service.find_admin_notification_by_title = AsyncMock(
+                return_value=mock_notification
+            )
+            mock_service.dismiss_notification = AsyncMock()
+            mock_get_service.return_value = mock_service
+
+            with caplog.at_level("INFO", logger="src.services.file_storage.diagnostics"):
+                await diagnostics_service.clear_unresolved_refs_notification(
+                    path="apps/my-app/pages/index.tsx\nforged=true"
+                )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("index.tsx\\nforged=true" in message for message in messages)
+        assert all("index.tsx\nforged=true" not in message for message in messages)
+
+    @pytest.mark.asyncio
     async def test_skips_duplicate_notification(self, diagnostics_service):
         """Does not create duplicate notification if one already exists."""
         unresolved = ["workflows/missing.py::func"]

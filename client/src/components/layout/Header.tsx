@@ -117,7 +117,9 @@ export function Header({
 
 				{/* Version Update Banner — only renders when /api/version
 				    differs from the baked-in client version. */}
-				<VersionUpdateBanner />
+				<div className="mr-2 hidden sm:block lg:mr-4">
+					<VersionUpdateBanner />
+				</div>
 
 				{/* File Activity Indicator (Platform Admin only) */}
 				{isPlatformAdmin && <FileActivityIndicator />}

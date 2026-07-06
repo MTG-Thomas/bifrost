@@ -33,10 +33,13 @@ _KEY_LEN = 32
 
 @dataclass
 class SolutionContent:
-    """The sensitive tier of a full-backup export.
+    """The sensitive tier of a full-backup export: secret/config values,
+    table rows, and solution-owned file sidecars.  Travels only inside the
+    password-encrypted .bifrost/secrets.enc blob — never in plaintext.
 
-    Secret/config values, table rows, and solution-owned file sidecars travel
-    only inside the password-encrypted .bifrost/secrets.enc blob.
+    ``solution_files`` is a list of dicts with keys:
+      ``location``, ``path``, ``sha256``, ``size``, ``payload``, ``encryption``.
+    Legacy imports may still provide ``content_b64``; new exports never do.
     """
 
     config_values: dict[str, str] = field(default_factory=dict)

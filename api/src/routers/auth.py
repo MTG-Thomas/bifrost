@@ -28,7 +28,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
-from shared.external_access import resolve_external_claim
+from shared.external_access import (
+    resolve_external_claim,
+    resolve_provider_org_claim,
+)
 
 from src.config import get_settings
 from src.core.auth import (
@@ -664,6 +667,7 @@ async def mfa_initial_verify(
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
         "is_external": await resolve_external_claim(db, user),
+        "is_provider_org": await resolve_provider_org_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }
@@ -816,6 +820,7 @@ async def _generate_login_tokens(
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
         "is_external": await resolve_external_claim(db, user),
+        "is_provider_org": await resolve_provider_org_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }
@@ -981,6 +986,7 @@ async def refresh_token(
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
         "is_external": await resolve_external_claim(db, user),
+        "is_provider_org": await resolve_provider_org_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }
@@ -2046,6 +2052,7 @@ async def setup_passkey_verify(
         "name": user.name or user.email.split("@")[0],
         "is_superuser": user.is_superuser,
         "is_external": await resolve_external_claim(db, user),
+        "is_provider_org": await resolve_provider_org_claim(db, user),
         "org_id": str(user.organization_id) if user.organization_id else None,
         "roles": roles,
     }

@@ -41,8 +41,10 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select
 
+from shared.file_paths import resolve_s3_key
 from src.models.orm.file_metadata import FileMetadata
 from src.models.orm.tables import Table
+from src.services.file_storage import FileStorageService
 
 pytestmark = pytest.mark.e2e
 
@@ -222,16 +224,55 @@ def _make_install_zip(slug: str, table_name: str, table_bundle_id: str) -> bytes
 def _install_zip(
     e2e_client, headers, zip_bytes: bytes, *, query: str = ""
 ):
-    return e2e_client.post(
+    # Install is async (202 + poll); wait_for_install returns a terminal shim and
+    # passes synchronous refusals (the structured inactive-install 409) through.
+    from tests.e2e.platform.conftest import wait_for_install
+
+    r = e2e_client.post(
         f"/api/solutions/install{query}",
         headers=_upload_headers(headers),
         files={"file": ("sol.zip", zip_bytes, "application/zip")},
     )
+    return wait_for_install(e2e_client, r, headers)
 
 
 # ---------------------------------------------------------------------------
 # Test class
 # ---------------------------------------------------------------------------
+
+@pytest.mark.e2e
+class TestFilePolicyDenialDiagnostics:
+    async def test_denied_write_403_detail_identifies_scope(
+        self, e2e_client, platform_admin, alice_user, db_session
+    ):
+        """A policy denial must identify itself: action, location, and the
+        derived install scope in the 403 detail — a scope-loss bug then reads
+        as `solution_id: null` instead of a bare 'Forbidden'."""
+        headers = platform_admin.headers
+        slug = f"deny-diag-{uuid.uuid4().hex[:8]}"
+        sol = _create_solution(e2e_client, headers, slug)
+        sol_id = sol["id"]
+        _deploy_solution(e2e_client, headers, sol_id, file_locations=["solutions"])
+        await _declare_solution_file_location(db_session, sol_id, "solutions")
+
+        # alice is a regular user: admin_bypass denies her the write.
+        r = e2e_client.post(
+            f"/api/files/write?solution={sol_id}",
+            headers=alice_user.headers,
+            json={
+                "location": "solutions",
+                "path": "deny/probe.txt",
+                "content": "x",
+                "mode": "cloud",
+            },
+        )
+        assert r.status_code == 403, r.text
+        detail = r.json()["detail"]
+        assert detail["action"] == "write"
+        assert detail["location"] == "solutions"
+        assert detail["solution_id"] == sol_id
+        assert "denied" in detail["message"].lower()
+
 
 @pytest.mark.e2e
 class TestSolutionInactiveLifecycleCapstone:
@@ -644,6 +685,19 @@ class TestSolutionInactiveLifecycleCapstone:
         assert not fm_remaining, (
             f"FileMetadata rows survived hard-delete timeout — FK cascade did not fire. "
             f"Remaining: {[str(fm.id) for fm in fm_remaining]}"
+        )
+
+        # ── HARD-DELETE-CASCADE: declared-location S3 bytes actually swept ─
+        # The file was written under location="solutions", so its S3 key sits at
+        # solutions/{sol_id}/{file_path} — a DIFFERENT prefix from the
+        # _solutions/{sol_id}/ install-manifest prefix the sweep clears separately.
+        # A cascaded FileMetadata row is not proof the S3 object is gone.
+        declared_key = resolve_s3_key("solutions", sol_id, file_path)
+        file_storage = FileStorageService(db_session)
+        remaining_keys = await file_storage.list_raw_s3(declared_key)
+        assert declared_key not in remaining_keys, (
+            f"Declared-location S3 object survived hard-delete: {declared_key!r} "
+            f"still present. list_raw_s3 returned: {remaining_keys}"
         )
 
         # ── HARD-DELETE-CASCADE: Table row cascaded away ──────────────────

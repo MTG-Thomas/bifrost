@@ -13,43 +13,27 @@ export interface PolicyRuleInUseError {
 	usages: PolicyRuleUsages;
 }
 
-function hasDetail(error: unknown): error is { detail: unknown } {
-	if (!error || typeof error !== "object") return false;
-	return "detail" in error;
-}
-
 function extractDetail(error: unknown): string {
-	if (hasDetail(error)) {
-		return String(error.detail);
+	if (typeof error === "object" && error !== null && "detail" in error) {
+		return String((error as { detail: unknown }).detail);
 	}
 	return "Unknown error";
 }
 
-export async function listPolicyRules(
-	domain?: "file" | "table",
-): Promise<PolicyRule[]> {
+export async function listPolicyRules(domain?: "file" | "table"): Promise<PolicyRule[]> {
 	const { data, error } = await apiClient.GET("/api/policy-rules", {
 		params: {
 			query: domain ? { domain } : undefined,
 		},
 	});
-	if (error)
-		throw new Error(
-			hasDetail(error)
-				? String(error.detail)
-				: "Failed to list policy rules",
-		);
+	if (error) throw new Error(typeof error === "object" && "detail" in error ? String((error as { detail: unknown }).detail) : "Failed to list policy rules");
 	return data ?? [];
 }
 
-export async function createPolicyRule(
-	body: PolicyRuleCreate,
-): Promise<PolicyRule> {
+export async function createPolicyRule(body: PolicyRuleCreate): Promise<PolicyRule> {
 	const { data, error } = await apiClient.POST("/api/policy-rules", { body });
-	if (error)
-		throw new Error(extractDetail(error) || "Failed to create policy rule");
-	if (data === undefined)
-		throw new Error("No data returned from create policy rule");
+	if (error) throw new Error(extractDetail(error) || "Failed to create policy rule");
+	if (data === undefined) throw new Error("No data returned from create policy rule");
 	return data;
 }
 
@@ -62,10 +46,8 @@ export async function updatePolicyRule(
 		"/api/policy-rules/{domain}/{name}",
 		{ params: { path: { domain, name } }, body },
 	);
-	if (error)
-		throw new Error(extractDetail(error) || "Failed to update policy rule");
-	if (data === undefined)
-		throw new Error("No data returned from update policy rule");
+	if (error) throw new Error(extractDetail(error) || "Failed to update policy rule");
+	if (data === undefined) throw new Error("No data returned from update policy rule");
 	return data;
 }
 
@@ -74,10 +56,7 @@ export async function updatePolicyRule(
  * function throws a plain `Error` whose `cause` is a `PolicyRuleInUseError` so
  * callers can distinguish "in use" (show blast radius) from other failures.
  */
-export async function deletePolicyRule(
-	domain: string,
-	name: string,
-): Promise<void> {
+export async function deletePolicyRule(domain: string, name: string): Promise<void> {
 	const { error } = await apiClient.DELETE(
 		"/api/policy-rules/{domain}/{name}",
 		{ params: { path: { domain, name } } },
@@ -85,19 +64,12 @@ export async function deletePolicyRule(
 	if (!error) return;
 
 	// Try to surface a structured in-use payload when the server sends 409.
-	if (hasDetail(error)) {
-		const detail = error.detail;
-		if (
-			typeof detail === "object" &&
-			detail !== null &&
-			"usages" in detail
-		) {
+	if (typeof error === "object" && error !== null && "detail" in error) {
+		const detail = (error as { detail: unknown }).detail;
+		if (typeof detail === "object" && detail !== null && "usages" in detail) {
 			const inUse: PolicyRuleInUseError = {
 				type: "in_use",
-				message:
-					"message" in detail
-						? String((detail as { message: unknown }).message)
-						: `Policy rule '${name}' is in use`,
+				message: "message" in detail ? String((detail as { message: unknown }).message) : `Policy rule '${name}' is in use`,
 				usages: (detail as { usages: PolicyRuleUsages }).usages,
 			};
 			const err = new Error(inUse.message);
@@ -109,25 +81,13 @@ export async function deletePolicyRule(
 	throw new Error("Failed to delete policy rule");
 }
 
-export async function policyRuleUsages(
-	domain: string,
-	name: string,
-): Promise<PolicyRuleUsages> {
-	const { data, error } = await apiClient.GET(
-		"/api/policy-rules/{domain}/{name}/usages",
-		{
-			params: {
-				path: { domain, name },
-			},
+export async function policyRuleUsages(domain: string, name: string): Promise<PolicyRuleUsages> {
+	const { data, error } = await apiClient.GET("/api/policy-rules/{domain}/{name}/usages", {
+		params: {
+			path: { domain, name },
 		},
-	);
-	if (error)
-		throw new Error(
-			hasDetail(error)
-				? String(error.detail)
-				: "Failed to get policy rule usages",
-		);
-	if (data === undefined)
-		throw new Error("No data returned for policy rule usages");
+	});
+	if (error) throw new Error(typeof error === "object" && "detail" in error ? String((error as { detail: unknown }).detail) : "Failed to get policy rule usages");
+	if (data === undefined) throw new Error("No data returned for policy rule usages");
 	return data;
 }

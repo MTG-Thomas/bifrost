@@ -1,9 +1,22 @@
 """Tests for the _search_content pure function in src.services.editor.search."""
 
+import os
+import re
+
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from src.services.editor import search as editor_search
 from src.services.editor.search import _search_content, _validate_regex_pattern
+
+
+FUZZ_EXAMPLES = int(os.environ.get("BIFROST_FUZZ_EXAMPLES", "100"))
+REGEX_VALIDATION_FUZZ_EXAMPLES = int(
+    os.environ.get("BIFROST_REGEX_VALIDATION_FUZZ_EXAMPLES", str(FUZZ_EXAMPLES))
+)
+REGEX_SEARCH_FUZZ_EXAMPLES = int(
+    os.environ.get("BIFROST_REGEX_SEARCH_FUZZ_EXAMPLES", "1000")
+)
 
 
 class TestSimpleSearch:
@@ -26,6 +39,37 @@ class TestSimpleSearch:
     def test_empty_content_returns_empty(self):
         results = _search_content("", "test.py", "hello", case_sensitive=False, is_regex=False)
         assert results == []
+
+    @pytest.mark.property
+    @settings(max_examples=FUZZ_EXAMPLES, deadline=200)
+    @given(
+        content=st.text(max_size=200),
+        query=st.text(min_size=1, max_size=30),
+        case_sensitive=st.booleans(),
+    )
+    def test_literal_search_matches_python_substring_semantics(
+        self,
+        content: str,
+        query: str,
+        case_sensitive: bool,
+    ):
+        results = _search_content(
+            content,
+            "test.py",
+            query,
+            case_sensitive=case_sensitive,
+            is_regex=False,
+        )
+
+        flags = 0 if case_sensitive else re.IGNORECASE
+        expected_match_count = sum(
+            1
+            for line in content.split("\n")
+            for _ in re.finditer(re.escape(query), line, flags)
+        )
+
+        assert len(results) == expected_match_count
+        assert all(result.match_text in content.split("\n") for result in results)
 
 
 class TestCaseSensitivity:
@@ -66,6 +110,57 @@ class TestRegexSearch:
         content = "hello world"
         results = _search_content(content, "test.py", "[invalid", case_sensitive=False, is_regex=True)
         assert results == []
+
+    @pytest.mark.property
+    @settings(max_examples=REGEX_VALIDATION_FUZZ_EXAMPLES, deadline=200)
+    @given(
+        pattern=st.text(max_size=80),
+    )
+    def test_regex_validation_accepts_or_rejects_cleanly(
+        self,
+        pattern: str,
+    ):
+        try:
+            _validate_regex_pattern(pattern)
+        except ValueError as exc:
+            assert "nested quantifiers" in str(exc) or "exceeds" in str(exc)
+        except Exception as exc:
+            # The stdlib parser can reject malformed generated patterns. Those
+            # are acceptable controlled rejections for this validation target.
+            assert exc.__class__.__module__.startswith("re")
+
+    @pytest.mark.property
+    @settings(max_examples=REGEX_SEARCH_FUZZ_EXAMPLES, deadline=None)
+    @given(
+        content=st.text(max_size=120),
+        pattern=st.sampled_from(
+            [
+                r"\w+",
+                r"\d+",
+                r"\s+",
+                r"[A-Za-z_][A-Za-z0-9_]*",
+                r"(?:foo|bar|baz)",
+                r"^.{0,20}$",
+                r"\b(?:GET|POST|PUT|DELETE)\b",
+            ]
+        ),
+        case_sensitive=st.booleans(),
+    )
+    def test_regex_search_with_safe_patterns_returns_results(
+        self,
+        content: str,
+        pattern: str,
+        case_sensitive: bool,
+    ):
+        results = _search_content(
+            content,
+            "test.py",
+            pattern,
+            case_sensitive=case_sensitive,
+            is_regex=True,
+        )
+        assert isinstance(results, list)
+        assert all(result.file_path == "test.py" for result in results)
 
     def test_regex_search_uses_timeout_capable_engine(self, monkeypatch):
         """Explicit regex mode must bound user-provided pattern execution."""

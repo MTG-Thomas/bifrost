@@ -28,8 +28,8 @@
     "client_id": "test-client-id",
     "display_name": "RT Golden OAuth",
     "oauth_flow_type": "authorization_code",
-    "provider_name": "rt-golden-oauth",
     "provider_metadata": {},
+    "provider_name": "rt-golden-oauth",
     "redirect_uri": "https://app.example.com/callback",
     "scopes": [
       "openid",

@@ -7,17 +7,20 @@ from __future__ import annotations
 import io
 import logging
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from src.models.enums import ConfigType
 from src.services.solutions.zip_install import (
+    BadExportPassword,
     ContentCollision,
     PreviewResult,
     _build_bundle,
     _config_type,
     _safe_extract_path,
     preview_zip,
+    validate_install_zip,
 )
 
 
@@ -45,6 +48,11 @@ def _make_workspace_zip(extra: dict[str, str] | None = None) -> bytes:
             "    required: true\n"
             "    description: needed\n"
             "    position: 0\n"
+        ),
+        ".bifrost/files.yaml": (
+            "locations:\n"
+            "  - reports\n"
+            "  - invoices\n"
         ),
         ".bifrost/claims.yaml": (
             "claims:\n"
@@ -85,6 +93,7 @@ def test_preview_lists_entities_and_config_schemas() -> None:
 
     assert len(result.claims) == 1
     assert result.claims[0]["name"] == "allowed_campus_ids"
+    assert result.file_locations == ["reports", "invoices"]
 
 
 def test_preview_empty_collections_when_absent() -> None:
@@ -260,3 +269,85 @@ def test_build_bundle_rejects_missing_declared_logo(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="solution logo file not found"):
         _build_bundle(object(), preview, workspace)
+
+
+def _write_zip(tmp_path: Path, data: bytes) -> Path:
+    zp = tmp_path / "solution.zip"
+    zp.write_bytes(data)
+    return zp
+
+
+def test_validate_install_zip_accepts_normal_workspace(tmp_path: Path) -> None:
+    """A well-formed shareable zip with no secrets blob passes fail-fast
+    validation (no password needed) and returns the parsed preview so the
+    endpoint can run its synchronous conflict checks (slug-keyed)."""
+    zp = _write_zip(tmp_path, _make_workspace_zip())
+    preview = validate_install_zip(zp, password=None)
+    assert preview.slug == "zip-demo"
+    assert preview.name == "Zip Demo"
+
+
+def test_validate_install_zip_rejects_non_workspace(tmp_path: Path) -> None:
+    """A zip missing the Solution descriptor slug/name is refused synchronously."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("random.txt", "not a workspace")
+    zp = _write_zip(tmp_path, buf.getvalue())
+    with pytest.raises(ValueError, match="not a Solution workspace"):
+        validate_install_zip(zp, password=None)
+
+
+def test_validate_install_zip_bad_bytes_raise(tmp_path: Path) -> None:
+    """Corrupt (non-zip) bytes raise BadZipFile (endpoint maps to 422)."""
+    zp = _write_zip(tmp_path, b"this is not a zip file")
+    with pytest.raises(zipfile.BadZipFile):
+        validate_install_zip(zp, password=None)
+
+
+def test_validate_install_zip_missing_password_for_secrets(tmp_path: Path) -> None:
+    """A full-backup zip carrying secrets.enc with NO password is refused
+    synchronously (fail-fast, before any job)."""
+    zp = _write_zip(
+        tmp_path,
+        _make_workspace_zip(extra={".bifrost/secrets.enc": "encrypted-blob"}),
+    )
+    with pytest.raises(BadExportPassword, match="password is required"):
+        validate_install_zip(zp, password=None)
+
+
+def test_validate_install_zip_wrong_password_for_secrets(tmp_path: Path) -> None:
+    """A real secrets blob that fails to decrypt with the supplied password is
+    refused synchronously with BadExportPassword (wrong password → 422, nothing
+    lands)."""
+    from src.services.solutions.secrets_blob import (
+        SolutionContent,
+        encode_secrets_blob,
+    )
+
+    blob = encode_secrets_blob(
+        SolutionContent(config_values={"API_KEY": "sk_secret"}),
+        password="correct-horse",
+    )
+    zp = _write_zip(
+        tmp_path, _make_workspace_zip(extra={".bifrost/secrets.enc": blob})
+    )
+    with pytest.raises(BadExportPassword, match="wrong password"):
+        validate_install_zip(zp, password="wrong-password")
+
+
+def test_validate_install_zip_correct_password_for_secrets(tmp_path: Path) -> None:
+    """The correct password decrypt-checks cleanly and validation passes."""
+    from src.services.solutions.secrets_blob import (
+        SolutionContent,
+        encode_secrets_blob,
+    )
+
+    blob = encode_secrets_blob(
+        SolutionContent(config_values={"API_KEY": "sk_secret"}),
+        password="correct-horse",
+    )
+    zp = _write_zip(
+        tmp_path, _make_workspace_zip(extra={".bifrost/secrets.enc": blob})
+    )
+    # Must not raise.
+    validate_install_zip(zp, password="correct-horse")

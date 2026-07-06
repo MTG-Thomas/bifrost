@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bifrost.cli import _WatchChangeHandler, _WatchState
+from bifrost.cli import _WatchChangeHandler, _WatchState, _file_activity_ws_url
 
 
 def test_read_only_events_are_ignored():
@@ -160,7 +160,7 @@ def test_deletion_computes_correct_repo_path():
     repo_prefix = "my-org/my-repo"
 
     rel = abs_path.relative_to(base)
-    repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
+    repo_path = f"{repo_prefix}/{rel.as_posix()}" if repo_prefix else rel.as_posix()
 
     assert repo_path == "my-org/my-repo/apps/my-app/old-file.tsx"
 
@@ -172,7 +172,7 @@ def test_deletion_computes_repo_path_without_prefix():
     repo_prefix = ""
 
     rel = abs_path.relative_to(base)
-    repo_path = f"{repo_prefix}/{rel}" if repo_prefix else str(rel)
+    repo_path = f"{repo_prefix}/{rel.as_posix()}" if repo_prefix else rel.as_posix()
 
     assert repo_path == "apps/my-app/old-file.tsx"
 
@@ -320,6 +320,25 @@ def test_watch_handler_respects_root_gitignore_for_subdirectory_watch(tmp_path):
     assert str(real_path) in state.pending_changes
 
 
+def test_file_activity_ws_url_uses_wss_for_https():
+    assert (
+        _file_activity_ws_url("https://dev.bifrost.example")
+        == "wss://dev.bifrost.example/ws/connect?channels=file-activity"
+    )
+
+
+def test_file_activity_ws_url_allows_localhost_cleartext_dev():
+    assert (
+        _file_activity_ws_url("http://localhost:8000")
+        == "ws://localhost:8000/ws/connect?channels=file-activity"
+    )
+
+
+def test_file_activity_ws_url_rejects_remote_cleartext():
+    with pytest.raises(ValueError, match="requires HTTPS"):
+        _file_activity_ws_url("http://bifrost.example")
+
+
 def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     """Events under .bifrost/ should produce zero queued work, so a subsequent
     drain → push pipeline would issue zero REST calls."""
@@ -399,3 +418,50 @@ def test_watch_allowed_in_plain_repo_workspace(tmp_path):
             handle_watch([str(tmp_path)])
         except RuntimeError as e:
             assert str(e) == "stop-after-guard"
+
+
+# =============================================================================
+# Initial-sync abort: a failed server listing must stop watch from starting
+# the observer (otherwise it half-initializes and mass-pushes per-file).
+# =============================================================================
+
+
+def test_watch_aborts_when_initial_sync_fails(tmp_path):
+    """If the initial _sync_files aborts (e.g. server file listing 403s), watch
+    must return that code and NEVER construct the Observer."""
+    import asyncio
+
+    from bifrost.cli import _watch_and_push
+
+    class _ListFails:
+        async def post(self, url: str, json: Any = None):
+            # The initial sync's /api/files/list returns 403 → _sync_files aborts.
+            if url == "/api/files/list":
+                return SimpleNamespace(
+                    status_code=403,
+                    json=lambda: {"detail": "Forbidden"},
+                    text="Forbidden",
+                )
+            return SimpleNamespace(status_code=204, json=lambda: {})
+
+    # Give the workspace one local file so a non-aborting run would try to push.
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "x.py").write_text("print('x')\n")
+
+    observer_constructed = {"v": False}
+
+    def _boom_observer(*a, **k):
+        observer_constructed["v"] = True
+        raise AssertionError("Observer must not be constructed after an aborted initial sync")
+
+    # _watch_and_push does `from watchdog.observers import Observer` internally,
+    # so patch it at the source module.
+    with patch("watchdog.observers.Observer", _boom_observer):
+        rc = asyncio.run(
+            _watch_and_push(
+                str(tmp_path), repo_prefix="", mirror=False, validate=False, client=_ListFails()
+            )
+        )
+
+    assert rc == 1, "watch must propagate the initial-sync abort code"
+    assert observer_constructed["v"] is False

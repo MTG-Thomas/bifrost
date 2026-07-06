@@ -149,10 +149,10 @@ class TestPathResolution:
         mock_fss_class.return_value = mock_fss
 
         req = SignedUrlRequest(
-            path="x.bin", location="temp", scope="org-a", method="GET"
+            path="x.bin", location="temp", scope=str(ORG_A), method="GET"
         )
-        result = await get_signed_url(req, MagicMock(), MagicMock(), AsyncMock())
-        assert result.path == "_tmp/org-a/x.bin"
+        result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
+        assert result.path == f"_tmp/{ORG_A}/x.bin"
 
     @pytest.mark.asyncio
     @patch("src.routers.files.FileStorageService")
@@ -164,10 +164,10 @@ class TestPathResolution:
         mock_fss_class.return_value = mock_fss
 
         req = SignedUrlRequest(
-            path="q1.pdf", location="reports", scope="org-a", method="GET"
+            path="q1.pdf", location="reports", scope=str(ORG_A), method="GET"
         )
-        result = await get_signed_url(req, MagicMock(), MagicMock(), AsyncMock())
-        assert result.path == "reports/org-a/q1.pdf"
+        result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
+        assert result.path == f"reports/{ORG_A}/q1.pdf"
 
 
 class TestPathValidation:

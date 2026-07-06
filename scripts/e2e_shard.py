@@ -2,7 +2,7 @@
 """Print the e2e test files for one shard of an N-shard split.
 
 Usage:
-    scripts/e2e_shard.py --shard-id 1 --total 2
+    scripts/e2e_shard.py --shard-id 1 --total 4
 
 Allocates files to shards by sorted-order round-robin, weighted by an
 optional weights file (see WEIGHTS below). Stable: adding a new file only
@@ -45,7 +45,7 @@ def collect_test_files() -> list[str]:
     out = []
     for p in sorted(TESTS_ROOT.rglob("test_*.py")):
         rel = p.relative_to(API_ROOT)
-        out.append(str(rel))
+        out.append(rel.as_posix())
     return out
 
 

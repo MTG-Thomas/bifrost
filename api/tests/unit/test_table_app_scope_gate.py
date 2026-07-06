@@ -15,7 +15,7 @@ from src.models.orm.applications import Application
 from src.models.orm.organizations import Organization
 from src.models.orm.solutions import Solution
 from src.models.orm.tables import Table
-from src.routers.tables import _resolve_solution_table_by_name
+from src.services.solution_scope import resolve_solution_table_by_name
 
 pytestmark = pytest.mark.e2e
 
@@ -39,13 +39,18 @@ async def _install_with_app_and_table(db, org_id, table_name):
     return app, table
 
 
-def _ctx(db, *, app_id, is_superuser) -> Any:
+def _ctx(db, *, app_id, is_superuser, is_provider_org=False) -> Any:
     # Duck-typed Context (matches what _resolve_solution_table_by_name reads).
     # solution_id=None: these tests drive the APP-id arm of the resolver; the
     # ?solution= arm (F2 chokepoint) reads ctx.solution_id first.
     return cast(Any, SimpleNamespace(
         db=db, app_id=str(app_id), solution_id=None,
-        user=SimpleNamespace(is_superuser=is_superuser),
+        user=SimpleNamespace(
+            user_id=uuid4(),
+            is_superuser=is_superuser,
+            is_provider_org=is_provider_org,
+            is_external=False,
+        ),
     ))
 
 
@@ -63,7 +68,7 @@ async def test_foreign_org_app_id_does_not_resolve_other_orgs_table(db_session):
 
     # Caller is a NON-superuser scoped to org A, but supplies org B's app id.
     ctx = _ctx(db, app_id=app_b.id, is_superuser=False)
-    got = await _resolve_solution_table_by_name(ctx, name, target_org_id=org_a.id)
+    got = await resolve_solution_table_by_name(db, ctx, name, target_org_id=org_a.id)
     assert got is None, "cross-tenant table resolved via a foreign app_id header"
 
 
@@ -78,7 +83,58 @@ async def test_own_org_app_id_resolves_its_table(db_session):
     app_b, table_b = await _install_with_app_and_table(db, org_b.id, name)
 
     ctx = _ctx(db, app_id=app_b.id, is_superuser=False)
-    got = await _resolve_solution_table_by_name(ctx, name, target_org_id=org_b.id)
+    got = await resolve_solution_table_by_name(db, ctx, name, target_org_id=org_b.id)
+    assert got is not None and got.id == table_b.id
+
+
+async def test_provider_org_member_resolves_foreign_install_table(db_session):
+    """Canonical bypass rule (is_superuser OR is_provider_org): a NON-admin
+    provider-org staffer targeting org B's install (target_org defaults to their
+    own org A) resolves the install's own table, identical to a platform admin.
+    Row access is decided by org B's table policies afterward."""
+    db = db_session
+    org_a = Organization(id=uuid4(), name=f"A-{uuid4().hex[:6]}", created_by="t")
+    org_b = Organization(id=uuid4(), name=f"B-{uuid4().hex[:6]}", created_by="t")
+    db.add_all([org_a, org_b])
+    await db.flush()
+
+    name = f"customers_{uuid4().hex[:8]}"
+    app_b, table_b = await _install_with_app_and_table(db, org_b.id, name)
+
+    ctx = _ctx(db, app_id=app_b.id, is_superuser=False, is_provider_org=True)
+    got = await resolve_solution_table_by_name(db, ctx, name, target_org_id=org_a.id)
+    assert got is not None and got.id == table_b.id
+
+
+async def test_plain_non_provider_member_still_filtered(db_session):
+    """A plain non-provider, non-admin caller in org A supplying org B's app id
+    still does NOT resolve org B's install table — the org filter still applies."""
+    db = db_session
+    org_a = Organization(id=uuid4(), name=f"A-{uuid4().hex[:6]}", created_by="t")
+    org_b = Organization(id=uuid4(), name=f"B-{uuid4().hex[:6]}", created_by="t")
+    db.add_all([org_a, org_b])
+    await db.flush()
+
+    name = f"customers_{uuid4().hex[:8]}"
+    app_b, table_b = await _install_with_app_and_table(db, org_b.id, name)
+
+    ctx = _ctx(db, app_id=app_b.id, is_superuser=False, is_provider_org=False)
+    got = await resolve_solution_table_by_name(db, ctx, name, target_org_id=org_a.id)
+    assert got is None, "cross-tenant table resolved for a non-bypass caller"
+
+
+async def test_provider_org_member_same_org_unchanged(db_session):
+    """Same-org resolution is unchanged for a provider-org member: their own
+    install's table still resolves by name."""
+    db = db_session
+    org_b = Organization(id=uuid4(), name=f"B-{uuid4().hex[:6]}", created_by="t")
+    db.add(org_b)
+    await db.flush()
+    name = f"customers_{uuid4().hex[:8]}"
+    app_b, table_b = await _install_with_app_and_table(db, org_b.id, name)
+
+    ctx = _ctx(db, app_id=app_b.id, is_superuser=False, is_provider_org=True)
+    got = await resolve_solution_table_by_name(db, ctx, name, target_org_id=org_b.id)
     assert got is not None and got.id == table_b.id
 
 
@@ -92,5 +148,5 @@ async def test_global_install_table_resolves_for_any_org(db_session):
     app_g, table_g = await _install_with_app_and_table(db, None, name)  # global install
 
     ctx = _ctx(db, app_id=app_g.id, is_superuser=False)
-    got = await _resolve_solution_table_by_name(ctx, name, target_org_id=org_a.id)
+    got = await resolve_solution_table_by_name(db, ctx, name, target_org_id=org_a.id)
     assert got is not None and got.id == table_g.id

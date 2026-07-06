@@ -172,6 +172,23 @@ class TestScanFile:
         assert issues[0].file_path == "test.py"
 
     @pytest.mark.asyncio
+    async def test_missing_config_log_escapes_user_controlled_values(
+        self, async_scanner, caplog
+    ):
+        code = 'key = await config.get("missing\\nkey")'
+        async_scanner.get_all_config_keys = AsyncMock(return_value=set())
+        async_scanner.get_all_mapped_integrations = AsyncMock(return_value=set())
+
+        with caplog.at_level("DEBUG", logger="src.services.sdk_reference_scanner"):
+            await async_scanner.scan_file("wf.py\nforged=true", code)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("missing\\nkey" in message for message in messages)
+        assert any("wf.py\\nforged=true" in message for message in messages)
+        assert all("missing\nkey" not in message for message in messages)
+        assert all("wf.py\nforged=true" not in message for message in messages)
+
+    @pytest.mark.asyncio
     async def test_missing_integration(self, async_scanner):
         code = 'halo = await integrations.get("Unknown")'
         async_scanner.get_all_config_keys = AsyncMock(return_value=set())

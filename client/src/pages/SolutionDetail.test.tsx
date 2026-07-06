@@ -34,27 +34,53 @@ vi.mock("@/contexts/AuthContext", () => ({
 	useAuth: () => ({ isPlatformAdmin: true }),
 }));
 
+const mockFilesExplorer = vi.fn();
+vi.mock("@/components/files/FilesExplorer", () => ({
+	FilesExplorer: (props: { install?: string; installName?: string }) => {
+		mockFilesExplorer(props);
+		return (
+			<div data-testid="solution-files-explorer">
+				Files Explorer {props.install} {props.installName}
+			</div>
+		);
+	},
+}));
+
 const mockGetSolutionEntities = vi.fn();
 const mockUpdateSolution = vi.fn();
 const mockDeleteSolution = vi.fn();
+const mockUninstallSolution = vi.fn();
+const mockGetSolutionDeletionSummary = vi.fn();
 const mockSetSolutionConfig = vi.fn();
 const mockExportSolution = vi.fn();
+const mockCreateSolutionExportJob = vi.fn();
+const mockListSolutionExportJobs = vi.fn();
+const mockDownloadSolutionExportJob = vi.fn();
 const mockGetSolutionCaptureCandidates = vi.fn();
 const mockCaptureSolutionEntities = vi.fn();
 const mockSyncSolution = vi.fn();
+const mockGetSolutionReadme = vi.fn();
 vi.mock("@/services/solutions", () => ({
 	getSolutionEntities: (...a: unknown[]) => mockGetSolutionEntities(...a),
+	getSolutionReadme: (...a: unknown[]) => mockGetSolutionReadme(...a),
 	updateSolution: (...a: unknown[]) => mockUpdateSolution(...a),
 	deleteSolution: (...a: unknown[]) => mockDeleteSolution(...a),
+	uninstallSolution: (...a: unknown[]) => mockUninstallSolution(...a),
+	getSolutionDeletionSummary: (...a: unknown[]) =>
+		mockGetSolutionDeletionSummary(...a),
 	setSolutionConfig: (...a: unknown[]) => mockSetSolutionConfig(...a),
 	exportSolution: (...a: unknown[]) => mockExportSolution(...a),
+	createSolutionExportJob: (...a: unknown[]) => mockCreateSolutionExportJob(...a),
+	listSolutionExportJobs: (...a: unknown[]) => mockListSolutionExportJobs(...a),
+	downloadSolutionExportJob: (...a: unknown[]) =>
+		mockDownloadSolutionExportJob(...a),
 	syncSolution: (...a: unknown[]) => mockSyncSolution(...a),
 	getSolutionCaptureCandidates: (...a: unknown[]) =>
 		mockGetSolutionCaptureCandidates(...a),
 	captureSolutionEntities: (...a: unknown[]) => mockCaptureSolutionEntities(...a),
 }));
 
-function makeEntities() {
+function makeEntities(statusOverride = "active") {
 	return {
 		solution: {
 			id: "sol-1",
@@ -65,6 +91,8 @@ function makeEntities() {
 			git_connected: false,
 			git_repo_url: null,
 			scope: "org",
+			status: statusOverride,
+			setup_complete: true,
 		},
 		workflows: [
 			{
@@ -140,6 +168,32 @@ async function renderPage() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockGetSolutionEntities.mockResolvedValue(makeEntities());
+	mockGetSolutionReadme.mockResolvedValue({ readme: null });
+	mockListSolutionExportJobs.mockResolvedValue({ jobs: [] });
+	mockCreateSolutionExportJob.mockResolvedValue({
+		id: "job-1",
+		solution_id: "sol-1",
+		status: "pending",
+		progress_percent: 0,
+		created_at: "2026-06-25T12:00:00Z",
+		updated_at: "2026-06-25T12:00:00Z",
+	});
+	mockDownloadSolutionExportJob.mockResolvedValue({
+		blob: new Blob(["zipbytes"]),
+		filename: "backup.zip",
+	});
+	mockGetSolutionDeletionSummary.mockResolvedValue({
+		solution_id: "sol-1",
+		files: 2,
+		tables: 1,
+		workflows: 3,
+		apps: 0,
+		forms: 1,
+		agents: 0,
+		claims: 1,
+		config_declarations: 2,
+		events: 0,
+	});
 	mockGetSolutionCaptureCandidates.mockResolvedValue({
 		workflows: [],
 		apps: [],
@@ -173,6 +227,19 @@ describe("SolutionDetail", () => {
 		).toBeInTheDocument();
 	});
 
+	it("keeps the README read-only even for manual installs", async () => {
+		await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		expect(
+			await screen.findByText(/no setup instructions provided/i),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/add setup instructions/i)).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /write readme/i }),
+		).not.toBeInTheDocument();
+	});
+
 	it("renders the version and upgraded-from subtext", async () => {
 		const entities = makeEntities();
 		entities.solution = {
@@ -204,6 +271,77 @@ describe("SolutionDetail", () => {
 		const configuration = screen.getByTestId("tab-configuration");
 		expect(configuration).toHaveTextContent("Configuration");
 		expect(configuration).toHaveTextContent("2");
+
+		expect(screen.getByTestId("tab-exports")).toHaveTextContent("Exports");
+	});
+
+	it("lists backup export jobs on the Exports tab and downloads completed jobs", async () => {
+		mockListSolutionExportJobs.mockResolvedValue({
+			jobs: [
+				{
+					id: "job-1",
+					solution_id: "sol-1",
+					status: "completed",
+					progress_percent: 100,
+					artifact_size_bytes: 2048,
+					created_at: "2026-06-25T12:00:00Z",
+					updated_at: "2026-06-25T12:05:00Z",
+					completed_at: "2026-06-25T12:05:00Z",
+					expires_at: "2026-07-02T12:05:00Z",
+					download_url: "/api/solutions/export-jobs/job-1/download",
+				},
+			],
+		});
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("tab-exports"));
+
+		expect(await screen.findByText("completed")).toBeInTheDocument();
+		expect(screen.getByText(/2(?:\.0)? KB/)).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /download/i }));
+
+		await waitFor(() =>
+			expect(mockDownloadSolutionExportJob).toHaveBeenCalledWith("job-1"),
+		);
+	});
+
+	it("shows an error state when backup export jobs fail to load", async () => {
+		mockListSolutionExportJobs.mockRejectedValue(
+			new Error("Failed to list backup exports"),
+		);
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("tab-exports"));
+
+		expect(
+			await screen.findByText("Failed to list backup exports"),
+		).toBeInTheDocument();
+	});
+
+	it("queues Backup exports instead of directly downloading", async () => {
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("solution-actions"));
+		await user.click(await screen.findByRole("menuitem", { name: /export/i }));
+		await user.click(screen.getByLabelText(/^backup/i));
+		await user.type(screen.getByLabelText(/^password/i), "hunter2");
+		await user.click(screen.getByRole("button", { name: /queue backup/i }));
+
+		await waitFor(() =>
+			expect(mockCreateSolutionExportJob).toHaveBeenCalledWith("sol-1", {
+				password: "hunter2",
+				options: {
+					includeConfigs: true,
+					includeSecrets: false,
+					includeTables: false,
+					includeFiles: true,
+				},
+			}),
+		);
+		expect(mockExportSolution).not.toHaveBeenCalled();
 	});
 
 	it("shows the per-type chips inside Contents", async () => {
@@ -218,6 +356,40 @@ describe("SolutionDetail", () => {
 		expect(workflows).toHaveTextContent("Workflows");
 		expect(workflows).toHaveTextContent("1");
 		expect(screen.getByTestId("chip-claims")).toHaveTextContent("Custom Claims");
+	});
+
+	it("opens the requested Contents filter from an Overview entity count", async () => {
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByRole("button", { name: /1 workflows/i }));
+
+		expect(screen.getByTestId("tab-contents")).toHaveAttribute(
+			"data-state",
+			"active",
+		);
+		expect(screen.getByTestId("chip-workflows")).toHaveTextContent("Workflows");
+		expect(screen.getByText("Sync Tickets")).toBeInTheDocument();
+		expect(screen.queryByTestId("summary-workflows")).not.toBeInTheDocument();
+	});
+
+	it("opens Files directly from the Overview Files count", async () => {
+		const entities = makeEntities();
+		(entities as Record<string, unknown>).files = [
+			{ location: "reports", path: "demo/readme.txt", size: 2 },
+		];
+		mockGetSolutionEntities.mockResolvedValue(entities);
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByRole("button", { name: /1 files/i }));
+
+		expect(screen.getByTestId("tab-contents")).toHaveAttribute(
+			"data-state",
+			"active",
+		);
+		expect(await screen.findByTestId("solution-files-explorer"))
+			.toHaveTextContent("Files Explorer sol-1 My Solution");
 	});
 
 	it("renders the update action and the overflow menu in the header", async () => {
@@ -448,6 +620,149 @@ describe("SolutionDetail", () => {
 		// backend drops update_available_version).
 		await waitFor(() =>
 			expect(mockGetSolutionEntities.mock.calls.length).toBeGreaterThan(1),
+		);
+	});
+
+	it("renders a Files chip in Contents when the install has files", async () => {
+		const entities = makeEntities();
+		(entities as Record<string, unknown>).files = [
+			{ location: "solutions", path: "data/hello.txt", size: 2 },
+		];
+		mockGetSolutionEntities.mockResolvedValue(entities);
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("tab-contents"));
+		const filesChip = screen.getByTestId("chip-files");
+		expect(filesChip).toHaveTextContent("Files");
+		expect(filesChip).toHaveTextContent("1");
+	});
+
+	it("embeds the solution-scoped file explorer from the Files chip", async () => {
+		const entities = makeEntities();
+		(entities as Record<string, unknown>).files = [
+			{ location: "solutions", path: "data/hello.txt", size: 2 },
+		];
+		mockGetSolutionEntities.mockResolvedValue(entities);
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("tab-contents"));
+		await user.click(screen.getByTestId("chip-files"));
+
+		expect(await screen.findByTestId("solution-files-explorer"))
+			.toHaveTextContent("Files Explorer sol-1 My Solution");
+		expect(mockFilesExplorer).toHaveBeenCalledWith({
+			install: "sol-1",
+			installName: "My Solution",
+			embedded: true,
+		});
+	});
+
+	it("shows 'Uninstall' in the overflow menu for an active solution", async () => {
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("solution-actions"));
+		expect(await screen.findByTestId("uninstall-solution")).toBeInTheDocument();
+		expect(screen.getByTestId("hard-delete-solution")).toBeInTheDocument();
+	});
+
+	it("calls uninstallSolution when Uninstall is clicked", async () => {
+		mockUninstallSolution.mockResolvedValue({
+			...makeEntities().solution,
+			status: "inactive",
+		});
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("solution-actions"));
+		await user.click(await screen.findByTestId("uninstall-solution"));
+
+		await waitFor(() =>
+			expect(mockUninstallSolution).toHaveBeenCalledWith("sol-1"),
+		);
+	});
+
+	it("shows Reactivate button and no Uninstall in overflow menu for an inactive solution", async () => {
+		mockGetSolutionEntities.mockResolvedValue(makeEntities("inactive"));
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		// Reactivate replaces Update in the header.
+		expect(screen.getByTestId("reactivate-solution")).toBeInTheDocument();
+		expect(screen.queryByTestId("update-solution")).not.toBeInTheDocument();
+		// Inactive badge shown.
+		expect(screen.getByTestId("status-inactive-badge")).toBeInTheDocument();
+
+		// Overflow menu has no Uninstall but still has Delete permanently.
+		await user.click(screen.getByTestId("solution-actions"));
+		expect(screen.queryByTestId("uninstall-solution")).not.toBeInTheDocument();
+		expect(screen.getByTestId("hard-delete-solution")).toBeInTheDocument();
+	});
+
+	it("opens the hard-delete modal, lists deletion summary, disables Confirm until slug typed", async () => {
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("solution-actions"));
+		await user.click(await screen.findByTestId("hard-delete-solution"));
+
+		const modal = await screen.findByTestId("hard-delete-dialog");
+		expect(modal).toBeInTheDocument();
+
+		// Deletion summary is shown (mocked with 2 files, 1 table, etc.)
+		const summaryList = await screen.findByTestId("deletion-summary-list");
+		expect(summaryList).toHaveTextContent(/2 files/);
+		expect(summaryList).toHaveTextContent(/1 table/);
+		expect(summaryList).toHaveTextContent(/3 workflows/);
+
+		expect(screen.getByTestId("hard-delete-slug")).toHaveTextContent(
+			"my-solution",
+		);
+		expect(screen.getByText("Type the Solution slug to confirm")).toBeInTheDocument();
+
+		// Confirm is disabled until slug is typed.
+		const confirmBtn = screen.getByTestId("confirm-hard-delete");
+		expect(confirmBtn).toBeDisabled();
+
+		const input = screen.getByTestId("hard-delete-confirm-input");
+		await user.type(input, "wrong-slug");
+		expect(confirmBtn).toBeDisabled();
+
+		await user.clear(input);
+		await user.type(input, "my-solution");
+		expect(confirmBtn).not.toBeDisabled();
+	});
+
+	it("calls deleteSolution with confirm=slug and navigates away on hard-delete", async () => {
+		mockDeleteSolution.mockResolvedValue({
+			solution_id: "sol-1",
+			workflows_deleted: 3,
+			apps_deleted: 0,
+			forms_deleted: 1,
+			agents_deleted: 0,
+			claims_deleted: 1,
+			config_declarations_deleted: 2,
+			tables_deleted: 1,
+			files_swept: 2,
+		});
+		const { user } = await renderPage();
+		await screen.findByTestId("solution-detail");
+
+		await user.click(screen.getByTestId("solution-actions"));
+		await user.click(await screen.findByTestId("hard-delete-solution"));
+		await screen.findByTestId("hard-delete-dialog");
+
+		const input = screen.getByTestId("hard-delete-confirm-input");
+		await user.type(input, "my-solution");
+		await user.click(screen.getByTestId("confirm-hard-delete"));
+
+		await waitFor(() =>
+			expect(mockDeleteSolution).toHaveBeenCalledWith("sol-1", "my-solution"),
+		);
+		await waitFor(() =>
+			expect(mockNavigate).toHaveBeenCalledWith("/solutions"),
 		);
 	});
 });

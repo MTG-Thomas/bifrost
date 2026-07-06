@@ -2565,3 +2565,475 @@ def test_app_model_round_trips_through_manifest():
     assert m.app_model == "standalone_v2"
     # default when omitted
     assert ManifestApp(id="a2", path="apps/y").app_model == "inline_v1"
+
+
+def test_manifest_workflow_carries_tool_description():
+    from bifrost.manifest import ManifestWorkflow
+
+    wf = ManifestWorkflow(
+        id="33333333-3333-3333-3333-333333333333",
+        path="functions/x.py",
+        function_name="x",
+        tool_description="curated tool blurb",
+    )
+    assert wf.tool_description == "curated tool blurb"
+    # Default is None when omitted
+    wf2 = ManifestWorkflow(id="44444444-4444-4444-4444-444444444444", path="p.py", function_name="f")
+    assert wf2.tool_description is None
+
+
+# =============================================================================
+# ManifestPolicyRule tests (Task 10)
+# =============================================================================
+
+
+class TestManifestPolicyRule:
+    """Tests for ManifestPolicyRule entity model."""
+
+    def test_from_row_to_orm_values_round_trip(self):
+        """from_row preserves name/domain/description/body; to_orm_values returns them."""
+        from types import SimpleNamespace
+        from uuid import UUID
+
+        from bifrost.manifest import ManifestPolicyRule
+        from bifrost.manifest_codec import Destination
+
+        rule_id = str(uuid4())
+        org_id = str(uuid4())
+        fake_row = SimpleNamespace(
+            id=UUID(rule_id),
+            name="admin_bypass",
+            domain="table",
+            description="Platform admins bypass all table policies.",
+            body={"actions": ["read", "create", "update", "delete"], "when": {"user": "is_platform_admin"}},
+            organization_id=UUID(org_id),
+        )
+
+        manifest_rule = ManifestPolicyRule.from_row(fake_row)
+        assert manifest_rule.name == "admin_bypass"
+        assert manifest_rule.domain == "table"
+        assert manifest_rule.description == "Platform admins bypass all table policies."
+        assert manifest_rule.body == {"actions": ["read", "create", "update", "delete"], "when": {"user": "is_platform_admin"}}
+        assert manifest_rule.organization_id == org_id
+        assert manifest_rule.id == rule_id
+
+        orm_vals = manifest_rule.to_orm_values(Destination.GIT_SYNC).direct
+        assert orm_vals["name"] == "admin_bypass"
+        assert orm_vals["domain"] == "table"
+        assert orm_vals["description"] == "Platform admins bypass all table policies."
+        assert orm_vals["body"] == {"actions": ["read", "create", "update", "delete"], "when": {"user": "is_platform_admin"}}
+        assert orm_vals["organization_id"] == org_id
+        assert orm_vals["id"] == rule_id
+
+    def test_from_row_drops_env_fields(self):
+        """from_row excludes is_builtin, created_by, solution_id, timestamps."""
+        from types import SimpleNamespace
+        from uuid import uuid4 as u4
+        from datetime import datetime, timezone
+
+        from bifrost.manifest import ManifestPolicyRule
+
+        fake_row = SimpleNamespace(
+            id=u4(),
+            name="owner_write",
+            domain="file",
+            description=None,
+            body={"actions": ["read"], "when": None},
+            organization_id=None,
+            # env fields that must NOT appear in ManifestPolicyRule
+            is_builtin=True,
+            created_by=u4(),
+            solution_id=u4(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        manifest_rule = ManifestPolicyRule.from_row(fake_row)
+        dumped = manifest_rule.model_dump(mode="json")
+        assert "is_builtin" not in dumped
+        assert "created_by" not in dumped
+        assert "solution_id" not in dumped
+        assert "created_at" not in dumped
+        assert "updated_at" not in dumped
+        assert dumped["name"] == "owner_write"
+        assert dumped["domain"] == "file"
+
+    def test_to_orm_values_raises_for_non_git_sync(self):
+        """to_orm_values raises NotImplementedError for non-GIT_SYNC destinations."""
+        from bifrost.manifest import ManifestPolicyRule
+        from bifrost.manifest_codec import Destination
+
+        rule = ManifestPolicyRule(
+            id=str(uuid4()),
+            name="test",
+            domain="table",
+            body={"actions": ["read"], "when": None},
+        )
+        with pytest.raises(NotImplementedError):
+            rule.to_orm_values(Destination.INSTALL)
+
+    def test_policy_rule_round_trips_through_yaml(self):
+        """ManifestPolicyRule serializes into and parses from manifest YAML."""
+        from bifrost.manifest import (
+            Manifest,
+            ManifestPolicyRule,
+            parse_manifest,
+            serialize_manifest,
+        )
+
+        rule_id = str(uuid4())
+        rule = ManifestPolicyRule(
+            id=rule_id,
+            name="admin_bypass",
+            domain="table",
+            description="Bypass for admins",
+            body={"actions": ["read", "create", "update", "delete"], "when": {"user": "is_platform_admin"}},
+        )
+        manifest = Manifest(policy_rules={rule_id: rule})
+        yaml_str = serialize_manifest(manifest)
+
+        restored = parse_manifest(yaml_str)
+        assert rule_id in restored.policy_rules
+        restored_rule = restored.policy_rules[rule_id]
+        assert restored_rule.name == "admin_bypass"
+        assert restored_rule.domain == "table"
+        assert restored_rule.description == "Bypass for admins"
+        assert restored_rule.body == {"actions": ["read", "create", "update", "delete"], "when": {"user": "is_platform_admin"}}
+
+    def test_table_policy_ref_round_trips(self):
+        """A table manifest policy list containing a {$ref: ops} ref round-trips."""
+        from bifrost.manifest import (
+            ManifestPolicyRef,
+            parse_manifest,
+            serialize_manifest,
+        )
+
+        table_id = str(uuid4())
+        raw = {
+            "tables": {
+                table_id: {
+                    "id": table_id,
+                    "name": "tickets",
+                    "policies": [
+                        {
+                            "name": "owner_can_write",
+                            "actions": ["update", "delete"],
+                            "when": {"eq": [{"row": "owner_id"}, {"user": "user_id"}]},
+                        },
+                        {"$ref": "ops"},
+                    ],
+                },
+            },
+        }
+
+        manifest = parse_manifest(yaml.dump(raw, default_flow_style=False))
+        table = manifest.tables[table_id]
+        assert table.policies is not None
+        assert len(table.policies) == 2
+        ref_entry = table.policies[1]
+        assert isinstance(ref_entry, ManifestPolicyRef)
+        assert ref_entry.ref == "ops"
+
+        # Round-trip through YAML — ref is preserved verbatim
+        output = serialize_manifest(manifest)
+        restored = parse_manifest(output)
+        restored_table = restored.tables[table_id]
+        assert restored_table.policies is not None
+        assert len(restored_table.policies) == 2
+        restored_ref = restored_table.policies[1]
+        assert isinstance(restored_ref, ManifestPolicyRef)
+        assert restored_ref.ref == "ops"
+
+
+# =============================================================================
+# Task 22: ManifestSolutionFile + FilePolicy.solution_id round-trip tests
+# =============================================================================
+
+
+class TestSolutionFilesManifestRoundTrip:
+    """Tests for solution-files manifest serialization and import round-trip."""
+
+    def test_file_policy_solution_id_is_environment_classed(self):
+        """FilePolicy.solution_id is an ENVIRONMENT-classed field that round-trips."""
+        from bifrost.manifest import ManifestFilePolicy
+        from bifrost.field_classes import FieldClass, field_class_of
+
+        # The solution_id field must be present on the model and ENVIRONMENT-classed.
+        assert "solution_id" in ManifestFilePolicy.model_fields, \
+            "solution_id must exist on ManifestFilePolicy"
+        fc = field_class_of(ManifestFilePolicy, "solution_id")
+        assert fc == FieldClass.ENVIRONMENT, f"expected ENVIRONMENT, got {fc}"
+
+    def test_file_policy_solution_id_round_trips(self):
+        """ManifestFilePolicy.solution_id survives parse/serialize."""
+        from bifrost.manifest import (
+            Manifest,
+            ManifestFilePolicy,
+            parse_manifest,
+            serialize_manifest,
+        )
+
+        fp_id = str(uuid4())
+        sol_id = str(uuid4())
+        manifest = Manifest(
+            file_policies={
+                fp_id: ManifestFilePolicy(
+                    id=fp_id,
+                    organization_id=None,
+                    location="shared",
+                    path="docs",
+                    policies=[],
+                    solution_id=sol_id,
+                )
+            }
+        )
+
+        output = serialize_manifest(manifest)
+        restored = parse_manifest(output)
+        assert fp_id in restored.file_policies
+        assert restored.file_policies[fp_id].solution_id == sol_id
+
+    def test_file_policy_solution_id_none_when_absent(self):
+        """ManifestFilePolicy.solution_id defaults to None (non-solution rows)."""
+        from bifrost.manifest import ManifestFilePolicy
+
+        fp_id = str(uuid4())
+        fp = ManifestFilePolicy(
+            id=fp_id,
+            organization_id=None,
+            location="shared",
+            path="docs",
+            policies=[],
+        )
+        assert fp.solution_id is None
+
+    def test_manifest_solution_files_field_exists(self):
+        """Manifest has a solution_files field carrying ManifestSolutionFile entries."""
+        from bifrost.manifest import Manifest
+
+        m = Manifest()
+        assert hasattr(m, "solution_files")
+        assert isinstance(m.solution_files, list)
+        assert m.solution_files == []
+
+    def test_manifest_solution_files_round_trips_through_yaml(self):
+        """ManifestSolutionFile index entries survive parse/serialize."""
+        from bifrost.manifest import (
+            Manifest,
+            ManifestSolutionFile,
+            parse_manifest,
+            serialize_manifest,
+        )
+
+        entry = ManifestSolutionFile(
+            location="shared",
+            path="docs/report.pdf",
+            sha256="abc123" * 10 + "ab",
+            size=4096,
+        )
+        manifest = Manifest(solution_files=[entry])
+
+        output = serialize_manifest(manifest)
+        restored = parse_manifest(output)
+        assert len(restored.solution_files) == 1
+        sf = restored.solution_files[0]
+        assert sf.location == "shared"
+        assert sf.path == "docs/report.pdf"
+        assert sf.sha256 == "abc123" * 10 + "ab"
+        assert sf.size == 4096
+
+    def test_manifest_solution_files_in_manifest_dir(self):
+        """solution_files serialize into the manifest dir and parse back."""
+        from bifrost.manifest import (
+            Manifest,
+            ManifestSolutionFile,
+            parse_manifest_dir,
+            serialize_manifest_dir,
+        )
+
+        entry = ManifestSolutionFile(
+            location="shared",
+            path="uploads/img.png",
+            sha256="de" * 32,
+            size=1024,
+        )
+        manifest = Manifest(solution_files=[entry])
+        files = serialize_manifest_dir(manifest)
+
+        restored = parse_manifest_dir(files)
+        assert len(restored.solution_files) == 1
+        assert restored.solution_files[0].path == "uploads/img.png"
+
+
+class TestResolveFileFromSidecarUnit:
+    """Unit tests for _resolve_solution_file in ManifestResolver."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_solution_file_missing_sidecar_fails_closed(self):
+        """If a manifest index entry has no matching sidecar bytes, import raises."""
+        from unittest.mock import AsyncMock
+        from bifrost.manifest import Manifest, ManifestSolutionFile
+        from src.services.manifest_import import ManifestResolver
+        from src.services.solutions.secrets_blob import SolutionContent
+
+        db = AsyncMock()
+        resolver = ManifestResolver(db)
+        install_id = uuid4()
+
+        manifest = Manifest(
+            solution_files=[
+                ManifestSolutionFile(
+                    location="shared",
+                    path="missing.txt",
+                    sha256="00" * 32,
+                    size=5,
+                )
+            ]
+        )
+
+        # secrets_content has no file matching the manifest index entry.
+        sidecar = SolutionContent(solution_files=[])
+
+        with pytest.raises(ValueError, match="missing.txt"):
+            await resolver._resolve_solution_files(
+                manifest, install_id=install_id, sidecar_content=sidecar
+            )
+
+    @pytest.mark.asyncio
+    async def test_resolve_solution_file_no_sidecar_content_noop(self):
+        """When sidecar_content is None, _resolve_solution_files is a no-op."""
+        from unittest.mock import AsyncMock
+        from bifrost.manifest import Manifest, ManifestSolutionFile
+        from src.services.manifest_import import ManifestResolver
+
+        db = AsyncMock()
+        resolver = ManifestResolver(db)
+
+        manifest = Manifest(
+            solution_files=[
+                ManifestSolutionFile(
+                    location="shared",
+                    path="file.txt",
+                    sha256="aa" * 32,
+                    size=3,
+                )
+            ]
+        )
+        # Should not raise — no sidecar_content means "no files to write"
+        await resolver._resolve_solution_files(
+            manifest, install_id=uuid4(), sidecar_content=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_solution_file_empty_manifest_noop(self):
+        """When manifest has no solution_files, _resolve_solution_files is a no-op."""
+        from unittest.mock import AsyncMock
+        from bifrost.manifest import Manifest
+        from src.services.manifest_import import ManifestResolver
+        from src.services.solutions.secrets_blob import SolutionContent
+
+        db = AsyncMock()
+        resolver = ManifestResolver(db)
+
+        manifest = Manifest()
+        sidecar = SolutionContent(solution_files=[{"location": "x", "path": "y.txt", "sha256": "ab" * 32, "size": 2, "content_b64": "aGk="}])
+
+        # No manifest entries → no-op even if sidecar has bytes.
+        await resolver._resolve_solution_files(
+            manifest, install_id=uuid4(), sidecar_content=sidecar
+        )
+        # If we reach here without raising, the test passes.
+
+
+class TestSolutionFilePolicyBundleRoundTrip:
+    """Solution capture -> export yaml -> CLI collect -> bundle equality.
+
+    Exercises the Task-A3 pipeline: the INSTALL view scrubs env-specific fields
+    (organization_id/solution_id) so only portable {id, location, path, policies}
+    travels; export writes .bifrost/file-policies.yaml keyed by id; the CLI
+    collector reads it back to the same bundle-entry shape the deployer consumes.
+    """
+
+    def _install_view(self, *, policy_id, location, path, policies, solution_id):
+        from types import SimpleNamespace
+
+        from bifrost.manifest import ManifestFilePolicy
+        from bifrost.manifest_codec import Destination
+
+        row = SimpleNamespace(
+            id=policy_id,
+            organization_id=uuid4(),  # scrubbed by INSTALL view
+            location=location,
+            path=path,
+            policies={"policies": policies},
+            solution_id=solution_id,  # scrubbed by INSTALL view
+        )
+        return ManifestFilePolicy.from_row(row).view(Destination.INSTALL)
+
+    def test_install_view_scrubs_env_fields(self):
+        """The INSTALL view drops organization_id and solution_id (portability)."""
+        entry = self._install_view(
+            policy_id=uuid4(),
+            location="shared",
+            path="finance",
+            policies=[{"name": "readers", "actions": ["read"], "when": {"user": "is_platform_admin"}}],
+            solution_id=uuid4(),
+        )
+        assert "organization_id" not in entry
+        assert "solution_id" not in entry
+        assert set(entry) == {"id", "location", "path", "policies"}
+
+    def test_capture_export_collect_round_trip(self, tmp_path):
+        """A captured solution policy survives yaml export + CLI collect intact."""
+        import pathlib
+
+        from bifrost.commands.solution import _collect_file_policies
+        from src.services.solutions.export import _manifest_yaml
+
+        root_id = str(uuid4())
+        prefix_id = str(uuid4())
+        # Two solution-tier rows: the seeded root (path="") + a prefix override.
+        entries = [
+            self._install_view(
+                policy_id=root_id,
+                location="shared",
+                path="",
+                policies=[{"$ref": "admin_bypass"}],
+                solution_id=uuid4(),
+            ),
+            self._install_view(
+                policy_id=prefix_id,
+                location="shared",
+                path="finance",
+                policies=[{"name": "own_org", "actions": ["read"], "when": {"user": "is_platform_admin"}}],
+                solution_id=uuid4(),
+            ),
+        ]
+
+        # Export (mirrors export.py's file-policies.yaml block).
+        yaml_text = _manifest_yaml(
+            "file_policies", {str(e["id"]): dict(e) for e in entries}
+        )
+        ws = tmp_path / "ws"
+        (ws / ".bifrost").mkdir(parents=True)
+        (ws / ".bifrost" / "file-policies.yaml").write_text(yaml_text)
+
+        collected = _collect_file_policies(pathlib.Path(ws))
+        by_id = {c["id"]: c for c in collected}
+        assert set(by_id) == {root_id, prefix_id}
+        # Root seed row round-trips with empty path + its ref list.
+        assert by_id[root_id]["path"] == ""
+        assert by_id[root_id]["policies"] == [{"$ref": "admin_bypass"}]
+        # Prefix override round-trips content-equal to the exported entry.
+        assert by_id[prefix_id]["location"] == "shared"
+        assert by_id[prefix_id]["path"] == "finance"
+        assert by_id[prefix_id]["policies"][0]["name"] == "own_org"
+
+    def test_collect_absent_file_returns_empty(self, tmp_path):
+        """No .bifrost/file-policies.yaml -> empty list (not an error)."""
+        import pathlib
+
+        from bifrost.commands.solution import _collect_file_policies
+
+        (tmp_path / ".bifrost").mkdir(parents=True)
+        assert _collect_file_policies(pathlib.Path(tmp_path)) == []

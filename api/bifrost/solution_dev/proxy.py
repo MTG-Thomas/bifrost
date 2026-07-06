@@ -8,8 +8,9 @@ Routes:
   everything else              → reverse-proxy to the Vite dev server (the app),
                                  including Vite's own HMR websocket.
 
-The upstream proxy injects the CLI token (Authorization) and the resolved org
-(X-Bifrost-Org) so data-plane calls run under the chosen --org, matching deployed.
+The upstream proxy injects the CLI token (Authorization), the bound install org
+(X-Bifrost-Org), and the bound install id (``?solution=`` / ``solution_id``) so
+data-plane calls run under the same install scope as deployed.
 
 WebSockets are NOT given the injected Authorization header: the browser
 authenticates the realtime socket via cookies or a `token` query param (see
@@ -30,8 +31,19 @@ import httpx
 import yarl
 from aiohttp import web
 
-# Hop-by-hop headers we must not forward when reverse-proxying.
-_STRIP = {"host", "content-length", "transfer-encoding", "connection", "keep-alive"}
+# Headers we must not forward when reverse-proxying: hop-by-hop headers, plus
+# the browser's Accept-Encoding — browsers advertise encodings (br, zstd) that
+# httpx may not decode, and the proxy rebuilds response headers WITHOUT
+# Content-Encoding, so a passed-through compressed body would reach the browser
+# labeled as plain JSON. Stripping it lets httpx negotiate only what it decodes.
+_STRIP = {
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "accept-encoding",
+}
 
 
 class _UpstreamAuthorityError(ValueError):
@@ -65,7 +77,7 @@ def _join_upstream(base_url: str, rel_url: yarl.URL) -> str:
     # (scheme://host[:port]) followed by a path. re.fullmatch on an
     # origin-prefixed pattern is the SSRF barrier static analysis recognizes,
     # and it genuinely rejects any authority the request managed to inject.
-    origin = f"{base.scheme}://{base.raw_host}" + (f":{base.port}" if base.port else "")
+    origin = str(base.origin())
     if not re.fullmatch(re.escape(origin) + r"(?:/.*)?", result, re.DOTALL):
         raise _UpstreamAuthorityError(f"proxy target {result!r} escapes upstream {origin!r}")
     return result
@@ -76,7 +88,8 @@ class DevProxyConfig:
     upstream_url: str   # the dev API, e.g. http://localhost:37791
     token: str          # CLI access token
     app_id: str         # chosen app's manifest UUID
-    org_id: str | None  # resolved --org (or None → caller's default org)
+    org_id: str | None  # bound install org id (or None for a global install)
+    solution_id: str | None = None  # bound Solution install id
 
 
 # Typed app keys (avoid aiohttp's NotAppKeyWarning for plain-string keys).
@@ -108,10 +121,17 @@ def build_dev_app(cfg: DevProxyConfig, host, vite_url: str) -> web.Application:
 def _auth_headers(cfg: DevProxyConfig, incoming) -> dict[str, str]:
     headers = {k: v for k, v in incoming.items() if k.lower() not in _STRIP}
     headers["Authorization"] = f"Bearer {cfg.token}"
+    headers["Accept-Encoding"] = "identity"
     if cfg.org_id:
         headers["X-Bifrost-Org"] = cfg.org_id
     headers["X-Bifrost-App"] = cfg.app_id
     return headers
+
+
+def _with_solution_query(rel_url: yarl.URL, solution_id: str | None) -> yarl.URL:
+    if not solution_id:
+        return rel_url
+    return rel_url.update_query(solution=solution_id)
 
 
 def _passthrough_headers(resp, default_content_type: str) -> dict[str, str]:
@@ -221,6 +241,8 @@ async def _execute_handler(request: web.Request) -> web.Response:
         return web.json_response({"status": "completed", "result": result})
 
     # Otherwise proxy to the dev API (UUIDs, _repo/ refs, sibling installs).
+    if cfg.solution_id:
+        body["solution_id"] = cfg.solution_id
     try:
         resp = await request.app[_HTTP].post(
             f"{cfg.upstream_url}/api/workflows/execute",
@@ -246,7 +268,10 @@ async def _api_proxy_handler(request: web.Request) -> web.StreamResponse:
     try:
         resp = await request.app[_HTTP].request(
             request.method,
-            _join_upstream(cfg.upstream_url, request.rel_url),
+            _join_upstream(
+                cfg.upstream_url,
+                _with_solution_query(request.rel_url, cfg.solution_id),
+            ),
             content=data or None,
             headers=_auth_headers(cfg, request.headers),
         )

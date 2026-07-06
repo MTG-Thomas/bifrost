@@ -1,9 +1,11 @@
 """
-Solution export — rebuild the workspace zip live from owned entities.
+Solution export — serialize Solution workspace zips.
 
-``GET /api/solutions/{id}/export`` calls
+``POST /api/solutions/{id}/export`` calls
 :func:`build_workspace_zip` on every request so the zip always reflects
-current ownership. No zip is cached to S3; the bundle is serialized on demand.
+current ownership unless the install has a deploy-time source artifact. In that
+case shareable export returns the stored artifact, and full export overlays the
+encrypted runtime payload onto that artifact.
 
 The zip is the same shape ``preview_zip``/``install_zip`` consume:
 ``bifrost.solution.yaml`` + ``.bifrost/*.yaml`` manifests + Python source +
@@ -154,6 +156,17 @@ def build_workspace_zip(bundle: "SolutionBundle", *, password: str | None = None
                     allow_unicode=True,
                 ),
             )
+        # Solution-tier file policies (keyed by UUID). Env-specific fields
+        # (organization_id/solution_id) are already scrubbed by the INSTALL view;
+        # deploy re-stamps the target install. Mirrors tables.yaml keying.
+        if bundle.file_policies:
+            put(
+                ".bifrost/file-policies.yaml",
+                _manifest_yaml(
+                    "file_policies",
+                    {str(e["id"]): dict(e) for e in bundle.file_policies},
+                ),
+            )
         # Connection declarations (integrations.get("X") refs) — keyed by the
         # integration NAME (the natural key; no per-install id). Each entry is a
         # secret-scrubbed {integration_name, template, position} dict, the same
@@ -219,6 +232,10 @@ def build_workspace_zip(bundle: "SolutionBundle", *, password: str | None = None
             put(".bifrost/apps.yaml", _manifest_yaml("apps", app_bodies))
 
         # ── Encrypted secrets blob (full-mode export only) ───────────────────
+        # File sidecars join config_values and table_data in the encrypted tier.
+        # The encrypted blob carries only the file index and payload member ref;
+        # payload bytes travel as separately encrypted zip members so large files
+        # do not become one enormous base64 JSON string.
         file_sidecar_entries: list[dict[str, Any]] = []
         if password and bundle.solution_files:
             from src.services.solutions.file_payloads import (
@@ -273,7 +290,11 @@ async def build_workspace_zip_for_export(
     *,
     password: str | None = None,
 ) -> None:
-    """Write an export ZIP to ``dest`` without loading solution file payloads."""
+    """Write an export ZIP to ``dest`` without loading solution file payloads.
+
+    Source/manifests are still produced by the small compatibility builder, but
+    solution-owned file payloads stream from S3 into encrypted payload members.
+    """
     base_zip = build_workspace_zip(bundle, password=None)
     with zipfile.ZipFile(io.BytesIO(base_zip), "r") as src, zipfile.ZipFile(
         dest, "w", zipfile.ZIP_DEFLATED
@@ -423,22 +444,31 @@ def add_encrypted_content_to_workspace_zip(
     *,
     password: str,
 ) -> bytes:
-    """Return ``source_zip`` plus a fresh encrypted runtime-content blob."""
+    """Return ``source_zip`` plus a fresh encrypted runtime-content blob.
+
+    The stored source artifact is immutable deploy input. A full backup export
+    should not rebuild that source from DB state; it should copy the artifact and
+    overlay the runtime payload as ``.bifrost/secrets.enc`` in the response zip.
+    If the source already contains that member, replace it so repeated full
+    exports never produce duplicate zip entries.
+    """
     from src.services.solutions.secrets_blob import encode_secrets_blob
 
     buf = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(source_zip), "r") as src, zipfile.ZipFile(
         buf, "w", zipfile.ZIP_DEFLATED
     ) as dst:
+
+        def put(path: str, data: bytes | str) -> None:
+            info = zipfile.ZipInfo(path, date_time=_ZIP_EPOCH)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            dst.writestr(info, data)
+
         for name in src.namelist():
             if name == ".bifrost/secrets.enc":
                 continue
-            _put_zip_member(dst, name, src.read(name))
+            put(name, src.read(name))
 
-        _put_zip_member(
-            dst,
-            ".bifrost/secrets.enc",
-            encode_secrets_blob(content, password=password),
-        )
+        put(".bifrost/secrets.enc", encode_secrets_blob(content, password=password))
 
     return buf.getvalue()

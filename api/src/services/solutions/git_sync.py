@@ -31,7 +31,6 @@ from src.models.orm.solutions import Solution
 from src.services.solutions.deploy import (
     DeployResult,
     SolutionBundle,
-    SolutionDeployer,
     SolutionFinalizeIncomplete,
 )
 
@@ -120,6 +119,7 @@ def read_workspace_bundle(solution: Solution, workspace: Path) -> SolutionBundle
         _collect_config_schemas,
         _collect_connection_schemas,
         _collect_events,
+        _collect_file_locations,
     )
     from bifrost.solution_descriptor import is_solution_workspace, load_descriptor
 
@@ -139,6 +139,7 @@ def read_workspace_bundle(solution: Solution, workspace: Path) -> SolutionBundle
         agents=agents,
         claims=_collect_claims(workspace),
         config_schemas=_collect_config_schemas(workspace),
+        file_locations=_collect_file_locations(workspace),
         # Declared integrations (connection refs): a git-connected deploy must
         # create the same integration shells + SolutionConnectionSchema rows the
         # zip path does, else a git-installed solution silently drops its
@@ -187,13 +188,16 @@ async def deploy_from_workspace(
             f"checkout at {workspace} has no {_DESCRIPTOR_FILENAME}; "
             f"refusing to full-replace install {solution.id} from a non-Solution repo"
         )
-    bundle = read_workspace_bundle(solution, workspace)
     # force=True: for a connected install the repo's main IS the single writer
     # (one-writer invariant) and auto-pull has no operator in the loop to pass
     # --force — a revert on main (older descriptor version) must still apply,
     # not strand the install behind the downgrade gate. Versions are recorded
     # either way.
-    return await SolutionDeployer(db).deploy(bundle, force=True)
+    from bifrost.commands.solution import _build_deploy_zip
+    from src.services.solutions.zip_install import deploy_zip_to_solution
+
+    data = _build_deploy_zip(workspace, extra_text_files={})
+    return await deploy_zip_to_solution(db, solution, data, force=True)
 
 
 async def sync(db: AsyncSession, solution: Solution) -> None:

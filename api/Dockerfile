@@ -6,7 +6,7 @@
 # Stage 1: Builder
 # =============================================================================
 # python:3.14-slim
-FROM python@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97 AS builder
+FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS builder
 
 WORKDIR /app
 
@@ -32,8 +32,7 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 # Stage 2: Runtime
 # =============================================================================
 # python:3.14-slim
-# NOSONAR - entrypoint drops to the bifrost user after fixing mounted volume permissions.
-FROM python@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97
+FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 WORKDIR /app
 
@@ -94,6 +93,27 @@ COPY client/src/lib/app-sdk/provider.tsx \
      client/src/lib/app-sdk/ws-client.ts \
      client/src/lib/app-sdk/use-workflow.ts \
      client/src/lib/app-sdk/use-workflow-hooks.ts \
+     client/src/lib/app-sdk/bifrost-header.tsx \
+     /app/src/services/sdk_package/sdk_src/
+COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/index.ts
+
+# SDK package builder (esbuild) + the v2 `bifrost` SDK source it bundles. The
+# SDK source of truth lives in client/src/lib/app-sdk; it is copied here so
+# /api/sdk/download can bundle + serve the installable `bifrost` package without
+# the client/ tree at runtime. A unit test enforces this file list stays in sync.
+COPY api/src/services/sdk_package/package.json /app/src/services/sdk_package/
+COPY api/src/services/sdk_package/build_sdk.js /app/src/services/sdk_package/
+RUN cd /app/src/services/sdk_package && npm install --production
+COPY client/src/lib/app-sdk/provider.tsx \
+     client/src/lib/app-sdk/tables.ts \
+     client/src/lib/app-sdk/transport.ts \
+     client/src/lib/app-sdk/use-table.ts \
+     client/src/lib/app-sdk/use-infinite-table.ts \
+     client/src/lib/app-sdk/ws-client.ts \
+     client/src/lib/app-sdk/use-workflow.ts \
+     client/src/lib/app-sdk/use-workflow-hooks.ts \
+     client/src/lib/app-sdk/files.ts \
+     client/src/lib/app-sdk/use-files.ts \
      client/src/lib/app-sdk/bifrost-header.tsx \
      /app/src/services/sdk_package/sdk_src/
 COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/index.ts

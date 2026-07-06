@@ -45,6 +45,37 @@ def test_join_upstream_preserves_flag_style_query():
     assert _join_upstream(base, yarl.URL("/api/x?a=1&b=2")) == "http://127.0.0.1:8000/api/x?a=1&b=2"
 
 
+def test_join_upstream_accepts_default_ports_without_rewriting_origin():
+    """Default HTTP/HTTPS ports are same-origin whether explicit or implicit."""
+    assert (
+        _join_upstream("https://bifrost.gocovi.com", yarl.URL("/api/auth/me"))
+        == "https://bifrost.gocovi.com/api/auth/me"
+    )
+    assert (
+        _join_upstream("https://bifrost.gocovi.com:443", yarl.URL("/api/auth/me"))
+        == "https://bifrost.gocovi.com/api/auth/me"
+    )
+    assert (
+        _join_upstream("http://localhost", yarl.URL("/api/auth/me"))
+        == "http://localhost/api/auth/me"
+    )
+    assert (
+        _join_upstream("http://localhost:80", yarl.URL("/api/auth/me"))
+        == "http://localhost/api/auth/me"
+    )
+
+
+def test_join_upstream_retains_non_default_ports():
+    assert (
+        _join_upstream("http://localhost:8080", yarl.URL("/api/auth/me"))
+        == "http://localhost:8080/api/auth/me"
+    )
+    assert (
+        _join_upstream("https://example.test:8443", yarl.URL("/api/auth/me"))
+        == "https://example.test:8443/api/auth/me"
+    )
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -73,7 +104,9 @@ def _make_upstream(record):
 
     async def other(request):
         record["other_path"] = request.path
+        record["other_query"] = request.rel_url.query_string
         record["other_org"] = request.headers.get("X-Bifrost-Org")
+        record["other_accept_encoding"] = request.headers.get("Accept-Encoding")
         return web.json_response({"upstream_other": True})
 
     async def ws_echo(request):
@@ -175,7 +208,13 @@ async def test_unknown_ref_proxies_to_upstream():
     up_port, dev_port = _free_port(), _free_port()
     up_runner = await _serve(_make_upstream(record), up_port)
     host = _StubHost(set())
-    cfg = DevProxyConfig(upstream_url=f"http://127.0.0.1:{up_port}", token="t", app_id="A", org_id="O")
+    cfg = DevProxyConfig(
+        upstream_url=f"http://127.0.0.1:{up_port}",
+        token="t",
+        app_id="A",
+        org_id="O",
+        solution_id="S",
+    )
     dev_runner = await _serve(build_dev_app(cfg, host, vite_url="http://127.0.0.1:1"), dev_port)
     try:
         async with httpx.AsyncClient() as c:
@@ -184,6 +223,7 @@ async def test_unknown_ref_proxies_to_upstream():
         assert r.status_code == 200
         assert r.json()["ran_upstream"] is True
         assert record["execute_body"]["app_id"] == "A"
+        assert record["execute_body"]["solution_id"] == "S"
     finally:
         await dev_runner.cleanup()
         await up_runner.cleanup()
@@ -194,15 +234,54 @@ async def test_other_api_path_proxies_with_org_header():
     up_port, dev_port = _free_port(), _free_port()
     up_runner = await _serve(_make_upstream(record), up_port)
     host = _StubHost(set())
-    cfg = DevProxyConfig(upstream_url=f"http://127.0.0.1:{up_port}", token="t", app_id="A", org_id="O")
+    cfg = DevProxyConfig(
+        upstream_url=f"http://127.0.0.1:{up_port}",
+        token="t",
+        app_id="A",
+        org_id="O",
+        solution_id="S",
+    )
     dev_runner = await _serve(build_dev_app(cfg, host, vite_url="http://127.0.0.1:1"), dev_port)
     try:
         async with httpx.AsyncClient() as c:
-            r = await c.get(f"http://127.0.0.1:{dev_port}/api/tables/foo")
+            r = await c.get(f"http://127.0.0.1:{dev_port}/api/tables/foo?limit=10")
         assert r.status_code == 200
         assert r.json()["upstream_other"] is True
         assert record["other_path"] == "/api/tables/foo"
+        assert record["other_query"] == "limit=10&solution=S"
         assert record["other_org"] == "O"
+    finally:
+        await dev_runner.cleanup()
+        await up_runner.cleanup()
+
+
+async def test_browser_accept_encoding_is_not_forwarded_upstream():
+    # Browsers advertise encodings (br, zstd) that httpx may not be able to
+    # decode. If the proxy forwards the browser's Accept-Encoding, upstream may
+    # respond with one of those, httpx passes the compressed bytes through, and
+    # _passthrough_headers drops Content-Encoding — so the browser gets
+    # compressed bytes labeled as plain JSON and fails to parse. The proxy must
+    # strip the browser's Accept-Encoding and let httpx negotiate for itself.
+    record = {}
+    up_port, dev_port = _free_port(), _free_port()
+    up_runner = await _serve(_make_upstream(record), up_port)
+    host = _StubHost(set())
+    cfg = DevProxyConfig(
+        upstream_url=f"http://127.0.0.1:{up_port}",
+        token="t",
+        app_id="A",
+        org_id="O",
+        solution_id="S",
+    )
+    dev_runner = await _serve(build_dev_app(cfg, host, vite_url="http://127.0.0.1:1"), dev_port)
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"http://127.0.0.1:{dev_port}/api/auth/me",
+                headers={"Accept-Encoding": "br, gzip, zstd, x-browser-sentinel"},
+            )
+        assert r.status_code == 200
+        assert record["other_accept_encoding"] == "identity"
     finally:
         await dev_runner.cleanup()
         await up_runner.cleanup()

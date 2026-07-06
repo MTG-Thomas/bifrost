@@ -1,6 +1,6 @@
 # Solution Workspace (v2) — Reference
 
-A Solution is an installable, deployable unit. Every entity it owns — apps, workflows, forms, agents, tables, configs — is **deploy-owned**: the platform writes them at install/deploy time and treats them as read-only afterwards. Live entity mutation (the entity create/update CLI verbs) returns a 409 because deploy owns those records. You author content in the workspace and ship it with `bifrost solution deploy` (full replace).
+A Solution is an installable, deployable unit. Every entity it owns — apps, workflows, forms, agents, tables, configs — is **deploy-owned**: the platform writes them at install/deploy time and treats them as read-only afterwards. Declared file locations are also part of the Solution definition; their runtime file bytes are user data. Live entity mutation (the entity create/update CLI verbs) returns a 409 because deploy owns those records. You author content in the workspace and ship it with `bifrost solution deploy` (full replace).
 
 > **For a full worked path (including v1→v2 migration and first-time setup), use the `bifrost:migrate` skill.**
 
@@ -8,13 +8,14 @@ A Solution is an installable, deployable unit. Every entity it owns — apps, wo
 
 ## Lifecycle
 
-### 1. Scaffold the workspace
+### 1. Create and bind the workspace
 
 ```bash
-bifrost solution init . --slug my-solution --name "My Solution"
+bifrost solution create . --slug my-solution --name "My Solution"
+# `bifrost solution init` is an alias for create.
 ```
 
-Creates `bifrost.solution.yaml` in the current directory. The hub uses this file as the mode marker — its presence switches all subsequent commands to solution mode.
+Creates `bifrost.solution.yaml` in the current directory, creates an empty remote install, and writes the install binding to `.env`. The hub uses the descriptor as the mode marker — its presence switches all subsequent commands to solution mode. If you cloned an existing workspace instead, run `bifrost solution bind --solution <id-or-slug>` to write the `.env` binding without creating a new install.
 
 ### 2. Scaffold a v2 app
 
@@ -67,19 +68,36 @@ In a form, agent, or app, reference this as `functions/hello.py::main`. The plat
 bifrost solution start
 ```
 
-Runs the app's Vite dev server and local workflow functions behind one origin — no deploy required. Hot reload works for both app code and workflow code. The org-targeting flags (below) run under a specific org context (superuser only); omit them to run under your own org.
+Runs the app's Vite dev server and local workflow functions behind one origin — no deploy required. Hot reload works for both app code and workflow code. `start` requires the workspace's `.env` Solution binding, or an explicit `--solution <id-or-slug>` override; install scope comes from that binding, not `--org`.
 
 Open the origin the command prints (the **proxy** port; `--port` sets it, default 3000). Vite itself binds to **`--port + 1`** behind the proxy — drive the app at the proxy port the command prints, not the Vite port.
 
 ### 5. Deploy
 
 ```bash
-bifrost solution deploy                       # your own org (home)
-bifrost solution deploy --global              # the global install
-bifrost solution deploy --org "Target Org"    # a specific org
+bifrost solution deploy                       # bound install from .env
+bifrost solution deploy --solution <id>       # explicit install override
 ```
 
-Full-replace deploy of the workspace — all entities are written (or overwritten) from the workspace content. Org targeting follows the **unified `--org` standard** (see below).
+Full-replace deploy of the workspace — all entities are written (or overwritten) from the workspace content. `deploy` requires a bound install and never creates a missing install. To target another install of the same definition, bind the workspace to it or pass `--solution <install-id-or-slug>`.
+
+### 5a. Declare Solution file locations
+
+If the Solution needs durable runtime files, declare named locations in `.bifrost/files.yaml`:
+
+```yaml
+locations:
+  - finance
+  - documents
+```
+
+These names become policy-addressable file locations for the install. They are the portable declaration, not the file content itself. Rules:
+
+- Use business/domain names (`finance`, `documents`, `attachments`), not platform internals.
+- Do not declare `workspace`; it is reserved.
+- Do not create or manage `_solutions/` or `_solution_artifacts/` folders yourself. Those are internal storage prefixes for deployed source and export artifacts.
+- Deploy seeds each declared location with a solution-scoped root `admin_bypass` file policy so platform admins can seed and maintain runtime files. This does not grant ordinary app users access; add explicit file policies for non-admin read/write/list/delete behavior.
+- Runtime files are read and written through the Files SDK (`files`, `useFiles`) or the Files CLI/API with `--solution <install-id-or-slug>`. They are not source files under `apps/` or `functions/`.
 
 ### 6. Install from a zip
 
@@ -89,63 +107,77 @@ bifrost solution install my-solution.zip --global            # global install
 bifrost solution install my-solution.zip --org "Target Org"  # a specific org
 ```
 
-Installs a packaged solution (drag-and-drop equivalent). Use `--set KEY=VALUE` to supply config values at install time. **`install` with no org flag installs into your own org** (not global) — pass `--global` for a global install.
+Installs a packaged solution (drag-and-drop equivalent). Use `--set KEY=VALUE` to supply config values at install time. Full-backup zips created with encrypted backup content require `--password`, and `--replace-secrets` / `--replace-data` control whether existing install data is overwritten. **`install` with no org flag installs into your own org** (not global) — pass `--global` for a global install.
+
+### 7. Export and backup
+
+```bash
+bifrost solution export <solution-ref> --mode shareable
+bifrost solution export <solution-ref> --mode full --password "$PASSWORD" --include-data
+```
+
+Export modes:
+
+- **Shareable** exports carry code, manifests, schema, declared file locations, and setup requirements. They do not carry secrets, table rows, or runtime file bytes.
+- **Full** exports are backups. With `--password`, they can carry secret/config values; with `--include-data`, they also carry table rows and solution runtime files in the encrypted tier.
+- File payloads in a full backup are encrypted payload members referenced from `.bifrost/secrets.enc`; do not expect plaintext runtime files as ordinary zip members.
 
 ### The unified `--org` standard
 
-Every org-targeting **write** command (`create`/`update`/`set`/`register`, and the `solution` subcommands) takes the same flag:
+Every org-targeting **write** command (`create`/`update`/`set`/`register`, plus install-creating Solution commands such as `solution create`, `solution install`, and `solution pull`) takes the same flag:
 
 - **Omit it** → your own org ("home"). A bare command never writes a global entity by accident.
 - **`--org <uuid|name>`** → that org.
 - **`--global`** (or `--org none` / `--org global`) → global scope (organization_id NULL).
 - **`--organization` and `--scope`** are permanent synonyms for `--org`.
 
-This applies to the `solution` subcommands (`deploy`, `pull`, `start`, `install`) and to the write verbs of the `_repo`-workspace entity commands (`tables`, `forms`, `agents`, `configs`, `claims`, `workflows`, `events`). **Read commands (`list`/`get`) do NOT take `--org`/`--global`** — they return the caller's full combined visibility. Install **kind** (org vs global) is purely this deploy-time choice — it is **not** stored in the descriptor; the server derives it from `organization_id` (NULL == global).
+This applies to install-creating or install-selecting Solution commands (`create`, `install`, `pull`) and to the write verbs of the `_repo`-workspace entity commands (`tables`, `forms`, `agents`, `configs`, `claims`, `workflows`, `events`). `solution start` and `solution deploy` do **not** take `--org`/`--global`; they use the bound install's scope. **Read commands (`list`/`get`) do NOT take `--org`/`--global`** — they return the caller's full combined visibility. Install **kind** (org vs global) is stored on the remote install, not in the descriptor.
 
 ---
 
 ## One definition, many installs
 
-`bifrost.solution.yaml` is the **definition** descriptor — `slug`, `name`, `version`, `global_repo_access`, and git-source fields (`git_connected`, `git_repo_url`, `repo_subpath`, `git_ref`, `logo`). It is **stateless** and intentionally carries **no install id** and **no install scope** — install kind (org vs global) is the installer's deploy-time `--org`/`--global` choice, not a descriptor field. It also doubles as the workspace mode marker (its presence is what switches tooling into solution mode).
+`bifrost.solution.yaml` is the **definition** descriptor — `slug`, `name`, `version`, `global_repo_access`, and git-source fields (`git_connected`, `git_repo_url`, `repo_subpath`, `git_ref`, `logo`). It intentionally carries **no install id** and **no install scope**. The concrete install binding lives in `.env` (`BIFROST_SOLUTION_ID`, slug, org id, scope), which is local environment state and should not be committed. The descriptor also doubles as the workspace mode marker (its presence is what switches tooling into solution mode).
 
-The install id lives **server-side** (`Solution.id` — the `solution_id` stamped on every managed entity *at deploy time*). **Nothing in the repo carries install identity** — not the descriptor, not `.bifrost/*.yaml` (its entries deliberately omit org/access/identity for portability). The repo is the **definition**; deploy is what mints an install and stamps identity onto the entity rows it writes. Deploy/pull resolve *which install* at runtime by matching **`(slug, org)`** against the server's installs, creating one if none matches.
+The install id lives **server-side** (`Solution.id` — the `solution_id` stamped on every managed entity *at deploy time*) and in the local uncommitted `.env` binding. The repo is the **definition**; `solution create` or `solution bind` chooses which concrete install this checkout is working against. Deploy/pull then operate on that install (or an explicit `--solution` override).
 
 **Instance vs fork — the `slug` is the dividing line:**
 
-- **One definition, many installs (instances).** Keep **one repo / one slug** and deploy it per customer-org: `bifrost solution deploy --org "Customer Org"` (or `bifrost solution install pkg.zip --org "Customer Org"`). Each org gets an **independent install** — its own id, config values, and entity rows — from the *same* source. Deploy refuses to let one org clobber another org's install of the same slug. This is how you run "the same HR portal" for 3 customers: one codebase, three installs.
+- **One definition, many installs (instances).** Keep **one repo / one slug** and create/install it per customer-org: `bifrost solution create --org "Customer Org"` for an authoring checkout, or `bifrost solution install pkg.zip --org "Customer Org"` for packaged delivery. Each org gets an **independent install** — its own id, config values, and entity rows — from the *same* source. Bind the checkout to the install you are editing before `start` or `deploy`. This is how you run "the same HR portal" for 3 customers: one codebase, three installs.
 - **A genuinely different solution → fork (new slug).** If a customer needs the solution to *diverge* (different features/code, not just different data), **fork the repo and give it a new `slug`**. Different slug = different definition = a separate solution, not an instance of the first. There is no per-customer stamping in the repo to do this for you — forking is the mechanism.
 - **Multiple repos / subfolders** for git-connected installs are distinguished by `repo_subpath` (omni-repo: one repo, a folder per solution) and `git_ref` (pin a branch/tag).
 - **Natural key collision** (two installs of the same slug in the same org) → resolution raises an ambiguity error; pass **`--solution <install-id>`** to target one install by id.
 
-Install **kind** is chosen entirely at deploy/install time via the unified `--org`/`--global` standard — there is no `scope` in the descriptor. `--global` makes a global install (organization_id NULL); `--org "Customer Org"` makes an org install; omitting both installs into your own org. The server derives the install's scope from `organization_id` (NULL == global), so the same descriptor deploys global OR per-org from the same source.
+Install **kind** is chosen when the remote install is created or installed via the unified `--org`/`--global` standard — there is no `scope` in the descriptor. `--global` makes a global install (organization_id NULL); `--org "Customer Org"` makes an org install; omitting both installs into your own org. The same descriptor can back global or per-org installs from the same source, but each checkout should be bound to exactly one install while developing.
 
 ---
 
-## Getting forms, agents, tables, and configs into a Solution
+## Getting forms, agents, tables, configs, and files into a Solution
 
-A solution owns these entities the same way it owns apps and workflows: deploy writes them, and they are read-only afterwards. There are two ways content arrives in the workspace manifest deploy reads.
+A solution owns these entities the same way it owns apps and workflows: deploy writes them, and they are read-only afterwards. File location declarations are also deploy-owned. There are two ways entity content arrives in the workspace manifest deploy reads.
 
 **Path A — capture an existing entity (the migration road).** This adopts a loose `_repo`/global entity that already exists OUTSIDE the solution (authored earlier in the `_repo` workspace, where live entity create/update is the normal path — see `references/repo.md`). Capture stamps it into the install, then you pull and deploy:
 
 ```bash
 bifrost solution capture <solution-id> --table <id> --form <id> --agent <id> --config <KEY>
-bifrost solution pull --org "Target Org"     # bring captured entities into source .bifrost/
-bifrost solution deploy --org "Target Org"   # ship them
+bifrost solution pull --solution <solution-id>  # bring captured entities into source .bifrost/
+bifrost solution bind --solution <solution-id>  # if this checkout is not already bound
+bifrost solution deploy                         # ship them to the bound install
 ```
 
-(Use the same org target — `--org "Target Org"`, `--global`, or omit for your own org — on `pull` and `deploy` that you used to create the install.)
+(Use the same concrete install id you captured into. Binding keeps `start` and `deploy` stamped to that install.)
 
 The capture flags are singular and repeatable: `--table`, `--form`, `--agent`, `--config`, `--claim`, `--workflow`, `--app` (each takes a name or id; `--config` takes a key).
 
 > **Ordering for a form/agent that references a workflow:** a form's `workflow_id` (and an agent's tool refs) must resolve to a **registered** workflow UUID — i.e. a workflow that has a row. The scaffold's sample (`functions/hello.py::main`) ships with a `.bifrost/workflows.yaml` entry, so it's registered on the **first `bifrost solution deploy`**. A workflow you write yourself is registered the same way: add its `.bifrost/workflows.yaml` entry (see "Write workflows in `functions/`" above), then `bifrost solution deploy` creates the row. So for a fresh solution the order is: write the workflow → add its manifest entry → **`solution deploy`** (creates the workflow row) → create the form/agent referencing that workflow → capture the form/agent (`--form`/`--agent`) → pull → deploy. (Reference the workflow by portable `path::function` ref; a bare name like `hello` can collide, so prefer the full `functions/hello.py::main` ref or the UUID.)
 
-**Which org target to use on `pull`/`deploy`.** `pull` and `deploy` resolve *which install* by `(slug, org)`, where the org comes from the unified `--org` standard (omit = your own org; `--org <uuid|name>` = that org; `--global` = the global install). So:
+**Which install to use on `pull`/`deploy`.** Capture, pull, start, and deploy should all target the same concrete install id. So:
 
-- **Global install** (created with `--global`) → pass `--global` on `pull`/`deploy`.
-- **Install in your own org** → omit the flag; resolution is unambiguous.
-- **Install in a *different* org** (created with `--org "Target Org"`) → pass the **same `--org "Target Org"`** to `pull` and `deploy`. Resolution only looks in the targeted org, so without it `pull`/`deploy` won't find that install (and may resolve a stale same-slug install in your own org instead) — a deploy can keep 409-blocking even after you "pulled".
+- **Bound checkout** → `bifrost solution deploy` uses `.env`.
+- **Different install of the same slug** → run `bifrost solution bind --solution <install-id>` first, or pass `--solution <install-id>` for one command.
+- **Ambiguous slug** → pass the install id instead of the slug.
 
-The rule: pick the org target once (commonly when first deploying a fresh install into a customer's org) and use the **same** target for that install's `pull`/`deploy`. To skip org resolution entirely, pass **`--solution <install-id>`** to target an install by id.
+The rule: pick the install once, bind the workspace, and let the binding stamp every local data-plane call and deploy.
 
 **Scope and capture — the loose entity must already be in the install's scope.** `bifrost solution capture` only adopts loose entities **already in the install's own scope**: an org install captures that org's entities; a global install captures global (`organization_id: null`) entities. The CLI resolves your `--table/--form/...` selectors against the install's **candidate list** (`/capture/candidates`) and refuses anything outside its scope — including by id — with "not in /capture/candidates for its scope". A concrete org-A entity is likewise never capturable into an org-B install (cross-tenant).
 
@@ -158,6 +190,8 @@ Capture stamps ownership server-side but does **not** write source. `bifrost sol
 **The deploy guard:** because deploy is full-replace, an entity captured in the UI/CLI but absent from your source manifest would be deleted by the reconcile sweep. To prevent silent loss, **deploy 409-blocks** if a captured-but-unpulled entity is missing from the manifest, naming it and telling you to `bifrost solution pull` first. An entity you previously pulled and then deliberately removed from the manifest is a genuine delete and proceeds. So the rule is simple: **after any capture, run `bifrost solution pull` before `bifrost solution deploy`.**
 
 **Path B — author from scratch.** The `bifrost:migrate` skill scaffolds a complete solution (including its forms/agents/tables) end-to-end; invoke it as a Claude skill (not a CLI command) when starting fresh.
+
+**Files are different from captured entities.** Add file *locations* to `.bifrost/files.yaml`; do not capture individual files into the source manifest. Runtime files are written later by the installed app or workflows. A full backup can carry those file bytes, but normal deploy is intentionally non-destructive for files absent from the bundle.
 
 ### Updating an already-owned entity
 
@@ -189,6 +223,8 @@ Apps built with `bifrost solution scaffold-app` consume the v2 `bifrost` SDK. Ke
 | `useWorkflow` / `useWorkflowQuery` / `useWorkflowMutation` | Execute workflows; query-style for data loads, mutation-style for actions |
 | `useTable` / `useInfiniteTable` | Direct table read with live updates |
 | `tables` | Low-level CRUD (`tables.get`, `tables.insert`, `tables.update`, `tables.delete`) + error classes |
+| `useFiles` | Live file listing for a location/prefix |
+| `files` | Low-level file API (`read`, `write`, `delete`, `list`, `exists`, signed URLs) + error classes |
 
 There is no React, shadcn, or router injection from the SDK — import those from the standard packages. See `references/web-sdk-v2.md` for full signatures and examples.
 
@@ -197,5 +233,7 @@ There is no React, shadcn, or router injection from the SDK — import those fro
 ## Key constraints
 
 - Workflows must use portable `path::function` refs (e.g. `functions/hello.py::main`), not UUIDs or bare names — UUIDs are environment-specific and break portability.
+- Solution file locations live in `.bifrost/files.yaml`; runtime file bytes are user data and only travel in encrypted full backups.
+- `_solutions/` and `_solution_artifacts/` are platform internals. Never create those folders in a Solution workspace.
 - The `bifrost:migrate` skill covers the v1→v2 migration path (slug swap, import rewrite, entity capture, etc.).
 - For table schema and query patterns, see `references/tables.md`. For workflow authoring, see `references/workflows-python.md`.

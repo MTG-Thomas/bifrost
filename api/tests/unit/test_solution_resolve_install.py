@@ -4,8 +4,11 @@ a slug (success-criteria §3.4, Codex G5)."""
 from __future__ import annotations
 
 import json
+import io
+import zipfile
 
 import pytest
+import yaml
 
 from bifrost.commands.solution import _AmbiguousInstall, _resolve_target_install
 
@@ -81,9 +84,7 @@ def test_scope_filters_out_wrong_scope():
 
 
 def test_deploy_fails_loudly_when_install_list_fetch_fails(tmp_path, monkeypatch):
-    """A non-200 from GET /api/solutions must abort the deploy with a loud
-    error — not silently treat the list as empty, attempt a fresh create, and
-    surface a confusing downstream 409 ('Failed to create install')."""
+    """An explicit --solution must surface list failures and never create."""
     from click.testing import CliRunner
 
     import bifrost.client as client_mod
@@ -117,11 +118,37 @@ def test_deploy_fails_loudly_when_install_list_fetch_fails(tmp_path, monkeypatch
         client_mod.BifrostClient, "get_instance", staticmethod(lambda **k: _FakeClient())
     )
 
-    result = CliRunner().invoke(solution_group, ["deploy"])
+    result = CliRunner().invoke(solution_group, ["deploy", "--solution", "s"])
     assert result.exit_code != 0
     assert "Failed to list installs (500)" in result.output
     assert "internal server error" in result.output
     assert "Failed to create install" not in result.output
+
+
+def test_deploy_requires_bound_workspace(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    import bifrost.client as client_mod
+    from bifrost.commands.solution import solution_group
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "bifrost.solution.yaml").write_text("slug: s\nname: S\n")
+
+    class _FakeClient:
+        async def get(self, path, **kwargs):
+            raise AssertionError(f"unexpected GET {path}")
+
+        async def post(self, path, **kwargs):
+            raise AssertionError(f"unexpected POST {path}")
+
+    monkeypatch.setattr(
+        client_mod.BifrostClient, "get_instance", staticmethod(lambda **k: _FakeClient())
+    )
+
+    result = CliRunner().invoke(solution_group, ["deploy"])
+
+    assert result.exit_code != 0
+    assert "not bound to an install" in result.output
 
 
 # ── deploy version + --force (Task 21) ──────────────────────────────────────
@@ -138,7 +165,7 @@ class _Resp:
 
 
 class _DeployFakeClient:
-    """Resolves the install by slug and records the deploy request body.
+    """Resolves the install by slug and records the deploy upload.
 
     Deploy is async: the POST returns 202 + a job id, then the CLI polls the
     deploy-jobs status endpoint. ``deploy_resp`` overrides the POST response (to
@@ -154,7 +181,8 @@ class _DeployFakeClient:
         job_status: str = "succeeded",
         job_error: str = "boom",
     ):
-        self.deploy_body: dict | None = None
+        self.deploy_files: dict | None = None
+        self.deploy_params: dict | None = None
         self._deploy_resp = deploy_resp or _Resp(
             202, body={"deploy_job_id": "job-1"}
         )
@@ -184,7 +212,8 @@ class _DeployFakeClient:
 
     async def post(self, path, **kwargs):
         if path == "/api/solutions/inst-1/deploy":
-            self.deploy_body = kwargs.get("json")
+            self.deploy_files = kwargs.get("files")
+            self.deploy_params = kwargs.get("params")
             return self._deploy_resp
         raise AssertionError(f"unexpected POST {path}")
 
@@ -197,10 +226,23 @@ def _deploy_workspace(tmp_path, monkeypatch, fake, descriptor_text: str):
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "bifrost.solution.yaml").write_text(descriptor_text)
+    (tmp_path / ".env").write_text(
+        "BIFROST_SOLUTION_ID=inst-1\n"
+        "BIFROST_SOLUTION_SLUG=s\n"
+        "BIFROST_SOLUTION_ORG_ID=org-1\n"
+        "BIFROST_SOLUTION_SCOPE=org\n"
+    )
     monkeypatch.setattr(
         client_mod.BifrostClient, "get_instance", staticmethod(lambda **k: fake)
     )
     return CliRunner(), solution_group
+
+
+def _deploy_descriptor(fake: _DeployFakeClient) -> dict:
+    assert fake.deploy_files is not None
+    file_tuple = fake.deploy_files["file"]
+    with zipfile.ZipFile(io.BytesIO(file_tuple[1])) as zf:
+        return yaml.safe_load(zf.read("bifrost.solution.yaml"))
 
 
 def test_deploy_body_includes_descriptor_version(tmp_path, monkeypatch):
@@ -210,9 +252,8 @@ def test_deploy_body_includes_descriptor_version(tmp_path, monkeypatch):
     )
     result = runner.invoke(grp, ["deploy"])
     assert result.exit_code == 0, result.output
-    assert fake.deploy_body is not None
-    assert fake.deploy_body["version"] == "1.2.3"
-    assert fake.deploy_body["force"] is False
+    assert _deploy_descriptor(fake)["version"] == "1.2.3"
+    assert fake.deploy_params == {"force": "false"}
 
 
 def test_deploy_force_flag_sets_force_true(tmp_path, monkeypatch):
@@ -222,8 +263,7 @@ def test_deploy_force_flag_sets_force_true(tmp_path, monkeypatch):
     )
     result = runner.invoke(grp, ["deploy", "--force"])
     assert result.exit_code == 0, result.output
-    assert fake.deploy_body is not None
-    assert fake.deploy_body["force"] is True
+    assert fake.deploy_params == {"force": "true"}
 
 
 def test_deploy_no_descriptor_version_sends_null(tmp_path, monkeypatch):
@@ -232,8 +272,7 @@ def test_deploy_no_descriptor_version_sends_null(tmp_path, monkeypatch):
     runner, grp = _deploy_workspace(tmp_path, monkeypatch, fake, "slug: s\nname: S\n")
     result = runner.invoke(grp, ["deploy"])
     assert result.exit_code == 0, result.output
-    assert fake.deploy_body is not None
-    assert fake.deploy_body.get("version") is None
+    assert "version" not in _deploy_descriptor(fake)
 
 
 def test_deploy_downgrade_prints_detail_and_force_hint(tmp_path, monkeypatch):
