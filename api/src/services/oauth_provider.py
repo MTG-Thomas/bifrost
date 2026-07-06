@@ -32,6 +32,15 @@ def compute_token_exchange_scopes(provider: "OAuthProvider") -> str | None:
     return " ".join(provider.scopes) if provider.scopes else None
 
 
+def compute_authorization_request_scopes(provider: "OAuthProvider") -> str | None:
+    """Return scopes to send during authorization URL generation."""
+    provider_metadata = getattr(provider, "provider_metadata", None) or {}
+    if provider_metadata.get("omit_authorization_scope") is True:
+        return None
+
+    return " ".join(provider.scopes) if provider.scopes else None
+
+
 def resolve_url_template(
     url: str, entity_id: str | None = None, defaults: dict[str, str] | None = None
 ) -> str:

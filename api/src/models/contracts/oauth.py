@@ -20,9 +20,10 @@ PROVIDER_METADATA_DESCRIPTION = "Provider-specific OAuth behavior flags and meta
 
 
 def _validate_provider_metadata(v: dict[str, Any]) -> dict[str, Any]:
-    flag = v.get("omit_token_exchange_scope")
-    if flag is not None and not isinstance(flag, bool):
-        raise ValueError("provider_metadata.omit_token_exchange_scope must be a boolean")
+    for key in ("omit_token_exchange_scope", "omit_authorization_scope"):
+        flag = v.get(key)
+        if flag is not None and not isinstance(flag, bool):
+            raise ValueError(f"provider_metadata.{key} must be a boolean")
     return v
 
 
