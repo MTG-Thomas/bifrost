@@ -4,6 +4,7 @@ import json
 import zipfile
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import click
 import pytest
@@ -217,11 +218,11 @@ def test_solution_init_writes_descriptor_binds_remote_and_refuses_overwrite(
         return None
 
     class Response:
-        status_code = 201
+        status_code = 202
         text = ""
 
         def json(self):
-            return {"id": "sol-1", "slug": "desk"}
+            return {"deploy_job_id": "job-1"}
 
     class Client:
         async def post(self, path, json=None, **kwargs):
@@ -239,6 +240,10 @@ def test_solution_init_writes_descriptor_binds_remote_and_refuses_overwrite(
     monkeypatch.setattr(
         "bifrost.commands.solution._resolve_install_org",
         fake_resolve_install_org,
+    )
+    monkeypatch.setattr(
+        "bifrost.commands.solution._poll_deploy_job",
+        AsyncMock(return_value=0),
     )
 
     result = runner.invoke(
@@ -483,7 +488,7 @@ def test_solution_install_posts_zip_config_and_replace_flags(tmp_path, monkeypat
     assert data["password"] == "pw"
     assert data["replace_secrets"] == "true"
     assert data["replace_data"] == "true"
-    assert "Installed solution sol-1" in result.output
+    assert "Installing solution (job job-1)..." in result.output
 
 
 def test_solution_install_validates_set_pairs_before_http(tmp_path, monkeypatch):
@@ -542,7 +547,7 @@ def test_solution_install_reports_collision_rejection_and_server_errors(tmp_path
     for response, expected in [
         (
             Response(409, {"detail": "API_KEY already set"}, "conflict"),
-            "Install collision: API_KEY already set",
+            "Install conflict: API_KEY already set",
         ),
         (
             Response(422, {"detail": "wrong password"}, "bad"),
