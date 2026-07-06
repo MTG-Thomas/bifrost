@@ -138,7 +138,8 @@ def test_handle_auth_help_list_first_stored_and_unknown(monkeypatch, capsys):
     )
     assert cli.handle_auth(["ls"]) == 0
     out = capsys.readouterr().out
-    assert "https://first.example.test  (current" in out
+    assert "https://first.example.test" in out
+    assert "(current" not in out
     assert "https://second.example.test" in out
 
     assert cli.handle_auth(["unknown"]) == 1

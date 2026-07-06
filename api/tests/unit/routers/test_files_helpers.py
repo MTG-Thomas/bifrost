@@ -21,6 +21,14 @@ USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 SOLUTION_ID = UUID("22222222-2222-2222-2222-222222222222")
 
 
+class _FakeDb:
+    def __init__(self):
+        self.commits = 0
+
+    async def commit(self):
+        self.commits += 1
+
+
 def _ctx(
     *,
     org_id: UUID | None = ORG_A,
@@ -31,7 +39,8 @@ def _ctx(
     return SimpleNamespace(
         org_id=org_id,
         solution_id=solution_id,
-        db=SimpleNamespace(),
+        app_id=None,
+        db=_FakeDb(),
         user=UserPrincipal(
             user_id=USER_ID,
             email="user@example.test",
@@ -233,7 +242,11 @@ async def test_read_file_reports_forbidden_when_no_tier_is_authorized(monkeypatc
         )
 
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "Forbidden"
+    assert exc_info.value.detail["message"] == "File policy denied"
+    assert exc_info.value.detail["action"] == "read"
+    assert exc_info.value.detail["location"] == "reports"
+    assert exc_info.value.detail["path"] == "reports/secret.txt"
+    assert exc_info.value.detail["scope"] is None
 
 
 @pytest.mark.asyncio
@@ -597,7 +610,11 @@ async def test_list_files_simple_forbids_when_directory_and_files_denied(monkeyp
         )
 
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "Forbidden"
+    assert exc_info.value.detail["message"] == "File policy denied"
+    assert exc_info.value.detail["action"] == "list"
+    assert exc_info.value.detail["location"] == "reports"
+    assert exc_info.value.detail["path"] == "reports"
+    assert exc_info.value.detail["scope"] == str(ORG_A)
 
 
 @pytest.mark.asyncio
@@ -1327,6 +1344,7 @@ async def test_list_file_policies_resolves_target_scope_and_serializes_rows(monk
         location="reports",
         scope=str(ORG_B),
         organization_id=str(ORG_A),
+        solution=None,
         db=db,
     )
 
@@ -1366,6 +1384,7 @@ async def test_get_file_policy_decodes_path_and_404s_missing_row(monkeypatch):
         SimpleNamespace(user_id=USER_ID),
         location="workspace",
         scope=None,
+        solution=None,
         db=SimpleNamespace(),
     )
 
@@ -1383,6 +1402,7 @@ async def test_get_file_policy_decodes_path_and_404s_missing_row(monkeypatch):
             SimpleNamespace(user_id=USER_ID),
             location="workspace",
             scope=None,
+            solution=None,
             db=SimpleNamespace(),
         )
 
@@ -1445,6 +1465,7 @@ async def test_set_file_policy_validates_refs_persists_commits_and_publishes(mon
         SimpleNamespace(user_id=USER_ID),
         location="reports",
         scope=str(ORG_A),
+        solution=None,
         db=db,
     )
 
@@ -1493,6 +1514,7 @@ async def test_set_file_policy_returns_422_for_unresolvable_policy_ref(monkeypat
             SimpleNamespace(user_id=USER_ID),
             location="reports",
             scope=str(ORG_A),
+            solution=None,
             db=SimpleNamespace(),
         )
 
@@ -1539,6 +1561,7 @@ async def test_delete_file_policy_commits_and_publishes_or_404s(monkeypatch):
         SimpleNamespace(user_id=USER_ID),
         location="reports",
         scope=str(ORG_A),
+        solution=None,
         db=db,
     )
 
@@ -1563,6 +1586,7 @@ async def test_delete_file_policy_commits_and_publishes_or_404s(monkeypatch):
             SimpleNamespace(user_id=USER_ID),
             location="reports",
             scope=str(ORG_A),
+            solution=None,
             db=db,
         )
 
@@ -1780,7 +1804,11 @@ async def test_require_file_policy_raises_for_denied_policy(monkeypatch):
         )
 
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "Forbidden"
+    assert exc_info.value.detail["message"] == "File policy denied"
+    assert exc_info.value.detail["action"] == "read"
+    assert exc_info.value.detail["location"] == "reports"
+    assert exc_info.value.detail["path"] == "blocked.txt"
+    assert exc_info.value.detail["scope"] == str(ORG_A)
 
 
 @pytest.mark.asyncio

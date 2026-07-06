@@ -28,6 +28,16 @@ def _options(**overrides) -> SolutionExportOptions:
     return SolutionExportOptions(**values)
 
 
+def _named_temp_file(path: Path):
+    class _TempFile:
+        name = str(path)
+
+        def close(self) -> None:
+            return None
+
+    return _TempFile()
+
+
 def test_export_option_helpers_preserve_backup_semantics() -> None:
     options = _options(include_configs=False, include_secrets=True, include_tables=True, include_files=True)
 
@@ -253,7 +263,11 @@ async def test_build_solution_backup_zip_overlays_runtime_payload_on_stored_sour
         calls.append(("overlay", (source_arg, bundle_arg.config_values, dest_arg, password)))
         dest_arg.write_bytes(b"zip")
 
-    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: source_path)
+    monkeypatch.setattr(
+        export_jobs.tempfile,
+        "NamedTemporaryFile",
+        lambda **_: _named_temp_file(source_path),
+    )
     monkeypatch.setattr(export_jobs, "SolutionSourceArtifactStorage", _Artifact)
     monkeypatch.setattr(export_jobs, "SolutionCaptureService", _Capture)
     monkeypatch.setattr(export_jobs, "apply_config_value_selection", apply_selection)
@@ -306,7 +320,11 @@ async def test_build_solution_backup_zip_uses_live_capture_when_source_artifact_
         calls.append(("live", (bundle_arg.config_values, dest_arg, password)))
         dest_arg.write_bytes(b"zip")
 
-    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: source_path)
+    monkeypatch.setattr(
+        export_jobs.tempfile,
+        "NamedTemporaryFile",
+        lambda **_: _named_temp_file(source_path),
+    )
     monkeypatch.setattr(export_jobs, "SolutionSourceArtifactStorage", _Artifact)
     monkeypatch.setattr(export_jobs, "SolutionCaptureService", _Capture)
     monkeypatch.setattr(export_jobs, "build_workspace_zip_for_export", build_workspace)
@@ -343,7 +361,11 @@ async def test_build_solution_backup_zip_removes_partial_dest_on_failure(
         async def bundle_for(self, _solution, **_flags):
             raise RuntimeError("capture failed")
 
-    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: source_path)
+    monkeypatch.setattr(
+        export_jobs.tempfile,
+        "NamedTemporaryFile",
+        lambda **_: _named_temp_file(source_path),
+    )
     monkeypatch.setattr(export_jobs, "SolutionSourceArtifactStorage", _Artifact)
     monkeypatch.setattr(export_jobs, "SolutionCaptureService", _Capture)
 
@@ -369,7 +391,11 @@ async def test_build_solution_backup_zip_tempfile_returns_caller_owned_path(
         assert options_arg == options
         dest_arg.write_bytes(b"zip")
 
-    monkeypatch.setattr(export_jobs, "_named_temp_path", lambda **_: out_path)
+    monkeypatch.setattr(
+        export_jobs.tempfile,
+        "NamedTemporaryFile",
+        lambda **_: _named_temp_file(out_path),
+    )
     monkeypatch.setattr(export_jobs, "build_solution_backup_zip_to_path", build_to_path)
 
     assert await export_jobs.build_solution_backup_zip_tempfile(

@@ -88,13 +88,20 @@ def _admin(**overrides):
     data = {
         "email": "admin@example.com",
         "organization_id": uuid4(),
+        "is_provider_org": False,
+        "app_id": None,
     }
     data.update(overrides)
     return SimpleNamespace(**data)
 
 
 def _ctx(user, org_id=None):
-    return SimpleNamespace(user=user, org_id=org_id if org_id is not None else user.organization_id)
+    return SimpleNamespace(
+        user=user,
+        org_id=org_id if org_id is not None else user.organization_id,
+        solution_id=None,
+        app_id=None,
+    )
 
 
 def _exec_user(**overrides):
@@ -104,8 +111,10 @@ def _exec_user(**overrides):
         "name": "User",
         "organization_id": uuid4(),
         "is_superuser": False,
+        "is_provider_org": False,
         "is_external": False,
         "embed": False,
+        "app_id": None,
     }
     data.update(overrides)
     return SimpleNamespace(**data)
@@ -342,7 +351,7 @@ async def test_execute_workflow_maps_missing_and_denied_workflow() -> None:
             )
 
     assert exc.value.status_code == status.HTTP_404_NOT_FOUND
-    assert exc.value.detail == "Workflow 'missing' not found"
+    assert exc.value.detail["message"] == "Workflow 'missing' not found"
 
     from src.repositories import AccessDeniedError
 

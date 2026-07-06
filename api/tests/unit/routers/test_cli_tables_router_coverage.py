@@ -22,19 +22,26 @@ def _user(*, is_external: bool = False):
         organization_id=uuid4(),
         is_superuser=False,
         is_external=is_external,
+        app_id=None,
     )
 
 
 def _request(*, query_params=None, headers=None):
+    query_params = query_params or {}
+    headers = headers or {}
     return SimpleNamespace(
-        query_params=query_params or {},
-        headers=headers or {},
+        query_params=query_params,
+        headers=headers,
+        app_id=headers.get("X-Bifrost-App"),
+        solution_id=query_params.get("solution"),
     )
 
 
 def _db(value=None) -> AsyncMock:
-    db = AsyncMock()
+    db = MagicMock()
     db.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: value))
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
     return db
 
 
@@ -44,7 +51,7 @@ async def test_create_table_rejects_solution_query_before_repo_work() -> None:
         with pytest.raises(HTTPException) as exc:
             await cli.cli_create_table(
                 SDKTableCreateRequest(name="tickets"),
-                _request(query_params={"solution": "app"}),
+                _request(query_params={"solution": str(uuid4())}),
                 _user(),
                 _db(),
             )

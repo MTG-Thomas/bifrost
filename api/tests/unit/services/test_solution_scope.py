@@ -41,6 +41,7 @@ def _ctx(*, solution_id=None, app_id=None, org_id=None, is_superuser=False):
             user_id=uuid4(),
             organization_id=org_id,
             is_superuser=is_superuser,
+            is_provider_org=False,
             is_external=False,
         ),
     )

@@ -47,9 +47,11 @@ def _principal(**overrides):
         "organization_id": uuid4(),
         "is_superuser": False,
         "is_platform_admin": False,
+        "is_provider_org": False,
         "role_ids": [],
         "role_names": [],
         "embed": False,
+        "app_id": None,
         "jti": None,
     }
     values.update(overrides)

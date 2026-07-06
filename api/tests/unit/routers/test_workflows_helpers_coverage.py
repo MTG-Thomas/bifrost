@@ -7,6 +7,7 @@ import pytest
 
 from src.models.enums import ExecutionStatus
 from src.routers import workflows
+from src.services.solution_scope import derive_execution_solution_scope
 
 
 class _ScalarResult:
@@ -111,8 +112,9 @@ def test_convert_workflow_orm_to_schema_normalizes_defaults():
 async def test_derive_solution_scope_prefers_valid_explicit_solution_id():
     solution_id = uuid4()
 
-    result = await workflows._derive_solution_scope(
+    result = await derive_execution_solution_scope(
         _Db(),
+        SimpleNamespace(solution_id=None, app_id=None),
         solution_id=str(solution_id),
         form_id=str(uuid4()),
         app_id=str(uuid4()),
@@ -123,22 +125,27 @@ async def test_derive_solution_scope_prefers_valid_explicit_solution_id():
 
 @pytest.mark.asyncio
 async def test_derive_solution_scope_returns_none_for_bad_ids():
-    assert await workflows._derive_solution_scope(
+    ctx = SimpleNamespace(solution_id=None, app_id=None)
+
+    assert await derive_execution_solution_scope(
         _Db(),
+        ctx,
         solution_id="not-a-uuid",
         form_id=None,
         app_id=None,
     ) is None
 
-    assert await workflows._derive_solution_scope(
+    assert await derive_execution_solution_scope(
         _Db(),
+        ctx,
         solution_id=None,
         form_id="not-a-uuid",
         app_id=None,
     ) is None
 
-    assert await workflows._derive_solution_scope(
+    assert await derive_execution_solution_scope(
         _Db(),
+        ctx,
         solution_id=None,
         form_id=None,
         app_id="not-a-uuid",
@@ -149,23 +156,27 @@ async def test_derive_solution_scope_returns_none_for_bad_ids():
 async def test_derive_solution_scope_uses_form_then_app_lookup():
     form_solution = uuid4()
     app_solution = uuid4()
+    ctx = SimpleNamespace(solution_id=None, app_id=None)
 
-    assert await workflows._derive_solution_scope(
+    assert await derive_execution_solution_scope(
         _Db(form_solution),
+        ctx,
         solution_id=None,
         form_id=str(uuid4()),
         app_id=None,
     ) == form_solution
 
-    assert await workflows._derive_solution_scope(
+    assert await derive_execution_solution_scope(
         _Db(app_solution),
+        ctx,
         solution_id=None,
         form_id=None,
         app_id=str(uuid4()),
     ) == app_solution
 
-    assert await workflows._derive_solution_scope(
+    assert await derive_execution_solution_scope(
         _Db(),
+        ctx,
         solution_id=None,
         form_id=None,
         app_id=None,

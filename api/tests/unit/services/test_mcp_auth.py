@@ -196,7 +196,10 @@ class TestMcpBoundTokens:
             credentials=token,
         )
 
-        user = await get_current_user_optional(request, credentials, MagicMock())
+        db = MagicMock()
+        db.get = AsyncMock()
+
+        user = await get_current_user_optional(request, credentials, db)
 
         assert user is None
 
@@ -472,6 +475,7 @@ class TestTokenEndpoint:
              patch("src.core.database.get_db_context", return_value=db_context), \
              patch("src.repositories.users.UserRepository") as mock_repo_cls, \
              patch("src.services.mcp_server.auth.resolve_external_claim", AsyncMock(return_value=True)) as mock_external, \
+             patch("src.services.mcp_server.auth.resolve_provider_org_claim", AsyncMock(return_value=False)), \
              patch("src.core.security.create_access_token", return_value="access-token") as mock_access, \
              patch("src.core.security.create_refresh_token", return_value=("refresh-token", "jti")):
             mock_repo_cls.return_value.get_by_id = AsyncMock(return_value=user)

@@ -137,7 +137,7 @@ async def test_sdk_integrations_list_mappings_scopes_provider_org_to_all_mapping
     repo.get_config_for_mapping.assert_awaited_once_with(
         integration.id,
         mapping.organization_id,
-        include_default_secrets=False,
+        include_default_secrets=True,
         external=False,
     )
 

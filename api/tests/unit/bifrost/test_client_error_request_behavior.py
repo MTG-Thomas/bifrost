@@ -70,7 +70,7 @@ async def test_request_supports_delete_body_and_refresh_retry(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refresh_tokens_returns_false_without_stored_credentials(monkeypatch):
-    monkeypatch.setattr(client_mod, "get_credentials", lambda: None)
+    monkeypatch.setattr(client_mod, "get_credentials", lambda **_kwargs: None)
 
     assert await client_mod.refresh_tokens() is False
 
@@ -80,7 +80,7 @@ async def test_refresh_tokens_returns_false_for_non_200_refresh_response(monkeyp
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda: {
+        lambda **_kwargs: {
             "api_url": "https://api.example.test",
             "access_token": "old-access",
             "refresh_token": "old-refresh",
@@ -121,7 +121,7 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda: {
+        lambda **_kwargs: {
             "api_url": "https://api.example.test/",
             "access_token": "old-access",
             "refresh_token": "old-refresh",
@@ -176,9 +176,15 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
 @pytest.mark.asyncio
 async def test_get_instance_require_auth_does_not_login_inside_running_loop(monkeypatch):
     login = AsyncMock(return_value=True)
-    monkeypatch.setattr(client_mod, "get_credentials", lambda: None)
+    monkeypatch.setattr(client_mod, "get_credentials", lambda **_kwargs: None)
     monkeypatch.setattr(client_mod, "is_token_expired", lambda: False)
     monkeypatch.setattr(client_mod, "login_flow", login)
+    monkeypatch.setattr(
+        client_mod,
+        "resolve_current_connection",
+        lambda **_kwargs: (None, None),
+    )
+    monkeypatch.setattr("bifrost.credentials.list_credentials", lambda: [])
 
     with pytest.raises(RuntimeError, match="Not logged in"):
         client_mod.BifrostClient.get_instance(require_auth=True)
@@ -191,7 +197,7 @@ def test_get_instance_refresh_failure_clears_expired_credentials(monkeypatch):
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda: {
+        lambda **_kwargs: {
             "api_url": "https://api.example.test",
             "access_token": "expired-access",
             "refresh_token": "refresh",

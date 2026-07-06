@@ -26,7 +26,7 @@ def _user() -> SimpleNamespace:
 
 
 def _ctx() -> SimpleNamespace:
-    return SimpleNamespace(org_id=uuid4(), user=_user())
+    return SimpleNamespace(org_id=uuid4(), solution_id=None, user=_user())
 
 
 def _source(source_type: EventSourceType, **overrides: object) -> SimpleNamespace:
@@ -271,6 +271,7 @@ class TestTopicEndpoints:
         ) as emit_event:
             global_response = await events.emit_topic_event(
                 EmitEventRequest(topic="ticket.created", data={"id": "T1"}, scope="GLOBAL"),
+                _ctx(),
                 _user(),
             )
 
@@ -289,6 +290,7 @@ class TestTopicEndpoints:
                     data={},
                     scope=str(org_id),
                 ),
+                _ctx(),
                 _user(),
             )
 
@@ -300,6 +302,7 @@ class TestTopicEndpoints:
         with pytest.raises(HTTPException) as exc:
             await events.emit_topic_event(
                 EmitEventRequest(topic="ticket.created", data={}, scope="not-a-uuid"),
+                _ctx(),
                 _user(),
             )
 
