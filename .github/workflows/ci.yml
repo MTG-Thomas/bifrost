@@ -175,8 +175,6 @@ jobs:
   # Unit Tests - Fast, gates all builds
   # =============================================================================
   test-unit:
-    # Skip on push: main — covered by the merge_group run.
-    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Unit Tests
     permissions:
@@ -274,8 +272,6 @@ jobs:
   # no ruleset edits needed.
   # =============================================================================
   test-e2e:
-    # Skip on push: main — covered by the merge_group run.
-    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     name: E2E Tests (shard ${{ matrix.shard }}/4)
     permissions:
@@ -374,7 +370,7 @@ jobs:
   # Fails if any shard failed or was cancelled. Runs even when shards fail
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
-    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
+    if: always()
     needs: [test-e2e]
     runs-on: ubuntu-latest
     name: E2E Tests
