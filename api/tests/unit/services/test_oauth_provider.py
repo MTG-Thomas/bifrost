@@ -17,6 +17,7 @@ from src.models.contracts.oauth import CreateOAuthConnectionRequest, UpdateOAuth
 from src.services.oauth_provider import (
     OAuthProviderClient,
     append_query_params,
+    compute_authorization_request_scopes,
     compute_token_exchange_scopes,
 )
 
@@ -61,6 +62,30 @@ class TestTokenExchangeScopePolicy:
         assert compute_token_exchange_scopes(provider) == "read write"
 
 
+class TestAuthorizationRequestScopePolicy:
+    """Test provider-configured scope behavior for authorization URLs."""
+
+    def test_generic_provider_requests_configured_scopes(self):
+        """Generic OAuth providers should send configured scopes when authorizing."""
+        provider = SimpleNamespace(
+            provider_metadata={},
+            provider_name="Generic OAuth",
+            scopes=["read", "write"],
+        )
+
+        assert compute_authorization_request_scopes(provider) == "read write"
+
+    def test_provider_metadata_can_omit_authorization_scope(self):
+        """Providers whose consent screen uses client-configured scopes can opt out."""
+        provider = SimpleNamespace(
+            provider_metadata={"omit_authorization_scope": True},
+            provider_name="ScopeSensitiveProvider",
+            scopes=["read", "write"],
+        )
+
+        assert compute_authorization_request_scopes(provider) is None
+
+
 class TestProviderMetadataValidation:
     """Test request validation for provider behavior metadata."""
 
@@ -79,6 +104,23 @@ class TestProviderMetadataValidation:
         with pytest.raises(ValidationError, match="omit_token_exchange_scope must be a boolean"):
             UpdateOAuthConnectionRequest(
                 provider_metadata={"omit_token_exchange_scope": 1},
+            )
+
+    def test_create_request_rejects_non_boolean_omit_authorization_scope_flag(self):
+        with pytest.raises(ValidationError, match="omit_authorization_scope must be a boolean"):
+            CreateOAuthConnectionRequest(
+                integration_id="integration-id",
+                oauth_flow_type="authorization_code",
+                client_id="client-id",
+                authorization_url="https://auth.example.com/oauth/authorize",
+                token_url="https://auth.example.com/oauth/token",
+                provider_metadata={"omit_authorization_scope": "true"},
+            )
+
+    def test_update_request_rejects_non_boolean_omit_authorization_scope_flag(self):
+        with pytest.raises(ValidationError, match="omit_authorization_scope must be a boolean"):
+            UpdateOAuthConnectionRequest(
+                provider_metadata={"omit_authorization_scope": 1},
             )
 
 

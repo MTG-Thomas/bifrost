@@ -66,10 +66,11 @@ class FakeDb:
 
 
 class FakeRepo:
-    def __init__(self, db, *, integration=None, mapping=None):
+    def __init__(self, db, *, integration=None, mapping=None, oauth_provider=None):
         self.db = db
         self.integration = integration
         self.mapping = mapping
+        self.oauth_provider = oauth_provider
 
     async def get_integration_by_id(self, integration_id):
         assert integration_id == INTEGRATION_ID
@@ -80,25 +81,42 @@ class FakeRepo:
         assert mapping_id == MAPPING_ID
         return self.mapping
 
+    async def get_oauth_provider(self, integration_id):
+        assert integration_id == INTEGRATION_ID
+        return self.oauth_provider
 
-def _patch_repo(monkeypatch, *, integration=None, mapping=None):
+
+def _patch_repo(monkeypatch, *, integration=None, mapping=None, oauth_provider=None):
     monkeypatch.setattr(
         integrations,
         "IntegrationsRepository",
-        lambda db: FakeRepo(db, integration=integration, mapping=mapping),
+        lambda db: FakeRepo(
+            db,
+            integration=integration,
+            mapping=mapping,
+            oauth_provider=oauth_provider,
+        ),
     )
+
+
+def _provider(**overrides):
+    data = {
+        "id": PROVIDER_ID,
+        "provider_name": "acme",
+        "authorization_url": "https://auth.example.test/{tenant}/authorize",
+        "client_id": "client-123",
+        "scopes": ["read", "write"],
+        "provider_metadata": {},
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
 
 
 @pytest.mark.asyncio
 async def test_authorize_mapping_resolves_provider_url_and_remembers_signed_state(
     monkeypatch,
 ):
-    provider = SimpleNamespace(
-        id=PROVIDER_ID,
-        authorization_url="https://auth.example.test/{tenant}/authorize",
-        client_id="client-123",
-        scopes=["read", "write"],
-    )
+    provider = _provider()
     integration = SimpleNamespace(id=INTEGRATION_ID, oauth_provider=provider)
     db = FakeDb()
     _patch_repo(monkeypatch, integration=integration, mapping=_mapping())
@@ -144,6 +162,70 @@ async def test_authorize_mapping_resolves_provider_url_and_remembers_signed_stat
         response.authorization_url
     )
     assert remembered_nonces == ["nonce-1"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_mapping_can_omit_scope_parameter(monkeypatch):
+    provider = _provider(provider_metadata={"omit_authorization_scope": True})
+    integration = SimpleNamespace(id=INTEGRATION_ID, oauth_provider=provider)
+    _patch_repo(monkeypatch, integration=integration, mapping=_mapping())
+
+    monkeypatch.setattr(
+        integrations,
+        "get_url_resolution_defaults",
+        lambda db_arg, provider_arg: _async_value({"tenant": "midtown"}),
+    )
+    monkeypatch.setattr(
+        integrations,
+        "resolve_url_template",
+        lambda *, url, defaults: url.replace("{tenant}", defaults["tenant"]),
+    )
+    monkeypatch.setattr(
+        integrations,
+        "encode_state",
+        lambda *, provider_id, mapping_id: ("signed-state", "nonce-1"),
+    )
+    monkeypatch.setattr(
+        integrations,
+        "remember_nonce",
+        lambda nonce: _async_value(None),
+    )
+
+    response = await integrations.authorize_mapping(
+        INTEGRATION_ID,
+        MAPPING_ID,
+        MappingAuthorizeRequest(redirect_uri="https://app.example.test/callback"),
+        _ctx(FakeDb()),
+        SimpleNamespace(user_id=USER_ID),
+    )
+
+    assert "scope=" not in response.authorization_url
+    assert "client_id=client-123" in response.authorization_url
+    assert "state=signed-state" in response.authorization_url
+
+
+@pytest.mark.asyncio
+async def test_integration_authorization_url_can_omit_scope_parameter(monkeypatch):
+    provider = _provider(
+        authorization_url="https://auth.example.test/oauth/authorize",
+        provider_metadata={"omit_authorization_scope": True},
+    )
+    _patch_repo(monkeypatch, oauth_provider=provider)
+    monkeypatch.setattr(integrations.secrets, "token_urlsafe", lambda length: "state-token")
+
+    response = await integrations.get_oauth_authorization_url(
+        INTEGRATION_ID,
+        _ctx(FakeDb()),
+        SimpleNamespace(user_id=USER_ID),
+        redirect_uri="https://app.example.test/callback",
+    )
+
+    assert response.state == "state-token"
+    assert "scope=" not in response.authorization_url
+    assert "client_id=client-123" in response.authorization_url
+    assert "redirect_uri=https%3A%2F%2Fapp.example.test%2Fcallback" in (
+        response.authorization_url
+    )
 
 
 @pytest.mark.asyncio

@@ -177,6 +177,35 @@ async def test_authorize_connection_resolves_url_and_marks_waiting():
 
 
 @pytest.mark.asyncio
+async def test_authorize_connection_can_omit_scope_parameter():
+    provider = _provider(
+        scopes=["read", "write"],
+        provider_metadata={"omit_authorization_scope": True},
+    )
+    repo = _repo(get_by_connection_name=provider, update_status=None)
+
+    with (
+        patch.object(oauth_connections, "OAuthProviderRepository", return_value=repo),
+        patch.object(oauth_connections.secrets, "token_urlsafe", return_value="state-token"),
+        patch.object(
+            oauth_connections,
+            "get_url_resolution_defaults",
+            new=AsyncMock(return_value={}),
+        ),
+    ):
+        result = await oauth_connections.authorize_connection(
+            "halo",
+            _ctx(),
+            MagicMock(),
+            redirect_uri="https://app.example.test/oauth/callback",
+        )
+
+    assert "scope=" not in result.authorization_url
+    assert "client_id=client-id" in result.authorization_url
+    assert "redirect_uri=https%3A%2F%2Fapp.example.test%2Foauth%2Fcallback" in result.authorization_url
+
+
+@pytest.mark.asyncio
 async def test_authorize_connection_rejects_client_credentials_connection():
     provider = _provider(authorization_url=None)
     repo = _repo(get_by_connection_name=provider)
