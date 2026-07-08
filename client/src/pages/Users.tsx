@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import {
 	Crown,
 	RefreshCw,
@@ -202,6 +203,8 @@ async function deleteUser(
 }
 
 export function Users() {
+	const navigate = useNavigate();
+	const { userId } = useParams<{ userId?: string }>();
 	const [selectedUser, setSelectedUser] = useState<User | undefined>();
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [isEditOpen, setIsEditOpen] = useState(false);
@@ -262,6 +265,13 @@ export function Users() {
 	};
 
 	const filteredUsers = useSearch(users || [], searchTerm, ["email", "name"]);
+
+	const routeSelectedUser = useMemo(
+		() => users?.find((user) => user.id === userId),
+		[users, userId],
+	);
+	const editDialogUser = selectedUser ?? routeSelectedUser;
+	const isEditDialogOpen = isEditOpen || Boolean(routeSelectedUser);
 
 	const sortedUsers = useMemo(() => {
 		if (!filteredUsers) return [];
@@ -352,6 +362,9 @@ export function Users() {
 	const handleEditUser = (user: User) => {
 		setSelectedUser(user);
 		setIsEditOpen(true);
+		if (userId !== user.id) {
+			navigate(`/users/${user.id}`);
+		}
 	};
 
 	const handleToggleActive = (user: User) => {
@@ -384,6 +397,7 @@ export function Users() {
 	const handleEditClose = () => {
 		setIsEditOpen(false);
 		setSelectedUser(undefined);
+		if (userId) navigate("/users", { replace: true });
 	};
 
 	const isSelf = (user: User) =>
@@ -866,8 +880,8 @@ export function Users() {
 			/>
 
 			<EditUserDialog
-				user={selectedUser}
-				open={isEditOpen}
+				user={editDialogUser}
+				open={isEditDialogOpen}
 				onOpenChange={handleEditClose}
 			/>
 

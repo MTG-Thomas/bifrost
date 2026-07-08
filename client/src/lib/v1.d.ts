@@ -21226,6 +21226,21 @@ export interface components {
             readonly scope: "org" | "global";
         };
         /**
+         * SolutionAccessUserSummary
+         * @description User who currently receives access through one of the entity's roles.
+         */
+        SolutionAccessUserSummary: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name?: string | null;
+            /** Email */
+            email: string;
+        };
+        /**
          * SolutionCaptureCandidates
          * @description Loose same-scope entities that can be adopted into an install.
          */
@@ -21738,6 +21753,12 @@ export interface components {
             select?: string | null;
             /** Created At */
             created_at?: string | null;
+            /** Role Ids */
+            role_ids?: string[];
+            /** Role Names */
+            role_names?: string[];
+            /** Access Users */
+            access_users?: components["schemas"]["SolutionAccessUserSummary"][];
         };
         /**
          * SolutionExistingInstall
