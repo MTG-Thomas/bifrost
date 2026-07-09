@@ -2299,7 +2299,16 @@ def start_cmd(
         raise click.ClickException("npm not found on PATH — install Node.js to run the dev server.")
     if not (chosen.app_dir / "node_modules").is_dir():
         click.echo("Installing app dependencies (npm install)…")
-        subprocess.run([npm, "install"], cwd=chosen.app_dir, check=True)
+        try:
+            subprocess.run([npm, "install"], cwd=chosen.app_dir, check=True)
+        except subprocess.CalledProcessError as exc:
+            # First run on a fresh machine is when this most likely fails
+            # (registry hiccup, unreachable SDK download) — a one-line error,
+            # never a raw traceback (issue #459).
+            raise click.ClickException(
+                f"npm install failed in {chosen.app_dir} (exit {exc.returncode}) "
+                "— see the npm output above."
+            )
 
     proxy_origin = (public_url or f"http://127.0.0.1:{port}").rstrip("/")
     vite_env = _vite_child_env(
@@ -2316,11 +2325,20 @@ def start_cmd(
     # child, and a plain terminate() of `npm` orphans `vite` (it keeps the port
     # bound). Killing the group reaps both. (POSIX; Windows falls back to a plain
     # terminate of the npm process.)
+    _ensure_port_free(vite_port)
     vite_proc = subprocess.Popen(
         [npm, "run", "dev", "--", "--port", str(vite_port), "--strictPort"],
         cwd=chosen.app_dir, env=vite_env,
         start_new_session=True,
     )
+    try:
+        _wait_for_vite(vite_proc, vite_port)
+    except BaseException:
+        # BaseException: a Ctrl-C during the (up to 60s) readiness wait must
+        # tear the detached npm+vite group down too, or it survives orphaned
+        # and holds the port for the next start.
+        _terminate_process_group(vite_proc)
+        raise
 
     try:
         asyncio.run(
@@ -2787,6 +2805,78 @@ def swap_slugs_cmd(app_a: str, app_b: str) -> None:
         raise SystemExit(rc)
 
 
+def _ensure_port_free(port: int) -> None:
+    """Refuse to spawn vite onto a port something already serves.
+
+    An orphaned dev server from a previous run holding the port makes the new
+    child die under ``--strictPort`` while readiness probes happily connect to
+    the LEFTOVER — `start` would silently serve the stale app (live-drive
+    finding). Checking before the spawn is deterministic; probing after it is
+    a race against npm's cold start.
+    """
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            pass
+    except OSError:
+        return
+    raise click.ClickException(
+        f"Port {port} is already in use — an orphaned app dev server from a "
+        "previous run is the usual cause. Kill the process holding it (or "
+        "pass --port to pick a different pair) and re-run."
+    )
+
+
+def _wait_for_vite(proc: "subprocess.Popen", port: int, timeout: float = 60.0) -> None:
+    """Block until the Vite child accepts TCP connections; fail fast if it dies.
+
+    ``--strictPort`` makes Vite exit when its port is taken; without this
+    check the proxy serves unexplained 502s while the only clue scrolls past
+    in npm output (issue #460). ``_ensure_port_free`` ran before the spawn,
+    so a connect success here can only be our child.
+    """
+    import socket
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        code = proc.poll()
+        if code is not None:
+            raise click.ClickException(
+                f"The app dev server (vite) exited with code {code} before "
+                f"serving — see its output above."
+            )
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return
+        except OSError:
+            time.sleep(0.25)
+    raise click.ClickException(
+        f"vite did not start listening on port {port} within {int(timeout)}s — "
+        "see its output above."
+    )
+
+
+def _terminate_windows_tree(proc: "subprocess.Popen") -> None:
+    """Kill the npm process AND its children on Windows.
+
+    There are no process groups there: a bare terminate() reaps npm but
+    orphans its vite child, which keeps the port bound and breaks the next
+    start under --strictPort (issue #461). ``taskkill /T`` kills the tree.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        # taskkill missing from PATH (stripped CI shell): at minimum reap the
+        # direct child like the pre-taskkill code did, rather than crash the
+        # teardown and leave the whole tree running.
+        proc.terminate()
+
+
 def _terminate_process_group(proc: "subprocess.Popen") -> None:
     """Stop a child and any grandchildren it spawned in its process group.
 
@@ -2795,15 +2885,27 @@ def _terminate_process_group(proc: "subprocess.Popen") -> None:
     """
     import signal
 
+    if not hasattr(os, "killpg"):
+        # Windows: no process groups — taskkill the whole tree instead.
+        _terminate_windows_tree(proc)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # taskkill /F already force-killed the tree; a wait timing out
+            # here means Windows is slow to reap — nothing more to do, and
+            # teardown must not raise.
+            pass
+        return
+
     def _signal_group(sig: int) -> None:
-        if hasattr(os, "killpg"):
-            try:
-                os.killpg(os.getpgid(proc.pid), sig)
-                return
-            except (ProcessLookupError, PermissionError):
-                return  # already gone / not our group — fall through to proc-level
-        # No process groups (Windows): signal the process itself.
-        proc.send_signal(sig)
+        # start_new_session=True guarantees pgid == proc.pid, and the group
+        # outlives a reaped leader: os.getpgid(pid) raises ESRCH once poll()
+        # reaps npm, silently skipping the kill while vite lives on. Signal
+        # the group id directly.
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass  # whole group already gone / not ours
 
     _signal_group(signal.SIGTERM)
     try:

@@ -731,12 +731,34 @@ async def _vite_proxy_handler(request: web.Request) -> web.StreamResponse:
         return await _ws_proxy(request, target)
     data = await request.read()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP}
-    resp = await request.app[_HTTP].request(
-        request.method,
-        _join_upstream(vite_url, request.rel_url),
-        content=data or None,
-        headers=headers,
-    )
+    try:
+        resp = await request.app[_HTTP].request(
+            request.method,
+            _join_upstream(vite_url, request.rel_url),
+            content=data or None,
+            headers=headers,
+        )
+    except httpx.ConnectError:
+        # A dead Vite child must be an EXPLAINED 502 (like the API handler's),
+        # not a bare 500 — "the page won't load" with no cause was issue #460.
+        return web.json_response(
+            {
+                "detail": (
+                    f"App dev server (vite) unreachable at {vite_url} — did it "
+                    "fail to start? Check the npm output in the `bifrost "
+                    "solution start` terminal."
+                )
+            },
+            status=502,
+        )
+    except httpx.HTTPError as exc:
+        # A live-but-misbehaving vite (read timeout during cold dependency
+        # pre-bundling, protocol error mid-response) is NOT a startup failure
+        # — say what actually happened instead of sending the user hunting one.
+        return web.json_response(
+            {"detail": f"Error talking to the app dev server (vite): {type(exc).__name__}: {exc}"},
+            status=502,
+        )
     return web.Response(
         body=resp.content, status=resp.status_code,
         headers=_passthrough_headers(resp, "text/html"),
