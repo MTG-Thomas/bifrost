@@ -32,8 +32,7 @@ from typing import Any
 import click
 import yaml
 
-from bifrost.client import BifrostClient, refresh_tokens
-from bifrost.credentials import get_credentials
+from bifrost.client import BifrostClient
 from bifrost.org_target import org_option, resolve_org_target
 from bifrost.solution_binding import (
     SolutionBindingError,
@@ -2208,16 +2207,6 @@ def _vite_child_env(
     return env
 
 
-async def _refresh_solution_start_access_token(api_url: str) -> str | None:
-    if not await refresh_tokens():
-        return None
-    creds = get_credentials(api_url.rstrip("/"))
-    if not creds:
-        return None
-    token = creds.get("access_token")
-    return str(token) if token else None
-
-
 @solution_group.command(name="start", help="Run the app's dev server + local workflows (one origin).")
 @click.argument("app_slug", required=False)
 @click.option("--solution", "solution_ref", default=None, help="Install id or unique slug.")
@@ -3006,9 +2995,7 @@ def _terminate_process_group(proc: "subprocess.Popen") -> None:
         _signal_group(signal.SIGKILL)
 
 
-def _dev_proxy_config(
-    client, chosen, org_info, solution_id, global_repo_access, refresh_token=None
-):
+def _dev_proxy_config(client, chosen, org_info, solution_id, global_repo_access):
     from bifrost.solution_dev.proxy import DevProxyConfig
 
     return DevProxyConfig(
@@ -3018,7 +3005,7 @@ def _dev_proxy_config(
         org_id=(org_info or {}).get("id"),
         solution_id=solution_id,
         global_repo_access=global_repo_access,
-        refresh_token=refresh_token,
+        refresh_token=client.refresh_access_token,
     )
 
 
@@ -3040,11 +3027,8 @@ async def _serve(
     from bifrost.solution_dev.proxy import build_dev_app
     from bifrost.solution_dev.reload import start_function_watch
 
-    async def refresh_token() -> str | None:
-        return await _refresh_solution_start_access_token(client.api_url)
-
     cfg = _dev_proxy_config(
-        client, chosen, org_info, solution_id, global_repo_access, refresh_token
+        client, chosen, org_info, solution_id, global_repo_access
     )
     app = build_dev_app(cfg, host, vite_url=f"http://127.0.0.1:{vite_port}")
     runner = web.AppRunner(app)
