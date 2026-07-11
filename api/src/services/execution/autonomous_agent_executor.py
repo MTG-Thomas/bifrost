@@ -720,7 +720,17 @@ class AutonomousAgentExecutor:
             f"Delegation to '{target_agent.name}' completed with status={sub_result.get('status')}"
         )
 
-        return str(sub_result.get("output", "Delegation completed with no output."))
+        delegated_status = sub_result.get("status")
+        delegated_output = sub_result.get("output")
+        if delegated_status != "completed":
+            detail = sub_result.get("error") or "no error detail"
+            raise ToolError(
+                f"Delegation to {target_agent.name} ended with status={delegated_status}: {detail}"
+            )
+        if delegated_output in (None, "", {}):
+            raise ToolError(f"Delegation to {target_agent.name} completed without a usable verdict.")
+
+        return str(delegated_output)
 
     async def _execute_system_tool(self, tool_call: ToolCallRequest, agent: Agent) -> str:
         """Execute a system tool."""
