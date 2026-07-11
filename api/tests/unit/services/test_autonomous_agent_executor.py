@@ -793,7 +793,7 @@ class TestAutonomousAgentExecutor:
         delegated.max_token_budget = 10000
         delegated.llm_model = None
         delegated.llm_max_tokens = None
-        delegated.organization_id = mock_agent.organization_id
+        delegated.organization_id = None
 
         mock_agent.delegated_agents = [delegated]
 
@@ -805,6 +805,15 @@ class TestAutonomousAgentExecutor:
         mock_result = MagicMock()
         mock_result.scalar_one.return_value = delegated
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
+
+        parent_org_id = uuid4()
+        parent_caller_user_id = uuid4()
+        parent_run = MagicMock()
+        parent_run.org_id = parent_org_id
+        parent_run.caller_user_id = parent_caller_user_id
+        parent_run.caller_email = "operator@example.com"
+        parent_run.caller_name = "Example Operator"
+        mock_session._mock_session.get = AsyncMock(side_effect=[parent_run, MagicMock()])
 
         mock_llm = AsyncMock()
         mock_llm.complete = AsyncMock(side_effect=[
@@ -856,6 +865,10 @@ class TestAutonomousAgentExecutor:
         assert child_run.parent_run_id is not None
         assert str(child_run.parent_run_id) == parent_run_id
         assert child_run.agent_id == delegated.id
+        assert child_run.org_id == parent_org_id
+        assert child_run.caller_user_id == parent_caller_user_id
+        assert child_run.caller_email == "operator@example.com"
+        assert child_run.caller_name == "Example Operator"
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
