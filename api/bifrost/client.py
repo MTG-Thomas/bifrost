@@ -730,11 +730,12 @@ class BifrostClient:
         """Make a synchronous request, refreshing on 401 and retrying once."""
         def _send() -> httpx.Response:
             observed_access_token = self._access_token
-            response = self._sync_http.request(method.upper(), path, **kwargs)
+            send = getattr(self._sync_http, method.lower())
+            response = send(path, **kwargs)
             if response.status_code == 401 and self._refresh_and_update_sync(
                 observed_access_token
             ):
-                response = self._sync_http.request(method.upper(), path, **kwargs)
+                response = send(path, **kwargs)
             return response
 
         return _send_sync_with_5xx_retry(method, _send)

@@ -147,7 +147,7 @@ class ManifestWorkflow(EntityCodec, BaseModel):
             roles=roles or [],
             access_level=wf.access_level or "role_based",
             endpoint_enabled=wf.endpoint_enabled or False,
-            allowed_methods=wf.allowed_methods or ["POST"],
+            allowed_methods=getattr(wf, "allowed_methods", None) or ["POST"],
             # NOT `or 1800` — 0 means "no timeout" and `or` would clobber it.
             timeout_seconds=wf.timeout_seconds if wf.timeout_seconds is not None else 1800,
             public_endpoint=wf.public_endpoint or False,

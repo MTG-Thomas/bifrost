@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -70,7 +70,7 @@ async def test_request_supports_delete_body_and_refresh_retry(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refresh_tokens_returns_false_without_stored_credentials(monkeypatch):
-    monkeypatch.setattr(client_mod, "get_credentials", lambda **_kwargs: None)
+    monkeypatch.setattr(client_mod, "get_credentials", lambda *_args, **_kwargs: None)
 
     assert await client_mod.refresh_tokens() is False
 
@@ -80,7 +80,7 @@ async def test_refresh_tokens_returns_false_for_non_200_refresh_response(monkeyp
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda **_kwargs: {
+        lambda *_args, **_kwargs: {
             "api_url": "https://api.example.test",
             "access_token": "old-access",
             "refresh_token": "old-refresh",
@@ -121,7 +121,7 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda **_kwargs: {
+        lambda *_args, **_kwargs: {
             "api_url": "https://api.example.test/",
             "access_token": "old-access",
             "refresh_token": "old-refresh",
@@ -192,7 +192,6 @@ async def test_get_instance_require_auth_does_not_login_inside_running_loop(monk
 
 
 def test_get_instance_refresh_failure_clears_expired_credentials(monkeypatch):
-    run_calls: list[object] = []
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
@@ -204,15 +203,10 @@ def test_get_instance_refresh_failure_clears_expired_credentials(monkeypatch):
         },
     )
     monkeypatch.setattr(client_mod, "is_token_expired", lambda: True)
-    monkeypatch.setattr(client_mod, "refresh_tokens", lambda: "refresh-coro")
-
-    def fake_run(coro):
-        run_calls.append(coro)
-        return False
-
-    monkeypatch.setattr(asyncio, "run", fake_run)
+    refresh = MagicMock(return_value=None)
+    monkeypatch.setattr(client_mod, "_refresh_connection_access_token_sync", refresh)
 
     with pytest.raises(RuntimeError, match="Not logged in"):
         client_mod.BifrostClient.get_instance()
 
-    assert run_calls == ["refresh-coro"]
+    refresh.assert_called_once_with("https://api.example.test", "expired-access")

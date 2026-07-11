@@ -239,12 +239,19 @@ def _fetch_module_index_from_api(solution_id: str | None = None) -> set[str]:
     try:
         import httpx
 
-        resp = httpx.get(
-            f"{api_url}/api/sdk/modules-index",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"solution_id": solution_id} if solution_id else None,
-            timeout=10.0,
-        )
+        if solution_id:
+            resp = httpx.get(
+                f"{api_url}/api/sdk/modules-index",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"solution_id": solution_id},
+                timeout=10.0,
+            )
+        else:
+            resp = httpx.get(
+                f"{api_url}/api/sdk/modules-index",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
         if resp.status_code != 200:
             return set()
         return set(resp.json().get("paths", []))
@@ -613,8 +620,10 @@ def get_module_index_sync() -> set[str]:
         # Redis index is empty — try API first
         logger.debug("Module index empty in Redis, falling back to API listing")
         ctx = get_solution_context()
-        api_paths = _fetch_module_index_from_api(
-            solution_id=ctx.solution_id if ctx is not None else None
+        api_paths = (
+            _fetch_module_index_from_api(solution_id=ctx.solution_id)
+            if ctx is not None
+            else _fetch_module_index_from_api()
         )
         if api_paths:
             try:

@@ -471,10 +471,10 @@ def get_ephemeral_credentials_source(
 ) -> Literal["env", "cwd_dotenv"] | None:
     """Return the active ephemeral credential source for api_url, if any."""
     url = api_url.rstrip("/")
-    if EnvBackend().get(url) is not None:
-        return "env"
     if _get_cwd_dotenv_credentials(url) is not None:
         return "cwd_dotenv"
+    if EnvBackend().get(url) is not None:
+        return "env"
     return None
 
 

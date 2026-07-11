@@ -117,9 +117,10 @@ async def test_concurrent_refreshes_for_same_stale_token_are_coalesced(
     refresh_calls = 0
 
     class FakeAsyncClient:
-        def __init__(self, *, base_url, timeout):
+        def __init__(self, *, base_url, timeout, trust_env):
             assert base_url == api_url
             assert timeout == 30.0
+            assert trust_env is False
 
         async def __aenter__(self):
             return self
@@ -219,9 +220,10 @@ async def test_env_credentials_survive_multiple_rotating_refreshes(
     refresh_tokens_seen: list[str] = []
 
     class FakeAsyncClient:
-        def __init__(self, *, base_url, timeout):
+        def __init__(self, *, base_url, timeout, trust_env):
             assert base_url == api_url
             assert timeout == 30.0
+            assert trust_env is False
 
         async def __aenter__(self):
             return self
