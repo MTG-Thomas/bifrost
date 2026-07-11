@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from src.services.llm.base import LLMConfig, LLMMessage, ToolCallRequest, ToolDefinition
-from src.services.llm.openai_client import OpenAIClient
+from src.services.llm.openai_client import OpenAIClient, _parse_tool_arguments
 
 
 def _client() -> OpenAIClient:
@@ -16,6 +17,21 @@ def _client() -> OpenAIClient:
 
 def test_provider_name() -> None:
     assert _client().provider_name == "openai"
+
+
+def test_parse_tool_arguments_accepts_foundry_deepseek_trailing_empty_string() -> None:
+    assert _parse_tool_arguments(None) == {}
+    assert _parse_tool_arguments("") == {}
+    assert _parse_tool_arguments('{}""') == {}
+    assert _parse_tool_arguments('{}""""') == {}
+    assert _parse_tool_arguments('{"ticket": 123}""') == {"ticket": 123}
+
+
+def test_parse_tool_arguments_rejects_nonempty_trailing_json() -> None:
+    with pytest.raises(json.JSONDecodeError, match="unexpected trailing"):
+        _parse_tool_arguments('{"ticket": 123}{"other": 456}')
+    with pytest.raises(json.JSONDecodeError, match="must be a JSON object"):
+        _parse_tool_arguments("[]")
 
 
 def test_convert_messages_handles_all_roles() -> None:

@@ -25,6 +25,29 @@ from src.services.llm.base import (
 logger = logging.getLogger(__name__)
 
 
+def _parse_tool_arguments(raw: str | None) -> dict[str, Any]:
+    """Parse tool arguments, tolerating Foundry models' trailing empty strings.
+
+    DeepSeek V4 on the Azure OpenAI-compatible endpoint has been observed to
+    return otherwise valid arguments as ``{}\"\"``. Accept only trailing JSON
+    empty-string values; any other extra content remains an error so malformed
+    or ambiguous tool input cannot be executed.
+    """
+    if not raw:
+        return {}
+    decoder = json.JSONDecoder()
+    value, end = decoder.raw_decode(raw)
+    remainder = raw[end:].strip()
+    while remainder:
+        extra, extra_end = decoder.raw_decode(remainder)
+        if extra != "":
+            raise json.JSONDecodeError("unexpected trailing tool arguments", raw, end)
+        remainder = remainder[extra_end:].strip()
+    if not isinstance(value, dict):
+        raise json.JSONDecodeError("tool arguments must be a JSON object", raw, 0)
+    return value
+
+
 class OpenAIClient(BaseLLMClient):
     """OpenAI LLM client implementation."""
 
@@ -66,11 +89,14 @@ class OpenAIClient(BaseLLMClient):
         # Parse tool calls if present
         tool_calls = None
         if message.tool_calls:
+            # Non-streaming autonomous runs fail closed on ambiguous arguments;
+            # executing a tool with guessed empty input is unsafe. Streaming UI
+            # calls retain their established warn-and-empty fallback behavior.
             tool_calls = [
                 ToolCallRequest(
                     id=tc.id,
                     name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
+                    arguments=_parse_tool_arguments(tc.function.arguments),
                 )
                 for tc in message.tool_calls
             ]
@@ -183,7 +209,7 @@ class OpenAIClient(BaseLLMClient):
                         for tc_data in tool_call_builders.values():
                             if tc_data["id"] and tc_data["name"]:
                                 try:
-                                    args = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+                                    args = _parse_tool_arguments(tc_data["arguments"])
                                 except json.JSONDecodeError:
                                     args = {}
                                     logger.warning(f"Failed to parse tool arguments: {tc_data['arguments']}")
