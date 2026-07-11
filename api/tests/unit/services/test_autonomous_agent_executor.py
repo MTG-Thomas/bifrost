@@ -1,5 +1,4 @@
 """Unit tests for AutonomousAgentExecutor."""
-
 import asyncio
 
 import pytest
@@ -90,22 +89,18 @@ class TestAutonomousAgentExecutor:
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
-    async def test_run_returns_structured_result(
-        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent
-    ):
+    async def test_run_returns_structured_result(self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent):
         """Run returns output, iterations_used, tokens_used, status."""
         mock_resolve_tools.return_value = ([], {})
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            return_value=LLMResponse(
-                content="Hello world",
-                tool_calls=None,
-                finish_reason="end_turn",
-                input_tokens=100,
-                output_tokens=50,
-            )
-        )
+        mock_llm.complete = AsyncMock(return_value=LLMResponse(
+            content="Hello world",
+            tool_calls=None,
+            finish_reason="end_turn",
+            input_tokens=100,
+            output_tokens=50,
+        ))
         mock_get_llm.return_value = mock_llm
 
         executor = AutonomousAgentExecutor(mock_session)
@@ -123,22 +118,18 @@ class TestAutonomousAgentExecutor:
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
-    async def test_run_records_steps(
-        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent
-    ):
+    async def test_run_records_steps(self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent):
         """Run records AgentRunStep entries via session.add."""
         mock_resolve_tools.return_value = ([], {})
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            return_value=LLMResponse(
-                content="Response",
-                tool_calls=None,
-                finish_reason="end_turn",
-                input_tokens=100,
-                output_tokens=50,
-            )
-        )
+        mock_llm.complete = AsyncMock(return_value=LLMResponse(
+            content="Response",
+            tool_calls=None,
+            finish_reason="end_turn",
+            input_tokens=100,
+            output_tokens=50,
+        ))
         mock_get_llm.return_value = mock_llm
 
         executor = AutonomousAgentExecutor(mock_session)
@@ -157,9 +148,7 @@ class TestAutonomousAgentExecutor:
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
-    async def test_run_with_tool_calls(
-        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent
-    ):
+    async def test_run_with_tool_calls(self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent):
         """Run executes tools and continues the loop until no more tool calls."""
         workflow_id = uuid4()
         mock_resolve_tools.return_value = (
@@ -169,33 +158,27 @@ class TestAutonomousAgentExecutor:
 
         # First call returns a tool call, second call returns final content
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(id="tc1", name="my_tool", arguments={"x": 1})
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                LLMResponse(
-                    content="Final answer",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=200,
-                    output_tokens=100,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(id="tc1", name="my_tool", arguments={"x": 1})],
+                finish_reason="tool_use",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+            LLMResponse(
+                content="Final answer",
+                tool_calls=None,
+                finish_reason="end_turn",
+                input_tokens=200,
+                output_tokens=100,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         # Mock the workflow tool execution (imported inside _execute_tool)
         with patch("src.services.execution.service.execute_tool") as mock_exec_tool:
-            mock_exec_tool.return_value = MagicMock(
-                result="tool output", status=MagicMock(value="completed")
-            )
+            mock_exec_tool.return_value = MagicMock(result="tool output", status=MagicMock(value="completed"))
 
             executor = AutonomousAgentExecutor(mock_session)
             result = await executor.run(
@@ -212,9 +195,7 @@ class TestAutonomousAgentExecutor:
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
-    async def test_run_respects_iteration_budget(
-        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent
-    ):
+    async def test_run_respects_iteration_budget(self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent):
         """Run stops when max_iterations is exceeded."""
         mock_agent.max_iterations = 2
         mock_resolve_tools.return_value = (
@@ -224,21 +205,17 @@ class TestAutonomousAgentExecutor:
 
         # Always return tool calls so the loop never ends naturally
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            return_value=LLMResponse(
-                content=None,
-                tool_calls=[ToolCallRequest(id="tc1", name="my_tool", arguments={})],
-                finish_reason="tool_use",
-                input_tokens=10,
-                output_tokens=5,
-            )
-        )
+        mock_llm.complete = AsyncMock(return_value=LLMResponse(
+            content=None,
+            tool_calls=[ToolCallRequest(id="tc1", name="my_tool", arguments={})],
+            finish_reason="tool_use",
+            input_tokens=10,
+            output_tokens=5,
+        ))
         mock_get_llm.return_value = mock_llm
 
         with patch("src.services.execution.service.execute_tool") as mock_exec_tool:
-            mock_exec_tool.return_value = MagicMock(
-                result="ok", status=MagicMock(value="completed")
-            )
+            mock_exec_tool.return_value = MagicMock(result="ok", status=MagicMock(value="completed"))
 
             executor = AutonomousAgentExecutor(mock_session)
             result = await executor.run(
@@ -252,9 +229,7 @@ class TestAutonomousAgentExecutor:
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
-    async def test_run_handles_llm_error(
-        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent
-    ):
+    async def test_run_handles_llm_error(self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent):
         """Run returns failed status when LLM call raises."""
         mock_resolve_tools.return_value = ([], {})
 
@@ -282,24 +257,19 @@ class TestAutonomousAgentExecutor:
         mock_resolve_tools.return_value = ([], {})
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            return_value=LLMResponse(
-                content='{"result": 42}',
-                tool_calls=None,
-                finish_reason="end_turn",
-                input_tokens=100,
-                output_tokens=50,
-            )
-        )
+        mock_llm.complete = AsyncMock(return_value=LLMResponse(
+            content='{"result": 42}',
+            tool_calls=None,
+            finish_reason="end_turn",
+            input_tokens=100,
+            output_tokens=50,
+        ))
         mock_get_llm.return_value = mock_llm
 
         executor = AutonomousAgentExecutor(mock_session)
         result = await executor.run(
             agent=mock_agent,
-            output_schema={
-                "type": "object",
-                "properties": {"result": {"type": "integer"}},
-            },
+            output_schema={"type": "object", "properties": {"result": {"type": "integer"}}},
             run_id=str(uuid4()),
         )
 
@@ -320,26 +290,22 @@ class TestAutonomousAgentExecutor:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(id="tc1", name="broken_tool", arguments={})
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=50,
-                    output_tokens=25,
-                ),
-                LLMResponse(
-                    content="Recovered from error",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(id="tc1", name="broken_tool", arguments={})],
+                finish_reason="tool_use",
+                input_tokens=50,
+                output_tokens=25,
+            ),
+            LLMResponse(
+                content="Recovered from error",
+                tool_calls=None,
+                finish_reason="end_turn",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         with patch("src.services.execution.service.execute_tool") as mock_exec_tool:
@@ -396,40 +362,36 @@ class TestAutonomousAgentExecutor:
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                # Main agent delegates
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(
-                            id="tc1",
-                            name="delegate_to_sub_agent",
-                            arguments={"task": "Summarize data"},
-                        )
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                # Sub agent responds (called by recursive run)
-                LLMResponse(
-                    content="Sub agent summary",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=80,
-                    output_tokens=40,
-                ),
-                # Main agent uses sub result
-                LLMResponse(
-                    content="Final: Sub agent summary",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=200,
-                    output_tokens=100,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            # Main agent delegates
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_sub_agent",
+                    arguments={"task": "Summarize data"},
+                )],
+                finish_reason="tool_use",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+            # Sub agent responds (called by recursive run)
+            LLMResponse(
+                content="Sub agent summary",
+                tool_calls=None,
+                finish_reason="end_turn",
+                input_tokens=80,
+                output_tokens=40,
+            ),
+            # Main agent uses sub result
+            LLMResponse(
+                content="Final: Sub agent summary",
+                tool_calls=None,
+                finish_reason="end_turn",
+                input_tokens=200,
+                output_tokens=100,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         executor = AutonomousAgentExecutor(mock_session)
@@ -496,37 +458,33 @@ class TestAutonomousAgentExecutor:
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(
-                            id="tc1",
-                            name="delegate_to_troubleshooting_agent",
-                            arguments={"task": "Fix the issue"},
-                        )
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                LLMResponse(
-                    content="Issue resolved",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=80,
-                    output_tokens=40,
-                ),
-                LLMResponse(
-                    content="Delegation complete: Issue resolved",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=200,
-                    output_tokens=100,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_troubleshooting_agent",
+                    arguments={"task": "Fix the issue"},
+                )],
+                finish_reason="tool_use",
+                input_tokens=100,
+                output_tokens=50,
+            ),
+            LLMResponse(
+                content="Issue resolved",
+                tool_calls=None,
+                finish_reason="end_turn",
+                input_tokens=80,
+                output_tokens=40,
+            ),
+            LLMResponse(
+                content="Delegation complete: Issue resolved",
+                tool_calls=None,
+                finish_reason="end_turn",
+                input_tokens=200,
+                output_tokens=100,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         executor = AutonomousAgentExecutor(mock_session)
@@ -540,9 +498,7 @@ class TestAutonomousAgentExecutor:
 
         # Verify session.execute was called to re-fetch the delegated agent
         execute_calls = mock_session._mock_session.execute.call_args_list
-        assert len(execute_calls) >= 1, (
-            "Expected at least one session.execute call for re-fetch"
-        )
+        assert len(execute_calls) >= 1, "Expected at least one session.execute call for re-fetch"
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
@@ -578,37 +534,27 @@ class TestAutonomousAgentExecutor:
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(
-                            id="tc1",
-                            name="delegate_to_sub_agent",
-                            arguments={"task": "Do work"},
-                        )
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                LLMResponse(
-                    content="Done",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=80,
-                    output_tokens=40,
-                ),
-                LLMResponse(
-                    content="All done",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=200,
-                    output_tokens=100,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(
+                    id="tc1", name="delegate_to_sub_agent",
+                    arguments={"task": "Do work"},
+                )],
+                finish_reason="tool_use",
+                input_tokens=100, output_tokens=50,
+            ),
+            LLMResponse(
+                content="Done",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=80, output_tokens=40,
+            ),
+            LLMResponse(
+                content="All done",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=200, output_tokens=100,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         mock_redis = MagicMock()
@@ -628,14 +574,11 @@ class TestAutonomousAgentExecutor:
         assert result["status"] == "completed"
         # Verify the sub-executor was constructed with redis_client
         sub_init_calls = [
-            c
-            for c in mock_init.call_args_list
+            c for c in mock_init.call_args_list
             if c.kwargs.get("redis_client") is mock_redis
             or (len(c.args) > 2 and c.args[2] is mock_redis)
         ]
-        assert len(sub_init_calls) >= 1, (
-            "Sub-executor should receive parent's redis_client"
-        )
+        assert len(sub_init_calls) >= 1, "Sub-executor should receive parent's redis_client"
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
@@ -656,30 +599,22 @@ class TestAutonomousAgentExecutor:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(
-                            id="tc1",
-                            name="delegate_to_deep_agent",
-                            arguments={"task": "Go deeper"},
-                        )
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                LLMResponse(
-                    content="Hit the limit",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=80,
-                    output_tokens=40,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(
+                    id="tc1", name="delegate_to_deep_agent",
+                    arguments={"task": "Go deeper"},
+                )],
+                finish_reason="tool_use",
+                input_tokens=100, output_tokens=50,
+            ),
+            LLMResponse(
+                content="Hit the limit",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=80, output_tokens=40,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         # Start at max depth — delegation should be rejected immediately
@@ -695,8 +630,7 @@ class TestAutonomousAgentExecutor:
         assert result["status"] == "completed"
         # The LLM should have received the depth limit error as a tool result
         tool_result_messages = [
-            m
-            for m in mock_llm.complete.call_args_list
+            m for m in mock_llm.complete.call_args_list
             if any(
                 hasattr(msg, "role") and msg.role == "tool"
                 for msg in m.kwargs.get("messages", m.args[0] if m.args else [])
@@ -738,31 +672,23 @@ class TestAutonomousAgentExecutor:
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(
-                            id="tc1",
-                            name="delegate_to_slow_agent",
-                            arguments={"task": "Take forever"},
-                        )
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                # After timeout error, LLM responds
-                LLMResponse(
-                    content="The delegation timed out",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=200,
-                    output_tokens=100,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(
+                    id="tc1", name="delegate_to_slow_agent",
+                    arguments={"task": "Take forever"},
+                )],
+                finish_reason="tool_use",
+                input_tokens=100, output_tokens=50,
+            ),
+            # After timeout error, LLM responds
+            LLMResponse(
+                content="The delegation timed out",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=200, output_tokens=100,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         executor = AutonomousAgentExecutor(mock_session)
@@ -772,10 +698,7 @@ class TestAutonomousAgentExecutor:
             coro.close()  # Clean up the coroutine
             raise asyncio.TimeoutError()
 
-        with patch(
-            "src.services.execution.autonomous_agent_executor.asyncio.wait_for",
-            mock_wait_for,
-        ):
+        with patch("src.services.execution.autonomous_agent_executor.asyncio.wait_for", mock_wait_for):
             result = await executor.run(
                 agent=mock_agent,
                 input_data={"task": "Delegate to slow agent"},
@@ -783,10 +706,7 @@ class TestAutonomousAgentExecutor:
             )
 
         assert result["status"] == "completed"
-        assert (
-            "timed out" in result["output"].lower()
-            or result["output"] == "The delegation timed out"
-        )
+        assert "timed out" in result["output"].lower() or result["output"] == "The delegation timed out"
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
@@ -801,30 +721,21 @@ class TestAutonomousAgentExecutor:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(
-                            id="tc1",
-                            name="nonexistent_tool",
-                            arguments={},
-                        )
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                LLMResponse(
-                    content="Recovered",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=80,
-                    output_tokens=40,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(
+                    id="tc1", name="nonexistent_tool", arguments={},
+                )],
+                finish_reason="tool_use",
+                input_tokens=100, output_tokens=50,
+            ),
+            LLMResponse(
+                content="Recovered",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=80, output_tokens=40,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         executor = AutonomousAgentExecutor(mock_session)
@@ -838,14 +749,9 @@ class TestAutonomousAgentExecutor:
 
         # The tool error message should have been fed to the LLM
         second_call_messages = mock_llm.complete.call_args_list[1].kwargs.get(
-            "messages",
-            mock_llm.complete.call_args_list[1].args[0]
-            if mock_llm.complete.call_args_list[1].args
-            else [],
+            "messages", mock_llm.complete.call_args_list[1].args[0] if mock_llm.complete.call_args_list[1].args else []
         )
-        tool_messages = [
-            m for m in second_call_messages if hasattr(m, "role") and m.role == "tool"
-        ]
+        tool_messages = [m for m in second_call_messages if hasattr(m, "role") and m.role == "tool"]
         assert len(tool_messages) >= 1
         assert "Unknown tool" in tool_messages[0].content
 
@@ -854,21 +760,15 @@ class TestAutonomousAgentExecutor:
         assert len(error_steps) >= 1
 
     @pytest.mark.asyncio
-    async def test_privileged_agent_management_tool_is_blocked(
-        self, mock_session, mock_agent
-    ):
+    async def test_privileged_agent_management_tool_is_blocked(self, mock_session, mock_agent):
         """Autonomous agents cannot execute privileged agent-management system tools."""
         mock_agent.system_tools = ["create_agent"]
 
         executor = AutonomousAgentExecutor(mock_session)
         tool_call = ToolCallRequest(id="tc1", name="create_agent", arguments={})
 
-        with patch.object(
-            executor, "_execute_system_tool", new_callable=AsyncMock
-        ) as mock_system_tool:
-            with pytest.raises(
-                ToolError, match="cannot be executed from autonomous agents"
-            ):
+        with patch.object(executor, "_execute_system_tool", new_callable=AsyncMock) as mock_system_tool:
+            with pytest.raises(ToolError, match="cannot be executed from autonomous agents"):
                 await executor._execute_tool(tool_call, mock_agent)
 
         mock_system_tool.assert_not_awaited()
@@ -928,39 +828,29 @@ class TestAutonomousAgentExecutor:
         )
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(
-                            id="tc1",
-                            name="delegate_to_child_agent",
-                            arguments={"task": "Do work"},
-                        )
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                # Sub agent responds
-                LLMResponse(
-                    content="Child done",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=80,
-                    output_tokens=40,
-                ),
-                # Main agent finishes
-                LLMResponse(
-                    content="All done",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=200,
-                    output_tokens=100,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(
+                    id="tc1", name="delegate_to_child_agent",
+                    arguments={"task": "Do work"},
+                )],
+                finish_reason="tool_use",
+                input_tokens=100, output_tokens=50,
+            ),
+            # Sub agent responds
+            LLMResponse(
+                content="Child done",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=80, output_tokens=40,
+            ),
+            # Main agent finishes
+            LLMResponse(
+                content="All done",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=200, output_tokens=100,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         parent_run_id = str(uuid4())
@@ -976,9 +866,11 @@ class TestAutonomousAgentExecutor:
 
         # Find AgentRun objects added to session (not AgentRunStep)
         from src.models.orm.agent_runs import AgentRun
-
         add_calls = mock_session._mock_session.add.call_args_list
-        agent_run_adds = [c[0][0] for c in add_calls if isinstance(c[0][0], AgentRun)]
+        agent_run_adds = [
+            c[0][0] for c in add_calls
+            if isinstance(c[0][0], AgentRun)
+        ]
         assert len(agent_run_adds) >= 1, "Should create a child AgentRun"
 
         child_run = agent_run_adds[0]
@@ -1011,27 +903,20 @@ class TestAutonomousAgentExecutor:
 
         # LLM returns tool calls (would loop), but cancel flag stops it
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            side_effect=[
-                LLMResponse(
-                    content=None,
-                    tool_calls=[
-                        ToolCallRequest(id="tc1", name="my_tool", arguments={})
-                    ],
-                    finish_reason="tool_use",
-                    input_tokens=100,
-                    output_tokens=50,
-                ),
-                # Should never reach this — cancelled before second iteration
-                LLMResponse(
-                    content="Should not reach",
-                    tool_calls=None,
-                    finish_reason="end_turn",
-                    input_tokens=80,
-                    output_tokens=40,
-                ),
-            ]
-        )
+        mock_llm.complete = AsyncMock(side_effect=[
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCallRequest(id="tc1", name="my_tool", arguments={})],
+                finish_reason="tool_use",
+                input_tokens=100, output_tokens=50,
+            ),
+            # Should never reach this — cancelled before second iteration
+            LLMResponse(
+                content="Should not reach",
+                tool_calls=None, finish_reason="end_turn",
+                input_tokens=80, output_tokens=40,
+            ),
+        ])
         mock_get_llm.return_value = mock_llm
 
         # Mock Redis client to return cancel flag after first iteration
@@ -1051,9 +936,7 @@ class TestAutonomousAgentExecutor:
         mock_redis.get = mock_get
 
         with patch("src.services.execution.service.execute_tool") as mock_exec_tool:
-            mock_exec_tool.return_value = MagicMock(
-                result="ok", status=MagicMock(value="completed")
-            )
+            mock_exec_tool.return_value = MagicMock(result="ok", status=MagicMock(value="completed"))
 
             executor = AutonomousAgentExecutor(mock_session, redis_client=mock_redis)
             result = await executor.run(
@@ -1075,15 +958,11 @@ class TestAutonomousAgentExecutor:
         mock_resolve_tools.return_value = ([], {})
 
         mock_llm = AsyncMock()
-        mock_llm.complete = AsyncMock(
-            return_value=LLMResponse(
-                content="Done",
-                tool_calls=None,
-                finish_reason="end_turn",
-                input_tokens=100,
-                output_tokens=50,
-            )
-        )
+        mock_llm.complete = AsyncMock(return_value=LLMResponse(
+            content="Done",
+            tool_calls=None, finish_reason="end_turn",
+            input_tokens=100, output_tokens=50,
+        ))
         mock_get_llm.return_value = mock_llm
 
         # No redis_client — cancellation checks should be no-ops
