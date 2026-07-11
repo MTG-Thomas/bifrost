@@ -12,12 +12,12 @@ from bifrost import client as client_mod
 @pytest.fixture(autouse=True)
 def _reset_client_globals():
     client_mod._clear_client()
-    client_mod._last_refreshed_env_credentials = None
+    client_mod._reset_refresh_coordinators_for_tests()
     if hasattr(client_mod._thread_local, "bifrost_client"):
         delattr(client_mod._thread_local, "bifrost_client")
     yield
     client_mod._clear_client()
-    client_mod._last_refreshed_env_credentials = None
+    client_mod._reset_refresh_coordinators_for_tests()
     if hasattr(client_mod._thread_local, "bifrost_client"):
         delattr(client_mod._thread_local, "bifrost_client")
 
@@ -59,7 +59,7 @@ async def test_request_supports_delete_body_and_refresh_retry(monkeypatch):
         "/api/items/1",
         json={"reason": "duplicate"},
     )
-    refresh.assert_awaited_once_with()
+    refresh.assert_awaited_once_with("old-token")
     second.assert_awaited_once_with(
         "DELETE",
         "/api/items/1",
@@ -170,7 +170,6 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
     assert saved[0]["refresh_token"] == "new-refresh"
     assert saved[0]["expires_at"]
     assert ephemeral_saved == []
-    assert client_mod._last_refreshed_env_credentials is None
 
 
 @pytest.mark.asyncio

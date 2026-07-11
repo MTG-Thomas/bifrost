@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 # Global client injection for platform mode
 _injected_client: Optional["BifrostClient"] = None
-_last_refreshed_env_credentials: dict[str, str] | None = None
 
 
 class BifrostAPIError(httpx.HTTPStatusError):
@@ -210,8 +209,6 @@ async def refresh_connection_access_token(
     a caller re-reads stored credentials and reuses a token already installed by
     another caller instead of rotating the same refresh token twice.
     """
-    global _last_refreshed_env_credentials
-
     normalized_url = api_url.rstrip("/")
     coordinator = _refresh_coordinator(normalized_url)
     await _acquire_refresh_lock(coordinator.lock)
@@ -262,13 +259,8 @@ async def refresh_connection_access_token(
             "expires_at": expires_at.isoformat(),
         }
         if ephemeral_source is not None:
-            _last_refreshed_env_credentials = {
-                **refreshed,
-                "source": ephemeral_source,
-            }
             save_ephemeral_credentials(source=ephemeral_source, **refreshed)
         else:
-            _last_refreshed_env_credentials = None
             save_credentials(
                 **refreshed,
             )
