@@ -98,7 +98,10 @@ class TestModuleCacheAsync:
         with (
             patch("src.core.module_cache.get_redis_client", return_value=mock_client),
             patch("src.core.module_cache.RepoStorage", return_value=mock_repo),
-            patch("src.core.module_cache.SolutionStorage", return_value=mock_solution_storage) as solution_storage_cls,
+            patch(
+                "src.services.solutions.storage.SolutionStorage",
+                return_value=mock_solution_storage,
+            ) as solution_storage_cls,
         ):
             from src.core.module_cache import get_module
 
