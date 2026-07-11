@@ -89,6 +89,9 @@ class OpenAIClient(BaseLLMClient):
         # Parse tool calls if present
         tool_calls = None
         if message.tool_calls:
+            # Non-streaming autonomous runs fail closed on ambiguous arguments;
+            # executing a tool with guessed empty input is unsafe. Streaming UI
+            # calls retain their established warn-and-empty fallback behavior.
             tool_calls = [
                 ToolCallRequest(
                     id=tc.id,

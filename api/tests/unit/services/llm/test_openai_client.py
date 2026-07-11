@@ -20,13 +20,18 @@ def test_provider_name() -> None:
 
 
 def test_parse_tool_arguments_accepts_foundry_deepseek_trailing_empty_string() -> None:
+    assert _parse_tool_arguments(None) == {}
+    assert _parse_tool_arguments("") == {}
     assert _parse_tool_arguments('{}""') == {}
+    assert _parse_tool_arguments('{}""""') == {}
     assert _parse_tool_arguments('{"ticket": 123}""') == {"ticket": 123}
 
 
 def test_parse_tool_arguments_rejects_nonempty_trailing_json() -> None:
     with pytest.raises(json.JSONDecodeError, match="unexpected trailing"):
         _parse_tool_arguments('{"ticket": 123}{"other": 456}')
+    with pytest.raises(json.JSONDecodeError, match="must be a JSON object"):
+        _parse_tool_arguments("[]")
 
 
 def test_convert_messages_handles_all_roles() -> None:
