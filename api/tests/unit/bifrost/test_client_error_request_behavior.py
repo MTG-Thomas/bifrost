@@ -164,7 +164,7 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
     monkeypatch.setattr(client_mod.httpx, "AsyncClient", RefreshClient)
 
     assert await client_mod.refresh_tokens() is True
-    assert saved[0]["api_url"] == "https://api.example.test/"
+    assert saved[0]["api_url"] == "https://api.example.test"
     assert saved[0]["access_token"] == "new-access"
     assert saved[0]["refresh_token"] == "new-refresh"
     assert saved[0]["expires_at"]
