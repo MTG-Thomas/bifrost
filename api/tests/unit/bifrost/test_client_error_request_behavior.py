@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -12,12 +11,12 @@ from bifrost import client as client_mod
 @pytest.fixture(autouse=True)
 def _reset_client_globals():
     client_mod._clear_client()
-    client_mod._last_refreshed_env_credentials = None
+    client_mod._reset_refresh_coordinators_for_tests()
     if hasattr(client_mod._thread_local, "bifrost_client"):
         delattr(client_mod._thread_local, "bifrost_client")
     yield
     client_mod._clear_client()
-    client_mod._last_refreshed_env_credentials = None
+    client_mod._reset_refresh_coordinators_for_tests()
     if hasattr(client_mod._thread_local, "bifrost_client"):
         delattr(client_mod._thread_local, "bifrost_client")
 
@@ -59,7 +58,7 @@ async def test_request_supports_delete_body_and_refresh_retry(monkeypatch):
         "/api/items/1",
         json={"reason": "duplicate"},
     )
-    refresh.assert_awaited_once_with()
+    refresh.assert_awaited_once_with("old-token")
     second.assert_awaited_once_with(
         "DELETE",
         "/api/items/1",
@@ -70,7 +69,7 @@ async def test_request_supports_delete_body_and_refresh_retry(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_refresh_tokens_returns_false_without_stored_credentials(monkeypatch):
-    monkeypatch.setattr(client_mod, "get_credentials", lambda **_kwargs: None)
+    monkeypatch.setattr(client_mod, "get_credentials", lambda *_args, **_kwargs: None)
 
     assert await client_mod.refresh_tokens() is False
 
@@ -80,7 +79,7 @@ async def test_refresh_tokens_returns_false_for_non_200_refresh_response(monkeyp
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda **_kwargs: {
+        lambda *_args, **_kwargs: {
             "api_url": "https://api.example.test",
             "access_token": "old-access",
             "refresh_token": "old-refresh",
@@ -121,7 +120,7 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
-        lambda **_kwargs: {
+        lambda *_args, **_kwargs: {
             "api_url": "https://api.example.test/",
             "access_token": "old-access",
             "refresh_token": "old-refresh",
@@ -165,12 +164,11 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
     monkeypatch.setattr(client_mod.httpx, "AsyncClient", RefreshClient)
 
     assert await client_mod.refresh_tokens() is True
-    assert saved[0]["api_url"] == "https://api.example.test/"
+    assert saved[0]["api_url"] == "https://api.example.test"
     assert saved[0]["access_token"] == "new-access"
     assert saved[0]["refresh_token"] == "new-refresh"
     assert saved[0]["expires_at"]
     assert ephemeral_saved == []
-    assert client_mod._last_refreshed_env_credentials is None
 
 
 @pytest.mark.asyncio
@@ -193,7 +191,6 @@ async def test_get_instance_require_auth_does_not_login_inside_running_loop(monk
 
 
 def test_get_instance_refresh_failure_clears_expired_credentials(monkeypatch):
-    run_calls: list[object] = []
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
@@ -205,15 +202,10 @@ def test_get_instance_refresh_failure_clears_expired_credentials(monkeypatch):
         },
     )
     monkeypatch.setattr(client_mod, "is_token_expired", lambda: True)
-    monkeypatch.setattr(client_mod, "refresh_tokens", lambda: "refresh-coro")
-
-    def fake_run(coro):
-        run_calls.append(coro)
-        return False
-
-    monkeypatch.setattr(asyncio, "run", fake_run)
+    refresh = MagicMock(return_value=None)
+    monkeypatch.setattr(client_mod, "_refresh_connection_access_token_sync", refresh)
 
     with pytest.raises(RuntimeError, match="Not logged in"):
         client_mod.BifrostClient.get_instance()
 
-    assert run_calls == ["refresh-coro"]
+    refresh.assert_called_once_with("https://api.example.test", "expired-access")

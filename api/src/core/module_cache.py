@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 MODULE_KEY_PREFIX = "bifrost:module:"
 MODULE_INDEX_KEY = "bifrost:module:index"
+SOLUTIONS_ROOT = "_solutions"
 
 
 class CachedModule(TypedDict):
@@ -31,6 +32,19 @@ class CachedModule(TypedDict):
     content: str
     path: str
     hash: str
+
+
+async def _read_module_from_storage(path: str) -> bytes:
+    parts = path.split("/", 2)
+    if len(parts) == 3 and parts[0] == SOLUTIONS_ROOT:
+        # SolutionStorage reaches file_ops, which imports this cache module.
+        # Defer the import until module_cache has finished initializing.
+        from src.services.solutions.storage import SolutionStorage
+
+        solution_id, relative_path = parts[1], parts[2]
+        return await SolutionStorage(solution_id).read(relative_path)
+
+    return await RepoStorage().read(path)
 
 
 async def get_module(path: str) -> CachedModule | None:
@@ -56,8 +70,7 @@ async def get_module(path: str) -> CachedModule | None:
 
     # Redis miss — try S3 fallback
     try:
-        repo = RepoStorage()
-        content_bytes = await repo.read(path)
+        content_bytes = await _read_module_from_storage(path)
     except Exception:
         logger.debug(f"Module not in cache or S3: {log_safe(path)}")
         return None

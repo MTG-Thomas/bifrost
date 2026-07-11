@@ -59,6 +59,60 @@ describe("BifrostHeader (SDK, self-contained)", () => {
     expect(screen.getByText("extra")).toBeInTheDocument();
   });
 
+  it("shows expired dev auth instead of the Account fallback", async () => {
+    const expiredAuth: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: "bifrost_dev_auth_expired",
+          detail: "Your CLI token has expired. Restart `bifrost solution start`.",
+        }),
+        {
+          status: 401,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Bifrost-Dev-Auth": "expired",
+          },
+        },
+      );
+
+    render(
+      <BifrostProvider baseUrl="https://dev.example" token="t" fetchImpl={expiredAuth}>
+        <BifrostHeader title="X" />
+      </BifrostProvider>,
+    );
+
+    expect(await screen.findByText("Session expired")).toBeInTheDocument();
+    expect(screen.queryByText("Account")).toBeNull();
+  });
+
+  it("uses shrinkable and wrapping inline layout for narrow app viewports", () => {
+    const { container } = render(
+      <BifrostProvider baseUrl="https://dev.example" token="t" fetchImpl={noNetwork} supportsTheme>
+        <BifrostHeader
+          title="A very long app title that should not force the app viewport wider"
+          action={<button type="button">Export a very long report label</button>}
+        />
+      </BifrostProvider>,
+    );
+
+    const header = container.querySelector("header")!;
+    const left = screen.getByText(/very long app title/i).parentElement!;
+    const right = screen.getByRole("button", { name: /account menu/i }).closest("div")!.parentElement!;
+    const title = screen.getByText(/very long app title/i);
+    const accountName = screen.getByText("Account");
+
+    expect(header.style.flexWrap).toBe("wrap");
+    expect(header.style.alignItems).toBe("center");
+    expect(left.style.flex).toBe("1 1 240px");
+    expect(left.style.minWidth).toBe("0");
+    expect(right.style.flex).toBe("0 1 auto");
+    expect(right.style.flexWrap).toBe("wrap");
+    expect(title.style.overflow).toBe("hidden");
+    expect(title.style.textOverflow).toBe("ellipsis");
+    expect(accountName.style.maxWidth).not.toBe("");
+    expect(accountName.style.overflow).toBe("hidden");
+  });
+
   it("styles itself inline (no dependency on Tailwind/theme CSS variables)", () => {
     // Standalone apps may have no Tailwind build and none of the platform's
     // theme CSS variables. The header must carry its own visual styling so it

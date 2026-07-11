@@ -120,9 +120,31 @@ function initials(me: Me | null): string {
 }
 
 // Palette-independent layout (shared by light + dark).
-const leftStyle: CSSProperties = { display: "flex", alignItems: "center", gap: "0.7rem", minWidth: 0 };
-const logoStyle: CSSProperties = { height: 26, width: "auto", borderRadius: 5, display: "block" };
-const rightStyle: CSSProperties = { display: "flex", alignItems: "center", gap: "0.5rem" };
+const leftStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "0.7rem",
+  minWidth: 0,
+  flex: "1 1 240px",
+  overflow: "hidden",
+};
+const logoStyle: CSSProperties = {
+  height: 26,
+  width: "auto",
+  borderRadius: 5,
+  display: "block",
+  flexShrink: 0,
+};
+const rightStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "flex-end",
+  gap: "0.5rem",
+  flex: "0 1 auto",
+  flexWrap: "wrap",
+  minWidth: 0,
+  maxWidth: "100%",
+};
 const iconStyle: CSSProperties = { width: "1rem", height: "1rem" };
 const triggerStyle: CSSProperties = {
   display: "inline-flex",
@@ -135,6 +157,8 @@ const triggerStyle: CSSProperties = {
   padding: "0.25rem 0.5rem",
   fontSize: "0.875rem",
   fontFamily: "inherit",
+  minWidth: 0,
+  maxWidth: "100%",
 };
 
 // Palette-keyed chrome (the parts that recolor between light + dark).
@@ -142,7 +166,8 @@ const headerStyle = (C: Palette): CSSProperties => ({
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  gap: "1rem",
+  flexWrap: "wrap",
+  gap: "0.5rem 1rem",
   borderBottom: `1px solid ${C.border}`,
   padding: "0.5rem 1rem",
   background: C.surface,
@@ -157,9 +182,16 @@ const backLinkStyle = (C: Palette): CSSProperties => ({
   textDecoration: "none",
   paddingRight: "0.7rem",
   borderRight: `1px solid ${C.border}`,
+  flexShrink: 0,
 });
 const titleStyle = (C: Palette): CSSProperties => ({
-  fontSize: "0.95rem", fontWeight: 600, color: C.fg, whiteSpace: "nowrap",
+  fontSize: "0.95rem",
+  fontWeight: 600,
+  color: C.fg,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  minWidth: 0,
 });
 const avatarStyle = (C: Palette, size: number): CSSProperties => ({
   width: size,
@@ -178,8 +210,9 @@ const avatarStyle = (C: Palette, size: number): CSSProperties => ({
 const menuStyle = (C: Palette): CSSProperties => ({
   position: "absolute",
   top: "calc(100% - 2px)",
-  right: "1rem",
+  right: 0,
   width: 232,
+  maxWidth: "calc(100vw - 2rem)",
   background: C.surface,
   border: `1px solid ${C.border}`,
   borderRadius: "0.625rem",
@@ -203,6 +236,16 @@ const menuItemStyle = (C: Palette): CSSProperties => ({
   textAlign: "left",
 });
 
+const accountNameStyle = (C: Palette): CSSProperties => ({
+  color: C.fg,
+  fontWeight: 500,
+  maxWidth: "min(10rem, 35vw)",
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+});
+
 export function BifrostHeader({ title, logo, action, className }: BifrostHeaderProps) {
   const { baseUrl, appId, authedFetch, logout, theme, toggleTheme, supportsTheme } =
     useBifrostContext();
@@ -217,6 +260,7 @@ export function BifrostHeader({ title, logo, action, className }: BifrostHeaderP
   ensureStyle(C, themeKey);
 
   const [me, setMe] = useState<Me | null>(null);
+  const [authExpired, setAuthExpired] = useState(false);
   const [fetchedLogo, setFetchedLogo] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -225,8 +269,18 @@ export function BifrostHeader({ title, logo, action, className }: BifrostHeaderP
   useEffect(() => {
     let cancelled = false;
     authedFetch("/api/auth/me")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => !cancelled && d && setMe(d))
+      .then((r) => {
+        if (r.ok) return r.json();
+        if (r.status === 401 && r.headers.get("X-Bifrost-Dev-Auth") === "expired") {
+          setAuthExpired(true);
+        }
+        return null;
+      })
+      .then((d) => {
+        if (cancelled || !d) return;
+        setAuthExpired(false);
+        setMe(d);
+      })
       .catch(() => {});
     return () => {
       cancelled = true;
@@ -272,7 +326,7 @@ export function BifrostHeader({ title, logo, action, className }: BifrostHeaderP
   }, [open]);
 
   const effectiveLogo = logo !== undefined ? logo : fetchedLogo;
-  const name = me?.name || me?.email?.split("@")[0] || "Account";
+  const name = authExpired ? "Session expired" : me?.name || me?.email?.split("@")[0] || "Account";
   const email = me?.email || "";
 
   return (
@@ -320,7 +374,7 @@ export function BifrostHeader({ title, logo, action, className }: BifrostHeaderP
                 initials(me)
               )}
             </span>
-            <span style={{ color: C.fg, fontWeight: 500 }}>{name}</span>
+            <span style={accountNameStyle(C)}>{name}</span>
             <ChevronDown style={{ ...iconStyle, color: C.faint }} />
           </button>
 

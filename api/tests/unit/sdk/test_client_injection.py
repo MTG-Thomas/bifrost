@@ -355,7 +355,12 @@ async def test_client_refreshes_once_after_401(monkeypatch):
 
     monkeypatch.setattr(client_mod.httpx, "Client", lambda **kwargs: SyncHTTP())
     monkeypatch.setattr(client_mod.httpx, "AsyncClient", lambda **kwargs: clients.pop(0))
-    monkeypatch.setattr(client_mod, "refresh_tokens", lambda: _async_return(True))
+    async def refresh_token(api_url, observed_access_token):
+        assert api_url == "https://api.example.test"
+        assert observed_access_token == "old"
+        return "new"
+
+    monkeypatch.setattr(client_mod, "refresh_connection_access_token", refresh_token)
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
