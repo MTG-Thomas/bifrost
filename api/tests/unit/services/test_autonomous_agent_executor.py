@@ -774,12 +774,13 @@ class TestAutonomousAgentExecutor:
         mock_system_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("parent_exists", [True, False])
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
     async def test_delegation_creates_child_agent_run(
-        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent
+        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent, parent_exists
     ):
-        """Delegation creates a child AgentRun with parent_run_id set."""
+        """Delegation creates a child run with inherited or fallback audit scope."""
         delegated = MagicMock()
         delegated.id = uuid4()
         delegated.name = "Child Agent"
@@ -793,7 +794,7 @@ class TestAutonomousAgentExecutor:
         delegated.max_token_budget = 10000
         delegated.llm_model = None
         delegated.llm_max_tokens = None
-        delegated.organization_id = mock_agent.organization_id
+        delegated.organization_id = None
 
         mock_agent.delegated_agents = [delegated]
 
@@ -805,6 +806,26 @@ class TestAutonomousAgentExecutor:
         mock_result = MagicMock()
         mock_result.scalar_one.return_value = delegated
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
+
+        fallback_org_id = uuid4()
+        fallback_caller_user_id = uuid4()
+        mock_agent.organization_id = fallback_org_id
+        fallback_caller = {
+            "user_id": str(fallback_caller_user_id),
+            "email": "fallback@example.com",
+            "name": "Fallback Operator",
+        }
+
+        parent_org_id = uuid4()
+        parent_caller_user_id = uuid4()
+        parent_run = MagicMock()
+        parent_run.org_id = parent_org_id
+        parent_run.caller_user_id = parent_caller_user_id
+        parent_run.caller_email = "operator@example.com"
+        parent_run.caller_name = "Example Operator"
+        mock_session._mock_session.get = AsyncMock(
+            side_effect=[parent_run if parent_exists else None, MagicMock()]
+        )
 
         mock_llm = AsyncMock()
         mock_llm.complete = AsyncMock(side_effect=[
@@ -838,6 +859,7 @@ class TestAutonomousAgentExecutor:
             agent=mock_agent,
             input_data={"task": "Delegate"},
             run_id=parent_run_id,
+            _caller=fallback_caller,
         )
 
         assert result["status"] == "completed"
@@ -856,6 +878,16 @@ class TestAutonomousAgentExecutor:
         assert child_run.parent_run_id is not None
         assert str(child_run.parent_run_id) == parent_run_id
         assert child_run.agent_id == delegated.id
+        assert child_run.org_id == (parent_org_id if parent_exists else fallback_org_id)
+        assert child_run.caller_user_id == (
+            parent_caller_user_id if parent_exists else fallback_caller_user_id
+        )
+        assert child_run.caller_email == (
+            "operator@example.com" if parent_exists else "fallback@example.com"
+        )
+        assert child_run.caller_name == (
+            "Example Operator" if parent_exists else "Fallback Operator"
+        )
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")

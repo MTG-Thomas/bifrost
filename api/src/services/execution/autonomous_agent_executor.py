@@ -631,6 +631,12 @@ class AutonomousAgentExecutor:
             )
             target_agent = result.scalar_one()
 
+            # Delegated agents may be globally scoped while the run itself is
+            # tenant-scoped. Preserve the parent run's audit/access context;
+            # using ``agent.organization_id`` here makes global-agent child
+            # runs invisible to the tenant that initiated the parent run.
+            parent_run = await db.get(AgentRun, UUID(self._current_run_id))
+
             # Create a child AgentRun so steps and AI usage are properly tracked
             sub_run = AgentRun(
                 id=UUID(sub_run_id),
@@ -639,7 +645,14 @@ class AutonomousAgentExecutor:
                 trigger_source=f"agent:{agent.name}",
                 input={"task": task, "_delegated_from": agent.name},
                 status="running",
-                org_id=agent.organization_id,
+                org_id=parent_run.org_id if parent_run else agent.organization_id,
+                caller_user_id=parent_run.caller_user_id if parent_run else self._caller_user_id,
+                caller_email=parent_run.caller_email if parent_run else (
+                    self._caller_context.get("email") if self._caller_context else None
+                ),
+                caller_name=parent_run.caller_name if parent_run else (
+                    self._caller_context.get("name") if self._caller_context else None
+                ),
                 parent_run_id=UUID(self._current_run_id),
                 budget_max_iterations=target_agent.max_iterations,
                 budget_max_tokens=target_agent.max_token_budget,
@@ -707,7 +720,17 @@ class AutonomousAgentExecutor:
             f"Delegation to '{target_agent.name}' completed with status={sub_result.get('status')}"
         )
 
-        return str(sub_result.get("output", "Delegation completed with no output."))
+        delegated_status = sub_result.get("status")
+        delegated_output = sub_result.get("output")
+        if delegated_status != "completed":
+            detail = sub_result.get("error") or "no error detail"
+            raise ToolError(
+                f"Delegation to {target_agent.name} ended with status={delegated_status}: {detail}"
+            )
+        if delegated_output in (None, "", {}):
+            raise ToolError(f"Delegation to {target_agent.name} completed without a usable verdict.")
+
+        return str(delegated_output)
 
     async def _execute_system_tool(self, tool_call: ToolCallRequest, agent: Agent) -> str:
         """Execute a system tool."""
