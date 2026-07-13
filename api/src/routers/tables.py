@@ -55,6 +55,7 @@ from src.models.contracts.tables import (
     TableUpdate,
 )
 from src.models.orm.custom_claims import CustomClaim as CustomClaimORM
+from src.models.orm.solutions import Solution as SolutionORM
 from src.models.orm.tables import Document, Table
 from src.services.solutions.guard import assert_entity_id_not_solution_managed
 from src.services.solution_scope import (
@@ -627,7 +628,23 @@ async def get_table_or_404(
             detail=f"Table '{name_or_id}' not found",
         )
 
+    await _assert_table_solution_active(ctx, table, name_or_id)
     return table
+
+
+async def _assert_table_solution_active(
+    ctx: Context, table: Table, requested_table_id: str
+) -> None:
+    """Hide tables owned by inactive solution installs from direct table APIs."""
+    if table.solution_id is None:
+        return
+
+    solution = await ctx.db.get(SolutionORM, table.solution_id)
+    if solution is not None and solution.status == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Table '{requested_table_id}' not found",
+        )
 
 
 async def _assert_solution_write_targets_owned_table(ctx: Context, table: Table) -> None:

@@ -147,11 +147,11 @@ async def test_active_solution_executes_normally(
     )
 
 
-def _deploy_with_app_and_table(e2e_client, headers, sid: str) -> tuple[str, str]:
+def _deploy_with_app_and_table(e2e_client, headers, sid: str) -> tuple[str, str, str]:
     """Deploy a minimal bundle with one app + one table.
 
-    Returns (app_id, table_name) where app_id is the resolved
-    per-install entity id (suitable for the X-Bifrost-App header).
+    Returns (app_id, table_id, table_name) where app_id/table_id are the resolved
+    per-install entity ids.
     """
     app_manifest_id = str(uuid.uuid4())
     table_manifest_id = str(uuid.uuid4())
@@ -169,7 +169,8 @@ def _deploy_with_app_and_table(e2e_client, headers, sid: str) -> tuple[str, str]
     assert dep.status_code in (200, 201), dep.text
 
     app_id = str(solution_entity_id(UUID(sid), UUID(app_manifest_id)))
-    return app_id, table_name
+    table_id = str(solution_entity_id(UUID(sid), UUID(table_manifest_id)))
+    return app_id, table_id, table_name
 
 
 async def test_inactive_solution_app_path_refused(
@@ -184,7 +185,7 @@ async def test_inactive_solution_app_path_refused(
     headers = platform_admin.headers
     slug = f"dormant-app-{uuid.uuid4().hex[:8]}"
     sid = _create_solution(e2e_client, headers, slug)
-    app_id, table_name = _deploy_with_app_and_table(e2e_client, headers, sid)
+    app_id, _table_id, table_name = _deploy_with_app_and_table(e2e_client, headers, sid)
     _uninstall(e2e_client, headers, sid)
 
     # Any request carrying the inactive solution's app id in X-Bifrost-App must
@@ -203,6 +204,34 @@ async def test_inactive_solution_app_path_refused(
     )
 
 
+async def test_inactive_solution_table_uuid_document_access_refused_without_solution_context(
+    e2e_client, platform_admin,
+):
+    """Direct table UUID document APIs must not bypass inactive solution dormancy."""
+    headers = platform_admin.headers
+    slug = f"dormant-table-uuid-{uuid.uuid4().hex[:8]}"
+    sid = _create_solution(e2e_client, headers, slug)
+    _app_id, table_id, _table_name = _deploy_with_app_and_table(e2e_client, headers, sid)
+    _uninstall(e2e_client, headers, sid)
+
+    r = e2e_client.post(
+        f"/api/tables/{table_id}/documents",
+        headers=headers,
+        json={"id": "probe", "data": {"val": "x"}},
+    )
+    assert r.status_code == 404, (
+        f"Expected inactive solution-owned table UUID write to be hidden, got {r.status_code}: {r.text}"
+    )
+
+    r = e2e_client.get(
+        f"/api/tables/{table_id}/documents/probe",
+        headers=headers,
+    )
+    assert r.status_code == 404, (
+        f"Expected inactive solution-owned table UUID read to be hidden, got {r.status_code}: {r.text}"
+    )
+
+
 async def test_active_solution_app_path_not_refused(
     e2e_client, platform_admin,
 ):
@@ -210,7 +239,7 @@ async def test_active_solution_app_path_not_refused(
     headers = platform_admin.headers
     slug = f"active-app-{uuid.uuid4().hex[:8]}"
     sid = _create_solution(e2e_client, headers, slug)
-    app_id, table_name = _deploy_with_app_and_table(e2e_client, headers, sid)
+    app_id, _table_id, table_name = _deploy_with_app_and_table(e2e_client, headers, sid)
 
     # Active solution: the dormant gate must not fire.  The row insert may
     # succeed or 409-conflict (duplicate) — what must NOT happen is a 409 from
