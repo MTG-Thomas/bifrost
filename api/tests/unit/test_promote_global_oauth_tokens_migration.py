@@ -1,10 +1,11 @@
 """Behavioral test for the global-OAuth-token heal migration.
 
 The migration (alembic/versions/20260601_promote_mis_stamped_global_oauth_tokens.py)
-is pure SQL, so we run its two statements against a seeded DB and assert it:
+is pure SQL, so we run its three statements against a seeded DB and assert it:
 
   - promotes a provider-org-stamped org-level token of a GLOBAL provider to NULL;
   - leaves a legitimately org-scoped connection's token alone;
+  - leaves legitimately org-scoped authorization-code callback tokens alone;
   - drops the redundant provider-org row when a real NULL token already exists;
   - never touches per-user tokens.
 
@@ -66,10 +67,10 @@ async def _org(db, name, *, is_provider=False):
     return o
 
 
-async def _provider(db, *, organization_id):
+async def _provider(db, *, organization_id, oauth_flow_type="client_credentials"):
     p = OAuthProvider(
         provider_name=f"conn_{uuid4().hex[:8]}",
-        oauth_flow_type="client_credentials",
+        oauth_flow_type=oauth_flow_type,
         client_id="cid",
         encrypted_client_secret=b"sec",
         organization_id=organization_id,
@@ -124,6 +125,52 @@ async def test_leaves_org_specific_connection_token_alone(db_session):
 
     await db_session.refresh(tok)
     assert tok.organization_id == provider_org.id, "per-org connection token must be preserved"
+
+
+@pytest.mark.asyncio
+async def test_leaves_provider_org_authorization_code_token_alone(db_session):
+    """Authorization-code callbacks can legitimately store org-level tokens
+    under the provider org. The migration must not promote them to global.
+    """
+    provider_org = await _org(db_session, f"Provider {uuid4().hex[:6]}", is_provider=True)
+    gp = await _provider(
+        db_session,
+        organization_id=None,
+        oauth_flow_type="authorization_code",
+    )
+    tok = await _token(db_session, provider_id=gp.id, organization_id=provider_org.id)
+
+    await _run_migration(db_session)
+
+    await db_session.refresh(tok)
+    assert tok.organization_id == provider_org.id, "auth-code org token must be preserved"
+
+
+@pytest.mark.asyncio
+async def test_keeps_provider_org_authorization_code_token_when_global_exists(db_session):
+    """A legitimate authorization-code org token must not be deleted just
+    because a separate global fallback token exists for the same provider.
+    """
+    provider_org = await _org(db_session, f"Provider {uuid4().hex[:6]}", is_provider=True)
+    gp = await _provider(
+        db_session,
+        organization_id=None,
+        oauth_flow_type="authorization_code",
+    )
+    global_token = await _token(db_session, provider_id=gp.id, organization_id=None)
+    org_token = await _token(db_session, provider_id=gp.id, organization_id=provider_org.id)
+
+    await _run_migration(db_session)
+
+    rows = (
+        await db_session.execute(
+            select(OAuthToken).where(OAuthToken.provider_id == gp.id)
+        )
+    ).scalars().all()
+    ids = {r.id for r in rows}
+    assert global_token.id in ids, "the global auth-code token must survive"
+    assert org_token.id in ids, "the org-scoped auth-code token must be preserved"
+    assert len(rows) == 2
 
 
 @pytest.mark.asyncio

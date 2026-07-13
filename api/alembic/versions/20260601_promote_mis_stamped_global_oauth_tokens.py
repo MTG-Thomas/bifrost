@@ -18,6 +18,8 @@ touch a legitimately org-scoped token:
 
   - the token's provider is itself GLOBAL (oauth_providers.organization_id
     IS NULL) — never touches a per-org connection's provider;
+  - the token's provider uses client_credentials — never touches
+    org-scoped authorization_code callback tokens;
   - the token is org-level (user_id IS NULL);
   - the token is stamped with the provider org specifically;
   - no true-global (NULL) token already exists for that provider — so we
@@ -51,6 +53,7 @@ def upgrade() -> None:
           AND t.user_id IS NULL
           AND p.id = t.provider_id
           AND p.organization_id IS NULL
+          AND p.oauth_flow_type = 'client_credentials'
           AND EXISTS (
               SELECT 1 FROM oauth_tokens g
               WHERE g.provider_id = t.provider_id
@@ -74,6 +77,7 @@ def upgrade() -> None:
             WHERE o.is_provider = true
               AND t.user_id IS NULL
               AND p.organization_id IS NULL
+              AND p.oauth_flow_type = 'client_credentials'
               AND NOT EXISTS (
                   SELECT 1 FROM oauth_tokens g
                   WHERE g.provider_id = t.provider_id
@@ -100,6 +104,7 @@ def upgrade() -> None:
           AND t.user_id IS NULL
           AND p.id = t.provider_id
           AND p.organization_id IS NULL
+          AND p.oauth_flow_type = 'client_credentials'
           AND NOT EXISTS (
               SELECT 1 FROM oauth_tokens g
               WHERE g.provider_id = t.provider_id
