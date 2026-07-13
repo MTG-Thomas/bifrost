@@ -73,7 +73,7 @@ export async function updateBranding(
 
 	if (error) {
 		throw new Error(
-			typeof error === "object" && error !== null && "message" in error
+			typeof error === "object" && "message" in error
 				? (error as { message?: string }).message ||
 						"Failed to update branding"
 				: "Failed to update branding",
@@ -102,7 +102,6 @@ export async function uploadLogo(
 		throw new Error(
 			`Failed to upload ${type} logo: ${
 				typeof error === "object" &&
-				error !== null &&
 				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"
@@ -128,7 +127,6 @@ export async function resetLogo(
 		throw new Error(
 			`Failed to reset ${type} logo: ${
 				typeof error === "object" &&
-				error !== null &&
 				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"
@@ -149,7 +147,6 @@ export async function resetColor(): Promise<BrandingSettings_API> {
 		throw new Error(
 			`Failed to reset primary color: ${
 				typeof error === "object" &&
-				error !== null &&
 				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"
@@ -173,7 +170,6 @@ export async function resetApplicationName(): Promise<BrandingSettings_API> {
 		throw new Error(
 			`Failed to reset application name: ${
 				typeof error === "object" &&
-				error !== null &&
 				"message" in error
 					? (error as { message?: string }).message
 					: "Unknown error"

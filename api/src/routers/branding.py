@@ -18,6 +18,7 @@ from shared.svg_sanitizer import SvgSanitizationError, sanitize_svg
 from src.models import BrandingSettings, BrandingTerminology, BrandingUpdateRequest, GlobalBranding
 from src.core.auth import Context, CurrentSuperuser
 from src.core.database import AsyncSession, get_db
+from src.core.log_safety import log_safe
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ async def update_branding(
     )
 
     await ctx.db.commit()
-    logger.info(f"Branding updated by {user.email}")
+    logger.info(f"Branding updated by {log_safe(user.email)}")
 
     return _branding_response(branding)
 
@@ -184,7 +185,9 @@ async def upload_logo(
         )
 
     await ctx.db.commit()
-    logger.info(f"Logo '{logo_type}' uploaded by {user.email}")
+    logger.info(
+        f"Logo '{log_safe(logo_type)}' uploaded by {log_safe(user.email)}"
+    )
 
     return _branding_response(branding)
 
@@ -278,7 +281,9 @@ async def reset_logo(
         )
 
     await ctx.db.commit()
-    logger.info(f"Logo '{logo_type}' reset to default by {user.email}")
+    logger.info(
+        f"Logo '{log_safe(logo_type)}' reset to default by {log_safe(user.email)}"
+    )
 
     return _branding_response(branding)
 
@@ -302,7 +307,7 @@ async def reset_color(
     branding = await branding_repo.set_branding(primary_color=None)
 
     await ctx.db.commit()
-    logger.info(f"Primary color reset to default by {user.email}")
+    logger.info(f"Primary color reset to default by {log_safe(user.email)}")
 
     return _branding_response(branding)
 
@@ -325,7 +330,7 @@ async def reset_application_name(
     branding = await branding_repo.set_branding(application_name=None)
 
     await ctx.db.commit()
-    logger.info(f"Application name reset to default by {user.email}")
+    logger.info(f"Application name reset to default by {log_safe(user.email)}")
 
     return _branding_response(branding)
 
@@ -349,7 +354,7 @@ async def reset_all_branding(
     await branding_repo.delete_branding()
 
     await ctx.db.commit()
-    logger.info(f"All branding reset to defaults by {user.email}")
+    logger.info(f"All branding reset to defaults by {log_safe(user.email)}")
 
     return BrandingSettings(
         application_name=None,

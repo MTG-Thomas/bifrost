@@ -94,6 +94,19 @@ class TestApplicationLogo:
         finally:
             _delete_app(e2e_client, platform_admin.headers, app["id"])
 
+    def test_upload_requires_platform_admin(self, e2e_client, platform_admin, org1_user):
+        slug = f"logo-app-auth-{uuid.uuid4().hex[:8]}"
+        app = _create_app(e2e_client, platform_admin.headers, slug)
+        try:
+            response = e2e_client.post(
+                f"/api/applications/{app['id']}/logo",
+                headers=_upload_headers(org1_user.headers),
+                files={"file": ("logo.png", CLEAN_PNG, "image/png")},
+            )
+            assert response.status_code == 403
+        finally:
+            _delete_app(e2e_client, platform_admin.headers, app["id"])
+
     def test_svg_sanitized(self, e2e_client, platform_admin):
         slug = f"logo-app-svg-{uuid.uuid4().hex[:8]}"
         app = _create_app(e2e_client, platform_admin.headers, slug)
@@ -115,16 +128,19 @@ class TestApplicationLogo:
             _delete_app(e2e_client, platform_admin.headers, app["id"])
 
 
-def _create_agent(e2e_client, headers, name):
+def _create_agent(e2e_client, headers, name, organization_id=None):
+    payload = {
+        "name": name,
+        "system_prompt": "You are a helper.",
+        "channels": ["chat"],
+        "access_level": "authenticated",
+    }
+    if organization_id is not None:
+        payload["organization_id"] = organization_id
     resp = e2e_client.post(
         "/api/agents",
         headers=headers,
-        json={
-            "name": name,
-            "system_prompt": "You are a helper.",
-            "channels": ["chat"],
-            "access_level": "authenticated",
-        },
+        json=payload,
     )
     assert resp.status_code == 201, f"create agent failed: {resp.text}"
     return resp.json()
@@ -181,6 +197,48 @@ class TestAgentLogo:
             assert resp.status_code == 400
         finally:
             _delete_agent(e2e_client, platform_admin.headers, agent["id"])
+
+    def test_view_access_does_not_grant_upload_access(
+        self, e2e_client, platform_admin, org1_user, org1
+    ):
+        agent = _create_agent(
+            e2e_client,
+            platform_admin.headers,
+            f"logo-bot-auth-{uuid.uuid4().hex[:8]}",
+            organization_id=org1["id"],
+        )
+        try:
+            response = e2e_client.post(
+                f"/api/agents/{agent['id']}/logo",
+                headers=_upload_headers(org1_user.headers),
+                files={"file": ("logo.png", CLEAN_PNG, "image/png")},
+            )
+            assert response.status_code == 403
+        finally:
+            _delete_agent(e2e_client, platform_admin.headers, agent["id"])
+
+    def test_owner_can_upload_to_private_agent(self, e2e_client, org1_user):
+        response = e2e_client.post(
+            "/api/agents",
+            headers=org1_user.headers,
+            json={
+                "name": f"private-logo-bot-{uuid.uuid4().hex[:8]}",
+                "system_prompt": "You are a helper.",
+                "channels": ["chat"],
+                "access_level": "private",
+            },
+        )
+        assert response.status_code == 201, response.text
+        agent = response.json()
+        try:
+            upload = e2e_client.post(
+                f"/api/agents/{agent['id']}/logo",
+                headers=_upload_headers(org1_user.headers),
+                files={"file": ("logo.png", CLEAN_PNG, "image/png")},
+            )
+            assert upload.status_code == 200, upload.text
+        finally:
+            _delete_agent(e2e_client, org1_user.headers, agent["id"])
 
     def test_svg_sanitized(self, e2e_client, platform_admin):
         agent = _create_agent(e2e_client, platform_admin.headers, f"logo-bot-svg-{uuid.uuid4().hex[:8]}")

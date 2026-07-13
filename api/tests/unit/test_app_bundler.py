@@ -451,7 +451,7 @@ async def test_build_uploads_live_outputs_and_manifest(
 
     async def fake_run_esbuild(cfg: dict) -> dict:
         out_dir = pathlib.Path(cfg["out_dir"])
-        out_dir.mkdir()
+        out_dir.mkdir(exist_ok=True)
         (out_dir / "entry-live.js").write_bytes(b"// live bundle\n")
         (out_dir / "entry-live.css").write_bytes(b".live{}\n")
         return {
