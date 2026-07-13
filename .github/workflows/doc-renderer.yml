@@ -1,0 +1,108 @@
+name: Document Renderer
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/doc-renderer.yml"
+      - "doc_renderer_service/**"
+      - "api/tests/unit/test_doc_renderer_service.py"
+      - "docker-compose.test.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/doc-renderer.yml"
+      - "doc_renderer_service/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    name: Build and smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build renderer image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ./doc_renderer_service
+          file: ./doc_renderer_service/Dockerfile
+          load: true
+          push: false
+          tags: bifrost-doc-renderer:test
+          cache-from: type=gha,scope=doc-renderer
+          cache-to: type=gha,mode=max,scope=doc-renderer
+
+      - name: Smoke test renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run --detach --read-only --tmpfs /tmp \
+            --env DOC_RENDERER_API_TOKEN=test-token \
+            --publish 127.0.0.1:18080:8080 \
+            bifrost-doc-renderer:test)"
+          trap 'docker logs "$container_id"; docker rm --force "$container_id"' EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == "30" ]]; then
+              echo "Renderer did not become healthy" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl --fail --silent --show-error \
+            --header 'Authorization: Bearer test-token' \
+            --header 'Content-Type: application/json' \
+            --data '{"title":"CI smoke","markdown":"# Renderer smoke","theme":"clean_report"}' \
+            --output /tmp/renderer-smoke.pdf \
+            http://127.0.0.1:18080/render/markdown-pdf
+          test "$(head -c 4 /tmp/renderer-smoke.pdf)" = '%PDF'
+
+  publish:
+    name: Publish image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish renderer image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ./doc_renderer_service
+          file: ./doc_renderer_service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/mtg-thomas/bifrost-doc-renderer:main
+            ghcr.io/mtg-thomas/bifrost-doc-renderer:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=doc-renderer
+          cache-to: type=gha,mode=max,scope=doc-renderer

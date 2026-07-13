@@ -359,6 +359,7 @@ services:
       - /app/src/services/sdk_package/sdk_src  # preserve image-baked SDK source (masked by :ro src mount)
       - ./api/shared:/app/shared:ro
       - ./api/bifrost:/app/bifrost:ro
+      - ./doc_renderer_service:/app/doc_renderer_service:ro
       - ./api/fuzz:/app/fuzz:ro
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
       - ./api/tests:/app/tests:ro

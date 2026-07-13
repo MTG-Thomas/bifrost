@@ -3,7 +3,8 @@
         "src/**/*.py",
         "shared/**/*.py",
         "bifrost/**/*.py",
-        "tests/**/*.py"
+        "tests/**/*.py",
+        "../doc_renderer_service/**/*.py"
     ],
     "exclude": [
         "**/__pycache__",
@@ -15,7 +16,8 @@
     "venvPath": "..",
     "venv": ".venv",
     "extraPaths": [
-        "scripts/skill-truth"
+        "scripts/skill-truth",
+        ".."
     ],
     "pythonVersion": "3.12",
     "pythonPlatform": "Linux",
