@@ -309,7 +309,11 @@ class EventProcessor:
         """
         validate_topic(topic)
 
-        source = await self._source_repo.get_by_topic(topic, solution_id=solution_id)
+        source = await self._source_repo.get_by_topic(
+            topic,
+            solution_id=solution_id,
+            organization_id=organization_id,
+        )
         if source is None:
             logger.info(
                 f"No active topic source for '{log_safe(topic)}'; emit is a no-op",
@@ -345,7 +349,14 @@ class EventProcessor:
         subscriptions = await self._subscription_repo.get_active_for_event(
             source_id=source.id,
             event_type=topic,
+            organization_id=stamped_org,
         )
+        if stamped_org is not None:
+            subscriptions = [
+                subscription
+                for subscription in subscriptions
+                if _subscription_matches_event_org(subscription, stamped_org)
+            ]
 
         if not subscriptions:
             event.status = EventStatus.COMPLETED
@@ -784,6 +795,23 @@ class EventProcessor:
             },
         )
 
+
+def _subscription_matches_event_org(
+    subscription: EventSubscription,
+    organization_id: UUID,
+) -> bool:
+    """Return whether a subscription target may receive an org-scoped event."""
+    target_type = getattr(subscription, "target_type", "workflow") or "workflow"
+    target = (
+        getattr(subscription, "agent", None)
+        if target_type == "agent"
+        else getattr(subscription, "workflow", None)
+    )
+    if target is None:
+        return False
+
+    target_org = getattr(target, "organization_id", None)
+    return target_org is None or target_org == organization_id
 
 
 def _delivery_status_from_execution(status: str) -> EventDeliveryStatus:

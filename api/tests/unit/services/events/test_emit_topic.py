@@ -19,6 +19,9 @@ import pytest
 from src.models.enums import EventDeliveryStatus
 
 
+_UNSET = object()
+
+
 def _make_source(topic: str, org_id=None):
     source = MagicMock()
     source.id = uuid.uuid4()
@@ -59,7 +62,7 @@ def _make_processor(source=None, subscriptions=None):
         return processor, mock_session
 
 
-def _make_workflow_subscription(workflow_id=None, org_id=None):
+def _make_workflow_subscription(workflow_id=None, org_id=_UNSET):
     sub = MagicMock()
     sub.id = uuid.uuid4()
     sub.target_type = "workflow"
@@ -69,7 +72,7 @@ def _make_workflow_subscription(workflow_id=None, org_id=None):
 
     workflow = MagicMock()
     workflow.id = sub.workflow_id
-    workflow.organization_id = org_id or uuid.uuid4()
+    workflow.organization_id = uuid.uuid4() if org_id is _UNSET else org_id
     sub.workflow = workflow
 
     return sub
@@ -178,6 +181,50 @@ async def test_emit_topic_with_subscriber_creates_delivery():
 
 
 @pytest.mark.asyncio
+async def test_emit_topic_filters_subscriptions_to_event_org():
+    """Org-scoped topic emissions never deliver to another tenant's target."""
+    event_org = uuid.uuid4()
+    other_org = uuid.uuid4()
+    source = _make_source("integration.refresh_failed", org_id=event_org)
+    same_org_sub = _make_workflow_subscription(org_id=event_org)
+    global_sub = _make_workflow_subscription(org_id=None)
+    other_org_sub = _make_workflow_subscription(org_id=other_org)
+    processor, session = _make_processor(
+        source=source,
+        subscriptions=[same_org_sub, global_sub, other_org_sub],
+    )
+
+    added_objects = []
+    session.add = lambda obj: added_objects.append(obj)
+    session.flush = AsyncMock()
+
+    event_id, count = await processor.emit_topic(
+        topic="integration.refresh_failed",
+        data={"organization": {"id": str(event_org)}},
+        organization_id=event_org,
+    )
+
+    processor._source_repo.get_by_topic.assert_awaited_once_with(
+        "integration.refresh_failed",
+        organization_id=event_org,
+    )
+    processor._subscription_repo.get_active_for_event.assert_awaited_once_with(
+        source_id=source.id,
+        event_type="integration.refresh_failed",
+        organization_id=event_org,
+    )
+
+    from src.models.orm.events import EventDelivery
+
+    deliveries = [o for o in added_objects if isinstance(o, EventDelivery)]
+    delivered_subscription_ids = {delivery.event_subscription_id for delivery in deliveries}
+    assert count == 2
+    assert {same_org_sub.id, global_sub.id} == delivered_subscription_ids
+    assert other_org_sub.id not in delivered_subscription_ids
+    assert all(delivery.event_id == event_id for delivery in deliveries)
+
+
+@pytest.mark.asyncio
 async def test_emit_topic_org_override():
     """Explicit organization_id overrides source.organization_id."""
     source_org = uuid.uuid4()
@@ -192,6 +239,11 @@ async def test_emit_topic_org_override():
     await processor.emit_topic(
         topic="user.invited",
         data={},
+        organization_id=override_org,
+    )
+
+    processor._source_repo.get_by_topic.assert_awaited_once_with(
+        "user.invited",
         organization_id=override_org,
     )
 
@@ -216,6 +268,16 @@ async def test_emit_topic_uses_source_org_when_no_override():
         topic="user.invited",
         data={},
         organization_id=None,
+    )
+
+    processor._source_repo.get_by_topic.assert_awaited_once_with(
+        "user.invited",
+        organization_id=None,
+    )
+    processor._subscription_repo.get_active_for_event.assert_awaited_once_with(
+        source_id=source.id,
+        event_type="user.invited",
+        organization_id=source_org,
     )
 
     from src.models.orm.events import Event
