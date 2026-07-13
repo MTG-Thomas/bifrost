@@ -96,7 +96,7 @@ async function main() {
   const buildRoot = fs.realpathSync(path.dirname(sourceDir));
   const expectedOutDir = path.join(buildRoot, "dist");
   const entryPath = path.resolve(sourceDir, entry);
-  const existingOutDir = fs.existsSync(outDir) ? fs.realpathSync(outDir) : outDir;
+  const existingOutDir = fs.existsSync(outDir) ? fs.realpathSync(outDir) : null;
 
   if (
     !isWithin(tempRoot, buildRoot)
@@ -112,8 +112,6 @@ async function main() {
     }));
     return;
   }
-
-  fs.mkdirSync(outDir, { recursive: true }); // NOSONAR -- validated isolated tempdir above
 
   const t0 = Date.now();
 
