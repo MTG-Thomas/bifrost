@@ -1075,8 +1075,9 @@ Usage: bifrost update [options]
 
 Update this CLI from the selected Bifrost instance. If --url is omitted,
 the current connection is resolved from BIFROST_API_URL, the selected default,
-or the only stored connection. If several connections exist with no default,
-an interactive terminal prompts you to choose one.
+or the only stored connection. Project-local .env files are ignored for this
+self-update command. If several connections exist with no default, an
+interactive terminal prompts you to choose one.
 
 Options:
   --url, -u URL   Bifrost instance to update from
@@ -1093,6 +1094,7 @@ Examples:
 
     resolved_url, _source = credentials.resolve_current_connection(
         api_url,
+        include_cwd_dotenv=False,
         prompt_for_default=True,
     )
     if not resolved_url:

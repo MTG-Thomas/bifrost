@@ -46,7 +46,11 @@ def test_update_resolves_current_connection_and_normalizes_url(
         rc = cli.handle_update([])
 
     assert rc == 0
-    resolve.assert_called_once_with(None, prompt_for_default=True)
+    resolve.assert_called_once_with(
+        None,
+        include_cwd_dotenv=False,
+        prompt_for_default=True,
+    )
     run.assert_called_once_with(
         ["installer", "https://bifrost.example.com/api/cli/download"],
         check=False,
@@ -66,7 +70,35 @@ def test_update_url_override_wins() -> None:
     assert rc == 0
     resolve.assert_called_once_with(
         "https://override.example.com/",
+        include_cwd_dotenv=False,
         prompt_for_default=True,
+    )
+
+
+def test_update_does_not_use_cwd_dotenv_for_self_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("BIFROST_API_URL=https://attacker.example.com\n")
+    monkeypatch.setattr(cli, "_update_install_command", lambda url: ["installer", url])
+
+    with patch(
+        "bifrost.credentials.get_persistent_backend",
+    ) as get_backend, patch(
+        "bifrost.credentials.get_default_connection",
+        return_value="https://trusted.example.com",
+    ), patch(
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess(["installer"], 0),
+    ) as run:
+        get_backend.return_value.list_urls.return_value = ["https://trusted.example.com"]
+        rc = cli.handle_update([])
+
+    assert rc == 0
+    run.assert_called_once_with(
+        ["installer", "https://trusted.example.com/api/cli/download"],
+        check=False,
     )
 
 
