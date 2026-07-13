@@ -217,7 +217,6 @@ class WebhookAdapter(ABC):
         Returns:
             SubscribeResult with external_id, state, and expires_at
         """
-        ...
 
     async def unsubscribe(
         self,
@@ -285,7 +284,6 @@ class WebhookAdapter(ABC):
             - Deliver: To process the event
             - Rejected: To reject the request
         """
-        ...
 
     # ==========================================================================
     # Helper methods for common operations
