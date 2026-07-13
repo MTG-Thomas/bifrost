@@ -216,6 +216,57 @@ async def test_local_path_ref_runs_in_function_host():
         await up_runner.cleanup()
 
 
+async def test_dev_session_gate_protects_proxy_and_uses_httponly_cookie():
+    record = {}
+    up_port, dev_port = _free_port(), _free_port()
+    up_runner = await _serve(_make_upstream(record), up_port)
+    cfg = DevProxyConfig(
+        upstream_url=f"http://127.0.0.1:{up_port}",
+        token="cli-token",
+        app_id="A",
+        org_id="O",
+        session_token="private-session-token",
+    )
+    dev_runner = await _serve(
+        build_dev_app(cfg, _StubHost(set()), vite_url="http://127.0.0.1:1"),
+        dev_port,
+    )
+    try:
+        async with httpx.AsyncClient() as client:
+            denied = await client.get(f"http://127.0.0.1:{dev_port}/api/test")
+            assert denied.status_code == 401
+
+            bootstrap = await client.get(
+                f"http://127.0.0.1:{dev_port}/",
+                headers={"Accept": "text/html"},
+            )
+            assert bootstrap.status_code == 200
+            assert "location.hash" in bootstrap.text
+            assert "private-session-token" not in bootstrap.text
+
+            rejected = await client.post(
+                f"http://127.0.0.1:{dev_port}/__bifrost/dev-auth",
+                headers={"X-Bifrost-Dev-Token": "wrong"},
+            )
+            assert rejected.status_code == 401
+
+            accepted = await client.post(
+                f"http://127.0.0.1:{dev_port}/__bifrost/dev-auth",
+                headers={"X-Bifrost-Dev-Token": "private-session-token"},
+            )
+            assert accepted.status_code == 200
+            set_cookie = accepted.headers["set-cookie"]
+            assert "HttpOnly" in set_cookie
+            assert "SameSite=Strict" in set_cookie
+
+            proxied = await client.get(f"http://127.0.0.1:{dev_port}/api/test")
+            assert proxied.status_code == 200
+            assert record["other_path"] == "/api/test"
+    finally:
+        await dev_runner.cleanup()
+        await up_runner.cleanup()
+
+
 class _RaisingHost:
     def resolve(self, ref):
         return ref
