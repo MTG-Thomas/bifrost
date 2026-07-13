@@ -1,6 +1,7 @@
 """Focused branch coverage for solution deploy helpers."""
 
 import base64
+from copy import deepcopy
 from enum import Enum
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -84,12 +85,13 @@ def test_remap_form_field_providers_maps_only_dict_fields_with_provider_ids():
 
 @pytest.mark.parametrize("form", [{"form_schema": None}, {"form_schema": []}, {}])
 def test_remap_form_field_providers_ignores_non_dict_schema(form):
+    original = deepcopy(form)
     deploy.SolutionDeployer._remap_form_field_providers(
         form,
         {WORKFLOW_ID: MAPPED_WORKFLOW_ID},
     )
 
-    assert form == form
+    assert form == original
 
 
 def test_validate_access_level_returns_valid_value_and_rejects_unknown_value():

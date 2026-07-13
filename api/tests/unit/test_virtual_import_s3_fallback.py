@@ -1,5 +1,6 @@
 """Tests for virtual import S3 fallback."""
 
+import importlib
 import json
 import logging
 from unittest.mock import MagicMock, patch
@@ -283,7 +284,7 @@ class TestS3ClientCaching:
 
     def test_nosuchkey_logs_debug_not_warning(self, caplog):
         """NoSuchKey errors should log at DEBUG level, not WARNING."""
-        import src.core.module_cache_sync as mod
+        mod = importlib.import_module("src.core.module_cache_sync")
 
         # Set up mock botocore client that raises NoSuchKey
         mock_client = MagicMock()
@@ -314,7 +315,7 @@ class TestS3ClientCaching:
 
     def test_s3_unavailable_returns_none_gracefully(self):
         """When S3 client is unavailable, _get_s3_module should return None."""
-        import src.core.module_cache_sync as mod
+        mod = importlib.import_module("src.core.module_cache_sync")
 
         # Simulate unavailable client
         mod._s3_available = False
