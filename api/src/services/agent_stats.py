@@ -12,6 +12,17 @@ from src.models.orm.agents import Agent, Conversation
 from src.models.orm.ai_usage import AIUsage
 
 
+MAX_STATS_WINDOW_DAYS = 90
+
+
+def _validated_window_days(window_days: int) -> int:
+    if not 1 <= window_days <= MAX_STATS_WINDOW_DAYS:
+        raise ValueError(
+            f"window_days must be between 1 and {MAX_STATS_WINDOW_DAYS}"
+        )
+    return window_days
+
+
 def _to_decimal(value: Decimal | int | None) -> Decimal:
     if value is None:
         return Decimal("0")
@@ -34,6 +45,7 @@ def _build_runs_by_day(
     window_days: int,
     now: datetime,
 ) -> list[int]:
+    window_days = _validated_window_days(window_days)
     buckets = [0] * window_days
     for run in runs:
         day_offset = (now - run.created_at).days
@@ -98,6 +110,7 @@ async def get_agent_stats(
     ``AgentRun`` only — the deferred "tuning + chat conversations"
     follow-up will revisit those.
     """
+    window_days = _validated_window_days(window_days)
     cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
     runs_q = select(AgentRun).where(
         AgentRun.agent_id == agent_id,
@@ -168,6 +181,7 @@ async def get_fleet_stats(
     fleet spend. ``avg_success_rate`` stays keyed on ``AgentRun`` only —
     there is no "success" concept on a chat conversation.
     """
+    window_days = _validated_window_days(window_days)
     cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
 
     agent_filter = []
