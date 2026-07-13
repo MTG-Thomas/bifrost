@@ -46,7 +46,11 @@ def test_update_resolves_current_connection_and_normalizes_url(
         rc = cli.handle_update([])
 
     assert rc == 0
-    resolve.assert_called_once_with(None, prompt_for_default=True)
+    resolve.assert_called_once_with(
+        None,
+        include_cwd_dotenv=False,
+        prompt_for_default=True,
+    )
     run.assert_called_once_with(
         ["installer", "https://bifrost.example.com/api/cli/download"],
         check=False,
@@ -66,6 +70,25 @@ def test_update_url_override_wins() -> None:
     assert rc == 0
     resolve.assert_called_once_with(
         "https://override.example.com/",
+        include_cwd_dotenv=False,
+        prompt_for_default=True,
+    )
+
+
+def test_update_ignores_cwd_dotenv_connection() -> None:
+    completed = subprocess.CompletedProcess(["installer"], 0)
+    with patch(
+        "bifrost.credentials.resolve_current_connection",
+        return_value=("https://stored.example.com", "default"),
+    ) as resolve, patch(
+        "bifrost.cli._update_install_command", return_value=["installer"]
+    ), patch("subprocess.run", return_value=completed):
+        rc = cli.handle_update([])
+
+    assert rc == 0
+    resolve.assert_called_once_with(
+        None,
+        include_cwd_dotenv=False,
         prompt_for_default=True,
     )
 
