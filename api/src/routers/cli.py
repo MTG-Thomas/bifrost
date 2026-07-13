@@ -746,7 +746,9 @@ async def sdk_integrations_get(
         if mapping:
             # Org-specific mapping found
             is_external = await _is_external_user_db(current_user, db)
-            config_kwargs: dict[str, Any] = {"include_default_secrets": not is_external}
+            config_kwargs: dict[str, Any] = {
+                "include_default_secrets": current_user.is_superuser and not is_external
+            }
             if is_external:
                 config_kwargs["external"] = True
             config = await repo.get_config_for_mapping(

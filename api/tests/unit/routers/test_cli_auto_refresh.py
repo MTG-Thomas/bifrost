@@ -500,8 +500,22 @@ class TestSDKIntegrationsGetConfig:
     """Tests for integration config resolution through the SDK endpoint."""
 
     @pytest.mark.asyncio
-    async def test_org_mapping_includes_default_secrets_for_execution_reads(self):
-        """Mapped SDK reads must include default secrets needed by workflow clients."""
+    @pytest.mark.parametrize(
+        ("is_superuser", "is_external", "expected_config_kwargs"),
+        [
+            (False, False, {"include_default_secrets": False}),
+            (True, False, {"include_default_secrets": True}),
+            (
+                True,
+                True,
+                {"include_default_secrets": False, "external": True},
+            ),
+        ],
+    )
+    async def test_org_mapping_default_secret_policy_follows_caller_privilege(
+        self, is_superuser, is_external, expected_config_kwargs
+    ):
+        """Mapped reads expose global default secrets only to internal superusers."""
         from src.models.contracts.cli import SDKIntegrationsGetRequest
         from src.routers import cli
 
@@ -527,12 +541,13 @@ class TestSDKIntegrationsGetConfig:
             return_value={
                 "base_url": "https://example.test",
                 "api_integration_code": "decrypted-code",
-                "secret": "decrypted-secret",
             }
         )
 
         user = MagicMock()
-        user.email = "engine@example.test"
+        user.email = "engine@example.test" if is_superuser else "user@example.test"
+        user.is_superuser = is_superuser
+        user.is_external = is_external
 
         with (
             patch.object(cli, "_resolve_sdk_org_id", AsyncMock(return_value=org_id)),
@@ -545,8 +560,6 @@ class TestSDKIntegrationsGetConfig:
             )
 
         repo.get_config_for_mapping.assert_awaited_once()
-        assert repo.get_config_for_mapping.await_args.kwargs == {
-            "include_default_secrets": True
-        }
+        assert repo.get_config_for_mapping.await_args.kwargs == expected_config_kwargs
         assert response is not None
-        assert response.config["secret"] == "decrypted-secret"
+        assert response.config["api_integration_code"] == "decrypted-code"
