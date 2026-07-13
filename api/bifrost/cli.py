@@ -57,6 +57,8 @@ from bifrost.platform_names import PLATFORM_EXPORT_NAMES as _PLATFORM_EXPORT_NAM
 
 logger = logging.getLogger(__name__)
 
+_URL_VALUE_REQUIRED_ERROR = "Error: --url requires a value"
+
 # Canonical gitignore-style skip patterns applied even without a .gitignore file
 # (build output, caches, editor turds, .env secrets). Shared with server-side
 # Solution capture/export so both surfaces skip the same files. The matcher is
@@ -1063,7 +1065,7 @@ def handle_update(args: list[str]) -> int:
         arg = args[i]
         if arg in ("--url", "-u"):
             if i + 1 >= len(args):
-                print("Error: --url requires a value", file=sys.stderr)
+                print(_URL_VALUE_REQUIRED_ERROR, file=sys.stderr)
                 return 1
             api_url = args[i + 1]
             i += 2
@@ -1155,7 +1157,7 @@ def handle_login(args: list[str]) -> int:
 
         if arg in ("--url", "-u"):
             if i + 1 >= len(args):
-                print("Error: --url requires a value", file=sys.stderr)
+                print(_URL_VALUE_REQUIRED_ERROR, file=sys.stderr)
                 return 1
             api_url = args[i + 1]
             i += 2
@@ -1302,7 +1304,7 @@ def handle_logout(args: list[str]) -> int:
         arg = args[i]
         if arg in ("--url", "-u"):
             if i + 1 >= len(args):
-                print("Error: --url requires a value", file=sys.stderr)
+                print(_URL_VALUE_REQUIRED_ERROR, file=sys.stderr)
                 return 1
             api_url = args[i + 1]
             i += 2
