@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from src.core.cache.redis_client import get_shared_redis
+from src.core.log_safety import log_safe
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,7 +68,9 @@ async def get_user_roles(
         r = await get_shared_redis()
         raw = await r.get(key)
     except Exception as e:
-        logger.warning(f"Role cache read failed, falling back to DB: {e}")
+        logger.warning(
+            f"Role cache read failed, falling back to DB: {log_safe(e)}"
+        )
         raw = None
 
     if raw is not None:
@@ -83,9 +86,14 @@ async def get_user_roles(
                 role_names = list(payload["role_names"])
                 return role_ids, role_names
             # Wrong shape / stale schema: treat as miss, fall through to DB.
-            logger.debug(f"Role cache entry for {user_id} has unexpected shape; refetching")
+            logger.debug(
+                f"Role cache entry for {log_safe(user_id)} has unexpected shape; refetching"
+            )
         except (ValueError, TypeError) as e:
-            logger.warning(f"Role cache entry for {user_id} unparseable; refetching: {e}")
+            logger.warning(
+                f"Role cache entry for {log_safe(user_id)} unparseable; "
+                f"refetching: {log_safe(e)}"
+            )
 
     # Miss -> DB
     from sqlalchemy import select
@@ -111,7 +119,9 @@ async def get_user_roles(
         r = await get_shared_redis()
         await r.set(key, json.dumps(payload), ex=_ROLE_CACHE_TTL)
     except Exception as e:
-        logger.warning(f"Role cache populate failed for user {user_id}: {e}")
+        logger.warning(
+            f"Role cache populate failed for user {log_safe(user_id)}: {log_safe(e)}"
+        )
 
     return role_ids, role_names
 
@@ -125,9 +135,11 @@ async def invalidate_user(user_id: UUID) -> None:
     try:
         r = await get_shared_redis()
         await r.delete(_key(user_id))
-        logger.debug(f"Invalidated role cache for user {user_id}")
+        logger.debug(f"Invalidated role cache for user {log_safe(user_id)}")
     except Exception as e:
-        logger.warning(f"Failed to invalidate role cache for user {user_id}: {e}")
+        logger.warning(
+            f"Failed to invalidate role cache for user {log_safe(user_id)}: {log_safe(e)}"
+        )
 
 
 async def invalidate_role(role_id: UUID) -> None:
@@ -153,8 +165,12 @@ async def invalidate_role(role_id: UUID) -> None:
             except (ValueError, TypeError) as e:
                 # Unparseable entry — drop it so we don't keep hitting the same
                 # bad value on every invalidation sweep.
-                logger.debug(f"Dropping unparseable role cache entry {key}: {e}")
+                logger.debug(
+                    f"Dropping unparseable role cache entry {log_safe(key)}: {log_safe(e)}"
+                )
                 await r.delete(key)
-        logger.debug(f"Invalidated role cache for role {role_id}")
+        logger.debug(f"Invalidated role cache for role {log_safe(role_id)}")
     except Exception as e:
-        logger.warning(f"Failed to invalidate role cache for role {role_id}: {e}")
+        logger.warning(
+            f"Failed to invalidate role cache for role {log_safe(role_id)}: {log_safe(e)}"
+        )
