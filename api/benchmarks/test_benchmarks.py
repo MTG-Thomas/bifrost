@@ -90,7 +90,7 @@ def test_bench_execution_pending_key(benchmark):
 
 
 def test_bench_rate_limit_key(benchmark):
-    benchmark(rate_limit_key, "/api/v1/login", "192.168.1.1")
+    benchmark(rate_limit_key, "/api/v1/login", "client-identifier")
 
 
 def test_bench_refresh_token_jti_key(benchmark):
@@ -171,10 +171,10 @@ def test_bench_redact_secrets_flat_string(benchmark):
 def test_bench_redact_secrets_nested_dict(benchmark):
     obj = {
         "config": {
-            "api_key": "another-api-key-12345",
+            "primary": "another-api-key-12345",
             "host": "example.com",
             "nested": {
-                "token": "super-secret-value",
+                "secondary": "super-secret-value",
                 "port": 443,
             },
         },
