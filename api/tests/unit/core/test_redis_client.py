@@ -4,11 +4,13 @@ Unit tests for Redis client for sync execution results.
 Tests the BLPOP/RPUSH pattern for synchronous workflow execution.
 """
 
-import pytest
+import importlib
 import json
 from decimal import Decimal
 from typing import cast
 from unittest.mock import AsyncMock
+
+import pytest
 
 
 class TestRedisClient:
@@ -691,7 +693,7 @@ class TestRedisClientSingleton:
         from src.core.redis_client import get_redis_client
 
         # Reset singleton
-        import src.core.redis_client as module
+        module = importlib.import_module("src.core.redis_client")
         module._redis_client = None
 
         client1 = get_redis_client()
@@ -702,7 +704,7 @@ class TestRedisClientSingleton:
     async def test_close_redis_client(self):
         """Test closing singleton Redis client."""
         from src.core.redis_client import close_redis_client, get_redis_client
-        import src.core.redis_client as module
+        module = importlib.import_module("src.core.redis_client")
 
         # Reset singleton
         module._redis_client = None

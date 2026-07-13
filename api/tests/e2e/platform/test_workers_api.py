@@ -9,6 +9,7 @@ Tests the API behavior for:
 - Stuck execution history
 """
 
+import importlib
 import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -36,7 +37,7 @@ def reset_redis_connections():
     that first touched them, so a client cached by a prior test's loop
     will raise ``Event loop is closed`` when reused here.
     """
-    import src.routers.platform.workers as workers_module
+    workers_module = importlib.import_module("src.routers.platform.workers")
     import src.services.execution.queue_tracker as queue_tracker_module
 
     workers_module._redis = None

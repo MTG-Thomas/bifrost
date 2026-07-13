@@ -390,9 +390,7 @@ async def native_login_flow(api_url: str, auto_open: bool = True) -> bool:
     """Native browser OAuth login with localhost callback."""
     api_url = api_url.rstrip("/")
 
-    from bifrost.credentials import warn_if_keyring_fallback
-
-    warn_if_keyring_fallback()
+    credentials.warn_if_keyring_fallback()
 
     state = secrets.token_urlsafe(32)
     code_verifier = secrets.token_urlsafe(64)
@@ -520,8 +518,7 @@ async def device_login_flow(api_url: str | None = None, auto_open: bool = True) 
     api_url = api_url.rstrip("/")
 
     # Surface keyring fallback here — login is the user's chance to fix it.
-    from bifrost.credentials import warn_if_keyring_fallback
-    warn_if_keyring_fallback()
+    credentials.warn_if_keyring_fallback()
 
     try:
         async with httpx.AsyncClient(base_url=api_url, timeout=30.0) as client:

@@ -4,6 +4,7 @@ Unit tests for Notification Service.
 Tests the Redis-based notification management and WebSocket delivery.
 """
 
+import importlib
 import json
 import pytest
 from datetime import datetime, timezone
@@ -791,7 +792,7 @@ class TestNotificationServiceSingleton:
 
     def test_get_notification_service_returns_singleton(self):
         """Test that get_notification_service returns same instance."""
-        import src.services.notification_service as module
+        module = importlib.import_module("src.services.notification_service")
 
         # Reset singleton
         module._notification_service = None
@@ -808,7 +809,7 @@ class TestNotificationServiceSingleton:
 
     async def test_close_notification_service(self):
         """Test closing singleton notification service."""
-        import src.services.notification_service as module
+        module = importlib.import_module("src.services.notification_service")
 
         # Reset singleton
         module._notification_service = None
