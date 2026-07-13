@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 
 import pytest
@@ -160,6 +161,45 @@ def test_extract_models_and_methods_handles_inline_responses_and_duplicate_names
     assert by_name["delete_users"].return_type == "Any"
     assert by_name["get_orders"].return_type == "Dict[str, Any]"
     assert by_name["patch_orders"].params == "user_id: str, data: Dict[str, Any] = None, **kwargs"
+
+
+def test_generate_sdk_treats_adversarial_paths_as_data() -> None:
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "Adversarial Paths"},
+        "paths": {
+            '/items/{item-id}"\nraise RuntimeError("injected")\n#': {
+                "get": {"responses": {"200": {}}}
+            },
+            "/owners/{class}": {"get": {"responses": {"200": {}}}},
+        },
+    }
+
+    code, _ = sdk_generator.generate_sdk(spec, "adversarial", "bearer")
+
+    ast.parse(code)
+    assert "def get_items(self, item_id: str, **kwargs)" in code
+    assert "def get_owners(self, class_: str, **kwargs)" in code
+    assert '\\nraise RuntimeError("injected")\\n#' in code
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/items/{unterminated",
+        "/items/unterminated}",
+        "/items/{{nested}}",
+        "/items/{item-id}/{item_id}",
+    ],
+)
+def test_extract_models_rejects_ambiguous_path_templates(path: str) -> None:
+    spec = {
+        "paths": {path: {"get": {"responses": {"200": {}}}}},
+        "components": {},
+    }
+
+    with pytest.raises(ValueError, match="OpenAPI path|Malformed OpenAPI"):
+        sdk_generator.extract_models_and_methods(spec, "UnsafeClient")
 
 
 def test_load_spec_helpers_parse_json_yaml_and_remote_content(monkeypatch: pytest.MonkeyPatch) -> None:

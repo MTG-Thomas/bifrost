@@ -74,6 +74,16 @@ class MethodInfo:
     return_type: str
     summary: str
 
+    @property
+    def url_template_literal(self) -> str:
+        """Return the URL template as a safe Python string literal."""
+        return repr(self.url_template)
+
+    @property
+    def summary_literal(self) -> str:
+        """Return the operation summary as a safe Python docstring literal."""
+        return repr(self.summary)
+
 
 @dataclass(frozen=True)
 class ValidatedSpecUrl:
@@ -270,6 +280,42 @@ def sanitize_field_name(name: str) -> str:
         py_name = f"{py_name}_"
 
     return py_name
+
+
+_PATH_PARAMETER_RE = re.compile(r"\{([^{}]{1,128})\}")
+
+
+def _prepare_path_template(path: str) -> tuple[str, list[tuple[str, str]]]:
+    """Normalize OpenAPI path parameters without treating the path as source."""
+    parameters: list[tuple[str, str]] = []
+    pieces: list[str] = []
+    cursor = 0
+    used_names: set[str] = set()
+
+    for match in _PATH_PARAMETER_RE.finditer(path):
+        literal = path[cursor : match.start()]
+        if "{" in literal or "}" in literal:
+            raise ValueError(f"Malformed OpenAPI path template: {path!r}")
+
+        original_name = match.group(1)
+        python_name = sanitize_field_name(original_name)
+        if not python_name or not python_name.isidentifier():
+            raise ValueError(f"Invalid OpenAPI path parameter: {original_name!r}")
+        if python_name in used_names:
+            raise ValueError(
+                f"OpenAPI path parameters normalize to duplicate name {python_name!r}"
+            )
+
+        used_names.add(python_name)
+        parameters.append((original_name, python_name))
+        pieces.extend((literal, "{", python_name, "}"))
+        cursor = match.end()
+
+    remainder = path[cursor:]
+    if "{" in remainder or "}" in remainder:
+        raise ValueError(f"Malformed OpenAPI path template: {path!r}")
+    pieces.append(remainder)
+    return "".join(pieces), parameters
 
 
 # =============================================================================
@@ -547,10 +593,10 @@ def extract_models_and_methods(
             method_names.add(method_name)
 
             # Build parameters
-            path_params = re.findall(r"\{([^}]{1,256})\}", path)
+            url_template, path_params = _prepare_path_template(path)
             params = []
-            for path_param in path_params:
-                params.append(f"{to_snake_case(path_param)}: str")
+            for _, python_name in path_params:
+                params.append(f"{python_name}: str")
 
             if http_method in ["post", "put", "patch"]:
                 params.append("data: Dict[str, Any] = None")
@@ -582,12 +628,6 @@ def extract_models_and_methods(
                 return_type = python_type_from_schema(
                     schema, components, inline_schemas, context_name
                 )
-
-            # Build URL template with snake_case params
-            url_template = path
-            for path_param in path_params:
-                snake_param = to_snake_case(path_param)
-                url_template = url_template.replace(f"{{{path_param}}}", f"{{{snake_param}}}")
 
             summary = operation.get("summary", f"{http_method.upper()} {path}")
 
