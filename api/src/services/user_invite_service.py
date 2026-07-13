@@ -92,6 +92,9 @@ class UserInviteService:
             await self.session.execute(select(User).where(User.id == invite.user_id))
         ).scalar_one()
 
+        if not user.is_active:
+            raise InviteConsumeError("User is inactive")
+
         if user.is_registered or await self._has_oauth_account(user.id):
             raise InviteConsumeError("User is already registered")
 

@@ -121,7 +121,7 @@ async def test_get_valid_invite_user_rejects_invalid_invite_states(session) -> N
 @pytest.mark.asyncio
 async def test_get_valid_invite_user_rejects_already_registered_user(session) -> None:
     invite = _invite()
-    user = SimpleNamespace(id=invite.user_id, is_registered=True)
+    user = SimpleNamespace(id=invite.user_id, is_active=True, is_registered=True)
     session.execute.side_effect = [_ScalarResult(invite), _ScalarResult(user)]
     service = UserInviteService(session)
 
@@ -130,9 +130,20 @@ async def test_get_valid_invite_user_rejects_already_registered_user(session) ->
 
 
 @pytest.mark.asyncio
+async def test_get_valid_invite_user_rejects_inactive_user(session) -> None:
+    invite = _invite()
+    user = SimpleNamespace(id=invite.user_id, is_active=False, is_registered=False)
+    session.execute.side_effect = [_ScalarResult(invite), _ScalarResult(user)]
+    service = UserInviteService(session)
+
+    with pytest.raises(InviteConsumeError, match="inactive"):
+        await service.get_valid_invite_user(token="raw")
+
+
+@pytest.mark.asyncio
 async def test_get_valid_invite_user_returns_invite_and_unregistered_user(session) -> None:
     invite = _invite()
-    user = SimpleNamespace(id=invite.user_id, is_registered=False)
+    user = SimpleNamespace(id=invite.user_id, is_active=True, is_registered=False)
     session.execute.side_effect = [
         _ScalarResult(invite),
         _ScalarResult(user),
