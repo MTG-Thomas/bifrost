@@ -548,7 +548,7 @@ def test_start_spawns_npm_via_resolved_path(tmp_path: Path, monkeypatch):
         assert argv[0] == npm_path, f"npm spawn used {argv[0]!r}, not the which() result"
 
 
-def test_start_accepts_bind_host_and_public_url(tmp_path: Path, monkeypatch):
+def test_start_accepts_loopback_bind_host_and_public_url(tmp_path: Path, monkeypatch):
     import shutil
     import subprocess
 
@@ -638,7 +638,7 @@ def test_start_accepts_bind_host_and_public_url(tmp_path: Path, monkeypatch):
         [
             "start",
             "--host",
-            "0.0.0.0",
+            "127.0.0.1",
             "--public-url",
             "http://devbox.test:3000/",
             "--port",
@@ -648,11 +648,41 @@ def test_start_accepts_bind_host_and_public_url(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert served == {
-        "bind_host": "0.0.0.0",
+        "bind_host": "127.0.0.1",
         "port": 3000,
         "proxy_origin": "http://devbox.test:3000",
     }
     assert popen_envs[0]["BIFROST_API_URL"] == "http://devbox.test:3000"
+
+
+def test_start_rejects_non_loopback_bind_host_before_auth(tmp_path: Path, monkeypatch):
+    import bifrost.client as client_mod
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "bifrost.solution.yaml").write_text("slug: s\nname: S\nscope: org\n")
+
+    def _fail_auth(**kwargs):
+        raise AssertionError("non-loopback host validation must run before auth")
+
+    monkeypatch.setattr(
+        client_mod.BifrostClient, "get_instance", staticmethod(_fail_auth)
+    )
+
+    result = CliRunner().invoke(
+        solution_group,
+        [
+            "start",
+            "--host",
+            "0.0.0.0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "Refusing to bind the Solution dev server to a non-loopback address"
+        in result.output
+    )
+    assert "CLI credentials" in result.output
 
 
 def test_handle_solution_renders_clickexception_not_traceback(tmp_path, monkeypatch, capsys):

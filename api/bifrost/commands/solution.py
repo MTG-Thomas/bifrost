@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import ipaddress
 import io
 import json
 import os
@@ -2207,6 +2208,30 @@ def _vite_child_env(
     return env
 
 
+def _ensure_loopback_bind_host(bind_host: str) -> None:
+    """Keep the token-injecting Solution dev proxy on loopback interfaces.
+
+    The dev proxy intentionally injects the developer's CLI bearer token into
+    proxied ``/api/*`` requests and exposes that token to Vite during local
+    serving. Binding it to a non-loopback interface would let any reachable
+    network client exercise the developer's platform permissions.
+    """
+    normalized = bind_host.strip().strip("[]").lower()
+    if normalized == "localhost":
+        return
+    try:
+        if ipaddress.ip_address(normalized).is_loopback:
+            return
+    except ValueError:
+        pass
+    raise click.ClickException(
+        "Refusing to bind the Solution dev server to a non-loopback address "
+        f"({bind_host!r}) because it proxies with your CLI credentials. Use "
+        "127.0.0.1, ::1, or localhost and put any remote tunnel/reverse proxy "
+        "access control in front of that loopback listener."
+    )
+
+
 @solution_group.command(name="start", help="Run the app's dev server + local workflows (one origin).")
 @click.argument("app_slug", required=False)
 @click.option("--solution", "solution_ref", default=None, help="Install id or unique slug.")
@@ -2243,6 +2268,7 @@ def start_cmd(
             "parent directory). Run `bifrost solution init` first."
         )
     descriptor = load_descriptor(workspace)
+    _ensure_loopback_bind_host(bind_host)
 
     client = BifrostClient.get_instance(require_auth=True)
     binding = asyncio.run(
