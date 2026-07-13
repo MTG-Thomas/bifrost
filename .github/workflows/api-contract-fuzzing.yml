@@ -29,8 +29,9 @@ jobs:
       - name: Install Schemathesis
         run: |
           python -m venv .schemathesis-venv
-          ./.schemathesis-venv/bin/python -m pip install --upgrade pip
-          ./.schemathesis-venv/bin/python -m pip install "schemathesis==4.22.3"
+          ./.schemathesis-venv/bin/python -m pip install \
+            --require-hashes \
+            -r .github/requirements/api-contract-fuzzing.lock
 
       - name: Run OpenAPI contract fuzzing
         run: |
