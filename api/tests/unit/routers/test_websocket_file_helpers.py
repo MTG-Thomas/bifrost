@@ -385,7 +385,7 @@ class TestHandleTableMessage:
             assert name_or_id == "docs"
             return table_id
 
-        async def missing_policies(resolved_id: str) -> None:
+        async def missing_policies(resolved_id: str, user: UserPrincipal) -> None:
             assert resolved_id == table_id
             return None
 
@@ -412,7 +412,7 @@ class TestHandleTableMessage:
         async def resolve_table(name_or_id: str, user: UserPrincipal) -> str:
             return table_id
 
-        async def load_policies(resolved_id: str) -> TablePolicies:
+        async def load_policies(resolved_id: str, user: UserPrincipal) -> TablePolicies:
             return TablePolicies()
 
         async def populate_roles(user: UserPrincipal) -> None:
@@ -443,7 +443,7 @@ class TestHandleTableMessage:
         async def resolve_table(name_or_id: str, user: UserPrincipal) -> str:
             return table_id
 
-        async def load_policies(resolved_id: str) -> TablePolicies:
+        async def load_policies(resolved_id: str, user: UserPrincipal) -> TablePolicies:
             return TablePolicies()
 
         async def populate_roles(user: UserPrincipal) -> None:
@@ -510,7 +510,7 @@ class TestHandleTableMessage:
     async def test_re_evaluate_revokes_when_policies_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def no_policies(table_id: str):
+        async def no_policies(table_id: str, user: UserPrincipal):
             assert table_id == "table-1"
             return None
 
@@ -534,7 +534,7 @@ class TestHandleTableMessage:
     async def test_document_change_emits_delete_decision(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def policies(table_id: str):
+        async def policies(table_id: str, user: UserPrincipal):
             assert table_id == "table-1"
             return object()
 
@@ -569,7 +569,7 @@ class TestHandleTableMessage:
     ) -> None:
         row = {"id": "row-1", "status": "open"}
 
-        async def policies(table_id: str):
+        async def policies(table_id: str, user: UserPrincipal):
             assert table_id == "table-1"
             return object()
 
@@ -598,6 +598,55 @@ class TestHandleTableMessage:
                 "row": row,
             }
         ]
+
+    async def test_document_change_does_not_reuse_stale_custom_claims(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        user = _user(org_id=uuid.uuid4())
+        user.claims = {"allowed_campus_ids": ["north"]}
+        policies = TablePolicies.model_validate({
+            "policies": [
+                {
+                    "name": "campus_read",
+                    "actions": ["read"],
+                    "when": {
+                        "in": [
+                            {"row": "campus_id"},
+                            {"claims": "allowed_campus_ids"},
+                        ]
+                    },
+                }
+            ]
+        })
+
+        async def load_policies(
+            table_id: str,
+            policy_user: UserPrincipal,
+        ) -> TablePolicies:
+            assert table_id == "table-1"
+            assert policy_user is not user
+            assert policy_user.claims == {}
+            return policies
+
+        monkeypatch.setattr(ws_mod, "_load_policies_for_table", load_policies)
+        websocket = FakeWebSocket()
+        websocket.state.table_subscriptions = {
+            "table-1": {"filter": None, "channel_name": "table:table-1"}
+        }
+
+        await ws_mod._handle_table_message(
+            websocket,
+            user,
+            "table:table-1",
+            {
+                "type": "document_change",
+                "old_row": None,
+                "new_row": {"id": "row-1", "campus_id": "north"},
+            },
+        )
+
+        assert websocket.sent == []
+        assert user.claims == {"allowed_campus_ids": ["north"]}
 
     async def test_revokes_subscription_when_policy_removed(
         self, monkeypatch: pytest.MonkeyPatch

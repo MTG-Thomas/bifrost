@@ -145,13 +145,14 @@ def test_file_channel_scope_and_path_helpers_cover_access_boundaries():
 async def test_load_policies_for_table_handles_cache_validation_and_ref_errors():
     table_id = str(uuid4())
     row = ({"policies": [{"name": "read", "actions": ["read"]}]}, uuid4(), None)
+    user = _user(org_id=row[1])
     ws_mod._table_policy_cache.clear()
 
     with (
         patch.object(ws_mod, "get_db_context", _db_context(_Db(_OneResult(row)))),
         patch.object(ws_mod, "resolve_policy_refs", AsyncMock()) as resolve_refs,
     ):
-        policies = await ws_mod._load_policies_for_table(table_id)
+        policies = await ws_mod._load_policies_for_table(table_id, user)
 
     assert policies is not None
     assert len(policies.policies) == 1
@@ -171,17 +172,61 @@ async def test_load_policies_for_table_handles_cache_validation_and_ref_errors()
             AsyncMock(side_effect=ws_mod.PolicyRuleNotFound("missing")),
         ),
     ):
-        denied = await ws_mod._load_policies_for_table(table_id)
+        denied = await ws_mod._load_policies_for_table(table_id, user)
 
     assert denied is not None
     assert denied.policies == []
 
     invalid_row = ({"policies": [{"name": "bad", "actions": []}]}, None, None)
     with patch.object(ws_mod, "get_db_context", _db_context(_Db(_OneResult(invalid_row)))):
-        invalid = await ws_mod._load_policies_for_table("table-name")
+        invalid = await ws_mod._load_policies_for_table("table-name", user)
 
     assert invalid is not None
     assert invalid.policies == []
+
+
+@pytest.mark.asyncio
+async def test_load_policies_for_table_preresolves_custom_claims_in_table_scope():
+    table_id = str(uuid4())
+    org_id = uuid4()
+    solution_id = uuid4()
+    user = _user(org_id=org_id)
+    row = (
+        {
+            "policies": [
+                {
+                    "name": "campus_read",
+                    "actions": ["read"],
+                    "when": {
+                        "in": [
+                            {"row": "campus_id"},
+                            {"claims": "allowed_campus_ids"},
+                        ]
+                    },
+                }
+            ]
+        },
+        org_id,
+        solution_id,
+    )
+    ws_mod._table_policy_cache.clear()
+
+    async def resolve_claims(principal, policies, db, scoped_org_id, scoped_solution_id):
+        assert principal is user
+        assert policies.policies[0].name == "campus_read"
+        assert scoped_org_id == org_id
+        assert scoped_solution_id == solution_id
+        principal.claims = {"allowed_campus_ids": ["north"]}
+
+    with (
+        patch.object(ws_mod, "get_db_context", _db_context(_Db(_OneResult(row)))),
+        patch.object(ws_mod, "resolve_policy_refs", AsyncMock()),
+        patch.object(ws_mod, "preresolve_for_policies", resolve_claims),
+    ):
+        policies = await ws_mod._load_policies_for_table(table_id, user)
+
+    assert policies is not None
+    assert user.claims == {"allowed_campus_ids": ["north"]}
 
 
 @pytest.mark.asyncio
