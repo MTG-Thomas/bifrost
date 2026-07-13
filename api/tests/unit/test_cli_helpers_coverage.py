@@ -613,7 +613,7 @@ def test_push_sync_and_pull_dispatch_to_sync_files(monkeypatch, tmp_path):
         def __enter__(self):
             return self
 
-        def __exit__(self, _exc_type, _exc_value, _traceback):
+        def __exit__(self, _exc_type=None, _exc_value=None, _traceback=None):
             locks.append(("exit", None))
 
     class ClientFactory:
@@ -677,7 +677,7 @@ def test_watch_dispatches_and_stops_server_on_interrupt(monkeypatch, tmp_path, c
         def __enter__(self):
             return self
 
-        def __exit__(self, _exc_type, _exc_value, _traceback):
+        def __exit__(self, _exc_type=None, _exc_value=None, _traceback=None):
             calls.append(("unlock",))
 
     class Client:
