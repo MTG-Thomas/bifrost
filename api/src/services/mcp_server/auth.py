@@ -452,6 +452,8 @@ class BifrostAuthProvider:
                     "is_provider_org": await resolve_provider_org_claim(db, user),
                     "org_id": str(user.organization_id) if user.organization_id else None,
                     "type": "access",
+                    "mcp": True,
+                    "scope": "mcp:access",
                 }
                 access_token = create_access_token(data=token_data)
                 refresh_token, _jti = create_refresh_token(data={"sub": str(user.id), "mcp": True})
@@ -507,6 +509,8 @@ class BifrostAuthProvider:
                     "is_provider_org": await resolve_provider_org_claim(db, user),
                     "org_id": str(user.organization_id) if user.organization_id else None,
                     "type": "access",
+                    "mcp": True,
+                    "scope": "mcp:access",
                 }
                 access_token = create_access_token(data=token_data)
                 new_refresh_token, _jti = create_refresh_token(data={"sub": str(user.id), "mcp": True})

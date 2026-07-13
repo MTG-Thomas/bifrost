@@ -121,6 +121,8 @@ async def test_auth_code_grant_stamps_is_external():
 
     assert "token_data" in captured, "create_access_token was never called"
     assert captured["token_data"].get("is_external") is True
+    assert captured["token_data"].get("mcp") is True
+    assert captured["token_data"].get("scope") == "mcp:access"
 
 
 @pytest.mark.asyncio
@@ -148,3 +150,5 @@ async def test_refresh_grant_stamps_is_external():
 
     assert "token_data" in captured, "create_access_token was never called"
     assert captured["token_data"].get("is_external") is True
+    assert captured["token_data"].get("mcp") is True
+    assert captured["token_data"].get("scope") == "mcp:access"
