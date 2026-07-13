@@ -82,9 +82,9 @@ RUN cd /app/src/services/app_bundler && npm ci --omit=dev
 # SDK source of truth lives in client/src/lib/app-sdk; it is copied here so
 # /api/sdk/download can bundle + serve the installable `bifrost` package without
 # the client/ tree at runtime. A unit test enforces this file list stays in sync.
-COPY api/src/services/sdk_package/package.json /app/src/services/sdk_package/
+COPY api/src/services/sdk_package/package*.json /app/src/services/sdk_package/
 COPY api/src/services/sdk_package/build_sdk.js /app/src/services/sdk_package/
-RUN cd /app/src/services/sdk_package && npm install --production
+RUN cd /app/src/services/sdk_package && npm ci --omit=dev
 COPY client/src/lib/app-sdk/provider.tsx \
      client/src/lib/app-sdk/tables.ts \
      client/src/lib/app-sdk/transport.ts \
@@ -101,9 +101,9 @@ COPY client/src/lib/app-sdk/index.v2.ts /app/src/services/sdk_package/sdk_src/in
 # SDK source of truth lives in client/src/lib/app-sdk; it is copied here so
 # /api/sdk/download can bundle + serve the installable `bifrost` package without
 # the client/ tree at runtime. A unit test enforces this file list stays in sync.
-COPY api/src/services/sdk_package/package.json /app/src/services/sdk_package/
+COPY api/src/services/sdk_package/package*.json /app/src/services/sdk_package/
 COPY api/src/services/sdk_package/build_sdk.js /app/src/services/sdk_package/
-RUN cd /app/src/services/sdk_package && npm install --production
+RUN cd /app/src/services/sdk_package && npm ci --omit=dev
 COPY client/src/lib/app-sdk/provider.tsx \
      client/src/lib/app-sdk/tables.ts \
      client/src/lib/app-sdk/transport.ts \
