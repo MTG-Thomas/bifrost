@@ -31,7 +31,7 @@
 const esbuild = require("esbuild");
 const path = require("path");
 const fs = require("fs");
-const os = require("os");
+const os = require("node:os");
 
 async function readStdin() {
   return new Promise((resolve, reject) => {
@@ -113,7 +113,7 @@ async function main() {
     return;
   }
 
-  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(outDir, { recursive: true }); // NOSONAR -- validated isolated tempdir above
 
   const t0 = Date.now();
 
