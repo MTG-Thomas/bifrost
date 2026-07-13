@@ -73,7 +73,7 @@ dependencies = [
     # =========================================================================
     "PyYAML",
     "croniter",  # CRON expression parsing
-    "defusedxml>=0.7.1",  # Safe XML/SVG parsing — strips scripts/event-handlers from uploads
+    "defusedxml>=0.7.1",  # Safe XML parsing for the SVG allowlist sanitizer
 
     # =========================================================================
     # Code Transformation

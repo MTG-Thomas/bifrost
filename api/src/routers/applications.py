@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from src.core.auth import Context, CurrentUser
+from src.core.auth import Context, CurrentSuperuser, CurrentUser
 from src.core.log_safety import log_safe
 from src.core.org_filter import resolve_org_filter
 from src.core.pubsub import publish_app_draft_update, publish_app_published
@@ -979,11 +979,13 @@ async def rollback_application(
 async def upload_application_logo(
     app_id: UUID,
     ctx: Context,
+    user: CurrentSuperuser,
     file: UploadFile = File(..., description="Logo image (PNG/JPEG/SVG, ≤5MB)"),
 ) -> dict:
     """Upload a square logo for an application.
 
-    Requires the same permissions as updating the application.
+    Platform-admin authorization is required because SVG logos are served from
+    the application origin.
     """
     await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     application = await get_application_by_id_or_404(ctx, app_id)

@@ -44,7 +44,6 @@ class BaseEmbeddingClient(ABC):
         Returns:
             List of embedding vectors (each is a list of floats)
         """
-        ...
 
     @abstractmethod
     async def embed_single(self, text: str) -> list[float]:
@@ -57,7 +56,6 @@ class BaseEmbeddingClient(ABC):
         Returns:
             Embedding vector as a list of floats
         """
-        ...
 
     @property
     def model_name(self) -> str:

@@ -422,6 +422,7 @@ class TestWebSocketEdgeCases:
             try:
                 await ws.send(json.dumps({"type": "ping"}))
                 msg = await asyncio.wait_for(ws.recv(), timeout=2)
+                assert json.loads(msg)["type"] == "pong"
                 # If we get here, server ignored the invalid JSON
                 logger.info("Server gracefully ignored invalid JSON")
             except ConnectionClosedError:

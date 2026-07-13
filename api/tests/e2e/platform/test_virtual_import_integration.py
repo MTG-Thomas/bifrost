@@ -6,6 +6,7 @@ Tests the complete flow of:
 2. Virtual import hook integration
 """
 
+import importlib
 import sys
 
 import pytest
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 @pytest.fixture(autouse=True)
 def reset_redis_client():
     """Reset the Redis client singleton between tests to avoid event loop issues."""
-    import src.core.redis_client as redis_module
+    redis_module = importlib.import_module("src.core.redis_client")
 
     # Reset before test
     redis_module._redis_client = None
@@ -43,7 +44,7 @@ class TestVirtualImportIntegration:
         for k in to_remove:
             del sys.modules[k]
         # Reset global finder
-        import src.services.execution.virtual_import as module
+        module = importlib.import_module("src.services.execution.virtual_import")
 
         module._finder = None
 
@@ -135,7 +136,7 @@ class TestWorkerVirtualImportHook:
             if not finder.__class__.__name__ == "VirtualModuleFinder"
         ]
         # Reset global finder
-        import src.services.execution.virtual_import as module
+        module = importlib.import_module("src.services.execution.virtual_import")
 
         module._finder = None
 
@@ -189,7 +190,7 @@ class TestEndToEndModuleLoading:
         for k in to_remove:
             del sys.modules[k]
         # Reset global finder
-        import src.services.execution.virtual_import as module
+        module = importlib.import_module("src.services.execution.virtual_import")
 
         module._finder = None
 
