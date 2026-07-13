@@ -61,7 +61,7 @@ class TestLargeFileMemory:
             baseline = tracemalloc.get_traced_memory()[0]
 
             for name in ["test_mem_1.py", "test_mem_2.py", "test_mem_3.py"]:
-                result = await file_storage.write_file(
+                await file_storage.write_file(
                     path=f"modules/{name}",
                     content=content_4mb,
                     updated_by="test",
