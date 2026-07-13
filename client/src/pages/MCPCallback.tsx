@@ -9,8 +9,8 @@
  * 2. User is redirected to Bifrost login
  * 3. After login, browser navigates to /mcp/callback with internal_state
  * 4. This component fetches /mcp/callback via XHR (works with Vite proxy)
- * 5. Server returns redirect_url in JSON response (claude:// protocol URL)
- * 6. Component opens the URL (triggers Claude Desktop) and closes the tab
+ * 5. Server returns redirect_url plus a presentation-only MCP client label
+ * 6. Component opens the URL and tells the user which client to return to
  */
 
 import { useEffect, useState, useRef } from "react";
@@ -19,10 +19,15 @@ import { Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
+type McpClientInfo = {
+	label: string;
+};
+
 export function MCPCallback() {
 	const [searchParams] = useSearchParams();
 	const [error, setError] = useState<string | null>(null);
 	const [success, setSuccess] = useState(false);
+	const [mcpClient, setMcpClient] = useState<McpClientInfo | null>(null);
 	const hasHandledRef = useRef(false);
 
 	useEffect(() => {
@@ -63,13 +68,20 @@ export function MCPCallback() {
 
 				const data = await response.json();
 
+				if (
+					data.mcp_client &&
+					typeof data.mcp_client === "object" &&
+					typeof data.mcp_client.label === "string"
+				) {
+					setMcpClient({ label: data.mcp_client.label });
+				}
+
 				if (data.redirect_url) {
 					// Show success state first
 					setSuccess(true);
 
-					// Use location.replace to redirect to the protocol URL (e.g., claude://)
-					// This triggers the desktop app and doesn't trigger popup blockers
-					// The page will show the success message while the protocol handler takes over
+					// Custom-scheme callbacks (cursor://, claude://) hand off to the host app.
+					// HTTPS callbacks (claude.ai, cursor.com) still navigate so the host can finish.
 					setTimeout(() => {
 						window.location.replace(data.redirect_url);
 					}, 100);
@@ -116,7 +128,8 @@ export function MCPCallback() {
 						Authorization Complete
 					</h2>
 					<p className="text-muted-foreground">
-						You can close this tab and return to Claude Desktop.
+						You can close this tab and return to{" "}
+						{mcpClient?.label ?? "your MCP client"}.
 					</p>
 				</div>
 			</div>

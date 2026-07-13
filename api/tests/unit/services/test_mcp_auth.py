@@ -504,8 +504,13 @@ class TestTokenEndpoint:
         assert json.loads(response.body)["error_description"] == "Missing refresh_token"
 
     @pytest.mark.asyncio
-    async def test_refresh_token_rejects_invalid_payload(self, auth_provider):
-        with patch("src.core.security.decode_token", return_value=None):
+    @pytest.mark.parametrize(
+        "payload",
+        [None, {"sub": "user-1"}],
+        ids=["invalid", "non-mcp"],
+    )
+    async def test_refresh_token_rejects_invalid_payload(self, auth_provider, payload):
+        with patch("src.core.security.decode_token", return_value=payload):
             response = await auth_provider._token(self._request_with_form({
                 "grant_type": "refresh_token",
                 "refresh_token": "bad-refresh",
@@ -520,7 +525,7 @@ class TestTokenEndpoint:
         db_context.__aenter__ = AsyncMock(return_value=MagicMock())
         db_context.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("src.core.security.decode_token", return_value={"sub": "user-1"}), \
+        with patch("src.core.security.decode_token", return_value={"sub": "user-1", "mcp": True}), \
              patch("src.core.database.get_db_context", return_value=db_context), \
              patch("src.repositories.users.UserRepository") as mock_repo_cls:
             mock_repo_cls.return_value.get_by_id = AsyncMock(return_value=None)
@@ -546,7 +551,7 @@ class TestTokenEndpoint:
         db_context.__aenter__ = AsyncMock(return_value=db)
         db_context.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("src.core.security.decode_token", return_value={"sub": "user-1"}), \
+        with patch("src.core.security.decode_token", return_value={"sub": "user-1", "mcp": True}), \
              patch("src.core.database.get_db_context", return_value=db_context), \
              patch("src.repositories.users.UserRepository") as mock_repo_cls, \
              patch("src.services.mcp_server.auth.resolve_external_claim", AsyncMock(return_value=False)), \
