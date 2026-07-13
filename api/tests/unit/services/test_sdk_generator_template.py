@@ -1,5 +1,7 @@
 """Tests for SDK generator template rendering."""
 
+import ast
+
 from jinja2.sandbox import SandboxedEnvironment
 
 from src.services import sdk_generator
@@ -34,5 +36,11 @@ def test_generate_sdk_renders_python_source_without_html_escaping(monkeypatch) -
 
     assert sandbox_calls
     assert module_name == "quotes_api"
-    assert '"""Return "quoted" values"""' in code
+    tree = ast.parse(code)
+    method = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "list_items"
+    )
+    assert ast.get_docstring(method) == 'Return "quoted" values'
     assert "&quot;" not in code

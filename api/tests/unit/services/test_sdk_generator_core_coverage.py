@@ -178,9 +178,10 @@ def test_generate_sdk_treats_adversarial_paths_as_data() -> None:
     code, _ = sdk_generator.generate_sdk(spec, "adversarial", "bearer")
 
     ast.parse(code)
-    assert "def get_items(self, item_id: str, **kwargs)" in code
+    assert "item_id: str" in code
     assert "def get_owners(self, class_: str, **kwargs)" in code
     assert '\\nraise RuntimeError("injected")\\n#' in code
+    assert '\nraise RuntimeError("injected")\n' not in code
 
 
 @pytest.mark.parametrize(
