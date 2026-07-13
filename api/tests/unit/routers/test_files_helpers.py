@@ -378,12 +378,36 @@ async def test_write_file_local_binary_decodes_without_cloud_metadata(monkeypatc
             scope=str(ORG_A),
             mode="local",
         ),
-        _ctx(),
-        SimpleNamespace(user_id=USER_ID),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, is_superuser=True),
         db=SimpleNamespace(),
     )
 
     assert writes == [("folder/raw.bin", b"\x00\x01raw", "reports", "user@example.test", str(ORG_A))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("file_request", "endpoint"),
+    [
+        (files.FileReadRequest(path="server_secret.py", mode="local"), files.read_file),
+        (files.FileWriteRequest(path="server_secret.py", content="owned", mode="local"), files.write_file),
+        (files.FileDeleteRequest(path="server_secret.py", mode="local"), files.delete_file),
+        (files.FileListRequest(directory="", mode="local"), files.list_files_simple),
+        (files.FileExistsRequest(path="server_secret.py", mode="local"), files.file_exists),
+    ],
+)
+async def test_policy_gated_file_endpoints_reject_local_mode_for_regular_users(file_request, endpoint):
+    with pytest.raises(HTTPException) as exc_info:
+        await endpoint(
+            file_request,
+            _ctx(is_superuser=False),
+            SimpleNamespace(user_id=USER_ID, is_superuser=False),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Local file mode is restricted to superusers."
 
 
 @pytest.mark.asyncio
