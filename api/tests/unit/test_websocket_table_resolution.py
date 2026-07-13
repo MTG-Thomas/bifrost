@@ -138,5 +138,5 @@ class TestLoadPoliciesForTableByName:
         db.add_all([live, managed])
         await db.flush()
 
-        policies = await ws_mod._load_policies_for_table(name)
+        policies = await ws_mod._load_policies_for_table(name, _org_user(org))
         assert policies == TablePolicies()
