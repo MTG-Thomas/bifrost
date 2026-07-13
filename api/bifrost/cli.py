@@ -3966,12 +3966,12 @@ Examples:
     body = None
 
     if len(args) > 2:
-        import pathlib
         raw = args[2]
         # Support @filename for reading body from file
         if raw.startswith("@"):
             try:
-                body = json.loads(pathlib.Path(raw[1:]).read_text())
+                with open(_safe_api_body_path(raw[1:]), encoding="utf-8") as body_file:
+                    body = json.load(body_file)
             except Exception as e:
                 print(f"Error reading file: {e}", file=sys.stderr)
                 return 1
@@ -3999,6 +3999,15 @@ Examples:
         return 1
 
     return asyncio.run(_api_request(method, endpoint, body, client=client))
+
+
+def _safe_api_body_path(filename: str) -> str:
+    """Resolve an ``@file`` API body without escaping the invocation directory."""
+    base_dir = os.path.realpath(os.getcwd())
+    resolved = os.path.realpath(filename)
+    if resolved != base_dir and not resolved.startswith(base_dir + os.sep):
+        raise ValueError(f"path {filename!r} is outside the current working directory")
+    return resolved
 
 
 def _validate_api_endpoint(endpoint: str) -> str | None:

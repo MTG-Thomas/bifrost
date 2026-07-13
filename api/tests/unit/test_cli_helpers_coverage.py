@@ -339,6 +339,7 @@ def test_validate_api_endpoint_and_handle_api_input_errors(tmp_path, monkeypatch
 
     body_file = tmp_path / "body.json"
     body_file.write_text('{"ok": true}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
     class ClientFactory:
         @staticmethod
@@ -346,10 +347,38 @@ def test_validate_api_endpoint_and_handle_api_input_errors(tmp_path, monkeypatch
             raise RuntimeError("not logged in")
 
     monkeypatch.setattr(cli, "BifrostClient", ClientFactory)
-    assert cli.handle_api(["POST", "/api/workflows", f"@{body_file}"]) == 1
+    assert cli.handle_api(["POST", "/api/workflows", "@body.json"]) == 1
     assert "not logged in" in capsys.readouterr().err
     assert cli.handle_api(["POST", "/api/workflows", "@missing.json"]) == 1
     assert "Error reading file" in capsys.readouterr().err
+
+
+def test_handle_api_body_file_cannot_escape_invocation_directory(tmp_path, monkeypatch, capsys):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"secret": true}', encoding="utf-8")
+    monkeypatch.chdir(workspace)
+
+    assert cli.handle_api(["POST", "/api/workflows", "@../outside.json"]) == 1
+    assert "outside the current working directory" in capsys.readouterr().err
+
+
+def test_handle_api_body_file_rejects_canonicalized_symlink_escape(tmp_path, monkeypatch, capsys):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"secret": true}', encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    realpath = cli.os.path.realpath
+    monkeypatch.setattr(
+        cli.os.path,
+        "realpath",
+        lambda path: str(outside) if path == "body.json" else realpath(path),
+    )
+
+    assert cli.handle_api(["POST", "/api/workflows", "@body.json"]) == 1
+    assert "outside the current working directory" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
