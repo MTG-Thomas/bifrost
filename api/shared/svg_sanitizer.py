@@ -185,11 +185,11 @@ _LOCAL_PAINT = re.compile(
     re.IGNORECASE,
 )
 _SAFE_COLOR = re.compile(
-    r"^(?:none|currentColor|context-fill|context-stroke|transparent|#[0-9a-f]{3,8}|[a-z]+|(?:rgb|rgba|hsl|hsla)\([0-9.,%+\-\s]+\))$",
+    r"^(?:context-fill|context-stroke|#[0-9a-f]{3,8}|[a-z]+|(?:rgb|hsl)a?\([0-9.,%+\-\s]+\))$",
     re.IGNORECASE,
 )
 _RASTER_DATA_URL = re.compile(
-    r"^data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$",
+    r"^data:image/(?:png|jpeg|gif|webp);base64,[A-Z0-9+/]+={0,2}$",
     re.IGNORECASE,
 )
 _UNSAFE_CSS = re.compile(
