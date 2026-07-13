@@ -24,6 +24,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import subprocess
 import time
 import zipfile
@@ -1523,9 +1524,6 @@ def pull_cmd(path: str, solution_id: str | None, org: str | None, is_global: boo
     entities it materialized so the matching ``pending_captures`` rows clear.
     Safe for an agent to run (it only rewrites the generated manifest).
     """
-    import io
-    import zipfile
-
     workspace = _workspace_from_path_arg(path)
     if not is_solution_workspace(workspace):
         raise click.ClickException(
@@ -2182,7 +2180,6 @@ def _vite_child_env(
     app_id: str,
     org_id: str | None,
     proxy_origin: str,
-    access_token: str,
 ) -> dict[str, str]:
     """Environment for the `solution start` Vite child.
 
@@ -2203,7 +2200,11 @@ def _vite_child_env(
     else:
         env.pop("VITE_BIFROST_ORG_ID", None)
     env["BIFROST_API_URL"] = proxy_origin
-    env["BIFROST_ACCESS_TOKEN"] = access_token
+    # The authenticated proxy injects the real CLI credential upstream. Keep
+    # it out of Vite's bundle-visible environment. A non-secret placeholder
+    # also prevents older scaffold configs from falling back to `auth token`.
+    env["BIFROST_ACCESS_TOKEN"] = "dev-proxy-authenticated"
+    env.pop("VITE_BIFROST_TOKEN", None)
     return env
 
 
@@ -2333,7 +2334,6 @@ def start_cmd(
         app_id=chosen.app_id,
         org_id=(org_info or {}).get("id"),
         proxy_origin=proxy_origin,
-        access_token=client._access_token,
     )
 
     # Run `npm run dev` in its OWN process group (start_new_session) so teardown
@@ -2995,7 +2995,16 @@ def _terminate_process_group(proc: "subprocess.Popen") -> None:
         _signal_group(signal.SIGKILL)
 
 
-def _dev_proxy_config(client, chosen, org_info, solution_id, global_repo_access):
+def _dev_proxy_config(
+    client,
+    chosen,
+    org_info,
+    solution_id,
+    global_repo_access,
+    *,
+    session_token=None,
+    secure_cookie=False,
+):
     from bifrost.solution_dev.proxy import DevProxyConfig
 
     return DevProxyConfig(
@@ -3006,6 +3015,8 @@ def _dev_proxy_config(client, chosen, org_info, solution_id, global_repo_access)
         solution_id=solution_id,
         global_repo_access=global_repo_access,
         refresh_token=client.refresh_access_token,
+        session_token=session_token,
+        secure_cookie=secure_cookie,
     )
 
 
@@ -3027,8 +3038,15 @@ async def _serve(
     from bifrost.solution_dev.proxy import build_dev_app
     from bifrost.solution_dev.reload import start_function_watch
 
+    session_token = secrets.token_urlsafe(32)
     cfg = _dev_proxy_config(
-        client, chosen, org_info, solution_id, global_repo_access
+        client,
+        chosen,
+        org_info,
+        solution_id,
+        global_repo_access,
+        session_token=session_token,
+        secure_cookie=proxy_origin.startswith("https://"),
     )
     app = build_dev_app(cfg, host, vite_url=f"http://127.0.0.1:{vite_port}")
     runner = web.AppRunner(app)
@@ -3036,7 +3054,10 @@ async def _serve(
     site = web.TCPSite(runner, bind_host, port)
     await site.start()
     observer = start_function_watch(workspace, host)
-    click.echo(f"\n  Bifrost solution dev server → {proxy_origin}\n")
+    click.echo(
+        f"\n  Bifrost solution dev server → "
+        f"{proxy_origin}#bifrost-dev-token={session_token}\n"
+    )
     click.echo(f"  Bound to {bind_host}:{port}\n")
     click.echo("  Press Ctrl-C to stop.\n")
     try:

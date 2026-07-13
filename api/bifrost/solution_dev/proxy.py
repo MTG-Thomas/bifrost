@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
+import secrets
 import uuid as _uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -61,6 +62,7 @@ class _UpstreamAuthorityError(ValueError):
 
 
 DEV_AUTH_EXPIRED_DETAIL = "Your CLI token has expired. Restart `bifrost solution start`."
+DEV_SESSION_COOKIE = "bifrost_dev_session"
 
 
 def _join_upstream(base_url: str, rel_url: yarl.URL) -> str:
@@ -111,6 +113,8 @@ class DevProxyConfig:
     auth_expired: bool = False
     branding: dict[str, Any] | None = None
     branding_loaded: bool = False
+    session_token: str | None = None
+    secure_cookie: bool = False
 
 
 # Typed app keys (avoid aiohttp's NotAppKeyWarning for plain-string keys).
@@ -122,7 +126,7 @@ _WARNED_UUID_REFS = web.AppKey("warned_uuid_refs", set)
 
 
 def build_dev_app(cfg: DevProxyConfig, host, vite_url: str) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_dev_session_middleware])
     app[_CFG] = cfg
     app[_HOST] = host
     app[_VITE] = vite_url.rstrip("/")
@@ -139,6 +143,72 @@ def build_dev_app(cfg: DevProxyConfig, host, vite_url: str) -> web.Application:
 
     app.on_cleanup.append(_close)
     return app
+
+
+def _dev_session_bootstrap() -> web.Response:
+    page = """<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+  <body>
+    <script>
+      const params = new URLSearchParams(location.hash.slice(1));
+      const token = params.get("bifrost-dev-token");
+      if (!token) {
+        document.body.textContent = "This Bifrost dev session requires its private launch URL.";
+      } else {
+        fetch("/__bifrost/dev-auth", {
+          method: "POST",
+          headers: {"X-Bifrost-Dev-Token": token},
+        }).then((response) => {
+          if (!response.ok) throw new Error("Dev session authentication failed");
+          history.replaceState(null, "", location.pathname + location.search);
+          location.reload();
+        }).catch(() => {
+          document.body.textContent = "Bifrost dev session authentication failed.";
+        });
+      }
+    </script>
+  </body>
+</html>"""
+    return web.Response(
+        text=page,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+@web.middleware
+async def _dev_session_middleware(request: web.Request, handler):
+    cfg: DevProxyConfig = request.app[_CFG]
+    if cfg.session_token is None:
+        return await handler(request)
+
+    if request.path == "/__bifrost/dev-auth" and request.method == "POST":
+        supplied = request.headers.get("X-Bifrost-Dev-Token", "")
+        if not secrets.compare_digest(supplied, cfg.session_token):
+            return web.json_response({"detail": "Invalid dev session"}, status=401)
+        response = web.json_response({"authenticated": True})
+        response.set_cookie(
+            DEV_SESSION_COOKIE,
+            cfg.session_token,
+            httponly=True,
+            secure=cfg.secure_cookie,
+            samesite="Strict",
+            path="/",
+        )
+        return response
+
+    cookie = request.cookies.get(DEV_SESSION_COOKIE, "")
+    if secrets.compare_digest(cookie, cfg.session_token):
+        return await handler(request)
+
+    accept = request.headers.get("Accept", "")
+    fetch_dest = request.headers.get("Sec-Fetch-Dest", "")
+    if request.method == "GET" and (
+        "text/html" in accept or fetch_dest in {"document", "iframe"}
+    ):
+        return _dev_session_bootstrap()
+    return web.json_response({"detail": "Dev session authentication required"}, status=401)
 
 
 def _auth_headers(cfg: DevProxyConfig, incoming) -> dict[str, str]:

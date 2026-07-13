@@ -1093,6 +1093,7 @@ Examples:
 
     resolved_url, _source = credentials.resolve_current_connection(
         api_url,
+        include_cwd_dotenv=False,
         prompt_for_default=True,
     )
     if not resolved_url:
