@@ -216,7 +216,7 @@ class EventSourceRepository(BaseRepository[EventSource]):
 
         stmt = stmt.order_by(*ordering, EventSource.created_at, EventSource.id).limit(1)
         result = await self.session.execute(stmt)
-        return result.unique().scalars().first()
+        return result.unique().scalar_one_or_none()
 
     async def get_distinct_topic_types(self) -> list[str]:
         """Return distinct event_type values for all active topic sources."""

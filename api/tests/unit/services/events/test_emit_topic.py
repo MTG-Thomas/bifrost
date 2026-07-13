@@ -206,6 +206,7 @@ async def test_emit_topic_filters_subscriptions_to_event_org():
 
     processor._source_repo.get_by_topic.assert_awaited_once_with(
         "integration.refresh_failed",
+        solution_id=None,
         organization_id=event_org,
     )
     processor._subscription_repo.get_active_for_event.assert_awaited_once_with(
@@ -244,6 +245,7 @@ async def test_emit_topic_org_override():
 
     processor._source_repo.get_by_topic.assert_awaited_once_with(
         "user.invited",
+        solution_id=None,
         organization_id=override_org,
     )
 
@@ -272,6 +274,7 @@ async def test_emit_topic_uses_source_org_when_no_override():
 
     processor._source_repo.get_by_topic.assert_awaited_once_with(
         "user.invited",
+        solution_id=None,
         organization_id=None,
     )
     processor._subscription_repo.get_active_for_event.assert_awaited_once_with(
