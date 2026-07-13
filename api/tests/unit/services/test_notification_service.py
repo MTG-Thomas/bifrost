@@ -162,7 +162,7 @@ class TestNotificationService:
         )
 
         with patch("src.services.notification_service.pubsub_manager", mock_pubsub):
-            _notification = await service.create_notification(
+            await service.create_notification(
                 user_id="user-123",
                 request=request,
                 for_admins=True,

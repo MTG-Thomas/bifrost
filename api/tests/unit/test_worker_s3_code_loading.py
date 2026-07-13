@@ -187,6 +187,10 @@ class TestWorkerCodeLoadingBranches:
         file_path = None
         reached_else = False
 
+        assert workflow_code is None
+        assert function_name is None
+        assert file_path is None
+
         if workflow_code and function_name and file_path:
             pytest.fail("Should not take the workflow_code branch")
         elif function_name and file_path:
