@@ -16,6 +16,7 @@ No entity_type or app_id parameters -- everything is path-based.
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -525,7 +526,7 @@ class TestGetContent:
     @pytest.mark.asyncio
     async def test_get_content_truncates_large_files(self, platform_admin_context):
         """Should return a warning and truncated flag for oversized content."""
-        import src.services.mcp_server.tools.code_editor as code_editor
+        code_editor = importlib.import_module("src.services.mcp_server.tools.code_editor")
 
         original_limit = code_editor.MAX_CONTENT_CHARS
         code_editor.MAX_CONTENT_CHARS = 12
@@ -1396,7 +1397,7 @@ class TestCodeEditorAuthorization:
         tool_name,
         args,
     ):
-        import src.services.mcp_server.tools.code_editor as code_editor
+        code_editor = importlib.import_module("src.services.mcp_server.tools.code_editor")
 
         result = await getattr(code_editor, tool_name)(org_user_context, *args)
 

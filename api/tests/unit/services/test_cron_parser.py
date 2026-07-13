@@ -1,11 +1,14 @@
+import importlib
+
 import pytest
 
-import src.services.cron_parser as cron_parser
 from src.services.cron_parser import (
     validate_cron_expression,
     is_cron_expression_valid,
     cron_to_human_readable,
 )
+
+cron_parser = importlib.import_module("src.services.cron_parser")
 
 
 class TestValidateCronExpression:
