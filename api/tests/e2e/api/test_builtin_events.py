@@ -74,6 +74,7 @@ def _create_topic_source(e2e_client, headers, topic: str, workflow_id: str) -> d
             "name": f"E2E {topic} {uuid4().hex[:8]}",
             "source_type": "topic",
             "event_type": topic,
+            "organization_id": None,
         },
     )
     assert response.status_code == 201, response.text
