@@ -91,16 +91,24 @@ def find_delegated_agent(agent: Agent, tool_name: str) -> Agent | None:
     return None
 
 
-async def _get_caller_user(
+async def _get_caller_access(
     session: AsyncSession, caller_user_id: UUID | None
-) -> User | None:
+) -> tuple[UUID, UUID | None, bool] | None:
     if caller_user_id is None:
         return None
-    return await session.get(User, caller_user_id)
+    result = await session.execute(
+        select(User.id, User.organization_id, User.is_superuser).where(
+            User.id == caller_user_id
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        return None
+    return row.id, row.organization_id, row.is_superuser
 
 
 def _agent_scope_allows_reference(parent_agent: Agent, referenced_org_id: UUID | None) -> bool:
-    parent_org_id = parent_agent.organization_id
+    parent_org_id = getattr(parent_agent, "organization_id", None)
     if referenced_org_id is None:
         return True
     if not isinstance(referenced_org_id, UUID) or not isinstance(parent_org_id, UUID):
@@ -123,16 +131,19 @@ async def caller_can_access_workflow_tool(
     if caller_is_platform_admin:
         return True
 
-    if _agent_scope_allows_reference(parent_agent, workflow.organization_id):
+    if _agent_scope_allows_reference(
+        parent_agent, getattr(workflow, "organization_id", None)
+    ):
         return True
 
-    caller = await _get_caller_user(session, caller_user_id)
-    if caller is not None:
+    caller_access = await _get_caller_access(session, caller_user_id)
+    if caller_access is not None:
+        user_id, organization_id, is_superuser = caller_access
         repo = WorkflowRepository(
             session,
-            org_id=caller.organization_id,
-            user_id=caller.id,
-            is_superuser=caller.is_superuser,
+            org_id=organization_id,
+            user_id=user_id,
+            is_superuser=is_superuser,
         )
         return await repo.get(id=workflow.id) is not None
 
@@ -151,16 +162,19 @@ async def caller_can_access_delegated_agent(
     if caller_is_platform_admin:
         return True
 
-    if _agent_scope_allows_reference(parent_agent, delegated_agent.organization_id):
+    if _agent_scope_allows_reference(
+        parent_agent, getattr(delegated_agent, "organization_id", None)
+    ):
         return True
 
-    caller = await _get_caller_user(session, caller_user_id)
-    if caller is not None:
+    caller_access = await _get_caller_access(session, caller_user_id)
+    if caller_access is not None:
+        user_id, organization_id, is_superuser = caller_access
         repo = AgentRepository(
             session,
-            org_id=caller.organization_id,
-            user_id=caller.id,
-            is_superuser=caller.is_superuser,
+            org_id=organization_id,
+            user_id=user_id,
+            is_superuser=is_superuser,
         )
         return await repo.get_agent_with_access_check(delegated_agent.id) is not None
 
