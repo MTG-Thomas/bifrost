@@ -5,6 +5,7 @@ Generates accurate SDK documentation dynamically from actual SDK source code.
 This ensures documentation is always up-to-date and accurate.
 """
 
+import importlib
 import inspect
 import logging
 from typing import Any
@@ -253,7 +254,7 @@ def _generate_error_docs() -> str:
     """Generate documentation for SDK error classes."""
     try:
         # Import to verify they exist (used in docstring examples)
-        import bifrost
+        bifrost = importlib.import_module("bifrost")
         _ = (bifrost.UserError, bifrost.WorkflowError, bifrost.ValidationError,
              bifrost.IntegrationError, bifrost.ConfigurationError)
 

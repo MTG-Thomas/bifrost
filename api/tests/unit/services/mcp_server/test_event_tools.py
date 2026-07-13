@@ -14,6 +14,7 @@ Tests the event source, subscription, and webhook adapter tools:
 - list_webhook_adapters
 """
 
+import importlib
 import sys
 import types
 from dataclasses import dataclass
@@ -164,7 +165,7 @@ class TestEventToolAuthorization:
         ],
     )
     async def test_non_admin_event_tools_return_error(self, org_user_context, tool_name, args):
-        import src.services.mcp_server.tools.events as events
+        events = importlib.import_module("src.services.mcp_server.tools.events")
 
         result = await getattr(events, tool_name)(org_user_context, *args)
 
@@ -1207,7 +1208,7 @@ class TestEventToolsRegistration:
         """Every tool in TOOLS should have a corresponding function."""
         from src.services.mcp_server.tools.events import TOOLS
 
-        import src.services.mcp_server.tools.events as events_module
+        events_module = importlib.import_module("src.services.mcp_server.tools.events")
 
         for tool_id, _name, _description in TOOLS:
             assert hasattr(events_module, tool_id), f"Missing function: {tool_id}"
