@@ -42,6 +42,7 @@ def recorder_workflow(e2e_client, platform_admin):
         "e2e_builtin_event_recorder.py",
         RECORDER_WORKFLOW,
         "e2e_builtin_event_recorder",
+        organization_id=None,
     )
     yield workflow
     e2e_client.delete(
@@ -58,6 +59,7 @@ def failing_workflow(e2e_client, platform_admin):
         "e2e_builtin_event_fails.py",
         FAILING_WORKFLOW,
         "e2e_builtin_event_fails",
+        organization_id=None,
     )
     yield workflow
     e2e_client.delete(

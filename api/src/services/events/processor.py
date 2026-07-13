@@ -808,7 +808,10 @@ def _subscription_matches_event_org(
         else getattr(subscription, "workflow", None)
     )
     if target is None:
-        return False
+        # Malformed subscriptions are rejected by the delivery loop below. Keep
+        # them here so scope filtering does not change the method's established
+        # subscriber-count semantics.
+        return True
 
     target_org = getattr(target, "organization_id", None)
     if target_org is None:
