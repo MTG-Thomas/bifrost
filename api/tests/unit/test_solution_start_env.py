@@ -51,17 +51,22 @@ class TestScaffoldApiUrl:
 
 def test_vite_child_env_points_bundle_at_local_proxy():
     env = _vite_child_env(
-        {"PATH": "/usr/bin", "BIFROST_API_URL": "http://upstream:34173"},
+        {
+            "PATH": "/usr/bin",
+            "BIFROST_API_URL": "http://upstream:34173",
+            "BIFROST_ACCESS_TOKEN": "real-cli-token",
+            "VITE_BIFROST_TOKEN": "also-real",
+        },
         app_id="2a9d06da-cc86-49ff-b3b5-26748c31f73e",
         org_id="org-1",
         proxy_origin="http://127.0.0.1:3777",
-        access_token="tok",
     )
     # The bundle-visible API URL is the PROXY, never the upstream.
     assert env["BIFROST_API_URL"] == "http://127.0.0.1:3777"
     assert env["VITE_BIFROST_APP_ID"] == "2a9d06da-cc86-49ff-b3b5-26748c31f73e"
     assert env["VITE_BIFROST_ORG_ID"] == "org-1"
-    assert env["BIFROST_ACCESS_TOKEN"] == "tok"
+    assert env["BIFROST_ACCESS_TOKEN"] == "dev-proxy-authenticated"
+    assert "VITE_BIFROST_TOKEN" not in env
     # Base env is inherited, not replaced.
     assert env["PATH"] == "/usr/bin"
 
@@ -78,7 +83,6 @@ def test_vite_child_env_omits_org_var_for_global_installs():
         app_id="2a9d06da-cc86-49ff-b3b5-26748c31f73e",
         org_id=None,
         proxy_origin="http://127.0.0.1:3777",
-        access_token="tok",
     )
     assert "VITE_BIFROST_ORG_ID" not in env
 
