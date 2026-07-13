@@ -166,3 +166,68 @@ def test_markdown_renderer_bounds_pandoc_runtime(monkeypatch) -> None:
 
     with pytest.raises(RenderError, match="30-second render limit"):
         markdown_to_html("# Hello")
+
+
+def test_html_renderer_uses_restricted_url_fetcher(monkeypatch) -> None:
+    import sys
+
+    captured = {}
+
+    class FakeHTML:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def write_pdf(self):
+            return b"%PDF-safe"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "weasyprint",
+        SimpleNamespace(HTML=FakeHTML, default_url_fetcher=lambda url: {"url": url}),
+    )
+
+    from doc_renderer_service.rendering import _safe_url_fetcher, render_pdf_from_html
+
+    result = render_pdf_from_html(
+        html='<img src="http://127.0.0.1/internal.svg">',
+        title="Safe Report",
+        theme="clean_report",
+    )
+
+    assert result.pdf_bytes == b"%PDF-safe"
+    assert captured["url_fetcher"] is _safe_url_fetcher
+
+
+def test_safe_url_fetcher_blocks_network_and_non_theme_files(monkeypatch) -> None:
+    import sys
+
+    fetches = []
+
+    def fake_default_url_fetcher(url: str):
+        fetches.append(url)
+        return {"url": url}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "weasyprint",
+        SimpleNamespace(default_url_fetcher=fake_default_url_fetcher),
+    )
+
+    from doc_renderer_service.rendering import THEMES_DIR, _safe_url_fetcher
+
+    theme_url = (THEMES_DIR / "clean_report.css").resolve().as_uri()
+    assert _safe_url_fetcher(theme_url) == {"url": theme_url}
+    assert _safe_url_fetcher("data:image/png;base64,AAAA") == {
+        "url": "data:image/png;base64,AAAA"
+    }
+
+    for unsafe_url in (
+        "http://127.0.0.1/internal.svg",
+        "https://example.com/style.css",
+        Path("/etc/passwd").as_uri(),
+        "data:text/html;base64,PGgxPkJsb2NrZWQ8L2gxPg==",
+    ):
+        with pytest.raises(ValueError, match="Blocked unsafe document resource URL"):
+            _safe_url_fetcher(unsafe_url)
+
+    assert fetches == [theme_url, "data:image/png;base64,AAAA"]

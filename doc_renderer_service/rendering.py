@@ -4,10 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
+from urllib.parse import urlparse
 
 SERVICE_ROOT = Path(__file__).resolve().parent
 THEMES_DIR = SERVICE_ROOT / "themes"
 PANDOC_TIMEOUT_SECONDS = 30
+ALLOWED_DATA_URL_PREFIXES = ("data:image/", "data:font/")
 
 THEME_PATHS = {
     "business_case": THEMES_DIR / "business_case.css",
@@ -49,6 +51,33 @@ def resolve_theme_path(theme: str) -> Path:
 
 def _stylesheet_link(theme_path: Path) -> str:
     return f'<link rel="stylesheet" href="{theme_path.resolve().as_uri()}">'
+
+
+def _is_path_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _safe_url_fetcher(url: str):
+    """Restrict WeasyPrint resource loading to bundled themes and safe data URLs."""
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme == "data" and url.lower().startswith(ALLOWED_DATA_URL_PREFIXES):
+        from weasyprint import default_url_fetcher  # pyright: ignore[reportMissingImports]
+
+        return default_url_fetcher(url)
+
+    if scheme == "file":
+        path = Path(parsed.path).resolve()
+        if _is_path_relative_to(path, THEMES_DIR.resolve()):
+            from weasyprint import default_url_fetcher  # pyright: ignore[reportMissingImports]
+
+            return default_url_fetcher(url)
+
+    raise ValueError("Blocked unsafe document resource URL")
 
 
 def _wrap_html_document(*, html_body: str, title: str | None, theme_path: Path) -> str:
@@ -117,7 +146,11 @@ def render_pdf_from_html(
     rendered_html = _wrap_html_document(html_body=html, title=title, theme_path=theme_path)
     try:
         from weasyprint import HTML  # pyright: ignore[reportMissingImports]
-        pdf_bytes = HTML(string=rendered_html, base_url=str(THEMES_DIR)).write_pdf()
+        pdf_bytes = HTML(
+            string=rendered_html,
+            base_url=str(THEMES_DIR),
+            url_fetcher=_safe_url_fetcher,
+        ).write_pdf()
     except Exception as exc:  # pragma: no cover - WeasyPrint internals
         raise RenderError(f"WeasyPrint failed to render PDF: {exc}") from exc
 
