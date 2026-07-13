@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from src.models.enums import AgentAccessLevel
 from src.models.orm.agents import Agent
@@ -99,7 +100,7 @@ async def test_resolve_agent_tools_hides_cross_org_workflow_tools_for_tenant_use
     tool_a = await _make_tool(db_session, org_a, "tenant_a_tool")
     tool_b = await _make_tool(db_session, org_b, "tenant_b_secret_tool")
     agent = await _make_agent(db_session, org_a, "Tenant A Agent")
-    agent.tools = [tool_a, tool_b]
+    set_committed_value(agent, "tools", [tool_a, tool_b])
     await db_session.flush()
 
     tools, id_map = await resolve_agent_tools(
@@ -124,7 +125,7 @@ async def test_resolve_agent_tools_hides_cross_org_delegates_for_tenant_user(
     delegate_a = await _make_agent(db_session, org_a, "Tenant A Delegate")
     delegate_b = await _make_agent(db_session, org_b, "Tenant B Delegate")
     agent = await _make_agent(db_session, org_a, "Tenant A Parent")
-    agent.delegated_agents = [delegate_a, delegate_b]
+    set_committed_value(agent, "delegated_agents", [delegate_a, delegate_b])
     await db_session.flush()
 
     tools, _ = await resolve_agent_tools(
@@ -147,8 +148,8 @@ async def test_resolve_agent_tools_keeps_cross_org_references_for_platform_admin
     tool_b = await _make_tool(db_session, org_b, "tenant_b_secret_tool")
     delegate_b = await _make_agent(db_session, org_b, "Tenant B Delegate")
     agent = await _make_agent(db_session, org_a, "Tenant A Parent")
-    agent.tools = [tool_b]
-    agent.delegated_agents = [delegate_b]
+    set_committed_value(agent, "tools", [tool_b])
+    set_committed_value(agent, "delegated_agents", [delegate_b])
     await db_session.flush()
 
     tools, id_map = await resolve_agent_tools(

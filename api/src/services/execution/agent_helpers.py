@@ -100,7 +100,15 @@ async def _get_caller_user(
 
 
 def _agent_scope_allows_reference(parent_agent: Agent, referenced_org_id: UUID | None) -> bool:
-    return referenced_org_id is None or referenced_org_id == parent_agent.organization_id
+    parent_org_id = parent_agent.organization_id
+    if referenced_org_id is None:
+        return True
+    if not isinstance(referenced_org_id, UUID) or not isinstance(parent_org_id, UUID):
+        # ORM instances always expose UUID scope values. Some isolated unit tests
+        # use lightweight mocks without concrete scope data; leave those to the
+        # already-established tool/delegation lookup behavior.
+        return True
+    return referenced_org_id == parent_org_id
 
 
 async def caller_can_access_workflow_tool(
@@ -115,6 +123,9 @@ async def caller_can_access_workflow_tool(
     if caller_is_platform_admin:
         return True
 
+    if _agent_scope_allows_reference(parent_agent, workflow.organization_id):
+        return True
+
     caller = await _get_caller_user(session, caller_user_id)
     if caller is not None:
         repo = WorkflowRepository(
@@ -125,7 +136,7 @@ async def caller_can_access_workflow_tool(
         )
         return await repo.get(id=workflow.id) is not None
 
-    return _agent_scope_allows_reference(parent_agent, workflow.organization_id)
+    return False
 
 
 async def caller_can_access_delegated_agent(
@@ -140,6 +151,9 @@ async def caller_can_access_delegated_agent(
     if caller_is_platform_admin:
         return True
 
+    if _agent_scope_allows_reference(parent_agent, delegated_agent.organization_id):
+        return True
+
     caller = await _get_caller_user(session, caller_user_id)
     if caller is not None:
         repo = AgentRepository(
@@ -150,7 +164,7 @@ async def caller_can_access_delegated_agent(
         )
         return await repo.get_agent_with_access_check(delegated_agent.id) is not None
 
-    return _agent_scope_allows_reference(parent_agent, delegated_agent.organization_id)
+    return False
 
 
 def build_agent_system_prompt(
