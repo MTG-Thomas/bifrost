@@ -4144,6 +4144,15 @@ Options:
     changed = [r for r in all_results if r.changed]
     apps_touched = {app_for_result[r.path] for r in changed}
 
+    for result in changed:
+        app_dir = app_for_result[result.path].resolve()
+        if not result.path.resolve().is_relative_to(app_dir):
+            print(
+                f"Error: migration result escapes app directory: {result.path}",
+                file=sys.stderr,
+            )
+            return 1
+
     if not changed:
         print("No changes needed.")
         return 0

@@ -71,6 +71,11 @@ function shapeMessages(messages, source_dir) {
   });
 }
 
+function isWithin(base, candidate) {
+  const relative = path.relative(base, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
 async function main() {
   const raw = await readStdin();
   const cfg = JSON.parse(raw);
@@ -84,15 +89,28 @@ async function main() {
     return;
   }
 
-  fs.mkdirSync(out_dir, { recursive: true });
+  const sourceDir = path.resolve(source_dir);
+  const outDir = path.resolve(out_dir);
+  const buildRoot = path.dirname(sourceDir);
+  const entryPath = path.resolve(sourceDir, entry);
+
+  if (!isWithin(sourceDir, entryPath) || !isWithin(buildRoot, outDir) || outDir === buildRoot) {
+    console.log(JSON.stringify({
+      success: false,
+      errors: [{ text: "Build paths must stay within the isolated build directory", file: null, line: null, column: null, line_text: null }],
+    }));
+    return;
+  }
+
+  fs.mkdirSync(outDir, { recursive: true });
 
   const t0 = Date.now();
 
   let result;
   try {
     result = await esbuild.build({
-      entryPoints: [path.join(source_dir, entry)],
-      outdir: out_dir,
+      entryPoints: [entryPath],
+      outdir: outDir,
       bundle: true,
       format: "esm",
       target: "es2020",
@@ -117,10 +135,10 @@ async function main() {
   } catch (buildErr) {
     // esbuild throws BuildFailure with .errors[] on syntax / resolve errors.
     const errs = Array.isArray(buildErr.errors) && buildErr.errors.length
-      ? shapeMessages(buildErr.errors, source_dir)
+      ? shapeMessages(buildErr.errors, sourceDir)
       : [{ text: buildErr.message || String(buildErr), file: null, line: null, column: null, line_text: null }];
     const warns = Array.isArray(buildErr.warnings)
-      ? shapeMessages(buildErr.warnings, source_dir)
+      ? shapeMessages(buildErr.warnings, sourceDir)
       : [];
     console.log(JSON.stringify({
       success: false,
@@ -138,7 +156,7 @@ async function main() {
   let css_file = null;
 
   for (const [abs, meta] of Object.entries(result.metafile.outputs)) {
-    const rel = path.relative(out_dir, abs);
+    const rel = path.relative(outDir, abs);
     const bytes = meta.bytes;
     outputs.push({ path: rel, bytes });
     if (meta.entryPoint) {
@@ -159,7 +177,7 @@ async function main() {
     entry_file,
     css_file,
     duration_ms,
-    warnings: shapeMessages(result.warnings, source_dir),
+    warnings: shapeMessages(result.warnings, sourceDir),
   }));
 }
 
