@@ -190,6 +190,24 @@ class TestModuleCacheAsync:
             mock_client.delete.assert_called_once_with("bifrost:module:shared/test.py")
             mock_redis.srem.assert_called_once_with("bifrost:module:index", "shared/test.py")
 
+    async def test_module_paths_are_log_safe(self, mock_redis_client):
+        """Caller-controlled module paths cannot forge additional log lines."""
+        mock_client, _mock_redis = mock_redis_client
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.logger.debug") as debug,
+        ):
+            from src.core.module_cache import invalidate_module, set_module
+
+            await set_module("shared/forged\nentry.py", "", "abc123")
+            await invalidate_module("shared/forged\nentry.py")
+
+        messages = [call.args[0] for call in debug.call_args_list]
+        assert len(messages) == 2
+        assert all("\n" not in message for message in messages)
+        assert all("\\n" in message for message in messages)
+
     async def test_get_all_module_paths(self, mock_redis_client):
         """Test getting all cached module paths."""
         mock_client, mock_redis = mock_redis_client

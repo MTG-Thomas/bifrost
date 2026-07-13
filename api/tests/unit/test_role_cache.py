@@ -184,11 +184,18 @@ class TestInvalidateUser:
         user_id = uuid4()
 
         mock_redis = AsyncMock()
-        mock_redis.delete = AsyncMock(side_effect=Exception("redis down"))
+        mock_redis.delete = AsyncMock(side_effect=Exception("redis down\nforged"))
 
-        with patch("shared.role_cache.get_shared_redis", return_value=mock_redis):
+        with (
+            patch("shared.role_cache.get_shared_redis", return_value=mock_redis),
+            patch("shared.role_cache.logger.warning") as warning,
+        ):
             # Must not raise
             await invalidate_user(user_id)
+
+        message = warning.call_args.args[0]
+        assert "\n" not in message
+        assert "\\n" in message
 
 
 class TestInvalidateRole:
