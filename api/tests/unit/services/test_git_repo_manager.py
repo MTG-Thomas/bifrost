@@ -1,5 +1,6 @@
 """Tests for GitRepoManager — S3-backed persistent git working tree."""
 
+import importlib
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.services.git_repo_manager import GitRepoManager
-import src.services.git_repo_manager as git_repo_manager
+
+git_repo_manager = importlib.import_module("src.services.git_repo_manager")
 
 
 @pytest.fixture
