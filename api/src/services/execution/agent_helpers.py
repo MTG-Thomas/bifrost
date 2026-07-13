@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.models.orm.agents import Agent
+from src.models.orm.users import User
+from src.models.orm.workflows import Workflow
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -16,6 +18,8 @@ from src.models.orm.external_mcp import (
 from src.core.system_agents import is_privileged_agent_management_tool
 from src.services.llm import ToolDefinition
 from src.services.tool_registry import ToolRegistry
+from src.repositories.agents import AgentRepository
+from src.repositories.workflows import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,68 @@ def find_delegated_agent(agent: Agent, tool_name: str) -> Agent | None:
     return None
 
 
+async def _get_caller_user(
+    session: AsyncSession, caller_user_id: UUID | None
+) -> User | None:
+    if caller_user_id is None:
+        return None
+    return await session.get(User, caller_user_id)
+
+
+def _agent_scope_allows_reference(parent_agent: Agent, referenced_org_id: UUID | None) -> bool:
+    return referenced_org_id is None or referenced_org_id == parent_agent.organization_id
+
+
+async def caller_can_access_workflow_tool(
+    workflow: Workflow,
+    parent_agent: Agent,
+    session: AsyncSession,
+    *,
+    caller_user_id: UUID | None = None,
+    caller_is_platform_admin: bool = False,
+) -> bool:
+    """Return whether an agent invocation may execute an attached workflow tool."""
+    if caller_is_platform_admin:
+        return True
+
+    caller = await _get_caller_user(session, caller_user_id)
+    if caller is not None:
+        repo = WorkflowRepository(
+            session,
+            org_id=caller.organization_id,
+            user_id=caller.id,
+            is_superuser=caller.is_superuser,
+        )
+        return await repo.get(id=workflow.id) is not None
+
+    return _agent_scope_allows_reference(parent_agent, workflow.organization_id)
+
+
+async def caller_can_access_delegated_agent(
+    delegated_agent: Agent,
+    parent_agent: Agent,
+    session: AsyncSession,
+    *,
+    caller_user_id: UUID | None = None,
+    caller_is_platform_admin: bool = False,
+) -> bool:
+    """Return whether an agent invocation may delegate to an attached agent."""
+    if caller_is_platform_admin:
+        return True
+
+    caller = await _get_caller_user(session, caller_user_id)
+    if caller is not None:
+        repo = AgentRepository(
+            session,
+            org_id=caller.organization_id,
+            user_id=caller.id,
+            is_superuser=caller.is_superuser,
+        )
+        return await repo.get_agent_with_access_check(delegated_agent.id) is not None
+
+    return _agent_scope_allows_reference(parent_agent, delegated_agent.organization_id)
+
+
 def build_agent_system_prompt(
     agent: Agent,
     *,
@@ -110,6 +176,7 @@ async def resolve_agent_tools(
     session: AsyncSession,
     *,
     caller_user_id: UUID | None = None,
+    caller_is_platform_admin: bool = False,
 ) -> tuple[list[ToolDefinition], dict[str, UUID]]:
     """Resolve tool definitions for an agent.
 
@@ -119,7 +186,10 @@ async def resolve_agent_tools(
         caller_user_id: User invoking the agent (chat / claim-bearing
             webhook), or ``None`` for autonomous runs. Controls whether
             MCP tools that require per-user OAuth get included in the
-            planner-visible toolset.
+            planner-visible toolset. Also scopes workflow/delegation tools
+            to the caller for interactive runs.
+        caller_is_platform_admin: Whether the invoking caller has platform
+            admin privileges. Platform admins may use cross-org references.
 
     Returns:
         ``(tool_definitions, id_map)``. The id map carries:
@@ -164,7 +234,22 @@ async def resolve_agent_tools(
                 tool_definitions.append(td)
 
     # 2. Workflow tools (sorted by ID for determinism)
-    tool_ids = [tool.id for tool in agent.tools]
+    tool_ids = []
+    for tool in agent.tools:
+        if await caller_can_access_workflow_tool(
+            tool,
+            agent,
+            session,
+            caller_user_id=caller_user_id,
+            caller_is_platform_admin=caller_is_platform_admin,
+        ):
+            tool_ids.append(tool.id)
+        else:
+            logger.warning(
+                "Hiding agent tool %s from agent %s because the caller cannot access it",
+                tool.id,
+                agent.id,
+            )
 
     if tool_ids:
         workflow_tool_defs = await tool_registry.get_tool_definitions(tool_ids)
@@ -191,6 +276,19 @@ async def resolve_agent_tools(
     if agent.delegated_agents:
         for delegated in agent.delegated_agents:
             if not delegated.is_active:
+                continue
+            if not await caller_can_access_delegated_agent(
+                delegated,
+                agent,
+                session,
+                caller_user_id=caller_user_id,
+                caller_is_platform_admin=caller_is_platform_admin,
+            ):
+                logger.warning(
+                    "Hiding delegated agent %s from agent %s because the caller cannot access it",
+                    delegated.id,
+                    agent.id,
+                )
                 continue
             tool_name = agent_delegation_slug(delegated.name)
             if tool_name not in seen_names:
