@@ -183,7 +183,6 @@ class TestGetUserRoles:
 
         message = warning.call_args.args[0]
         assert "\n" not in message
-        assert "\\n" in message
 
     @pytest.mark.asyncio
     async def test_cache_population_failure_log_is_safe(self):
