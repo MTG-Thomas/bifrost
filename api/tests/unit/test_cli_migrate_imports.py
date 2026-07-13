@@ -4,6 +4,8 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import pytest
+
 # Ensure the standalone bifrost CLI package is importable.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
@@ -39,6 +41,19 @@ def _make_app(tmp_path: pathlib.Path, components: dict[str, str] | None = None) 
     for name, body in (components or {}).items():
         _write(app_dir / "components" / f"{name}.tsx", body)
     return app_dir
+
+
+def test_migrate_app_rejects_source_outside_app(tmp_path, monkeypatch) -> None:
+    app = _make_app(tmp_path)
+    outside = tmp_path / "outside.tsx"
+    _write(outside, "export default () => null;\n")
+    monkeypatch.setattr(
+        "bifrost.migrate_imports.find_source_files",
+        lambda _app_dir: [outside],
+    )
+
+    with pytest.raises(ValueError, match="escapes app directory"):
+        migrate_app(app, PLATFORM, LUCIDE)
 
 
 # ---------------------------------------------------------------------------

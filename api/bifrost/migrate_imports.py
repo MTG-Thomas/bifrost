@@ -831,11 +831,21 @@ def migrate_app(
     lucide_names: AbstractSet[str],
 ) -> list[FileMigrationResult]:
     """Run migration on every TSX/TS file in an app, return results (changed + unchanged)."""
-    user_components = list_user_components(app_dir)
+    resolved_app_dir = app_dir.resolve()
+    user_components = list_user_components(resolved_app_dir)
     results: list[FileMigrationResult] = []
-    for src_file in find_source_files(app_dir):
+    for src_file in find_source_files(resolved_app_dir):
+        resolved_source = src_file.resolve()
+        if not resolved_source.is_relative_to(resolved_app_dir):
+            raise ValueError(f"Source file escapes app directory: {src_file}")
         results.append(
-            migrate_file(src_file, app_dir, user_components, platform_names, lucide_names)
+            migrate_file(
+                resolved_source,
+                resolved_app_dir,
+                user_components,
+                platform_names,
+                lucide_names,
+            )
         )
     return results
 
