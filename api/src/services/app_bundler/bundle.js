@@ -31,6 +31,7 @@
 const esbuild = require("esbuild");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 async function readStdin() {
   return new Promise((resolve, reject) => {
@@ -89,12 +90,22 @@ async function main() {
     return;
   }
 
-  const sourceDir = path.resolve(source_dir);
+  const tempRoot = fs.realpathSync(os.tmpdir());
+  const sourceDir = fs.realpathSync(path.resolve(source_dir));
   const outDir = path.resolve(out_dir);
-  const buildRoot = path.dirname(sourceDir);
+  const buildRoot = fs.realpathSync(path.dirname(sourceDir));
+  const expectedOutDir = path.join(buildRoot, "dist");
   const entryPath = path.resolve(sourceDir, entry);
+  const existingOutDir = fs.existsSync(outDir) ? fs.realpathSync(outDir) : outDir;
 
-  if (!isWithin(sourceDir, entryPath) || !isWithin(buildRoot, outDir) || outDir === buildRoot) {
+  if (
+    !isWithin(tempRoot, buildRoot)
+    || !path.basename(buildRoot).startsWith("bifrost-bundle-")
+    || path.basename(sourceDir) !== "src"
+    || !isWithin(sourceDir, entryPath)
+    || outDir !== expectedOutDir
+    || existingOutDir !== expectedOutDir
+  ) {
     console.log(JSON.stringify({
       success: false,
       errors: [{ text: "Build paths must stay within the isolated build directory", file: null, line: null, column: null, line_text: null }],
