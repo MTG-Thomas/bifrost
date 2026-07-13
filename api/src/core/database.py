@@ -50,7 +50,9 @@ def _prepare_asyncpg_url(url: str) -> tuple[str, dict]:
             # Bifrost strengthens every encrypted mode to authenticated TLS.
             # Encryption without certificate and hostname verification still
             # permits an active network attacker to impersonate PostgreSQL.
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            # PROTOCOL_TLS_CLIENT requires certificate validation and hostname
+            # checks; the assertions in test_database_tls.py lock this down.
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)  # NOSONAR
             ssl_context.load_default_certs()
             connect_args["ssl"] = ssl_context
         elif sslmode == "prefer":
