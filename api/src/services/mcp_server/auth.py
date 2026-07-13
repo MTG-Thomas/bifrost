@@ -40,6 +40,21 @@ TTL_MCP_AUTH_CODE = 300  # 5 minutes for authorization code
 TTL_MCP_CLIENT = 86400 * 30  # 30 days for registered clients
 
 
+async def _mcp_access_token_data(db: Any, user: Any) -> dict[str, Any]:
+    return {
+        "sub": str(user.id),
+        "email": user.email,
+        "name": user.name,
+        "is_superuser": user.is_superuser,
+        "is_external": await resolve_external_claim(db, user),
+        "is_provider_org": await resolve_provider_org_claim(db, user),
+        "org_id": str(user.organization_id) if user.organization_id else None,
+        "type": "access",
+        "mcp": True,
+        "scope": "mcp:access",
+    }
+
+
 def _mcp_auth_code_key(code: str) -> str:
     """Key for MCP authorization code storage."""
     return f"bifrost:mcp:auth_code:{code}"
@@ -443,18 +458,7 @@ class BifrostAuthProvider:
                 # (EXT-1) is neutralized for bypass principals at this mint —
                 # without it every MCP-OAuth token defaulted to is_external=False
                 # (LEAK #1), re-opening the global tier to external users.
-                token_data = {
-                    "sub": str(user.id),
-                    "email": user.email,
-                    "name": user.name,
-                    "is_superuser": user.is_superuser,
-                    "is_external": await resolve_external_claim(db, user),
-                    "is_provider_org": await resolve_provider_org_claim(db, user),
-                    "org_id": str(user.organization_id) if user.organization_id else None,
-                    "type": "access",
-                    "mcp": True,
-                    "scope": "mcp:access",
-                }
+                token_data = await _mcp_access_token_data(db, user)
                 access_token = create_access_token(data=token_data)
                 refresh_token, _jti = create_refresh_token(data={"sub": str(user.id), "mcp": True})
 
@@ -481,7 +485,11 @@ class BifrostAuthProvider:
             from src.core.security import decode_token
 
             payload = decode_token(refresh_token, expected_type="refresh")
-            if payload is None or not payload.get("sub"):
+            if (
+                payload is None
+                or not payload.get("sub")
+                or payload.get("mcp") is not True
+            ):
                 return JSONResponse(
                     {"error": "invalid_grant", "error_description": "Invalid refresh token"},
                     status_code=400
@@ -500,18 +508,7 @@ class BifrostAuthProvider:
                     )
 
                 # Create new tokens (carry the is_external claim — LEAK #1).
-                token_data = {
-                    "sub": str(user.id),
-                    "email": user.email,
-                    "name": user.name,
-                    "is_superuser": user.is_superuser,
-                    "is_external": await resolve_external_claim(db, user),
-                    "is_provider_org": await resolve_provider_org_claim(db, user),
-                    "org_id": str(user.organization_id) if user.organization_id else None,
-                    "type": "access",
-                    "mcp": True,
-                    "scope": "mcp:access",
-                }
+                token_data = await _mcp_access_token_data(db, user)
                 access_token = create_access_token(data=token_data)
                 new_refresh_token, _jti = create_refresh_token(data={"sub": str(user.id), "mcp": True})
 

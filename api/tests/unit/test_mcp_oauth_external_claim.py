@@ -138,7 +138,8 @@ async def test_refresh_grant_stamps_is_external():
 
     ctx = _patches(captured, user)
     with patch(
-        "src.core.security.decode_token", return_value={"sub": str(user.id)}
+        "src.core.security.decode_token",
+        return_value={"sub": str(user.id), "mcp": True},
     ):
         for p in ctx:
             p.start()
