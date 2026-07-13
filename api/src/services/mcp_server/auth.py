@@ -255,6 +255,7 @@ class BifrostAuthProvider:
 
         oauth_data = {
             "client_id": client_id,
+            "client_name": client_data.get("client_name"),
             "redirect_uri": redirect_uri,
             "state": state,
             "code_challenge": code_challenge,
@@ -368,7 +369,18 @@ class BifrostAuthProvider:
         # This is needed because Vite's proxy only works for XHR, not browser navigations
         accept = request.headers.get("accept", "")
         if "application/json" in accept:
-            return JSONResponse({"redirect_url": redirect_url})
+            from src.services.mcp_server.mcp_client_identity import resolve_mcp_client_label
+
+            client_label = resolve_mcp_client_label(
+                oauth_data["redirect_uri"],
+                oauth_data.get("client_name"),
+            )
+            return JSONResponse(
+                {
+                    "redirect_url": redirect_url,
+                    "mcp_client": {"label": client_label},
+                }
+            )
 
         return RedirectResponse(url=redirect_url, status_code=302)
 
