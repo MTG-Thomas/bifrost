@@ -161,6 +161,7 @@ class BundlerService:
             src_dir = tmp_path / "src"
             out_dir = tmp_path / "dist"
             src_dir.mkdir()
+            out_dir.mkdir()
 
             # 1. Materialize app source from _repo to tempdir
             sources = await self._materialize_source(src_dir, repo_prefix)

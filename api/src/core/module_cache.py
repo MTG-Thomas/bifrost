@@ -94,7 +94,7 @@ async def get_module(path: str) -> CachedModule | None:
         redis_conn = await redis._get_redis()
         await cast(Awaitable[int], redis_conn.sadd(MODULE_INDEX_KEY, path))
     except Exception as e:
-        logger.warning(f"Failed to re-cache S3 module to Redis: {e}")
+        logger.warning(f"Failed to re-cache S3 module to Redis: {log_safe(e)}")
 
     return module
 
@@ -120,7 +120,7 @@ async def set_module(path: str, content: str, content_hash: str) -> None:
     redis_conn = await redis._get_redis()
     await cast(Awaitable[int], redis_conn.sadd(MODULE_INDEX_KEY, path))
 
-    logger.debug(f"Cached module: {path}")
+    logger.debug(f"Cached module: {log_safe(path)}")
 
 
 async def invalidate_module(path: str) -> None:
@@ -141,7 +141,7 @@ async def invalidate_module(path: str) -> None:
     redis_conn = await redis._get_redis()
     await cast(Awaitable[int], redis_conn.srem(MODULE_INDEX_KEY, path))
 
-    logger.debug(f"Invalidated module cache: {path}")
+    logger.debug(f"Invalidated module cache: {log_safe(path)}")
 
 
 async def get_all_module_paths() -> set[str]:
@@ -182,7 +182,9 @@ async def refresh_modules_from_directory(work_dir: Path) -> int:
         content_hash = hashlib.sha256(content_bytes).hexdigest()
         await set_module(rel_path, content_str, content_hash)
         count += 1
-    logger.info(f"Refreshed {count} module(s) in Redis cache from {work_dir}")
+    logger.info(
+        f"Refreshed {count} module(s) in Redis cache from {log_safe(work_dir)}"
+    )
     return count
 
 

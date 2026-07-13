@@ -8,7 +8,7 @@ def _repo_file(*parts: str) -> Path:
         candidate = parent.joinpath(*parts)
         if candidate.exists():
             return candidate
-    pytest.skip(
+    return pytest.skip(
         f"{Path(*parts)} is not available in this packaged test environment",
         allow_module_level=True,
     )

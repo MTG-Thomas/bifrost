@@ -359,28 +359,6 @@ def test_watch_handler_dropped_events_do_not_call_post(tmp_path, monkeypatch):
     assert not changes
     assert not deletes
 
-    # If a caller naively iterated drained sets and posted per file, no posts
-    # would happen because both sets are empty. This documents the contract.
-    posted: list[tuple[str, dict]] = []
-
-    async def fake_post(url, json=None, **kwargs):  # type: ignore[no-untyped-def]
-        posted.append((url, json or {}))
-
-        class _Resp:
-            status_code = 204
-
-        return _Resp()
-
-    # Iterate as the watch batch would (no asyncio needed since we never await)
-    for _ in changes:
-        # Would have called fake_post; we never get here.
-        pass
-    for _ in deletes:
-        pass
-
-    assert posted == []
-
-
 def test_watch_refuses_in_solution_workspace(tmp_path, capsys):
     """`bifrost watch` must refuse inside a Solution workspace (D1): watch only
     syncs to the global _repo/, so running it where a bifrost.solution.yaml is
