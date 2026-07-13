@@ -208,6 +208,21 @@ class TestModuleCacheAsync:
         assert all("\n" not in message for message in messages)
         assert all("\\n" in message for message in messages)
 
+    async def test_refresh_directory_log_is_safe(self):
+        """Caller-controlled directory paths cannot forge additional log lines."""
+        work_dir = MagicMock()
+        work_dir.rglob.return_value = []
+        work_dir.__str__.return_value = "workspace\nforged"
+
+        with patch("src.core.module_cache.logger.info") as info:
+            from src.core.module_cache import refresh_modules_from_directory
+
+            assert await refresh_modules_from_directory(work_dir) == 0
+
+        message = info.call_args.args[0]
+        assert "\n" not in message
+        assert "\\n" in message
+
     async def test_get_all_module_paths(self, mock_redis_client):
         """Test getting all cached module paths."""
         mock_client, mock_redis = mock_redis_client

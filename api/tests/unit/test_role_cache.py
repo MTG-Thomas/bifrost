@@ -147,6 +147,64 @@ class TestGetUserRoles:
         assert role_ids == []
         assert role_names == []
 
+    @pytest.mark.asyncio
+    async def test_read_failure_log_is_safe_and_falls_back_to_db(self):
+        user_id = uuid4()
+        db = _make_db_returning([])
+        populate_redis = AsyncMock()
+
+        with (
+            patch(
+                "shared.role_cache.get_shared_redis",
+                side_effect=[Exception("redis down\nforged"), populate_redis],
+            ),
+            patch("shared.role_cache.logger.warning") as warning,
+        ):
+            assert await get_user_roles(user_id, db) == ([], [])
+
+        message = warning.call_args.args[0]
+        assert "\n" not in message
+        assert "\\n" in message
+
+    @pytest.mark.asyncio
+    async def test_malformed_cache_entry_log_is_safe_and_refetches(self):
+        user_id = uuid4()
+        db = _make_db_returning([])
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = json.dumps(
+            {"role_ids": ["bad\nrole"], "role_names": ["admin"], "v": 1}
+        )
+
+        with (
+            patch("shared.role_cache.get_shared_redis", return_value=mock_redis),
+            patch("shared.role_cache.logger.warning") as warning,
+        ):
+            assert await get_user_roles(user_id, db) == ([], [])
+
+        message = warning.call_args.args[0]
+        assert "\n" not in message
+        assert "\\n" in message
+
+    @pytest.mark.asyncio
+    async def test_cache_population_failure_log_is_safe(self):
+        user_id = uuid4()
+        db = _make_db_returning([])
+        read_redis = AsyncMock()
+        read_redis.get.return_value = None
+
+        with (
+            patch(
+                "shared.role_cache.get_shared_redis",
+                side_effect=[read_redis, Exception("write down\nforged")],
+            ),
+            patch("shared.role_cache.logger.warning") as warning,
+        ):
+            assert await get_user_roles(user_id, db) == ([], [])
+
+        message = warning.call_args.args[0]
+        assert "\n" not in message
+        assert "\\n" in message
+
 
 class TestInvalidateUser:
     """Write path (single user): invalidate clears one entry."""
@@ -272,6 +330,58 @@ class TestInvalidateRole:
         mock_redis = AsyncMock()
         mock_redis.scan_iter = fake_scan_iter
 
-        with patch("shared.role_cache.get_shared_redis", return_value=mock_redis):
+        with (
+            patch("shared.role_cache.get_shared_redis", return_value=mock_redis),
+            patch("shared.role_cache.logger.warning") as warning,
+        ):
             # Must not raise
             await invalidate_role(role_id)
+
+        assert "redis down" in warning.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_invalidate_role_safely_logs_and_drops_malformed_entry(self):
+        role_id = uuid4()
+        cache_key = f"{_ROLE_CACHE_KEY_PREFIX}forged\nuser"
+
+        async def fake_scan_iter(match: str):
+            del match
+            yield cache_key
+
+        mock_redis = AsyncMock()
+        mock_redis.scan_iter = fake_scan_iter
+        mock_redis.get.return_value = "not-json"
+
+        with (
+            patch("shared.role_cache.get_shared_redis", return_value=mock_redis),
+            patch("shared.role_cache.logger.debug") as debug,
+        ):
+            await invalidate_role(role_id)
+
+        mock_redis.delete.assert_awaited_once_with(cache_key)
+        message = debug.call_args_list[0].args[0]
+        assert "\n" not in message
+        assert "\\n" in message
+
+    @pytest.mark.asyncio
+    async def test_invalidate_role_failure_log_is_safe(self):
+        role_id = uuid4()
+
+        async def fake_scan_iter(match: str):
+            del match
+            for key in ():
+                yield key
+            raise Exception("scan down\nforged")
+
+        mock_redis = AsyncMock()
+        mock_redis.scan_iter = fake_scan_iter
+
+        with (
+            patch("shared.role_cache.get_shared_redis", return_value=mock_redis),
+            patch("shared.role_cache.logger.warning") as warning,
+        ):
+            await invalidate_role(role_id)
+
+        message = warning.call_args.args[0]
+        assert "\n" not in message
+        assert "\\n" in message
