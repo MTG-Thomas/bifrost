@@ -669,7 +669,10 @@ class FileOperationsService:
                     Key=old_s3_key,
                 )
             except Exception as e:
-                logger.warning(f"S3 move failed for {old_path} -> {new_path}: {e}")
+                logger.warning(
+                    f"S3 move failed for {log_safe(old_path)} -> "
+                    f"{log_safe(new_path)}: {log_safe(e)}"
+                )
 
         # Update file_index: insert new path, delete old
         new_stmt = insert(FileIndex).values(
@@ -693,4 +696,6 @@ class FileOperationsService:
         del_stmt = delete(FileIndex).where(FileIndex.path == old_path)
         await self.db.execute(del_stmt)
 
-        logger.info(f"File moved: {old_path} -> {new_path}")
+        logger.info(
+            f"File moved: {log_safe(old_path)} -> {log_safe(new_path)}"
+        )

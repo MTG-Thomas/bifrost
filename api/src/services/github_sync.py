@@ -15,7 +15,7 @@ import hashlib
 import logging
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from git import Repo as GitRepo
@@ -31,7 +31,6 @@ from src.services.git_repo_manager import GitRepoManager
 from src.services.github_sync_entity_metadata import extract_entity_metadata
 
 if TYPE_CHECKING:
-    from typing import Literal  # used only in string annotations below
     from src.models.contracts.github import (
         AbortMergeResult,
         CommitResult,
@@ -1213,7 +1212,7 @@ class GitHubSyncService:
 
         # Build entity change list from the diff
         # Diff uses add/change/delete; EntityChange uses added/updated/removed
-        _action_map: dict[str, "Literal['added', 'updated', 'removed']"] = {
+        _action_map: dict[str, Literal["added", "updated", "removed"]] = {
             "add": "added", "change": "updated", "delete": "removed",
         }
         entity_changes: list[EntityChange] = []
