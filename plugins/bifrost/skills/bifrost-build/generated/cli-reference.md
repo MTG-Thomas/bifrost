@@ -1940,7 +1940,7 @@ Usage: solution start [OPTIONS] [APP_SLUG]
 Options:
   --solution TEXT    Install id or unique slug.
   --port INTEGER     Local origin port.  [default: 3000]
-  --host TEXT        Address for the local origin to bind.  [default:
+  --host TEXT        Loopback address for the local origin to bind.  [default:
                      127.0.0.1]
   --public-url TEXT  Browser-visible origin for the local proxy, e.g.
                      https://dev.example.

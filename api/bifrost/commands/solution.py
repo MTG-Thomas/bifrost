@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import io
+import ipaddress
 import json
 import os
 import pathlib
@@ -2176,6 +2177,16 @@ def export_cmd(
         raise SystemExit(rc)
 
 
+def _is_loopback_bind_host(bind_host: str) -> bool:
+    normalized = bind_host.strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 def _vite_child_env(
     base_env: dict[str, str],
     *,
@@ -2212,7 +2223,7 @@ def _vite_child_env(
 @click.option("--solution", "solution_ref", default=None, help="Install id or unique slug.")
 @click.option("--port", default=3000, show_default=True, type=int, help="Local origin port.")
 @click.option("--host", "bind_host", default="127.0.0.1", show_default=True,
-              help="Address for the local origin to bind.")
+              help="Loopback address for the local origin to bind.")
 @click.option("--public-url", default=None,
               help="Browser-visible origin for the local proxy, e.g. https://dev.example.")
 def start_cmd(
@@ -2243,6 +2254,13 @@ def start_cmd(
             "parent directory). Run `bifrost solution init` first."
         )
     descriptor = load_descriptor(workspace)
+
+    if not _is_loopback_bind_host(bind_host):
+        raise click.UsageError(
+            "--host must be a loopback address (for example 127.0.0.1, ::1, or "
+            "localhost). The solution dev proxy injects your CLI access token "
+            "into API requests and must not be exposed to other hosts."
+        )
 
     client = BifrostClient.get_instance(require_auth=True)
     binding = asyncio.run(

@@ -548,7 +548,7 @@ def test_start_spawns_npm_via_resolved_path(tmp_path: Path, monkeypatch):
         assert argv[0] == npm_path, f"npm spawn used {argv[0]!r}, not the which() result"
 
 
-def test_start_accepts_bind_host_and_public_url(tmp_path: Path, monkeypatch):
+def test_start_accepts_loopback_bind_host_and_public_url(tmp_path: Path, monkeypatch):
     import shutil
     import subprocess
 
@@ -638,7 +638,7 @@ def test_start_accepts_bind_host_and_public_url(tmp_path: Path, monkeypatch):
         [
             "start",
             "--host",
-            "0.0.0.0",
+            "localhost",
             "--public-url",
             "http://devbox.test:3000/",
             "--port",
@@ -648,11 +648,25 @@ def test_start_accepts_bind_host_and_public_url(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert served == {
-        "bind_host": "0.0.0.0",
+        "bind_host": "localhost",
         "port": 3000,
         "proxy_origin": "http://devbox.test:3000",
     }
     assert popen_envs[0]["BIFROST_API_URL"] == "http://devbox.test:3000"
+
+
+def test_start_rejects_non_loopback_bind_host(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "bifrost.solution.yaml").write_text("slug: s\nname: S\nscope: org\n")
+
+    result = CliRunner().invoke(
+        solution_group,
+        ["start", "--host", "0.0.0.0", "--port", "3000"],
+    )
+
+    assert result.exit_code != 0
+    assert "--host must be a loopback address" in result.output
+    assert "must not be exposed to other hosts" in result.output
 
 
 def test_handle_solution_renders_clickexception_not_traceback(tmp_path, monkeypatch, capsys):
