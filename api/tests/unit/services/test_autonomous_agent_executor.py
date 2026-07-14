@@ -873,8 +873,14 @@ class TestAutonomousAgentExecutor:
         parent_run.caller_user_id = parent_caller_user_id
         parent_run.caller_email = "operator@example.com"
         parent_run.caller_name = "Example Operator"
+        validated_caller = MagicMock()
+        validated_caller.is_superuser = False
         mock_session._mock_session.get = AsyncMock(
-            side_effect=[parent_run if parent_exists else None, MagicMock()]
+            side_effect=[
+                validated_caller,
+                parent_run if parent_exists else None,
+                MagicMock(),
+            ]
         )
 
         mock_llm = AsyncMock()
