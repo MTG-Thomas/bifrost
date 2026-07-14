@@ -4054,8 +4054,8 @@ def _open_api_body_file(filename: str) -> TextIO:
 def _open_api_body_file_windows(filename: str, base_dir: str, resolved: str) -> TextIO:
     """Open a Windows path and validate containment from the resulting handle."""
     import ctypes
+    import ctypes.wintypes as wintypes
     import msvcrt
-    from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     create_file = kernel32.CreateFileW
