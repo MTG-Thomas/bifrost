@@ -1,4 +1,5 @@
 """Shared helpers for agent execution (used by both chat and autonomous executors)."""
+
 import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -85,7 +86,7 @@ def agent_delegation_slug(name: str) -> str:
 
 def find_delegated_agent(agent: Agent, tool_name: str) -> Agent | None:
     """Match a delegate_to_* tool name to the target agent."""
-    for d in (agent.delegated_agents or []):
+    for d in agent.delegated_agents or []:
         if agent_delegation_slug(d.name) == tool_name and d.is_active:
             return d
     return None
@@ -94,7 +95,7 @@ def find_delegated_agent(agent: Agent, tool_name: str) -> Agent | None:
 async def _get_caller_access(
     session: AsyncSession, caller_user_id: UUID | None
 ) -> tuple[UUID, UUID | None, bool] | None:
-    if caller_user_id is None:
+    if not isinstance(caller_user_id, UUID):
         return None
     result = await session.execute(
         select(User.id, User.organization_id, User.is_superuser).where(
@@ -107,15 +108,14 @@ async def _get_caller_access(
     return row.id, row.organization_id, row.is_superuser
 
 
-def _agent_scope_allows_reference(parent_agent: Agent, referenced_org_id: UUID | None) -> bool:
+def _agent_scope_allows_reference(
+    parent_agent: Agent, referenced_org_id: UUID | None
+) -> bool:
     parent_org_id = getattr(parent_agent, "organization_id", None)
     if referenced_org_id is None:
-        return True
+        return parent_org_id is None or isinstance(parent_org_id, UUID)
     if not isinstance(referenced_org_id, UUID) or not isinstance(parent_org_id, UUID):
-        # ORM instances always expose UUID scope values. Some isolated unit tests
-        # use lightweight mocks without concrete scope data; leave those to the
-        # already-established tool/delegation lookup behavior.
-        return True
+        return False
     return referenced_org_id == parent_org_id
 
 
@@ -128,13 +128,10 @@ async def caller_can_access_workflow_tool(
     caller_is_platform_admin: bool = False,
 ) -> bool:
     """Return whether an agent invocation may execute an attached workflow tool."""
-    if caller_is_platform_admin:
-        return True
-
-    if _agent_scope_allows_reference(
-        parent_agent, getattr(workflow, "organization_id", None)
-    ):
-        return True
+    if caller_user_id is None:
+        return not caller_is_platform_admin and _agent_scope_allows_reference(
+            parent_agent, getattr(workflow, "organization_id", None)
+        )
 
     caller_access = await _get_caller_access(session, caller_user_id)
     if caller_access is not None:
@@ -159,13 +156,10 @@ async def caller_can_access_delegated_agent(
     caller_is_platform_admin: bool = False,
 ) -> bool:
     """Return whether an agent invocation may delegate to an attached agent."""
-    if caller_is_platform_admin:
-        return True
-
-    if _agent_scope_allows_reference(
-        parent_agent, getattr(delegated_agent, "organization_id", None)
-    ):
-        return True
+    if caller_user_id is None:
+        return not caller_is_platform_admin and _agent_scope_allows_reference(
+            parent_agent, getattr(delegated_agent, "organization_id", None)
+        )
 
     caller_access = await _get_caller_access(session, caller_user_id)
     if caller_access is not None:
@@ -459,7 +453,7 @@ def parse_mcp_tool_name(qualified_name: str) -> tuple[UUID, str] | None:
     """
     if not qualified_name.startswith(MCP_TOOL_PREFIX):
         return None
-    payload = qualified_name[len(MCP_TOOL_PREFIX):]
+    payload = qualified_name[len(MCP_TOOL_PREFIX) :]
     parts = payload.split("__", 1)
     if len(parts) != 2:
         return None

@@ -66,6 +66,11 @@ class TestAutonomousAgentExecutor:
         executor = AutonomousAgentExecutor(mock_session)
         executor._tool_workflow_id_map["do_work"] = workflow_id
 
+        workflow = MagicMock()
+        workflow.id = workflow_id
+        workflow.organization_id = mock_agent.organization_id
+        mock_session._mock_session.get = AsyncMock(return_value=workflow)
+
         response = MagicMock()
         response.status.value = "Success"
         response.result = {"ok": True}
@@ -85,6 +90,51 @@ class TestAutonomousAgentExecutor:
         assert kwargs["user_id"] == str(mock_agent.id)
         assert kwargs["user_email"] != "system@internal.gobifrost.com"
         assert kwargs["is_platform_admin"] is False
+
+    @pytest.mark.asyncio
+    async def test_workflow_tool_rechecks_reference_access_at_dispatch(
+        self, mock_session, mock_agent
+    ):
+        """A stale or forged tool call cannot bypass caller access checks."""
+        workflow_id = uuid4()
+        executor = AutonomousAgentExecutor(mock_session)
+        executor._tool_workflow_id_map["restricted_work"] = workflow_id
+
+        workflow = MagicMock()
+        workflow.id = workflow_id
+        workflow.organization_id = uuid4()
+        mock_session._mock_session.get = AsyncMock(return_value=workflow)
+
+        with pytest.raises(ToolError, match="Unknown tool"):
+            await executor._execute_tool(
+                ToolCallRequest(id="tc1", name="restricted_work", arguments={}),
+                mock_agent,
+            )
+
+    @pytest.mark.asyncio
+    async def test_delegation_rechecks_reference_access_at_dispatch(
+        self, mock_session, mock_agent
+    ):
+        """A stale or forged delegation call cannot cross tenant scope."""
+        delegate = MagicMock()
+        delegate.id = uuid4()
+        delegate.name = "Restricted Delegate"
+        delegate.is_active = True
+        delegate.organization_id = uuid4()
+        mock_agent.delegated_agents = [delegate]
+
+        executor = AutonomousAgentExecutor(mock_session)
+        executor._current_run_id = str(uuid4())
+
+        with pytest.raises(ToolError, match="not found"):
+            await executor._execute_delegation(
+                ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_restricted_delegate",
+                    arguments={"task": "restricted"},
+                ),
+                mock_agent,
+            )
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")

@@ -27,13 +27,15 @@ async def _make_org(db: AsyncSession, name_prefix: str) -> Organization:
     return org
 
 
-async def _make_user(db: AsyncSession, org: Organization) -> User:
+async def _make_user(
+    db: AsyncSession, org: Organization, *, is_superuser: bool = False
+) -> User:
     user = User(
         id=uuid4(),
         email=f"agent-auth-{uuid4().hex[:8]}@example.com",
         name="Agent Auth User",
         is_active=True,
-        is_superuser=False,
+        is_superuser=is_superuser,
         is_verified=True,
         is_registered=True,
         organization_id=org.id,
@@ -45,7 +47,13 @@ async def _make_user(db: AsyncSession, org: Organization) -> User:
     return user
 
 
-async def _make_tool(db: AsyncSession, org: Organization, name: str) -> Workflow:
+async def _make_tool(
+    db: AsyncSession,
+    org: Organization | None,
+    name: str,
+    *,
+    access_level: str = "authenticated",
+) -> Workflow:
     workflow = Workflow(
         id=uuid4(),
         name=name,
@@ -53,12 +61,12 @@ async def _make_tool(db: AsyncSession, org: Organization, name: str) -> Workflow
         description=f"{name} description",
         category="General",
         type="tool",
-        organization_id=org.id,
+        organization_id=org.id if org else None,
         path=f"workflows/{name}.py",
         parameters_schema=[],
         tags=[],
         is_active=True,
-        access_level="authenticated",
+        access_level=access_level,
     )
     db.add(workflow)
     await db.flush()
@@ -67,8 +75,10 @@ async def _make_tool(db: AsyncSession, org: Organization, name: str) -> Workflow
 
 async def _make_agent(
     db: AsyncSession,
-    org: Organization,
+    org: Organization | None,
     name: str,
+    *,
+    access_level: AgentAccessLevel = AgentAccessLevel.AUTHENTICATED,
 ) -> Agent:
     agent = Agent(
         id=uuid4(),
@@ -76,8 +86,8 @@ async def _make_agent(
         description=f"{name} description",
         system_prompt="You are a test agent.",
         channels=["chat"],
-        access_level=AgentAccessLevel.AUTHENTICATED,
-        organization_id=org.id,
+        access_level=access_level,
+        organization_id=org.id if org else None,
         is_active=True,
         knowledge_sources=[],
         system_tools=[],
@@ -101,6 +111,7 @@ async def test_resolve_agent_tools_hides_cross_org_workflow_tools_for_tenant_use
     tool_b = await _make_tool(db_session, org_b, "tenant_b_secret_tool")
     agent = await _make_agent(db_session, org_a, "Tenant A Agent")
     set_committed_value(agent, "tools", [tool_a, tool_b])
+    set_committed_value(agent, "delegated_agents", [])
     await db_session.flush()
 
     tools, id_map = await resolve_agent_tools(
@@ -125,6 +136,7 @@ async def test_resolve_agent_tools_hides_cross_org_delegates_for_tenant_user(
     delegate_a = await _make_agent(db_session, org_a, "Tenant A Delegate")
     delegate_b = await _make_agent(db_session, org_b, "Tenant B Delegate")
     agent = await _make_agent(db_session, org_a, "Tenant A Parent")
+    set_committed_value(agent, "tools", [])
     set_committed_value(agent, "delegated_agents", [delegate_a, delegate_b])
     await db_session.flush()
 
@@ -145,6 +157,7 @@ async def test_resolve_agent_tools_keeps_cross_org_references_for_platform_admin
 ):
     org_a = await _make_org(db_session, "org-a")
     org_b = await _make_org(db_session, "org-b")
+    admin = await _make_user(db_session, org_a, is_superuser=True)
     tool_b = await _make_tool(db_session, org_b, "tenant_b_secret_tool")
     delegate_b = await _make_agent(db_session, org_b, "Tenant B Delegate")
     agent = await _make_agent(db_session, org_a, "Tenant A Parent")
@@ -155,6 +168,7 @@ async def test_resolve_agent_tools_keeps_cross_org_references_for_platform_admin
     tools, id_map = await resolve_agent_tools(
         agent,
         db_session,
+        caller_user_id=admin.id,
         caller_is_platform_admin=True,
     )
 
@@ -162,3 +176,65 @@ async def test_resolve_agent_tools_keeps_cross_org_references_for_platform_admin
     assert "wf_tenant_b_secret_tool" in names
     assert "delegate_to_tenant_b_delegate" in names
     assert id_map == {"wf_tenant_b_secret_tool": tool_b.id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("global_scope", [False, True])
+async def test_resolve_agent_tools_hides_role_restricted_references(
+    db_session: AsyncSession,
+    global_scope: bool,
+):
+    org = await _make_org(db_session, "tenant")
+    user = await _make_user(db_session, org)
+    reference_org = None if global_scope else org
+    tool = await _make_tool(
+        db_session,
+        reference_org,
+        f"restricted_tool_{global_scope}",
+        access_level="role_based",
+    )
+    delegate = await _make_agent(
+        db_session,
+        reference_org,
+        f"Restricted Delegate {global_scope}",
+        access_level=AgentAccessLevel.ROLE_BASED,
+    )
+    agent = await _make_agent(db_session, org, "Tenant Parent")
+    set_committed_value(agent, "tools", [tool])
+    set_committed_value(agent, "delegated_agents", [delegate])
+    await db_session.flush()
+
+    tools, id_map = await resolve_agent_tools(
+        agent,
+        db_session,
+        caller_user_id=user.id,
+    )
+
+    assert tools == []
+    assert id_map == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_user_id", [None, uuid4(), "not-a-uuid"])
+async def test_resolve_agent_tools_rejects_unvalidated_platform_admin_claim(
+    db_session: AsyncSession,
+    caller_user_id,
+):
+    org_a = await _make_org(db_session, "org-a")
+    org_b = await _make_org(db_session, "org-b")
+    tool_b = await _make_tool(db_session, org_b, "tenant_b_secret_tool")
+    delegate_b = await _make_agent(db_session, org_b, "Tenant B Delegate")
+    agent = await _make_agent(db_session, org_a, "Tenant A Parent")
+    set_committed_value(agent, "tools", [tool_b])
+    set_committed_value(agent, "delegated_agents", [delegate_b])
+    await db_session.flush()
+
+    tools, id_map = await resolve_agent_tools(
+        agent,
+        db_session,
+        caller_user_id=caller_user_id,
+        caller_is_platform_admin=True,
+    )
+
+    assert tools == []
+    assert id_map == {}
