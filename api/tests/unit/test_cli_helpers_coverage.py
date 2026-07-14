@@ -1,5 +1,6 @@
 import base64
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -379,6 +380,48 @@ def test_handle_api_body_file_rejects_canonicalized_symlink_escape(tmp_path, mon
 
     assert cli.handle_api(["POST", "/api/workflows", "@body.json"]) == 1
     assert "outside the current working directory" in capsys.readouterr().err
+
+
+def test_safe_api_body_path_supports_root_working_directory(monkeypatch):
+    monkeypatch.setattr(cli.os, "getcwd", lambda: "/")
+    monkeypatch.setattr(cli.os.path, "realpath", lambda path: path)
+
+    assert cli._safe_api_body_path("/body.json") == ("/", "/body.json")
+
+
+def test_open_api_body_file_rejects_path_swapped_to_symlink(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "body.json").write_text('{"secret": true}', encoding="utf-8")
+    swapped = workspace / "swapped"
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(swapped), str(outside)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        swapped.symlink_to(outside, target_is_directory=True)
+    candidate = swapped / "body.json"
+
+    # Model a swap after canonical validation: the opener receives the path
+    # that was valid before the attacker replaced it with an escaping symlink.
+    monkeypatch.setattr(
+        cli,
+        "_safe_api_body_path",
+        lambda _filename: (str(workspace), str(candidate)),
+    )
+
+    try:
+        with pytest.raises((OSError, ValueError)):
+            cli._open_api_body_file("body.json")
+    finally:
+        if os.name == "nt":
+            os.rmdir(swapped)
+        else:
+            swapped.unlink()
 
 
 @pytest.mark.asyncio

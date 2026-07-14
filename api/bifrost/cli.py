@@ -32,7 +32,7 @@ import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
@@ -3970,7 +3970,7 @@ Examples:
         # Support @filename for reading body from file
         if raw.startswith("@"):
             try:
-                with open(_safe_api_body_path(raw[1:]), encoding="utf-8") as body_file:
+                with _open_api_body_file(raw[1:]) as body_file:
                     body = json.load(body_file)
             except Exception as e:
                 print(f"Error reading file: {e}", file=sys.stderr)
@@ -4001,13 +4001,129 @@ Examples:
     return asyncio.run(_api_request(method, endpoint, body, client=client))
 
 
-def _safe_api_body_path(filename: str) -> str:
-    """Resolve an ``@file`` API body without escaping the invocation directory."""
+def _safe_api_body_path(filename: str) -> tuple[str, str]:
+    """Resolve an ``@file`` API body within the invocation directory."""
     base_dir = os.path.realpath(os.getcwd())
     resolved = os.path.realpath(filename)
-    if resolved != base_dir and not resolved.startswith(base_dir + os.sep):
+    if resolved == base_dir or not _path_is_within(base_dir, resolved):
         raise ValueError(f"path {filename!r} is outside the current working directory")
-    return resolved
+    return base_dir, resolved
+
+
+def _path_is_within(base_dir: str, candidate: str) -> bool:
+    """Return whether two canonical paths share the same path-aware root."""
+    try:
+        common = os.path.commonpath((base_dir, candidate))
+    except ValueError:
+        return False
+    return os.path.normcase(common) == os.path.normcase(base_dir)
+
+
+def _open_api_body_file(filename: str) -> TextIO:
+    """Open a validated API body without re-resolving an attacker-swappable path."""
+    base_dir, resolved = _safe_api_body_path(filename)
+
+    if os.name == "nt":
+        return _open_api_body_file_windows(filename, base_dir, resolved)
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if os.open in os.supports_dir_fd and hasattr(os, "O_DIRECTORY") and nofollow:
+        parts = pathlib.Path(os.path.relpath(resolved, base_dir)).parts
+        directory_fd = os.open(base_dir, os.O_RDONLY | os.O_DIRECTORY | nofollow)
+        try:
+            opened_base = os.fstat(directory_fd)
+            current_base = os.stat(".")
+            if (opened_base.st_dev, opened_base.st_ino) != (current_base.st_dev, current_base.st_ino):
+                raise ValueError("current working directory changed while opening API body")
+            for component in parts[:-1]:
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | nofollow,
+                    dir_fd=directory_fd,
+                )
+                os.close(directory_fd)
+                directory_fd = next_fd
+            file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=directory_fd)
+        finally:
+            os.close(directory_fd)
+        return os.fdopen(file_fd, encoding="utf-8")
+
+    raise OSError("secure API body file reads are not supported on this platform")
+
+
+def _open_api_body_file_windows(filename: str, base_dir: str, resolved: str) -> TextIO:
+    """Open a Windows path and validate containment from the resulting handle."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+    get_final_path.restype = wintypes.DWORD
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    handle = create_file(
+        resolved,
+        generic_read,
+        share_read_write_delete,
+        None,
+        open_existing,
+        file_attribute_normal,
+        None,
+    )
+    if handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    try:
+        capacity = 1024
+        while True:
+            buffer = ctypes.create_unicode_buffer(capacity)
+            length = get_final_path(handle, buffer, capacity, 0)
+            if length == 0:
+                raise ctypes.WinError(ctypes.get_last_error())
+            if length < capacity:
+                break
+            capacity = length + 1
+
+        final_path = buffer.value
+        if final_path.startswith("\\\\?\\UNC\\"):
+            final_path = "\\\\" + final_path[8:]
+        elif final_path.startswith("\\\\?\\"):
+            final_path = final_path[4:]
+        final_path = os.path.realpath(final_path)
+        if not _path_is_within(base_dir, final_path):
+            raise ValueError(f"path {filename!r} changed while opening")
+
+        file_fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        handle = None  # The Python file descriptor now owns the OS handle.
+        try:
+            return os.fdopen(file_fd, encoding="utf-8")
+        except Exception:
+            os.close(file_fd)
+            raise
+    finally:
+        if handle is not None:
+            close_handle(handle)
 
 
 def _validate_api_endpoint(endpoint: str) -> str | None:
