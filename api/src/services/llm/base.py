@@ -128,7 +128,6 @@ class BaseLLMClient(ABC):
         Returns:
             LLMResponse with content and/or tool calls
         """
-        ...
 
     @abstractmethod
     def stream(
@@ -151,13 +150,11 @@ class BaseLLMClient(ABC):
         Yields:
             LLMStreamChunk objects as they arrive
         """
-        ...
 
     @property
     @abstractmethod
     def provider_name(self) -> str:
         """Return the provider name (e.g., 'openai', 'anthropic')."""
-        ...
 
     @property
     def model_name(self) -> str:

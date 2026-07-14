@@ -30,27 +30,22 @@ class FileBackend(ABC):
     @abstractmethod
     async def read(self, path: str, location: Location, scope: str | None = None) -> bytes:
         """Read file content."""
-        ...
 
     @abstractmethod
     async def write(self, path: str, content: bytes, location: Location, updated_by: str = "system", scope: str | None = None) -> None:
         """Write file content."""
-        ...
 
     @abstractmethod
     async def delete(self, path: str, location: Location, scope: str | None = None) -> None:
         """Delete a file."""
-        ...
 
     @abstractmethod
     async def list(self, directory: str, location: Location, scope: str | None = None) -> list[str]:
         """List files in a directory."""
-        ...
 
     @abstractmethod
     async def exists(self, path: str, location: Location, scope: str | None = None) -> bool:
         """Check if a file exists."""
-        ...
 
 
 class LocalBackend(FileBackend):

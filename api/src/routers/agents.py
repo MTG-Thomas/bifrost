@@ -1102,6 +1102,14 @@ async def upload_agent_logo(
             detail=f"Agent {agent_id} not found",
         )
     assert_not_solution_managed(agent)
+    if not user.is_platform_admin and (
+        agent.owner_user_id != user.user_id
+        or agent.access_level != AgentAccessLevel.PRIVATE
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only edit your own private agents",
+        )
 
     if file.content_type not in LOGO_ALLOWED_CONTENT_TYPES:
         raise HTTPException(

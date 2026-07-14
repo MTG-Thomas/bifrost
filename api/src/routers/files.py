@@ -552,6 +552,14 @@ def _tiers_for_backend_mode(tiers: list[_T], mode: str) -> list[_T]:
     return tiers
 
 
+def _require_local_mode_superuser(mode: str, user: UserPrincipal) -> None:
+    if mode == "local" and not user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Local file mode is restricted to superusers.",
+        )
+
+
 async def _filter_listed_paths(
     ctx: Context,
     *,
@@ -1096,6 +1104,7 @@ async def read_file(
 ) -> FileReadResponse:
     """Read a file from a managed or custom location."""
     try:
+        _require_local_mode_superuser(request.mode, ctx.user)
         from src.services.solution_scope import file_read_tiers
 
         if request.location != "workspace":
@@ -1175,6 +1184,7 @@ async def write_file(
 ) -> None:
     """Write a file to a managed or custom location."""
     try:
+        _require_local_mode_superuser(request.mode, ctx.user)
         effective_scope = _resolve_effective_scope(ctx, request.location, request.scope)
         solution_id = _ctx_solution_id(ctx, request.location)
         await _require_declared_solution_file_location(
@@ -1243,6 +1253,7 @@ async def delete_file(
 ) -> None:
     """Delete a file from a managed or custom location."""
     try:
+        _require_local_mode_superuser(request.mode, ctx.user)
         effective_scope = _resolve_effective_scope(ctx, request.location, request.scope)
         solution_id = _ctx_solution_id(ctx, request.location)
         await _require_declared_solution_file_location(
@@ -1301,6 +1312,7 @@ async def list_files_simple(
 ) -> FileListResponse:
     """List files in a directory (simple SDK-focused endpoint)."""
     try:
+        _require_local_mode_superuser(request.mode, ctx.user)
         from src.services.solution_scope import file_read_tiers
 
         if request.location != "workspace":
@@ -1454,6 +1466,7 @@ async def file_exists(
 ) -> FileExistsResponse:
     """Check if a file exists."""
     try:
+        _require_local_mode_superuser(request.mode, ctx.user)
         from src.services.solution_scope import file_read_tiers
 
         if request.location != "workspace":

@@ -4,6 +4,7 @@ Unit tests for Distributed Lock Service.
 Tests the Redis-based distributed locking for exclusive operations.
 """
 
+import importlib
 import json
 import pytest
 from datetime import datetime, timedelta, timezone
@@ -327,7 +328,7 @@ class TestLockServiceSingleton:
 
     def test_get_lock_service_returns_singleton(self):
         """Test that get_lock_service returns same instance."""
-        import src.core.locks as module
+        module = importlib.import_module("src.core.locks")
 
         # Reset singleton
         module._lock_service = None
@@ -344,7 +345,7 @@ class TestLockServiceSingleton:
 
     async def test_close_lock_service(self):
         """Test closing singleton lock service."""
-        import src.core.locks as module
+        module = importlib.import_module("src.core.locks")
 
         # Reset singleton
         module._lock_service = None

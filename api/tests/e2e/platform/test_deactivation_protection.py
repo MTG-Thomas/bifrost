@@ -307,7 +307,7 @@ class TestDeactivationProtection:
         path = "test_replacements.py"
 
         # Step 1: Save initial two-workflow file
-        result = await storage.write_file(path, TWO_WORKFLOW_CODE.encode("utf-8"), updated_by="test")
+        await storage.write_file(path, TWO_WORKFLOW_CODE.encode("utf-8"), updated_by="test")
         await db_session.commit()
 
         # Register both workflows in DB (auto-discovery removed)
@@ -675,7 +675,7 @@ def test_provider():
     """A test data provider."""
     return []
 '''
-        result = await storage.write_file(path, dp_code.encode("utf-8"), updated_by="test")
+        await storage.write_file(path, dp_code.encode("utf-8"), updated_by="test")
         await db_session.commit()
 
         # Register the data provider in DB (auto-discovery removed)
