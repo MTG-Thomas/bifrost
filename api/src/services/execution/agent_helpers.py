@@ -24,6 +24,15 @@ from src.repositories.workflows import WorkflowRepository
 
 logger = logging.getLogger(__name__)
 
+CallerAccess = tuple[UUID, UUID | None, bool]
+
+
+class _UnresolvedCallerAccess:
+    pass
+
+
+_UNRESOLVED_CALLER_ACCESS = _UnresolvedCallerAccess()
+
 
 # Service-token freshness margin for autonomous-run tool inclusion. We
 # only filter tools out at planning time when the service token is plainly
@@ -94,7 +103,7 @@ def find_delegated_agent(agent: Agent, tool_name: str) -> Agent | None:
 
 async def _get_caller_access(
     session: AsyncSession, caller_user_id: UUID | None
-) -> tuple[UUID, UUID | None, bool] | None:
+) -> CallerAccess | None:
     if not isinstance(caller_user_id, UUID):
         return None
     result = await session.execute(
@@ -126,6 +135,9 @@ async def caller_can_access_workflow_tool(
     *,
     caller_user_id: UUID | None = None,
     caller_is_platform_admin: bool = False,
+    caller_access: CallerAccess | None | _UnresolvedCallerAccess = (
+        _UNRESOLVED_CALLER_ACCESS
+    ),
 ) -> bool:
     """Return whether an agent invocation may execute an attached workflow tool."""
     if caller_user_id is None:
@@ -133,7 +145,10 @@ async def caller_can_access_workflow_tool(
             parent_agent, getattr(workflow, "organization_id", None)
         )
 
-    caller_access = await _get_caller_access(session, caller_user_id)
+    # Authenticated callers are always authorized from the database-derived
+    # access tuple; the platform-admin claim only gates callerless execution.
+    if isinstance(caller_access, _UnresolvedCallerAccess):
+        caller_access = await _get_caller_access(session, caller_user_id)
     if caller_access is not None:
         user_id, organization_id, is_superuser = caller_access
         repo = WorkflowRepository(
@@ -154,6 +169,9 @@ async def caller_can_access_delegated_agent(
     *,
     caller_user_id: UUID | None = None,
     caller_is_platform_admin: bool = False,
+    caller_access: CallerAccess | None | _UnresolvedCallerAccess = (
+        _UNRESOLVED_CALLER_ACCESS
+    ),
 ) -> bool:
     """Return whether an agent invocation may delegate to an attached agent."""
     if caller_user_id is None:
@@ -161,7 +179,10 @@ async def caller_can_access_delegated_agent(
             parent_agent, getattr(delegated_agent, "organization_id", None)
         )
 
-    caller_access = await _get_caller_access(session, caller_user_id)
+    # Authenticated callers are always authorized from the database-derived
+    # access tuple; the platform-admin claim only gates callerless execution.
+    if isinstance(caller_access, _UnresolvedCallerAccess):
+        caller_access = await _get_caller_access(session, caller_user_id)
     if caller_access is not None:
         user_id, organization_id, is_superuser = caller_access
         repo = AgentRepository(
@@ -225,6 +246,11 @@ async def resolve_agent_tools(
     tool_definitions: list[ToolDefinition] = []
     tool_workflow_id_map: dict[str, UUID] = {}
     seen_names: dict[str, str] = {}
+    caller_access = (
+        await _get_caller_access(session, caller_user_id)
+        if caller_user_id is not None
+        else None
+    )
 
     # 1. System tools first (they always win conflicts)
     configured_system_tool_ids = list(agent.system_tools or [])
@@ -264,6 +290,7 @@ async def resolve_agent_tools(
             session,
             caller_user_id=caller_user_id,
             caller_is_platform_admin=caller_is_platform_admin,
+            caller_access=caller_access,
         ):
             tool_ids.append(tool.id)
         else:
@@ -305,6 +332,7 @@ async def resolve_agent_tools(
                 session,
                 caller_user_id=caller_user_id,
                 caller_is_platform_admin=caller_is_platform_admin,
+                caller_access=caller_access,
             ):
                 logger.warning(
                     "Hiding delegated agent %s from agent %s because the caller cannot access it",

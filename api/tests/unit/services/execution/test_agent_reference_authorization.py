@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -12,6 +13,7 @@ from src.models.orm.agents import Agent
 from src.models.orm.organizations import Organization
 from src.models.orm.users import User
 from src.models.orm.workflows import Workflow
+from src.services.execution import agent_helpers
 from src.services.execution.agent_helpers import resolve_agent_tools
 
 
@@ -204,14 +206,20 @@ async def test_resolve_agent_tools_hides_role_restricted_references(
     set_committed_value(agent, "delegated_agents", [delegate])
     await db_session.flush()
 
-    tools, id_map = await resolve_agent_tools(
-        agent,
-        db_session,
-        caller_user_id=user.id,
-    )
+    with patch.object(
+        agent_helpers,
+        "_get_caller_access",
+        wraps=agent_helpers._get_caller_access,
+    ) as get_caller_access:
+        tools, id_map = await resolve_agent_tools(
+            agent,
+            db_session,
+            caller_user_id=user.id,
+        )
 
     assert tools == []
     assert id_map == {}
+    get_caller_access.assert_awaited_once_with(db_session, user.id)
 
 
 @pytest.mark.asyncio
