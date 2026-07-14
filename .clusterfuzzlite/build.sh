@@ -2,7 +2,7 @@
 
 cd "$SRC/bifrost"
 
-pip3 install --target "$OUT/deps" -r .clusterfuzzlite/requirements.txt
+pip3 install --require-hashes --target "$OUT/deps" -r .clusterfuzzlite/requirements.lock
 cp -R api "$OUT/api"
 
 for fuzzer in api/fuzz/atheris_targets/*_fuzzer.py; do

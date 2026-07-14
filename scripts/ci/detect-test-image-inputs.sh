@@ -37,7 +37,7 @@ elif [ "$event_name" = "pull_request" ]; then
     changed_files="$(git diff --name-only "origin/$base_ref...HEAD" || true)"
   fi
 
-  api_pattern='^(api/Dockerfile\.dev|pyproject\.toml|requirements(-pyright)?\.lock|api/src/services/app_compiler/(package(-lock)?\.json|compile\.js|tailwind\.js)|api/src/services/app_bundler/package(-lock)?\.json|api/src/services/sdk_package/(package\.json|build_sdk\.js)|client/src/lib/app-sdk/.*)$'
+  api_pattern='^(api/Dockerfile\.dev|pyproject\.toml|requirements(-pyright)?\.lock|api/src/services/app_compiler/(package(-lock)?\.json|compile\.js|tailwind\.js)|api/src/services/app_bundler/package(-lock)?\.json|api/src/services/sdk_package/(package(-lock)?\.json|build_sdk\.js)|client/src/lib/app-sdk/.*)$'
   client_pattern='^(client/Dockerfile\.dev|client/package(-lock)?\.json)$'
 
   if printf '%s\n' "$changed_files" | grep -Eq "$api_pattern"; then
