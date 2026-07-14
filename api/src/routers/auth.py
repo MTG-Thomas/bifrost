@@ -1751,7 +1751,6 @@ async def request_device_code(
     Returns:
         DeviceCodeResponse with device_code, user_code, verification URL, and polling interval
     """
-    import json
     import uuid
 
     # Rate limiting
@@ -1822,8 +1821,6 @@ async def exchange_device_token(
     Returns:
         DeviceTokenResponse with tokens or DeviceTokenErrorResponse with error
     """
-    import json
-
     # Rate limiting (more lenient for polling)
     client_ip = get_client_ip(request)
     await auth_limiter.check("device_token", client_ip)
@@ -2014,8 +2011,6 @@ async def setup_passkey_verify(
     Raises:
         HTTPException: If token is invalid/expired or verification fails
     """
-    import json
-
     from src.services.passkey_service import PasskeyService
 
     # Rate limiting
@@ -2098,8 +2093,6 @@ async def authorize_device(
     Raises:
         HTTPException: If user_code is invalid or expired
     """
-    import json
-
     r = await get_shared_redis()
 
     # Look up device_code from user_code (reverse index)
@@ -2232,8 +2225,6 @@ async def register_from_invite_passkey_verify(
     db: DbSession,
 ) -> SetupPasskeyVerifyResponse:
     """Complete invite registration by verifying a passkey and logging the user in."""
-    import json
-
     from src.services.passkey_service import PasskeyService
 
     invite_svc = UserInviteService(db)

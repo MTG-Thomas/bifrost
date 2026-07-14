@@ -4,6 +4,10 @@ const BASE = "http://localhost:34212";
 const SLUG = "gallery";
 const NAME = "Shared Gallery";
 const log = (...a) => console.log("[setup]", ...a);
+const BASE_URL = new URL(BASE);
+if (!["localhost", "127.0.0.1"].includes(BASE_URL.hostname)) {
+	throw new Error(`files gallery demo setup only uploads fixtures to localhost, got ${BASE_URL.origin}`);
+}
 
 async function login(username, password = "password") {
 	const r = await fetch(`${BASE}/api/auth/login`, {
@@ -20,7 +24,10 @@ if (!tok) throw new Error("admin login failed");
 const H = (t = tok) => ({ Authorization: `Bearer ${t}`, "Content-Type": "application/json" });
 
 async function api(method, path, body, t = tok) {
-	const r = await fetch(`${BASE}${path}`, { method, headers: H(t), body: body ? JSON.stringify(body) : undefined });
+	const url = new URL(path, BASE_URL);
+	if (url.origin !== BASE_URL.origin) throw new Error(`refusing cross-origin demo request: ${url.href}`);
+	const payload = body ? JSON.stringify(body) : undefined;
+	const r = await fetch(url, { method, headers: H(t), body: payload }); // codeql[js/file-access-to-http] Fixed demo fixtures are uploaded only to the guarded localhost Bifrost API.
 	const txt = await r.text();
 	let json; try { json = JSON.parse(txt); } catch { json = txt; }
 	return { ok: r.ok, status: r.status, json };

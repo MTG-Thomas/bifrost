@@ -233,7 +233,7 @@ async def test_combined_lifespan_yields_without_mcp_lifespan(monkeypatch):
         yield
 
     monkeypatch.setattr(main, "app_lifespan", fake_app_lifespan)
-    monkeypatch.setattr(main, "_get_mcp_asgi_app", lambda: SimpleNamespace())
+    monkeypatch.setattr(main, "_get_mcp_asgi_app", SimpleNamespace)
 
     async with main.lifespan(SimpleNamespace()):
         yielded = True

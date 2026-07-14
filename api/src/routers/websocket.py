@@ -6,6 +6,7 @@ Replaces Azure Web PubSub with native FastAPI WebSockets.
 """
 
 import asyncio
+import copy
 import logging
 from dataclasses import dataclass
 from typing import Annotated, Any, cast
@@ -16,6 +17,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from shared.claims.preresolve import preresolve_for_policies
 from shared.policies.probe import is_subscribe_authorized
 from shared.policy_rules import PolicyRuleDomainMismatch, PolicyRuleNotFound, resolve_policy_refs
 from src.repositories.policy_rule import PolicyRuleRepository
@@ -173,8 +175,11 @@ def _invalidate_table_policy_cache(table_id: str) -> None:
     _table_policy_cache.pop(table_id, None)
 
 
-async def _load_policies_for_table(table_id: str) -> TablePolicies | None:
-    """Load and resolve policies for a table by id (UUID) or name.
+async def _load_policies_for_table(
+    table_id: str,
+    user: UserPrincipal,
+) -> TablePolicies | None:
+    """Load policies and safely pre-resolve their custom claims.
 
     Returns None if the table doesn't exist.
 
@@ -259,6 +264,14 @@ async def _load_policies_for_table(table_id: str) -> TablePolicies | None:
             )
             return TablePolicies()
 
+        await preresolve_for_policies(
+            user,
+            policies,
+            db,
+            raw.org_id,
+            raw.solution_id,
+        )
+
     return policies
 
 
@@ -278,6 +291,18 @@ async def _populate_user_roles(user: UserPrincipal) -> None:
         role_ids, role_names = await get_user_roles(user.user_id, db)
         user.role_ids = role_ids
         user.role_names = role_names
+
+
+def _fresh_table_policy_user(user: UserPrincipal) -> UserPrincipal:
+    """Copy a websocket principal without reusing custom-claim values.
+
+    Websocket principals live across tables and policy changes. Custom claims
+    can be solution-scoped and mutable, so each evaluation must resolve them
+    afresh rather than sharing a name-keyed cache across subscriptions.
+    """
+    policy_user = copy.copy(user)
+    policy_user.claims = {}  # type: ignore[attr-defined]
+    return policy_user
 
 
 def _make_table_dispatcher(websocket: WebSocket, user: UserPrincipal) -> Any:
@@ -335,7 +360,8 @@ async def _handle_table_message(
     if msg_type != "document_change":
         return
 
-    policies = await _load_policies_for_table(table_id)
+    policy_user = _fresh_table_policy_user(user)
+    policies = await _load_policies_for_table(table_id, policy_user)
     if policies is None:
         return
 
@@ -343,7 +369,7 @@ async def _handle_table_message(
         old_row=payload.get("old_row"),
         new_row=payload.get("new_row"),
         policies=policies,
-        user=user,
+        user=policy_user,
         user_filter=sub.get("filter"),
     )
     if decision is None:
@@ -372,8 +398,9 @@ async def _re_evaluate_subscription(
     table_id: str,
 ) -> None:
     """Re-run subscribe-time authorization after a policy edit; revoke if no."""
-    policies = await _load_policies_for_table(table_id)
-    if policies is None or not is_subscribe_authorized(policies, user):
+    policy_user = _fresh_table_policy_user(user)
+    policies = await _load_policies_for_table(table_id, policy_user)
+    if policies is None or not is_subscribe_authorized(policies, policy_user):
         await websocket.send_json({
             "type": "subscription_revoked",
             "channel": f"table:{table_id}",
@@ -415,7 +442,9 @@ async def _authorize_table_subscribe(
     # would NOT have reached us (no subscriber to fan out to). Force a
     # fresh load on subscribe to close that staleness window.
     _invalidate_table_policy_cache(canonical_id)
-    policies = await _load_policies_for_table(canonical_id)
+    await _populate_user_roles(user)
+    policy_user = _fresh_table_policy_user(user)
+    policies = await _load_policies_for_table(canonical_id, policy_user)
     if policies is None:
         await websocket.send_json({
             "type": "error",
@@ -424,8 +453,7 @@ async def _authorize_table_subscribe(
         })
         return None
 
-    await _populate_user_roles(user)
-    if not is_subscribe_authorized(policies, user):
+    if not is_subscribe_authorized(policies, policy_user):
         await websocket.send_json({
             "type": "error",
             "channel": spec.name,

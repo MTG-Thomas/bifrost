@@ -257,22 +257,6 @@ class TestDetectPendingDeactivationsLogic:
             )
             assert info.decorator_type == decorator_type
 
-    def test_similarity_threshold_concept(self):
-        """Test that similarity threshold (0.2) is documented for filtering."""
-        # The service uses 0.2 as the threshold for including replacements
-        # Scores >= 0.2 are included, < 0.2 are filtered out
-        threshold = 0.2
-
-        # These should be included
-        assert 0.85 >= threshold
-        assert 0.5 >= threshold
-        assert 0.2 >= threshold
-
-        # These should be filtered
-        assert 0.19 < threshold
-        assert 0.0 < threshold
-
-
 class TestApplyWorkflowReplacements:
     """Tests for _apply_workflow_replacements function.
 

@@ -14,7 +14,7 @@ Organization Scoping:
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from uuid import UUID
 
 from datetime import datetime, timedelta, timezone
@@ -22,9 +22,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, distinct, func, or_, select, union_all, update
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import existing Pydantic models for API compatibility
 from src.models.enums import ExecutionStatus
@@ -656,7 +654,7 @@ async def get_workflow_usage_stats(
 
 async def _insert_scheduled_execution(
     *,
-    db: "AsyncSession",
+    db: AsyncSession,
     workflow_id: UUID,
     workflow_name: str,
     parameters: dict,

@@ -6,6 +6,7 @@ from src.services.webhooks.adapters.generic import GenericWebhookAdapter
 from src.services.webhooks.adapters.microsoft_graph import MicrosoftGraphAdapter
 
 __all__ = [
+    "BUILTIN_ADAPTERS",
     "GenericWebhookAdapter",
     "MicrosoftGraphAdapter",
 ]

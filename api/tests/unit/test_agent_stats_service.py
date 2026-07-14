@@ -11,7 +11,28 @@ from src.models.enums import AgentAccessLevel
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent, Conversation
 from src.models.orm.ai_usage import AIUsage
-from src.services.agent_stats import get_agent_stats, get_fleet_stats
+from src.services.agent_stats import (
+    MAX_STATS_WINDOW_DAYS,
+    _build_runs_by_day,
+    get_agent_stats,
+    get_fleet_stats,
+)
+
+
+@pytest.mark.parametrize("window_days", [0, -1, MAX_STATS_WINDOW_DAYS + 1, 10_000_000])
+def test_runs_by_day_rejects_unbounded_windows(window_days):
+    with pytest.raises(ValueError, match="window_days must be between"):
+        _build_runs_by_day([], window_days=window_days, now=datetime.now(timezone.utc))
+
+
+def test_runs_by_day_accepts_maximum_window():
+    buckets = _build_runs_by_day(
+        [],
+        window_days=MAX_STATS_WINDOW_DAYS,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert len(buckets) == MAX_STATS_WINDOW_DAYS
 
 
 @pytest_asyncio.fixture

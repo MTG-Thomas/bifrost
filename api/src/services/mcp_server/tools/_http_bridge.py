@@ -34,7 +34,6 @@ Auth strategy — two mutually exclusive paths:
 
 from __future__ import annotations
 
-import logging
 import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -43,8 +42,6 @@ import httpx
 
 if TYPE_CHECKING:
     from src.services.mcp_server.server import MCPContext
-
-logger = logging.getLogger(__name__)
 
 # When set (e.g. in E2E tests), route parity-tool REST calls over the network
 # to an already-running API instance instead of the in-process FastAPI app.

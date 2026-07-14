@@ -35,6 +35,7 @@ def test_content_hash_none_skips_validation():
     """When content_hash is None, validation should be skipped (no error)."""
     content_hash = None
     workflow_code = "print('hello')"
+    assert workflow_code
     # Simulates the worker logic: if content_hash is None, skip validation
     if content_hash and workflow_code:
         actual_hash = hashlib.sha256(workflow_code.encode("utf-8")).hexdigest()
