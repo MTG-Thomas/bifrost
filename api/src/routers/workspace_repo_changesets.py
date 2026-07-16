@@ -18,7 +18,9 @@ from src.models.contracts.workspace_repo_changesets import (
 from src.services.workspace_repo_changesets import (
     ChangesetConflict,
     ChangesetInvalid,
+    OrganizationScopeRequired,
     WorkspaceRepoChangesetService,
+    require_organization_id,
 )
 
 router = APIRouter(
@@ -27,7 +29,8 @@ router = APIRouter(
 )
 
 
-async def _service(db: DbSession, org_id) -> WorkspaceRepoChangesetService:
+async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangesetService:
+    org_id = require_organization_id(org_id)
     from src.services.github_config import get_github_config
     from src.services.github_sync import GitHubSyncService
 
@@ -50,6 +53,8 @@ def _translate(exc: Exception) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         )
+    if isinstance(exc, OrganizationScopeRequired):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     if isinstance(exc, KeyError):
         return HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

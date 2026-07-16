@@ -17,6 +17,7 @@ ChangesetStatus = Literal[
     "aborted",
     "conflicted",
     "failed",
+    "recovery_required",
 ]
 
 
@@ -82,6 +83,7 @@ class WorkspaceRepoChangesetResponse(BaseModel):
     activated_revision: str | None = None
     commit_sha: str | None = None
     error: str | None = None
+    failure_detail: dict | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -1,6 +1,6 @@
 """add persistent workspace _repo changesets
 
-Revision ID: 20260716_workspace_repo_changesets
+Revision ID: 20260716_ws_repo_changesets
 Revises: 20260705_merge_deploy_export
 """
 from collections.abc import Sequence
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "20260716_workspace_repo_changesets"
+revision: str = "20260716_ws_repo_changesets"
 down_revision: str = "20260705_merge_deploy_export"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.Column("activated_revision", sa.String(64), nullable=True),
         sa.Column("commit_sha", sa.String(64), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("failure_detail", postgresql.JSONB(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.PrimaryKeyConstraint("id"),

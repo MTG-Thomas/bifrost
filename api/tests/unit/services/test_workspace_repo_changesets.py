@@ -13,7 +13,9 @@ from src.models.contracts.workspace_repo_changesets import (
 from src.services.workspace_repo_changesets import (
     ChangesetConflict,
     ChangesetInvalid,
+    OrganizationScopeRequired,
     WorkspaceRepoChangesetService,
+    require_organization_id,
 )
 
 
@@ -65,6 +67,9 @@ class MemoryRows:
 
 
 class FakeDB:
+    def __init__(self):
+        self.commits = 0
+
     async def flush(self):
         return None
 
@@ -72,6 +77,10 @@ class FakeDB:
         return None
 
     async def commit(self):
+        self.commits += 1
+        return None
+
+    async def rollback(self):
         return None
 
 
@@ -81,6 +90,11 @@ def service(files=None, organization_id=None):
     )
     value.rows = MemoryRows()
     return value
+
+
+def test_repo_changesets_require_an_organization_scope():
+    with pytest.raises(OrganizationScopeRequired, match="organization-scoped"):
+        require_organization_id(None)
 
 
 @pytest.mark.asyncio
@@ -306,9 +320,11 @@ async def test_activation_persists_failure_when_compensation_also_fails(monkeypa
     )
     with pytest.raises(RuntimeError, match="rollback failed"):
         await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
-    assert stored.status == "failed"
+    assert stored.status == "recovery_required"
     assert "activation failed" in stored.error
     assert "rollback failed" in stored.error
+    assert stored.failure_detail["rollback"]["state"] == "failed"
+    assert stored.failure_detail["rollback"]["errors"]
 
 
 @pytest.mark.asyncio
@@ -316,6 +332,7 @@ async def test_activation_closes_with_commit_without_push_by_default(monkeypatch
     calls = []
 
     async def commit(message, push):
+        assert svc.db.commits == 2  # activation, then durable Git-pending marker
         calls.append((message, push))
         return "a" * 40, None
 
@@ -356,6 +373,56 @@ async def test_activation_closes_with_commit_without_push_by_default(monkeypatch
     assert closed.status == "committed"
     assert closed.commit_sha == "a" * 40
     assert calls == [("agent change", False)]
+
+
+@pytest.mark.asyncio
+async def test_git_commit_failure_preserves_activation_with_recovery_evidence(monkeypatch):
+    async def commit(_message, _push):
+        raise RuntimeError("git commit failed")
+
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({"features/a.txt": b"a"}),
+        commit_callback=commit,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path="features/a.txt",
+            operation="write",
+            content_base64=base64.b64encode(b"A").decode(),
+        ),
+    )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class Storage:
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, path, content, **_kwargs):
+            await svc.repo.write(path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+    result = await svc.activate(
+        row.id, WorkspaceRepoActivateRequest(commit_message="agent change"), "tester"
+    )
+
+    assert result.status == "activated"
+    assert svc.repo.files["features/a.txt"] == b"A"
+    assert result.failure_detail == {
+        "phase": "git_closure",
+        "state": "failed",
+        "message": "git commit failed",
+        "activation_preserved": True,
+    }
 
 
 @pytest.mark.asyncio

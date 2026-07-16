@@ -49,6 +49,18 @@ class ChangesetInvalid(Exception):
     pass
 
 
+class OrganizationScopeRequired(Exception):
+    pass
+
+
+def require_organization_id(organization_id: UUID | None) -> UUID:
+    if organization_id is None:
+        raise OrganizationScopeRequired(
+            "workspace _repo changesets require an organization-scoped platform administrator"
+        )
+    return organization_id
+
+
 CommitCallback = Callable[[str, bool], Awaitable[tuple[str | None, str | None]]]
 
 
@@ -344,19 +356,12 @@ class WorkspaceRepoChangesetService:
             activated_revision, _ = await self._snapshot(row.scope)
             row.activated_revision = activated_revision
             row.status = "activated"
-            if request.commit_message:
-                if self.commit_callback is None:
-                    raise ChangesetInvalid(
-                        "platform Git commit closure is not configured"
-                    )
-                row.commit_sha, push_error = await self.commit_callback(
-                    request.commit_message, request.push
-                )
-                row.status = "committed_unpushed" if push_error else "committed"
-                row.error = push_error
             await self.db.flush()
-            return self._response(row)
+            # Activation is the authoritative workspace transition. Make it
+            # durable before crossing the independent Git boundary.
+            await self.db.commit()
         except Exception as exc:
+            await self.db.rollback()
             # Compensate through the normal facade so S3, index, workflow metadata,
             # module cache, app previews, and activity observers converge on the
             # restored state rather than leaving a direct-storage-only rollback.
@@ -378,8 +383,16 @@ class WorkspaceRepoChangesetService:
                             )
                 except Exception as rollback_exc:
                     rollback_errors.append(f"{path}: {rollback_exc}")
-            row.status = "failed"
+            row.status = "recovery_required" if rollback_errors else "failed"
             row.error = str(exc)
+            row.failure_detail = {
+                "phase": "activation",
+                "message": str(exc),
+                "rollback": {
+                    "state": "failed" if rollback_errors else "completed",
+                    "errors": rollback_errors,
+                },
+            }
             if rollback_errors:
                 row.error = (
                     f"{row.error}; rollback failed: {'; '.join(rollback_errors)}"
@@ -391,6 +404,65 @@ class WorkspaceRepoChangesetService:
             if rollback_errors:
                 raise RuntimeError(row.error) from exc
             raise
+
+        if not request.commit_message:
+            return self._response(row)
+        if self.commit_callback is None:
+            row.error = "platform Git commit closure is not configured"
+            row.failure_detail = {
+                "phase": "git_closure",
+                "state": "not_configured",
+                "activation_preserved": True,
+            }
+            await self.db.flush()
+            await self.db.commit()
+            return self._response(row)
+
+        # Leave a durable pending marker before Git. If persisting the outcome
+        # later fails, the active workspace is still explicit and reconcilable.
+        row.failure_detail = {
+            "phase": "git_closure",
+            "state": "pending",
+            "activation_preserved": True,
+        }
+        await self.db.flush()
+        await self.db.commit()
+        try:
+            commit_sha, push_error = await self.commit_callback(
+                request.commit_message, request.push
+            )
+        except Exception as exc:
+            await self.db.rollback()
+            row = await self._required(changeset_id, for_update=True)
+            row.error = str(exc)
+            row.failure_detail = {
+                "phase": "git_closure",
+                "state": "failed",
+                "message": str(exc),
+                "activation_preserved": True,
+            }
+            await self.db.flush()
+            await self.db.commit()
+            return self._response(row)
+
+        row = await self._required(changeset_id, for_update=True)
+        row.commit_sha = commit_sha
+        row.status = "committed_unpushed" if push_error else "committed"
+        row.error = push_error
+        row.failure_detail = (
+            {
+                "phase": "git_push",
+                "state": "failed",
+                "message": push_error,
+                "activation_preserved": True,
+                "commit_sha": commit_sha,
+            }
+            if push_error
+            else None
+        )
+        await self.db.flush()
+        await self.db.commit()
+        return self._response(row)
 
     async def abort(self, changeset_id: UUID) -> WorkspaceRepoChangesetResponse:
         row = await self._required(changeset_id, for_update=True)
@@ -449,6 +521,7 @@ class WorkspaceRepoChangesetService:
             activated_revision=row.activated_revision,
             commit_sha=row.commit_sha,
             error=row.error,
+            failure_detail=row.failure_detail,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
