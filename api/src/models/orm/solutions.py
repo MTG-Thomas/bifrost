@@ -91,6 +91,17 @@ class Solution(Base):
         default=None,
     )
 
+    # Positive compatibility discriminator. Rows that predate immutable
+    # deployments, and installs created by the legacy ZIP/git projection paths,
+    # execute from their mutable Solution storage. New deployment-aware rows
+    # fail closed until active_deployment_id is set.
+    execution_runtime_mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="deployment-v1",
+        server_default=text("'deployment-v1'"),
+    )
+
     # Definition identity (shared across installs of the same Solution).
     slug: Mapped[str] = mapped_column(String(255), index=True)
     name: Mapped[str] = mapped_column(String(255))

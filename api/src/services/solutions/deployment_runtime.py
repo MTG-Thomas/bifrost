@@ -160,6 +160,8 @@ async def pin_workflow_runtime(
         session, workflow.solution_id, solution.active_deployment_id, caller_deployment_id
     )
     if selected_deployment_id is None:
+        if solution.execution_runtime_mode == "repo-v1":
+            return None
         raise DeploymentRuntimeError(
             "Solution has no active deployment; capture an initial deployment before execution"
         )

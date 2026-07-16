@@ -18,6 +18,23 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Existing Solution installs were authored before immutable deployment
+    # closures existed. Mark only those rows as mutable-storage compatibility,
+    # then make all future unmarked inserts deployment-aware and fail-closed.
+    op.add_column(
+        "solutions",
+        sa.Column(
+            "execution_runtime_mode",
+            sa.String(length=32),
+            nullable=False,
+            server_default="repo-v1",
+        ),
+    )
+    op.alter_column(
+        "solutions",
+        "execution_runtime_mode",
+        server_default=sa.text("'deployment-v1'"),
+    )
     op.add_column(
         "executions",
         sa.Column(
@@ -54,3 +71,4 @@ def downgrade() -> None:
     op.drop_column("executions", "runtime_evidence_hash")
     op.drop_column("executions", "runtime_evidence")
     op.drop_column("executions", "runtime_mode")
+    op.drop_column("solutions", "execution_runtime_mode")

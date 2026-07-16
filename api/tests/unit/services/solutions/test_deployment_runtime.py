@@ -144,6 +144,7 @@ async def test_solution_without_active_deployment_never_falls_back_to_mutable_ro
         organization_id=None,
         global_repo_access=False,
         active_deployment_id=None,
+        execution_runtime_mode="deployment-v1",
     )
     session = SimpleNamespace(
         execute=AsyncMock(return_value=_Result((workflow, solution)))
@@ -151,6 +152,23 @@ async def test_solution_without_active_deployment_never_falls_back_to_mutable_ro
 
     with pytest.raises(DeploymentRuntimeError, match="no active deployment"):
         await pin_workflow_runtime(session, workflow_id)
+
+
+@pytest.mark.asyncio
+async def test_explicit_legacy_solution_without_deployment_uses_repo_compatibility():
+    solution_id, workflow_id = uuid4(), uuid4()
+    workflow = SimpleNamespace(id=workflow_id, solution_id=solution_id)
+    solution = SimpleNamespace(
+        id=solution_id,
+        status="active",
+        organization_id=None,
+        global_repo_access=False,
+        active_deployment_id=None,
+        execution_runtime_mode="repo-v1",
+    )
+    session = SimpleNamespace(execute=AsyncMock(return_value=_Result((workflow, solution))))
+
+    assert await pin_workflow_runtime(session, workflow_id) is None
 
 
 def test_tampered_queue_evidence_is_rejected_against_durable_manifest_evidence():

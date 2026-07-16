@@ -244,7 +244,8 @@ class TestCrossOrgFormExecuteAnchor:
         db = db_session
         org_b = (await _org(db)).id
         sol = Solution(
-            id=uuid4(), slug=f"s-{uuid4().hex[:8]}", name="S", organization_id=org_b
+            id=uuid4(), slug=f"s-{uuid4().hex[:8]}", name="S", organization_id=org_b,
+            execution_runtime_mode="repo-v1",
         )
         db.add(sol)
         await db.flush()
@@ -330,7 +331,8 @@ class TestCrossOrgFormExecuteAnchor:
         db = db_session
         org_b = (await _org(db)).id
         sol = Solution(
-            id=uuid4(), slug=f"s-{uuid4().hex[:8]}", name="S", organization_id=org_b
+            id=uuid4(), slug=f"s-{uuid4().hex[:8]}", name="S", organization_id=org_b,
+            execution_runtime_mode="repo-v1",
         )
         db.add(sol)
         await db.flush()
