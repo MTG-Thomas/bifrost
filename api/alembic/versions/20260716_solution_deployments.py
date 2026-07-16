@@ -18,6 +18,9 @@ down_revision: str = "20260705_merge_deploy_export"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_DEPLOYMENT_ID_COLUMN = "solution_deployments.id"
+_DEPLOYMENT_SOLUTION_COLUMN = "solution_deployments.solution_id"
+
 
 def upgrade() -> None:
     op.create_table(
@@ -59,13 +62,13 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["solution_id"], ["solutions.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
             ["parent_deployment_id", "solution_id"],
-            ["solution_deployments.id", "solution_deployments.solution_id"],
+            [_DEPLOYMENT_ID_COLUMN, _DEPLOYMENT_SOLUTION_COLUMN],
             name="fk_solution_deployment_parent_same_solution",
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
             ["base_deployment_id", "solution_id"],
-            ["solution_deployments.id", "solution_deployments.solution_id"],
+            [_DEPLOYMENT_ID_COLUMN, _DEPLOYMENT_SOLUTION_COLUMN],
             name="fk_solution_deployment_base_same_solution",
             ondelete="RESTRICT",
         ),
@@ -101,14 +104,14 @@ def upgrade() -> None:
         sa.Column("declared_constraint", sa.Text(), nullable=True),
         sa.Column("resolved_bundle_hash", sa.String(length=71), nullable=False),
         sa.ForeignKeyConstraint(
-            ["deployment_id"], ["solution_deployments.id"], ondelete="RESTRICT"
+            ["deployment_id"], [_DEPLOYMENT_ID_COLUMN], ondelete="RESTRICT"
         ),
         sa.ForeignKeyConstraint(
             ["dependency_solution_id"], ["solutions.id"], ondelete="RESTRICT"
         ),
         sa.ForeignKeyConstraint(
             ["dependency_deployment_id", "dependency_solution_id"],
-            ["solution_deployments.id", "solution_deployments.solution_id"],
+            [_DEPLOYMENT_ID_COLUMN, _DEPLOYMENT_SOLUTION_COLUMN],
             name="fk_solution_dependency_exact_deployment",
             ondelete="RESTRICT",
         ),

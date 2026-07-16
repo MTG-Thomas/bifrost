@@ -168,11 +168,24 @@ def validate_runtime_closure(
     if manifest.content_hash() != expected_manifest_hash:
         raise ValueError("compiled manifest hash mismatch")
 
+    _validate_manifest_resolution_agreement(manifest, resolution)
+    _validate_entity_sources(resolution)
+    _validate_dependency_edges(manifest, dependency_edges)
+    return manifest, resolution
+
+
+def _validate_manifest_resolution_agreement(
+    manifest: CompiledDeploymentManifest,
+    resolution: DeploymentResolutionMap,
+) -> None:
     for kind in ("workflows", "agents", "forms", "events", "applications"):
         if getattr(manifest, kind) != getattr(resolution, kind):
             raise ValueError(f"manifest/resolution mismatch for {kind}")
     if manifest.dependencies != resolution.dependencies:
         raise ValueError("manifest/resolution dependency mismatch")
+
+
+def _validate_entity_sources(resolution: DeploymentResolutionMap) -> None:
     for entities in (
         resolution.workflows,
         resolution.agents,
@@ -188,6 +201,11 @@ def validate_runtime_closure(
                 if source is None or source.content_hash != entity.source_hash:
                     raise ValueError(f"source resolution mismatch: {entity.source_ref}")
 
+
+def _validate_dependency_edges(
+    manifest: CompiledDeploymentManifest,
+    dependency_edges: list[Any],
+) -> None:
     expected_edges = {
         (edge.dependency_solution_id, edge.dependency_deployment_id, edge.resolved_bundle_hash)
         for edge in dependency_edges
@@ -198,4 +216,3 @@ def validate_runtime_closure(
     }
     if expected_edges != manifest_edges:
         raise ValueError("relational dependency edges do not match the manifest")
-    return manifest, resolution

@@ -21,6 +21,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
 
+_DEPLOYMENT_ID_COLUMN = "solution_deployments.id"
+_DEPLOYMENT_SOLUTION_COLUMN = "solution_deployments.solution_id"
+
 
 class SolutionDeployment(Base):
     """An immutable candidate or activated runtime closure for a Solution."""
@@ -32,13 +35,13 @@ class SolutionDeployment(Base):
         UniqueConstraint("id", "solution_id", name="uq_solution_deployment_id_solution"),
         ForeignKeyConstraint(
             ["parent_deployment_id", "solution_id"],
-            ["solution_deployments.id", "solution_deployments.solution_id"],
+            [_DEPLOYMENT_ID_COLUMN, _DEPLOYMENT_SOLUTION_COLUMN],
             name="fk_solution_deployment_parent_same_solution",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
             ["base_deployment_id", "solution_id"],
-            ["solution_deployments.id", "solution_deployments.solution_id"],
+            [_DEPLOYMENT_ID_COLUMN, _DEPLOYMENT_SOLUTION_COLUMN],
             name="fk_solution_deployment_base_same_solution",
             ondelete="RESTRICT",
         ),
@@ -101,13 +104,13 @@ class SolutionDeploymentDependency(Base):
     __table_args__ = (
         ForeignKeyConstraint(
             ["dependency_deployment_id", "dependency_solution_id"],
-            ["solution_deployments.id", "solution_deployments.solution_id"],
+            [_DEPLOYMENT_ID_COLUMN, _DEPLOYMENT_SOLUTION_COLUMN],
             name="fk_solution_dependency_exact_deployment",
             ondelete="RESTRICT",
         ),
     )
     deployment_id: Mapped[UUID] = mapped_column(
-        ForeignKey("solution_deployments.id", ondelete="RESTRICT"), primary_key=True
+        ForeignKey(_DEPLOYMENT_ID_COLUMN, ondelete="RESTRICT"), primary_key=True
     )
     dependency_solution_id: Mapped[UUID] = mapped_column(
         ForeignKey("solutions.id", ondelete="RESTRICT"), primary_key=True
