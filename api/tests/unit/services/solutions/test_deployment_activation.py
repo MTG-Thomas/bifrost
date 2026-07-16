@@ -191,10 +191,12 @@ async def test_activation_rejects_expected_pointer_that_is_not_draft_base():
     solution_id = uuid4()
     candidate = deployment(solution_id, "ready", uuid4())
     repository = FakeRepository([candidate], candidate.base_deployment_id)
+    activation = service(repository, FakeHooks())
+    unexpected_active_id = uuid4()
 
     with pytest.raises(ValueError, match="draft base"):
-        await service(repository, FakeHooks()).activate(
-            candidate.id, None, expected_active_deployment_id=uuid4()
+        await activation.activate(
+            candidate.id, None, expected_active_deployment_id=unexpected_active_id
         )
 
 
@@ -209,7 +211,8 @@ async def test_repository_transition_rules_allow_rollback_but_not_ready_to_activ
     await repository.transition(
         uuid4(), None, expected_state="superseded", new_state="activating"
     )
+    deployment_id = uuid4()
     with pytest.raises(InvalidDeploymentTransition, match="ready -> active"):
         await repository.transition(
-            uuid4(), None, expected_state="ready", new_state="active"
+            deployment_id, None, expected_state="ready", new_state="active"
         )
