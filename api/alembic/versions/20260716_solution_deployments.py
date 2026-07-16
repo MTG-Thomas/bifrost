@@ -1,7 +1,7 @@
 """add immutable Solution deployment runtime closures
 
 Revision ID: 20260716_solution_deployments
-Revises: 20260705_merge_deploy_export
+Revises: 20260716_ws_repo_changesets
 Create Date: 2026-07-16
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260716_solution_deployments"
-down_revision: str = "20260705_merge_deploy_export"
+down_revision: str = "20260716_ws_repo_changesets"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
