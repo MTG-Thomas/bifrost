@@ -52,6 +52,12 @@ class SolutionDeploymentAPIService:
         if manifest.source.runtime_prefix != expected_runtime:
             raise ValueError("runtime prefix must use the canonical deployment key")
 
+        # Registering an immutable deployment is the positive boundary between
+        # the mutable ZIP/_repo compatibility path and deployment-aware
+        # execution. From this transaction onward, a missing active pointer must
+        # fail closed rather than falling back to mutable Solution storage.
+        solution.execution_runtime_mode = "deployment-v1"
+
         resolution_hash = sha256_digest(canonical_json(body.resolution_map))
         manifest_hash = manifest.content_hash()
         existing = await self.session.get(SolutionDeployment, manifest.deployment_id)
@@ -83,7 +89,7 @@ class SolutionDeploymentAPIService:
             base_deployment_id=body.base_deployment_id,
             # The body is a complete, hash-validated immutable draft. `ready`
             # means it may enter the existing CAS activation seam.
-            state="ready",
+            state="draft",
             declared_version=body.declared_version,
             bundle_hash=manifest.bundle_hash,
             compiled_manifest=manifest.model_dump(mode="json", exclude_none=True),
@@ -102,6 +108,17 @@ class SolutionDeploymentAPIService:
             dependencies=dependencies,
         )
         await self.repository.create(deployment)
+        for expected_state, new_state in (
+            ("draft", "building"),
+            ("building", "validated"),
+            ("validated", "ready"),
+        ):
+            deployment = await self.repository.transition(
+                deployment.id,
+                solution.organization_id,
+                expected_state=expected_state,
+                new_state=new_state,
+            )
         # The source/runtime objects are reference-only inputs. The canonical
         # manifest itself is finalized server-side through create-only storage.
         try:

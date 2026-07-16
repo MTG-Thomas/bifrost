@@ -4,6 +4,8 @@ from types import ModuleType
 
 from fastapi import FastAPI
 
+from src.models.contracts.solution_deployments import SolutionDeploymentCapabilities
+
 # Import the focused router without eagerly importing every optional router
 # dependency from src.routers.__init__.
 routers_package = ModuleType("src.routers")
@@ -31,3 +33,14 @@ def test_solution_deployment_openapi_exposes_minimal_cs_surface():
     ]
     assert create_schema["$ref"].endswith("SolutionDeploymentCreate")
     assert "multipart/form-data" not in paths[base]["post"]["requestBody"]["content"]
+
+
+def test_capabilities_fail_closed_for_unconfigured_end_to_end_deployment():
+    capabilities = SolutionDeploymentCapabilities()
+
+    assert capabilities.registration is True
+    assert capabilities.inspection is True
+    assert capabilities.artifact_upload is False
+    assert capabilities.server_side_compilation is False
+    assert capabilities.activation_configured is False
+    assert capabilities.safe_for_end_to_end_cs_deploy is False

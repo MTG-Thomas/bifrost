@@ -35,11 +35,15 @@ async def test_create_registers_complete_reference_only_ready_draft(monkeypatch)
             runtime_prefix=deployment_runtime_prefix(solution_id, deployment_id),
         ),
     )
+    solution = SimpleNamespace(
+        organization_id=None, execution_runtime_mode="repo-v1"
+    )
     session = SimpleNamespace(
-        scalar=AsyncMock(return_value=SimpleNamespace(organization_id=None)),
+        scalar=AsyncMock(return_value=solution),
         get=AsyncMock(return_value=None),
     )
     created = []
+    transitions = []
     written = []
 
     class Repository:
@@ -48,6 +52,17 @@ async def test_create_registers_complete_reference_only_ready_draft(monkeypatch)
 
         async def create(self, deployment):
             created.append(deployment)
+
+        async def transition(
+            self, deployment_id, organization_id, *, expected_state, new_state
+        ):
+            row = created[0]
+            assert row.id == deployment_id
+            assert organization_id is None
+            assert row.state == expected_state
+            transitions.append((expected_state, new_state))
+            row.state = new_state
+            return row
 
     class Storage:
         def __init__(self, *_args):
@@ -72,6 +87,12 @@ async def test_create_registers_complete_reference_only_ready_draft(monkeypatch)
     assert row.state == "ready"
     assert row.source_artifact_key == manifest.source.artifact_key
     assert created == [row]
+    assert transitions == [
+        ("draft", "building"),
+        ("building", "validated"),
+        ("validated", "ready"),
+    ]
+    assert solution.execution_runtime_mode == "deployment-v1"
     assert written == [manifest.canonical_bytes()]
 
 
