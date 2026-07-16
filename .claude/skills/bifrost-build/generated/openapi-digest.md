@@ -431,6 +431,11 @@
 | POST | `/api/solutions/{solution_id}/capture/preview` |
 | GET | `/api/solutions/{solution_id}/deletion-summary` |
 | POST | `/api/solutions/{solution_id}/deploy` |
+| POST | `/api/solutions/{solution_id}/deployments` |
+| GET | `/api/solutions/{solution_id}/deployments/capabilities` |
+| GET | `/api/solutions/{solution_id}/deployments/{deployment_id}` |
+| POST | `/api/solutions/{solution_id}/deployments/{deployment_id}/activate` |
+| POST | `/api/solutions/{solution_id}/deployments/{deployment_id}/rollback` |
 | GET | `/api/solutions/{solution_id}/entities` |
 | POST | `/api/solutions/{solution_id}/export` |
 | GET | `/api/solutions/{solution_id}/export-jobs` |
