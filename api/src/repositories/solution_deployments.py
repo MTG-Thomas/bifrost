@@ -170,7 +170,10 @@ class SolutionDeploymentRepository:
         result = await self.session.execute(
             update(Solution)
             .where(Solution.id == solution_id, scope_clause, active_clause)
-            .values(active_deployment_id=new_active_deployment_id)
+            .values(
+                active_deployment_id=new_active_deployment_id,
+                execution_runtime_mode="deployment-v1",
+            )
             .returning(Solution.id)
         )
         return result.scalar_one_or_none() is not None

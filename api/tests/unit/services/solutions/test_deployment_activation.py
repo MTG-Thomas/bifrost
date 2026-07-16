@@ -216,3 +216,25 @@ async def test_repository_transition_rules_allow_rollback_but_not_ready_to_activ
         await repository.transition(
             deployment_id, None, expected_state="ready", new_state="active"
         )
+
+
+@pytest.mark.asyncio
+async def test_pointer_cas_marks_solution_as_deployment_runtime():
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = uuid4()
+    session.execute = AsyncMock(return_value=result)
+    repository = SolutionDeploymentRepository(cast(Any, session))
+
+    moved = await repository.compare_and_set_active_deployment(
+        uuid4(),
+        None,
+        expected_active_deployment_id=None,
+        new_active_deployment_id=uuid4(),
+    )
+
+    assert moved is True
+    statement = session.execute.await_args.args[0]
+    values = {column.key: value.value for column, value in statement._values.items()}
+    assert values["execution_runtime_mode"] == "deployment-v1"
+    assert "active_deployment_id" in values
