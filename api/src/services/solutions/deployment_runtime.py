@@ -156,29 +156,9 @@ async def pin_workflow_runtime(
         return None
     if solution is None or (caller_deployment_id is None and solution.status != "active"):
         raise DeploymentRuntimeError("Solution is not active")
-    selected_deployment_id = solution.active_deployment_id
-    if caller_deployment_id is not None:
-        caller = await SolutionDeploymentRepository(session).get_by_id_for_runtime(
-            caller_deployment_id
-        )
-        if caller is None:
-            raise DeploymentRuntimeError("caller deployment is missing")
-        if workflow.solution_id == caller.solution_id:
-            selected_deployment_id = caller.id
-        else:
-            edge = next(
-                (
-                    item
-                    for item in caller.dependencies
-                    if item.dependency_solution_id == workflow.solution_id
-                ),
-                None,
-            )
-            if edge is None:
-                raise DeploymentRuntimeError(
-                    "cross-Solution workflow is not pinned by the caller deployment"
-                )
-            selected_deployment_id = edge.dependency_deployment_id
+    selected_deployment_id = await _select_deployment_id(
+        session, workflow.solution_id, solution.active_deployment_id, caller_deployment_id
+    )
     if selected_deployment_id is None:
         raise DeploymentRuntimeError(
             "Solution has no active deployment; capture an initial deployment before execution"
@@ -201,12 +181,7 @@ async def pin_workflow_runtime(
         expected_manifest_hash=deployment.compiled_manifest_hash,
         expected_resolution_hash=deployment.resolution_map_hash,
     )
-    try:
-        entity = resolution.resolve_workflow_id(workflow.id)
-    except KeyError as exc:
-        raise DeploymentRuntimeError(
-            f"workflow {workflow.id} is absent from active deployment"
-        ) from exc
+    entity = _resolve_workflow_entity(resolution, workflow.id)
     definition = entity.definition
     source_ref = entity.source_ref or str(_required(definition, "path"))
     try:
@@ -246,6 +221,45 @@ async def pin_workflow_runtime(
         can_access_global_repo=bool(solution.global_repo_access),
         source_hashes={key: item.content_hash for key, item in resolution.sources.items()},
     )
+
+
+async def _select_deployment_id(
+    session: AsyncSession,
+    workflow_solution_id: UUID,
+    active_deployment_id: UUID | None,
+    caller_deployment_id: UUID | None,
+) -> UUID | None:
+    if caller_deployment_id is None:
+        return active_deployment_id
+    caller = await SolutionDeploymentRepository(session).get_by_id_for_runtime(
+        caller_deployment_id
+    )
+    if caller is None:
+        raise DeploymentRuntimeError("caller deployment is missing")
+    if workflow_solution_id == caller.solution_id:
+        return caller.id
+    edge = next(
+        (
+            item
+            for item in caller.dependencies
+            if item.dependency_solution_id == workflow_solution_id
+        ),
+        None,
+    )
+    if edge is None:
+        raise DeploymentRuntimeError(
+            "cross-Solution workflow is not pinned by the caller deployment"
+        )
+    return edge.dependency_deployment_id
+
+
+def _resolve_workflow_entity(resolution: Any, workflow_id: UUID) -> Any:
+    try:
+        return resolution.resolve_workflow_id(workflow_id)
+    except KeyError as exc:
+        raise DeploymentRuntimeError(
+            f"workflow {workflow_id} is absent from active deployment"
+        ) from exc
 
 
 async def resolve_pinned_workflow_runtime(

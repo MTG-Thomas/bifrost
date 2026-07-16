@@ -71,8 +71,10 @@ async def test_queue_failure_leaves_committed_durable_deployment_pin(monkeypatch
         is_platform_admin=False,
     )
 
+    workflow_id_value = str(workflow_id)
+    parameters = {}
     with pytest.raises(OSError, match="queue unavailable"):
-        await enqueue_workflow_execution(context, str(workflow_id), {})
+        await enqueue_workflow_execution(context, workflow_id_value, parameters)
 
     db.commit.assert_awaited_once()
     assert added[0].solution_deployment_id == deployment_id
