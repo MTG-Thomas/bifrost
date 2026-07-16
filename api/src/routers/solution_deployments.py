@@ -34,7 +34,11 @@ router = APIRouter(
 )
 
 
-@router.get("/capabilities", response_model=SolutionDeploymentCapabilities)
+@router.get(
+    "/capabilities",
+    response_model=SolutionDeploymentCapabilities,
+    responses={404: {"description": "Solution not found"}},
+)
 async def deployment_capabilities(
     solution_id: UUID, ctx: Context, user: CurrentSuperuser
 ):
@@ -86,7 +90,16 @@ async def _run_pointer_move(
     return result
 
 
-@router.post("", response_model=SolutionDeploymentPublic, status_code=201)
+@router.post(
+    "",
+    response_model=SolutionDeploymentPublic,
+    status_code=201,
+    responses={
+        404: {"description": "Solution not found"},
+        409: {"description": "Deployment registration conflict"},
+        422: {"description": "Invalid deployment closure"},
+    },
+)
 async def create_deployment(
     solution_id: UUID,
     body: SolutionDeploymentCreate,
@@ -115,7 +128,11 @@ async def create_deployment(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.get("/{deployment_id}", response_model=SolutionDeploymentPublic)
+@router.get(
+    "/{deployment_id}",
+    response_model=SolutionDeploymentPublic,
+    responses={404: {"description": "Solution or deployment not found"}},
+)
 async def inspect_deployment(
     solution_id: UUID, deployment_id: UUID, ctx: Context, user: CurrentSuperuser
 ):
@@ -132,6 +149,12 @@ async def inspect_deployment(
 @router.post(
     "/{deployment_id}/activate",
     response_model=DeploymentActivationPublic,
+    responses={
+        404: {"description": "Solution or deployment not found"},
+        409: {"description": "Activation conflict or write lock held"},
+        422: {"description": "Invalid activation request"},
+        503: {"description": "Activation unavailable or write lock lost"},
+    },
 )
 async def activate_deployment(
     solution_id: UUID,
@@ -159,6 +182,12 @@ async def activate_deployment(
 @router.post(
     "/{deployment_id}/rollback",
     response_model=DeploymentActivationPublic,
+    responses={
+        404: {"description": "Solution or deployment not found"},
+        409: {"description": "Rollback conflict or write lock held"},
+        422: {"description": "Invalid rollback request"},
+        503: {"description": "Rollback unavailable or write lock lost"},
+    },
 )
 async def rollback_deployment(
     solution_id: UUID,

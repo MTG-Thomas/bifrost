@@ -218,9 +218,10 @@ async def test_activation_rejects_deployment_from_different_solution_in_same_sco
     actual_solution_id = uuid4()
     candidate = deployment(actual_solution_id, "ready", None)
     repository = FakeRepository([candidate], None)
+    activation = service(repository, FakeHooks())
 
     with pytest.raises(ValueError, match="missing or out of scope"):
-        await service(repository, FakeHooks()).activate(
+        await activation.activate(
             candidate.id,
             None,
             route_solution_id,

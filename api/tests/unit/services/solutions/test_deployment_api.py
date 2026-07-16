@@ -93,11 +93,10 @@ async def test_create_rejects_noncanonical_external_source_reference():
         scalar=AsyncMock(return_value=SimpleNamespace(organization_id=None)),
         get=AsyncMock(return_value=None),
     )
+    api = SolutionDeploymentAPIService(session)
+    user_id = uuid4()
+    body = SolutionDeploymentCreate(
+        compiled_manifest=manifest, resolution_map=resolution
+    )
     with pytest.raises(ValueError, match="canonical deployment key"):
-        await SolutionDeploymentAPIService(session).create_ready_draft(
-            solution_id,
-            uuid4(),
-            SolutionDeploymentCreate(
-                compiled_manifest=manifest, resolution_map=resolution
-            ),
-        )
+        await api.create_ready_draft(solution_id, user_id, body)
