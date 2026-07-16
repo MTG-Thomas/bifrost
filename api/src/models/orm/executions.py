@@ -67,6 +67,14 @@ class Execution(Base):
     workflow_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )  # FK to the workflow that was executed (null for inline scripts/legacy)
+    solution_deployment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("solution_deployments.id", ondelete="RESTRICT"), default=None
+    )
+    runtime_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="legacy", server_default="legacy"
+    )
+    runtime_evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    runtime_evidence_hash: Mapped[str | None] = mapped_column(String(71), nullable=True)
     api_key_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )  # Workflow whose API key triggered this execution (null for user-triggered)
@@ -108,6 +116,7 @@ class Execution(Base):
         Index("ix_executions_is_local_execution", "is_local_execution"),
         Index("ix_executions_session_id", "session_id"),
         Index("ix_executions_workflow_id", "workflow_id"),
+        Index("ix_executions_solution_deployment_id", "solution_deployment_id"),
     )
 
 

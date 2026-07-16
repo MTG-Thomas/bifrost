@@ -9,6 +9,7 @@ from src.models.orm.solution_deployments import (
     SolutionDeploymentDependency,
 )
 from src.models.orm.solutions import Solution
+from src.models.orm.executions import Execution
 from src.repositories.solution_deployments import SolutionDeploymentRepository
 
 
@@ -25,6 +26,8 @@ def test_solution_deployment_schema_exposes_runtime_closure_and_exact_edges():
     assert deployment_columns["source_artifact_key"].nullable is False
     assert dependency_columns["dependency_deployment_id"].nullable is False
     assert "active_deployment_id" in Solution.__table__.columns
+    assert Solution.__table__.columns["execution_runtime_mode"].nullable is False
+    assert "solution_deployment_id" in Execution.__table__.columns
 
     deployment_constraints = {c.name for c in SolutionDeployment.__table__.constraints}
     dependency_constraints = {

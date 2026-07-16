@@ -193,6 +193,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         set_solution_context(
             _exec_solution_id,
             global_repo_access=bool(context_data.get("solution_global_repo_access", False)),
+            runtime_storage_prefix=context_data.get("runtime_storage_prefix"),
+            source_hashes=context_data.get("deployment_source_hashes"),
         )
 
     span_attributes = {
@@ -291,11 +293,9 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                 actual_hash = hashlib.sha256(
                     loaded_code.encode("utf-8")
                 ).hexdigest()
-                if actual_hash != content_hash:
-                    logger.warning(
-                        f"Content hash mismatch for {file_path}: "
-                        f"expected={content_hash[:12]}... actual={actual_hash[:12]}... "
-                        f"Code may have changed between dispatch and execution."
+                if actual_hash != str(content_hash).removeprefix("sha256:"):
+                    raise RuntimeError(
+                        f"deployment source integrity mismatch for {file_path}"
                     )
 
             if workflow_func is None:
@@ -346,6 +346,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             broadcaster=None,  # Logs go to Redis Stream directly
             event=event_ctx,
             solution_id=context_data.get("solution_id"),  # install scope for SDK
+            solution_deployment_id=context_data.get("solution_deployment_id"),
         )
 
         # Execute

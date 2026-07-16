@@ -77,6 +77,17 @@ class SolutionDeploymentRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_id_for_runtime(
+        self, deployment_id: UUID
+    ) -> SolutionDeployment | None:
+        """Internal immutable-runtime lookup; authorization happened at pin creation."""
+        result = await self.session.execute(
+            select(SolutionDeployment)
+            .options(selectinload(SolutionDeployment.dependencies))
+            .where(SolutionDeployment.id == deployment_id)
+        )
+        return result.scalar_one_or_none()
+
     async def transition(
         self,
         deployment_id: UUID,
