@@ -138,6 +138,9 @@ def upgrade() -> None:
           IF NOT FOUND OR solution_org IS DISTINCT FROM NEW.organization_id THEN
             RAISE EXCEPTION 'deployment organization scope must match its Solution install';
           END IF;
+          IF TG_OP = 'INSERT' AND NEW.state <> 'draft' THEN
+            RAISE EXCEPTION 'new SolutionDeployment must start in draft';
+          END IF;
           IF TG_OP = 'UPDATE' AND NOT (
             (OLD.state = 'draft' AND NEW.state IN ('draft','building','aborted')) OR
             (OLD.state = 'building' AND NEW.state IN ('building','validated','failed','aborted')) OR
@@ -209,9 +212,13 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE FUNCTION enforce_solution_dependency_integrity() RETURNS trigger AS $$
-        DECLARE owner_org uuid; dependency_org uuid;
+        DECLARE owner_org uuid; owner_state text; dependency_org uuid;
         BEGIN
-          SELECT organization_id INTO owner_org FROM solution_deployments WHERE id = NEW.deployment_id;
+          SELECT organization_id, state INTO owner_org, owner_state
+            FROM solution_deployments WHERE id = NEW.deployment_id;
+          IF NOT FOUND OR owner_state NOT IN ('draft', 'building') THEN
+            RAISE EXCEPTION 'dependency closure is immutable after validation';
+          END IF;
           SELECT organization_id INTO dependency_org FROM solution_deployments
             WHERE id = NEW.dependency_deployment_id;
           IF dependency_org IS NOT NULL AND dependency_org IS DISTINCT FROM owner_org THEN

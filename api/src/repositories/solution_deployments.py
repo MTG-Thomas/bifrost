@@ -18,6 +18,13 @@ class InvalidDeploymentTransition(ValueError):
     pass
 
 
+class _Unset:
+    pass
+
+
+_UNSET = _Unset()
+
+
 _TRANSITIONS: dict[str, frozenset[str]] = {
     "draft": frozenset({"building", "aborted"}),
     "building": frozenset({"validated", "failed", "aborted"}),
@@ -77,17 +84,17 @@ class SolutionDeploymentRepository:
         *,
         expected_state: str,
         new_state: str,
-        validated_at: datetime | None = None,
-        activated_at: datetime | None = None,
-        superseded_at: datetime | None = None,
-        validation_result: dict | None = None,
-        failure_detail: dict | None = None,
-        git_push_state: str | None = None,
+        validated_at: datetime | None | _Unset = _UNSET,
+        activated_at: datetime | None | _Unset = _UNSET,
+        superseded_at: datetime | None | _Unset = _UNSET,
+        validation_result: dict | None | _Unset = _UNSET,
+        failure_detail: dict | None | _Unset = _UNSET,
+        git_push_state: str | None | _Unset = _UNSET,
     ) -> SolutionDeployment:
         if new_state not in _TRANSITIONS.get(expected_state, frozenset()):
             raise InvalidDeploymentTransition(f"{expected_state} -> {new_state}")
-        values = {
-            "state": new_state,
+        values: dict[str, object] = {"state": new_state}
+        optional_values = {
             "validated_at": validated_at,
             "activated_at": activated_at,
             "superseded_at": superseded_at,
@@ -95,6 +102,9 @@ class SolutionDeploymentRepository:
             "failure_detail": failure_detail,
             "git_push_state": git_push_state,
         }
+        values.update(
+            {key: value for key, value in optional_values.items() if value is not _UNSET}
+        )
         result = await self.session.execute(
             update(SolutionDeployment)
             .where(

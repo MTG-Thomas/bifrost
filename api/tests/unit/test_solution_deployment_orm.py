@@ -1,3 +1,7 @@
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
 from sqlalchemy.orm import configure_mappers
 
 from src.models.orm.solution_deployments import (
@@ -38,3 +42,46 @@ def test_deployment_repository_does_not_expose_unscoped_crud():
     assert not hasattr(SolutionDeploymentRepository, "get_all")
     assert not hasattr(SolutionDeploymentRepository, "update")
     assert not hasattr(SolutionDeploymentRepository, "delete")
+
+
+@pytest.mark.parametrize(
+    ("expected_state", "new_state"),
+    [("validated", "ready"), ("active", "superseded")],
+)
+async def test_transition_omits_unsupplied_lifecycle_metadata(
+    expected_state: str, new_state: str
+):
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = MagicMock(spec=SolutionDeployment)
+    session.execute = AsyncMock(return_value=result)
+    repository = SolutionDeploymentRepository(session)
+
+    await repository.transition(
+        uuid4(),
+        uuid4(),
+        expected_state=expected_state,
+        new_state=new_state,
+    )
+
+    statement = session.execute.await_args.args[0]
+    assert {column.key for column in statement._values} == {"state"}
+
+
+async def test_transition_can_explicitly_clear_supported_metadata():
+    session = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = MagicMock(spec=SolutionDeployment)
+    session.execute = AsyncMock(return_value=result)
+    repository = SolutionDeploymentRepository(session)
+
+    await repository.transition(
+        uuid4(),
+        None,
+        expected_state="active",
+        new_state="superseded",
+        failure_detail=None,
+    )
+
+    statement = session.execute.await_args.args[0]
+    assert {column.key for column in statement._values} == {"state", "failure_detail"}

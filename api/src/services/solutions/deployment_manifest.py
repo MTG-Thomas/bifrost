@@ -4,10 +4,38 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+
+class FrozenDict(dict):
+    """JSON-compatible dict whose contents cannot change after validation."""
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("deployment contract containers are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable  # pyright: ignore[reportAssignmentType]
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable  # pyright: ignore[reportAssignmentType]
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return FrozenDict({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
 
 
 def canonical_json(value: BaseModel | dict[str, Any]) -> bytes:
@@ -32,6 +60,12 @@ def sha256_digest(data: bytes) -> str:
 
 class ImmutableContract(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @model_validator(mode="after")
+    def _freeze_nested_containers(self) -> ImmutableContract:
+        for field_name in type(self).model_fields:
+            object.__setattr__(self, field_name, _deep_freeze(getattr(self, field_name)))
+        return self
 
 
 class DeploymentSource(ImmutableContract):
@@ -186,6 +220,9 @@ def _validate_manifest_resolution_agreement(
 
 
 def _validate_entity_sources(resolution: DeploymentResolutionMap) -> None:
+    dependency_solution_ids = {
+        dependency.solution_id for dependency in resolution.dependencies.values()
+    }
     for entities in (
         resolution.workflows,
         resolution.agents,
@@ -196,6 +233,13 @@ def _validate_entity_sources(resolution: DeploymentResolutionMap) -> None:
         for portable_ref, entity in entities.items():
             if portable_ref != entity.portable_ref:
                 raise ValueError(f"portable reference key mismatch: {portable_ref}")
+            if (
+                entity.dependency_solution_id is not None
+                and entity.dependency_solution_id not in dependency_solution_ids
+            ):
+                raise ValueError(
+                    f"undeclared dependency owner: {entity.dependency_solution_id}"
+                )
             if entity.source_ref is not None:
                 source = resolution.sources.get(entity.source_ref)
                 if source is None or source.content_hash != entity.source_hash:

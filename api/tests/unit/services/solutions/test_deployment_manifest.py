@@ -27,7 +27,7 @@ def test_manifest_hash_is_canonical_and_contract_is_frozen():
     workflow = RuntimeEntityDefinition(
         portable_ref="workflows/triage.py::run",
         resolved_id=workflow_id,
-        definition={"z": 2, "a": 1},
+        definition={"z": 2, "a": {"values": [1, 2]}},
         source_ref="workflows/triage.py",
         source_hash="sha256:abc",
     )
@@ -54,6 +54,20 @@ def test_manifest_hash_is_canonical_and_contract_is_frozen():
     assert first.content_hash() == second.content_hash()
     with pytest.raises(ValidationError):
         first.bundle_hash = "sha256:changed"
+    original_hash = first.content_hash()
+    with pytest.raises(TypeError, match="immutable"):
+        workflow.definition["new"] = "value"
+    nested = workflow.definition["a"]
+    assert isinstance(nested, dict)
+    with pytest.raises(TypeError, match="immutable"):
+        nested["new"] = "value"
+    values = nested["values"]
+    assert isinstance(values, tuple)
+    with pytest.raises(AttributeError):
+        values.append(3)
+    with pytest.raises(TypeError, match="immutable"):
+        first.workflows["replacement"] = workflow
+    assert first.content_hash() == original_hash
 
 
 def test_resolution_map_uses_only_deployment_local_immutable_evidence():
@@ -149,6 +163,35 @@ def test_runtime_closure_anchors_resolution_and_supports_id_lookup():
         validate_runtime_closure(
             manifest,
             changed,
+            [],
+            expected_manifest_hash=manifest.content_hash(),
+            expected_resolution_hash=resolution_hash,
+        )
+
+
+def test_runtime_closure_rejects_undeclared_dependency_owner():
+    dependency_solution_id = uuid4()
+    workflow = RuntimeEntityDefinition(
+        portable_ref="workflows/run.py::run",
+        resolved_id=uuid4(),
+        definition={"function_name": "run"},
+        dependency_solution_id=dependency_solution_id,
+    )
+    resolution = DeploymentResolutionMap(workflows={workflow.portable_ref: workflow})
+    resolution_hash = sha256_digest(canonical_json(resolution))
+    manifest = CompiledDeploymentManifest(
+        solution_id=uuid4(),
+        deployment_id=uuid4(),
+        bundle_hash="sha256:bundle",
+        resolution_map_hash=resolution_hash,
+        source=DeploymentSource(artifact_key="source.zip", runtime_prefix="runtime/"),
+        workflows={workflow.portable_ref: workflow},
+    )
+
+    with pytest.raises(ValueError, match="undeclared dependency owner"):
+        validate_runtime_closure(
+            manifest,
+            resolution,
             [],
             expected_manifest_hash=manifest.content_hash(),
             expected_resolution_hash=resolution_hash,
