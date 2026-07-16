@@ -1,4 +1,4 @@
-"""Persistent workspace changesets for concurrent remote editors."""
+"""Persistent workspace _repo changesets for concurrent remote editors."""
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -10,11 +10,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from src.models.orm.base import Base
 
 
-class WorkspaceChangeset(Base):
-    __tablename__ = "workspace_changesets"
+class WorkspaceRepoChangeset(Base):
+    __tablename__ = "workspace_repo_changesets"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
     scope: Mapped[str] = mapped_column(String(1000), nullable=False)
     base_revision: Mapped[str] = mapped_column(String(64), nullable=False)
     base_files: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
@@ -27,5 +29,14 @@ class WorkspaceChangeset(Base):
     activated_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=text("NOW()"), onupdate=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

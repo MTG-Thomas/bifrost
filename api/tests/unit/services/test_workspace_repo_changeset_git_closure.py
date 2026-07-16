@@ -8,7 +8,9 @@ from src.services.github_sync import GitHubSyncService
 
 
 @pytest.mark.asyncio
-async def test_commit_workspace_changes_syncs_storage_and_does_not_push_by_default(tmp_path):
+async def test_workspace_repo_commit_closure_syncs_storage_and_does_not_push_by_default(
+    tmp_path,
+):
     service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
     events = []
 
@@ -21,7 +23,9 @@ async def test_commit_workspace_changes_syncs_storage_and_does_not_push_by_defau
     service.repo_manager = SimpleNamespace(checkout=checkout)
     repo = Mock()
     service._open_or_init = Mock(return_value=repo)
-    service._do_commit = AsyncMock(return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None))
+    service._do_commit = AsyncMock(
+        return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
+    )
     service._do_push = Mock()
 
     sha, push_error = await service.commit_workspace_changes("agent change")
@@ -34,7 +38,7 @@ async def test_commit_workspace_changes_syncs_storage_and_does_not_push_by_defau
 
 
 @pytest.mark.asyncio
-async def test_commit_workspace_changes_pushes_only_when_requested(tmp_path):
+async def test_workspace_repo_commit_closure_pushes_only_when_requested(tmp_path):
     service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
 
     @asynccontextmanager
@@ -44,8 +48,12 @@ async def test_commit_workspace_changes_pushes_only_when_requested(tmp_path):
     service.repo_manager = SimpleNamespace(checkout=checkout)
     repo = Mock()
     service._open_or_init = Mock(return_value=repo)
-    service._do_commit = AsyncMock(return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None))
-    service._do_push = Mock(return_value=SimpleNamespace(success=True, commit_sha="b" * 40, error=None))
+    service._do_commit = AsyncMock(
+        return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
+    )
+    service._do_push = Mock(
+        return_value=SimpleNamespace(success=True, commit_sha="b" * 40, error=None)
+    )
 
     sha, push_error = await service.commit_workspace_changes("agent change", push=True)
 
@@ -55,7 +63,7 @@ async def test_commit_workspace_changes_pushes_only_when_requested(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_commit_workspace_changes_returns_commit_when_push_fails(tmp_path):
+async def test_workspace_repo_commit_closure_returns_commit_when_push_fails(tmp_path):
     service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
 
     @asynccontextmanager
@@ -65,8 +73,12 @@ async def test_commit_workspace_changes_returns_commit_when_push_fails(tmp_path)
     service.repo_manager = SimpleNamespace(checkout=checkout)
     repo = Mock()
     service._open_or_init = Mock(return_value=repo)
-    service._do_commit = AsyncMock(return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None))
-    service._do_push = Mock(return_value=SimpleNamespace(success=False, commit_sha=None, error="rejected"))
+    service._do_commit = AsyncMock(
+        return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
+    )
+    service._do_push = Mock(
+        return_value=SimpleNamespace(success=False, commit_sha=None, error="rejected")
+    )
 
     sha, push_error = await service.commit_workspace_changes("agent change", push=True)
 

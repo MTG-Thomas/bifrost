@@ -5,12 +5,16 @@ from uuid import uuid4
 
 import pytest
 
-from src.models.contracts.workspace_changesets import (
-    WorkspaceActivateRequest,
-    WorkspaceChangesetBegin,
-    WorkspaceFileMutationRequest,
+from src.models.contracts.workspace_repo_changesets import (
+    WorkspaceRepoActivateRequest,
+    WorkspaceRepoChangesetBegin,
+    WorkspaceRepoFileMutationRequest,
 )
-from src.services.workspace_changesets import ChangesetConflict, ChangesetInvalid, WorkspaceChangesetService
+from src.services.workspace_repo_changesets import (
+    ChangesetConflict,
+    ChangesetInvalid,
+    WorkspaceRepoChangesetService,
+)
 
 
 class MemoryRepo:
@@ -72,29 +76,49 @@ class FakeDB:
 
 
 def service(files=None, organization_id=None):
-    value = WorkspaceChangesetService(FakeDB(), organization_id or uuid4(), repo=MemoryRepo(files))
+    value = WorkspaceRepoChangesetService(
+        FakeDB(), organization_id or uuid4(), repo=MemoryRepo(files)
+    )
     value.rows = MemoryRows()
     return value
 
 
 @pytest.mark.asyncio
 async def test_begin_uses_canonical_revision_and_rejects_stale_revision():
-    svc = service({"features/a.py": b"one", "features/b.py": b"two", "other/x": b"ignored"})
+    svc = service(
+        {"features/a.py": b"one", "features/b.py": b"two", "other/x": b"ignored"}
+    )
     state = await svc.state("features")
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features", base_revision=state.revision, worker_id="worker-1"), uuid4())
+    assert state.storage_root == "_repo"
+    row = await svc.begin(
+        WorkspaceRepoChangesetBegin(
+            scope="features", base_revision=state.revision, worker_id="worker-1"
+        ),
+        uuid4(),
+    )
     assert row.base_revision == state.revision
     assert row.worker_id == "worker-1"
 
     with pytest.raises(ChangesetConflict) as exc:
-        await svc.begin(WorkspaceChangesetBegin(scope="features", base_revision="0" * 64), uuid4())
+        await svc.begin(
+            WorkspaceRepoChangesetBegin(scope="features", base_revision="0" * 64),
+            uuid4(),
+        )
     assert exc.value.detail["reason"] == "revision_mismatch"
 
 
 @pytest.mark.asyncio
 async def test_stage_is_scope_bounded_and_diff_does_not_mutate_workspace():
     svc = service({"features/a.py": b"old\n"})
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
-    changed = await svc.stage(row.id, WorkspaceFileMutationRequest(path="features/a.py", operation="write", content_base64=base64.b64encode(b"new\n").decode()))
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    changed = await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path="features/a.py",
+            operation="write",
+            content_base64=base64.b64encode(b"new\n").decode(),
+        ),
+    )
     assert changed.status == "staged"
     assert svc.repo.files["features/a.py"] == b"old\n"
     diff = await svc.diff(row.id)
@@ -102,16 +126,19 @@ async def test_stage_is_scope_bounded_and_diff_does_not_mutate_workspace():
     assert "+new" in diff.files[0].unified_diff
 
     with pytest.raises(ChangesetInvalid):
-        await svc.stage(row.id, WorkspaceFileMutationRequest(path="apps/a.ts", operation="delete"))
+        await svc.stage(
+            row.id,
+            WorkspaceRepoFileMutationRequest(path="apps/a.ts", operation="delete"),
+        )
 
 
 @pytest.mark.asyncio
 async def test_diff_rejects_content_that_no_longer_matches_captured_base():
     svc = service({"features/a.py": b"old\n"})
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     await svc.stage(
         row.id,
-        WorkspaceFileMutationRequest(
+        WorkspaceRepoFileMutationRequest(
             path="features/a.py",
             operation="write",
             content_base64=base64.b64encode(b"new\n").decode(),
@@ -134,7 +161,7 @@ async def test_changesets_are_hidden_from_other_organizations():
     first.rows = rows
     second.rows = rows
 
-    row = await first.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
+    row = await first.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     with pytest.raises(KeyError):
         await second.get(row.id)
     assert (await first.state("features")).open_changesets == 1
@@ -142,10 +169,20 @@ async def test_changesets_are_hidden_from_other_organizations():
 
 
 @pytest.mark.asyncio
-async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(monkeypatch):
+async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
+    monkeypatch,
+):
     svc = service({"features/a.py": b"a", "features/b.py": b"b"})
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
-    await svc.stage(row.id, WorkspaceFileMutationRequest(path="features/a.py", operation="write", content_base64=base64.b64encode(b"A").decode(), force_deactivation=True))
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path="features/a.py",
+            operation="write",
+            content_base64=base64.b64encode(b"A").decode(),
+            force_deactivation=True,
+        ),
+    )
     stored = svc.rows.items[row.id]
     stored.validation = {"valid": True}
     stored.status = "validated"
@@ -162,48 +199,65 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
         async def delete_file(self, path):
             await svc.repo.delete(path)
 
-    monkeypatch.setattr("src.services.workspace_changesets.FileStorageService", Storage)
-    activated = await svc.activate(row.id, WorkspaceActivateRequest(), "tester")
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+    activated = await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
     assert activated.status == "activated"
     assert svc.repo.files == {"features/a.py": b"A", "features/b.py": b"B"}
 
-    second = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
-    await svc.stage(second.id, WorkspaceFileMutationRequest(path="features/a.py", operation="delete"))
+    second = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        second.id,
+        WorkspaceRepoFileMutationRequest(path="features/a.py", operation="delete"),
+    )
     current = svc.rows.items[second.id]
     current.validation = {"valid": True}
     current.status = "validated"
     svc.repo.files["features/a.py"] = b"someone else"
     with pytest.raises(ChangesetConflict) as exc:
-        await svc.activate(second.id, WorkspaceActivateRequest(), "tester")
+        await svc.activate(second.id, WorkspaceRepoActivateRequest(), "tester")
     assert exc.value.detail["conflicting_paths"] == ["features/a.py"]
 
 
 @pytest.mark.asyncio
 async def test_activation_compensates_storage_on_partial_failure(monkeypatch):
     svc = service({"features/a.txt": b"a", "features/b.txt": b"b"})
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     for path, content in (("features/a.txt", b"A"), ("features/b.txt", b"B")):
-        await svc.stage(row.id, WorkspaceFileMutationRequest(path=path, operation="write", content_base64=base64.b64encode(content).decode()))
+        await svc.stage(
+            row.id,
+            WorkspaceRepoFileMutationRequest(
+                path=path,
+                operation="write",
+                content_base64=base64.b64encode(content).decode(),
+            ),
+        )
     stored = svc.rows.items[row.id]
     stored.validation = {"valid": True}
     stored.status = "validated"
 
     class FailingStorage:
         calls = 0
+
         def __init__(self, _db):
             pass
+
         async def write_file(self, path, content, **_kwargs):
             self.calls += 1
             await svc.repo.write(path, content)
             if self.calls == 2:
                 raise RuntimeError("storage failed")
             return SimpleNamespace(pending_deactivations=[])
+
         async def delete_file(self, path):
             await svc.repo.delete(path)
 
-    monkeypatch.setattr("src.services.workspace_changesets.FileStorageService", FailingStorage)
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", FailingStorage
+    )
     with pytest.raises(RuntimeError, match="storage failed"):
-        await svc.activate(row.id, WorkspaceActivateRequest(), "tester")
+        await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
     assert svc.repo.files == {"features/a.txt": b"a", "features/b.txt": b"b"}
     assert stored.status == "failed"
 
@@ -211,11 +265,11 @@ async def test_activation_compensates_storage_on_partial_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_activation_persists_failure_when_compensation_also_fails(monkeypatch):
     svc = service({"features/a.txt": b"a", "features/b.txt": b"b"})
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     for path, content in (("features/a.txt", b"A"), ("features/b.txt", b"B")):
         await svc.stage(
             row.id,
-            WorkspaceFileMutationRequest(
+            WorkspaceRepoFileMutationRequest(
                 path=path,
                 operation="write",
                 content_base64=base64.b64encode(content).decode(),
@@ -235,7 +289,10 @@ async def test_activation_persists_failure_when_compensation_also_fails(monkeypa
             self.calls += 1
             if self.calls == 2:
                 raise RuntimeError("activation failed")
-            if kwargs.get("updated_by") == "changeset-rollback" and path == "features/a.txt":
+            if (
+                kwargs.get("updated_by") == "changeset-rollback"
+                and path == "features/a.txt"
+            ):
                 raise RuntimeError("rollback failed")
             await svc.repo.write(path, content)
             return SimpleNamespace(pending_deactivations=[])
@@ -243,9 +300,12 @@ async def test_activation_persists_failure_when_compensation_also_fails(monkeypa
         async def delete_file(self, path):
             await svc.repo.delete(path)
 
-    monkeypatch.setattr("src.services.workspace_changesets.FileStorageService", BrokenRollbackStorage)
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService",
+        BrokenRollbackStorage,
+    )
     with pytest.raises(RuntimeError, match="rollback failed"):
-        await svc.activate(row.id, WorkspaceActivateRequest(), "tester")
+        await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
     assert stored.status == "failed"
     assert "activation failed" in stored.error
     assert "rollback failed" in stored.error
@@ -259,44 +319,17 @@ async def test_activation_closes_with_commit_without_push_by_default(monkeypatch
         calls.append((message, push))
         return "a" * 40, None
 
-    svc = WorkspaceChangesetService(FakeDB(), uuid4(), repo=MemoryRepo({"features/a.txt": b"a"}), commit_callback=commit)
-    svc.rows = MemoryRows()
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
-    await svc.stage(row.id, WorkspaceFileMutationRequest(path="features/a.txt", operation="write", content_base64=base64.b64encode(b"A").decode()))
-    stored = svc.rows.items[row.id]
-    stored.validation = {"valid": True}
-    stored.status = "validated"
-
-    class Storage:
-        def __init__(self, _db):
-            pass
-        async def write_file(self, path, content, **_kwargs):
-            await svc.repo.write(path, content)
-            return SimpleNamespace(pending_deactivations=[])
-
-    monkeypatch.setattr("src.services.workspace_changesets.FileStorageService", Storage)
-    closed = await svc.activate(row.id, WorkspaceActivateRequest(commit_message="agent change"), "tester")
-    assert closed.status == "committed"
-    assert closed.commit_sha == "a" * 40
-    assert calls == [("agent change", False)]
-
-
-@pytest.mark.asyncio
-async def test_activation_records_committed_unpushed_without_rolling_back(monkeypatch):
-    async def commit(_message, _push):
-        return "a" * 40, "remote rejected push"
-
-    svc = WorkspaceChangesetService(
+    svc = WorkspaceRepoChangesetService(
         FakeDB(),
         uuid4(),
         repo=MemoryRepo({"features/a.txt": b"a"}),
         commit_callback=commit,
     )
     svc.rows = MemoryRows()
-    row = await svc.begin(WorkspaceChangesetBegin(scope="features"), uuid4())
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     await svc.stage(
         row.id,
-        WorkspaceFileMutationRequest(
+        WorkspaceRepoFileMutationRequest(
             path="features/a.txt",
             operation="write",
             content_base64=base64.b64encode(b"A").decode(),
@@ -314,8 +347,58 @@ async def test_activation_records_committed_unpushed_without_rolling_back(monkey
             await svc.repo.write(path, content)
             return SimpleNamespace(pending_deactivations=[])
 
-    monkeypatch.setattr("src.services.workspace_changesets.FileStorageService", Storage)
-    closed = await svc.activate(row.id, WorkspaceActivateRequest(commit_message="agent change", push=True), "tester")
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+    closed = await svc.activate(
+        row.id, WorkspaceRepoActivateRequest(commit_message="agent change"), "tester"
+    )
+    assert closed.status == "committed"
+    assert closed.commit_sha == "a" * 40
+    assert calls == [("agent change", False)]
+
+
+@pytest.mark.asyncio
+async def test_activation_records_committed_unpushed_without_rolling_back(monkeypatch):
+    async def commit(_message, _push):
+        return "a" * 40, "remote rejected push"
+
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({"features/a.txt": b"a"}),
+        commit_callback=commit,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path="features/a.txt",
+            operation="write",
+            content_base64=base64.b64encode(b"A").decode(),
+        ),
+    )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class Storage:
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, path, content, **_kwargs):
+            await svc.repo.write(path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+    closed = await svc.activate(
+        row.id,
+        WorkspaceRepoActivateRequest(commit_message="agent change", push=True),
+        "tester",
+    )
     assert closed.status == "committed_unpushed"
     assert closed.commit_sha == "a" * 40
     assert closed.error == "remote rejected push"

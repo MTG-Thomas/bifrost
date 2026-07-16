@@ -1,4 +1,4 @@
-"""REST contracts for transactional workspace changesets."""
+"""REST contracts for transactional workspace _repo changesets."""
 
 from datetime import datetime
 from typing import Literal
@@ -20,7 +20,8 @@ ChangesetStatus = Literal[
 ]
 
 
-class WorkspaceStateResponse(BaseModel):
+class WorkspaceRepoStateResponse(BaseModel):
+    storage_root: Literal["_repo"] = "_repo"
     scope: str
     revision: str
     file_count: int
@@ -29,15 +30,23 @@ class WorkspaceStateResponse(BaseModel):
     git_status: dict | None = None
 
 
-class WorkspaceChangesetBegin(BaseModel):
-    scope: str = Field(min_length=1, max_length=1000)
+class WorkspaceRepoChangesetBegin(BaseModel):
+    scope: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="Path prefix relative to the global _repo compatibility root.",
+    )
     base_revision: str | None = Field(default=None, min_length=64, max_length=64)
     title: str | None = Field(default=None, max_length=255)
     worker_id: str | None = Field(default=None, max_length=255)
 
 
-class WorkspaceFileMutationRequest(BaseModel):
-    path: str = Field(min_length=1, max_length=1000)
+class WorkspaceRepoFileMutationRequest(BaseModel):
+    path: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="File path relative to _repo and contained by the changeset scope.",
+    )
     operation: Literal["write", "delete"]
     content_base64: str | None = None
     expected_hash: str | None = Field(default=None, min_length=64, max_length=64)
@@ -52,7 +61,7 @@ class WorkspaceFileMutationRequest(BaseModel):
         return self
 
 
-class WorkspaceMutation(BaseModel):
+class WorkspaceRepoMutation(BaseModel):
     path: str
     operation: Literal["write", "delete"]
     content_base64: str | None = None
@@ -61,14 +70,14 @@ class WorkspaceMutation(BaseModel):
     force_deactivation: bool = False
 
 
-class WorkspaceChangesetResponse(BaseModel):
+class WorkspaceRepoChangesetResponse(BaseModel):
     id: UUID
     scope: str
     base_revision: str
     status: ChangesetStatus
     title: str | None = None
     worker_id: str | None = None
-    mutations: list[WorkspaceMutation] = Field(default_factory=list)
+    mutations: list[WorkspaceRepoMutation] = Field(default_factory=list)
     validation: dict | None = None
     activated_revision: str | None = None
     commit_sha: str | None = None
@@ -77,7 +86,7 @@ class WorkspaceChangesetResponse(BaseModel):
     updated_at: datetime
 
 
-class WorkspaceFileDiff(BaseModel):
+class WorkspaceRepoFileDiff(BaseModel):
     path: str
     operation: Literal["write", "delete"]
     before_hash: str | None = None
@@ -85,18 +94,18 @@ class WorkspaceFileDiff(BaseModel):
     unified_diff: str | None = None
 
 
-class WorkspaceChangesetDiffResponse(BaseModel):
+class WorkspaceRepoChangesetDiffResponse(BaseModel):
     changeset_id: UUID
-    files: list[WorkspaceFileDiff]
+    files: list[WorkspaceRepoFileDiff]
 
 
-class WorkspaceValidationResponse(BaseModel):
+class WorkspaceRepoValidationResponse(BaseModel):
     valid: bool
     diagnostics: list[dict] = Field(default_factory=list)
     pending_deactivations: list[dict] = Field(default_factory=list)
     validated_revision: str
 
 
-class WorkspaceActivateRequest(BaseModel):
+class WorkspaceRepoActivateRequest(BaseModel):
     commit_message: str | None = Field(default=None, max_length=500)
     push: bool = False

@@ -62,7 +62,7 @@ from src.models.orm.file_index import FileIndex
 from src.models.orm.file_metadata import FileMetadata, FilePolicy
 from src.models.orm.policy_rule import PolicyRule
 from src.models.orm.worker_metric import WorkerMetric
-from src.models.orm.workspace_changesets import WorkspaceChangeset
+from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 
 __all__ = [
     # Base
@@ -156,7 +156,7 @@ __all__ = [
     "PolicyRule",
     # Worker Metrics
     "WorkerMetric",
-    "WorkspaceChangeset",
+    "WorkspaceRepoChangeset",
     # Events
     "EventSource",
     "WebhookSource",
