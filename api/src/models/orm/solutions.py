@@ -67,6 +67,19 @@ class Solution(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
 
+    # Selects the immutable runtime closure used by newly created executions.
+    # Existing installs remain NULL until captured as an initial deployment.
+    active_deployment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "solution_deployments.id",
+            name="fk_solutions_active_deployment",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+        default=None,
+    )
+
     # Definition identity (shared across installs of the same Solution).
     slug: Mapped[str] = mapped_column(String(255), index=True)
     name: Mapped[str] = mapped_column(String(255))

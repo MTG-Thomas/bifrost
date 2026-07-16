@@ -48,6 +48,10 @@ from src.models.orm.organizations import Organization
 from src.models.orm.pending_capture import PendingCaptureORM
 from src.models.orm.solution_config_schema import SolutionConfigSchema
 from src.models.orm.solution_deploy_jobs import SolutionDeployJob
+from src.models.orm.solution_deployments import (
+    SolutionDeployment,
+    SolutionDeploymentDependency,
+)
 from src.models.orm.solution_connection_schema import SolutionConnectionSchema
 from src.models.orm.solution_file_location import SolutionFileLocation
 from src.models.orm.solutions import Solution
@@ -75,6 +79,8 @@ __all__ = [
     "SolutionConnectionSchema",
     "SolutionFileLocation",
     "SolutionDeployJob",
+    "SolutionDeployment",
+    "SolutionDeploymentDependency",
     "SolutionExportJob",
     "PendingCaptureORM",
     # Applications (App Builder)
