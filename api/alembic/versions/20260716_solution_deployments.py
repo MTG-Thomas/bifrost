@@ -181,19 +181,33 @@ def upgrade() -> None:
           RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
+        """
+    )
+    op.execute(
+        """
         CREATE TRIGGER trg_solution_deployment_integrity
           BEFORE INSERT OR UPDATE ON solution_deployments
           FOR EACH ROW EXECUTE FUNCTION enforce_solution_deployment_integrity();
-
+        """
+    )
+    op.execute(
+        """
         CREATE FUNCTION prevent_solution_deployment_delete() RETURNS trigger AS $$
         BEGIN
           RAISE EXCEPTION 'SolutionDeployment history cannot be deleted';
         END;
         $$ LANGUAGE plpgsql;
+        """
+    )
+    op.execute(
+        """
         CREATE TRIGGER trg_solution_deployment_no_delete
           BEFORE DELETE ON solution_deployments
           FOR EACH ROW EXECUTE FUNCTION prevent_solution_deployment_delete();
-
+        """
+    )
+    op.execute(
+        """
         CREATE FUNCTION enforce_solution_dependency_integrity() RETURNS trigger AS $$
         DECLARE owner_org uuid; dependency_org uuid;
         BEGIN
@@ -206,9 +220,17 @@ def upgrade() -> None:
           RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
+        """
+    )
+    op.execute(
+        """
         CREATE TRIGGER trg_solution_dependency_integrity
           BEFORE INSERT ON solution_deployment_dependencies
           FOR EACH ROW EXECUTE FUNCTION enforce_solution_dependency_integrity();
+        """
+    )
+    op.execute(
+        """
         CREATE TRIGGER trg_solution_dependency_immutable
           BEFORE UPDATE OR DELETE ON solution_deployment_dependencies
           FOR EACH ROW EXECUTE FUNCTION prevent_solution_deployment_delete();
@@ -217,17 +239,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        """
-        DROP TRIGGER trg_solution_dependency_immutable ON solution_deployment_dependencies;
-        DROP TRIGGER trg_solution_dependency_integrity ON solution_deployment_dependencies;
-        DROP FUNCTION enforce_solution_dependency_integrity();
-        DROP TRIGGER trg_solution_deployment_no_delete ON solution_deployments;
-        DROP TRIGGER trg_solution_deployment_integrity ON solution_deployments;
-        DROP FUNCTION prevent_solution_deployment_delete();
-        DROP FUNCTION enforce_solution_deployment_integrity();
-        """
-    )
+    for statement in (
+        "DROP TRIGGER trg_solution_dependency_immutable ON solution_deployment_dependencies",
+        "DROP TRIGGER trg_solution_dependency_integrity ON solution_deployment_dependencies",
+        "DROP FUNCTION enforce_solution_dependency_integrity()",
+        "DROP TRIGGER trg_solution_deployment_no_delete ON solution_deployments",
+        "DROP TRIGGER trg_solution_deployment_integrity ON solution_deployments",
+        "DROP FUNCTION prevent_solution_deployment_delete()",
+        "DROP FUNCTION enforce_solution_deployment_integrity()",
+    ):
+        op.execute(statement)
     op.drop_constraint(
         "fk_solutions_active_deployment", "solutions", type_="foreignkey"
     )
