@@ -45,10 +45,13 @@ class SolutionDeploymentActivationService:
         self,
         deployment_id: UUID,
         organization_id: UUID | None,
+        solution_id: UUID,
         *,
         expected_active_deployment_id: UUID | None,
     ) -> ActivationResult:
-        deployment = await self._require_deployment(deployment_id, organization_id)
+        deployment = await self._require_deployment(
+            deployment_id, organization_id, solution_id
+        )
         if deployment.base_deployment_id != expected_active_deployment_id:
             raise ValueError(
                 "expected active deployment must match the draft base deployment"
@@ -65,11 +68,12 @@ class SolutionDeploymentActivationService:
         self,
         target_deployment_id: UUID,
         organization_id: UUID | None,
+        solution_id: UUID,
         *,
         expected_active_deployment_id: UUID,
     ) -> ActivationResult:
         deployment = await self._require_deployment(
-            target_deployment_id, organization_id
+            target_deployment_id, organization_id, solution_id
         )
         if deployment.id == expected_active_deployment_id:
             raise ValueError("rollback target is already active")
@@ -167,7 +171,8 @@ class SolutionDeploymentActivationService:
             )
 
         try:
-            await self.hooks.rebuild_projections(deployment)
+            async with self.repository.projection_savepoint():
+                await self.hooks.rebuild_projections(deployment)
             if expected_active_deployment_id is not None:
                 previous = await self.repository.get_runtime_closure(
                     expected_active_deployment_id, organization_id
@@ -227,10 +232,10 @@ class SolutionDeploymentActivationService:
         )
 
     async def _require_deployment(
-        self, deployment_id: UUID, organization_id: UUID | None
+        self, deployment_id: UUID, organization_id: UUID | None, solution_id: UUID
     ) -> SolutionDeployment:
         deployment = await self.repository.get_runtime_closure(
-            deployment_id, organization_id
+            deployment_id, organization_id, solution_id
         )
         if deployment is None:
             raise ValueError("deployment missing or out of scope")

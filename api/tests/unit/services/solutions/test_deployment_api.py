@@ -36,7 +36,8 @@ async def test_create_registers_complete_reference_only_ready_draft(monkeypatch)
         ),
     )
     session = SimpleNamespace(
-        scalar=AsyncMock(return_value=SimpleNamespace(organization_id=None))
+        scalar=AsyncMock(return_value=SimpleNamespace(organization_id=None)),
+        get=AsyncMock(return_value=None),
     )
     created = []
     written = []
@@ -55,8 +56,12 @@ async def test_create_registers_complete_reference_only_ready_draft(monkeypatch)
         async def write_compiled_manifest(self, content):
             written.append(content)
 
-    monkeypatch.setattr("src.services.solutions.deployment_api.SolutionDeploymentRepository", Repository)
-    monkeypatch.setattr("src.services.solutions.deployment_api.SolutionDeploymentStorage", Storage)
+    monkeypatch.setattr(
+        "src.services.solutions.deployment_api.SolutionDeploymentRepository", Repository
+    )
+    monkeypatch.setattr(
+        "src.services.solutions.deployment_api.SolutionDeploymentStorage", Storage
+    )
     service = SolutionDeploymentAPIService(session)
     row = await service.create_ready_draft(
         solution_id,
@@ -80,14 +85,19 @@ async def test_create_rejects_noncanonical_external_source_reference():
         deployment_id=deployment_id,
         bundle_hash="sha256:bundle",
         resolution_map_hash=sha256_digest(canonical_json(resolution)),
-        source=DeploymentSource(artifact_key="mutable/source.zip", runtime_prefix="runtime/"),
+        source=DeploymentSource(
+            artifact_key="mutable/source.zip", runtime_prefix="runtime/"
+        ),
     )
     session = SimpleNamespace(
-        scalar=AsyncMock(return_value=SimpleNamespace(organization_id=None))
+        scalar=AsyncMock(return_value=SimpleNamespace(organization_id=None)),
+        get=AsyncMock(return_value=None),
     )
     with pytest.raises(ValueError, match="canonical deployment key"):
         await SolutionDeploymentAPIService(session).create_ready_draft(
             solution_id,
             uuid4(),
-            SolutionDeploymentCreate(compiled_manifest=manifest, resolution_map=resolution),
+            SolutionDeploymentCreate(
+                compiled_manifest=manifest, resolution_map=resolution
+            ),
         )

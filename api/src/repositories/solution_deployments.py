@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import UUID
 
@@ -46,11 +47,15 @@ class SolutionDeploymentRepository:
     @staticmethod
     def _scope_clause(organization_id: UUID | None):
         column = SolutionDeployment.organization_id
-        return column.is_(None) if organization_id is None else column == organization_id
+        return (
+            column.is_(None) if organization_id is None else column == organization_id
+        )
 
     async def create(self, deployment: SolutionDeployment) -> SolutionDeployment:
         solution_org = await self.session.scalar(
-            select(Solution.organization_id).where(Solution.id == deployment.solution_id)
+            select(Solution.organization_id).where(
+                Solution.id == deployment.solution_id
+            )
         )
         if solution_org != deployment.organization_id:
             raise ValueError("deployment scope must exactly match its Solution install")
@@ -61,19 +66,28 @@ class SolutionDeploymentRepository:
             expected_manifest_hash=deployment.compiled_manifest_hash,
             expected_resolution_hash=deployment.resolution_map_hash,
         )
+        await self.validate_dependencies(deployment)
         self.session.add(deployment)
         await self.session.flush()
         return deployment
 
     async def get_runtime_closure(
-        self, deployment_id: UUID, organization_id: UUID | None
+        self,
+        deployment_id: UUID,
+        organization_id: UUID | None,
+        solution_id: UUID | None = None,
     ) -> SolutionDeployment | None:
+        clauses = [
+            SolutionDeployment.id == deployment_id,
+            self._scope_clause(organization_id),
+        ]
+        if solution_id is not None:
+            clauses.append(SolutionDeployment.solution_id == solution_id)
         result = await self.session.execute(
             select(SolutionDeployment)
             .options(selectinload(SolutionDeployment.dependencies))
             .where(
-                SolutionDeployment.id == deployment_id,
-                self._scope_clause(organization_id),
+                *clauses,
             )
         )
         return result.scalar_one_or_none()
@@ -88,6 +102,29 @@ class SolutionDeploymentRepository:
             .where(SolutionDeployment.id == deployment_id)
         )
         return result.scalar_one_or_none()
+
+    async def validate_dependencies(self, deployment: SolutionDeployment) -> None:
+        for edge in deployment.dependencies:
+            dependency = await self.session.scalar(
+                select(SolutionDeployment).where(
+                    SolutionDeployment.id == edge.dependency_deployment_id,
+                    SolutionDeployment.solution_id == edge.dependency_solution_id,
+                )
+            )
+            if dependency is None:
+                raise ValueError("dependency deployment does not exist")
+            if dependency.organization_id not in {None, deployment.organization_id}:
+                raise ValueError("dependency deployment is outside the Solution scope")
+            if dependency.state not in {"active", "superseded", "committed_unpushed"}:
+                raise ValueError("dependency deployment is not finalized")
+            if dependency.bundle_hash != edge.resolved_bundle_hash:
+                raise ValueError("dependency deployment bundle hash mismatch")
+
+    @asynccontextmanager
+    async def projection_savepoint(self):
+        """Keep adapter DB failures from poisoning recovery evidence persistence."""
+        async with self.session.begin_nested():
+            yield
 
     async def transition(
         self,
@@ -129,7 +166,9 @@ class SolutionDeploymentRepository:
         )
         deployment = result.scalar_one_or_none()
         if deployment is None:
-            raise InvalidDeploymentTransition("deployment missing, out of scope, or state changed")
+            raise InvalidDeploymentTransition(
+                "deployment missing, out of scope, or state changed"
+            )
         return deployment
 
     async def get_solution_active_deployment(

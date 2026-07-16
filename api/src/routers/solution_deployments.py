@@ -10,14 +10,34 @@ from src.models.contracts.solution_deployments import (
     DeploymentActivationPublic,
     DeploymentPointerRequest,
     SolutionDeploymentCreate,
+    SolutionDeploymentCapabilities,
     SolutionDeploymentPublic,
 )
 from src.models.orm.solutions import Solution
 from src.repositories.solution_deployments import SolutionDeploymentRepository
-from src.services.solutions.deployment_activation import SolutionDeploymentActivationService
+from src.services.solutions.deployment_activation import (
+    SolutionDeploymentActivationService,
+)
 from src.services.solutions.deployment_api import SolutionDeploymentAPIService
+from src.services.solutions.deployment_api import DeploymentRegistrationConflict
+from src.services.solutions.write_lock import (
+    SolutionWriteLockHeld,
+    SolutionWriteLockLost,
+    solution_write_lock,
+)
 
-router = APIRouter(prefix="/api/solutions/{solution_id}/deployments", tags=["Solution Deployments"])
+router = APIRouter(
+    prefix="/api/solutions/{solution_id}/deployments", tags=["Solution Deployments"]
+)
+
+
+@router.get("/capabilities", response_model=SolutionDeploymentCapabilities)
+async def deployment_capabilities(
+    solution_id: UUID, ctx: Context, user: CurrentSuperuser
+):
+    del user
+    await _scope(ctx, solution_id)
+    return SolutionDeploymentCapabilities()
 
 
 async def _scope(ctx: Context, solution_id: UUID) -> UUID | None:
@@ -37,7 +57,10 @@ def get_activation_service(ctx: Context) -> SolutionDeploymentActivationService:
 
 @router.post("", response_model=SolutionDeploymentPublic, status_code=201)
 async def create_deployment(
-    solution_id: UUID, body: SolutionDeploymentCreate, ctx: Context, user: CurrentSuperuser
+    solution_id: UUID,
+    body: SolutionDeploymentCreate,
+    ctx: Context,
+    user: CurrentSuperuser,
 ):
     try:
         row = await SolutionDeploymentAPIService(ctx.db).create_ready_draft(
@@ -47,6 +70,16 @@ async def create_deployment(
         return row
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DeploymentRegistrationConflict as exc:
+        await ctx.db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "deployment_registration_conflict",
+                "message": str(exc),
+                "reconcile": f"GET /api/solutions/{solution_id}/deployments/{body.compiled_manifest.deployment_id}",
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -79,11 +112,23 @@ async def activate_deployment(
     del user
     organization_id = await _scope(ctx, solution_id)
     try:
-        result = await service.activate(
-            deployment_id,
-            organization_id,
-            expected_active_deployment_id=body.expected_active_deployment_id,
-        )
+        async with solution_write_lock(solution_id):
+            result = await service.activate(
+                deployment_id,
+                organization_id,
+                solution_id,
+                expected_active_deployment_id=body.expected_active_deployment_id,
+            )
+    except SolutionWriteLockHeld as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "solution_write_lock_held"}
+        ) from exc
+    except SolutionWriteLockLost as exc:
+        await ctx.db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "solution_write_lock_lost", "retryable": True},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     await ctx.db.commit()
@@ -105,14 +150,28 @@ async def rollback_deployment(
 ):
     del user
     if body.expected_active_deployment_id is None:
-        raise HTTPException(status_code=422, detail="rollback requires expected active deployment")
+        raise HTTPException(
+            status_code=422, detail="rollback requires expected active deployment"
+        )
     organization_id = await _scope(ctx, solution_id)
     try:
-        result = await service.rollback(
-            deployment_id,
-            organization_id,
-            expected_active_deployment_id=body.expected_active_deployment_id,
-        )
+        async with solution_write_lock(solution_id):
+            result = await service.rollback(
+                deployment_id,
+                organization_id,
+                solution_id,
+                expected_active_deployment_id=body.expected_active_deployment_id,
+            )
+    except SolutionWriteLockHeld as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "solution_write_lock_held"}
+        ) from exc
+    except SolutionWriteLockLost as exc:
+        await ctx.db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "solution_write_lock_lost", "retryable": True},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     await ctx.db.commit()

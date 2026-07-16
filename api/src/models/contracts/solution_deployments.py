@@ -60,3 +60,12 @@ class DeploymentActivationPublic(BaseModel):
     active_deployment_id: UUID | None
     conflict: dict | None = None
     recovery: dict | None = None
+
+
+class SolutionDeploymentCapabilities(BaseModel):
+    registration: bool = True
+    inspection: bool = True
+    artifact_upload: bool = False
+    server_side_compilation: bool = False
+    activation_configured: bool = False
+    safe_for_end_to_end_cs_deploy: bool = False

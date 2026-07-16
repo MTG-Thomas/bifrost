@@ -22,11 +22,12 @@ def test_solution_deployment_openapi_exposes_minimal_cs_surface():
     base = "/api/solutions/{solution_id}/deployments"
     item = f"{base}/{{deployment_id}}"
     assert set(paths[base]) >= {"post"}
+    assert set(paths[f"{base}/capabilities"]) >= {"get"}
     assert set(paths[item]) >= {"get"}
     assert set(paths[f"{item}/activate"]) >= {"post"}
     assert set(paths[f"{item}/rollback"]) >= {"post"}
-    create_schema = paths[base]["post"]["requestBody"]["content"][
-        "application/json"
-    ]["schema"]
+    create_schema = paths[base]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
     assert create_schema["$ref"].endswith("SolutionDeploymentCreate")
     assert "multipart/form-data" not in paths[base]["post"]["requestBody"]["content"]
