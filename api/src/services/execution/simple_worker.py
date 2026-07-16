@@ -378,6 +378,7 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
         set_solution_context(
             _exec_solution_id,
             global_repo_access=bool(context.get("solution_global_repo_access", False)),
+            runtime_storage_prefix=context.get("runtime_storage_prefix"),
         )
     _clear_workspace_modules()
 

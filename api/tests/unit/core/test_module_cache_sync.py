@@ -235,6 +235,19 @@ def test_candidate_paths_respect_solution_context():
     finally:
         module_cache_sync.clear_solution_context()
 
+    deployment_id = uuid4()
+    module_cache_sync.set_solution_context(
+        solution_id,
+        global_repo_access=False,
+        runtime_storage_prefix=f"_solutions/{solution_id}/{deployment_id}/",
+    )
+    try:
+        assert module_cache_sync.candidate_module_paths("modules/a.py") == [
+            f"_solutions/{solution_id}/{deployment_id}/modules/a.py"
+        ]
+    finally:
+        module_cache_sync.clear_solution_context()
+
     module_cache_sync.set_solution_context(solution_id, global_repo_access=True)
     try:
         assert module_cache_sync.candidate_module_paths("/modules/a.py") == [

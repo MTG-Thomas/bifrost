@@ -76,6 +76,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         is_local_execution: bool = False,
         execution_model: str | None = None,
         workflow_id: str | None = None,
+        solution_deployment_id: str | None = None,
     ) -> Execution:
         """
         Create a new execution record.
@@ -118,6 +119,7 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         # Parse workflow_id if present
         parsed_workflow_id = UUID(workflow_id) if workflow_id else None
+        parsed_solution_deployment_id = UUID(solution_deployment_id) if solution_deployment_id else None
 
         # A scheduled execution has a pre-existing row (inserted at schedule
         # time as SCHEDULED, promoted to PENDING by the scheduler). In that
@@ -126,6 +128,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         if existing is not None:
             existing.workflow_name = workflow_name
             existing.workflow_id = parsed_workflow_id
+            existing.solution_deployment_id = parsed_solution_deployment_id
             existing.status = status
             existing.parameters = parameters
             existing.executed_by = parsed_user_id
@@ -148,6 +151,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             id=UUID(execution_id),
             workflow_name=workflow_name,
             workflow_id=parsed_workflow_id,
+            solution_deployment_id=parsed_solution_deployment_id,
             status=status,
             parameters=parameters,
             executed_by=parsed_user_id,
@@ -666,6 +670,7 @@ async def create_execution(
     is_local_execution: bool = False,
     execution_model: str | None = None,
     workflow_id: str | None = None,
+    solution_deployment_id: str | None = None,
     session: "AsyncSession | None" = None,
 ) -> None:
     """
@@ -697,6 +702,7 @@ async def create_execution(
             is_local_execution=is_local_execution,
             execution_model=execution_model,
             workflow_id=workflow_id,
+            solution_deployment_id=solution_deployment_id,
         )
 
     if session is not None:

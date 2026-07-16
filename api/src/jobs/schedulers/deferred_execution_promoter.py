@@ -85,6 +85,8 @@ async def promote_due_executions() -> tuple[int, int]:
                         (row.execution_context or {}).get("is_platform_admin", False)
                     ),
                     file_path=None,
+                    solution_deployment_id=str(row.solution_deployment_id) if row.solution_deployment_id else None,
+                    runtime_evidence=(row.execution_context or {}).get("runtime_evidence"),
                 )
                 promoted += 1
             except Exception:

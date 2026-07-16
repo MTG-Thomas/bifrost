@@ -60,12 +60,20 @@ class SolutionContext:
 
     solution_id: str
     global_repo_access: bool
+    runtime_storage_prefix: str | None = None
 
 
-def set_solution_context(solution_id: UUID | str, global_repo_access: bool) -> None:
+def set_solution_context(
+    solution_id: UUID | str,
+    global_repo_access: bool,
+    *,
+    runtime_storage_prefix: str | None = None,
+) -> None:
     """Activate the solution import root for the current thread/execution."""
     _solution_ctx.value = SolutionContext(
-        solution_id=str(solution_id), global_repo_access=bool(global_repo_access)
+        solution_id=str(solution_id),
+        global_repo_access=bool(global_repo_access),
+        runtime_storage_prefix=(runtime_storage_prefix.rstrip("/") + "/") if runtime_storage_prefix else None,
     )
 
 
@@ -93,7 +101,8 @@ def _candidate_storage_paths(path: str) -> list[str]:
     ctx = get_solution_context()
     if ctx is None:
         return [path]
-    rooted = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{path.lstrip('/')}"
+    root = ctx.runtime_storage_prefix or f"{SOLUTIONS_ROOT}/{ctx.solution_id}/"
+    rooted = f"{root}{path.lstrip('/')}"
     if ctx.global_repo_access:
         return [rooted, path]
     return [rooted]
@@ -116,7 +125,8 @@ def candidate_index_prefixes(base_path: str) -> list[str]:
     ctx = get_solution_context()
     if ctx is None:
         return [f"{base}/"]
-    rooted = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{base}/"
+    root = ctx.runtime_storage_prefix or f"{SOLUTIONS_ROOT}/{ctx.solution_id}/"
+    rooted = f"{root}{base}/"
     if ctx.global_repo_access:
         return [rooted, f"{base}/"]
     return [rooted]
@@ -666,7 +676,8 @@ def solution_has_submodules(base_path: str) -> bool:
     ctx = get_solution_context()
     if ctx is None:
         return False
-    prefix = f"{SOLUTIONS_ROOT}/{ctx.solution_id}/{base_path.rstrip('/')}/"
+    root = ctx.runtime_storage_prefix or f"{SOLUTIONS_ROOT}/{ctx.solution_id}/"
+    prefix = f"{root}{base_path.rstrip('/')}/"
     api_paths = _fetch_module_index_from_api(solution_id=ctx.solution_id)
     if any(path.startswith(prefix) for path in api_paths):
         return True

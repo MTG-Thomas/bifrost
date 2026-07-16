@@ -48,6 +48,8 @@ async def _publish_pending(
     is_platform_admin: bool,
     file_path: str | None,
     event: dict[str, Any] | None = None,
+    solution_deployment_id: str | None = None,
+    runtime_evidence: dict[str, Any] | None = None,
 ) -> None:
     """
     Write a pending-execution blob to Redis, register with the queue tracker,
@@ -89,6 +91,8 @@ async def _publish_pending(
                 sync=sync,
                 is_platform_admin=is_platform_admin,
                 event=event,
+                solution_deployment_id=solution_deployment_id,
+                runtime_evidence=runtime_evidence,
             )
 
             # Add to queue tracking (publishes position updates to all queued executions)
@@ -99,6 +103,7 @@ async def _publish_pending(
                 "execution_id": execution_id,
                 "workflow_id": workflow_id,
                 "sync": sync,
+                "solution_deployment_id": solution_deployment_id,
             }
 
             # Include file_path for fast direct loading (avoids filesystem scan)
@@ -144,6 +149,14 @@ async def enqueue_workflow_execution(
     Returns:
         execution_id: UUID of the queued execution
     """
+    from src.core.database import get_db_context
+    from src.services.solutions.deployment_runtime import pin_workflow_runtime
+
+    async with get_db_context() as db:
+        pinned_runtime = await pin_workflow_runtime(db, uuid.UUID(workflow_id))
+    runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
+    solution_deployment_id = str(pinned_runtime.deployment_id) if pinned_runtime else None
+
     # Generate or use provided execution ID
     if execution_id is None:
         execution_id = str(uuid.uuid4())
@@ -171,6 +184,8 @@ async def enqueue_workflow_execution(
         is_platform_admin=context.is_platform_admin,
         file_path=file_path,
         event=event_payload,
+        solution_deployment_id=solution_deployment_id,
+        runtime_evidence=runtime_evidence,
     )
 
     logger.info(
