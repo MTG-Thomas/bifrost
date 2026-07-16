@@ -5,7 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +29,19 @@ class SolutionDeployment(Base):
     __table_args__ = (
         Index("ix_solution_deployments_solution_created", "solution_id", "created_at"),
         Index("ix_solution_deployments_org_state", "organization_id", "state"),
+        UniqueConstraint("id", "solution_id", name="uq_solution_deployment_id_solution"),
+        ForeignKeyConstraint(
+            ["parent_deployment_id", "solution_id"],
+            ["solution_deployments.id", "solution_deployments.solution_id"],
+            name="fk_solution_deployment_parent_same_solution",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["base_deployment_id", "solution_id"],
+            ["solution_deployments.id", "solution_deployments.solution_id"],
+            name="fk_solution_deployment_base_same_solution",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "state IN ('draft','building','validated','ready','activating','active',"
             "'superseded','conflicted','failed','recovery_required','aborted',"
@@ -28,24 +51,21 @@ class SolutionDeployment(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    organization_id: Mapped[UUID] = mapped_column(
-        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    organization_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True
     )
     solution_id: Mapped[UUID] = mapped_column(
-        ForeignKey("solutions.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("solutions.id", ondelete="RESTRICT"), nullable=False
     )
-    parent_deployment_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("solution_deployments.id", ondelete="SET NULL"), nullable=True
-    )
-    base_deployment_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("solution_deployments.id", ondelete="SET NULL"), nullable=True
-    )
+    parent_deployment_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    base_deployment_id: Mapped[UUID | None] = mapped_column(nullable=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     declared_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bundle_hash: Mapped[str] = mapped_column(String(71), nullable=False)
     compiled_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
     compiled_manifest_hash: Mapped[str] = mapped_column(String(71), nullable=False)
     resolution_map: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    resolution_map_hash: Mapped[str] = mapped_column(String(71), nullable=False)
     source_artifact_key: Mapped[str] = mapped_column(String(2048), nullable=False)
     runtime_storage_prefix: Mapped[str] = mapped_column(String(2048), nullable=False)
     git_repository: Mapped[str | None] = mapped_column(String(2048), nullable=True)
@@ -69,7 +89,6 @@ class SolutionDeployment(Base):
 
     dependencies: Mapped[list["SolutionDeploymentDependency"]] = relationship(
         back_populates="deployment",
-        cascade="all, delete-orphan",
         lazy="selectin",
         foreign_keys="SolutionDeploymentDependency.deployment_id",
     )
@@ -79,15 +98,21 @@ class SolutionDeploymentDependency(Base):
     """Exact immutable dependency deployment selected during compilation."""
 
     __tablename__ = "solution_deployment_dependencies"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["dependency_deployment_id", "dependency_solution_id"],
+            ["solution_deployments.id", "solution_deployments.solution_id"],
+            name="fk_solution_dependency_exact_deployment",
+            ondelete="RESTRICT",
+        ),
+    )
     deployment_id: Mapped[UUID] = mapped_column(
-        ForeignKey("solution_deployments.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("solution_deployments.id", ondelete="RESTRICT"), primary_key=True
     )
     dependency_solution_id: Mapped[UUID] = mapped_column(
         ForeignKey("solutions.id", ondelete="RESTRICT"), primary_key=True
     )
-    dependency_deployment_id: Mapped[UUID] = mapped_column(
-        ForeignKey("solution_deployments.id", ondelete="RESTRICT"), nullable=False
-    )
+    dependency_deployment_id: Mapped[UUID] = mapped_column(nullable=False)
     declared_constraint: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolved_bundle_hash: Mapped[str] = mapped_column(String(71), nullable=False)
 

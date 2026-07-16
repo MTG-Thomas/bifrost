@@ -10,6 +10,9 @@ from src.services.solutions.deployment_manifest import (
     DeploymentSource,
     RuntimeEntityDefinition,
     RuntimeSourceResolution,
+    canonical_json,
+    sha256_digest,
+    validate_runtime_closure,
 )
 
 
@@ -28,10 +31,20 @@ def test_manifest_hash_is_canonical_and_contract_is_frozen():
         source_ref="workflows/triage.py",
         source_hash="sha256:abc",
     )
+    resolution = DeploymentResolutionMap(
+        workflows={workflow.portable_ref: workflow},
+        sources={
+            "workflows/triage.py": RuntimeSourceResolution(
+                object_key="runtime/workflows/triage.py", content_hash="sha256:abc"
+            )
+        },
+    )
+    resolution_hash = sha256_digest(canonical_json(resolution))
     first = CompiledDeploymentManifest(
         solution_id=solution_id,
         deployment_id=deployment_id,
         bundle_hash="sha256:bundle",
+        resolution_map_hash=resolution_hash,
         source=source,
         workflows={workflow.portable_ref: workflow},
     )
@@ -86,4 +99,57 @@ def test_contract_rejects_unknown_mutable_projection_fields():
                 "definition": {},
                 "active_orm_row": {"name": "mutable"},
             }
+        )
+
+
+def test_canonical_json_rejects_non_json_numbers():
+    with pytest.raises(ValueError):
+        canonical_json({"bad": float("nan")})
+
+
+def test_runtime_closure_anchors_resolution_and_supports_id_lookup():
+    solution_id = uuid4()
+    deployment_id = uuid4()
+    workflow = RuntimeEntityDefinition(
+        portable_ref="workflows/run.py::run",
+        resolved_id=uuid4(),
+        definition={"function_name": "run"},
+        source_ref="workflows/run.py",
+        source_hash="sha256:source",
+    )
+    resolution = DeploymentResolutionMap(
+        workflows={workflow.portable_ref: workflow},
+        sources={
+            "workflows/run.py": RuntimeSourceResolution(
+                object_key="runtime/workflows/run.py", content_hash="sha256:source"
+            )
+        },
+    )
+    resolution_hash = sha256_digest(canonical_json(resolution))
+    manifest = CompiledDeploymentManifest(
+        solution_id=solution_id,
+        deployment_id=deployment_id,
+        bundle_hash="sha256:bundle",
+        resolution_map_hash=resolution_hash,
+        source=DeploymentSource(artifact_key="source.zip", runtime_prefix="runtime/"),
+        workflows={workflow.portable_ref: workflow},
+    )
+
+    validate_runtime_closure(
+        manifest,
+        resolution,
+        [],
+        expected_manifest_hash=manifest.content_hash(),
+        expected_resolution_hash=resolution_hash,
+    )
+    assert resolution.resolve_workflow_id(workflow.resolved_id) == workflow
+
+    changed = resolution.model_copy(update={"workflows": {}})
+    with pytest.raises(ValueError, match="hash mismatch"):
+        validate_runtime_closure(
+            manifest,
+            changed,
+            [],
+            expected_manifest_hash=manifest.content_hash(),
+            expected_resolution_hash=resolution_hash,
         )

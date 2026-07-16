@@ -15,6 +15,14 @@ class ResourceExistsError(Exception):
     pass
 
 
+class S3PreconditionFailed(Exception):
+    def __init__(self):
+        self.response = {
+            "ResponseMetadata": {"HTTPStatusCode": 412},
+            "Error": {"Code": "PreconditionFailed"},
+        }
+
+
 class FakeClient:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
@@ -73,3 +81,11 @@ async def test_runtime_path_rejects_traversal():
     storage = make_storage(FakeClient())
     with pytest.raises(ValueError):
         await storage.write_runtime_file("../mutable.py", b"code")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [S3PreconditionFailed(), ResourceExistsError("azure duplicate")],
+)
+def test_provider_duplicate_write_exceptions_are_classified(error):
+    assert SolutionDeploymentStorage._is_already_exists(error)

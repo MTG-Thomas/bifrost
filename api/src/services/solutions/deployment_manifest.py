@@ -7,7 +7,7 @@ import json
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 def canonical_json(value: BaseModel | dict[str, Any]) -> bytes:
@@ -18,8 +18,12 @@ def canonical_json(value: BaseModel | dict[str, Any]) -> bytes:
         else value
     )
     return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def sha256_digest(data: bytes) -> str:
@@ -38,7 +42,7 @@ class DeploymentSource(ImmutableContract):
 class RuntimeEntityDefinition(ImmutableContract):
     portable_ref: str
     resolved_id: UUID
-    definition: dict[str, Any]
+    definition: dict[str, JsonValue]
     source_ref: str | None = None
     source_hash: str | None = None
     dependency_solution_id: UUID | None = None
@@ -67,6 +71,7 @@ class CompiledDeploymentManifest(ImmutableContract):
     solution_id: UUID
     deployment_id: UUID
     bundle_hash: str
+    resolution_map_hash: str
     source: DeploymentSource
     workflows: dict[str, RuntimeEntityDefinition] = Field(default_factory=dict)
     agents: dict[str, RuntimeEntityDefinition] = Field(default_factory=dict)
@@ -119,3 +124,78 @@ class DeploymentResolutionMap(ImmutableContract):
 
     def resolve_source(self, source_ref: str) -> RuntimeSourceResolution:
         return self.sources[source_ref]
+
+    def resolve_workflow_id(self, resolved_id: UUID) -> RuntimeEntityDefinition:
+        return self._resolve_id(self.workflows, resolved_id)
+
+    def resolve_agent_id(self, resolved_id: UUID) -> RuntimeEntityDefinition:
+        return self._resolve_id(self.agents, resolved_id)
+
+    @staticmethod
+    def _resolve_id(
+        entities: dict[str, RuntimeEntityDefinition], resolved_id: UUID
+    ) -> RuntimeEntityDefinition:
+        matches = [entity for entity in entities.values() if entity.resolved_id == resolved_id]
+        if len(matches) != 1:
+            raise KeyError(resolved_id)
+        return matches[0]
+
+
+def validate_runtime_closure(
+    manifest_value: CompiledDeploymentManifest | dict[str, Any],
+    resolution_value: DeploymentResolutionMap | dict[str, Any],
+    dependency_edges: list[Any],
+    *,
+    expected_manifest_hash: str,
+    expected_resolution_hash: str,
+) -> tuple[CompiledDeploymentManifest, DeploymentResolutionMap]:
+    """Prove that all duplicated closure evidence describes one immutable runtime."""
+    manifest = (
+        manifest_value
+        if isinstance(manifest_value, CompiledDeploymentManifest)
+        else CompiledDeploymentManifest.model_validate(manifest_value)
+    )
+    resolution = (
+        resolution_value
+        if isinstance(resolution_value, DeploymentResolutionMap)
+        else DeploymentResolutionMap.model_validate(resolution_value)
+    )
+    resolution_hash = sha256_digest(canonical_json(resolution))
+    if resolution_hash != expected_resolution_hash:
+        raise ValueError("resolution map hash mismatch")
+    if manifest.resolution_map_hash != resolution_hash:
+        raise ValueError("manifest does not anchor the resolution map")
+    if manifest.content_hash() != expected_manifest_hash:
+        raise ValueError("compiled manifest hash mismatch")
+
+    for kind in ("workflows", "agents", "forms", "events", "applications"):
+        if getattr(manifest, kind) != getattr(resolution, kind):
+            raise ValueError(f"manifest/resolution mismatch for {kind}")
+    if manifest.dependencies != resolution.dependencies:
+        raise ValueError("manifest/resolution dependency mismatch")
+    for entities in (
+        resolution.workflows,
+        resolution.agents,
+        resolution.forms,
+        resolution.events,
+        resolution.applications,
+    ):
+        for portable_ref, entity in entities.items():
+            if portable_ref != entity.portable_ref:
+                raise ValueError(f"portable reference key mismatch: {portable_ref}")
+            if entity.source_ref is not None:
+                source = resolution.sources.get(entity.source_ref)
+                if source is None or source.content_hash != entity.source_hash:
+                    raise ValueError(f"source resolution mismatch: {entity.source_ref}")
+
+    expected_edges = {
+        (edge.dependency_solution_id, edge.dependency_deployment_id, edge.resolved_bundle_hash)
+        for edge in dependency_edges
+    }
+    manifest_edges = {
+        (item.solution_id, item.deployment_id, item.bundle_hash)
+        for item in manifest.dependencies.values()
+    }
+    if expected_edges != manifest_edges:
+        raise ValueError("relational dependency edges do not match the manifest")
+    return manifest, resolution

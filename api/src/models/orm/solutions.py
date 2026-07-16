@@ -25,7 +25,17 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String, Text, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    LargeBinary,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
@@ -50,6 +60,13 @@ class Solution(Base):
     # equal in a plain unique index, so global installs need a slug-only partial
     # index of their own. Mirrors migration 20260605_solution_unique_scope.
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["active_deployment_id", "id"],
+            ["solution_deployments.id", "solution_deployments.solution_id"],
+            name="fk_solutions_active_deployment",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
         Index(
             "ix_solutions_slug_org_unique",
             "slug",
@@ -70,12 +87,6 @@ class Solution(Base):
     # Selects the immutable runtime closure used by newly created executions.
     # Existing installs remain NULL until captured as an initial deployment.
     active_deployment_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey(
-            "solution_deployments.id",
-            name="fk_solutions_active_deployment",
-            ondelete="SET NULL",
-            use_alter=True,
-        ),
         nullable=True,
         default=None,
     )
