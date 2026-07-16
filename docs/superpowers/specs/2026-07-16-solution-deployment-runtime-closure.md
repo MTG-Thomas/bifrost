@@ -72,7 +72,7 @@ Minimum durable fields:
 
 ```text
 id UUID primary key
-organization_id UUID not null
+organization_id UUID null (must exactly match Solution scope; null means global)
 solution_id UUID not null
 parent_deployment_id UUID null
 base_deployment_id UUID null
@@ -82,6 +82,7 @@ bundle_hash sha256 not null
 compiled_manifest JSONB not null
 compiled_manifest_hash sha256 not null
 resolution_map JSONB not null
+resolution_map_hash sha256 not null
 source_artifact_key string not null
 runtime_storage_prefix string not null
 git_repository string null
@@ -129,7 +130,10 @@ solution_deployment_dependencies
 
 The exact `dependency_deployment_id` is immutable after validation. The
 declared constraint explains selection; it is never re-evaluated during an
-execution.
+execution. Composite integrity requires the selected deployment to belong to
+`dependency_solution_id`; an organization-scoped deployment may depend on the
+same organization or a global deployment, while a global deployment may depend
+only on global deployments.
 
 ### Execution changes
 
@@ -206,6 +210,10 @@ The production adapter reads the immutable compiled manifest. Tests use an
 in-memory adapter through the same interface. Execution callers do not know
 about object-store key construction, active ORM projections, or dependency
 selection.
+
+The manifest contains the canonical resolution-map hash. Runtime loading
+verifies both hashes and the equality of duplicated entity, dependency, and
+source evidence before resolving an execution.
 
 Active ORM rows continue to serve administrative APIs. Each projected
 Solution-owned row records `projected_from_deployment_id` so drift can be

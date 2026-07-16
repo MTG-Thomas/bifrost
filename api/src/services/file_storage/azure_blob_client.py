@@ -187,6 +187,7 @@ class AzureBlobStorageClient:
         Key: str,
         Body: bytes,
         ContentType: str | None = None,
+        IfNoneMatch: str | None = None,
     ) -> None:
         del Bucket
         from azure.storage.blob import ContentSettings
@@ -195,7 +196,7 @@ class AzureBlobStorageClient:
         await self._container_client.upload_blob(
             name=Key,
             data=Body,
-            overwrite=True,
+            overwrite=IfNoneMatch != "*",
             content_settings=ContentSettings(content_type=ContentType),
         )
 
