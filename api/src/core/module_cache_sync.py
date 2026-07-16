@@ -61,6 +61,7 @@ class SolutionContext:
     solution_id: str
     global_repo_access: bool
     runtime_storage_prefix: str | None = None
+    source_hashes: dict[str, str] | None = None
 
 
 def set_solution_context(
@@ -68,12 +69,14 @@ def set_solution_context(
     global_repo_access: bool,
     *,
     runtime_storage_prefix: str | None = None,
+    source_hashes: dict[str, str] | None = None,
 ) -> None:
     """Activate the solution import root for the current thread/execution."""
     _solution_ctx.value = SolutionContext(
         solution_id=str(solution_id),
         global_repo_access=bool(global_repo_access),
         runtime_storage_prefix=(runtime_storage_prefix.rstrip("/") + "/") if runtime_storage_prefix else None,
+        source_hashes=source_hashes,
     )
 
 
@@ -506,7 +509,9 @@ def get_module_sync(path: str) -> CachedModule | None:
             key = f"{MODULE_KEY_PREFIX}{storage_path}"
             data = client.get(key)
             if data:
-                return json.loads(data)
+                module = json.loads(data)
+                _verify_deployment_module_hash(path, module)
+                return module
 
             # --- Cold-cache fallback 1: API endpoint ---
             api_module = _fetch_module_from_api(storage_path)
@@ -516,6 +521,7 @@ def get_module_sync(path: str) -> CachedModule | None:
                     client.sadd(MODULE_INDEX_KEY, storage_path)
                 except redis.RedisError as e:
                     logger.warning(f"Failed to re-cache API module to Redis: {e}")
+                _verify_deployment_module_hash(path, api_module)
                 return api_module
 
             # --- Cold-cache fallback 2: direct object storage (legacy path) ---
@@ -544,6 +550,7 @@ def get_module_sync(path: str) -> CachedModule | None:
             except redis.RedisError as e:
                 logger.warning(f"Failed to cache object storage module to Redis: {e}")
 
+            _verify_deployment_module_hash(path, module)
             return module
 
         logger.debug(f"Module not in cache, API, or object storage: {path}")
@@ -552,6 +559,18 @@ def get_module_sync(path: str) -> CachedModule | None:
     except redis.RedisError as e:
         logger.warning(f"Redis error fetching module {path}: {e}")
         return None
+
+
+def _verify_deployment_module_hash(path: str, module: CachedModule) -> None:
+    ctx = get_solution_context()
+    if ctx is None or not ctx.runtime_storage_prefix:
+        return
+    expected = (ctx.source_hashes or {}).get(path.lstrip("/"))
+    if expected is None:
+        raise RuntimeError(f"deployment source is absent from manifest: {path}")
+    actual = str(module.get("hash") or "").removeprefix("sha256:")
+    if actual != expected.removeprefix("sha256:"):
+        raise RuntimeError(f"deployment import integrity mismatch: {path}")
 
 
 def _list_s3_modules() -> set[str]:

@@ -50,6 +50,7 @@ async def _publish_pending(
     event: dict[str, Any] | None = None,
     solution_deployment_id: str | None = None,
     runtime_evidence: dict[str, Any] | None = None,
+    runtime_mode: str = "legacy",
 ) -> None:
     """
     Write a pending-execution blob to Redis, register with the queue tracker,
@@ -93,6 +94,7 @@ async def _publish_pending(
                 event=event,
                 solution_deployment_id=solution_deployment_id,
                 runtime_evidence=runtime_evidence,
+                runtime_mode=runtime_mode,
             )
 
             # Add to queue tracking (publishes position updates to all queued executions)
@@ -150,16 +152,52 @@ async def enqueue_workflow_execution(
         execution_id: UUID of the queued execution
     """
     from src.core.database import get_db_context
+    from src.models.enums import ExecutionStatus
+    from src.models.orm.executions import Execution
+    from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
     from src.services.solutions.deployment_runtime import pin_workflow_runtime
 
-    async with get_db_context() as db:
-        pinned_runtime = await pin_workflow_runtime(db, uuid.UUID(workflow_id))
-    runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
-    solution_deployment_id = str(pinned_runtime.deployment_id) if pinned_runtime else None
-
-    # Generate or use provided execution ID
+    # Generate first: the durable row and queue payload share one identity.
     if execution_id is None:
         execution_id = str(uuid.uuid4())
+
+    async with get_db_context() as db:
+        caller_deployment_id = (
+            uuid.UUID(context.solution_deployment_id)
+            if context.solution_deployment_id
+            else None
+        )
+        pinned_runtime = await pin_workflow_runtime(
+            db, uuid.UUID(workflow_id), caller_deployment_id=caller_deployment_id
+        )
+        runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
+        runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
+        evidence_hash = (
+            sha256_digest(canonical_json(runtime_evidence)) if runtime_evidence else None
+        )
+        existing = await db.get(Execution, uuid.UUID(execution_id))
+        if existing is None:
+            org_value = org_id_override or context.org_id
+            db.add(
+                Execution(
+                    id=uuid.UUID(execution_id),
+                    workflow_name=pinned_runtime.name if pinned_runtime else "pending",
+                    workflow_id=uuid.UUID(workflow_id),
+                    solution_deployment_id=(
+                        pinned_runtime.deployment_id if pinned_runtime else None
+                    ),
+                    runtime_mode=runtime_mode,
+                    runtime_evidence=runtime_evidence,
+                    runtime_evidence_hash=evidence_hash,
+                    status=ExecutionStatus.PENDING,
+                    parameters=parameters,
+                    executed_by=uuid.UUID(context.user_id),
+                    executed_by_name=context.name,
+                    organization_id=(uuid.UUID(org_value) if org_value else None),
+                )
+            )
+            await db.commit()
+    solution_deployment_id = str(pinned_runtime.deployment_id) if pinned_runtime else None
 
     # Serialize event context for cross-process transit. EventContext is a
     # dataclass with primitive fields, so dict serialization is lossless and
@@ -186,6 +224,7 @@ async def enqueue_workflow_execution(
         event=event_payload,
         solution_deployment_id=solution_deployment_id,
         runtime_evidence=runtime_evidence,
+        runtime_mode=runtime_mode,
     )
 
     logger.info(

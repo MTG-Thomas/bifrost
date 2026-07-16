@@ -194,6 +194,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             _exec_solution_id,
             global_repo_access=bool(context_data.get("solution_global_repo_access", False)),
             runtime_storage_prefix=context_data.get("runtime_storage_prefix"),
+            source_hashes=context_data.get("deployment_source_hashes"),
         )
 
     span_attributes = {
@@ -345,6 +346,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             broadcaster=None,  # Logs go to Redis Stream directly
             event=event_ctx,
             solution_id=context_data.get("solution_id"),  # install scope for SDK
+            solution_deployment_id=context_data.get("solution_deployment_id"),
         )
 
         # Execute

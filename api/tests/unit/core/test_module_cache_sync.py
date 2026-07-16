@@ -5,6 +5,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+import pytest
 
 def _module_cache_sync() -> Any:
     return cast(Any, importlib.import_module("src.core.module_cache_sync"))
@@ -332,6 +333,26 @@ def test_get_module_sync_builds_module_from_object_storage(monkeypatch):
         module_cache_sync.MODULE_INDEX_KEY,
         "modules/a.py",
     )
+
+
+def test_deployment_import_rejects_manifest_hash_mismatch(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    redis_client = MagicMock()
+    redis_client.get.return_value = json.dumps(
+        {"content": "tampered", "path": "modules/a.py", "hash": "bad"}
+    )
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    module_cache_sync.set_solution_context(
+        "solution",
+        False,
+        runtime_storage_prefix="_solutions/solution/deployment/",
+        source_hashes={"modules/a.py": "sha256:expected"},
+    )
+    try:
+        with pytest.raises(RuntimeError, match="import integrity mismatch"):
+            module_cache_sync.get_module_sync("modules/a.py")
+    finally:
+        module_cache_sync.clear_solution_context()
 
 
 def test_get_module_index_sync_repopulates_from_api_then_storage(monkeypatch):

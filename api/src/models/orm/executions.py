@@ -70,6 +70,11 @@ class Execution(Base):
     solution_deployment_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("solution_deployments.id", ondelete="RESTRICT"), default=None
     )
+    runtime_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="legacy", server_default="legacy"
+    )
+    runtime_evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    runtime_evidence_hash: Mapped[str | None] = mapped_column(String(71), nullable=True)
     api_key_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="SET NULL", onupdate="CASCADE"), default=None
     )  # Workflow whose API key triggered this execution (null for user-triggered)

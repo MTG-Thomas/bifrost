@@ -19,6 +19,28 @@ class DeploymentRuntimeError(RuntimeError):
     """A Solution execution could not prove its immutable runtime closure."""
 
 
+def verify_runtime_evidence(
+    deployment_id: str,
+    queued: dict[str, Any] | None,
+    durable: dict[str, Any] | None,
+    durable_hash: str | None,
+    authoritative: dict[str, Any],
+) -> None:
+    """Require queue, database, and immutable-manifest evidence to be identical."""
+    from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
+
+    if not isinstance(queued, dict) or queued != durable:
+        raise DeploymentRuntimeError("queue evidence differs from durable pin")
+    if queued.get("solution_deployment_id") != deployment_id:
+        raise DeploymentRuntimeError("pinned execution deployment evidence mismatch")
+    if sha256_digest(canonical_json(queued)) != durable_hash:
+        raise DeploymentRuntimeError("durable runtime evidence hash mismatch")
+    if queued != authoritative:
+        raise DeploymentRuntimeError(
+            "runtime evidence differs from immutable deployment manifest"
+        )
+
+
 @dataclass(frozen=True)
 class PinnedWorkflowRuntime:
     workflow_id: UUID
@@ -41,6 +63,7 @@ class PinnedWorkflowRuntime:
     cache_ttl_seconds: int
     organization_id: str | None
     can_access_global_repo: bool
+    source_hashes: dict[str, str]
 
     def queue_evidence(self) -> dict[str, Any]:
         return {
@@ -63,6 +86,7 @@ class PinnedWorkflowRuntime:
             "workflow_cache_ttl_seconds": self.cache_ttl_seconds,
             "workflow_organization_id": self.organization_id,
             "solution_global_repo_access": self.can_access_global_repo,
+            "deployment_source_hashes": self.source_hashes,
         }
 
 
@@ -112,7 +136,10 @@ def _number(definition: dict[str, Any], key: str, default: int | float) -> int |
 
 
 async def pin_workflow_runtime(
-    session: AsyncSession, workflow_id: UUID
+    session: AsyncSession,
+    workflow_id: UUID,
+    *,
+    caller_deployment_id: UUID | None = None,
 ) -> PinnedWorkflowRuntime | None:
     """Return immutable evidence for a Solution workflow; None means `_repo`."""
     row = (
@@ -127,19 +154,45 @@ async def pin_workflow_runtime(
     workflow, solution = row
     if workflow.solution_id is None:
         return None
-    if solution is None or solution.status != "active":
+    if solution is None or (caller_deployment_id is None and solution.status != "active"):
         raise DeploymentRuntimeError("Solution is not active")
-    if solution.active_deployment_id is None:
+    selected_deployment_id = solution.active_deployment_id
+    if caller_deployment_id is not None:
+        caller = await SolutionDeploymentRepository(session).get_by_id_for_runtime(
+            caller_deployment_id
+        )
+        if caller is None:
+            raise DeploymentRuntimeError("caller deployment is missing")
+        if workflow.solution_id == caller.solution_id:
+            selected_deployment_id = caller.id
+        else:
+            edge = next(
+                (
+                    item
+                    for item in caller.dependencies
+                    if item.dependency_solution_id == workflow.solution_id
+                ),
+                None,
+            )
+            if edge is None:
+                raise DeploymentRuntimeError(
+                    "cross-Solution workflow is not pinned by the caller deployment"
+                )
+            selected_deployment_id = edge.dependency_deployment_id
+    if selected_deployment_id is None:
         raise DeploymentRuntimeError(
             "Solution has no active deployment; capture an initial deployment before execution"
         )
 
     deployment = await SolutionDeploymentRepository(session).get_runtime_closure(
-        solution.active_deployment_id, solution.organization_id
+        selected_deployment_id, solution.organization_id
     )
     if deployment is None or deployment.solution_id != solution.id:
         raise DeploymentRuntimeError("active deployment is missing or out of scope")
-    if deployment.state not in {"active", "committed_unpushed"}:
+    executable_states = {"active", "committed_unpushed"}
+    if caller_deployment_id is not None:
+        executable_states.add("superseded")
+    if deployment.state not in executable_states:
         raise DeploymentRuntimeError("active deployment is not executable")
     _, resolution = validate_runtime_closure(
         deployment.compiled_manifest,
@@ -191,4 +244,17 @@ async def pin_workflow_runtime(
             else None
         ),
         can_access_global_repo=bool(solution.global_repo_access),
+        source_hashes={key: item.content_hash for key, item in resolution.sources.items()},
     )
+
+
+async def resolve_pinned_workflow_runtime(
+    session: AsyncSession, deployment_id: UUID, workflow_id: UUID
+) -> PinnedWorkflowRuntime:
+    """Resolve by an explicit immutable deployment, never by the active pointer."""
+    pinned = await pin_workflow_runtime(
+        session, workflow_id, caller_deployment_id=deployment_id
+    )
+    if pinned is None or pinned.deployment_id != deployment_id:
+        raise DeploymentRuntimeError("workflow does not belong to the pinned deployment")
+    return pinned
