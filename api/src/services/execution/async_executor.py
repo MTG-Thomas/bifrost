@@ -160,8 +160,9 @@ async def _publish_pending(
                 "execution_id": execution_id,
                 "workflow_id": workflow_id,
                 "sync": sync,
-                "solution_deployment_id": solution_deployment_id,
             }
+            if solution_deployment_id is not None:
+                message["solution_deployment_id"] = solution_deployment_id
 
             # Include file_path for fast direct loading (avoids filesystem scan)
             if file_path:

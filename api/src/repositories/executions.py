@@ -126,7 +126,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         # case update-in-place instead of inserting a duplicate PK.
         existing = await self.session.get(Execution, UUID(execution_id))
         if existing is not None:
-            if existing.solution_deployment_id != parsed_solution_deployment_id:
+            if getattr(existing, "solution_deployment_id", None) != parsed_solution_deployment_id:
                 raise ValueError("immutable scheduled execution deployment pin mismatch")
             existing.workflow_name = workflow_name
             existing.workflow_id = parsed_workflow_id

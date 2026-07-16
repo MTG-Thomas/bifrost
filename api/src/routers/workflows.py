@@ -683,6 +683,9 @@ async def _insert_scheduled_execution(
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
 
     runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
+    execution_context: dict[str, object] = {"is_platform_admin": is_platform_admin}
+    if runtime_evidence is not None:
+        execution_context["runtime_evidence"] = runtime_evidence
     db.add(
         Execution(
             id=exec_id,
@@ -702,10 +705,7 @@ async def _insert_scheduled_execution(
             runtime_evidence_hash=(
                 sha256_digest(canonical_json(runtime_evidence)) if runtime_evidence else None
             ),
-            execution_context={
-                "is_platform_admin": is_platform_admin,
-                "runtime_evidence": runtime_evidence,
-            },
+            execution_context=execution_context,
         )
     )
     await db.commit()
