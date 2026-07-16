@@ -274,6 +274,17 @@ EXECUTION_RESOLUTION_MODELS_WITHOUT_REPO_YET: set[str] = {
 }
 
 
+# Execution-critical rows that resolve through a dedicated repository with an
+# exact organization scope, rather than the org-to-global name cascade exposed
+# by OrgScopedRepository. SolutionDeployment is addressed by its immutable,
+# execution-pinned UUID; allowing cascade fallback could substitute a different
+# runtime closure. Its narrow repository therefore requires the caller's exact
+# organization_id (including explicit None for a global Solution install).
+EXACT_SCOPE_RESOLUTION_MODELS: set[str] = {
+    "SolutionDeployment",
+}
+
+
 def _models_with_org_id() -> dict[str, Path]:
     """Return {ClassName: file_path} for every Base subclass that declares
     an organization_id column."""
@@ -374,14 +385,16 @@ def _is_classified_org_model(model_name: str, repos: set[str]) -> bool:
         model_name in IDENTITY_MODELS
         or model_name in repos
         or model_name in EXECUTION_RESOLUTION_MODELS_WITHOUT_REPO_YET
+        or model_name in EXACT_SCOPE_RESOLUTION_MODELS
     )
 
 
 class TestOrgScopedModelsHaveRepository:
     """Every ORM model with organization_id must be classified.
 
-    Either it has an OrgScopedRepository subclass (execution-resolution),
-    OR it's on the IDENTITY_MODELS allow-list (identity entity).
+    Either it has an OrgScopedRepository subclass (cascade resolution), uses a
+    documented exact-scope resolution repository, or is on the IDENTITY_MODELS
+    allow-list (identity entity).
 
     Adding an org-scoped model without classification fails this test.
     """
@@ -404,6 +417,8 @@ class TestOrgScopedModelsHaveRepository:
                 "ORM models with organization_id that are not classified.\n"
                 "Either:\n"
                 "  - Add an OrgScopedRepository subclass (if execution-resolution), or\n"
+                "  - Add it to EXACT_SCOPE_RESOLUTION_MODELS (if its dedicated "
+                "repository intentionally forbids cascade), or\n"
                 "  - Add the model name to IDENTITY_MODELS in this test (if identity).\n"
                 "See api/src/repositories/README.md for the classification rule.\n"
                 f"Unclassified models:\n{details}"
@@ -421,9 +436,24 @@ class TestOrgScopedModelsHaveRepository:
                 "Remove them from the allow-list."
             )
 
+    def test_exact_scope_resolution_models_actually_exist(self) -> None:
+        """Exact-scope classifications must track real org-scoped models."""
+        models_with_org_id = set(_models_with_org_id().keys())
+        stale = EXACT_SCOPE_RESOLUTION_MODELS - models_with_org_id
+        if stale:
+            pytest.fail(
+                "EXACT_SCOPE_RESOLUTION_MODELS contains entries that no longer have "
+                f"organization_id columns (or no longer exist): {sorted(stale)}. "
+                "Remove them from the classification."
+            )
+
     def test_no_overlap_between_buckets(self) -> None:
         """A model can't be both identity and execution-resolution."""
-        overlap = IDENTITY_MODELS & EXECUTION_RESOLUTION_MODELS_WITHOUT_REPO_YET
+        execution_resolution = (
+            EXECUTION_RESOLUTION_MODELS_WITHOUT_REPO_YET
+            | EXACT_SCOPE_RESOLUTION_MODELS
+        )
+        overlap = IDENTITY_MODELS & execution_resolution
         assert not overlap, (
             f"Models classified as BOTH identity and execution-resolution: {overlap}. "
             "Pick one."
