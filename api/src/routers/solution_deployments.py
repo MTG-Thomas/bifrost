@@ -1,5 +1,7 @@
 """Admin API for immutable Solution deployment registration and pointer movement."""
 
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Annotated
 from uuid import UUID
 
@@ -16,6 +18,7 @@ from src.models.contracts.solution_deployments import (
 from src.models.orm.solutions import Solution
 from src.repositories.solution_deployments import SolutionDeploymentRepository
 from src.services.solutions.deployment_activation import (
+    ActivationResult,
     SolutionDeploymentActivationService,
 )
 from src.services.solutions.deployment_api import SolutionDeploymentAPIService
@@ -53,6 +56,34 @@ def get_activation_service(ctx: Context) -> SolutionDeploymentActivationService:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Solution deployment activation hooks are not configured",
     )
+
+
+async def _run_pointer_move(
+    ctx: Context,
+    solution_id: UUID,
+    operation: Callable[[UUID | None], Awaitable[ActivationResult]],
+) -> ActivationResult:
+    """Serialize one pointer mutation and normalize its transactional errors."""
+    organization_id = await _scope(ctx, solution_id)
+    try:
+        async with solution_write_lock(solution_id):
+            result = await operation(organization_id)
+    except SolutionWriteLockHeld as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "solution_write_lock_held"}
+        ) from exc
+    except SolutionWriteLockLost as exc:
+        await ctx.db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "solution_write_lock_lost", "retryable": True},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await ctx.db.commit()
+    if result.state == "conflicted":
+        raise HTTPException(status_code=409, detail=result.conflict)
+    return result
 
 
 @router.post("", response_model=SolutionDeploymentPublic, status_code=201)
@@ -98,7 +129,10 @@ async def inspect_deployment(
     return row
 
 
-@router.post("/{deployment_id}/activate", response_model=DeploymentActivationPublic)
+@router.post(
+    "/{deployment_id}/activate",
+    response_model=DeploymentActivationPublic,
+)
 async def activate_deployment(
     solution_id: UUID,
     deployment_id: UUID,
@@ -110,34 +144,22 @@ async def activate_deployment(
     ],
 ):
     del user
-    organization_id = await _scope(ctx, solution_id)
-    try:
-        async with solution_write_lock(solution_id):
-            result = await service.activate(
-                deployment_id,
-                organization_id,
-                solution_id,
-                expected_active_deployment_id=body.expected_active_deployment_id,
-            )
-    except SolutionWriteLockHeld as exc:
-        raise HTTPException(
-            status_code=409, detail={"code": "solution_write_lock_held"}
-        ) from exc
-    except SolutionWriteLockLost as exc:
-        await ctx.db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "solution_write_lock_lost", "retryable": True},
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    await ctx.db.commit()
-    if result.state == "conflicted":
-        raise HTTPException(status_code=409, detail=result.conflict)
-    return result
+    return await _run_pointer_move(
+        ctx,
+        solution_id,
+        partial(
+            service.activate,
+            deployment_id,
+            solution_id=solution_id,
+            expected_active_deployment_id=body.expected_active_deployment_id,
+        ),
+    )
 
 
-@router.post("/{deployment_id}/rollback", response_model=DeploymentActivationPublic)
+@router.post(
+    "/{deployment_id}/rollback",
+    response_model=DeploymentActivationPublic,
+)
 async def rollback_deployment(
     solution_id: UUID,
     deployment_id: UUID,
@@ -153,28 +175,13 @@ async def rollback_deployment(
         raise HTTPException(
             status_code=422, detail="rollback requires expected active deployment"
         )
-    organization_id = await _scope(ctx, solution_id)
-    try:
-        async with solution_write_lock(solution_id):
-            result = await service.rollback(
-                deployment_id,
-                organization_id,
-                solution_id,
-                expected_active_deployment_id=body.expected_active_deployment_id,
-            )
-    except SolutionWriteLockHeld as exc:
-        raise HTTPException(
-            status_code=409, detail={"code": "solution_write_lock_held"}
-        ) from exc
-    except SolutionWriteLockLost as exc:
-        await ctx.db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "solution_write_lock_lost", "retryable": True},
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    await ctx.db.commit()
-    if result.state == "conflicted":
-        raise HTTPException(status_code=409, detail=result.conflict)
-    return result
+    return await _run_pointer_move(
+        ctx,
+        solution_id,
+        partial(
+            service.rollback,
+            deployment_id,
+            solution_id=solution_id,
+            expected_active_deployment_id=body.expected_active_deployment_id,
+        ),
+    )
