@@ -15,6 +15,7 @@ from src.routers.codex_gateway import router as codex_gateway_router
 from src.routers.websocket import router as websocket_router
 from src.routers.branding import router as branding_router
 from src.routers.files import router as files_router
+from src.routers.workspace_changesets import router as workspace_changesets_router
 from src.routers.schedules import router as schedules_router
 from src.routers.workflow_keys import router as workflow_keys_router
 from src.routers.audit import router as audit_router
@@ -89,6 +90,7 @@ __all__ = [
     "websocket_router",
     "branding_router",
     "files_router",
+    "workspace_changesets_router",
     "schedules_router",
     "workflow_keys_router",
     "audit_router",
