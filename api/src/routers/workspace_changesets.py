@@ -29,11 +29,11 @@ async def _service(db: DbSession, org_id) -> WorkspaceChangesetService:
     if config and config.repo_url:
         git = GitHubSyncService(db, config.repo_url, config.branch)
 
-        async def commit(message: str, push: bool) -> str | None:
+        async def commit(message: str, push: bool) -> tuple[str | None, str | None]:
             return await git.commit_workspace_changes(message, push=push)
 
         callback = commit
-    return WorkspaceChangesetService(db, commit_callback=callback)
+    return WorkspaceChangesetService(db, org_id, commit_callback=callback)
 
 
 def _translate(exc: Exception) -> HTTPException:

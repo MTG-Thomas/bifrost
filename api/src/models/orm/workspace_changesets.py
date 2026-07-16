@@ -14,6 +14,7 @@ class WorkspaceChangeset(Base):
     __tablename__ = "workspace_changesets"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     scope: Mapped[str] = mapped_column(String(1000), nullable=False)
     base_revision: Mapped[str] = mapped_column(String(64), nullable=False)
     base_files: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

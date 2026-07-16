@@ -6,7 +6,18 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-ChangesetStatus = Literal["open", "staged", "validated", "activating", "activated", "committed", "aborted", "conflicted", "failed"]
+ChangesetStatus = Literal[
+    "open",
+    "staged",
+    "validated",
+    "activating",
+    "activated",
+    "committed",
+    "committed_unpushed",
+    "aborted",
+    "conflicted",
+    "failed",
+]
 
 
 class WorkspaceStateResponse(BaseModel):

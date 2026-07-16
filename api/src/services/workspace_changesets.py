@@ -49,14 +49,21 @@ class ChangesetInvalid(Exception):
     pass
 
 
-CommitCallback = Callable[[str, bool], Awaitable[str | None]]
+CommitCallback = Callable[[str, bool], Awaitable[tuple[str | None, str | None]]]
 
 
 class WorkspaceChangesetService:
     ACTIVE = {"open", "staged", "validated"}
 
-    def __init__(self, db: AsyncSession, repo: RepoStorage | None = None, commit_callback: CommitCallback | None = None):
+    def __init__(
+        self,
+        db: AsyncSession,
+        organization_id: UUID,
+        repo: RepoStorage | None = None,
+        commit_callback: CommitCallback | None = None,
+    ):
         self.db = db
+        self.organization_id = organization_id
         self.repo = repo or RepoStorage()
         self.rows = WorkspaceChangesetRepository(db)
         self.commit_callback = commit_callback
@@ -96,7 +103,7 @@ class WorkspaceChangesetService:
     async def state(self, scope: str, git_status: dict | None = None, workspace_dirty: bool = False) -> WorkspaceStateResponse:
         scope = self.normalize_scope(scope)
         revision, files = await self._snapshot(scope)
-        count = await self.rows.count_open(scope)
+        count = await self.rows.count_open(scope, self.organization_id)
         return WorkspaceStateResponse(scope=scope, revision=revision, file_count=len(files), dirty=workspace_dirty or count > 0, open_changesets=count, git_status=git_status)
 
     async def begin(self, request: WorkspaceChangesetBegin, user_id: UUID) -> WorkspaceChangesetResponse:
@@ -104,7 +111,7 @@ class WorkspaceChangesetService:
         revision, files = await self._snapshot(scope)
         if request.base_revision is not None and request.base_revision != revision:
             raise ChangesetConflict("revision_mismatch", base_revision=request.base_revision, current_revision=revision, conflicting_paths=[])
-        row = WorkspaceChangeset(scope=scope, base_revision=revision, base_files=files, mutations=[], status="open", title=request.title, worker_id=request.worker_id, created_by=user_id)
+        row = WorkspaceChangeset(organization_id=self.organization_id, scope=scope, base_revision=revision, base_files=files, mutations=[], status="open", title=request.title, worker_id=request.worker_id, created_by=user_id)
         await self.rows.add(row)
         return self._response(row)
 
@@ -141,6 +148,14 @@ class WorkspaceChangesetService:
         result = []
         for item in row.mutations:
             before = await self._read_optional(item["path"])
+            current_hash = hashlib.sha256(before).hexdigest() if before is not None else None
+            if current_hash != item.get("before_hash"):
+                raise ChangesetConflict(
+                    "file_revision_mismatch",
+                    path=item["path"],
+                    expected_hash=item.get("before_hash"),
+                    current_hash=current_hash,
+                )
             after = base64.b64decode(item["content_base64"]) if item["operation"] == "write" else None
             unified = self._unified_diff(item["path"], before, after)
             result.append(WorkspaceFileDiff(path=item["path"], operation=item["operation"], before_hash=item.get("before_hash"), after_hash=item.get("after_hash"), unified_diff=unified))
@@ -216,27 +231,36 @@ class WorkspaceChangesetService:
             if request.commit_message:
                 if self.commit_callback is None:
                     raise ChangesetInvalid("platform Git commit closure is not configured")
-                row.commit_sha = await self.commit_callback(request.commit_message, request.push)
-                row.status = "committed"
+                row.commit_sha, push_error = await self.commit_callback(request.commit_message, request.push)
+                row.status = "committed_unpushed" if push_error else "committed"
+                row.error = push_error
             await self.db.flush()
             return self._response(row)
         except Exception as exc:
             # Compensate through the normal facade so S3, index, workflow metadata,
             # module cache, app previews, and activity observers converge on the
             # restored state rather than leaving a direct-storage-only rollback.
+            rollback_errors: list[str] = []
             for path, content in originals.items():
-                if content is None:
-                    await storage.delete_file(path)
-                else:
-                    restored = await storage.write_file(path, content, updated_by="changeset-rollback", force_deactivation=True)
-                    if restored.pending_deactivations:
-                        raise RuntimeError(f"failed to restore {path}") from exc
+                try:
+                    if content is None:
+                        await storage.delete_file(path)
+                    else:
+                        restored = await storage.write_file(path, content, updated_by="changeset-rollback", force_deactivation=True)
+                        if restored.pending_deactivations:
+                            raise RuntimeError(f"deactivation preflight blocked restore of {path}")
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"{path}: {rollback_exc}")
             row.status = "failed"
             row.error = str(exc)
+            if rollback_errors:
+                row.error += "; rollback failed: " + "; ".join(rollback_errors)
             await self.db.flush()
             # Failure state and the compensating writes are part of the durable
             # audit record even though the HTTP request returns an error.
             await self.db.commit()
+            if rollback_errors:
+                raise RuntimeError(row.error) from exc
             raise
 
     async def abort(self, changeset_id: UUID) -> WorkspaceChangesetResponse:
@@ -247,7 +271,7 @@ class WorkspaceChangesetService:
         return self._response(row)
 
     async def _required(self, changeset_id: UUID, *, for_update: bool = False) -> WorkspaceChangeset:
-        row = await self.rows.get(changeset_id, for_update=for_update)
+        row = await self.rows.get(changeset_id, self.organization_id, for_update=for_update)
         if row is None:
             raise KeyError(changeset_id)
         return row

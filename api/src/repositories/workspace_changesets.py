@@ -17,16 +17,20 @@ class WorkspaceChangesetRepository:
         await self.db.flush()
         return row
 
-    async def get(self, changeset_id: UUID, *, for_update: bool = False) -> WorkspaceChangeset | None:
-        stmt = select(WorkspaceChangeset).where(WorkspaceChangeset.id == changeset_id)
+    async def get(self, changeset_id: UUID, organization_id: UUID, *, for_update: bool = False) -> WorkspaceChangeset | None:
+        stmt = select(WorkspaceChangeset).where(
+            WorkspaceChangeset.id == changeset_id,
+            WorkspaceChangeset.organization_id == organization_id,
+        )
         if for_update:
             stmt = stmt.with_for_update()
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
-    async def count_open(self, scope: str) -> int:
+    async def count_open(self, scope: str, organization_id: UUID) -> int:
         statuses = ("open", "staged", "validated", "activating")
         stmt = select(func.count()).select_from(WorkspaceChangeset).where(
             WorkspaceChangeset.scope == scope,
+            WorkspaceChangeset.organization_id == organization_id,
             WorkspaceChangeset.status.in_(statuses),
         )
         return int((await self.db.execute(stmt)).scalar_one())

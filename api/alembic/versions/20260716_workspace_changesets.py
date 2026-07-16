@@ -19,6 +19,7 @@ def upgrade() -> None:
     op.create_table(
         "workspace_changesets",
         sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("organization_id", sa.Uuid(), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("scope", sa.String(1000), nullable=False),
         sa.Column("base_revision", sa.String(64), nullable=False),
         sa.Column("base_files", postgresql.JSONB(), nullable=False),
@@ -35,9 +36,13 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_workspace_changesets_scope_status", "workspace_changesets", ["scope", "status"])
+    op.create_index(
+        "ix_workspace_changesets_org_scope_status",
+        "workspace_changesets",
+        ["organization_id", "scope", "status"],
+    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_workspace_changesets_scope_status", table_name="workspace_changesets")
+    op.drop_index("ix_workspace_changesets_org_scope_status", table_name="workspace_changesets")
     op.drop_table("workspace_changesets")
