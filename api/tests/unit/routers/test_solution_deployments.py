@@ -1,18 +1,7 @@
-import sys
-from pathlib import Path
-from types import ModuleType
-
 from fastapi import FastAPI
 
 from src.models.contracts.solution_deployments import SolutionDeploymentCapabilities
-
-# Import the focused router without eagerly importing every optional router
-# dependency from src.routers.__init__.
-routers_package = ModuleType("src.routers")
-routers_package.__path__ = [str(Path(__file__).parents[3] / "src" / "routers")]
-sys.modules["src.routers"] = routers_package
-
-from src.routers.solution_deployments import router  # noqa: E402
+from src.routers.solution_deployments import router
 
 
 def test_solution_deployment_openapi_exposes_minimal_cs_surface():
