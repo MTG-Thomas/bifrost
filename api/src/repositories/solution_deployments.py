@@ -33,6 +33,7 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     "activating": frozenset({"active", "conflicted", "failed", "recovery_required"}),
     "active": frozenset({"superseded", "committed_unpushed", "recovery_required"}),
     "committed_unpushed": frozenset({"active", "superseded", "recovery_required"}),
+    "superseded": frozenset({"activating"}),
 }
 
 
@@ -130,3 +131,49 @@ class SolutionDeploymentRepository:
         if deployment is None:
             raise InvalidDeploymentTransition("deployment missing, out of scope, or state changed")
         return deployment
+
+    async def get_solution_active_deployment(
+        self, solution_id: UUID, organization_id: UUID | None
+    ) -> UUID | None:
+        scope_clause = (
+            Solution.organization_id.is_(None)
+            if organization_id is None
+            else Solution.organization_id == organization_id
+        )
+        result = await self.session.execute(
+            select(Solution.active_deployment_id).where(
+                Solution.id == solution_id,
+                scope_clause,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def compare_and_set_active_deployment(
+        self,
+        solution_id: UUID,
+        organization_id: UUID | None,
+        *,
+        expected_active_deployment_id: UUID | None,
+        new_active_deployment_id: UUID,
+    ) -> bool:
+        """Atomically move the active pointer only when the expected base still wins."""
+        scope_clause = (
+            Solution.organization_id.is_(None)
+            if organization_id is None
+            else Solution.organization_id == organization_id
+        )
+        active_clause = (
+            Solution.active_deployment_id.is_(None)
+            if expected_active_deployment_id is None
+            else Solution.active_deployment_id == expected_active_deployment_id
+        )
+        result = await self.session.execute(
+            update(Solution)
+            .where(Solution.id == solution_id, scope_clause, active_clause)
+            .values(
+                active_deployment_id=new_active_deployment_id,
+                execution_runtime_mode="deployment-v1",
+            )
+            .returning(Solution.id)
+        )
+        return result.scalar_one_or_none() is not None
