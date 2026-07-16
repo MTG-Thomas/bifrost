@@ -1,6 +1,6 @@
 """pin workflow executions to immutable Solution deployments
 
-Revision ID: 20260716_execution_deployment_pin
+Revision ID: 20260716_exec_deploy_pin
 Revises: 20260716_solution_deployments
 Create Date: 2026-07-16
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "20260716_execution_deployment_pin"
+revision: str = "20260716_exec_deploy_pin"
 down_revision: str = "20260716_solution_deployments"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
