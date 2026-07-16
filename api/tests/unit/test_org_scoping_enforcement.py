@@ -242,6 +242,10 @@ IDENTITY_MODELS: set[str] = {
     # Export jobs are durable history/artifact rows for a specific install and
     # org scope. They are looked up by id, never resolved through cascade.
     "SolutionExportJob",
+    # _repo changesets are durable transaction/audit rows addressed by UUID
+    # within an explicit organization scope. They are never resolved through
+    # the org-to-global execution cascade.
+    "WorkspaceRepoChangeset",
     # File policies resolve with the SAME org→global cascade-and-override as
     # OrgScopedRepository (org-specific prefix wins; fall back to the global
     # (org=NULL) prefix), so a global `shared/<prefix>` policy cascades to every
