@@ -804,6 +804,26 @@ class GitHubSyncService:
             logger.error(f"Commit failed: {e}", exc_info=True)
             return CommitResult(success=False, error=str(e))
 
+    async def commit_workspace_changes(self, message: str, *, push: bool = False) -> tuple[str | None, str | None]:
+        """Commit the current authoritative S3 workspace, optionally pushing it.
+
+        Unlike ``desktop_commit`` this uses ``checkout()`` so direct workspace
+        file writes are synced down before staging and the resulting ``.git``
+        state is synced back to object storage on exit.
+        """
+        async with self.repo_manager.checkout() as work_dir:
+            repo = self._open_or_init(work_dir)
+            result = await self._do_commit(work_dir, repo, message)
+            if not result.success:
+                raise RuntimeError(result.error or "Git commit failed")
+            commit_sha = result.commit_sha
+            if push:
+                pushed = self._do_push(work_dir, repo)
+                if not pushed.success:
+                    return commit_sha, pushed.error or "Git push failed"
+                commit_sha = pushed.commit_sha or commit_sha
+            return commit_sha, None
+
     async def desktop_sync(self, job_id: str | None = None, confirm_deletes: bool = False) -> "SyncResult":
         """Combined pull + push. The ONLY place entity import + S3 sync-up happen.
 

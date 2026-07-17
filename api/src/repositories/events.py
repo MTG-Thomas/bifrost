@@ -12,10 +12,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Sequence
 from uuid import UUID
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from src.models.enums import EventDeliveryStatus, EventSourceType, EventStatus
+from src.models.orm.agents import Agent
 from src.models.orm.events import (
     Event,
     EventDelivery,
@@ -25,6 +26,7 @@ from src.models.orm.events import (
 )
 from src.models.orm.integrations import Integration
 from src.models.orm.oauth import OAuthProvider
+from src.models.orm.workflows import Workflow
 from src.repositories.base import BaseRepository
 
 
@@ -172,12 +174,18 @@ class EventSourceRepository(BaseRepository[EventSource]):
         return result.scalar() or 0
 
     async def get_by_topic(
-        self, topic: str, *, solution_id: UUID | None = None
+        self,
+        topic: str,
+        *,
+        solution_id: UUID | None = None,
+        organization_id: UUID | None = None,
     ) -> EventSource | None:
-        """Get an active topic EventSource by event_type.
+        """Get an active topic source visible to a solution and organization.
 
-        Solution callers resolve their own install first, then _repo sources.
-        Loose callers must not accidentally select a solution-managed row.
+        Solution callers prefer their own install and may fall back to a
+        repository source. Organization-scoped emissions prefer their tenant's
+        source and may fall back to a global source. Loose callers cannot select
+        solution-managed or tenant-managed rows.
         """
         stmt = (
             select(EventSource)
@@ -185,16 +193,28 @@ class EventSourceRepository(BaseRepository[EventSource]):
             .where(EventSource.event_type == topic)
             .where(EventSource.is_active.is_(True))
         )
+        ordering = []
         if solution_id is not None:
             stmt = stmt.where(
                 (EventSource.solution_id == solution_id)
                 | (EventSource.solution_id.is_(None))
-            ).order_by(
-                case((EventSource.solution_id == solution_id, 0), else_=1)
             )
+            ordering.append(case((EventSource.solution_id == solution_id, 0), else_=1))
         else:
             stmt = stmt.where(EventSource.solution_id.is_(None))
 
+        if organization_id is not None:
+            stmt = stmt.where(
+                (EventSource.organization_id == organization_id)
+                | (EventSource.organization_id.is_(None))
+            )
+            ordering.append(
+                case((EventSource.organization_id == organization_id, 0), else_=1)
+            )
+        else:
+            stmt = stmt.where(EventSource.organization_id.is_(None))
+
+        stmt = stmt.order_by(*ordering, EventSource.created_at, EventSource.id).limit(1)
         result = await self.session.execute(stmt)
         return result.unique().scalar_one_or_none()
 
@@ -284,6 +304,7 @@ class EventSubscriptionRepository(BaseRepository[EventSubscription]):
         self,
         source_id: UUID,
         event_type: str | None = None,
+        organization_id: UUID | None = None,
     ) -> Sequence[EventSubscription]:
         """
         Get active subscriptions that match an event.
@@ -291,10 +312,16 @@ class EventSubscriptionRepository(BaseRepository[EventSubscription]):
         Args:
             source_id: Event source ID
             event_type: Optional event type for filtering
+            organization_id: Optional event organization for tenant-safe routing.
+                When provided, subscriptions must target a workflow/agent in the
+                same organization or a global target.
         """
         stmt = (
             select(EventSubscription)
-            .options(joinedload(EventSubscription.workflow))
+            .options(
+                joinedload(EventSubscription.workflow),
+                joinedload(EventSubscription.agent),
+            )
             .where(EventSubscription.event_source_id == source_id)
             .where(EventSubscription.is_active.is_(True))
         )
@@ -312,6 +339,29 @@ class EventSubscriptionRepository(BaseRepository[EventSubscription]):
         else:
             # Event has no type: only match subscriptions with no filter
             stmt = stmt.where(EventSubscription.event_type.is_(None))
+
+        if organization_id is not None:
+            target_org_filter = or_(
+                and_(
+                    EventSubscription.target_type == "workflow",
+                    EventSubscription.workflow.has(
+                        or_(
+                            Workflow.organization_id == organization_id,
+                            Workflow.organization_id.is_(None),
+                        )
+                    ),
+                ),
+                and_(
+                    EventSubscription.target_type == "agent",
+                    EventSubscription.agent.has(
+                        or_(
+                            Agent.organization_id == organization_id,
+                            Agent.organization_id.is_(None),
+                        )
+                    ),
+                ),
+            )
+            stmt = stmt.where(target_org_filter)
 
         result = await self.session.execute(stmt)
         return result.unique().scalars().all()

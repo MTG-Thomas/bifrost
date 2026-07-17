@@ -111,6 +111,8 @@ class ExecutionContext:
     # The SDK appends it to name lookups (tables/configs) so they resolve the
     # install's OWN entity first, then _repo/. None for plain _repo/ executions.
     solution_id: str | None = field(default=None)
+    # Immutable deployment inherited by same-Solution and dependency calls.
+    solution_deployment_id: str | None = field(default=None)
 
     # ==================== PLATFORM ====================
     # Public URL for constructing external links (e.g., workflow URLs, execution URLs)
