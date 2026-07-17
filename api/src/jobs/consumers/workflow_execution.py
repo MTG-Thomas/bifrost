@@ -25,6 +25,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID
 
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
@@ -561,6 +562,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
             cache_ttl_seconds = 300
             solution_id: str | None = None  # Install id if solution-managed
             solution_global_repo_access = False  # Whether solution code may import _repo/
+            solution_deployment_id = pending.get("solution_deployment_id")
+            runtime_mode = pending.get("runtime_mode") or "legacy"
+            runtime_storage_prefix: str | None = None
 
             if not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
@@ -568,8 +572,52 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 try:
                     # Get workflow metadata (no code — worker loads via Redis→S3)
                     # Brief DB session for metadata read
-                    async with get_db_context() as db:
-                        workflow_data = await get_workflow_for_execution(workflow_id, db=db)
+                    if solution_deployment_id:
+                        from src.services.solutions.deployment_runtime import (
+                            DeploymentRuntimeError,
+                            resolve_pinned_workflow_runtime,
+                            verify_runtime_evidence,
+                            workflow_data_from_evidence,
+                        )
+                        from src.models.orm.executions import Execution
+
+                        try:
+                            async with get_db_context() as db:
+                                execution = await db.get(Execution, UUID(execution_id))
+                                if execution is None or execution.runtime_mode != "deployment-v1":
+                                    raise DeploymentRuntimeError(
+                                        "modern deployment execution is missing durable pin evidence"
+                                    )
+                                if str(execution.solution_deployment_id) != str(solution_deployment_id):
+                                    raise DeploymentRuntimeError("durable deployment pin mismatch")
+                                queued_evidence = pending.get("runtime_evidence")
+                                pinned = await resolve_pinned_workflow_runtime(
+                                    db, UUID(str(solution_deployment_id)), UUID(str(workflow_id))
+                                )
+                            authoritative_evidence = pinned.queue_evidence()
+                            verify_runtime_evidence(
+                                str(solution_deployment_id),
+                                queued_evidence,
+                                execution.runtime_evidence,
+                                execution.runtime_evidence_hash,
+                                authoritative_evidence,
+                            )
+                            workflow_data = workflow_data_from_evidence(
+                                str(solution_deployment_id), authoritative_evidence
+                            )
+                        except DeploymentRuntimeError as exc:
+                            raise WorkflowNotFoundError(str(exc)) from exc
+                        runtime_storage_prefix = workflow_data["runtime_storage_prefix"]
+                    else:
+                        # Compatibility boundary: newly enqueued Solution work is
+                        # always pinned above, so a null deployment here is either
+                        # `_repo` or a pre-migration pending/scheduled execution.
+                        if runtime_mode not in {"legacy", "repo-v1"}:
+                            raise WorkflowNotFoundError(
+                                "modern Solution execution is missing deployment pin"
+                            )
+                        async with get_db_context() as db:
+                            workflow_data = await get_workflow_for_execution(workflow_id, db=db)
                     workflow_name = workflow_data["name"]
                     workflow_function_name = workflow_data["function_name"]
                     file_path = workflow_data["path"]  # Used for __file__ injection and Redis/S3 loading
@@ -580,6 +628,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     # Initialize ROI from workflow defaults
                     roi_time_saved = workflow_data["time_saved"]
                     roi_value = workflow_data["value"]
+                    content_hash = workflow_data.get("content_hash")
 
                     # Solution scoping: if the workflow is solution-managed, its
                     # code + imports must resolve under _solutions/{id}/ (with
@@ -620,6 +669,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         status=ExecutionStatus.FAILED,
                         execution_model="process",
                         workflow_id=workflow_id,
+                        solution_deployment_id=solution_deployment_id,
                     )
                     await update_execution(
                         execution_id=execution_id,
@@ -672,6 +722,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 status=ExecutionStatus.RUNNING,
                 execution_model="process",
                 workflow_id=workflow_id,
+                solution_deployment_id=solution_deployment_id,
             )
             await publish_execution_update(execution_id, "Running")
             await publish_history_update(
@@ -739,6 +790,11 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "content_hash": content_hash,  # Pinned hash at dispatch time
                 "event": event_data,  # EventContext dict (None if not event-triggered)
                 "solution_id": solution_id,  # Install id if solution-managed (else None)
+                "solution_deployment_id": solution_deployment_id,
+                "runtime_storage_prefix": runtime_storage_prefix,
+                "deployment_source_hashes": (
+                    pending.get("runtime_evidence") or {}
+                ).get("deployment_source_hashes"),
                 "solution_global_repo_access": solution_global_repo_access,
                 # Pre-minted engine token: child writes directly to credentials file,
                 # no SECRET_KEY required in child env.

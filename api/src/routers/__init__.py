@@ -15,6 +15,7 @@ from src.routers.codex_gateway import router as codex_gateway_router
 from src.routers.websocket import router as websocket_router
 from src.routers.branding import router as branding_router
 from src.routers.files import router as files_router
+from src.routers.workspace_repo_changesets import router as workspace_repo_changesets_router
 from src.routers.schedules import router as schedules_router
 from src.routers.workflow_keys import router as workflow_keys_router
 from src.routers.audit import router as audit_router
@@ -46,6 +47,7 @@ from src.routers.hooks import router as hooks_router
 from src.routers.tables import router as tables_router
 from src.routers.claims import router as claims_router
 from src.routers.solutions import router as solutions_router
+from src.routers.solution_deployments import router as solution_deployments_router
 from src.routers.knowledge_sources import router as knowledge_sources_router
 from src.routers.app_embed_secrets import router as app_embed_secrets_router
 from src.routers.applications import router as applications_router
@@ -89,6 +91,7 @@ __all__ = [
     "websocket_router",
     "branding_router",
     "files_router",
+    "workspace_repo_changesets_router",
     "schedules_router",
     "workflow_keys_router",
     "audit_router",
@@ -121,6 +124,7 @@ __all__ = [
     "tables_router",
     "claims_router",
     "solutions_router",
+    "solution_deployments_router",
     "knowledge_sources_router",
     "app_embed_secrets_router",
     "applications_router",

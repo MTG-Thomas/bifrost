@@ -41,6 +41,7 @@ from src.routers import (
     websocket_router,
     branding_router,
     files_router,
+    workspace_repo_changesets_router,
     schedules_router,
     workflow_keys_router,
     audit_router,
@@ -74,6 +75,7 @@ from src.routers import (
     tables_router,
     claims_router,
     solutions_router,
+    solution_deployments_router,
     knowledge_sources_router,
     app_embed_secrets_router,
     applications_router,
@@ -570,6 +572,7 @@ def create_app() -> FastAPI:
     app.include_router(websocket_router)
     app.include_router(branding_router)
     app.include_router(files_router)
+    app.include_router(workspace_repo_changesets_router)
     app.include_router(schedules_router)
     app.include_router(workflow_keys_router)
     app.include_router(audit_router)
@@ -603,6 +606,7 @@ def create_app() -> FastAPI:
     app.include_router(tables_router)
     app.include_router(claims_router)
     app.include_router(solutions_router)
+    app.include_router(solution_deployments_router)
     app.include_router(knowledge_sources_router)
     app.include_router(app_embed_secrets_router)
     app.include_router(applications_router)

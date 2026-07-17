@@ -25,7 +25,17 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String, Text, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    LargeBinary,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.orm.base import Base
@@ -50,6 +60,13 @@ class Solution(Base):
     # equal in a plain unique index, so global installs need a slug-only partial
     # index of their own. Mirrors migration 20260605_solution_unique_scope.
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["active_deployment_id", "id"],
+            ["solution_deployments.id", "solution_deployments.solution_id"],
+            name="fk_solutions_active_deployment",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
         Index(
             "ix_solutions_slug_org_unique",
             "slug",
@@ -66,6 +83,24 @@ class Solution(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+
+    # Selects the immutable runtime closure used by newly created executions.
+    # Existing installs remain NULL until captured as an initial deployment.
+    active_deployment_id: Mapped[UUID | None] = mapped_column(
+        nullable=True,
+        default=None,
+    )
+
+    # Positive compatibility discriminator. Rows that predate immutable
+    # deployments, and installs created by the legacy ZIP/git projection paths,
+    # execute from their mutable Solution storage. New deployment-aware rows
+    # fail closed until active_deployment_id is set.
+    execution_runtime_mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="deployment-v1",
+        server_default=text("'deployment-v1'"),
+    )
 
     # Definition identity (shared across installs of the same Solution).
     slug: Mapped[str] = mapped_column(String(255), index=True)
