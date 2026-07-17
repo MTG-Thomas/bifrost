@@ -1,4 +1,5 @@
 """Shared helpers for agent execution (used by both chat and autonomous executors)."""
+
 import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -8,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.models.orm.agents import Agent
+from src.models.orm.users import User
+from src.models.orm.workflows import Workflow
 from src.models.orm.external_mcp import (
     AgentMCPConnection,
     MCPConnection,
@@ -16,8 +19,19 @@ from src.models.orm.external_mcp import (
 from src.core.system_agents import is_privileged_agent_management_tool
 from src.services.llm import ToolDefinition
 from src.services.tool_registry import ToolRegistry
+from src.repositories.agents import AgentRepository
+from src.repositories.workflows import WorkflowRepository
 
 logger = logging.getLogger(__name__)
+
+CallerAccess = tuple[UUID, UUID | None, bool]
+
+
+class _UnresolvedCallerAccess:
+    pass
+
+
+_UNRESOLVED_CALLER_ACCESS = _UnresolvedCallerAccess()
 
 
 # Service-token freshness margin for autonomous-run tool inclusion. We
@@ -81,10 +95,105 @@ def agent_delegation_slug(name: str) -> str:
 
 def find_delegated_agent(agent: Agent, tool_name: str) -> Agent | None:
     """Match a delegate_to_* tool name to the target agent."""
-    for d in (agent.delegated_agents or []):
+    for d in agent.delegated_agents or []:
         if agent_delegation_slug(d.name) == tool_name and d.is_active:
             return d
     return None
+
+
+async def _get_caller_access(
+    session: AsyncSession, caller_user_id: UUID | None
+) -> CallerAccess | None:
+    if not isinstance(caller_user_id, UUID):
+        return None
+    result = await session.execute(
+        select(User.id, User.organization_id, User.is_superuser).where(
+            User.id == caller_user_id
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        return None
+    return row.id, row.organization_id, row.is_superuser
+
+
+def _agent_scope_allows_reference(
+    parent_agent: Agent, referenced_org_id: UUID | None
+) -> bool:
+    parent_org_id = getattr(parent_agent, "organization_id", None)
+    if referenced_org_id is None:
+        return parent_org_id is None or isinstance(parent_org_id, UUID)
+    if not isinstance(referenced_org_id, UUID) or not isinstance(parent_org_id, UUID):
+        return False
+    return referenced_org_id == parent_org_id
+
+
+async def caller_can_access_workflow_tool(
+    workflow: Workflow,
+    parent_agent: Agent,
+    session: AsyncSession,
+    *,
+    caller_user_id: UUID | None = None,
+    caller_is_platform_admin: bool = False,
+    caller_access: CallerAccess | None | _UnresolvedCallerAccess = (
+        _UNRESOLVED_CALLER_ACCESS
+    ),
+) -> bool:
+    """Return whether an agent invocation may execute an attached workflow tool."""
+    if caller_user_id is None:
+        return not caller_is_platform_admin and _agent_scope_allows_reference(
+            parent_agent, getattr(workflow, "organization_id", None)
+        )
+
+    # Authenticated callers are always authorized from the database-derived
+    # access tuple; the platform-admin claim only gates callerless execution.
+    if isinstance(caller_access, _UnresolvedCallerAccess):
+        caller_access = await _get_caller_access(session, caller_user_id)
+    if caller_access is not None:
+        user_id, organization_id, is_superuser = caller_access
+        repo = WorkflowRepository(
+            session,
+            org_id=organization_id,
+            user_id=user_id,
+            is_superuser=is_superuser,
+        )
+        return await repo.get(id=workflow.id) is not None
+
+    return False
+
+
+async def caller_can_access_delegated_agent(
+    delegated_agent: Agent,
+    parent_agent: Agent,
+    session: AsyncSession,
+    *,
+    caller_user_id: UUID | None = None,
+    caller_is_platform_admin: bool = False,
+    caller_access: CallerAccess | None | _UnresolvedCallerAccess = (
+        _UNRESOLVED_CALLER_ACCESS
+    ),
+) -> bool:
+    """Return whether an agent invocation may delegate to an attached agent."""
+    if caller_user_id is None:
+        return not caller_is_platform_admin and _agent_scope_allows_reference(
+            parent_agent, getattr(delegated_agent, "organization_id", None)
+        )
+
+    # Authenticated callers are always authorized from the database-derived
+    # access tuple; the platform-admin claim only gates callerless execution.
+    if isinstance(caller_access, _UnresolvedCallerAccess):
+        caller_access = await _get_caller_access(session, caller_user_id)
+    if caller_access is not None:
+        user_id, organization_id, is_superuser = caller_access
+        repo = AgentRepository(
+            session,
+            org_id=organization_id,
+            user_id=user_id,
+            is_superuser=is_superuser,
+        )
+        return await repo.get_agent_with_access_check(delegated_agent.id) is not None
+
+    return False
 
 
 def build_agent_system_prompt(
@@ -110,6 +219,7 @@ async def resolve_agent_tools(
     session: AsyncSession,
     *,
     caller_user_id: UUID | None = None,
+    caller_is_platform_admin: bool = False,
 ) -> tuple[list[ToolDefinition], dict[str, UUID]]:
     """Resolve tool definitions for an agent.
 
@@ -119,7 +229,10 @@ async def resolve_agent_tools(
         caller_user_id: User invoking the agent (chat / claim-bearing
             webhook), or ``None`` for autonomous runs. Controls whether
             MCP tools that require per-user OAuth get included in the
-            planner-visible toolset.
+            planner-visible toolset. Also scopes workflow/delegation tools
+            to the caller for interactive runs.
+        caller_is_platform_admin: Whether the invoking caller has platform
+            admin privileges. Platform admins may use cross-org references.
 
     Returns:
         ``(tool_definitions, id_map)``. The id map carries:
@@ -133,6 +246,11 @@ async def resolve_agent_tools(
     tool_definitions: list[ToolDefinition] = []
     tool_workflow_id_map: dict[str, UUID] = {}
     seen_names: dict[str, str] = {}
+    caller_access = (
+        await _get_caller_access(session, caller_user_id)
+        if caller_user_id is not None
+        else None
+    )
 
     # 1. System tools first (they always win conflicts)
     configured_system_tool_ids = list(agent.system_tools or [])
@@ -164,7 +282,23 @@ async def resolve_agent_tools(
                 tool_definitions.append(td)
 
     # 2. Workflow tools (sorted by ID for determinism)
-    tool_ids = [tool.id for tool in agent.tools]
+    tool_ids = []
+    for tool in agent.tools:
+        if await caller_can_access_workflow_tool(
+            tool,
+            agent,
+            session,
+            caller_user_id=caller_user_id,
+            caller_is_platform_admin=caller_is_platform_admin,
+            caller_access=caller_access,
+        ):
+            tool_ids.append(tool.id)
+        else:
+            logger.warning(
+                "Hiding agent tool %s from agent %s because the caller cannot access it",
+                tool.id,
+                agent.id,
+            )
 
     if tool_ids:
         workflow_tool_defs = await tool_registry.get_tool_definitions(tool_ids)
@@ -191,6 +325,20 @@ async def resolve_agent_tools(
     if agent.delegated_agents:
         for delegated in agent.delegated_agents:
             if not delegated.is_active:
+                continue
+            if not await caller_can_access_delegated_agent(
+                delegated,
+                agent,
+                session,
+                caller_user_id=caller_user_id,
+                caller_is_platform_admin=caller_is_platform_admin,
+                caller_access=caller_access,
+            ):
+                logger.warning(
+                    "Hiding delegated agent %s from agent %s because the caller cannot access it",
+                    delegated.id,
+                    agent.id,
+                )
                 continue
             tool_name = agent_delegation_slug(delegated.name)
             if tool_name not in seen_names:
@@ -333,7 +481,7 @@ def parse_mcp_tool_name(qualified_name: str) -> tuple[UUID, str] | None:
     """
     if not qualified_name.startswith(MCP_TOOL_PREFIX):
         return None
-    payload = qualified_name[len(MCP_TOOL_PREFIX):]
+    payload = qualified_name[len(MCP_TOOL_PREFIX) :]
     parts = payload.split("__", 1)
     if len(parts) != 2:
         return None

@@ -335,6 +335,50 @@ class TestWorkflowToolIdResolution:
         compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
         assert "some_unknown_tool" in compiled
 
+    @pytest.mark.asyncio
+    async def test_execute_tool_rechecks_reference_access_at_dispatch(
+        self, executor, mock_session
+    ):
+        """A stale or forged workflow call is denied before execution."""
+        from src.services.llm.base import ToolCallRequest
+
+        workflow_id = uuid4()
+        executor._tool_workflow_id_map["restricted_work"] = workflow_id
+
+        workflow = MagicMock()
+        workflow.id = workflow_id
+        workflow.name = "Restricted Work"
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = workflow
+        mock_session.execute = AsyncMock(return_value=result)
+
+        agent = MagicMock()
+        agent.organization_id = uuid4()
+        conversation = MagicMock()
+        conversation.user = MagicMock()
+
+        with patch(
+            "src.services.agent_executor.caller_can_access_workflow_tool",
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as check_access, patch(
+            "src.services.execution.service.execute_tool",
+            new_callable=AsyncMock,
+        ) as execute_tool:
+            tool_result = await executor._execute_tool(
+                ToolCallRequest(
+                    id="call_restricted",
+                    name="restricted_work",
+                    arguments={},
+                ),
+                agent=agent,
+                conversation=conversation,
+            )
+
+        check_access.assert_awaited_once()
+        execute_tool.assert_not_awaited()
+        assert tool_result.error == "Tool 'restricted_work' not found"
+
 
 class TestPrivilegedAgentManagementTools:
     """Regression tests for privileged MCP agent-management tools in chat."""
@@ -537,6 +581,42 @@ class TestChatDelegation:
     """Test that chat _execute_delegation uses AutonomousAgentExecutor."""
 
     @pytest.mark.asyncio
+    async def test_delegation_rechecks_reference_access_at_dispatch(self, executor):
+        """A stale or forged delegation call is denied before child execution."""
+        from src.services.llm.base import ToolCallRequest
+
+        organization_id = uuid4()
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Restricted Agent"
+        delegated.is_active = True
+        delegated.organization_id = organization_id
+
+        agent = MagicMock()
+        agent.organization_id = organization_id
+        agent.delegated_agents = [delegated]
+
+        with patch(
+            "src.services.agent_executor.caller_can_access_delegated_agent",
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as check_access, patch(
+            "src.services.agent_executor.AutonomousAgentExecutor"
+        ) as autonomous_executor:
+            result = await executor._execute_delegation(
+                ToolCallRequest(
+                    id="tc_restricted",
+                    name="delegate_to_restricted_agent",
+                    arguments={"task": "restricted"},
+                ),
+                agent,
+            )
+
+        check_access.assert_awaited_once()
+        autonomous_executor.assert_not_called()
+        assert result.error == "Delegated agent not found: delegate_to_restricted_agent"
+
+    @pytest.mark.asyncio
     async def test_delegation_calls_autonomous_executor(self, executor, mock_session):
         """Chat delegation dispatches to AutonomousAgentExecutor.run()."""
         from src.services.llm.base import ToolCallRequest
@@ -545,8 +625,10 @@ class TestChatDelegation:
         delegated.id = uuid4()
         delegated.name = "Data Analyst"
         delegated.is_active = True
+        delegated.organization_id = uuid4()
 
         agent = MagicMock()
+        agent.organization_id = delegated.organization_id
         agent.delegated_agents = [delegated]
 
         tool_call = ToolCallRequest(
@@ -602,8 +684,10 @@ class TestChatDelegation:
         delegated.id = uuid4()
         delegated.name = "Troubleshooting Agent"
         delegated.is_active = True
+        delegated.organization_id = uuid4()
 
         agent = MagicMock()
+        agent.organization_id = delegated.organization_id
         agent.delegated_agents = [delegated]
 
         tool_call = ToolCallRequest(
@@ -694,8 +778,10 @@ class TestChatDelegation:
         delegated.id = uuid4()
         delegated.name = "Broken Agent"
         delegated.is_active = True
+        delegated.organization_id = uuid4()
 
         agent = MagicMock()
+        agent.organization_id = delegated.organization_id
         agent.delegated_agents = [delegated]
 
         tool_call = ToolCallRequest(
@@ -737,8 +823,10 @@ class TestChatDelegation:
         delegated.id = uuid4()
         delegated.name = "Crasher"
         delegated.is_active = True
+        delegated.organization_id = uuid4()
 
         agent = MagicMock()
+        agent.organization_id = delegated.organization_id
         agent.delegated_agents = [delegated]
 
         tool_call = ToolCallRequest(
@@ -776,8 +864,10 @@ class TestChatDelegation:
         delegated.id = uuid4()
         delegated.name = "Slow Agent"
         delegated.is_active = True
+        delegated.organization_id = uuid4()
 
         agent = MagicMock()
+        agent.organization_id = delegated.organization_id
         agent.delegated_agents = [delegated]
 
         tool_call = ToolCallRequest(
