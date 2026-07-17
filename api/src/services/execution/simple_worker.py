@@ -375,10 +375,21 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
 
     _exec_solution_id = context.get("solution_id")
     if _exec_solution_id:
-        set_solution_context(
-            _exec_solution_id,
-            global_repo_access=bool(context.get("solution_global_repo_access", False)),
-        )
+        context_options = {
+            "runtime_storage_prefix": context.get("runtime_storage_prefix"),
+            "source_hashes": context.get("deployment_source_hashes"),
+        }
+        if any(value is not None for value in context_options.values()):
+            set_solution_context(
+                _exec_solution_id,
+                global_repo_access=bool(context.get("solution_global_repo_access", False)),
+                **context_options,
+            )
+        else:
+            set_solution_context(
+                _exec_solution_id,
+                global_repo_access=bool(context.get("solution_global_repo_access", False)),
+            )
     _clear_workspace_modules()
 
     # 2. Run the execution using existing worker logic

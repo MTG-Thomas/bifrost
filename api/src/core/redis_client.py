@@ -52,6 +52,9 @@ class PendingExecution(TypedDict):
     """Schema for pending execution data stored in Redis."""
     execution_id: str
     workflow_id: str | None  # UUID from database (None for inline code)
+    solution_deployment_id: str | None
+    runtime_evidence: dict[str, Any] | None
+    runtime_mode: str
     script_name: str | None  # Name for inline code execution
     parameters: dict[str, Any]
     org_id: str | None
@@ -111,6 +114,9 @@ class RedisClient:
         sync: bool = False,
         is_platform_admin: bool = False,
         event: dict[str, Any] | None = None,
+        solution_deployment_id: str | None = None,
+        runtime_evidence: dict[str, Any] | None = None,
+        runtime_mode: str = "legacy",
     ) -> None:
         """
         Store pending execution in Redis.
@@ -138,6 +144,9 @@ class RedisClient:
         data: PendingExecution = {
             "execution_id": execution_id,
             "workflow_id": workflow_id,
+            "solution_deployment_id": solution_deployment_id,
+            "runtime_evidence": runtime_evidence,
+            "runtime_mode": runtime_mode,
             "script_name": script_name,
             "parameters": parameters,
             "org_id": org_id,

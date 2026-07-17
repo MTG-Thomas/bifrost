@@ -17,6 +17,9 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def one_or_none(self):
+        return self._value
+
     def all(self):
         return self._value
 
@@ -246,7 +249,10 @@ async def test_insert_scheduled_execution_persists_expected_execution_fields():
     org_id = uuid4()
     executed_by = uuid4()
     form_id = uuid4()
-    db = _Db()
+    # Runtime pinning deliberately resolves the workflow before persisting the
+    # scheduled row. A non-Solution workflow selects the `_repo` compatibility
+    # mode without any deployment closure lookup.
+    db = _Db((SimpleNamespace(solution_id=None), None))
     scheduled_at = datetime.now(UTC)
 
     execution_id = await workflows._insert_scheduled_execution(

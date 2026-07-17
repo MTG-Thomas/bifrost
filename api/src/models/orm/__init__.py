@@ -48,6 +48,10 @@ from src.models.orm.organizations import Organization
 from src.models.orm.pending_capture import PendingCaptureORM
 from src.models.orm.solution_config_schema import SolutionConfigSchema
 from src.models.orm.solution_deploy_jobs import SolutionDeployJob
+from src.models.orm.solution_deployments import (
+    SolutionDeployment,
+    SolutionDeploymentDependency,
+)
 from src.models.orm.solution_connection_schema import SolutionConnectionSchema
 from src.models.orm.solution_file_location import SolutionFileLocation
 from src.models.orm.solutions import Solution
@@ -62,6 +66,7 @@ from src.models.orm.file_index import FileIndex
 from src.models.orm.file_metadata import FileMetadata, FilePolicy
 from src.models.orm.policy_rule import PolicyRule
 from src.models.orm.worker_metric import WorkerMetric
+from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 
 __all__ = [
     # Base
@@ -74,6 +79,8 @@ __all__ = [
     "SolutionConnectionSchema",
     "SolutionFileLocation",
     "SolutionDeployJob",
+    "SolutionDeployment",
+    "SolutionDeploymentDependency",
     "SolutionExportJob",
     "PendingCaptureORM",
     # Applications (App Builder)
@@ -155,6 +162,7 @@ __all__ = [
     "PolicyRule",
     # Worker Metrics
     "WorkerMetric",
+    "WorkspaceRepoChangeset",
     # Events
     "EventSource",
     "WebhookSource",

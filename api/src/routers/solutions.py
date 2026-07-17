@@ -182,6 +182,7 @@ async def create_solution(body: SolutionCreate, ctx: Context, user: CurrentSuper
         git_repo_url=body.git_repo_url,
         repo_subpath=body.repo_subpath,
         git_ref=body.git_ref,
+        execution_runtime_mode="repo-v1",
     )
     ctx.db.add(row)
     try:
@@ -2089,6 +2090,7 @@ async def install_from_repo(
             git_repo_url=body.repo_url,
             repo_subpath=body.repo_subpath,
             git_ref=body.git_ref,
+            execution_runtime_mode="repo-v1",
         )
         ctx.db.add(solution)
         try:

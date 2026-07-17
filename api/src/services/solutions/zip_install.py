@@ -430,7 +430,12 @@ async def _resolve_or_create_solution(
             await db.flush()
         return existing
 
-    row = Solution(slug=slug, name=name, organization_id=organization_id)
+    row = Solution(
+        slug=slug,
+        name=name,
+        organization_id=organization_id,
+        execution_runtime_mode="repo-v1",
+    )
     db.add(row)
     await db.flush()
     return row

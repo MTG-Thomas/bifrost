@@ -42,6 +42,7 @@ def recorder_workflow(e2e_client, platform_admin):
         "e2e_builtin_event_recorder.py",
         RECORDER_WORKFLOW,
         "e2e_builtin_event_recorder",
+        organization_id=None,
     )
     yield workflow
     e2e_client.delete(
@@ -58,6 +59,7 @@ def failing_workflow(e2e_client, platform_admin):
         "e2e_builtin_event_fails.py",
         FAILING_WORKFLOW,
         "e2e_builtin_event_fails",
+        organization_id=None,
     )
     yield workflow
     e2e_client.delete(
@@ -74,6 +76,7 @@ def _create_topic_source(e2e_client, headers, topic: str, workflow_id: str) -> d
             "name": f"E2E {topic} {uuid4().hex[:8]}",
             "source_type": "topic",
             "event_type": topic,
+            "organization_id": None,
         },
     )
     assert response.status_code == 201, response.text

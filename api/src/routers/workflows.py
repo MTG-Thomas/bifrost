@@ -676,6 +676,16 @@ async def _insert_scheduled_execution(
     from src.models.orm.executions import Execution
 
     exec_id = uuid4()
+    from src.services.solutions.deployment_runtime import pin_workflow_runtime
+
+    pinned_runtime = await pin_workflow_runtime(db, workflow_id)
+    runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
+    from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
+
+    runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
+    execution_context: dict[str, object] = {"is_platform_admin": is_platform_admin}
+    if runtime_evidence is not None:
+        execution_context["runtime_evidence"] = runtime_evidence
     db.add(
         Execution(
             id=exec_id,
@@ -689,7 +699,13 @@ async def _insert_scheduled_execution(
             executed_by_name=executed_by_name,
             form_id=form_id,
             api_key_id=api_key_id,
-            execution_context={"is_platform_admin": is_platform_admin},
+            solution_deployment_id=pinned_runtime.deployment_id if pinned_runtime else None,
+            runtime_mode=runtime_mode,
+            runtime_evidence=runtime_evidence,
+            runtime_evidence_hash=(
+                sha256_digest(canonical_json(runtime_evidence)) if runtime_evidence else None
+            ),
+            execution_context=execution_context,
         )
     )
     await db.commit()
