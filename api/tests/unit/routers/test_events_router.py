@@ -263,6 +263,22 @@ class TestWebhookAdapterEndpoints:
 
 class TestTopicEndpoints:
     @pytest.mark.asyncio
+    async def test_emit_topic_event_defaults_to_caller_org(self):
+        event_id = uuid4()
+        ctx = _ctx()
+
+        with patch.object(
+            events, "emit_event", AsyncMock(return_value=(event_id, 1))
+        ) as emit_event:
+            await events.emit_topic_event(
+                EmitEventRequest(topic="ticket.created", data={}),
+                ctx,
+                _user(),
+            )
+
+        assert emit_event.await_args.kwargs["organization_id"] == ctx.org_id
+
+    @pytest.mark.asyncio
     async def test_emit_topic_event_accepts_global_and_org_scopes(self):
         event_id = uuid4()
 

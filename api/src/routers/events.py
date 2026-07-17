@@ -1066,8 +1066,10 @@ async def emit_topic_event(
             detail=str(exc),
         )
 
-    organization_id: UUID | None = None
-    if request.scope and request.scope != "GLOBAL":
+    organization_id: UUID | None = ctx.org_id
+    if request.scope == "GLOBAL":
+        organization_id = None
+    elif request.scope:
         try:
             organization_id = UUID(request.scope)
         except ValueError:
