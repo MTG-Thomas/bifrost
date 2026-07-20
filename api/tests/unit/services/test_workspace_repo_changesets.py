@@ -233,6 +233,9 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
         await svc.activate(second.id, WorkspaceRepoActivateRequest(), "tester")
     assert exc.value.detail["conflicting_paths"] == ["features/a.py"]
 
+    aborted = await svc.abort(second.id)
+    assert aborted.status == "aborted"
+
 
 @pytest.mark.asyncio
 async def test_activation_compensates_storage_on_partial_failure(monkeypatch):

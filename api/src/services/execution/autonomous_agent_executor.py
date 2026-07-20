@@ -23,12 +23,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from src.models.orm.agents import Agent
+from src.models.orm.workflows import Workflow
 from src.models.orm.agent_runs import AgentRun, AgentRunStep
+from src.models.orm.users import User
 from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.pubsub import publish_agent_run_step
 from src.core.system_agents import is_privileged_agent_management_tool
 from src.services.execution.agent_helpers import (
     build_agent_system_prompt,
+    caller_can_access_delegated_agent,
+    caller_can_access_workflow_tool,
     find_delegated_agent,
     parse_mcp_tool_name,
     resolve_agent_tools,
@@ -83,6 +87,7 @@ class AutonomousAgentExecutor:
         # service token only.
         self._caller_user_id: UUID | None = None
         self._caller_context: dict[str, Any] | None = None
+        self._caller_is_platform_admin = False
         # Buffers for Redis-first pattern (flushed to DB after run completes)
         self._pending_steps: list[dict[str, Any]] = []
         self._pending_ai_usage: list[dict[str, Any]] = []
@@ -131,6 +136,7 @@ class AutonomousAgentExecutor:
                 caller_user_id = None
         self._caller_user_id = caller_user_id
         self._caller_context = _caller.copy() if _caller else None
+        self._caller_is_platform_admin = False
 
         # Short-circuit if agent is paused. Runs already past this point continue
         # normally — this check only gates new runs at entry.
@@ -158,8 +164,14 @@ class AutonomousAgentExecutor:
         # service token. Chat-claim webhooks that pass a user_id see
         # all enabled MCP tools in the agent's org.
         async with self._session_factory() as db:
+            if caller_user_id is not None:
+                caller = await db.get(User, caller_user_id)
+                self._caller_is_platform_admin = bool(caller and caller.is_superuser)
             tool_definitions, self._tool_workflow_id_map = await resolve_agent_tools(
-                agent, db, caller_user_id=caller_user_id
+                agent,
+                db,
+                caller_user_id=caller_user_id,
+                caller_is_platform_admin=self._caller_is_platform_admin,
             )
             llm_client = await get_llm_client(db)
 
@@ -456,6 +468,17 @@ class AutonomousAgentExecutor:
         if not workflow_id:
             raise ToolError(f"Unknown tool: {tool_call.name}")
 
+        async with self._session_factory() as db:
+            workflow = await db.get(Workflow, workflow_id)
+            if workflow is None or not await caller_can_access_workflow_tool(
+                workflow,
+                agent,
+                db,
+                caller_user_id=self._caller_user_id,
+                caller_is_platform_admin=self._caller_is_platform_admin,
+            ):
+                raise ToolError(f"Unknown tool: {tool_call.name}")
+
         from src.services.execution.service import execute_tool
 
         response = await execute_tool(
@@ -466,7 +489,7 @@ class AutonomousAgentExecutor:
             user_email=str(self._caller_context.get("email", "")) if self._caller_context else (getattr(agent, "created_by", None) or f"agent:{agent.id}"),
             user_name=str(self._caller_context.get("name", "")) if self._caller_context else agent.name,
             org_id=str(agent.organization_id) if agent.organization_id else None,
-            is_platform_admin=bool(self._caller_context.get("is_platform_admin", False)) if self._caller_context else False,
+            is_platform_admin=self._caller_is_platform_admin,
             is_agent=True,
         )
 
@@ -621,9 +644,18 @@ class AutonomousAgentExecutor:
             f"(depth={self._delegation_depth + 1}/{MAX_DELEGATION_DEPTH})"
         )
 
-        # Brief DB session: re-fetch child agent with relationships + create sub-run record
+        # Brief DB session: verify access, re-fetch child agent with relationships + create sub-run record
         sub_run_id = str(uuid4())
         async with self._session_factory() as db:
+            if not await caller_can_access_delegated_agent(
+                target_agent,
+                agent,
+                db,
+                caller_user_id=self._caller_user_id,
+                caller_is_platform_admin=self._caller_is_platform_admin,
+            ):
+                raise ToolError(f"Delegation target for '{tool_call.name}' not found.")
+
             result = await db.execute(
                 select(Agent)
                 .options(selectinload(Agent.tools), selectinload(Agent.delegated_agents))
@@ -746,7 +778,7 @@ class AutonomousAgentExecutor:
                 context = MCPContext(
                     user_id=str(self._caller_user_id) if self._caller_user_id else str(agent.id),
                     org_id=str(agent.organization_id) if agent.organization_id else None,
-                    is_platform_admin=bool(self._caller_context.get("is_platform_admin", False)) if self._caller_context else False,
+                    is_platform_admin=self._caller_is_platform_admin,
                     user_email=str(self._caller_context.get("email", "")) if self._caller_context else (getattr(agent, "created_by", None) or f"agent:{agent.id}"),
                     user_name=str(self._caller_context.get("name", "")) if self._caller_context else agent.name,
                     session=db,

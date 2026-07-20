@@ -66,6 +66,7 @@ CommitCallback = Callable[[str, bool], Awaitable[tuple[str | None, str | None]]]
 
 class WorkspaceRepoChangesetService:
     ACTIVE = {"open", "staged", "validated"}
+    ABORTABLE = ACTIVE | {"conflicted"}
 
     def __init__(
         self,
@@ -466,7 +467,10 @@ class WorkspaceRepoChangesetService:
 
     async def abort(self, changeset_id: UUID) -> WorkspaceRepoChangesetResponse:
         row = await self._required(changeset_id, for_update=True)
-        self._ensure_active(row)
+        if row.status not in self.ABORTABLE:
+            raise ChangesetInvalid(
+                f"changeset in {row.status!r} state cannot be aborted"
+            )
         row.status = "aborted"
         await self.db.flush()
         return self._response(row)

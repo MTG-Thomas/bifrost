@@ -21,6 +21,7 @@ under a live holder — Codex #13).
 Manual deploy and git-connected sync share the SAME key namespace, so they can't
 race each other either.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -66,6 +67,10 @@ class SolutionWriteLockHeld(Exception):
     """Another writer already holds this install's deploy lock."""
 
 
+class SolutionWriteLockLost(RuntimeError):
+    """The holder lost its fencing token before completing the mutation."""
+
+
 @contextlib.asynccontextmanager
 async def solution_write_lock(solution_id: UUID) -> AsyncIterator[None]:
     """Hold the per-install write lock across a deploy's DB + S3 phases.
@@ -90,6 +95,8 @@ async def solution_write_lock(solution_id: UUID) -> AsyncIterator[None]:
     if not acquired:
         raise SolutionWriteLockHeld(str(solution_id))
 
+    lost = asyncio.Event()
+
     async def _renew() -> None:
         # Keep renewing for the lifetime of the context. A transient redis error
         # must NOT end the loop (that would silently stop renewal and let the
@@ -97,17 +104,22 @@ async def solution_write_lock(solution_id: UUID) -> AsyncIterator[None]:
         while True:
             await asyncio.sleep(_RENEW_INTERVAL_S)
             try:
-                await renew(keys=[key], args=[token, _LOCK_TTL_S])
+                if not await renew(keys=[key], args=[token, _LOCK_TTL_S]):
+                    lost.set()
+                    return
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - renewal is best-effort; keep trying
                 logger.warning(
-                    "write-lock renewal failed for %s (will retry)", log_safe(solution_id)
+                    "write-lock renewal failed for %s (will retry)",
+                    log_safe(solution_id),
                 )
 
     watchdog = asyncio.create_task(_renew())
     try:
         yield
+        if lost.is_set():
+            raise SolutionWriteLockLost(str(solution_id))
     finally:
         watchdog.cancel()
         with contextlib.suppress(asyncio.CancelledError):

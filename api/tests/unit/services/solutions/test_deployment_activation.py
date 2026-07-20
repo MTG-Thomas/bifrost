@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -39,13 +40,21 @@ class FakeRepository:
         self.deployments = {item.id: item for item in deployments}
         self.active = active
 
-    async def get_runtime_closure(self, deployment_id, organization_id):
+    async def get_runtime_closure(
+        self, deployment_id, organization_id, solution_id=None
+    ):
         item = self.deployments.get(deployment_id)
         return (
             item
-            if item is not None and item.organization_id == organization_id
+            if item is not None
+            and item.organization_id == organization_id
+            and (solution_id is None or item.solution_id == solution_id)
             else None
         )
+
+    @asynccontextmanager
+    async def projection_savepoint(self):
+        yield
 
     async def transition(
         self, deployment_id, organization_id, *, expected_state, new_state, **values
@@ -111,10 +120,10 @@ async def test_two_drafts_from_one_base_have_deterministic_cas_conflict():
     activation = service(repository, hooks)
 
     winner = await activation.activate(
-        first.id, None, expected_active_deployment_id=current.id
+        first.id, None, solution_id, expected_active_deployment_id=current.id
     )
     loser = await activation.activate(
-        second.id, None, expected_active_deployment_id=current.id
+        second.id, None, solution_id, expected_active_deployment_id=current.id
     )
 
     assert winner.state == "active"
@@ -140,7 +149,7 @@ async def test_rollback_reactivates_prior_immutable_deployment_by_cas():
     activation = service(repository, FakeHooks())
 
     result = await activation.rollback(
-        prior.id, None, expected_active_deployment_id=current.id
+        prior.id, None, solution_id, expected_active_deployment_id=current.id
     )
 
     assert result.state == "active"
@@ -159,7 +168,7 @@ async def test_artifact_failure_records_recovery_without_moving_pointer():
     activation = service(repository, FakeHooks(fail_verify=True))
 
     result = await activation.activate(
-        candidate.id, None, expected_active_deployment_id=current.id
+        candidate.id, None, solution_id, expected_active_deployment_id=current.id
     )
 
     assert result.state == "recovery_required"
@@ -177,7 +186,7 @@ async def test_projection_failure_records_pointer_moved_recovery_evidence():
     activation = service(repository, FakeHooks(fail_projection=True))
 
     result = await activation.activate(
-        candidate.id, None, expected_active_deployment_id=current.id
+        candidate.id, None, solution_id, expected_active_deployment_id=current.id
     )
 
     assert result.state == "recovery_required"
@@ -196,7 +205,27 @@ async def test_activation_rejects_expected_pointer_that_is_not_draft_base():
 
     with pytest.raises(ValueError, match="draft base"):
         await activation.activate(
-            candidate.id, None, expected_active_deployment_id=unexpected_active_id
+            candidate.id,
+            None,
+            solution_id,
+            expected_active_deployment_id=unexpected_active_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_activation_rejects_deployment_from_different_solution_in_same_scope():
+    route_solution_id = uuid4()
+    actual_solution_id = uuid4()
+    candidate = deployment(actual_solution_id, "ready", None)
+    repository = FakeRepository([candidate], None)
+    activation = service(repository, FakeHooks())
+
+    with pytest.raises(ValueError, match="missing or out of scope"):
+        await activation.activate(
+            candidate.id,
+            None,
+            route_solution_id,
+            expected_active_deployment_id=None,
         )
 
 

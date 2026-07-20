@@ -168,8 +168,8 @@ class _{{ class_name }}Client:
 
 {% for method in methods %}
     def {{ method.name }}(self, {{ method.params }}) -> {{ method.return_type }}:
-        """{{ method.summary }}"""
-        url = f"{self.base_url}{{ method.url_template }}"
+        {{ method.summary_literal }}
+        url = f"{self.base_url}" + f{{ method.url_template_literal }}
 {% if method.http_method in ['post', 'put', 'patch'] %}
         response = self._request_with_retry("{{ method.http_method | upper }}", url, json=data, params=kwargs)
 {% else %}

@@ -35,7 +35,7 @@ from src.models.contracts.agents import (
     ToolResult,
 )
 from src.models.enums import MessageRole
-from src.models.orm import Agent, Conversation, Message, Workflow
+from src.models.orm import Agent, Conversation, Message, User, Workflow
 from src.repositories.agents import AgentRepository
 from src.services.llm import (
     LLMMessage,
@@ -44,6 +44,8 @@ from src.services.llm import (
     get_llm_client,
 )
 from src.services.execution.agent_helpers import (
+    caller_can_access_delegated_agent,
+    caller_can_access_workflow_tool,
     find_delegated_agent,
     parse_mcp_tool_name,
     resolve_agent_tools,
@@ -621,8 +623,14 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         the system tool wins and a warning is logged.
         """
         async with self._db() as session:
+            user = None
+            if caller_user_id is not None:
+                user = await session.get(User, caller_user_id)
             tools, self._tool_workflow_id_map = await resolve_agent_tools(
-                agent, session, caller_user_id=caller_user_id
+                agent,
+                session,
+                caller_user_id=caller_user_id,
+                caller_is_platform_admin=bool(user.is_superuser) if user else False,
             )
         return tools
 
@@ -1240,7 +1248,12 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
         # Check if this is a delegation tool call
         if tool_call.name.startswith("delegate_to_") and agent:
-            return await self._execute_delegation(tool_call, agent)
+            return await self._execute_delegation(
+                tool_call,
+                agent,
+                conversation=conversation,
+                caller_user_id=caller_user_id,
+            )
 
         # Check if this is a system tool call
         if agent and tool_call.name in (agent.system_tools or []):
@@ -1288,6 +1301,9 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                     )
                 workflow = result.scalar_one_or_none()
 
+            # Get user info from conversation
+            user = conversation.user if conversation else None
+
             if not workflow:
                 return ToolResult(
                     tool_call_id=tool_call.id,
@@ -1297,8 +1313,24 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
                     duration_ms=int((time.time() - start_time) * 1000),
                 )
 
-            # Get user info from conversation
-            user = conversation.user if conversation else None
+            can_access = False
+            if agent is not None:
+                async with self._db() as session:
+                    can_access = await caller_can_access_workflow_tool(
+                        workflow,
+                        agent,
+                        session,
+                        caller_user_id=user.id if user else None,
+                        caller_is_platform_admin=bool(user.is_superuser) if user else False,
+                    )
+            if not can_access:
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error=f"Tool '{tool_call.name}' not found",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
 
             # Execute the workflow via execution service
             from src.services.execution.service import execute_tool
@@ -1602,6 +1634,9 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
         self,
         tool_call: ToolCallRequest,
         agent: Agent,
+        *,
+        conversation: Conversation | None = None,
+        caller_user_id: UUID | None = None,
     ) -> ToolResult:
         """Execute a delegation to another agent via AutonomousAgentExecutor."""
         start_time = time.time()
@@ -1632,9 +1667,28 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
 
             logger.info(f"Agent '{agent.name}' delegating to '{delegated_agent.name}' via chat")
 
-            # Re-fetch with relationships loaded — the parent's selectinload
-            # doesn't transitively load the child agent's own relationships
             async with self._db() as session:
+                user = conversation.user if conversation else None
+                if user is None and caller_user_id is not None:
+                    user = await session.get(User, caller_user_id)
+                can_delegate = await caller_can_access_delegated_agent(
+                    delegated_agent,
+                    agent,
+                    session,
+                    caller_user_id=user.id if user else None,
+                    caller_is_platform_admin=bool(user.is_superuser) if user else False,
+                )
+                if not can_delegate:
+                    return ToolResult(
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        result=None,
+                        error=f"Delegated agent not found: {tool_call.name}",
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+
+                # Re-fetch with relationships loaded — the parent's selectinload
+                # doesn't transitively load the child agent's own relationships
                 result = await session.execute(
                     select(Agent)
                     .options(selectinload(Agent.tools), selectinload(Agent.delegated_agents))
@@ -1645,11 +1699,22 @@ IMPORTANT: When the user's request can be fulfilled using one of your tools, you
             redis_client = await get_shared_redis()
             sub_executor = AutonomousAgentExecutor(self._session_factory, redis_client=redis_client)
             try:
+                caller = None
+                if user is not None:
+                    caller = {
+                        "user_id": str(user.id),
+                        "email": user.email,
+                        "name": user.name,
+                        "is_platform_admin": bool(user.is_superuser),
+                    }
+                run_kwargs: dict[str, Any] = {
+                    "agent": delegated_agent,
+                    "input_data": {"task": task, "_delegated_from": agent.name},
+                }
+                if caller is not None:
+                    run_kwargs["_caller"] = caller
                 sub_result = await asyncio.wait_for(
-                    sub_executor.run(
-                        agent=delegated_agent,
-                        input_data={"task": task, "_delegated_from": agent.name},
-                    ),
+                    sub_executor.run(**run_kwargs),
                     timeout=DELEGATION_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
