@@ -154,7 +154,7 @@ async def pin_workflow_runtime(
     workflow, solution = row
     if workflow.solution_id is None:
         return None
-    if solution is None or (caller_deployment_id is None and solution.status != "active"):
+    if solution is None or solution.status != "active":
         raise DeploymentRuntimeError("Solution is not active")
     selected_deployment_id = await _select_deployment_id(
         session, workflow.solution_id, solution.active_deployment_id, caller_deployment_id

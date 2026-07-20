@@ -228,6 +228,19 @@ async def test_child_call_inherits_superseded_parent_deployment(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pinned_runtime_rejects_inactive_solution():
+    solution_id, workflow_id, deployment_id = uuid4(), uuid4(), uuid4()
+    workflow = SimpleNamespace(id=workflow_id, solution_id=solution_id)
+    solution = SimpleNamespace(id=solution_id, status="inactive")
+    session = SimpleNamespace(execute=AsyncMock(return_value=_Result((workflow, solution))))
+
+    with pytest.raises(DeploymentRuntimeError, match="Solution is not active"):
+        await pin_workflow_runtime(
+            session, workflow_id, caller_deployment_id=deployment_id
+        )
+
+
+@pytest.mark.asyncio
 async def test_cross_solution_child_uses_exact_dependency_deployment(monkeypatch):
     owner_solution_id, target_solution_id, workflow_id = uuid4(), uuid4(), uuid4()
     caller_id, dependency_id, current_target_id = uuid4(), uuid4(), uuid4()
