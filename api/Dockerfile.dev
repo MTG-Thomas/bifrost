@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r requireme
 # Stage 2: Runtime
 # =============================================================================
 # python:3.14-slim
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS runtime
 
 WORKDIR /app
 
@@ -61,7 +61,7 @@ RUN printf '#!/bin/sh\nexec python -m bifrost "$@"\n' > /usr/local/bin/bifrost \
     && chmod +x /usr/local/bin/bifrost
 
 # Create non-root user
-RUN useradd -m -u 1000 bifrost && \
+RUN useradd --no-log-init -m -u 1000 bifrost && \
     chown -R bifrost:bifrost /app
 
 # Create directories for workspace and temp
