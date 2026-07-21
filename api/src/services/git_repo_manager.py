@@ -1,9 +1,9 @@
 """
-Git Repo Manager — S3-backed persistent git working tree.
+Git Repo Manager — object-storage-backed persistent git working tree.
 
 Manages the lifecycle of a persistent local git working directory backed by
-S3 _repo/. Uses `aws s3 sync` for efficient incremental transfer of the
-entire directory tree including .git/ objects.
+the configured object storage provider's _repo/ prefix. S3 uses `aws s3 sync`
+for efficient incremental transfer; other providers use RepoStorage.
 
 The working directory is persistent at PERSISTENT_WORK_DIR and is NOT deleted
 between operations. This allows incremental syncs (only changed files are
@@ -17,10 +17,11 @@ only used for bulk sync operations (git clone/fetch/merge/push).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
-from pathlib import Path
+from collections.abc import AsyncIterator, Awaitable, Iterable
+from pathlib import Path, PurePosixPath
 
 import redis.asyncio as redis
 
@@ -33,13 +34,15 @@ GIT_LOCK_KEY = "bifrost:git-lock"
 GIT_LOCK_TIMEOUT = 300  # 5 minutes
 
 PERSISTENT_WORK_DIR = Path("/tmp/git")
+OBJECT_STORAGE_CONCURRENCY = 16
 
 
 class GitRepoManager:
-    """Context manager that syncs _repo/ between S3 and a persistent local working dir."""
+    """Sync _repo/ between object storage and a persistent local working dir."""
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or get_settings()
+        self._downloaded_hashes: dict[str, str] = {}
 
     @property
     def work_dir(self) -> Path:
@@ -110,11 +113,15 @@ class GitRepoManager:
             return
 
         client = redis.from_url(redis_url)
-        lock = client.lock(GIT_LOCK_KEY, timeout=GIT_LOCK_TIMEOUT, blocking_timeout=GIT_LOCK_TIMEOUT)
+        lock = client.lock(
+            GIT_LOCK_KEY, timeout=GIT_LOCK_TIMEOUT, blocking_timeout=GIT_LOCK_TIMEOUT
+        )
         try:
             acquired = await lock.acquire()
             if not acquired:
-                raise RuntimeError("Failed to acquire git lock — another git operation is in progress")
+                raise RuntimeError(
+                    "Failed to acquire git lock — another git operation is in progress"
+                )
             logger.debug("Acquired git lock")
             yield
         finally:
@@ -126,23 +133,121 @@ class GitRepoManager:
             await client.aclose()
 
     async def sync_down(self, target: Path) -> None:
-        """Sync _repo/ from S3 to a local directory."""
+        """Sync _repo/ from the configured object store to a local directory."""
         target.mkdir(parents=True, exist_ok=True)
+        if self._settings.object_storage_provider == "azure_blob":
+            await self._sync_down_with_repo_storage(target)
+            return
+
         s3_uri = self._s3_uri()
         cmd = self._build_sync_cmd(source=s3_uri, dest=str(target))
         logger.info(f"sync_down: {s3_uri} -> {target}")
         await self._run_aws_cli(cmd)
 
     async def sync_up(self, source: Path) -> None:
-        """Sync a local directory back to S3 _repo/ with --delete."""
+        """Sync a local directory back to _repo/, deleting removed objects."""
+        if self._settings.object_storage_provider == "azure_blob":
+            await self._sync_up_with_repo_storage(source)
+            return
+
         s3_uri = self._s3_uri()
         cmd = self._build_sync_cmd(source=str(source), dest=s3_uri, delete=True)
         logger.info(f"sync_up: {source} -> {s3_uri}")
         await self._run_aws_cli(cmd)
 
+    async def _sync_down_with_repo_storage(self, target: Path) -> None:
+        """Materialize Azure-backed _repo/ through the shared storage adapter."""
+        from src.services.repo_storage import RepoStorage
+
+        storage = RepoStorage(self._settings)
+        paths = await storage.list()
+        semaphore = asyncio.Semaphore(OBJECT_STORAGE_CONCURRENCY)
+        downloaded_hashes: dict[str, str] = {}
+
+        async def download(path: str) -> None:
+            destination = self._safe_local_path(target, path)
+            async with semaphore:
+                content = await storage.read(path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(destination.write_bytes, content)
+            downloaded_hashes[path] = hashlib.sha256(content).hexdigest()
+
+        await self._run_transfers(
+            download(path) for path in paths if not path.endswith("/")
+        )
+        self._downloaded_hashes = downloaded_hashes
+        logger.info(
+            "sync_down: object storage -> %s (%d files)", target, len(downloaded_hashes)
+        )
+
+    async def _sync_up_with_repo_storage(self, source: Path) -> None:
+        """Persist local changes through RepoStorage with aws-sync semantics."""
+        from src.services.repo_storage import RepoStorage
+
+        storage = RepoStorage(self._settings)
+        semaphore = asyncio.Semaphore(OBJECT_STORAGE_CONCURRENCY)
+        local_files: dict[str, Path] = {}
+        for path in source.rglob("*"):
+            if path.is_symlink():
+                raise ValueError(f"Symlinks are not supported: {path}")
+            if path.is_file():
+                local_files[path.relative_to(source).as_posix()] = path
+        remote_paths = set(await storage.list())
+
+        async def upload(relative_path: str, path: Path) -> None:
+            content = await asyncio.to_thread(path.read_bytes)
+            content_hash = hashlib.sha256(content).hexdigest()
+            if self._downloaded_hashes.get(relative_path) == content_hash:
+                return
+            async with semaphore:
+                await storage.write(relative_path, content)
+
+        async def delete(relative_path: str) -> None:
+            async with semaphore:
+                await storage.delete(relative_path)
+
+        await self._run_transfers(
+            upload(relative_path, path) for relative_path, path in local_files.items()
+        )
+        removed_paths = remote_paths - local_files.keys()
+        await self._run_transfers(delete(path) for path in removed_paths)
+        logger.info(
+            "sync_up: %s -> object storage (%d local files, %d deleted)",
+            source,
+            len(local_files),
+            len(removed_paths),
+        )
+
+    @staticmethod
+    async def _run_transfers(transfers: Iterable[Awaitable[None]]) -> None:
+        """Run transfers and drain cancelled siblings before returning an error."""
+        tasks = [asyncio.create_task(transfer) for transfer in transfers]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    @staticmethod
+    def _safe_local_path(root: Path, relative_path: str) -> Path:
+        """Resolve an object key below root and reject traversal or absolute keys."""
+        posix_path = PurePosixPath(relative_path)
+        if posix_path.is_absolute() or ".." in posix_path.parts:
+            raise ValueError(f"Unsafe repository object path: {relative_path!r}")
+        destination = root.joinpath(*posix_path.parts)
+        if destination.resolve(strict=False) != root.resolve().joinpath(
+            *posix_path.parts
+        ):
+            raise ValueError(f"Unsafe repository object path: {relative_path!r}")
+        return destination
+
     async def has_git_dir(self) -> bool:
         """Check if .git/HEAD exists in S3 _repo/ (quick existence check)."""
         from src.services.repo_storage import RepoStorage
+
         storage = RepoStorage(self._settings)
         return await storage.exists(".git/HEAD")
 
@@ -172,6 +277,7 @@ class GitRepoManager:
     def _build_env(self) -> dict[str, str]:
         """Build environment variables for the aws CLI process."""
         import os
+
         env = {**os.environ}
         if self._settings.s3_access_key:
             env["AWS_ACCESS_KEY_ID"] = self._settings.s3_access_key
