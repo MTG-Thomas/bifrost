@@ -20,7 +20,7 @@ import asyncio
 import hashlib
 import logging
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Iterable
 from pathlib import Path, PurePosixPath
 
 import redis.asyncio as redis
@@ -172,8 +172,8 @@ class GitRepoManager:
             await asyncio.to_thread(destination.write_bytes, content)
             downloaded_hashes[path] = hashlib.sha256(content).hexdigest()
 
-        await asyncio.gather(
-            *(download(path) for path in paths if not path.endswith("/"))
+        await self._run_transfers(
+            download(path) for path in paths if not path.endswith("/")
         )
         self._downloaded_hashes = downloaded_hashes
         logger.info(
@@ -186,11 +186,12 @@ class GitRepoManager:
 
         storage = RepoStorage(self._settings)
         semaphore = asyncio.Semaphore(OBJECT_STORAGE_CONCURRENCY)
-        local_files = {
-            path.relative_to(source).as_posix(): path
-            for path in source.rglob("*")
-            if path.is_file()
-        }
+        local_files: dict[str, Path] = {}
+        for path in source.rglob("*"):
+            if path.is_symlink():
+                raise ValueError(f"Symlinks are not supported: {path}")
+            if path.is_file():
+                local_files[path.relative_to(source).as_posix()] = path
         remote_paths = set(await storage.list())
 
         async def upload(relative_path: str, path: Path) -> None:
@@ -205,20 +206,30 @@ class GitRepoManager:
             async with semaphore:
                 await storage.delete(relative_path)
 
-        await asyncio.gather(
-            *(
-                upload(relative_path, path)
-                for relative_path, path in local_files.items()
-            )
+        await self._run_transfers(
+            upload(relative_path, path) for relative_path, path in local_files.items()
         )
         removed_paths = remote_paths - local_files.keys()
-        await asyncio.gather(*(delete(path) for path in removed_paths))
+        await self._run_transfers(delete(path) for path in removed_paths)
         logger.info(
             "sync_up: %s -> object storage (%d local files, %d deleted)",
             source,
             len(local_files),
             len(removed_paths),
         )
+
+    @staticmethod
+    async def _run_transfers(transfers: Iterable[Awaitable[None]]) -> None:
+        """Run transfers and drain cancelled siblings before returning an error."""
+        tasks = [asyncio.create_task(transfer) for transfer in transfers]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     @staticmethod
     def _safe_local_path(root: Path, relative_path: str) -> Path:

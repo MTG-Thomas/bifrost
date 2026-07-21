@@ -1,6 +1,7 @@
 """Tests for GitRepoManager object-storage-backed persistent git worktree."""
 
 import importlib
+import asyncio
 import hashlib
 import logging
 from pathlib import Path
@@ -317,6 +318,41 @@ class TestAzureBlobSync:
                 await azure_manager.sync_down(tmp_path)
 
         storage.read.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_up_rejects_symlinks(self, azure_manager, tmp_path):
+        outside = tmp_path.parent / "outside-secret"
+        outside.write_bytes(b"secret")
+        (tmp_path / "linked-secret").symlink_to(outside)
+        storage = MagicMock()
+        storage.list = AsyncMock(return_value=[])
+        storage.write = AsyncMock()
+
+        with patch("src.services.repo_storage.RepoStorage", return_value=storage):
+            with pytest.raises(ValueError, match="Symlinks are not supported"):
+                await azure_manager.sync_up(tmp_path)
+
+        storage.write.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_transfer_cancels_and_drains_siblings(self, azure_manager):
+        sibling_cancelled = asyncio.Event()
+
+        async def fail() -> None:
+            await asyncio.sleep(0)
+            raise RuntimeError("transfer failed")
+
+        async def wait_forever() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+
+        with pytest.raises(RuntimeError, match="transfer failed"):
+            await azure_manager._run_transfers([fail(), wait_forever()])
+
+        assert sibling_cancelled.is_set()
 
 
 class TestCheckout:
