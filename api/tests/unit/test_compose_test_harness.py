@@ -119,7 +119,10 @@ def test_dev_image_installs_pyright_from_hash_pinned_lock():
     """Local Docker type-checks should not depend on host pyright installs."""
     dockerfile = _find_repo_file("api/Dockerfile.dev").read_text()
     assert "requirements-pyright.lock" in dockerfile
-    assert "pip install --no-cache-dir --require-hashes -r requirements-pyright.lock" in dockerfile
+    assert (
+        "pip install --no-cache-dir --only-binary :all: --require-hashes "
+        "-r requirements-pyright.lock"
+    ) in dockerfile
 
 
 def test_test_sh_advertises_dockerized_api_quality_lane():
