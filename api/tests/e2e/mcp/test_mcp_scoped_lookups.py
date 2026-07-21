@@ -101,7 +101,7 @@ async def global_agent(db_session: AsyncSession) -> AsyncGenerator[Agent, None]:
         description="A global agent accessible to all orgs",
         system_prompt="You are a helpful assistant",
         channels=["chat"],
-        access_level=AgentAccessLevel.ROLE_BASED,
+        access_level=AgentAccessLevel.AUTHENTICATED,
         organization_id=None,  # Global
         is_active=True,
         knowledge_sources=[],
@@ -132,7 +132,7 @@ async def org_agent(
         description="An org-specific agent",
         system_prompt="You are an org-specific assistant",
         channels=["chat"],
-        access_level=AgentAccessLevel.ROLE_BASED,
+        access_level=AgentAccessLevel.AUTHENTICATED,
         organization_id=test_org_id,  # Org-scoped
         is_active=True,
 
@@ -162,7 +162,7 @@ async def global_only_agent(db_session: AsyncSession) -> AsyncGenerator[Agent, N
         description="A global agent with unique name",
         system_prompt="You are a unique global assistant",
         channels=["chat"],
-        access_level=AgentAccessLevel.ROLE_BASED,
+        access_level=AgentAccessLevel.AUTHENTICATED,
         organization_id=None,  # Global
         is_active=True,
         knowledge_sources=[],
