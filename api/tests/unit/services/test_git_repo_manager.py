@@ -1,6 +1,7 @@
-"""Tests for GitRepoManager — S3-backed persistent git working tree."""
+"""Tests for GitRepoManager object-storage-backed persistent git worktree."""
 
 import importlib
+import hashlib
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +22,7 @@ def mock_settings():
     settings.s3_access_key = "bifrost"
     settings.s3_secret_key = "bifrost123"
     settings.s3_region = "us-east-1"
+    settings.object_storage_provider = "s3"
     settings.redis_url = ""  # Disable Redis lock in unit tests
     return settings
 
@@ -40,10 +42,13 @@ class TestBuildSyncCmd:
             dest="/tmp/work",
         )
         assert cmd == [
-            "aws", "s3", "sync",
+            "aws",
+            "s3",
+            "sync",
             "s3://bifrost-local/_repo/",
             "/tmp/work",
-            "--endpoint-url", "http://seaweedfs:8333",
+            "--endpoint-url",
+            "http://seaweedfs:8333",
             "--only-show-errors",
         ]
 
@@ -54,11 +59,14 @@ class TestBuildSyncCmd:
             delete=True,
         )
         assert cmd == [
-            "aws", "s3", "sync",
+            "aws",
+            "s3",
+            "sync",
             "/tmp/work",
             "s3://bifrost-local/_repo/",
             "--delete",
-            "--endpoint-url", "http://seaweedfs:8333",
+            "--endpoint-url",
+            "http://seaweedfs:8333",
             "--only-show-errors",
         ]
 
@@ -72,7 +80,9 @@ class TestBuildSyncCmd:
         )
         assert "--endpoint-url" not in cmd
         assert cmd == [
-            "aws", "s3", "sync",
+            "aws",
+            "s3",
+            "sync",
             "s3://prod-bucket/_repo/",
             "/tmp/work",
             "--only-show-errors",
@@ -104,14 +114,18 @@ class TestS3Uri:
 class TestPersistentWorkDir:
     """Tests for persistent worktree helpers."""
 
-    def test_work_dir_creates_configured_persistent_path(self, manager, tmp_path, monkeypatch):
+    def test_work_dir_creates_configured_persistent_path(
+        self, manager, tmp_path, monkeypatch
+    ):
         work_dir = tmp_path / "git-work"
         monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
 
         assert manager.work_dir == work_dir
         assert work_dir.is_dir()
 
-    def test_is_initialized_requires_git_directory(self, manager, tmp_path, monkeypatch):
+    def test_is_initialized_requires_git_directory(
+        self, manager, tmp_path, monkeypatch
+    ):
         work_dir = tmp_path / "git-work"
         monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
 
@@ -126,14 +140,22 @@ class TestHasGitDir:
 
     @pytest.mark.asyncio
     async def test_returns_true_when_git_head_exists(self, manager):
-        with patch("src.services.repo_storage.RepoStorage.exists", new_callable=AsyncMock, return_value=True) as mock_exists:
+        with patch(
+            "src.services.repo_storage.RepoStorage.exists",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_exists:
             result = await manager.has_git_dir()
             assert result is True
             mock_exists.assert_awaited_once_with(".git/HEAD")
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_git_dir(self, manager):
-        with patch("src.services.repo_storage.RepoStorage.exists", new_callable=AsyncMock, return_value=False) as mock_exists:
+        with patch(
+            "src.services.repo_storage.RepoStorage.exists",
+            new_callable=AsyncMock,
+            return_value=False,
+        ) as mock_exists:
             result = await manager.has_git_dir()
             assert result is False
             mock_exists.assert_awaited_once_with(".git/HEAD")
@@ -148,7 +170,9 @@ class TestRunAwsCli:
         mock_process.communicate = AsyncMock(return_value=(b"", b""))
         mock_process.returncode = 0
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process) as mock_exec:
+        with patch(
+            "asyncio.create_subprocess_exec", return_value=mock_process
+        ) as mock_exec:
             await manager._run_aws_cli(["aws", "s3", "sync", "src", "dst"])
             mock_exec.assert_called_once()
             # Verify env includes AWS credentials
@@ -199,12 +223,14 @@ class TestSyncDown:
     @pytest.mark.asyncio
     async def test_creates_target_dir(self, manager):
         import tempfile
+
         target = Path(tempfile.mkdtemp()) / "subdir"
         with patch.object(manager, "_run_aws_cli", new_callable=AsyncMock):
             await manager.sync_down(target)
             assert target.exists()
         # Cleanup
         import shutil
+
         shutil.rmtree(target.parent)
 
 
@@ -223,6 +249,76 @@ class TestSyncUp:
             assert "--delete" in cmd
 
 
+class TestAzureBlobSync:
+    """Azure Blob uses RepoStorage rather than the AWS CLI."""
+
+    @pytest.fixture
+    def azure_manager(self, mock_settings):
+        mock_settings.object_storage_provider = "azure_blob"
+        return GitRepoManager(settings=mock_settings)
+
+    @pytest.mark.asyncio
+    async def test_sync_down_materializes_repo_objects(self, azure_manager, tmp_path):
+        storage = MagicMock()
+        storage.list = AsyncMock(return_value=[".git/HEAD", "workflows/test.py"])
+        storage.read = AsyncMock(
+            side_effect=lambda path: {
+                ".git/HEAD": b"ref: refs/heads/main\n",
+                "workflows/test.py": b"print('ok')\n",
+            }[path]
+        )
+
+        with (
+            patch("src.services.repo_storage.RepoStorage", return_value=storage),
+            patch.object(azure_manager, "_run_aws_cli", new_callable=AsyncMock) as aws,
+        ):
+            await azure_manager.sync_down(tmp_path)
+
+        assert (tmp_path / ".git" / "HEAD").read_bytes() == b"ref: refs/heads/main\n"
+        assert (tmp_path / "workflows" / "test.py").read_bytes() == b"print('ok')\n"
+        aws.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_up_writes_changes_and_deletes_removed_objects(
+        self, azure_manager, tmp_path
+    ):
+        unchanged = tmp_path / ".git" / "HEAD"
+        unchanged.parent.mkdir(parents=True)
+        unchanged.write_bytes(b"main")
+        changed = tmp_path / "workflows" / "test.py"
+        changed.parent.mkdir(parents=True)
+        changed.write_bytes(b"changed")
+        azure_manager._downloaded_hashes = {
+            ".git/HEAD": hashlib.sha256(b"main").hexdigest(),
+            "workflows/test.py": hashlib.sha256(b"old").hexdigest(),
+            "deleted.py": hashlib.sha256(b"deleted").hexdigest(),
+        }
+        storage = MagicMock()
+        storage.list = AsyncMock(
+            return_value=[".git/HEAD", "workflows/test.py", "deleted.py"]
+        )
+        storage.write = AsyncMock()
+        storage.delete = AsyncMock()
+
+        with patch("src.services.repo_storage.RepoStorage", return_value=storage):
+            await azure_manager.sync_up(tmp_path)
+
+        storage.write.assert_awaited_once_with("workflows/test.py", b"changed")
+        storage.delete.assert_awaited_once_with("deleted.py")
+
+    @pytest.mark.asyncio
+    async def test_sync_down_rejects_path_traversal(self, azure_manager, tmp_path):
+        storage = MagicMock()
+        storage.list = AsyncMock(return_value=["../escape"])
+        storage.read = AsyncMock(return_value=b"bad")
+
+        with patch("src.services.repo_storage.RepoStorage", return_value=storage):
+            with pytest.raises(ValueError, match="Unsafe repository object path"):
+                await azure_manager.sync_down(tmp_path)
+
+        storage.read.assert_not_awaited()
+
+
 class TestCheckout:
     """Tests for checkout context manager lifecycle (persistent working dir)."""
 
@@ -236,9 +332,11 @@ class TestCheckout:
         async def mock_sync_up(source):
             call_order.append(("sync_up", source))
 
-        with patch.object(manager, "sync_down", side_effect=mock_sync_down), \
-             patch.object(manager, "sync_up", side_effect=mock_sync_up), \
-             patch.object(manager, "_acquire_lock") as mock_lock:
+        with (
+            patch.object(manager, "sync_down", side_effect=mock_sync_down),
+            patch.object(manager, "sync_up", side_effect=mock_sync_up),
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
             # Mock the lock as an async context manager that does nothing
             mock_lock.return_value.__aenter__ = AsyncMock()
             mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -263,9 +361,11 @@ class TestCheckout:
 
     @pytest.mark.asyncio
     async def test_persistent_dir_survives_exception(self, manager):
-        with patch.object(manager, "sync_down", new_callable=AsyncMock), \
-             patch.object(manager, "sync_up", new_callable=AsyncMock), \
-             patch.object(manager, "_acquire_lock") as mock_lock:
+        with (
+            patch.object(manager, "sync_down", new_callable=AsyncMock),
+            patch.object(manager, "sync_up", new_callable=AsyncMock),
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
             mock_lock.return_value.__aenter__ = AsyncMock()
             mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -278,12 +378,15 @@ class TestCheckout:
     @pytest.mark.asyncio
     async def test_sync_up_not_called_on_sync_down_failure(self, manager):
         """If sync_down fails, sync_up should not be called."""
-        with patch.object(
-            manager, "sync_down",
-            side_effect=RuntimeError("download failed"),
-        ), \
-             patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up, \
-             patch.object(manager, "_acquire_lock") as mock_lock:
+        with (
+            patch.object(
+                manager,
+                "sync_down",
+                side_effect=RuntimeError("download failed"),
+            ),
+            patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up,
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
             mock_lock.return_value.__aenter__ = AsyncMock()
             mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -293,7 +396,9 @@ class TestCheckout:
             mock_up.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_readonly_checkout_skips_sync_up(self, manager, tmp_path, monkeypatch):
+    async def test_readonly_checkout_skips_sync_up(
+        self, manager, tmp_path, monkeypatch
+    ):
         work_dir = tmp_path / "git-work"
         monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
 
@@ -312,7 +417,9 @@ class TestCheckout:
         mock_up.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_lock_yields_work_dir_without_s3_sync(self, manager, tmp_path, monkeypatch):
+    async def test_lock_yields_work_dir_without_s3_sync(
+        self, manager, tmp_path, monkeypatch
+    ):
         work_dir = tmp_path / "git-work"
         monkeypatch.setattr(git_repo_manager, "PERSISTENT_WORK_DIR", work_dir)
 
