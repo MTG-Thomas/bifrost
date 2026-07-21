@@ -14,9 +14,11 @@ from src.repositories.solution_deployments import SolutionDeploymentRepository
 class DeploymentActivationHooks(Protocol):
     """External artifact/projection work required before pointer movement."""
 
-    async def verify_finalized(self, deployment: SolutionDeployment) -> None: ...
+    async def verify_finalized(self, deployment: SolutionDeployment) -> None:
+        """Verify that deployment artifacts are finalized and ready to activate."""
 
-    async def rebuild_projections(self, deployment: SolutionDeployment) -> None: ...
+    async def rebuild_projections(self, deployment: SolutionDeployment) -> None:
+        """Rebuild external projections for the deployment before pointer movement."""
 
 
 @dataclass(frozen=True)

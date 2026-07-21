@@ -136,6 +136,9 @@
 		"vitest": "^4.1.4"
 	},
 	"overrides": {
-		"dompurify": "^3.4.10"
+		"dompurify": "^3.4.10",
+		"@redocly/openapi-core": {
+			"js-yaml": "4.3.0"
+		}
 	}
 }
