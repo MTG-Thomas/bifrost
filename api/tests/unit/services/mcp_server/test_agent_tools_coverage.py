@@ -586,6 +586,32 @@ class TestUpdateAgentTool:
         db.flush.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_update_agent_allows_private_owner(self):
+        context = _context(admin=False)
+        agent = _agent_detail(
+            access_level=AgentAccessLevel.PRIVATE,
+            owner_user_id=context.user_id,
+            organization_id=context.org_id,
+        )
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=_Result(agent))
+
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=agent)),
+            patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        ):
+            result = await agents.update_agent(
+                context,
+                agent_id=str(agent.id),
+                name="Owned private agent",
+            )
+
+        assert result.structured_content["success"] is True
+        assert result.structured_content["updates"] == ["name"]
+        db.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_update_agent_rejects_solution_managed_and_missing_updates(self):
         org_id = uuid4()
         agent_id = uuid4()

@@ -610,15 +610,6 @@ async def update_agent(
             if not _can_manage_agent(context, agent):
                 return error_result("You can only update your own private agents.")
 
-            # Check access for non-admins
-            if not context.is_platform_admin:
-                if agent.organization_id:
-                    if context.org_id and str(agent.organization_id) != str(context.org_id):
-                        return error_result("You don't have permission to update this agent.")
-                # Global agents can only be updated by admins
-                if agent.organization_id is None:
-                    return error_result("Only platform admins can update global agents.")
-
             updates_made = []
 
             # Apply updates
