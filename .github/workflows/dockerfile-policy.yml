@@ -1,0 +1,64 @@
+name: Dockerfile Policy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - api/Dockerfile
+      - api/Dockerfile.dev
+      - client/Dockerfile
+      - client/Dockerfile.dev
+      - client/Dockerfile.playwright
+      - droast.toml
+      - .github/workflows/dockerfile-policy.yml
+  push:
+    branches: [main]
+    paths:
+      - api/Dockerfile
+      - api/Dockerfile.dev
+      - client/Dockerfile
+      - client/Dockerfile.dev
+      - client/Dockerfile.playwright
+      - droast.toml
+      - .github/workflows/dockerfile-policy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Roast platform Dockerfiles
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Dockerfile Roast
+        id: install-droast
+        env:
+          DROAST_VERSION: "1.4.7"
+          DROAST_LINUX_X86_64_SHA256: 8051a050c3a4bd94dcea1e5d8cda3a57d37baa53ff394396793ebda9d094f68e
+        run: |
+          set -euo pipefail
+          install_path="$RUNNER_TEMP/droast"
+          curl --fail --location --silent --show-error \
+            "https://github.com/immanuwell/dockerfile-roast/releases/download/${DROAST_VERSION}/droast-linux-x86_64" \
+            --output "$install_path"
+          echo "${DROAST_LINUX_X86_64_SHA256}  ${install_path}" | sha256sum -c -
+          chmod +x "$install_path"
+          echo "bin=$install_path" >> "$GITHUB_OUTPUT"
+
+      - name: Lint platform Dockerfiles
+        run: >-
+          ${{ steps.install-droast.outputs.bin }}
+          --config droast.toml
+          --format github
+          --no-fail
+          api/Dockerfile
+          api/Dockerfile.dev
+          client/Dockerfile
+          client/Dockerfile.dev
+          client/Dockerfile.playwright
