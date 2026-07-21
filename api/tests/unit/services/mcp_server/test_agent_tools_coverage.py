@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from src.models.enums import AgentAccessLevel
 from src.services.mcp_server.tools import agents
 
 
@@ -52,6 +53,7 @@ def _agent_detail(**overrides):
         system_prompt="Route work carefully",
         channels=["chat", "teams"],
         access_level=SimpleNamespace(value="role_based"),
+        owner_user_id=None,
         organization_id=uuid4(),
         is_active=True,
         created_by="creator@example.com",
@@ -123,6 +125,38 @@ class TestAgentToolHelpers:
         assert agents._reference_in_agent_scope(None, org_id)
         assert agents._reference_in_agent_scope(org_id, org_id)
         assert not agents._reference_in_agent_scope(uuid4(), org_id)
+
+    def test_regular_user_can_manage_only_owned_private_agents(self):
+        user_id = uuid4()
+        context = _context(user_id=user_id)
+
+        assert agents._can_manage_agent(
+            context,
+            _agent_detail(access_level=AgentAccessLevel.PRIVATE, owner_user_id=user_id),
+        )
+        assert not agents._can_manage_agent(
+            context,
+            _agent_detail(access_level=AgentAccessLevel.PRIVATE, owner_user_id=uuid4()),
+        )
+        assert not agents._can_manage_agent(
+            context,
+            _agent_detail(access_level=AgentAccessLevel.AUTHENTICATED),
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_loader_uses_access_checked_repository(self):
+        agent_id = uuid4()
+        expected = _agent_detail(id=agent_id)
+        repo = MagicMock()
+        repo.get_agent_with_access_check = AsyncMock(return_value=expected)
+
+        with patch.object(agents, "_agent_repository", return_value=repo):
+            actual = await agents._load_accessible_agent(
+                _context(), AsyncMock(), agent_id=agent_id
+            )
+
+        assert actual is expected
+        repo.get_agent_with_access_check.assert_awaited_once_with(agent_id)
 
     @pytest.mark.asyncio
     async def test_schema_tool_returns_agent_documentation(self):
@@ -206,9 +240,11 @@ class TestGetAgentTool:
     async def test_get_agent_by_id_shapes_full_agent_details(self):
         agent = _agent_detail()
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(agent))
 
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=agent)),
+        ):
             result = await agents.get_agent(_context(), agent_id=str(agent.id))
 
         content = result.structured_content
@@ -222,7 +258,6 @@ class TestGetAgentTool:
         assert content["knowledge_sources"] == ["kb"]
         assert content["system_tools"] == ["list_agents"]
         assert content["llm_max_tokens"] == 2048
-        db.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_agent_by_name_returns_prioritized_lookup_result(self):
@@ -238,9 +273,11 @@ class TestGetAgentTool:
             system_tools=None,
         )
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(agent))
 
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=agent)),
+        ):
             result = await agents.get_agent(_context(admin=False), agent_name="Dispatcher")
 
         assert result.structured_content["access_level"] == "role_based"
@@ -259,13 +296,21 @@ class TestGetAgentTool:
             result = await agents.get_agent(_context(), agent_id="bad")
         assert "not a valid UUID" in result.structured_content["error"]
 
-        db.execute = AsyncMock(return_value=_Result(None))
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=None)),
+        ):
             result = await agents.get_agent(_context(), agent_id=str(uuid4()))
         assert "not found" in result.structured_content["error"]
 
-        db.execute = AsyncMock(side_effect=RuntimeError("query failed"))
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(
+                agents,
+                "_load_accessible_agent",
+                AsyncMock(side_effect=RuntimeError("query failed")),
+            ),
+        ):
             result = await agents.get_agent(_context(), agent_id=str(uuid4()))
         assert "Error getting agent" in result.structured_content["error"]
         assert "query failed" in result.structured_content["error"]
@@ -545,10 +590,11 @@ class TestUpdateAgentTool:
         org_id = uuid4()
         agent_id = uuid4()
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=org_id)))
+        existing = _agent_detail(id=agent_id, organization_id=org_id)
 
         with (
             patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=existing)),
             patch("src.services.solutions.guard.is_solution_managed", return_value=True),
             patch("src.services.solutions.guard.SOLUTION_MANAGED_MESSAGE", "locked"),
         ):
@@ -560,13 +606,13 @@ class TestUpdateAgentTool:
         assert result.structured_content["error"] == "locked"
         db.flush.assert_not_called()
 
-        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=org_id)))
         with (
             patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=existing)),
             patch("src.services.solutions.guard.is_solution_managed", return_value=False),
         ):
             result = await agents.update_agent(
-                _context(admin=False, org_id=org_id),
+                _context(admin=True, org_id=org_id),
                 agent_id=str(agent_id),
             )
         assert "No updates provided" in result.structured_content["error"]
@@ -576,9 +622,11 @@ class TestUpdateAgentTool:
         org_id = uuid4()
         agent_id = uuid4()
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(None))
 
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=None)),
+        ):
             result = await agents.update_agent(
                 _context(admin=True, org_id=None),
                 agent_id=str(agent_id),
@@ -586,9 +634,10 @@ class TestUpdateAgentTool:
             )
         assert "not found" in result.structured_content["error"]
 
-        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=uuid4())))
+        inaccessible = _agent_detail(id=agent_id, organization_id=uuid4())
         with (
             patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=inaccessible)),
             patch("src.services.solutions.guard.is_solution_managed", return_value=False),
         ):
             result = await agents.update_agent(
@@ -596,10 +645,16 @@ class TestUpdateAgentTool:
                 agent_id=str(agent_id),
                 name="Wrong Org",
             )
-        assert "permission" in result.structured_content["error"]
+        assert "own private agents" in result.structured_content["error"]
 
-        db.execute = AsyncMock(side_effect=RuntimeError("update query failed"))
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(
+                agents,
+                "_load_accessible_agent",
+                AsyncMock(side_effect=RuntimeError("update query failed")),
+            ),
+        ):
             result = await agents.update_agent(
                 _context(admin=True, org_id=None),
                 agent_id=str(agent_id),
@@ -613,16 +668,21 @@ class TestDeleteAgentTool:
     @pytest.mark.asyncio
     async def test_delete_agent_soft_deletes_and_shapes_response(self):
         org_id = uuid4()
-        agent = _agent_detail(organization_id=org_id)
+        context = _context(admin=False, org_id=org_id)
+        agent = _agent_detail(
+            organization_id=org_id,
+            access_level=AgentAccessLevel.PRIVATE,
+            owner_user_id=context.user_id,
+        )
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(agent))
 
         with (
             patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=agent)),
             patch("src.services.solutions.guard.is_solution_managed", return_value=False),
         ):
             result = await agents.delete_agent(
-                _context(admin=False, org_id=org_id),
+                context,
                 agent_id=str(agent.id),
             )
 
@@ -636,32 +696,41 @@ class TestDeleteAgentTool:
     async def test_delete_agent_reports_not_found_locked_access_and_db_errors(self):
         agent_id = uuid4()
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=_Result(None))
 
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=None)),
+        ):
             result = await agents.delete_agent(_context(admin=True, org_id=None), str(agent_id))
         assert "not found" in result.structured_content["error"]
 
         locked_agent = _agent_detail(id=agent_id)
-        db.execute = AsyncMock(return_value=_Result(locked_agent))
         with (
             patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=locked_agent)),
             patch("src.services.solutions.guard.is_solution_managed", return_value=True),
             patch("src.services.solutions.guard.SOLUTION_MANAGED_MESSAGE", "locked"),
         ):
             result = await agents.delete_agent(_context(admin=True, org_id=None), str(agent_id))
         assert result.structured_content["error"] == "locked"
 
-        db.execute = AsyncMock(return_value=_Result(_agent_detail(id=agent_id, organization_id=None)))
+        global_agent = _agent_detail(id=agent_id, organization_id=None)
         with (
             patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(agents, "_load_accessible_agent", AsyncMock(return_value=global_agent)),
             patch("src.services.solutions.guard.is_solution_managed", return_value=False),
         ):
             result = await agents.delete_agent(_context(admin=False), str(agent_id))
-        assert "Only platform admins" in result.structured_content["error"]
+        assert "own private agents" in result.structured_content["error"]
 
-        db.execute = AsyncMock(side_effect=RuntimeError("delete query failed"))
-        with patch.object(agents, "get_tool_db", _fake_tool_db(db)):
+        with (
+            patch.object(agents, "get_tool_db", _fake_tool_db(db)),
+            patch.object(
+                agents,
+                "_load_accessible_agent",
+                AsyncMock(side_effect=RuntimeError("delete query failed")),
+            ),
+        ):
             result = await agents.delete_agent(_context(admin=True, org_id=None), str(agent_id))
         assert "Error deleting agent" in result.structured_content["error"]
         assert "delete query failed" in result.structured_content["error"]
