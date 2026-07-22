@@ -859,7 +859,7 @@ def test_v2_scaffold_files_are_wired_for_instance_sdk_and_runtime_config():
     assert package["name"] == "desk"
     assert package["dependencies"]["bifrost"] == "https://bifrost.example/api/sdk/download"
     assert package["dependencies"]["lucide-react"]
-    assert "window.__BIFROST_APP__" in files["src/main.tsx"]
+    assert "window.__BIFROST_APP_MODULES__" in files["src/main.tsx"]
     assert "BIFROST_ACCESS_TOKEN" in files["vite.config.ts"]
     assert "functions/hello.py::main" in files["src/App.tsx"]
 

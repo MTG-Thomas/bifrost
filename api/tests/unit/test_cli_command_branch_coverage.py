@@ -120,7 +120,7 @@ def test_handle_logout_yes_removes_matching_url_and_tokens(monkeypatch, tmp_path
     assert "OTHER=keep" in env_text
     assert "BIFROST_API_URL" not in env_text
     assert "BIFROST_ACCESS_TOKEN" not in env_text
-    assert "Removed BIFROST_API_URL" in capsys.readouterr().out
+    assert "Removed Bifrost connection" in capsys.readouterr().out
 
 
 def test_handle_auth_help_list_first_stored_and_unknown(monkeypatch, capsys):

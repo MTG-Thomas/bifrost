@@ -239,11 +239,27 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
             await session.commit()
 
-        # Pub/sub — no DB connection held
+        # Wake sync callers as soon as their result and buffered SDK writes are
+        # durably committed.  Everything below is terminal-event fan-out or
+        # cleanup and must not add latency to the request/response path.
+        if is_sync:
+            await self._redis_client.push_result(
+                execution_id=execution_id,
+                status=status.value,
+                result=workflow_result,
+                error=result.get("error"),
+                error_type=result.get("error_type"),
+                duration_ms=duration_ms,
+            )
+
+        # Pub/sub — no DB connection held.  The result is already persisted and
+        # execution clients fetch it from the result endpoint, so publishing it
+        # again needlessly serializes and transports large payloads through
+        # Redis and WebSocket connections.
         await publish_execution_update(
             execution_id,
             status.value,
-            {"result": workflow_result, "durationMs": duration_ms},
+            {"duration_ms": duration_ms},
         )
 
         completed_at = datetime.now(timezone.utc)
@@ -266,16 +282,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
             logger.warning(f"Failed to cleanup cache for {execution_id[:8]}...: {e}")
 
         await self._redis_client.delete_pending_execution(execution_id)
-
-        if is_sync:
-            await self._redis_client.push_result(
-                execution_id=execution_id,
-                status=status.value,
-                result=workflow_result,
-                error=result.get("error"),
-                error_type=result.get("error_type"),
-                duration_ms=duration_ms,
-            )
 
         logger.info(
             f"Execution result processed: {execution_id[:8]}... status={status.value}",
@@ -375,6 +381,17 @@ class WorkflowExecutionConsumer(BaseConsumer):
 
             await session.commit()
 
+        # Match the success path: once the failure is durable, wake sync
+        # callers before terminal-event fan-out and cleanup add latency.
+        if is_sync:
+            await self._redis_client.push_result(
+                execution_id=execution_id,
+                status=status.value,
+                error=error,
+                error_type=error_type,
+                duration_ms=duration_ms,
+            )
+
         # Pub/sub — no DB connection held
         await publish_execution_update(
             execution_id,
@@ -402,15 +419,6 @@ class WorkflowExecutionConsumer(BaseConsumer):
             logger.warning(f"Failed to cleanup cache for {execution_id[:8]}...: {e}")
 
         await self._redis_client.delete_pending_execution(execution_id)
-
-        if is_sync:
-            await self._redis_client.push_result(
-                execution_id=execution_id,
-                status=status.value,
-                error=error,
-                error_type=error_type,
-                duration_ms=duration_ms,
-            )
 
         logger.warning(
             f"Execution failed: {execution_id[:8]}... status={status.value} error={error_type}",

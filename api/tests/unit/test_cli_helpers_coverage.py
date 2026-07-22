@@ -102,7 +102,6 @@ def test_collect_push_files_applies_prefix_ignore_and_line_normalization(tmp_pat
 
     assert skipped == 0
     assert files == {
-        "apps/demo/.gitignore": base64.b64encode(b"*.tmp\n").decode("ascii"),
         "apps/demo/main.py": base64.b64encode(b"print('ok')\n").decode("ascii")
     }
 
@@ -229,14 +228,13 @@ def test_env_file_helpers_update_append_and_remove(tmp_path, monkeypatch, capsys
         "BIFROST_REFRESH_TOKEN=refresh\n"
     )
 
-    assert cli._remove_env_url_line("https://other.example") is False
-    assert cli._remove_env_url_line("https://new.example/") is True
-    assert "BIFROST_API_URL" not in env_file.read_text(encoding="utf-8")
-
-    assert cli._remove_env_keys({"BIFROST_ACCESS_TOKEN", "BIFROST_REFRESH_TOKEN"})
+    assert cli._remove_env_connection("https://other.example") is False
+    assert cli._remove_env_connection("https://new.example/") is True
     remaining = env_file.read_text(encoding="utf-8")
     assert "KEEP=value" in remaining
+    assert "BIFROST_API_URL" not in remaining
     assert "BIFROST_ACCESS_TOKEN" not in remaining
+    assert "BIFROST_REFRESH_TOKEN" not in remaining
 
     (tmp_path / ".gitignore").write_text("node_modules\n", encoding="utf-8")
     cli._write_env_url("https://api.example")

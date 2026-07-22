@@ -1,5 +1,7 @@
 """Tests for knowledge content chunking."""
-from src.services.knowledge.chunking import split_into_chunks
+import pytest
+
+from src.services.knowledge.chunking import reassemble_chunks, split_into_chunks
 
 
 def test_short_text_returns_single_chunk():
@@ -62,6 +64,39 @@ def test_overlap_repeats_trailing_context():
         if prev_sentences:
             last_sentence = prev_sentences[-1].strip()
             assert last_sentence in chunks[i + 1]
+
+
+def test_reassemble_is_exact_inverse_of_split():
+    # Highly repetitive text is the adversarial case for any
+    # suffix/prefix-matching reassembly — the exact-overlap invariant
+    # must survive it.
+    cases = [
+        "",
+        "short doc",
+        "sentence. " * 4000,                      # repetitive, ~40k chars
+        ("Para one text. " * 60 + "\n\n") * 20,   # paragraph boundaries
+        "a" * 5000,                               # hard cuts, no boundaries
+        "word " * 3000,                           # word boundaries only
+    ]
+    for text in cases:
+        chunks = split_into_chunks(text)
+        assert reassemble_chunks(chunks) == text
+
+    # Non-default params round-trip too, as long as the guard passes.
+    text = "This is sentence number one. " * 100
+    chunks = split_into_chunks(text, target_chars=1000, overlap_chars=100)
+    assert reassemble_chunks(chunks, overlap_chars=100) == text
+
+
+def test_reassemble_empty_list_returns_empty_string():
+    assert reassemble_chunks([]) == ""
+
+
+def test_split_rejects_overlap_too_large_for_reassembly():
+    # overlap >= target // 2 would let the start+1 clamp fire, breaking
+    # the exact-overlap invariant reassemble_chunks depends on.
+    with pytest.raises(ValueError, match="overlap_chars"):
+        split_into_chunks("x" * 5000, target_chars=200, overlap_chars=100)
 
 
 def test_default_target_size_is_reasonable_for_embeddings():

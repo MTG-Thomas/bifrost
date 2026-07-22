@@ -840,3 +840,87 @@ class TestKnowledgeStoreSemanticSearch:
         if pangram_result:
             # Pangram should be last or have lowest score
             assert results[-1]["key"] == "pangram" or pangram_result["score"] == min(r["score"] for r in results)
+
+
+class TestKnowledgeDocumentUpdate:
+    """PUT /api/knowledge-sources/{ns}/documents/{id} — the REST update
+    surface used by the knowledge UI. Pins the chunk-aware replace semantics:
+    full-content round-trip through GET, stable document id, and re-embedding
+    via the same chunked path as create."""
+
+    def test_update_multichunk_document_roundtrip(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+        embedding_config_setup,
+        knowledge_cleanup,
+    ):
+        """GET → edit → PUT on a long (multi-chunk) document must preserve
+        the full content and the document id."""
+        original = "Original knowledge fact sentence number one. " * 250  # multi-chunk
+        edited = "Edited knowledge fact sentence number two. " * 250
+
+        create = e2e_client.post(
+            "/api/knowledge-sources/e2e-test/documents",
+            headers=platform_admin.headers,
+            json={"content": original, "key": "update-roundtrip"},
+        )
+        assert create.status_code == 201, f"Create failed: {create.text}"
+        created = create.json()
+        doc_id = created["id"]
+        assert created["content"] == original
+
+        got = e2e_client.get(
+            f"/api/knowledge-sources/e2e-test/documents/{doc_id}",
+            headers=platform_admin.headers,
+        )
+        assert got.status_code == 200, f"Get failed: {got.text}"
+        assert got.json()["content"] == original
+
+        put = e2e_client.put(
+            f"/api/knowledge-sources/e2e-test/documents/{doc_id}",
+            headers=platform_admin.headers,
+            json={"content": edited},
+        )
+        assert put.status_code == 200, f"Update failed: {put.text}"
+        body = put.json()
+        assert body["id"] == doc_id, "document id must be stable across edits"
+        assert body["content"] == edited
+
+        got_after = e2e_client.get(
+            f"/api/knowledge-sources/e2e-test/documents/{doc_id}",
+            headers=platform_admin.headers,
+        )
+        assert got_after.status_code == 200
+        assert got_after.json()["content"] == edited
+
+    def test_update_short_document(
+        self,
+        e2e_client,
+        platform_admin,
+        org1,
+        embedding_config_setup,
+        knowledge_cleanup,
+    ):
+        """Single-chunk update happy path: content and metadata update,
+        created_at is preserved, id is stable."""
+        create = e2e_client.post(
+            "/api/knowledge-sources/e2e-test/documents",
+            headers=platform_admin.headers,
+            json={"content": "short v1", "key": "update-short", "metadata": {"v": 1}},
+        )
+        assert create.status_code == 201, f"Create failed: {create.text}"
+        created = create.json()
+
+        put = e2e_client.put(
+            f"/api/knowledge-sources/e2e-test/documents/{created['id']}",
+            headers=platform_admin.headers,
+            json={"content": "short v2", "metadata": {"v": 2}},
+        )
+        assert put.status_code == 200, f"Update failed: {put.text}"
+        body = put.json()
+        assert body["id"] == created["id"]
+        assert body["content"] == "short v2"
+        assert body["metadata"] == {"v": 2}
+        assert body["created_at"] == created["created_at"]

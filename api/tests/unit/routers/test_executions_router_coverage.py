@@ -182,6 +182,7 @@ async def test_list_executions_resolves_org_scope_and_parses_filters():
         "exclude_local": False,
         "limit": 25,
         "offset": 50,
+        "cursor": None,
     }
 
 
