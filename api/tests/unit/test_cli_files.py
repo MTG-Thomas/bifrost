@@ -104,9 +104,17 @@ class TestWrite:
         assert result.exit_code == 0, result.output
         assert captured["calls"][0]["body"]["content"] == "from-stdin\n"
 
-    def test_writes_from_file_flag(self, tmp_path) -> None:
+    def test_writes_from_file_flag(self, tmp_path, monkeypatch) -> None:
         local = tmp_path / "local.txt"
-        local.write_text("local-content")
+        local.write_text("local-content ⚠️", encoding="utf-8")
+        original_read_text = pathlib.Path.read_text
+        observed: dict[str, str | None] = {}
+
+        def read_text(path, *, encoding=None, errors=None):
+            observed["encoding"] = encoding
+            return original_read_text(path, encoding=encoding, errors=errors)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", read_text)
         captured: dict = {}
         result = _invoke(
             ["write", "out.txt", "--from-file", str(local)],
@@ -114,7 +122,8 @@ class TestWrite:
             {"/api/files/write": {}},
         )
         assert result.exit_code == 0, result.output
-        assert captured["calls"][0]["body"]["content"] == "local-content"
+        assert observed["encoding"] == "utf-8"
+        assert captured["calls"][0]["body"]["content"] == "local-content ⚠️"
 
     def test_rejects_multiple_content_sources(self, tmp_path) -> None:
         local = tmp_path / "y.txt"
