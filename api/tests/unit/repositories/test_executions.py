@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -237,6 +238,45 @@ async def test_update_execution_sets_result_type_metrics_economics_and_logs() ->
     assert first_log.log_metadata == {"step": 1}
     assert second_log.sequence == 1
     session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_execution_redacts_generated_script_before_persistence() -> None:
+    marker = "SYNTHETIC_EXECUTION_SCRIPT_MARKER"
+    session = AsyncMock()
+    session.add = MagicMock()
+    repo = ExecutionRepository(session)
+
+    await repo.update_execution(
+        execution_id=str(uuid4()),
+        status=ExecutionStatus.SUCCESS,
+        variables={
+            "script": marker,
+            "nested": {
+                "credential": "SYNTHETIC_CREDENTIAL_MARKER",
+                "status": "safe",
+            },
+        },
+    )
+
+    statement = session.execute.await_args.args[0]
+    persisted = statement.compile().params["variables"]
+    assert persisted == {
+        "script": "[REDACTED]",
+        "nested": {"credential": "[REDACTED]", "status": "safe"},
+    }
+    serialized = json.dumps(persisted)
+    assert marker not in serialized
+    assert "SYNTHETIC_CREDENTIAL_MARKER" not in serialized
+
+    raw_admin = repo._to_pydantic(
+        _execution(variables=persisted),
+        _user(is_superuser=True),
+    )
+    admin_serialized = json.dumps(raw_admin.variables)
+    assert raw_admin.variables == persisted
+    assert marker not in admin_serialized
+    assert "SYNTHETIC_CREDENTIAL_MARKER" not in admin_serialized
 
 
 @pytest.mark.asyncio
