@@ -17,6 +17,7 @@ def _context(
     org_id: UUID | None,
     is_superuser: bool = True,
     is_engine_token: bool = False,
+    email: str = "caller@example.com",
     delegated_user_id: UUID | None = None,
     delegated_is_superuser: bool = False,
 ):
@@ -26,6 +27,7 @@ def _context(
             is_superuser=is_superuser,
             is_engine_token=is_engine_token,
             delegated_user_id=delegated_user_id,
+            email=email,
             delegated_email="caller@example.com",
             delegated_name="Original Caller",
             delegated_is_superuser=delegated_is_superuser,
@@ -82,6 +84,17 @@ def test_shared_sentinel_subject_without_engine_marker_keeps_own_identity() -> N
     )
 
     assert _effective_execution_user(ctx) is ctx.user
+
+
+def test_legacy_engine_token_without_marker_still_fails_closed() -> None:
+    ctx = _context(
+        user_id=ENGINE_USER_ID,
+        org_id=uuid4(),
+        email="engine@bifrost.internal",
+    )
+
+    with pytest.raises(HTTPException, match="missing original caller"):
+        _effective_execution_user(ctx)
 
 
 def test_engine_delegation_without_caller_identity_fails_closed() -> None:
