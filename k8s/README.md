@@ -27,12 +27,15 @@ k8s/
 │   └── deployment.yaml # Background job workers
 ├── scheduler/
 │   └── deployment.yaml # Cron scheduler (singleton)
-├── coding-agent/
-│   └── deployment.yaml # Claude Agent SDK container
 └── rabbitmq/
     ├── deployment.yaml # RabbitMQ message broker
     └── service.yaml    # ClusterIP service (port 5672, 15672)
 ```
+
+There is no separate `coding-agent` workload. The retired dedicated agent
+service was replaced by unified agent execution: interactive agent requests run
+in the API deployment, while queued autonomous agent runs are handled by the
+worker deployment.
 
 ## Quick Start
 
@@ -99,7 +102,6 @@ kubectl apply -f k8s/api/
 kubectl apply -f k8s/client/
 kubectl apply -f k8s/worker/
 kubectl apply -f k8s/scheduler/
-kubectl apply -f k8s/coding-agent/
 ```
 
 ### 5. Verify Deployment
