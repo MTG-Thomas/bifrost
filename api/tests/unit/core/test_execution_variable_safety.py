@@ -54,6 +54,18 @@ def test_single_line_command_is_redacted_under_a_generic_container() -> None:
     }
 
 
+def test_shell_command_with_synthetic_authorization_is_redacted() -> None:
+    generated = (
+        "curl https://example.invalid -H "
+        f"'Authorization: Bearer {SYNTHETIC_CREDENTIAL_MARKER}'"
+    )
+
+    sanitized = sanitize_execution_variables({"payload": generated})
+
+    assert sanitized == {"payload": REDACTED}
+    assert SYNTHETIC_CREDENTIAL_MARKER not in json.dumps(sanitized)
+
+
 def test_secret_string_is_redacted_without_plaintext_recovery() -> None:
     sanitized = sanitize_execution_variables(
         {"value": SecretString(SYNTHETIC_CREDENTIAL_MARKER)}
@@ -96,4 +108,22 @@ def test_nested_container_and_opaque_values_fail_safe() -> None:
         "set_value": {7},
         "binary_value": REDACTED,
         "opaque_value": "<OpaqueValue>",
+    }
+
+
+def test_container_cycles_are_redacted_without_rejecting_shared_values() -> None:
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+    shared = {"description": "safe"}
+
+    sanitized = sanitize_execution_variables(
+        {"cyclic": cyclic, "shared_values": [shared, shared]}
+    )
+
+    assert sanitized == {
+        "cyclic": {"self": REDACTED},
+        "shared_values": [
+            {"description": "safe"},
+            {"description": "safe"},
+        ],
     }

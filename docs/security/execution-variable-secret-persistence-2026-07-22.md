@@ -35,21 +35,14 @@ admin-readback shape cannot recover the markers.
 
 ## Affected active records
 
-Metadata-only queries found 11 successful executions. No affected parameters,
-results, variables, or log payloads were opened during the inventory.
+Metadata-only queries found 11 successful executions spanning 2026-07-11
+through 2026-07-22. No affected parameters, results, variables, or log payloads
+were opened during the inventory.
 
-| Customer / device / SQL instance | Execution IDs |
-| --- | --- |
-| Dr. Dayton Dawson DDS / Ninja 2870 `SERVER` / `SIDEXIS_SQL` | `9df9b93e-1432-4204-b074-a32a30e0b2f2` |
-| Dr. Jimmy Lutz DDS / Ninja 1322 `SERVER` / `SIDEXIS_SQL` | `499c891a-8306-47c1-a1fd-a340916ea485`, `8f63976c-06c6-40ee-a5f4-6d4fd5856178`, `2360bcda-790d-4696-9541-2aabd8087812` |
-| Blue River Dental Care / Ninja 836 `HIGHSERVER1` / `SIDEXIS_SQL` | `6c661b9a-f1aa-4b39-b374-de6664850c2b`, `3c8a9608-7e58-4735-9aaf-3a10d3e4ccba`, `24b0ecb1-19f5-4cac-a913-291990199f4c` |
-| Generations in Dentistry / Ninja 1021 `DEDICATED2` / `SIDEXIS_SQL` | `3388e4e2-4a49-4646-9885-abfdc6d63619`, `273cbbce-bd20-45fa-995f-519af1d5607c`, `591c5ea7-5974-442e-a565-defdcb619c98` |
-| Aspen Dental Group / Ninja 289 `DATASERVER` / `SIDEXIS_SQL` | `6c029e48-5516-4729-be2c-023062f1a731` |
-
-The span is 2026-07-11 01:37:11 UTC through 2026-07-22 22:01:47 UTC.
-Ninja 2870 also has `PDATA_SQLEXPRESS`; the durable SQL inventory shows that
-instance separately, and it is not part of this workflow's affected SIDEXIS
-credential lane.
+Customer, endpoint, SQL-instance, and execution-ID mappings are intentionally
+excluded from this repository. The exact list is held in access-controlled
+incident record `P0-BIFROST-EXECVAR-2026-07-22`. That record is the only
+authority for remediation binding and credential-rotation scope.
 
 ## Storage and retention map
 
@@ -60,7 +53,7 @@ This is a 2026-07-22 metadata-only production snapshot.
 | Primary PostgreSQL | `psql-mtg-bifrost-poc-01`, PostgreSQL 16, primary role, no HA, no read replicas. All 11 rows have non-null `variables` and the affected key. | Exact active rows can be transactionally replaced with a redaction sentinel. |
 | PostgreSQL automated backup/PITR | Seven automatic daily full backups are currently listed, 2026-07-16 through 2026-07-22. Retention is 7 days; geo-redundant backup is disabled. WAL supports PITR inside that window. | Managed snapshots and WAL cannot be surgically edited. A restore to a time before active-row redaction will resurrect the old values. Let them expire naturally, and require the redaction runbook before any restored database is made accessible. |
 | Separate PostgreSQL backup/replica | No Azure PostgreSQL replica, Azure Backup item, Data Protection item, long-term-retention job, or operator-created backup was found. | No separately managed database copy was identified. |
-| Redis execution context | Managed Redis AOF is enabled at one-second frequency; RDB is disabled. Ten IDs had no current key. The latest execution had one `bifrost:exec:{id}:context` key with the source-defined one-hour TTL when inspected. | The live key expires automatically. Managed AOF is resilience storage, not a user-addressable backup or PITR surface; its files cannot be surgically edited. |
+| Redis execution context | Managed Redis AOF is enabled at one-second frequency; RDB is disabled. Ten IDs had no current key. The latest execution had one `bifrost:exec:{id}:context` key with the source-defined one-hour TTL when inspected. | The live key expires automatically, but key expiry alone is not proof that old bytes have been eliminated from provider-managed AOF storage. Azure does not expose AOF files, rewrite timing, or a supported surgical-erasure operation to this operator. Treat historical AOF bytes as provider-controlled until normal rewrite/storage lifecycle completes; obtain Microsoft support confirmation if an elimination attestation is required. No provider-side deletion is currently authorized. |
 | RabbitMQ | All workflow, retry, and poison queues had zero ready, unacknowledged, and total messages. | No queued copy remains. |
 | Kubernetes container logs | Current API logs contained short execution-ID/status lines only; no matching long payload-shaped line was found. Other current app/worker logs had no matches. | Node/container rotation applies. No Azure diagnostic setting exports AKS logs. |
 | OpenTelemetry / Tempo | Trace and log export goes to the in-cluster collector and Tempo. Tempo block retention is 168 hours. Searches for all 11 execution IDs returned zero traces; collector matches were short metadata lines only. | No affected trace was identified. Existing blocks expire at 7 days and are not a surgical record-edit surface. |
@@ -83,10 +76,24 @@ the execution records and all non-variable history.
 
 1. Confirm prevention is deployed and the synthetic canary passes.
 2. Freeze admin read access to the 11 records for the maintenance window.
-3. Open one database transaction and lock exactly the 11 rows by ID and the
-   affected workflow ID. Select counts and booleans only; do not return JSONB.
-4. Require `row_count = 11`, `workflow_count = 11`, and
-   `variables_nonnull_count = 11`. Any mismatch rolls back and stops.
+3. Load the exact 11 UUIDs from access-controlled incident record
+   `P0-BIFROST-EXECVAR-2026-07-22` into an asyncpg `list[UUID]`; do not paste
+   them into shell history. Open one database transaction and lock the rows
+   with this bound query. Select counts and booleans only; do not return JSONB:
+
+   ```sql
+   SELECT id
+   FROM executions
+   WHERE workflow_id = 'a2e75961-9f0e-4a96-9ee5-a9d240cdda08'::uuid
+     AND id = ANY($1::uuid[])
+   ORDER BY id
+   FOR UPDATE;
+   ```
+
+4. Define `matching_row_count` as the number of rows returned by that query.
+   Separately count locked rows with non-null variables. Require
+   `matching_row_count = 11` and `variables_nonnull_count = 11`. Any mismatch
+   rolls back and stops.
 5. Replace the whole `variables` document, rather than trying to find every
    nested secret-bearing local:
 
@@ -96,9 +103,12 @@ the execution records and all non-variable history.
        'redacted', true,
        'reason', 'security_incident_2026_07_22'
    )
-   WHERE workflow_id = 'a2e75961-9f0e-4a96-9ee5-a9d240cdda08'
-     AND id = ANY(:exact_11_execution_ids);
+   WHERE workflow_id = 'a2e75961-9f0e-4a96-9ee5-a9d240cdda08'::uuid
+     AND id = ANY($1::uuid[]);
    ```
+
+   Execute this with asyncpg and bind the same access-controlled `list[UUID]`
+   as parameter `$1`; no manual SQL substitution is permitted.
 
 6. Before commit, verify by count/boolean only that all 11 rows equal the
    sentinel and that no other row changed. Roll back on any contradiction.
@@ -128,9 +138,9 @@ authored source, Git history, execution history, operator notes, or deployment
 logs. Future automation should resolve a per-customer/per-instance record from
 the approved Keeper/IT Glue lane and pass it as an in-memory secret type.
 
-Rotation scope is the five `SIDEXIS_SQL` instances in the affected-record table.
-Do not include Ninja 2870 `PDATA_SQLEXPRESS` without separate evidence that it
-uses the same login.
+Rotation scope is the five `SIDEXIS_SQL` bindings in the access-controlled
+incident record. Do not add any other instance without separate evidence that
+it used the affected credential.
 
 For each instance, strictly one at a time:
 
@@ -181,4 +191,3 @@ Required communication:
    of broader backup destruction/retention changes.
 4. Approve the five-site credential rotation and customer/vendor communication
    windows.
-
