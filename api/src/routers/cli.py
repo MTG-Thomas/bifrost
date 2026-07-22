@@ -334,6 +334,8 @@ async def get_dev_context(
             "email": current_user.email,
             "name": current_user.name,
             "is_superuser": current_user.is_superuser,
+            "is_provider_org": current_user.is_provider_org,
+            "is_external": current_user.is_external,
         },
         organization=org_data,
         default_parameters={},

@@ -66,6 +66,8 @@ class PendingExecution(TypedDict):
     startup: dict[str, Any] | None  # Launch workflow results (available via context.startup)
     sync: bool  # If True, worker pushes result to Redis for sync execution
     is_platform_admin: bool  # Whether the caller is a platform admin
+    is_provider_org: bool  # Trusted caller provider-org membership
+    is_external: bool  # Trusted caller external-access restriction
     event: dict[str, Any] | None  # EventContext fields if event-triggered; None otherwise
     created_at: str  # ISO format
     cancelled: bool
@@ -113,6 +115,8 @@ class RedisClient:
         api_key_id: str | None = None,
         sync: bool = False,
         is_platform_admin: bool = False,
+        is_provider_org: bool = False,
+        is_external: bool = False,
         event: dict[str, Any] | None = None,
         solution_deployment_id: str | None = None,
         runtime_evidence: dict[str, Any] | None = None,
@@ -158,6 +162,8 @@ class RedisClient:
             "startup": startup,
             "sync": sync,
             "is_platform_admin": is_platform_admin,
+            "is_provider_org": is_provider_org,
+            "is_external": is_external,
             "event": event,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "cancelled": False,

@@ -49,6 +49,11 @@ async def test_promotes_due_rows(db_session):
     from src.jobs.schedulers.deferred_execution_promoter import promote_due_executions
 
     due = _new_scheduled(datetime.now(timezone.utc) - timedelta(seconds=1))
+    due.execution_context = {
+        "is_platform_admin": False,
+        "is_provider_org": True,
+        "is_external": True,
+    }
     db_session.add(due)
     await db_session.commit()
 
@@ -61,6 +66,8 @@ async def test_promotes_due_rows(db_session):
     assert promoted == 1
     assert failed == 0
     pub.assert_awaited_once()
+    assert pub.await_args.kwargs["is_provider_org"] is True
+    assert pub.await_args.kwargs["is_external"] is True
 
     await db_session.refresh(due)
     assert due.status == ExecutionStatus.PENDING

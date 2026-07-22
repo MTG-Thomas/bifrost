@@ -415,6 +415,7 @@ def mint_engine_token(
     delegated_name: str = "",
     delegated_is_superuser: bool = False,
     delegated_is_provider_org: bool = False,
+    delegated_is_external: bool = False,
 ) -> tuple[str, str]:
     """
     Mint a long-lived engine token (30 days) parent-side.
@@ -445,6 +446,7 @@ def mint_engine_token(
                 "delegated_name": delegated_name,
                 "delegated_is_superuser": delegated_is_superuser,
                 "delegated_is_provider_org": delegated_is_provider_org,
+                "delegated_is_external": delegated_is_external,
             }
         )
 

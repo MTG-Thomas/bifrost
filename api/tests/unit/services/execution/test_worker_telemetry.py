@@ -76,17 +76,23 @@ async def test_run_execution_emits_worker_span(monkeypatch):
         "transient": False,
         "no_cache": False,
         "is_platform_admin": False,
+        "is_provider_org": True,
+        "is_external": False,
     }
 
+    execute = AsyncMock(return_value=result)
     with (
         patch("bifrost.credentials.is_token_expired", return_value=False),
         patch("src.core.module_cache_sync.set_solution_context"),
         patch("src.core.module_cache_sync.clear_solution_context"),
-        patch("src.services.execution.engine.execute", new=AsyncMock(return_value=result)),
+        patch("src.services.execution.engine.execute", new=execute),
     ):
         payload = await worker._run_execution("exec-1", context_data)
 
     assert payload["status"] == ExecutionStatus.SUCCESS.value
+    request = execute.await_args.args[0]
+    assert request.is_provider_org is True
+    assert request.is_external is False
     assert len(fake_tracer.spans) == 1
     span = fake_tracer.spans[0]
     assert span.name == "bifrost.worker.execute"

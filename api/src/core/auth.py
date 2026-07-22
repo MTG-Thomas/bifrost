@@ -220,6 +220,7 @@ async def get_current_user_optional(
         delegated_is_provider_org=payload.get(
             "delegated_is_provider_org", False
         ),
+        delegated_is_external=payload.get("delegated_is_external", False),
     )
 
 

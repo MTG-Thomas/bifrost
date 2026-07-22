@@ -73,6 +73,7 @@ class UserPrincipal:
     delegated_name: str = ""
     delegated_is_superuser: bool = False
     delegated_is_provider_org: bool = False
+    delegated_is_external: bool = False
 
     @property
     def is_platform_admin(self) -> bool:

@@ -343,6 +343,8 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             transient=context_data.get("transient", False),
             no_cache=context_data.get("no_cache", False),
             is_platform_admin=context_data.get("is_platform_admin", False),
+            is_provider_org=context_data.get("is_provider_org", False),
+            is_external=context_data.get("is_external", False),
             broadcaster=None,  # Logs go to Redis Stream directly
             event=event_ctx,
             solution_id=context_data.get("solution_id"),  # install scope for SDK

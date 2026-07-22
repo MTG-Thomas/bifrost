@@ -95,7 +95,14 @@ class TestCLIContextOrgOverride:
         data = response.json()
 
         user = data["user"]
-        for field in ("id", "email", "name", "is_superuser"):
+        for field in (
+            "id",
+            "email",
+            "name",
+            "is_superuser",
+            "is_provider_org",
+            "is_external",
+        ):
             assert field in user, f"missing user.{field}"
 
         org = data["organization"]

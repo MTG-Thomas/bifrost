@@ -15,6 +15,8 @@ class TestToPublicDict:
             is_platform_admin=True,
             is_function_key=False,
             execution_id="exec-789",
+            is_provider_org=True,
+            is_external=True,
             workflow_name="my_workflow",
             is_agent=False,
             public_url="https://bifrost.example.com",
@@ -31,6 +33,8 @@ class TestToPublicDict:
         assert result["organization"] == {"id": "org-456", "name": "Acme Corp", "is_active": True, "is_provider": False}
         assert result["is_platform_admin"] is True
         assert result["is_function_key"] is False
+        assert result["is_provider_org"] is True
+        assert result["is_external"] is True
         assert result["execution_id"] == "exec-789"
         assert result["workflow_name"] == "my_workflow"
         assert result["is_agent"] is False
@@ -132,6 +136,8 @@ class TestCLIPlatformParity:
             is_platform_admin=user_info.get("is_superuser", False),
             is_function_key=False,
             execution_id=f"standalone-{uuid.uuid4()}",
+            is_provider_org=user_info.get("is_provider_org", False),
+            is_external=user_info.get("is_external", False),
             workflow_name=workflow_name,
         )
 
@@ -142,6 +148,8 @@ class TestCLIPlatformParity:
         name: str,
         is_superuser: bool,
         org: Organization | None,
+        is_provider_org: bool = False,
+        is_external: bool = False,
         workflow_name: str = "test_workflow",
     ) -> ExecutionContext:
         """Simulate what execute() does in engine.py lines 278-291."""
@@ -154,6 +162,8 @@ class TestCLIPlatformParity:
             is_platform_admin=is_superuser,
             is_function_key=False,
             execution_id="engine-exec-123",
+            is_provider_org=is_provider_org,
+            is_external=is_external,
             workflow_name=workflow_name,
             public_url="http://localhost:8000",
         )
@@ -250,6 +260,8 @@ class TestCLIPlatformParity:
                 "email": "provider@test.com",
                 "name": "Provider Admin",
                 "is_superuser": True,
+                "is_provider_org": True,
+                "is_external": False,
             },
             "organization": {
                 "id": "org-prov",
@@ -272,6 +284,7 @@ class TestCLIPlatformParity:
             name="Provider Admin",
             is_superuser=True,
             org=org,
+            is_provider_org=True,
         )
 
         assert cli_ctx.organization is not None

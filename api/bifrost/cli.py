@@ -1643,6 +1643,8 @@ def _run_direct(
                 is_platform_admin=user_info.get("is_superuser", False),
                 is_function_key=False,
                 execution_id=f"standalone-{uuid.uuid4()}",
+                is_provider_org=user_info.get("is_provider_org", False),
+                is_external=user_info.get("is_external", False),
                 workflow_name=selected_workflow,
                 solution_id=solution_id,
             )

@@ -665,6 +665,8 @@ async def _insert_scheduled_execution(
     form_id: UUID | None,
     api_key_id: UUID | None,
     is_platform_admin: bool,
+    is_provider_org: bool = False,
+    is_external: bool = False,
 ) -> UUID:
     """Insert a SCHEDULED execution row.
 
@@ -683,7 +685,11 @@ async def _insert_scheduled_execution(
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
 
     runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
-    execution_context: dict[str, object] = {"is_platform_admin": is_platform_admin}
+    execution_context: dict[str, object] = {
+        "is_platform_admin": is_platform_admin,
+        "is_provider_org": is_provider_org,
+        "is_external": is_external,
+    }
     if runtime_evidence is not None:
         execution_context["runtime_evidence"] = runtime_evidence
     db.add(
@@ -710,65 +716,6 @@ async def _insert_scheduled_execution(
     )
     await db.commit()
     return exec_id
-
-
-def _is_engine_principal(user) -> bool:
-    """Identify current and pre-marker engine tokens without matching embeds."""
-    from src.core.security import ENGINE_USER_ID
-
-    return bool(getattr(user, "is_engine_token", False)) or (
-        str(user.user_id) == ENGINE_USER_ID
-        and getattr(user, "email", "") == "engine@bifrost.internal"
-    )
-
-
-def _validate_execution_identity_overrides(
-    ctx: Context,
-    *,
-    org_id: str | None,
-    run_as: str | None,
-) -> None:
-    """Keep delegated engine calls inside the parent execution identity."""
-    if _is_engine_principal(ctx.user):
-        crosses_org = org_id is not None and org_id != (
-            str(ctx.org_id) if ctx.org_id is not None else None
-        )
-        if run_as is not None or crosses_org:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Delegated workflows cannot override org_id or run_as",
-            )
-        return
-
-    if (org_id or run_as) and not ctx.user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="org_id and run_as overrides require platform admin",
-        )
-
-
-def _effective_execution_user(ctx: Context):
-    """Return the original caller for an internal engine delegation."""
-    from src.core.principal import UserPrincipal
-    if not _is_engine_principal(ctx.user):
-        return ctx.user
-
-    if ctx.user.delegated_user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Delegated workflow is missing original caller identity",
-        )
-
-    return UserPrincipal(
-        user_id=ctx.user.delegated_user_id,
-        email=ctx.user.delegated_email,
-        organization_id=ctx.org_id,
-        name=ctx.user.delegated_name,
-        is_active=True,
-        is_superuser=ctx.user.delegated_is_superuser,
-        is_verified=True,
-        is_provider_org=ctx.user.delegated_is_provider_org,
-    )
 
 
 @router.post(
@@ -803,8 +750,19 @@ async def execute_workflow(
     )
     from src.repositories import AccessDeniedError, WorkflowRepository
     from src.core.org_filter import resolve_target_org
+    from src.services.execution.delegation_authorization import (
+        DelegationAuthorizationError,
+        effective_execution_user,
+        validate_execution_identity_overrides,
+    )
 
-    effective_user = _effective_execution_user(ctx)
+    try:
+        effective_user = effective_execution_user(ctx.user, ctx.org_id)
+    except DelegationAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
 
     # Resolve org scope for workflow lookup — follows the same pattern as
     # configs, tables, etc. Superusers can pass org_id to search that org;
@@ -892,17 +850,26 @@ async def execute_workflow(
             detail="Either workflow_id or code must be provided",
         )
 
-    _validate_execution_identity_overrides(
-        ctx,
-        org_id=request.org_id,
-        run_as=request.run_as,
-    )
+    try:
+        validate_execution_identity_overrides(
+            ctx.user,
+            ctx.org_id,
+            requested_org_id=request.org_id,
+            run_as=request.run_as,
+        )
+    except DelegationAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
 
     # Resolve run_as user if provided
     exec_user_id = str(effective_user.user_id)
     exec_user_name = effective_user.name or effective_user.email or "Unknown"
     exec_user_email = effective_user.email or ""
     exec_is_admin = effective_user.is_superuser
+    exec_is_provider_org = effective_user.is_provider_org
+    exec_is_external = effective_user.is_external
 
     if request.run_as:
         from src.models.orm.users import User
@@ -919,6 +886,13 @@ async def execute_workflow(
         exec_user_name = run_as_user.name or run_as_user.email or "Unknown"
         exec_user_email = run_as_user.email or ""
         exec_is_admin = run_as_user.is_superuser
+        from shared.external_access import (
+            resolve_external_claim,
+            resolve_provider_org_claim,
+        )
+
+        exec_is_provider_org = await resolve_provider_org_claim(db, run_as_user)
+        exec_is_external = await resolve_external_claim(db, run_as_user)
         logger.info(f"Impersonating user: {exec_user_id} ({exec_user_email})")
 
     # Determine execution org_id
@@ -959,6 +933,8 @@ async def execute_workflow(
             form_id=UUID(request.form_id) if request.form_id else None,
             api_key_id=None,  # API-key-triggered scheduling not supported in v1
             is_platform_admin=exec_is_admin,
+            is_provider_org=exec_is_provider_org,
+            is_external=exec_is_external,
         )
         return WorkflowExecutionResponse(
             execution_id=str(exec_id),
@@ -993,6 +969,8 @@ async def execute_workflow(
         is_platform_admin=exec_is_admin,
         is_function_key=False,
         execution_id=str(uuid4()),
+        is_provider_org=exec_is_provider_org,
+        is_external=exec_is_external,
     )
 
     try:

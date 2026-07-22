@@ -774,7 +774,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 delegated_email=user_email,
                 delegated_name=user_name,
                 delegated_is_superuser=pending.get("is_platform_admin", False),
-                delegated_is_provider_org=bool(org and org.is_provider),
+                delegated_is_provider_org=pending.get("is_provider_org", False),
+                delegated_is_external=pending.get("is_external", False),
             )
 
             # Build context for worker process
@@ -796,6 +797,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "cache_ttl_seconds": cache_ttl_seconds,
                 "transient": False,
                 "is_platform_admin": pending.get("is_platform_admin", False),
+                "is_provider_org": pending.get("is_provider_org", False),
+                "is_external": pending.get("is_external", False),
                 "startup": startup,  # Launch workflow results (available via context.startup)
                 "roi": {
                     "time_saved": roi_time_saved,

@@ -912,6 +912,8 @@ async def execute_form(
             form_id=form.id,
             api_key_id=None,
             is_platform_admin=ctx.user.is_superuser,
+            is_provider_org=getattr(ctx.user, "is_provider_org", False),
+            is_external=getattr(ctx.user, "is_external", False),
         )
         logger.info(
             f"Form {log_safe(form_id)} scheduled by user {ctx.user.email}, "
