@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import secrets
 import shlex
 import shutil
@@ -4198,6 +4199,79 @@ def _validate_api_endpoint(endpoint: str) -> str | None:
     return None
 
 
+_EXECUTION_SUBMISSION_PATH = "/api/workflows/execute"
+_EXECUTION_ID_HEADER = "X-Bifrost-Execution-ID"
+
+
+def _safe_api_endpoint(endpoint: str) -> str:
+    """Return an operator-useful endpoint without query-string secrets."""
+    parsed = urlsplit(endpoint)
+    safe = parsed.path or "/"
+    return f"{safe}?<redacted>" if parsed.query else safe
+
+
+def _safe_api_exception(exc: Exception) -> str:
+    """Retain exception type/repr while removing common credential material."""
+    rendered = repr(exc)
+    rendered = re.sub(
+        r"(?i)\bBearer\s+[^\s'\",)]+",
+        "Bearer <redacted>",
+        rendered,
+    )
+    rendered = re.sub(
+        r"(?i)\b(access[_-]?token|refresh[_-]?token|authorization|api[_-]?key|password|secret)"
+        r"(['\"]?\s*[:=]\s*['\"]?)"
+        r"([^\s'\",)}]+)",
+        r"\1\2<redacted>",
+        rendered,
+    )
+    rendered = re.sub(
+        r"(?i)(https?://[^?\s'\"]+)\?[^\s'\"]+",
+        r"\1?<redacted>",
+        rendered,
+    )
+    return f"{type(exc).__name__}: {rendered}"
+
+
+def _print_api_failure(method: str, endpoint: str, exc: Exception) -> None:
+    print(
+        f"Error: {method.upper()} {_safe_api_endpoint(endpoint)} failed with "
+        f"{_safe_api_exception(exc)}",
+        file=sys.stderr,
+    )
+
+
+def _execution_submission_id(method: str, endpoint: str, body: Any | None) -> str | None:
+    """Create a recovery identity only for persisted workflow submissions."""
+    if method.upper() != "POST" or urlsplit(endpoint).path != _EXECUTION_SUBMISSION_PATH:
+        return None
+    if not isinstance(body, dict):
+        return None
+    if not body.get("workflow_id") or body.get("transient") or body.get("code"):
+        return None
+    return str(uuid4())
+
+
+def _render_api_json(data: Any) -> str:
+    """Render strict JSON; non-finite values are a protocol failure."""
+    return json.dumps(data, indent=2, default=str, allow_nan=False)
+
+
+async def _recover_execution_submission(
+    client: "BifrostClient", execution_id: str
+) -> dict[str, Any] | None:
+    """Read back one exact client-identified execution without replaying POST."""
+    recovery_path = f"/api/executions/{execution_id}"
+    response = await client.get(recovery_path)
+    if response.status_code >= 400:
+        return None
+    data = response.json()
+    if not isinstance(data, dict) or data.get("execution_id") != execution_id:
+        return None
+    _render_api_json(data)  # Validate before emitting any output.
+    return data
+
+
 async def _api_request(method: str, endpoint: str, body: Any | None, client: "BifrostClient | None" = None) -> int:
     if client is None:
         try:
@@ -4210,21 +4284,50 @@ async def _api_request(method: str, endpoint: str, body: Any | None, client: "Bi
     kwargs: dict[str, Any] = {}
     if body is not None:
         kwargs["json"] = body
+    execution_id = _execution_submission_id(method, endpoint, body)
+    if execution_id:
+        kwargs["headers"] = {_EXECUTION_ID_HEADER: execution_id}
 
     try:
         response = await http_fn(endpoint, **kwargs)
-        # Pretty-print response
         try:
             data = response.json()
-            print(json.dumps(data, indent=2, default=str))
         except Exception:
             print(response.text)
+            return 0 if response.status_code < 400 else 1
+
+        if execution_id and response.status_code < 400:
+            if not isinstance(data, dict) or data.get("execution_id") != execution_id:
+                recovered = await _recover_execution_submission(client, execution_id)
+                if recovered is None:
+                    raise ValueError(
+                        "submission response did not contain the expected "
+                        f"execution_id; recovery GET /api/executions/{execution_id} "
+                        "did not find it"
+                    )
+                data = recovered
+
+        print(_render_api_json(data))
         return 0 if response.status_code < 400 else 1
-    except httpx.ConnectError:
-        print("Error: could not connect to Bifrost API.", file=sys.stderr)
+    except httpx.TransportError as exc:
+        if execution_id:
+            try:
+                recovered = await _recover_execution_submission(client, execution_id)
+            except Exception as recovery_exc:
+                _print_api_failure("GET", f"/api/executions/{execution_id}", recovery_exc)
+            else:
+                if recovered is not None:
+                    print(_render_api_json(recovered))
+                    return 0
+                _print_api_failure(
+                    "GET",
+                    f"/api/executions/{execution_id}",
+                    LookupError("matching execution was not found"),
+                )
+        _print_api_failure(method, endpoint, exc)
         return 1
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+    except Exception as exc:
+        _print_api_failure(method, endpoint, exc)
         return 1
 
 

@@ -404,6 +404,86 @@ async def test_execute_workflow_schedules_workflow_with_delay() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_workflow_returns_existing_matching_submission() -> None:
+    user = _exec_user()
+    workflow = _workflow()
+    repo = _WorkflowRepo(workflow=workflow)
+    execution_id = uuid4()
+    existing = WorkflowExecutionResponse(
+        execution_id=str(execution_id),
+        workflow_id=str(workflow.id),
+        workflow_name=workflow.name,
+        status=ExecutionStatus.SUCCESS,
+        result={"covered": True},
+    )
+
+    with (
+        patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch(
+            "src.services.execution.submission_recovery.recover_execution_submission",
+            AsyncMock(return_value=existing),
+        ) as recover,
+        patch("src.services.execution.service.run_workflow", AsyncMock()) as run_workflow,
+    ):
+        result = await workflows.execute_workflow(
+            WorkflowExecutionRequest(
+                workflow_id="sync_records",
+                input_data={"ring": 3},
+            ),
+            _ctx(user),
+            _Db(),
+            user,
+            execution_request_id=execution_id,
+        )
+
+    assert result is existing
+    recover.assert_awaited_once()
+    assert recover.await_args.kwargs["execution_id"] == execution_id
+    assert recover.await_args.kwargs["workflow_id"] == workflow.id
+    assert recover.await_args.kwargs["parameters"] == {"ring": 3}
+    run_workflow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_workflow_propagates_new_submission_identity() -> None:
+    user = _exec_user()
+    workflow = _workflow()
+    repo = _WorkflowRepo(workflow=workflow)
+    execution_id = uuid4()
+    service_result = WorkflowExecutionResponse(
+        execution_id=str(execution_id),
+        workflow_id=str(workflow.id),
+        workflow_name=workflow.name,
+        status=ExecutionStatus.PENDING,
+    )
+
+    with (
+        patch("src.repositories.WorkflowRepository", return_value=repo),
+        patch(
+            "src.services.execution.submission_recovery.recover_execution_submission",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.services.execution.service.run_workflow",
+            AsyncMock(return_value=service_result),
+        ) as run_workflow,
+        patch.object(workflows, "publish_execution_update", AsyncMock()),
+        patch.object(workflows, "publish_history_update", AsyncMock()),
+    ):
+        result = await workflows.execute_workflow(
+            WorkflowExecutionRequest(workflow_id="sync_records"),
+            _ctx(user),
+            _Db(),
+            user,
+            execution_request_id=execution_id,
+        )
+
+    assert result.execution_id == str(execution_id)
+    run_workflow.assert_awaited_once()
+    assert run_workflow.await_args.kwargs["context"].execution_id == str(execution_id)
+
+
+@pytest.mark.asyncio
 async def test_execute_workflow_returns_cached_transient_data_provider_result() -> None:
     user = _exec_user()
     workflow = _workflow(type="data_provider", cache_ttl_seconds=300)

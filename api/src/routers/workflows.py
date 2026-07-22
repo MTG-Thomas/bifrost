@@ -14,12 +14,12 @@ Organization Scoping:
 """
 
 import logging
-from typing import Any, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, distinct, func, or_, select, union_all, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -667,6 +667,7 @@ async def _insert_scheduled_execution(
     is_platform_admin: bool,
     is_provider_org: bool = False,
     is_external: bool = False,
+    execution_id: UUID | None = None,
 ) -> UUID:
     """Insert a SCHEDULED execution row.
 
@@ -677,7 +678,7 @@ async def _insert_scheduled_execution(
 
     from src.models.orm.executions import Execution
 
-    exec_id = uuid4()
+    exec_id = execution_id or uuid4()
     from src.services.solutions.deployment_runtime import pin_workflow_runtime
 
     pinned_runtime = await pin_workflow_runtime(db, workflow_id)
@@ -729,6 +730,10 @@ async def execute_workflow(
     ctx: Context,
     db: DbSession,
     user: CurrentActiveUser,  # Changed from CurrentSuperuser - auth check below
+    execution_request_id: Annotated[
+        UUID | None,
+        Header(alias="X-Bifrost-Execution-ID"),
+    ] = None,
 ) -> WorkflowExecutionResponse:
     """Execute a workflow, data provider, or inline script.
 
@@ -912,6 +917,38 @@ async def execute_workflow(
     else:
         execution_org_id = ctx.org_id
 
+    if execution_request_id is not None:
+        if request.transient or workflow is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "X-Bifrost-Execution-ID requires a persisted registered "
+                    "workflow execution"
+                ),
+            )
+        from src.services.execution.submission_recovery import (
+            ExecutionSubmissionConflictError,
+            recover_execution_submission,
+        )
+
+        try:
+            recovered = await recover_execution_submission(
+                db,
+                execution_id=execution_request_id,
+                workflow_id=workflow.id,
+                parameters=request.input_data,
+                executed_by=UUID(exec_user_id),
+                organization_id=execution_org_id,
+                form_id=UUID(request.form_id) if request.form_id else None,
+            )
+        except ExecutionSubmissionConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        if recovered is not None:
+            return recovered
+
     # Scheduled execution: normalize delay_seconds -> scheduled_at and insert row.
     # The deferred_execution_promoter job will publish this row when it matures.
     scheduled_at: datetime | None = request.scheduled_at
@@ -935,6 +972,7 @@ async def execute_workflow(
             is_platform_admin=exec_is_admin,
             is_provider_org=exec_is_provider_org,
             is_external=exec_is_external,
+            execution_id=execution_request_id,
         )
         return WorkflowExecutionResponse(
             execution_id=str(exec_id),
@@ -968,7 +1006,7 @@ async def execute_workflow(
         organization=org,
         is_platform_admin=exec_is_admin,
         is_function_key=False,
-        execution_id=str(uuid4()),
+        execution_id=str(execution_request_id or uuid4()),
         is_provider_org=exec_is_provider_org,
         is_external=exec_is_external,
     )
