@@ -58,6 +58,73 @@ def _reference_in_agent_scope(reference_org_id: Any, agent_org_id: UUID | None) 
     return reference_org_id is None or reference_org_id == agent_org_id
 
 
+def _agent_repository(context: Any, db: Any) -> Any:
+    """Build the canonical access-aware repository for an MCP caller."""
+    from src.repositories.agents import AgentRepository
+
+    org_id = UUID(str(context.org_id)) if context.org_id else None
+    user_id = UUID(str(context.user_id)) if context.user_id else None
+    return AgentRepository(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        is_superuser=bool(context.is_platform_admin),
+        is_external=bool(getattr(context, "is_external", False)),
+    )
+
+
+async def _load_accessible_agent(
+    context: Any,
+    db: Any,
+    *,
+    agent_id: UUID | None = None,
+    agent_name: str | None = None,
+) -> Any | None:
+    """Load one agent through the same access policy as REST and execution."""
+    from src.core.org_filter import OrgFilterType
+
+    repo = _agent_repository(context, db)
+    if agent_id is not None:
+        return await repo.get_agent_with_access_check(agent_id)
+
+    if context.is_platform_admin:
+        candidates = await repo.list_all_in_scope(
+            OrgFilterType.ALL,
+            active_only=False,
+        )
+    else:
+        candidates = await repo.list_agents(active_only=False)
+
+    matches = [agent for agent in candidates if agent.name == agent_name]
+    if not matches:
+        return None
+
+    context_org_id = UUID(str(context.org_id)) if context.org_id else None
+    matches.sort(
+        key=lambda agent: (
+            agent.organization_id == context_org_id,
+            agent.organization_id is None,
+        ),
+        reverse=True,
+    )
+    return matches[0]
+
+
+def _can_manage_agent(context: Any, agent: Any) -> bool:
+    """Regular MCP callers may mutate only private agents they own."""
+    if context.is_platform_admin:
+        return True
+
+    from src.models.enums import AgentAccessLevel
+
+    return (
+        agent.access_level == AgentAccessLevel.PRIVATE
+        and agent.owner_user_id is not None
+        and context.user_id is not None
+        and str(agent.owner_user_id) == str(context.user_id)
+    )
+
+
 # ==================== SCHEMA TOOL ====================
 
 
@@ -178,12 +245,6 @@ async def get_agent(
     Returns:
         ToolResult with agent details
     """
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-
-    from src.models.orm import Agent
-    from src.services.mcp_server.tools._org_scope import apply_mcp_org_scope
-
     logger.info(f"MCP get_agent called: agent_id={agent_id}, agent_name={agent_name}")
 
     if not agent_id and not agent_name:
@@ -191,34 +252,22 @@ async def get_agent(
 
     try:
         async with get_tool_db(context) as db:
-            # Build query
-            query = select(Agent).options(
-                selectinload(Agent.tools),
-                selectinload(Agent.delegated_agents),
-                selectinload(Agent.roles),
-            )
-
             if agent_id:
-                # ID-based lookup: IDs are unique, so cascade filter is safe
                 try:
                     uuid_id = UUID(agent_id)
                 except ValueError:
                     return error_result(f"'{agent_id}' is not a valid UUID")
-                query = query.where(Agent.id == uuid_id)
-                # Apply org scoping for non-admins (cascade filter for ID lookups)
-                query = apply_mcp_org_scope(query, Agent, context)
+                agent = await _load_accessible_agent(
+                    context,
+                    db,
+                    agent_id=uuid_id,
+                )
             else:
-                # Name-based lookup: use prioritized lookup (org-specific > global)
-                query = query.where(Agent.name == agent_name)
-                query = apply_mcp_org_scope(query, Agent, context)
-                if not context.is_platform_admin and context.org_id:
-                    # Prioritize org-specific over global (nulls come last)
-                    query = query.order_by(
-                        Agent.organization_id.desc().nulls_last()
-                    ).limit(1)
-
-            result = await db.execute(query)
-            agent = result.scalar_one_or_none()
+                agent = await _load_accessible_agent(
+                    context,
+                    db,
+                    agent_name=agent_name,
+                )
 
             if not agent:
                 identifier = agent_id or agent_name
@@ -536,16 +585,11 @@ async def update_agent(
     try:
         async with get_tool_db(context) as db:
             # Get existing agent
-            result = await db.execute(
-                select(Agent)
-                .options(
-                    selectinload(Agent.tools),
-                    selectinload(Agent.delegated_agents),
-                    selectinload(Agent.roles),
-                )
-                .where(Agent.id == uuid_id)
+            agent = await _load_accessible_agent(
+                context,
+                db,
+                agent_id=uuid_id,
             )
-            agent = result.scalar_one_or_none()
 
             if not agent:
                 return error_result(f"Agent '{agent_id}' not found. Use list_agents to see available agents.")
@@ -563,14 +607,8 @@ async def update_agent(
             if is_solution_managed(agent):
                 return error_result(SOLUTION_MANAGED_MESSAGE)
 
-            # Check access for non-admins
-            if not context.is_platform_admin:
-                if agent.organization_id:
-                    if context.org_id and str(agent.organization_id) != str(context.org_id):
-                        return error_result("You don't have permission to update this agent.")
-                # Global agents can only be updated by admins
-                if agent.organization_id is None:
-                    return error_result("Only platform admins can update global agents.")
+            if not _can_manage_agent(context, agent):
+                return error_result("You can only update your own private agents.")
 
             updates_made = []
 
@@ -723,10 +761,6 @@ async def delete_agent(
     Returns:
         ToolResult with deletion confirmation
     """
-    from sqlalchemy import select
-
-    from src.models.orm import Agent
-
     logger.info(f"MCP delete_agent called: agent_id={agent_id}")
 
     if not agent_id:
@@ -740,10 +774,11 @@ async def delete_agent(
 
     try:
         async with get_tool_db(context) as db:
-            result = await db.execute(
-                select(Agent).where(Agent.id == uuid_id)
+            agent = await _load_accessible_agent(
+                context,
+                db,
+                agent_id=uuid_id,
             )
-            agent = result.scalar_one_or_none()
 
             if not agent:
                 return error_result(f"Agent '{agent_id}' not found. Use list_agents to see available agents.")
@@ -759,14 +794,8 @@ async def delete_agent(
             if is_solution_managed(agent):
                 return error_result(SOLUTION_MANAGED_MESSAGE)
 
-            # Check access for non-admins
-            if not context.is_platform_admin:
-                if agent.organization_id:
-                    if context.org_id and str(agent.organization_id) != str(context.org_id):
-                        return error_result("You don't have permission to delete this agent.")
-                # Global agents can only be deleted by admins
-                if agent.organization_id is None:
-                    return error_result("Only platform admins can delete global agents.")
+            if not _can_manage_agent(context, agent):
+                return error_result("You can only delete your own private agents.")
 
             # Soft delete
             agent.is_active = False
