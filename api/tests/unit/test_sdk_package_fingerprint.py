@@ -56,16 +56,20 @@ def test_sdk_contract_version_matches_json_file():
     from src.services import sdk_package as sdkpkg
 
     contract_path = next(
-        path
-        for path in (
-            sdkpkg._SDK_SRC / sdkpkg._SDK_CONTRACT_FILENAME,
-            *(
-                candidate / sdkpkg._SDK_CONTRACT_FILENAME
-                for candidate in sdkpkg._client_sdk_candidates()
-            ),
-        )
-        if path.is_file()
+        (
+            path
+            for path in (
+                sdkpkg._SDK_SRC / sdkpkg._SDK_CONTRACT_FILENAME,
+                *(
+                    candidate / sdkpkg._SDK_CONTRACT_FILENAME
+                    for candidate in sdkpkg._client_sdk_candidates()
+                ),
+            )
+            if path.is_file()
+        ),
+        None,
     )
+    assert contract_path is not None, "sdk-contract.json is missing from all supported sources"
     contract = _json.loads(contract_path.read_text())
     assert sdkpkg.sdk_contract_version() == contract["version"]
 
