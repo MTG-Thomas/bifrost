@@ -105,8 +105,9 @@ def test_engine_delegation_allows_only_matching_org() -> None:
 
     _validate_execution_identity_overrides(ctx, org_id=str(org_id), run_as=None)
 
+    other_org_id = str(uuid4())
     with pytest.raises(HTTPException, match="cannot override"):
-        _validate_execution_identity_overrides(ctx, org_id=str(uuid4()), run_as=None)
+        _validate_execution_identity_overrides(ctx, org_id=other_org_id, run_as=None)
 
 
 def test_engine_delegation_cannot_impersonate_user() -> None:
@@ -116,8 +117,9 @@ def test_engine_delegation_cannot_impersonate_user() -> None:
         is_engine_token=True,
     )
 
+    run_as = str(uuid4())
     with pytest.raises(HTTPException, match="cannot override"):
-        _validate_execution_identity_overrides(ctx, org_id=None, run_as=str(uuid4()))
+        _validate_execution_identity_overrides(ctx, org_id=None, run_as=run_as)
 
 
 def test_platform_admin_api_call_retains_override_access() -> None:

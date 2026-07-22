@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _parse_delegated_user_id(payload: dict, token_user_id: UUID) -> tuple[UUID | None, bool]:
+    """Parse the optional delegated caller claim and report validity."""
+    value = payload.get("delegated_user_id")
+    if not value:
+        return None, True
+    try:
+        return UUID(value), True
+    except ValueError:
+        logger.warning(
+            "Token for user %s has invalid delegated_user_id format: %s",
+            token_user_id,
+            value,
+        )
+        return None, False
+
+
 @dataclass
 class ExecutionContext:
     """
@@ -173,17 +189,12 @@ async def get_current_user_optional(
     # else: superuser with no org = system account (valid)
     # else: embed token without org = valid (HMAC-verified)
 
-    delegated_user_id: UUID | None = None
-    delegated_user_id_str = payload.get("delegated_user_id")
-    if delegated_user_id_str:
-        try:
-            delegated_user_id = UUID(delegated_user_id_str)
-        except ValueError:
-            logger.warning(
-                f"Token for user {user_id} has invalid delegated_user_id format: "
-                f"{delegated_user_id_str}"
-            )
-            return None
+    delegated_user_id, delegated_user_id_valid = _parse_delegated_user_id(
+        payload,
+        user_id,
+    )
+    if not delegated_user_id_valid:
+        return None
 
     return UserPrincipal(
         user_id=user_id,
