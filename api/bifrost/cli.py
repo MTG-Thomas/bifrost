@@ -4262,9 +4262,9 @@ async def _recover_execution_submission(
 ) -> dict[str, Any] | None:
     """Read back one exact client-identified execution without replaying POST."""
     recovery_path = f"/api/executions/{execution_id}"
-    get_once = getattr(client, "get_once", None)
+    get_once: Any = getattr(client, "get_once", None)
     response = await (
-        get_once(recovery_path) if callable(get_once) else client.get(recovery_path)
+        get_once(recovery_path) if get_once is not None else client.get(recovery_path)
     )
     if response.status_code >= 400:
         return None
