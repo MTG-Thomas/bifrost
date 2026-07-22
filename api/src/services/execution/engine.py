@@ -25,6 +25,7 @@ from src.sdk.error_handling import WorkflowError
 from src.sdk.errors import UserError, WorkflowExecutionException
 from src.models.enums import ExecutionStatus
 from src.core.cache import get_cached_data_provider, cache_data_provider_result
+from src.core.execution_variable_safety import sanitize_execution_variables
 from src.core.secret_string import redact_secrets
 
 logger = logging.getLogger(__name__)
@@ -249,12 +250,17 @@ def _scrub_outputs(
     error_message: str | None = None,
 ) -> tuple[Any, dict[str, Any] | None, list[dict[str, Any]] | None, str | None]:
     """Scrub secret values from execution outputs before returning."""
+    safe_variables = (
+        sanitize_execution_variables(variables) if variables is not None else None
+    )
     secret_values = context._collect_secret_values()
     if not secret_values:
-        return result, variables, logs, error_message
+        return result, safe_variables, logs, error_message
     return (
         redact_secrets(result, secret_values) if result is not None else None,
-        redact_secrets(variables, secret_values) if variables is not None else None,
+        redact_secrets(safe_variables, secret_values)
+        if safe_variables is not None
+        else None,
         redact_secrets(logs, secret_values) if logs is not None else None,
         redact_secrets(error_message, secret_values) if error_message is not None else None,
     )

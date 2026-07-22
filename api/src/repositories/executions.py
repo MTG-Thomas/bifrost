@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.principal import UserPrincipal
+from src.core.execution_variable_safety import sanitize_execution_variables
 from src.core.log_safety import log_safe
 from src.models import (
     AIUsage,
@@ -235,7 +236,9 @@ class ExecutionRepository(BaseRepository[Execution]):
             update_values["completed_at"] = datetime.now(timezone.utc)
 
         if variables is not None:
-            update_values["variables"] = _make_json_safe(variables)
+            update_values["variables"] = _make_json_safe(
+                sanitize_execution_variables(variables)
+            )
 
         if execution_context is not None:
             update_values["execution_context"] = _make_json_safe(execution_context)
