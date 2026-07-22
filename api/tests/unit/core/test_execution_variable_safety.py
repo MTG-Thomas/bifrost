@@ -70,3 +70,30 @@ def test_description_is_not_misclassified_as_script() -> None:
         "description": "safe",
         "status_code": 200,
     }
+
+
+def test_authorization_code_remains_sensitive() -> None:
+    assert sanitize_execution_variables(
+        {"authorization_code": SYNTHETIC_CREDENTIAL_MARKER}
+    ) == {"authorization_code": REDACTED}
+
+
+def test_nested_container_and_opaque_values_fail_safe() -> None:
+    class OpaqueValue:
+        pass
+
+    sanitized = sanitize_execution_variables(
+        {
+            "tuple_value": ("safe",),
+            "set_value": {7},
+            "binary_value": b"not-persisted",
+            "opaque_value": OpaqueValue(),
+        }
+    )
+
+    assert sanitized == {
+        "tuple_value": ("safe",),
+        "set_value": {7},
+        "binary_value": REDACTED,
+        "opaque_value": "<OpaqueValue>",
+    }

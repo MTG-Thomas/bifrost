@@ -43,7 +43,7 @@ _SCRIPT_CONTENT_PATTERNS = (
     re.compile(r"(?m)^\s*(?:import|from)\s+[A-Za-z_]"),
     re.compile(r"(?m)^\s*(?:CREATE\s+LOGIN|ALTER\s+SERVER\s+ROLE)\b", re.IGNORECASE),
     re.compile(r"\$(?:ErrorActionPreference|ProgressPreference)\b", re.IGNORECASE),
-    re.compile(r"\b(?:ConvertFrom-Base64String|Invoke-[A-Za-z]+|New-Object)\b", re.IGNORECASE),
+    re.compile(r"\b(?:ConvertFrom-Base64String|Invoke-[a-z]+|New-Object)\b", re.IGNORECASE),
 )
 
 
@@ -56,9 +56,10 @@ def _key_tokens(key: Any) -> set[str]:
 
 def _is_sensitive_key(key: Any) -> bool:
     tokens = _key_tokens(key)
+    compact_key = "".join(re.findall(r"[A-Za-z0-9]+", str(key))).casefold()
     return bool(
         tokens & _SENSITIVE_KEY_TOKENS
-        or tokens & _SENSITIVE_COMPACT_KEYS
+        or compact_key in _SENSITIVE_COMPACT_KEYS
     )
 
 
