@@ -27,7 +27,17 @@ def split_into_chunks(
     Split `text` into chunks of at most `target_chars`, preferring natural
     boundaries. Returns at least one chunk (an empty list is never valid —
     an empty doc returns `[""]`).
+
+    ``reassemble_chunks`` is the exact inverse. That round-trip relies on
+    every non-final chunk being longer than ``overlap_chars`` (guaranteed
+    by the ``_find_boundary`` floor of half the window), so the params are
+    validated here rather than trusting the caller.
     """
+    if overlap_chars >= target_chars // 2:
+        raise ValueError(
+            "overlap_chars must be < target_chars // 2 so consecutive chunks "
+            "overlap by exactly overlap_chars (required by reassemble_chunks)"
+        )
     if len(text) <= target_chars:
         return [text]
 
@@ -45,6 +55,28 @@ def split_into_chunks(
         # repeats the last `overlap_chars` of this one.
         start = max(end - overlap_chars, start + 1)
     return chunks
+
+
+def reassemble_chunks(
+    chunks: list[str],
+    overlap_chars: int = DEFAULT_OVERLAP_CHARS,
+) -> str:
+    """
+    Reconstruct the original text from chunks produced by
+    ``split_into_chunks`` (in chunk order, with the same ``overlap_chars``).
+
+    Exact inverse, not a heuristic: ``split_into_chunks`` always steps the
+    next window to ``end - overlap_chars`` (the ``start + 1`` clamp can never
+    win because ``_find_boundary`` keeps every non-final chunk at least half
+    the window, and the param guard keeps that above ``overlap_chars``), so
+    each chunk after the first repeats exactly its first ``overlap_chars``
+    characters. Like the embedding column (see ``KnowledgeStore.embedding``),
+    this ties read-time config to store-time config: changing
+    ``DEFAULT_OVERLAP_CHARS`` requires re-storing existing chunked documents.
+    """
+    if not chunks:
+        return ""
+    return chunks[0] + "".join(chunk[overlap_chars:] for chunk in chunks[1:])
 
 
 def _find_boundary(text: str, start: int, end: int) -> int:

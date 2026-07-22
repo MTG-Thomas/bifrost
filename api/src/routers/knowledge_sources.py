@@ -441,7 +441,8 @@ async def create_document(
         id=str(doc.id),
         namespace=doc.namespace,
         key=doc.key,
-        content=doc.content,
+        # Echo the full submitted content, not the first chunk row's slice.
+        content=data.content,
         metadata=doc.doc_metadata or {},
         organization_id=str(doc.organization_id) if doc.organization_id else None,
         created_at=doc.created_at,
@@ -485,29 +486,50 @@ async def update_document(
     scope: str | None = Query(default=None),
     replace: bool = Query(default=False),
 ) -> KnowledgeDocumentPublic:
-    """Update a document and re-embed. Optionally change scope."""
+    """Update a document and re-embed. Optionally change scope.
+
+    Re-embedding goes through the same chunk → embed → store path as create
+    (``KnowledgeRepository.replace_chunked``): the document's rows are
+    replaced with freshly chunked-and-embedded rows — long content is
+    re-chunked into multiple rows, each with a flat per-chunk vector (the
+    previous code assigned the whole batch result to a single row's
+    ``embedding``, which crashed on ``float()`` and never chunked).
+
+    Identity is stable across edits: the document keeps its id and its
+    original ``created_at`` (so edits don't reorder created_at-sorted
+    listings). Scope changes are a true *move*: the old rows (in the source
+    org) are removed, not left behind as a copy, and a collision with a
+    document already holding the same identity in the target scope 409s
+    unless ``replace=true``.
+    """
+    # First resolve the addressed physical chunk without locking it. Every
+    # chunk id is an alias for one logical document, so locking this row would
+    # let requests through different chunks deadlock during group replacement.
     result = await db.execute(
         select(KnowledgeStore).where(KnowledgeStore.id == doc_id)
     )
-    doc = result.scalar_one_or_none()
-    if not doc or doc.namespace != namespace:
+    addressed = result.scalar_one_or_none()
+    if not addressed or addressed.namespace != namespace:
         raise HTTPException(404, f"Document {doc_id} not found in namespace {namespace}")
 
-    # Re-embed
-    try:
-        from src.services.embeddings.factory import get_embedding_client
-        client = await get_embedding_client(db)
-        embedding = await client.embed(data.content)
-    except ValueError as e:
-        raise HTTPException(503, f"Embedding service unavailable: {e}")
+    # Resolve every alias to chunk zero and lock that persistent canonical row.
+    # This gives concurrent edits one lock order and one stable public id.
+    source_repo = KnowledgeRepository(session=db, org_id=addressed.organization_id)
+    doc = await source_repo.lock_document(
+        namespace, addressed.key, addressed.organization_id
+    )
+    if not doc:
+        raise HTTPException(404, f"Document {doc_id} not found in namespace {namespace}")
 
-    doc.content = data.content
-    doc.embedding = embedding
-    if data.metadata is not None:
-        doc.doc_metadata = data.metadata
-    doc.updated_at = datetime.now(timezone.utc)
+    # Snapshot identity/audit fields before sibling replacement.
+    doc_key = doc.key
+    current_org_id = doc.organization_id
+    original_created_at = doc.created_at
+    original_created_by = doc.created_by
+    metadata = data.metadata if data.metadata is not None else (doc.doc_metadata or {})
 
-    # Update scope if provided
+    # Resolve the target scope (defaults to the doc's current org when unchanged).
+    target_org_id = current_org_id
     if scope is not None:
         from src.core.org_filter import resolve_target_org
         try:
@@ -515,47 +537,73 @@ async def update_document(
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
-        # Pre-check for unique constraint conflict when changing scope
-        if doc.key and target_org_id != doc.organization_id:
-            conflict = await db.execute(
-                select(KnowledgeStore.id).where(
-                    KnowledgeStore.namespace == namespace,
-                    KnowledgeStore.organization_id == target_org_id,
-                    KnowledgeStore.key == doc.key,
-                    KnowledgeStore.id != doc_id,
+    repo = KnowledgeRepository(session=db, org_id=target_org_id)
+
+    if target_org_id != current_org_id:
+        # Moving scope can collide with a document already holding this
+        # identity in the target scope — keyed or keyless (NULL keys are
+        # equal under the NULLS NOT DISTINCT unique constraint). 409 before
+        # mutating anything, unless the caller asked to replace it.
+        conflicting_id = await repo.find_document_id(
+            namespace, doc_key, target_org_id
+        )
+        if conflicting_id:
+            if replace:
+                await repo.delete_document(namespace, doc_key, target_org_id)
+            else:
+                descriptor = f"key '{doc_key}'" if doc_key else "no key"
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "conflict",
+                        "message": f"A document with {descriptor} already exists in namespace '{namespace}' for the target scope",
+                        "conflicting_id": str(conflicting_id),
+                        "key": doc_key,
+                        "namespace": namespace,
+                    },
                 )
-            )
-            conflicting_id = conflict.scalar_one_or_none()
-            if conflicting_id:
-                if replace:
-                    await db.execute(
-                        delete(KnowledgeStore).where(KnowledgeStore.id == conflicting_id)
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "error": "conflict",
-                            "message": f"A document with key '{doc.key}' already exists in namespace '{namespace}' for the target scope",
-                            "conflicting_id": str(conflicting_id),
-                            "key": doc.key,
-                            "namespace": namespace,
-                        },
-                    )
 
-        doc.organization_id = target_org_id
+    try:
+        from src.services.embeddings.factory import get_embedding_client
+        client = await get_embedding_client(db)
+    except ValueError as e:
+        raise HTTPException(503, f"Embedding service unavailable: {e}")
 
-    await db.flush()
+    try:
+        doc_ids = await repo.replace_chunked(
+            doc_id=doc.id,
+            content=data.content,
+            namespace=namespace,
+            key=doc_key,
+            current_organization_id=current_org_id,
+            organization_id=target_org_id,
+            metadata=metadata,
+            created_by=original_created_by,
+            created_at=original_created_at,
+            embedder=client,
+        )
+    except ValueError as e:
+        # Embed-time failures are service unavailability to the caller, same
+        # as client construction above. Nothing is lost: replace_chunked only
+        # flushes, and the transaction commits in get_db after this handler
+        # returns — an error here rolls the whole replace back.
+        raise HTTPException(503, f"Embedding service unavailable: {e}")
+
+    stored = await db.execute(
+        select(KnowledgeStore).where(KnowledgeStore.id == UUID(doc_ids[0]))
+    )
+    new_doc = stored.scalar_one()
 
     return KnowledgeDocumentPublic(
-        id=str(doc.id),
-        namespace=doc.namespace,
-        key=doc.key,
-        content=doc.content,
-        metadata=doc.doc_metadata or {},
-        organization_id=str(doc.organization_id) if doc.organization_id else None,
-        created_at=doc.created_at,
-        updated_at=doc.updated_at,
+        id=str(new_doc.id),
+        namespace=new_doc.namespace,
+        key=new_doc.key,
+        # Echo the full submitted content, not the first chunk row's slice.
+        content=data.content,
+        metadata=new_doc.doc_metadata or {},
+        organization_id=str(new_doc.organization_id) if new_doc.organization_id else None,
+        created_at=new_doc.created_at,
+        updated_at=new_doc.updated_at,
     )
 
 
@@ -566,7 +614,7 @@ async def delete_document(
     db: DbSession,
     user: CurrentSuperuser,
 ) -> None:
-    """Delete a document."""
+    """Delete a document — every chunk row of it, not just the addressed row."""
     result = await db.execute(
         select(KnowledgeStore).where(KnowledgeStore.id == doc_id)
     )
@@ -574,10 +622,8 @@ async def delete_document(
     if not doc or doc.namespace != namespace:
         raise HTTPException(404, f"Document {doc_id} not found in namespace {namespace}")
 
-    await db.execute(
-        delete(KnowledgeStore).where(KnowledgeStore.id == doc_id)
-    )
-    await db.flush()
+    repo = KnowledgeRepository(session=db, org_id=doc.organization_id)
+    await repo.delete_document(namespace, doc.key, doc.organization_id)
 
 
 @router.delete("/{namespace}", status_code=status.HTTP_204_NO_CONTENT)

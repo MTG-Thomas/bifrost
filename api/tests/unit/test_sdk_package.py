@@ -42,6 +42,7 @@ def _ensure_sdk_src() -> bool:
     for f in sdkpkg._SDK_SOURCE_FILES:
         shutil.copy(client / f, dst / f)
     shutil.copy(client / "index.v2.ts", dst / "index.ts")
+    shutil.copy(client / "sdk-contract.json", dst / "sdk-contract.json")
     return True
 
 
@@ -72,6 +73,7 @@ def test_materialize_sdk_src_stages_client_fallback(tmp_path, monkeypatch):
     for name in sdkpkg._SDK_SOURCE_FILES:
         (client_src / name).write_text(f"// {name}")
     (client_src / "index.v2.ts").write_text("export const v2 = true")
+    (client_src / "sdk-contract.json").write_text('{"version": 1}')
 
     monkeypatch.setattr(sdkpkg, "_client_sdk_candidates", lambda: [client_src])
     monkeypatch.setattr(sdkpkg, "_SDK_SRC", tmp_path / "missing")
@@ -81,6 +83,7 @@ def test_materialize_sdk_src_stages_client_fallback(tmp_path, monkeypatch):
     assert staged == tmp_path / "work" / "sdk_src"
     assert (staged / "provider.tsx").read_text() == "// provider.tsx"
     assert (staged / "index.ts").read_text() == "export const v2 = true"
+    assert (staged / "sdk-contract.json").read_text() == '{"version": 1}'
 
 
 def test_materialize_sdk_src_returns_baked_path_when_no_source_available(
@@ -133,6 +136,7 @@ def test_build_sdk_tarball_cached_per_version(monkeypatch):
     import src.services.sdk_package as sdkpkg
 
     sdkpkg.build_sdk_tarball.cache_clear()
+    sdkpkg._built_bundle.cache_clear()
     calls: list[Path] = []
 
     def _fake_bundle(workdir: Path) -> bytes:
@@ -146,6 +150,7 @@ def test_build_sdk_tarball_cached_per_version(monkeypatch):
     finally:
         # Don't leak the fake-bundle tarball into other tests via the cache.
         sdkpkg.build_sdk_tarball.cache_clear()
+        sdkpkg._built_bundle.cache_clear()
 
     assert first == second
     assert len(calls) == 1, "builder ran more than once for the same version"

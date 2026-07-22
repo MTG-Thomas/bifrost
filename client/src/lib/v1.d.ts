@@ -7967,12 +7967,26 @@ export interface paths {
         /**
          * Update Document
          * @description Update a document and re-embed. Optionally change scope.
+         *
+         *     Re-embedding goes through the same chunk → embed → store path as create
+         *     (``KnowledgeRepository.replace_chunked``): the document's rows are
+         *     replaced with freshly chunked-and-embedded rows — long content is
+         *     re-chunked into multiple rows, each with a flat per-chunk vector (the
+         *     previous code assigned the whole batch result to a single row's
+         *     ``embedding``, which crashed on ``float()`` and never chunked).
+         *
+         *     Identity is stable across edits: the document keeps its id and its
+         *     original ``created_at`` (so edits don't reorder created_at-sorted
+         *     listings). Scope changes are a true *move*: the old rows (in the source
+         *     org) are removed, not left behind as a copy, and a collision with a
+         *     document already holding the same identity in the target scope 409s
+         *     unless ``replace=true``.
          */
         put: operations["update_document_api_knowledge_sources__namespace__documents__doc_id__put"];
         post?: never;
         /**
          * Delete Document
-         * @description Delete a document.
+         * @description Delete a document — every chunk row of it, not just the addressed row.
          */
         delete: operations["delete_document_api_knowledge_sources__namespace__documents__doc_id__delete"];
         options?: never;
@@ -14408,15 +14422,76 @@ export interface components {
          */
         ExecutionStatus: "Scheduled" | "Pending" | "Running" | "Success" | "Failed" | "Timeout" | "Stuck" | "CompletedWithErrors" | "Cancelling" | "Cancelled";
         /**
+         * ExecutionSummary
+         * @description Execution metadata without payloads — what list views return.
+         *
+         *     Deliberately omits input_data/result/logs/variables/execution_context so
+         *     list responses never select or serialize multi-megabyte payloads. Fetch a
+         *     single execution for those.
+         */
+        ExecutionSummary: {
+            /** Execution Id */
+            execution_id: string;
+            /** Workflow Name */
+            workflow_name: string;
+            /** Workflow Id */
+            workflow_id?: string | null;
+            /** Org Id */
+            org_id?: string | null;
+            /** Org Name */
+            org_name?: string | null;
+            /** Form Id */
+            form_id?: string | null;
+            /** Executed By */
+            executed_by: string;
+            /** Executed By Name */
+            executed_by_name: string;
+            /** Executed By Email */
+            executed_by_email?: string | null;
+            status: components["schemas"]["ExecutionStatus"];
+            /** Result Type */
+            result_type?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Scheduled At */
+            scheduled_at?: string | null;
+            /** Session Id */
+            session_id?: string | null;
+            /** Peak Memory Bytes */
+            peak_memory_bytes?: number | null;
+            /** Process Rss Bytes */
+            process_rss_bytes?: number | null;
+            /** Cpu Total Seconds */
+            cpu_total_seconds?: number | null;
+            /** Execution Model */
+            execution_model?: string | null;
+            /**
+             * Time Saved
+             * @default 0
+             */
+            time_saved: number;
+            /**
+             * Value
+             * @default 0
+             */
+            value: number;
+        };
+        /**
          * ExecutionsListResponse
          * @description Response model for listing workflow executions with pagination
          */
         ExecutionsListResponse: {
             /**
              * Executions
-             * @description List of workflow executions
+             * @description List of workflow execution summaries (no input/result payloads — fetch a single execution for those)
              */
-            executions: components["schemas"]["WorkflowExecution"][];
+            executions: components["schemas"]["ExecutionSummary"][];
             /**
              * Continuation Token
              * @description Continuation token for next page (opaque, base64-encoded). Presence of token indicates more results available.
@@ -23095,6 +23170,10 @@ export interface components {
             version: string;
             /** Contract Version */
             contract_version: number;
+            /** Sdk Fingerprint */
+            sdk_fingerprint: string;
+            /** Sdk Contract Version */
+            sdk_contract_version: number;
         };
         /**
          * WatchSessionRequest
@@ -23325,7 +23404,7 @@ export interface components {
         };
         /**
          * WorkflowExecution
-         * @description Workflow execution entity
+         * @description Workflow execution entity — summary fields plus full payloads.
          */
         WorkflowExecution: {
             /** Execution Id */
@@ -23347,14 +23426,6 @@ export interface components {
             /** Executed By Email */
             executed_by_email?: string | null;
             status: components["schemas"]["ExecutionStatus"];
-            /** Input Data */
-            input_data: {
-                [key: string]: unknown;
-            };
-            /** Result */
-            result?: {
-                [key: string]: unknown;
-            } | unknown[] | string | null;
             /** Result Type */
             result_type?: string | null;
             /** Error Message */
@@ -23367,14 +23438,6 @@ export interface components {
             completed_at?: string | null;
             /** Scheduled At */
             scheduled_at?: string | null;
-            /** Logs */
-            logs?: {
-                [key: string]: unknown;
-            }[] | null;
-            /** Variables */
-            variables?: {
-                [key: string]: unknown;
-            } | null;
             /** Session Id */
             session_id?: string | null;
             /** Peak Memory Bytes */
@@ -23395,6 +23458,22 @@ export interface components {
              * @default 0
              */
             value: number;
+            /** Input Data */
+            input_data: {
+                [key: string]: unknown;
+            };
+            /** Result */
+            result?: {
+                [key: string]: unknown;
+            } | unknown[] | string | null;
+            /** Logs */
+            logs?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Variables */
+            variables?: {
+                [key: string]: unknown;
+            } | null;
             /** Ai Usage */
             ai_usage?: components["schemas"]["AIUsagePublicSimple"][] | null;
             ai_totals?: components["schemas"]["AIUsageTotalsSimple"] | null;

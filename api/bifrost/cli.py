@@ -183,9 +183,7 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     """
     import pathspec
 
-    # Always start with defaults (.git/, __pycache__, etc.) — .gitignore
-    # never lists .git/ because git handles it implicitly, but we need it.
-    lines = list(_DEFAULT_IGNORE_PATTERNS)
+    lines: list[str] = []
 
     workspace_root = _workspace_root_for(local_root)
     workspace_gitignore = workspace_root / ".gitignore"
@@ -195,6 +193,10 @@ def _build_file_filter(local_root: pathlib.Path) -> "pathspec.PathSpec":
     gitignore_path = local_root / ".gitignore"
     if gitignore_path != workspace_gitignore and gitignore_path.is_file():
         lines.extend(gitignore_path.read_text(encoding="utf-8").splitlines())
+
+    # Canonical safety exclusions are appended last so a .gitignore negation
+    # cannot re-include secrets, agent state, dependency trees, or build output.
+    lines.extend(_DEFAULT_IGNORE_PATTERNS)
 
     return pathspec.PathSpec.from_lines("gitwildmatch", lines)
 
@@ -677,7 +679,8 @@ def logout_flow(api_url: str | None = None) -> tuple[bool, str | None]:
 
     Args:
         api_url: URL to log out from. If None, resolves the same way
-            get_credentials() does (env var, then first stored URL).
+            get_credentials() does (folder/env binding, saved default, then
+            the sole stored connection).
 
     Returns:
         (cleared, url) — cleared is True if a record was removed; url is
@@ -764,29 +767,45 @@ def _write_env_url(api_url: str) -> None:
             pass
 
 
-def _remove_env_url_line(api_url: str) -> bool:
-    """
-    Remove a `BIFROST_API_URL=<api_url>` line from CWD's .env, if present.
+def _line_assigns_env_var(line: str, key: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}=")
 
-    Returns True if a line was removed.
+
+def _remove_env_connection(api_url: str) -> bool:
+    """
+    Remove a matching folder-local Bifrost connection from CWD's .env.
+
+    The URL is the binding key. Only when it matches ``api_url`` do we remove
+    the URL plus any password-grant access and refresh tokens from that file.
+    Browser login writes only the URL, while password-grant login writes all
+    three values.
+
+    Returns True if a matching connection was removed.
     """
     env_path = pathlib.Path.cwd() / ".env"
     lines = _read_env_file(env_path)
     if not lines:
         return False
     target = api_url.rstrip("/")
-    kept: list[str] = []
-    removed = False
-    for line in lines:
-        stripped = line.lstrip()
-        if stripped.startswith("BIFROST_API_URL=") or stripped.startswith("export BIFROST_API_URL="):
-            value = line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/")
-            if value == target:
-                removed = True
-                continue
-        kept.append(line)
-    if not removed:
+    has_matching_url = any(
+        _line_assigns_env_var(line, "BIFROST_API_URL")
+        and line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/") == target
+        for line in lines
+    )
+    if not has_matching_url:
         return False
+
+    connection_keys = {
+        "BIFROST_API_URL",
+        "BIFROST_ACCESS_TOKEN",
+        "BIFROST_REFRESH_TOKEN",
+    }
+    kept = [
+        line
+        for line in lines
+        if not any(_line_assigns_env_var(line, key) for key in connection_keys)
+    ]
     if all(not line.strip() for line in kept):
         env_path.unlink()
     else:
@@ -1319,15 +1338,18 @@ Usage: bifrost logout [options]
 Clear stored credentials for one Bifrost URL.
 
 If --url is omitted, logs out from the URL resolved by the same rules as
-`bifrost api ...` (BIFROST_API_URL env var, then the first stored URL).
+`bifrost api ...` (folder/env binding, saved default, then the sole stored
+connection).
 
-After clearing the keychain entry, if the current directory's .env contains
-a BIFROST_API_URL line for that URL, you'll be prompted to remove it.
+After clearing persistent credentials, if the current directory's .env is
+bound to that URL, you'll be prompted to remove the complete folder binding.
+For browser login this is the URL; for password login it also includes the
+folder-local access and refresh tokens.
 
 Options:
   --url, -u URL   Specific URL to log out from
   --yes, -y       Auto-confirm the .env removal prompt
-  --no-prompt     Skip the .env prompt entirely (leaves it as-is)
+  --no-prompt     Skip the .env prompt entirely (leaves the folder binding as-is)
   --help, -h      Show this help message
 
 Examples:
@@ -1343,14 +1365,14 @@ Examples:
     if not cleared or target_url is None:
         return 0
 
-    # Prompt to remove the matching .env line, if present
+    # Prompt to remove the matching folder-local connection, if present.
     if no_prompt:
         return 0
     env_path = pathlib.Path.cwd() / ".env"
     if not env_path.exists():
         return 0
     has_match = any(
-        line.lstrip().startswith(("BIFROST_API_URL=", "export BIFROST_API_URL="))
+        _line_assigns_env_var(line, "BIFROST_API_URL")
         and line.split("=", 1)[1].strip().strip('"').strip("'").rstrip("/") == target_url.rstrip("/")
         for line in _read_env_file(env_path)
     )
@@ -1361,17 +1383,14 @@ Examples:
         confirm = "y"
     else:
         try:
-            confirm = input(f"Remove BIFROST_API_URL={target_url} from {env_path}? [y/N] ").strip().lower()
+            confirm = input(
+                f"Remove Bifrost connection for {target_url} from {env_path}? [y/N] "
+            ).strip().lower()
         except EOFError:
             confirm = "n"
     if confirm in ("y", "yes"):
-        removed_url = _remove_env_url_line(target_url)
-        removed_tokens = _remove_env_keys({
-            "BIFROST_ACCESS_TOKEN",
-            "BIFROST_REFRESH_TOKEN",
-        })
-        if removed_url or removed_tokens:
-            print(f"Removed BIFROST_API_URL line from {env_path}")
+        if _remove_env_connection(target_url):
+            print(f"Removed Bifrost connection for {target_url} from {env_path}")
     return 0
 
 
@@ -2417,6 +2436,14 @@ Examples:
         print(f"Error: {parsed.local_path} is not a valid directory", file=sys.stderr)
         return 1
 
+    if resolved == pathlib.Path.home().resolve():
+        print(
+            "Error: refusing to watch your home directory. "
+            "Choose a project or workspace subdirectory instead.",
+            file=sys.stderr,
+        )
+        return 1
+
     # Refuse inside a Solution workspace (D1). `watch` only ever syncs to the
     # global `_repo/` workspace; a Solution developer running it here would
     # silently push their apps/ and workflows/ to `_repo/` instead of the
@@ -3110,10 +3137,15 @@ async def _process_incoming(
     and drops the no-op push.
     """
     ts = datetime.now().strftime('%H:%M:%S')
+    spec = _build_file_filter(base_path)
+    resolved_base = base_path.resolve()
 
     # Process incoming file changes
     for paths, user_name in files:
         for repo_path in paths:
+            rel = _incoming_relative_path(repo_path, repo_prefix)
+            if rel is None or _should_skip_path(rel, spec, repo_path):
+                continue
             try:
                 resp = await client.post("/api/files/read", json={
                     "path": repo_path,
@@ -3125,14 +3157,11 @@ async def _process_incoming(
                     data = resp.json()
                     content = base64.b64decode(data["content"])
                     content_hash = _hash_for_cache(content)
-                    # Convert repo_path to local path
-                    if repo_prefix and repo_path.startswith(repo_prefix + "/"):
-                        rel = repo_path[len(repo_prefix) + 1:]
-                    elif repo_prefix and repo_path.startswith(repo_prefix):
-                        rel = repo_path[len(repo_prefix):]
-                    else:
-                        rel = repo_path
-                    local_file = base_path / rel
+                    local_file = (base_path / rel).resolve()
+                    try:
+                        local_file.relative_to(resolved_base)
+                    except ValueError:
+                        continue
                     local_file.parent.mkdir(parents=True, exist_ok=True)
                     # Skip if we already know the server has this content and
                     # the local file matches (cache hit). Falls back to a byte
@@ -3172,13 +3201,14 @@ async def _process_incoming(
     # Process incoming deletes
     for paths, user_name in deletes:
         for repo_path in paths:
-            if repo_prefix and repo_path.startswith(repo_prefix + "/"):
-                rel = repo_path[len(repo_prefix) + 1:]
-            elif repo_prefix and repo_path.startswith(repo_prefix):
-                rel = repo_path[len(repo_prefix):]
-            else:
-                rel = repo_path
-            local_file = base_path / rel
+            rel = _incoming_relative_path(repo_path, repo_prefix)
+            if rel is None or _should_skip_path(rel, spec, repo_path):
+                continue
+            local_file = (base_path / rel).resolve()
+            try:
+                local_file.relative_to(resolved_base)
+            except ValueError:
+                continue
             if local_file.exists():
                 try:
                     local_file.unlink()
@@ -3435,15 +3465,43 @@ def _safe_server_rel_path(repo_path: str, repo_prefix: str) -> str:
     return rel
 
 
+def _has_hidden_path_component(path: str) -> bool:
+    """Return whether a POSIX repo path contains a hidden component."""
+    normalized = path.replace("\\", "/")
+    return any(part.startswith(".") for part in pathlib.PurePosixPath(normalized).parts)
+
+
 def _should_skip_path(
     rel_path: str,
     spec: "pathspec.PathSpec",
     repo_path: str | None = None,
 ) -> bool:
-    """Check if a relative path should be skipped during push/watch."""
+    """Apply hidden-path, canonical, and gitignore filtering."""
+    if _has_hidden_path_component(rel_path):
+        return True
+    if repo_path is not None and _has_hidden_path_component(repo_path):
+        return True
     if spec.match_file(rel_path):
         return True
     return repo_path is not None and repo_path != rel_path and spec.match_file(repo_path)
+
+
+def _incoming_relative_path(repo_path: str, repo_prefix: str) -> str | None:
+    """Map an incoming repo key to a safe, in-scope local relative path."""
+    normalized = repo_path.replace("\\", "/")
+    if not normalized or normalized.startswith("/"):
+        return None
+    if any(part in ("", ".", "..") for part in normalized.split("/")):
+        return None
+
+    if repo_prefix:
+        prefix = repo_prefix.replace("\\", "/").strip("/")
+        prefix_with_slash = prefix + "/"
+        if not normalized.startswith(prefix_with_slash):
+            return None
+        normalized = normalized[len(prefix_with_slash):]
+
+    return normalized or None
 
 
 def _collect_push_files(

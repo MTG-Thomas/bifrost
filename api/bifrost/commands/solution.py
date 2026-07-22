@@ -402,9 +402,9 @@ def _v2_scaffold_files(slug: str, api_url: str) -> dict[str, str]:
     Designed so a developer's local ``npm run dev`` works with ZERO token
     pasting: ``vite.config.ts`` reads the CLI's own ``BIFROST_API_URL`` +
     ``BIFROST_ACCESS_TOKEN`` (the ones ``bifrost login`` already wrote to .env)
-    and exposes them to the app. Deployed, the platform injects
-    ``window.__BIFROST_APP__`` instead; ``main.tsx`` prefers that and falls back
-    to the dev env, so one source builds + runs in both places (Codex R4 DX).
+    and exposes them to the app. Deployed, the platform calls the app's explicit
+    ``mount()`` lifecycle with per-mount bootstrap data. Local Vite dev invokes
+    that same lifecycle with the dev env, so one source runs in both places.
     """
     pkg = {
         "name": slug,
@@ -452,7 +452,7 @@ import { defineConfig } from "vite";
 //      stores the token in the OS keyring / ~/.bifrost/credentials.json (NOT a
 //      .env), so without this the normal login path leaves `npm run dev`
 //      tokenless (R7-P2-f).
-// Deployed, window.__BIFROST_APP__ supplies these instead and main.tsx prefers it.
+// Deployed, the platform passes these values to the app's mount() lifecycle.
 function readBifrostEnv() {
   const out = {
     url: process.env.BIFROST_API_URL || "",
@@ -500,8 +500,8 @@ export default defineConfig(({ command }) => {
   // SECURITY: the dev token is injected ONLY for `vite` (serve / `npm run dev`),
   // never for `vite build`. Baking BIFROST_ACCESS_TOKEN into the production
   // bundle via `define` would ship a usable credential to every app user
-  // (Codex R6-P1-c). In a deployed build the token comes from
-  // window.__BIFROST_APP__ at runtime (per viewer); the bundle stays tokenless.
+  // (Codex R6-P1-c). In a deployed build the token comes from the platform's
+  // per-mount bootstrap at runtime; the bundle stays tokenless.
   const define =
     command === "serve"
       ? {
@@ -522,10 +522,14 @@ export default defineConfig(({ command }) => {
 """
     index_html = f"""\
 <!doctype html>
-<html lang="en">
-  <head><meta charset="UTF-8" /><title>{slug}</title></head>
-  <body>
-    <div id="root"></div>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="bifrost-app-runtime" content="mount-v1" />
+    <title>{slug}</title>
+  </head>
+  <body class="h-full">
+    <div id="root" class="h-full"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
@@ -539,42 +543,66 @@ import { BifrostProvider } from "bifrost";
 import App from "./App";
 import "./index.css";
 
-// Deployed: the platform injects this app's bootstrap (mount node, basename,
-// per-viewer token, org). It keys the bootstrap by THIS entry's `m` nonce in a
-// registry, so a fast navigation between two apps can't make our still-loading
-// entry read the OTHER app's bootstrap (Codex #9). Read our own nonce from this
-// module's URL and prefer the registry; fall back to the legacy single object
-// (older hosts) and finally to a local #root for `npm run dev`.
-const __m = new URL(import.meta.url).searchParams.get("m");
-const boot =
-  (__m && window.__BIFROST_APPS__ && window.__BIFROST_APPS__[__m]) ||
-  window.__BIFROST_APP__;
-const mountEl = boot?.mountEl ?? document.getElementById("root")!;
-const basename = boot?.basename ?? "/";
-const baseUrl = boot?.baseUrl ?? import.meta.env.VITE_BIFROST_API_URL ?? window.location.origin;
-const token = boot?.token ?? import.meta.env.VITE_BIFROST_TOKEN ?? "";
-// Precedence (boot over VITE env) is locked by client/src/lib/app-sdk/dev-bootstrap.test.ts
-const orgScope = boot?.orgScope ?? import.meta.env.VITE_BIFROST_ORG_ID ?? null;
-// This app's id, so useWorkflow scopes path refs to THIS install's workflow.
-const appId = boot?.appId ?? import.meta.env.VITE_BIFROST_APP_ID ?? null;
-// Platform theme, so the app starts in sync. supportsTheme is ON by default:
-// the scaffold ships Tailwind + the shadcn `.dark` token layer, so the app DOES
-// respond to theme — which makes BifrostHeader show the light/dark toggle.
-const theme = boot?.theme ?? "light";
+export interface BifrostAppBootstrap {
+  basename: string;
+  baseUrl: string;
+  token: string;
+  orgScope: string | null;
+  appId: string | null;
+  onLogout: () => void;
+  theme: "light" | "dark";
+}
 
-const root = createRoot(mountEl);
-// Let the platform tear this root down on navigation (no leak).
-boot?.registerUnmount?.(() => root.unmount());
+interface BifrostAppModule {
+  mount: (mountEl: HTMLElement, bootstrap: BifrostAppBootstrap) => () => void;
+}
 
-root.render(
-  <StrictMode>
-    <BifrostProvider baseUrl={baseUrl} token={token} orgScope={orgScope} appId={appId} theme={theme} supportsTheme onLogout={boot?.onLogout}>
-      <BrowserRouter basename={basename}>
-        <App />
-      </BrowserRouter>
-    </BifrostProvider>
-  </StrictMode>,
-);
+declare global {
+  interface Window {
+    __BIFROST_APP_MODULES__?: Map<string, BifrostAppModule>;
+  }
+}
+
+export function mount(mountEl: HTMLElement, bootstrap: BifrostAppBootstrap) {
+  const root = createRoot(mountEl);
+  root.render(
+    <StrictMode>
+      <BifrostProvider
+        baseUrl={bootstrap.baseUrl}
+        token={bootstrap.token}
+        orgScope={bootstrap.orgScope}
+        appId={bootstrap.appId}
+        theme={bootstrap.theme}
+        supportsTheme
+        onLogout={bootstrap.onLogout}
+      >
+        <BrowserRouter basename={bootstrap.basename}>
+          <App />
+        </BrowserRouter>
+      </BifrostProvider>
+    </StrictMode>,
+  );
+  return () => root.unmount();
+}
+
+// Register the reusable factory under this immutable entry's canonical URL.
+// Child chunks import this exact URL, so the browser evaluates the graph once.
+(window.__BIFROST_APP_MODULES__ ??= new Map()).set(import.meta.url, { mount });
+
+// Vite dev serves this entry directly; production mounting is owned by the host.
+if (import.meta.env.DEV) {
+  const mountEl = document.getElementById("root");
+  if (!mountEl) throw new Error("Missing #root mount element");
+  mount(mountEl, {
+    basename: "/",
+    baseUrl: import.meta.env.VITE_BIFROST_API_URL ?? window.location.origin,
+    token: import.meta.env.VITE_BIFROST_TOKEN ?? "",
+    orgScope: import.meta.env.VITE_BIFROST_ORG_ID ?? null,
+    appId: import.meta.env.VITE_BIFROST_APP_ID ?? null,
+    onLogout: () => window.location.assign("/login"),
+    theme: document.documentElement.classList.contains("dark") ? "dark" : "light",
+  });
+}
 """
     app_tsx = """\
 import { Routes, Route, Link } from "react-router-dom";
@@ -1247,8 +1275,8 @@ def _collect_apps(workspace: pathlib.Path) -> list[dict]:
                 # `.env.local` holds BIFROST_ACCESS_TOKEN (the documented local
                 # dev override) — shipping it lets the server-side Vite build
                 # bake the token into the public JS, leaking it to every app
-                # user (Codex R6-P1-c). The token reaches the runtime via
-                # window.__BIFROST_APP__, never the bundle.
+                # user (Codex R6-P1-c). The host passes the token through the
+                # per-mount bootstrap at runtime, never through the bundle.
                 if f.name == ".env" or f.name.startswith(".env."):
                     continue
                 rel_parts = f.relative_to(app_dir).parts
@@ -2231,7 +2259,9 @@ def start_cmd(
     from bifrost.solution_dev.scaffold_check import (
         ORG_NULL_HINT,
         PATCH_HINT,
+        MOUNT_RUNTIME_HINT,
         main_tsx_needs_dev_fallback,
+        main_tsx_needs_mount_runtime,
         vite_config_needs_org_null,
     )
 
@@ -2263,6 +2293,8 @@ def start_cmd(
     main_tsx = chosen.app_dir / "src" / "main.tsx"
     if main_tsx_needs_dev_fallback(main_tsx):
         click.echo(PATCH_HINT, err=True)
+    if main_tsx_needs_mount_runtime(main_tsx):
+        click.echo(MOUNT_RUNTIME_HINT, err=True)
     if vite_config_needs_org_null(chosen.app_dir / "vite.config.ts"):
         click.echo(ORG_NULL_HINT, err=True)
 
@@ -2327,6 +2359,39 @@ def start_cmd(
                     f"npm install failed in {chosen.app_dir} (exit {exc.returncode}) "
                     "— see the npm output above."
                 )
+
+    async def _fetch_server_version() -> tuple[str | None, int | None]:
+        resp = await client.get("/api/version")
+        if resp.status_code != 200:
+            return None, None
+        data = resp.json()
+        fp = data.get("sdk_fingerprint")
+        fp = fp if isinstance(fp, str) else None
+        if fp == "unavailable":
+            # Server's own toolchain failed to compute a fingerprint — no
+            # signal to compare against, treat like an old server.
+            fp = None
+        contract = data.get("sdk_contract_version")
+        contract = contract if isinstance(contract, int) else None
+        return fp, contract
+
+    try:
+        server_fp, server_contract = asyncio.run(_fetch_server_version())
+    except Exception:
+        # The staleness check must never block `start`: network errors, an
+        # old server without this field, bad JSON, or anything else the
+        # server does wrong all degrade to "no warning", not a crash.
+        server_fp, server_contract = None, None
+
+    warning = sdk_staleness_warning(
+        installed_sdk_fingerprint(chosen.app_dir),
+        server_fp,
+        installed_sdk_contract(chosen.app_dir),
+        server_contract,
+    )
+    if warning is not None:
+        message, severity = warning
+        click.secho(message, fg="red" if severity == "breaking" else "yellow")
 
     proxy_origin = (public_url or f"http://127.0.0.1:{port}").rstrip("/")
     vite_env = _vite_child_env(
@@ -2884,6 +2949,194 @@ def _restore_sdk_dep(app_dir: pathlib.Path, api_url: str, original: str) -> None
             pkg_file.write_text(text.replace(expected, original), encoding="utf-8")
     except OSError:
         pass  # best-effort: worst case the user re-heals on a later start
+
+
+def installed_sdk_fingerprint(app_dir: pathlib.Path) -> str | None:
+    """Read the ``bifrost.fingerprint`` stamp from the installed SDK's
+    ``package.json``, or ``None`` if it's missing, unreadable, or unstamped
+    (an old SDK predating the staleness gate). Pure/no-network — Task 6
+    reuses this to decide whether the app's SDK needs `sdk update`."""
+    pkg_file = app_dir / "node_modules" / "bifrost" / "package.json"
+    try:
+        pkg = json.loads(pkg_file.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    stamp = pkg.get("bifrost")
+    if not isinstance(stamp, dict):
+        return None
+    fingerprint = stamp.get("fingerprint")
+    return fingerprint if isinstance(fingerprint, str) else None
+
+
+def sdk_staleness_warning(
+    installed_fp: str | None,
+    server_fp: str | None,
+    installed_contract: int | None,
+    server_contract: int | None,
+) -> tuple[str, str] | None:  # (message, severity: "warn"|"breaking") or None
+    """Decide whether `solution start` should warn that the locally-installed
+    web SDK is stale relative to the server. Pure/no-network — callers own
+    fetching `server_fp`/`server_contract` from `GET /api/version` and reading
+    `installed_fp`/`installed_contract` via `installed_sdk_fingerprint` /
+    `installed_sdk_contract`.
+
+    Tiered: "no change" is silent, "non-breaking" is gentle (yellow), a
+    contract mismatch is loud (red) since hooks may actually fail.
+    """
+    if server_fp is None:
+        # Old server (predates the staleness gate), fetch failure, or the
+        # server's own toolchain couldn't compute a fingerprint — no signal,
+        # so stay silent rather than nag.
+        return None
+    if installed_fp is not None and installed_fp == server_fp:
+        return None  # nothing changed -> never prompts
+
+    update_hint = "Run: bifrost solution sdk update"
+    if (
+        installed_contract is not None
+        and server_contract is not None
+        and installed_contract != server_contract
+    ):
+        return (
+            f"Web SDK is incompatible with this server (SDK contract "
+            f"v{installed_contract}, server v{server_contract}) — hooks may "
+            f"fail. {update_hint}",
+            "breaking",
+        )
+
+    return (
+        f"Web SDK update available (non-breaking). {update_hint}",
+        "warn",
+    )
+
+
+def installed_sdk_contract(app_dir: pathlib.Path) -> int | None:
+    """Read the ``bifrost.contract`` stamp from the installed SDK's
+    ``package.json``, or ``None`` if missing/unreadable/unstamped. Sibling to
+    ``installed_sdk_fingerprint``; Task 6 reuses this for the CLI/SDK contract
+    version gate."""
+    pkg_file = app_dir / "node_modules" / "bifrost" / "package.json"
+    try:
+        pkg = json.loads(pkg_file.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    stamp = pkg.get("bifrost")
+    if not isinstance(stamp, dict):
+        return None
+    contract = stamp.get("contract")
+    return contract if isinstance(contract, int) else None
+
+
+@click.group(name="sdk", help="Manage the app's vendored Bifrost SDK.")
+def sdk_group() -> None:
+    pass
+
+
+solution_group.add_command(sdk_group)
+
+
+@sdk_group.command(
+    name="update",
+    help="Re-vendor the Bifrost SDK into the app (re-download + reinstall).",
+)
+@click.argument("path", type=click.Path(exists=True, file_okay=False), default=".")
+@click.option(
+    "--app",
+    "app_slug",
+    default=None,
+    help="standalone_v2 app slug (required when the Solution has multiple apps).",
+)
+def sdk_update_cmd(path: str, app_slug: str | None) -> None:
+    import shutil
+
+    from bifrost.solution_dev.app_select import AppSelectionError, select_app
+
+    workspace = _workspace_from_path_arg(path)
+    if not is_solution_workspace(workspace):
+        raise click.ClickException(
+            f"No {DESCRIPTOR_FILENAME} in {workspace} — not a Solution workspace. "
+            f"Run `bifrost solution init` first."
+        )
+    descriptor = load_descriptor(workspace)
+
+    client = BifrostClient.get_instance(require_auth=True)
+    binding = asyncio.run(
+        _resolve_bound_solution(client, workspace, descriptor, None)
+    )
+    click.echo(f"Using Solution install id: {binding.solution_id}")
+
+    try:
+        chosen = select_app(workspace, slug=app_slug)
+    except AppSelectionError as exc:
+        message = str(exc)
+        if app_slug is None and message.startswith("Multiple apps found"):
+            message = f"{message} For SDK updates, pass --app <slug>."
+        raise click.ClickException(message)
+
+    async def _fetch_server_fingerprint() -> str | None:
+        resp = await client.get("/api/version")
+        if resp.status_code != 200:
+            click.echo(
+                f"  warning: could not reach /api/version ({resp.status_code}) — "
+                "continuing without server-side verification.",
+                err=True,
+            )
+            return None
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        fingerprint = data.get("sdk_fingerprint")
+        return fingerprint if isinstance(fingerprint, str) else None
+
+    server_fingerprint = asyncio.run(_fetch_server_fingerprint())
+    if server_fingerprint is None:
+        click.echo(
+            "  note: this server does not report sdk_fingerprint (predates the "
+            "staleness gate) — updating without verification."
+        )
+    elif server_fingerprint == "unavailable":
+        click.echo(
+            "  note: server could not compute its own SDK fingerprint "
+            "(toolchain failure) — updating without verification."
+        )
+        server_fingerprint = None
+
+    old_fingerprint = installed_sdk_fingerprint(chosen.app_dir)
+
+    if server_fingerprint is not None and old_fingerprint == server_fingerprint:
+        click.echo(f"SDK already up to date ({old_fingerprint})")
+        return
+
+    bifrost_modules = chosen.app_dir / "node_modules" / "bifrost"
+    if bifrost_modules.is_dir():
+        shutil.rmtree(bifrost_modules)
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise click.ClickException("npm not found on PATH — install Node.js to run this command.")
+
+    dep_spec = f"bifrost@{client.api_url.rstrip('/')}{_SDK_DOWNLOAD_SUFFIX}"
+    click.echo(f"Reinstalling {dep_spec}...")
+    try:
+        subprocess.run([npm, "install", "--force", dep_spec], cwd=chosen.app_dir, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"npm install failed in {chosen.app_dir} (exit {exc.returncode}) "
+            "— see the npm output above."
+        )
+
+    new_fingerprint = installed_sdk_fingerprint(chosen.app_dir)
+
+    if server_fingerprint is not None and new_fingerprint != server_fingerprint:
+        raise click.ClickException(
+            f"SDK still stale after reinstall: was {old_fingerprint!r}, now "
+            f"{new_fingerprint!r}, server wants {server_fingerprint!r}. The npm "
+            "registry/cache may be serving an old tarball — try again or check "
+            "the SDK download endpoint."
+        )
+
+    click.echo(f"SDK updated: {old_fingerprint} -> {new_fingerprint}")
 
 
 def _ensure_port_free(port: int) -> None:

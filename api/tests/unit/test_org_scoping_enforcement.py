@@ -95,9 +95,11 @@ ALLOW_LIST_INLINE_ORG: set[tuple[str, str, str]] = {
     ('routers/knowledge_sources.py', 'KnowledgeNamespaceRole.organization_id == org_id,', 'knowledge sources inline cascade; phase 6 migrates'),
     # The KnowledgeStore document-list inline cascades were removed (EXT-1
     # NEW-J) — list_all_documents / list_documents now route through
-    # org_filter_clause (the single source of truth that honors the EMPTY
-    # sentinel). Only the namespace-role + target_org_id lookups remain inline.
-    ('routers/knowledge_sources.py', 'KnowledgeStore.organization_id == target_org_id,', 'knowledge sources inline cascade; phase 6 migrates'),
+    # org_filter_clause. The single-document update/conflict lookups moved
+    # into KnowledgeRepository (replace_chunked / find_document_id /
+    # delete_document); this entry now covers only the BULK scope-update
+    # conflict check.
+    ('routers/knowledge_sources.py', 'KnowledgeStore.organization_id == target_org_id,', 'bulk scope-update conflict check; phase 6 migrates'),
     ('routers/llm_config.py', 'SystemConfig.organization_id.is_(None),', 'SystemConfig admin lookup; pre-repo pattern (permanent)'),
     ('routers/mcp_connections.py', 'query = query.where(MCPConnection.organization_id == scope_org)', 'MCP connection org filter; phase 6 migrates'),
     ('routers/metrics.py', 'query = query.where(ExecutionMetricsDaily.organization_id == org_uuid)', 'ExecutionMetricsDaily identity-entity filter (permanent)'),
