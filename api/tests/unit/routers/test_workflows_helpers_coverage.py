@@ -265,7 +265,6 @@ async def test_insert_scheduled_execution_persists_expected_execution_fields():
         executed_by=executed_by,
         executed_by_name="Ada",
         form_id=form_id,
-        api_key_id=None,
         is_platform_admin=True,
     )
 

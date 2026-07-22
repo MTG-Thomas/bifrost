@@ -767,6 +767,14 @@ class BifrostClient:
         """Make GET request."""
         return await self._request_with_refresh("get", path, **kwargs)
 
+    async def get_once(self, path: str, **kwargs) -> httpx.Response:
+        """Make one GET attempt without refresh or transient-status retries.
+
+        This is intentionally narrow: fail-closed recovery probes must preserve
+        the first response rather than masking it with the SDK retry policy.
+        """
+        return await self._get_async_client().get(path, **kwargs)
+
     async def post(self, path: str, **kwargs) -> httpx.Response:
         """Make POST request."""
         return await self._request_with_refresh("post", path, **kwargs)
