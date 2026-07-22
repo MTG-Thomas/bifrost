@@ -910,7 +910,6 @@ async def execute_form(
             executed_by=ctx.user.user_id,
             executed_by_name=ctx.user.name or ctx.user.email or "Unknown",
             form_id=form.id,
-            api_key_id=None,
             is_platform_admin=ctx.user.is_superuser,
             is_provider_org=getattr(ctx.user, "is_provider_org", False),
             is_external=getattr(ctx.user, "is_external", False),

@@ -4275,6 +4275,55 @@ async def _recover_execution_submission(
     return data
 
 
+async def _print_api_response(
+    response: httpx.Response,
+    client: "BifrostClient",
+    execution_id: str | None,
+) -> int:
+    """Validate and print one API response, recovering a known submission ID."""
+    try:
+        data = response.json()
+    except Exception:
+        print(response.text)
+        return 0 if response.status_code < 400 else 1
+
+    if execution_id and response.status_code < 400:
+        if not isinstance(data, dict) or data.get("execution_id") != execution_id:
+            recovered = await _recover_execution_submission(client, execution_id)
+            if recovered is None:
+                raise ValueError(
+                    "submission response did not contain the expected "
+                    f"execution_id; recovery GET /api/executions/{execution_id} "
+                    "did not find it"
+                )
+            data = recovered
+
+    print(_render_api_json(data))
+    return 0 if response.status_code < 400 else 1
+
+
+async def _recover_api_transport_failure(
+    client: "BifrostClient",
+    execution_id: str,
+) -> bool:
+    """Attempt one exact read-only recovery and emit deterministic evidence."""
+    recovery_path = f"/api/executions/{execution_id}"
+    try:
+        recovered = await _recover_execution_submission(client, execution_id)
+    except Exception as exc:
+        _print_api_failure("GET", recovery_path, exc)
+        return False
+    if recovered is None:
+        _print_api_failure(
+            "GET",
+            recovery_path,
+            LookupError("matching execution was not found"),
+        )
+        return False
+    print(_render_api_json(recovered))
+    return True
+
+
 async def _api_request(method: str, endpoint: str, body: Any | None, client: "BifrostClient | None" = None) -> int:
     if client is None:
         try:
@@ -4293,40 +4342,10 @@ async def _api_request(method: str, endpoint: str, body: Any | None, client: "Bi
 
     try:
         response = await http_fn(endpoint, **kwargs)
-        try:
-            data = response.json()
-        except Exception:
-            print(response.text)
-            return 0 if response.status_code < 400 else 1
-
-        if execution_id and response.status_code < 400:
-            if not isinstance(data, dict) or data.get("execution_id") != execution_id:
-                recovered = await _recover_execution_submission(client, execution_id)
-                if recovered is None:
-                    raise ValueError(
-                        "submission response did not contain the expected "
-                        f"execution_id; recovery GET /api/executions/{execution_id} "
-                        "did not find it"
-                    )
-                data = recovered
-
-        print(_render_api_json(data))
-        return 0 if response.status_code < 400 else 1
+        return await _print_api_response(response, client, execution_id)
     except httpx.TransportError as exc:
-        if execution_id:
-            try:
-                recovered = await _recover_execution_submission(client, execution_id)
-            except Exception as recovery_exc:
-                _print_api_failure("GET", f"/api/executions/{execution_id}", recovery_exc)
-            else:
-                if recovered is not None:
-                    print(_render_api_json(recovered))
-                    return 0
-                _print_api_failure(
-                    "GET",
-                    f"/api/executions/{execution_id}",
-                    LookupError("matching execution was not found"),
-                )
+        if execution_id and await _recover_api_transport_failure(client, execution_id):
+            return 0
         _print_api_failure(method, endpoint, exc)
         return 1
     except Exception as exc:

@@ -104,10 +104,11 @@ async def test_rejects_reuse_for_different_work(field, replacement) -> None:
         "form_id": existing.form_id,
     }
     supplied[field] = replacement
+    db = _Db(existing)
 
     with pytest.raises(ExecutionSubmissionConflictError, match="different work"):
         await recover_execution_submission(
-            _Db(existing),
+            db,
             execution_id=existing.id,
             **supplied,
         )
