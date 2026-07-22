@@ -19,20 +19,20 @@ import pytest
 
 
 def test_tarball_package_json_carries_fingerprint():
-    from src.services.sdk_package import build_sdk_tarball, sdk_fingerprint
+    from src.services import sdk_package as sdkpkg
 
-    data = build_sdk_tarball("v1.2.3")
+    data = sdkpkg.build_sdk_tarball("v1.2.3")
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         pkg = json.load(tar.extractfile("package/package.json"))
 
-    assert pkg["bifrost"]["fingerprint"] == sdk_fingerprint("v1.2.3")
+    assert pkg["bifrost"]["fingerprint"] == sdkpkg.sdk_fingerprint("v1.2.3")
     assert len(pkg["bifrost"]["fingerprint"]) == 16
 
 
 def test_fingerprint_is_stable_across_calls(monkeypatch):
     import hashlib
 
-    import src.services.sdk_package as sdkpkg
+    from src.services import sdk_package as sdkpkg
 
     bundle = b"stable-sdk-bundle"
     monkeypatch.setattr(sdkpkg, "_built_bundle", lambda _version: bundle)
@@ -43,9 +43,9 @@ def test_fingerprint_is_stable_across_calls(monkeypatch):
 
 
 def test_sdk_contract_version_is_positive_int():
-    from src.services.sdk_package import sdk_contract_version
+    from src.services import sdk_package as sdkpkg
 
-    version = sdk_contract_version()
+    version = sdkpkg.sdk_contract_version()
     assert isinstance(version, int)
     assert version > 0
 
@@ -53,20 +53,20 @@ def test_sdk_contract_version_is_positive_int():
 def test_sdk_contract_version_matches_json_file():
     import json as _json
 
-    from src.services.sdk_package import _SDK_SRC, sdk_contract_version
+    from src.services import sdk_package as sdkpkg
 
-    contract = _json.loads((_SDK_SRC / "sdk-contract.json").read_text())
-    assert sdk_contract_version() == contract["version"]
+    contract = _json.loads((sdkpkg._SDK_SRC / "sdk-contract.json").read_text())
+    assert sdkpkg.sdk_contract_version() == contract["version"]
 
 
 def test_tarball_package_json_carries_contract_version():
-    from src.services.sdk_package import build_sdk_tarball, sdk_contract_version
+    from src.services import sdk_package as sdkpkg
 
-    data = build_sdk_tarball("v1.2.3")
+    data = sdkpkg.build_sdk_tarball("v1.2.3")
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         pkg = json.load(tar.extractfile("package/package.json"))
 
-    assert pkg["bifrost"]["contract"] == sdk_contract_version()
+    assert pkg["bifrost"]["contract"] == sdkpkg.sdk_contract_version()
 
 
 def test_version_endpoint_reports_sdk_fingerprint_and_contract(monkeypatch):
@@ -135,7 +135,7 @@ def test_version_endpoint_tolerates_fingerprint_failure(monkeypatch):
 def test_sdk_fingerprint_does_not_cache_failures(monkeypatch):
     """A transient node hiccup must be retryable on the next call, not
     permanently cached as a failure."""
-    import src.services.sdk_package as sdkpkg
+    from src.services import sdk_package as sdkpkg
 
     calls = {"n": 0}
 
