@@ -12,8 +12,6 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
-
 import sqlalchemy as sa
 from croniter import croniter
 from sqlalchemy import select
