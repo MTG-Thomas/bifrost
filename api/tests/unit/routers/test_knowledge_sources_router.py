@@ -56,6 +56,9 @@ class _Db:
     def add(self, obj):
         self.added.append(obj)
 
+    def add_all(self, objects):
+        self.added.extend(objects)
+
     async def flush(self):
         self.flushed += 1
 
@@ -82,6 +85,9 @@ def _doc(**overrides):
         "organization_id": uuid4(),
         "created_at": datetime(2026, 7, 5, tzinfo=timezone.utc),
         "updated_at": datetime(2026, 7, 5, tzinfo=timezone.utc),
+        "created_by": uuid4(),
+        "chunk_index": 0,
+        "chunk_count": 1,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -272,7 +278,11 @@ async def test_update_document_handles_not_found_embedding_error_and_conflict(mo
     assert missing.value.status_code == 404
 
     doc = _doc(id=doc_id)
-    db = _Db(_ExecuteResult([doc]))
+    db = _Db(
+        _ExecuteResult([doc]),
+        _ExecuteResult(scalar=doc.id),
+        _ExecuteResult([doc]),
+    )
 
     async def no_embedder(_db):
         raise ValueError("no provider")
@@ -300,7 +310,12 @@ async def test_update_document_handles_not_found_embedding_error_and_conflict(mo
 
     monkeypatch.setattr(factory, "get_embedding_client", embedder)
     conflict_id = uuid4()
-    db = _Db(_ExecuteResult([doc]), _ExecuteResult(scalar=conflict_id))
+    db = _Db(
+        _ExecuteResult([doc]),
+        _ExecuteResult(scalar=doc.id),
+        _ExecuteResult([doc]),
+        _ExecuteResult(scalar=conflict_id),
+    )
     with pytest.raises(HTTPException) as conflict:
         await knowledge_sources.update_document(
             "docs",
@@ -323,14 +338,22 @@ async def test_update_delete_and_delete_namespace_success_paths(monkeypatch):
     doc = _doc()
 
     class Embedder:
-        async def embed(self, content):
-            return [0.3, 0.4]
+        async def embed(self, chunks):
+            return [[0.3, 0.4] for _chunk in chunks]
 
     async def embedder(_db):
         return Embedder()
 
     monkeypatch.setattr(factory, "get_embedding_client", embedder)
-    db = _Db(_ExecuteResult([doc]), _ExecuteResult([]))
+    db = _Db(
+        _ExecuteResult([doc]),
+        _ExecuteResult(scalar=doc.id),
+        _ExecuteResult([doc]),
+        _ExecuteResult(),
+        _ExecuteResult([doc]),
+        _ExecuteResult(),
+        _ExecuteResult([doc]),
+    )
 
     updated = await knowledge_sources.update_document(
         "docs",
@@ -346,7 +369,7 @@ async def test_update_delete_and_delete_namespace_success_paths(monkeypatch):
     assert updated.metadata == {"kind": "runbook"}
     assert updated.organization_id is None
     assert doc.embedding == [0.3, 0.4]
-    assert db.flushed == 1
+    assert db.flushed == 2
 
     delete_db = _Db(_ExecuteResult([doc]), _ExecuteResult(rowcount=1))
     await knowledge_sources.delete_document("docs", doc.id, delete_db, _user())

@@ -406,7 +406,7 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
     publish_execution_update.assert_awaited_once_with(
         execution_id,
         "Success",
-        {"result": {"ok": True}, "durationMs": 123},
+        {"duration_ms": 123},
     )
     publish_history_update.assert_awaited_once()
     cleanup_cache.assert_awaited_once_with(execution_id)

@@ -435,10 +435,12 @@ async def test_get_by_key_and_namespace_listing_convert_rows_to_documents():
         organization_id=org_id,
         key="handbook.md",
         created_at=None,
+        chunk_index=0,
+        chunk_count=1,
     )
     session = AsyncMock()
     session.execute.side_effect = [
-        _ScalarOneOrNoneResult(doc),
+        _ScalarsResult([doc]),
         _ScalarsResult([doc, SimpleNamespace(**{**doc.__dict__, "key": None})]),
     ]
     repo = KnowledgeRepository(session, org_id=org_id, is_superuser=False)
@@ -462,7 +464,7 @@ async def test_get_by_key_and_namespace_listing_convert_rows_to_documents():
 @pytest.mark.asyncio
 async def test_get_by_key_returns_none_when_missing():
     session = AsyncMock()
-    session.execute.return_value = _ScalarOneOrNoneResult(None)
+    session.execute.return_value = _ScalarsResult([])
     repo = KnowledgeRepository(session, org_id=None, is_superuser=True)
 
     assert await repo.get_by_key("missing.md", "docs") is None
@@ -480,6 +482,8 @@ async def test_get_by_id_applies_scope_and_converts_document():
         organization_id=None,
         key="global.md",
         created_at=None,
+        chunk_index=0,
+        chunk_count=1,
     )
     session = AsyncMock()
     session.execute.return_value = _ScalarOneOrNoneResult(doc)

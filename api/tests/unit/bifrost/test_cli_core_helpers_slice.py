@@ -25,7 +25,7 @@ def test_env_helpers_upsert_gitignore_and_remove_values(tmp_path, monkeypatch, c
     assert (tmp_path / ".gitignore").read_text() == "dist\n.env\n"
     assert "Updated" in capsys.readouterr().out
 
-    assert cli._remove_env_url_line("https://api.example/")
+    assert cli._remove_env_connection("https://api.example/")
     assert "BIFROST_API_URL" not in (tmp_path / ".env").read_text()
     assert cli._remove_env_keys({"OLD", "ADDED"})
     assert (tmp_path / ".env").read_text() == "NO_NEWLINE=value\n"
@@ -36,7 +36,7 @@ def test_env_remove_deletes_blank_env_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text("BIFROST_API_URL='https://api.example'\n\n")
 
-    assert cli._remove_env_url_line("https://api.example")
+    assert cli._remove_env_connection("https://api.example")
     assert not (tmp_path / ".env").exists()
     assert cli._read_env_file(tmp_path / "missing.env") == []
 
