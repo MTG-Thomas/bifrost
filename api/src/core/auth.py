@@ -173,6 +173,18 @@ async def get_current_user_optional(
     # else: superuser with no org = system account (valid)
     # else: embed token without org = valid (HMAC-verified)
 
+    delegated_user_id: UUID | None = None
+    delegated_user_id_str = payload.get("delegated_user_id")
+    if delegated_user_id_str:
+        try:
+            delegated_user_id = UUID(delegated_user_id_str)
+        except ValueError:
+            logger.warning(
+                f"Token for user {user_id} has invalid delegated_user_id format: "
+                f"{delegated_user_id_str}"
+            )
+            return None
+
     return UserPrincipal(
         user_id=user_id,
         email=payload.get("email", ""),
@@ -189,6 +201,13 @@ async def get_current_user_optional(
         app_id=payload.get("app_id"),
         form_id=payload.get("form_id"),
         verified_params=payload.get("verified_params"),
+        delegated_user_id=delegated_user_id,
+        delegated_email=payload.get("delegated_email", ""),
+        delegated_name=payload.get("delegated_name", ""),
+        delegated_is_superuser=payload.get("delegated_is_superuser", False),
+        delegated_is_provider_org=payload.get(
+            "delegated_is_provider_org", False
+        ),
     )
 
 

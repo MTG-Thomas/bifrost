@@ -61,6 +61,14 @@ class UserPrincipal:
     app_id: str | None = None  # App ID for embed tokens
     form_id: str | None = None  # Form ID for form embed tokens
     verified_params: dict[str, str] | None = None  # HMAC-verified query params
+    # Original caller identity carried only by the internal workflow-engine
+    # token. The token retains transport authority, while delegated execution
+    # authorization and audit identity use these claims instead of the engine.
+    delegated_user_id: UUID | None = None
+    delegated_email: str = ""
+    delegated_name: str = ""
+    delegated_is_superuser: bool = False
+    delegated_is_provider_org: bool = False
 
     @property
     def is_platform_admin(self) -> bool:

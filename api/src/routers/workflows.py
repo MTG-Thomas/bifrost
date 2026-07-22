@@ -739,6 +739,32 @@ def _validate_execution_identity_overrides(
         )
 
 
+def _effective_execution_user(ctx: Context):
+    """Return the original caller for an internal engine delegation."""
+    from src.core.principal import UserPrincipal
+    from src.core.security import ENGINE_USER_ID
+
+    if str(ctx.user.user_id) != ENGINE_USER_ID:
+        return ctx.user
+
+    if ctx.user.delegated_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Delegated workflow is missing original caller identity",
+        )
+
+    return UserPrincipal(
+        user_id=ctx.user.delegated_user_id,
+        email=ctx.user.delegated_email,
+        organization_id=ctx.org_id,
+        name=ctx.user.delegated_name,
+        is_active=True,
+        is_superuser=ctx.user.delegated_is_superuser,
+        is_verified=True,
+        is_provider_org=ctx.user.delegated_is_provider_org,
+    )
+
+
 @router.post(
     "/execute",
     response_model=WorkflowExecutionResponse,
@@ -772,11 +798,13 @@ async def execute_workflow(
     from src.repositories import AccessDeniedError, WorkflowRepository
     from src.core.org_filter import resolve_target_org
 
+    effective_user = _effective_execution_user(ctx)
+
     # Resolve org scope for workflow lookup — follows the same pattern as
     # configs, tables, etc. Superusers can pass org_id to search that org;
     # regular users always use their own org.
     lookup_org_id = resolve_target_org(
-        user=user,
+        user=effective_user,
         scope=request.org_id,
         default_org_id=ctx.org_id,
     )
@@ -784,14 +812,14 @@ async def execute_workflow(
     workflow_repo = WorkflowRepository(
         session=db,
         org_id=lookup_org_id,
-        user_id=ctx.user.user_id,
-        is_superuser=ctx.user.is_superuser,
+        user_id=effective_user.user_id,
+        is_superuser=effective_user.is_superuser,
         # Embed principals carry is_external=True (OPEN-D: external-equivalent
         # for the config/knowledge/table data gates), but workflow execution
         # is the HMAC-pre-authorized app function-call channel — deliberately
         # allowlisted by EmbedScopeMiddleware and execution-scoped by jti.
         # Keep the pre-OPEN-D resolution semantics for embed sessions here.
-        is_external=ctx.user.is_external and not ctx.user.embed,
+        is_external=effective_user.is_external and not effective_user.embed,
     )
 
     # A Solution caller's path::fn ref carries no install id (it can't know the
@@ -836,7 +864,7 @@ async def execute_workflow(
     # Authorization check
     if request.code:
         # Inline code execution requires platform admin
-        if not ctx.user.is_superuser:
+        if not effective_user.is_superuser:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Inline code execution requires platform admin access",
@@ -865,10 +893,10 @@ async def execute_workflow(
     )
 
     # Resolve run_as user if provided
-    exec_user_id = str(ctx.user.user_id)
-    exec_user_name = ctx.user.name or ctx.user.email or "Unknown"
-    exec_user_email = ctx.user.email or ""
-    exec_is_admin = ctx.user.is_superuser
+    exec_user_id = str(effective_user.user_id)
+    exec_user_name = effective_user.name or effective_user.email or "Unknown"
+    exec_user_email = effective_user.email or ""
+    exec_is_admin = effective_user.is_superuser
 
     if request.run_as:
         from src.models.orm.users import User

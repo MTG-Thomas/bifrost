@@ -769,7 +769,12 @@ class WorkflowExecutionConsumer(BaseConsumer):
             # credentials file directly — no SECRET_KEY needed in the child.
             from src.core.security import mint_engine_token
             engine_token, engine_token_expires_at = mint_engine_token(
-                organization_id=org_id
+                organization_id=org_id,
+                delegated_user_id=user_id,
+                delegated_email=user_email,
+                delegated_name=user_name,
+                delegated_is_superuser=pending.get("is_platform_admin", False),
+                delegated_is_provider_org=bool(org and org.is_provider),
             )
 
             # Build context for worker process
