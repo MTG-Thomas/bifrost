@@ -241,8 +241,8 @@ async def enqueue_workflow_execution(
         api_key_id=api_key_id,
         sync=sync,
         is_platform_admin=context.is_platform_admin,
-        is_provider_org=context.is_provider_org,
-        is_external=context.is_external,
+        is_provider_org=getattr(context, "is_provider_org", False),
+        is_external=getattr(context, "is_external", False),
         file_path=file_path,
         event=event_payload,
         solution_deployment_id=solution_deployment_id,
@@ -305,8 +305,8 @@ async def enqueue_code_execution(
         user_email=context.email,
         form_id=None,
         is_platform_admin=context.is_platform_admin,
-        is_provider_org=context.is_provider_org,
-        is_external=context.is_external,
+        is_provider_org=getattr(context, "is_provider_org", False),
+        is_external=getattr(context, "is_external", False),
     )
 
     # Add to queue tracking
