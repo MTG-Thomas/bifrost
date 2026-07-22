@@ -104,7 +104,7 @@ class TestCLIContextOrgOverride:
             "is_external",
         ):
             assert field in user, f"missing user.{field}"
-        assert user["is_provider_org"] is False
+        assert user["is_provider_org"] is True
         assert user["is_external"] is False
 
         org = data["organization"]
