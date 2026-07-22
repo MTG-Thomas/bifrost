@@ -712,6 +712,33 @@ async def _insert_scheduled_execution(
     return exec_id
 
 
+def _validate_execution_identity_overrides(
+    ctx: Context,
+    *,
+    org_id: str | None,
+    run_as: str | None,
+) -> None:
+    """Keep delegated engine calls inside the parent execution identity."""
+    from src.core.security import ENGINE_USER_ID
+
+    if str(ctx.user.user_id) == ENGINE_USER_ID:
+        crosses_org = org_id is not None and org_id != (
+            str(ctx.org_id) if ctx.org_id is not None else None
+        )
+        if run_as is not None or crosses_org:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Delegated workflows cannot override org_id or run_as",
+            )
+        return
+
+    if (org_id or run_as) and not ctx.user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="org_id and run_as overrides require platform admin",
+        )
+
+
 @router.post(
     "/execute",
     response_model=WorkflowExecutionResponse,
@@ -831,12 +858,11 @@ async def execute_workflow(
             detail="Either workflow_id or code must be provided",
         )
 
-    # Validate admin-only overrides (org_id, run_as)
-    if (request.org_id or request.run_as) and not ctx.user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="org_id and run_as overrides require platform admin",
-        )
+    _validate_execution_identity_overrides(
+        ctx,
+        org_id=request.org_id,
+        run_as=request.run_as,
+    )
 
     # Resolve run_as user if provided
     exec_user_id = str(ctx.user.user_id)

@@ -768,7 +768,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
             # The child receives the token via context_data and writes it to the
             # credentials file directly — no SECRET_KEY needed in the child.
             from src.core.security import mint_engine_token
-            engine_token, engine_token_expires_at = mint_engine_token()
+            engine_token, engine_token_expires_at = mint_engine_token(
+                organization_id=org_id
+            )
 
             # Build context for worker process
             context_data = {

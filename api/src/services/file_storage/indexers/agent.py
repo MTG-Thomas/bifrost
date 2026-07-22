@@ -139,7 +139,8 @@ class AgentIndexer:
                 if agent_data.get("max_token_budget") is not None
                 else {}
             ),
-            system_tools=agent_data.get("system_tools", []),
+            # System tools are environment-specific privileges. New agents get
+            # the model default; file sync must not import YAML-controlled grants.
             created_by="file_sync",
         ).on_conflict_do_update(
             index_elements=[Agent.id],
@@ -169,7 +170,6 @@ class AgentIndexer:
                     if agent_data.get("max_token_budget") is not None
                     else {}
                 ),
-                "system_tools": agent_data.get("system_tools", []),
                 "updated_at": now,
                 # NOTE: organization_id and access_level are NOT updated
                 # These are preserved from the database (env-specific)
