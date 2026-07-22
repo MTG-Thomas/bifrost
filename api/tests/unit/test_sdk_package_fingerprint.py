@@ -29,10 +29,17 @@ def test_tarball_package_json_carries_fingerprint():
     assert len(pkg["bifrost"]["fingerprint"]) == 16
 
 
-def test_fingerprint_is_stable_across_calls():
-    from src.services.sdk_package import sdk_fingerprint
+def test_fingerprint_is_stable_across_calls(monkeypatch):
+    import hashlib
 
-    assert sdk_fingerprint("v1.2.3") == sdk_fingerprint("v1.2.3")
+    import src.services.sdk_package as sdkpkg
+
+    bundle = b"stable-sdk-bundle"
+    monkeypatch.setattr(sdkpkg, "_built_bundle", lambda _version: bundle)
+
+    expected = hashlib.sha256(bundle).hexdigest()[:16]
+    assert sdkpkg.sdk_fingerprint("v1.2.3") == expected
+    assert sdkpkg.sdk_fingerprint("v1.2.3") == expected
 
 
 def test_sdk_contract_version_is_positive_int():

@@ -29,6 +29,7 @@ _SDK_SRC = _HERE / "sdk_src"
 _BUILDER = _HERE / "build_sdk.js"
 # esbuild is installed under the app_bundler package (shared Node toolchain).
 _NODE_MODULES = _HERE.parent / "app_bundler" / "node_modules"
+_SDK_CONTRACT_FILENAME = "sdk-contract.json"
 _SDK_SOURCE_FILES = (
     "provider.tsx",
     "tables.ts",
@@ -118,7 +119,10 @@ def _materialize_sdk_src(workdir: Path) -> Path:
     for name in _SDK_SOURCE_FILES:
         shutil.copy(client_src / name, staged / name)
     shutil.copy(client_src / "index.v2.ts", staged / "index.ts")
-    shutil.copy(client_src / "sdk-contract.json", staged / "sdk-contract.json")
+    shutil.copy(
+        client_src / _SDK_CONTRACT_FILENAME,
+        staged / _SDK_CONTRACT_FILENAME,
+    )
     return staged
 
 
@@ -160,18 +164,18 @@ def sdk_contract_version() -> int:
     The JSON file is baked into the image alongside the SDK source (see
     Dockerfile), so this resolves identically in dev and in the built image.
     """
-    contract_path = _SDK_SRC / "sdk-contract.json"
+    contract_path = _SDK_SRC / _SDK_CONTRACT_FILENAME
     if not contract_path.is_file():
         client_src = next(
             (
                 candidate
                 for candidate in _client_sdk_candidates()
-                if (candidate / "sdk-contract.json").is_file()
+                if (candidate / _SDK_CONTRACT_FILENAME).is_file()
             ),
             None,
         )
         if client_src is not None:
-            contract_path = client_src / "sdk-contract.json"
+            contract_path = client_src / _SDK_CONTRACT_FILENAME
     contract = json.loads(contract_path.read_text())
     return contract["version"]
 
