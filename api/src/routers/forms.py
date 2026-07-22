@@ -941,6 +941,8 @@ async def execute_form(
         scope=str(anchor_org_id) if anchor_org_id else "GLOBAL",
         organization=org,
         is_platform_admin=ctx.user.is_superuser,
+        is_provider_org=getattr(ctx.user, "is_provider_org", False),
+        is_external=getattr(ctx.user, "is_external", False),
         is_function_key=False,
         execution_id=str(uuid4()),
         startup=request.startup_data,
@@ -1109,6 +1111,8 @@ async def execute_startup_workflow(
         scope=str(launch_anchor_org_id) if launch_anchor_org_id else "GLOBAL",
         organization=org,
         is_platform_admin=ctx.user.is_superuser,
+        is_provider_org=getattr(ctx.user, "is_provider_org", False),
+        is_external=getattr(ctx.user, "is_external", False),
         is_function_key=False,
         execution_id=str(uuid4()),
     )

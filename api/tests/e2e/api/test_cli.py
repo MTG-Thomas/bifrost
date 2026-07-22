@@ -104,10 +104,29 @@ class TestCLIContextOrgOverride:
             "is_external",
         ):
             assert field in user, f"missing user.{field}"
+        assert user["is_provider_org"] is False
+        assert user["is_external"] is False
 
         org = data["organization"]
         for field in ("id", "name", "is_active", "is_provider"):
             assert field in org, f"missing organization.{field}"
+
+    def test_provider_context_reports_authorization_flags(
+        self,
+        e2e_client,
+        provider_org_user,
+        org1,
+    ):
+        response = e2e_client.get(
+            "/api/sdk/context",
+            params={"org_id": org1["id"]},
+            headers=provider_org_user.headers,
+        )
+        assert response.status_code == 200
+        user = response.json()["user"]
+        assert user["is_superuser"] is False
+        assert user["is_provider_org"] is True
+        assert user["is_external"] is False
 
     def test_non_superuser_cannot_target_other_org(
         self,
