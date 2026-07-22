@@ -54,8 +54,13 @@ Before any code, before any worktree, get an issue number.
 Search for existing issues:
 
 ```bash
-search_terms="<2-3 key terms>"
-gh issue list --search "$search_terms" --state all --limit 5
+ISSUE_TMP_DIR="$(mktemp -d)"
+SEARCH_FILE="$ISSUE_TMP_DIR/search.txt"
+# Write the exact search text to $SEARCH_FILE with the agent's file-edit tool.
+# Do not put conversation-derived text in shell source.
+gh issue list --search "$(<"$SEARCH_FILE")" --state all --limit 5
+rm -f -- "$SEARCH_FILE"
+rmdir -- "$ISSUE_TMP_DIR"
 ```
 
 If a plausible match exists, surface it: "This looks related to #N — is that the same thing, or a new one?"
@@ -67,7 +72,7 @@ When drafting an issue body:
 - Pick the template (`bug`, `feature`, `chore`) from the work description.
 - Fill every field from conversation context; ask the user only for gaps.
 - Show the draft (title + body + labels + assignee) before filing.
-- On approval, file via `gh issue create --title "..." --body "..." --label "..." --assignee "@me"` (self-assign only if the user is doing the work).
+- On approval, use the file-backed pattern below. Never interpolate conversation-derived title/body/search text into shell source.
 
 ### 2. Worktree setup
 
@@ -290,35 +295,28 @@ Do **not** add priority labels, milestones, or status labels.
 
 ## The `gh issue create` Pattern
 
+Treat issue search terms, titles, and bodies as untrusted data. Never embed them in a shell command, quoted assignment, command-generating template, or fixed-delimiter heredoc. Shell quoting is not a substitute for separating data from shell source.
+
 ```bash
-tmp_body="$(mktemp)"
-cat > "$tmp_body" <<'EOF'
-## Summary
-...
+ISSUE_TMP_DIR="$(mktemp -d)"
+TITLE_FILE="$ISSUE_TMP_DIR/title.txt"
+BODY_FILE="$ISSUE_TMP_DIR/body.md"
 
-## Steps to reproduce
-...
-
-## Expected behavior
-...
-
-## Actual behavior
-...
-
-## Environment
-...
-
-## Notes
-- File paths and line numbers where relevant
-- Proposed approach if known
-EOF
+# Write title.txt and body.md with the agent's file-edit API/tool, not with
+# shell interpolation, echo/printf, a here-string, or a heredoc. The body file
+# should mirror the relevant template in .github/ISSUE_TEMPLATE/.
 gh issue create \
-  --title "[bug]: <summary>" \
-  --body-file "$tmp_body" \
+  --title "$(<"$TITLE_FILE")" \
+  --body-file "$BODY_FILE" \
   --label "bug" \
   --assignee "@me"   # only if user is doing the work
-rm -f "$tmp_body"
+
+# Remove only the exact files created above; leave cleanup visible and bounded.
+rm -f -- "$TITLE_FILE" "$BODY_FILE"
+rmdir -- "$ISSUE_TMP_DIR"
 ```
+
+Labels and assignees must come from fixed repository conventions or a validated allowlist. For batch triage, repeat the file-backed invocation per issue; do not construct a shell loop containing untrusted issue text.
 
 Mirror the relevant template in `.github/ISSUE_TEMPLATE/`. Use `[bug]:`, `[feature]:`, or `[chore]:` title prefixes.
 
