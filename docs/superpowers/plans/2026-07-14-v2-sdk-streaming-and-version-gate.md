@@ -412,7 +412,7 @@ Add the three new state hooks (`logs`, `status`, `executionId`) and return them.
 
 - [ ] **Step 4: Run the full file.** `npx vitest run src/lib/app-sdk/use-workflow.test.tsx` — all PASS.
 
-- [ ] **Step 5: Typecheck + neighboring tests.** `npx tsc --noEmit && npx vitest run src/lib/app-sdk/` — all PASS.
+- [ ] **Step 5: Typecheck + neighboring tests.** `npm run tsc && npx vitest run src/lib/app-sdk/` — all PASS.
 
 - [ ] **Step 6: Commit.** `git commit -am "feat(sdk): streaming workflow transport — async execute + ws + result fetch"`
 
@@ -655,7 +655,7 @@ Rules (tiered — "no change" is silent, "non-breaking" is gentle, "breaking" is
 
 **Files:** none (verification only)
 
-- [ ] Full local gates: `./test.sh unit`, `cd client && npx tsc --noEmit && npm run lint && npx vitest run`, `ruff check api/src api/bifrost`, pyright on touched files.
+- [ ] Full local gates: `./test.sh unit`, `cd client && npm run tsc && npm run lint && npx vitest run`, `ruff check api/src api/bifrost`, pyright on touched files.
 - [ ] Boot the worktree debug stack (`bifrost-debug` skill), scaffold or reuse a v2 solution app bound to it, and drive as a real user:
   - Short workflow (<5s): result appears, logs streamed live into the hook state.
   - Long workflow (`time.sleep(360)`, 6 min — PAST the old 5-minute nginx ceiling): no 504, run resolves. This is the headline fix; do not skip it.

@@ -149,7 +149,7 @@ esac
 On native Windows, prefer:
 
 ```powershell
-py -3.11 -m pipx install --force {url}/api/cli/download
+py -3.11 -m pipx install --force "{url}/api/cli/download"
 ```
 
 Verify with:
@@ -167,11 +167,11 @@ the others; update the CLI first because it supplies the SDK-update command.
 
 1. **CLI from the intended Bifrost instance:**
    ```bash
-   pipx install --force {url}/api/cli/download
+   pipx install --force "{url}/api/cli/download"
    bifrost --version
    ```
    On native Windows, use
-   `py -3.11 -m pipx install --force {url}/api/cli/download`.
+   `py -3.11 -m pipx install --force "{url}/api/cli/download"`.
 2. **Vendored web SDK in each Solution workspace:**
    ```bash
    cd /path/to/solution
@@ -213,7 +213,7 @@ For the repository's local debug stack, use the `bifrost-debug` skill instead;
 it knows the default `dev@gobifrost.com` / `password` credentials and creates a
 dedicated scratch-folder binding without changing the saved default.
 
-To disconnect a specific instance, use `bifrost logout --url {url}`. It clears
+To disconnect a specific instance, use `bifrost logout --url "{url}"`. It clears
 that URL's stored credentials and offers to remove a matching folder binding.
 
 ## MCP Configuration

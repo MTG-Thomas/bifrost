@@ -63,9 +63,9 @@ After the stack is up, create one scratch directory for this worktree. Never
 run debug CLI commands from bare `/tmp`.
 
 ```bash
-mkdir -p /tmp/bifrost-cli-<worktree-name>
+install -d -m 700 /tmp/bifrost-cli-<worktree-name>
 cd /tmp/bifrost-cli-<worktree-name>
-touch .env
+install -m 600 /dev/null .env
 python3 -m venv .venv
 ./.venv/bin/pip install --quiet --upgrade pip
 ./.venv/bin/pip install --quiet "<URL_FROM_DEBUG_STATUS>/api/cli/download"
@@ -79,7 +79,7 @@ tokens into that scratch `.env`. Run all later debug-instance CLI commands
 from the same scratch directory with `./.venv/bin/bifrost ...`.
 
 Run `./debug.sh` commands from the worktree, never from the scratch directory.
-If the connection is ever unclear, `bifrost auth default` is a read-only check:
+If the connection is ever unclear, `./.venv/bin/bifrost auth default` is a read-only check:
 the `Current connection` line is what commands in that folder will use.
 
 When explicitly tearing down the stack, clear its folder binding before or

@@ -426,6 +426,8 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
     consumer = make_consumer()
     execution_id = str(uuid4())
     session = _Session()
+    call_order: list[str] = []
+    session.commit.side_effect = lambda: call_order.append("commit")
     pending = {
         "workflow_id": "wf-1",
         "workflow_name": "Workflow",
@@ -437,8 +439,12 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
         "event": {"type": "demo"},
     }
     consumer._redis_client.get_pending_execution.return_value = pending
-    consumer._redis_client.delete_pending_execution = AsyncMock()
-    consumer._redis_client.push_result = AsyncMock()
+    consumer._redis_client.delete_pending_execution = AsyncMock(
+        side_effect=lambda _execution_id: call_order.append("delete_pending")
+    )
+    consumer._redis_client.push_result = AsyncMock(
+        side_effect=lambda **_kwargs: call_order.append("push_result")
+    )
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
@@ -447,9 +453,21 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
         patch("bifrost._sync.flush_pending_changes", new_callable=AsyncMock, return_value=0),
         patch("bifrost._logging.flush_logs_to_postgres", new_callable=AsyncMock, return_value=0),
         patch("src.core.metrics.update_daily_metrics", new_callable=AsyncMock) as update_daily_metrics,
-        patch("src.jobs.consumers.workflow_execution.publish_execution_update", new_callable=AsyncMock) as publish_execution_update,
-        patch("src.jobs.consumers.workflow_execution.publish_history_update", new_callable=AsyncMock) as publish_history_update,
-        patch("src.core.cache.cleanup_execution_cache", new_callable=AsyncMock) as cleanup_cache,
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_execution_update",
+            new_callable=AsyncMock,
+            side_effect=lambda *_args, **_kwargs: call_order.append("publish_execution"),
+        ) as publish_execution_update,
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_history_update",
+            new_callable=AsyncMock,
+            side_effect=lambda **_kwargs: call_order.append("publish_history"),
+        ) as publish_history_update,
+        patch(
+            "src.core.cache.cleanup_execution_cache",
+            new_callable=AsyncMock,
+            side_effect=lambda _execution_id: call_order.append("cleanup_cache"),
+        ) as cleanup_cache,
         patch("src.services.events.builtins.emit_workflow_failure_events", new_callable=AsyncMock) as emit_failure,
     ):
         await consumer._process_failure(
@@ -479,6 +497,11 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
         db=session,
     )
     session.commit.assert_awaited_once()
+    assert call_order[:2] == ["commit", "push_result"]
+    assert call_order.index("push_result") < call_order.index("publish_execution")
+    assert call_order.index("push_result") < call_order.index("publish_history")
+    assert call_order.index("push_result") < call_order.index("cleanup_cache")
+    assert call_order.index("push_result") < call_order.index("delete_pending")
     publish_execution_update.assert_awaited_once_with(
         execution_id,
         "Cancelled",

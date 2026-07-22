@@ -41,6 +41,11 @@ class _ExecuteResult:
             return self._scalar
         return self._values[0] if self._values else None
 
+    def scalar_one(self):
+        if self._scalar is not None:
+            return self._scalar
+        return self._values[0]
+
 
 class _Db:
     def __init__(self, *results):
@@ -274,6 +279,8 @@ async def test_update_document_handles_not_found_embedding_error_and_conflict(mo
             KnowledgeDocumentUpdate(content="new"),
             _Db(_ExecuteResult([])),
             _user(),
+            scope=None,
+            replace=False,
         )
     assert missing.value.status_code == 404
 
@@ -298,6 +305,8 @@ async def test_update_document_handles_not_found_embedding_error_and_conflict(mo
             KnowledgeDocumentUpdate(content="new"),
             db,
             _user(),
+            scope=None,
+            replace=False,
         )
     assert unavailable.value.status_code == 503
 

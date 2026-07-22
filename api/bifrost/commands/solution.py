@@ -3029,10 +3029,45 @@ def installed_sdk_contract(app_dir: pathlib.Path) -> int | None:
 
 @click.group(name="sdk", help="Manage the app's vendored Bifrost SDK.")
 def sdk_group() -> None:
+    # Click uses this function only as the container for SDK subcommands.
     pass
 
 
 solution_group.add_command(sdk_group)
+
+
+async def _fetch_server_sdk_fingerprint(client: BifrostClient) -> str | None:
+    def report_missing_fingerprint() -> None:
+        click.echo(
+            "  note: this server does not report sdk_fingerprint (predates the "
+            "staleness gate) — updating without verification."
+        )
+
+    resp = await client.get("/api/version")
+    if resp.status_code != 200:
+        click.echo(
+            f"  warning: could not reach /api/version ({resp.status_code}) — "
+            "continuing without server-side verification.",
+            err=True,
+        )
+        report_missing_fingerprint()
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        report_missing_fingerprint()
+        return None
+    fingerprint = data.get("sdk_fingerprint")
+    if fingerprint == "unavailable":
+        click.echo(
+            "  note: server could not compute its own SDK fingerprint "
+            "(toolchain failure) — updating without verification."
+        )
+        return None
+    if not isinstance(fingerprint, str):
+        report_missing_fingerprint()
+        return None
+    return fingerprint
 
 
 @sdk_group.command(
@@ -3073,34 +3108,7 @@ def sdk_update_cmd(path: str, app_slug: str | None) -> None:
             message = f"{message} For SDK updates, pass --app <slug>."
         raise click.ClickException(message)
 
-    async def _fetch_server_fingerprint() -> str | None:
-        resp = await client.get("/api/version")
-        if resp.status_code != 200:
-            click.echo(
-                f"  warning: could not reach /api/version ({resp.status_code}) — "
-                "continuing without server-side verification.",
-                err=True,
-            )
-            return None
-        try:
-            data = resp.json()
-        except ValueError:
-            return None
-        fingerprint = data.get("sdk_fingerprint")
-        return fingerprint if isinstance(fingerprint, str) else None
-
-    server_fingerprint = asyncio.run(_fetch_server_fingerprint())
-    if server_fingerprint is None:
-        click.echo(
-            "  note: this server does not report sdk_fingerprint (predates the "
-            "staleness gate) — updating without verification."
-        )
-    elif server_fingerprint == "unavailable":
-        click.echo(
-            "  note: server could not compute its own SDK fingerprint "
-            "(toolchain failure) — updating without verification."
-        )
-        server_fingerprint = None
+    server_fingerprint = asyncio.run(_fetch_server_sdk_fingerprint(client))
 
     old_fingerprint = installed_sdk_fingerprint(chosen.app_dir)
 

@@ -257,6 +257,36 @@ describe("useWorkflow", () => {
     );
   }
 
+  it("unsubscribes and rejects an active run when the component unmounts", async () => {
+    const unsubscribe = vi.fn();
+    (subscribeToExecution as Mock).mockImplementation(() => unsubscribe);
+    const { fetchMock } = makeFetchMock([
+      { match: isExecute, respond: () => ({ execution_id: "e-unmount", status: "Pending" }) },
+      {
+        match: (url) => isGetExecution(url, "e-unmount"),
+        respond: () => ({ status: "Running" }),
+      },
+    ]);
+    const onError = vi.fn();
+    const view = render(
+      <BifrostProvider
+        baseUrl="https://dev.example"
+        token="tok-x"
+        fetchImpl={fetchMock as unknown as typeof fetch}
+      >
+        <StreamRunner onResult={() => {}} onError={onError} />
+      </BifrostProvider>,
+    );
+
+    screen.getByText("go").click();
+    await waitFor(() => expect(subscribeToExecution).toHaveBeenCalled());
+    view.unmount();
+
+    await waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(onError.mock.calls[0][0].message).toContain("component unmounted");
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   it("executes async (no sync flag) and resolves with the fetched result on terminal event", async () => {
     let streamCb: (evt: unknown) => void = () => {};
     (subscribeToExecution as Mock).mockImplementation((_id: string, cb: (evt: unknown) => void) => {

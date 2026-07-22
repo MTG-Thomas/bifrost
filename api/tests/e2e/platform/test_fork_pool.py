@@ -224,6 +224,7 @@ class TestForkBasedExecution:
         # returned as null/{} (which would read as "this run had no result").
         assert "result" not in matching[0]
         assert "input_data" not in matching[0]
+        assert "logs" not in matching[0]
         assert "variables" not in matching[0]
         assert "execution_context" not in matching[0]
 

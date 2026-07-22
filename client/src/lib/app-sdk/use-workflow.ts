@@ -29,7 +29,7 @@
  * response: `is_transient` runs (data-provider-style executions) and runs
  * that are already terminal by the time the POST responds.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { components } from "@/lib/v1";
 
@@ -88,6 +88,103 @@ class ExecutionFetchError extends Error {
   }
 }
 
+interface ExecutionSnapshot {
+  status?: string;
+  result?: unknown;
+  error_message?: string | null;
+}
+
+interface ExecutionWait<T> {
+  promise: Promise<T>;
+  cancel: () => void;
+}
+
+function waitForExecution<T>(
+  executionId: string,
+  fetchExecution: (id: string) => Promise<ExecutionSnapshot>,
+  settleFromExecution: (execution: ExecutionSnapshot) => T,
+  onStatus: (status: string) => void,
+  onLog: (log: WorkflowLogEntry) => void,
+): ExecutionWait<T> {
+  let settled = false;
+  let sawTerminal = false;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let unsubscribe: () => void = () => {};
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (reason: unknown) => void;
+
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+
+  const cleanup = () => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    unsubscribe();
+  };
+  const resolve = (value: T) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolvePromise(value);
+  };
+  const reject = (reason: unknown) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    rejectPromise(reason);
+  };
+  const settleExecution = (execution: ExecutionSnapshot) => {
+    try {
+      resolve(settleFromExecution(execution));
+    } catch (error) {
+      reject(error);
+    }
+  };
+  const startPolling = () => {
+    if (!settled && !pollTimer) pollTimer = setInterval(checkOnce, POLL_INTERVAL_MS);
+  };
+  const checkOnce = async () => {
+    if (settled) return;
+    try {
+      const execution = await fetchExecution(executionId);
+      if (settled) return;
+      if (execution.status) onStatus(execution.status);
+      if (execution.status && TERMINAL_STATUSES.has(execution.status)) {
+        settleExecution(execution);
+      }
+    } catch (fetchError) {
+      if (settled) return;
+      if (fetchError instanceof ExecutionFetchError && !fetchError.retryable) {
+        reject(fetchError);
+        return;
+      }
+      if (sawTerminal) startPolling();
+    }
+  };
+  const handleEvent = (event: ExecutionStreamEvent) => {
+    if (settled) return;
+    if (event.type === "ready") void checkOnce();
+    if (event.type === "log" && event.log) onLog(event.log);
+    if (event.type === "status") {
+      if (event.status) onStatus(event.status);
+      if (event.isTerminal) {
+        sawTerminal = true;
+        void checkOnce();
+      }
+    }
+  };
+
+  unsubscribe = subscribeToExecution(executionId, handleEvent, startPolling);
+  void checkOnce();
+
+  return {
+    promise,
+    cancel: () => reject(new Error("Workflow run cancelled because its component unmounted")),
+  };
+}
+
 /**
  * Run a Bifrost workflow by UUID, portable `path::function` ref, or workflow
  * name from a v2 app. All three resolve identically: the server scopes the
@@ -111,6 +208,19 @@ export function useWorkflow<T = unknown>(workflowRef: string): UseWorkflowState<
   // newer run is still in flight. Each caller's promise still settles with its
   // own result/rejection.
   const seqRef = useRef(0);
+  const mountedRef = useRef(false);
+  const activeCancelsRef = useRef(new Set<() => void>());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const activeCancels = activeCancelsRef.current;
+    return () => {
+      mountedRef.current = false;
+      seqRef.current += 1;
+      for (const cancel of activeCancels) cancel();
+      activeCancels.clear();
+    };
+  }, []);
 
   const run = useCallback(
     async (input: Record<string, unknown> = {}): Promise<T> => {
@@ -121,11 +231,7 @@ export function useWorkflow<T = unknown>(workflowRef: string): UseWorkflowState<
       setStatus("Pending");
       setExecutionId(null);
 
-      const settleFromExecution = (exec: {
-        status?: string;
-        result?: unknown;
-        error_message?: string | null;
-      }): T => {
+      const settleFromExecution = (exec: ExecutionSnapshot): T => {
         if (exec.status === "Success" || exec.status === "CompletedWithErrors") {
           return exec.result as T;
         }
@@ -136,11 +242,7 @@ export function useWorkflow<T = unknown>(workflowRef: string): UseWorkflowState<
       const fetchExecution = async (id: string) => {
         const r = await authedFetch(`/api/executions/${id}`);
         if (!r.ok) throw new ExecutionFetchError(r.status, r.statusText);
-        return (await r.json()) as {
-          status?: string;
-          result?: unknown;
-          error_message?: string | null;
-        };
+        return (await r.json()) as ExecutionSnapshot;
       };
 
       try {
@@ -159,6 +261,9 @@ export function useWorkflow<T = unknown>(workflowRef: string): UseWorkflowState<
           throw new Error(`workflow execution failed: ${resp.status} ${resp.statusText}`);
         }
         const body = (await resp.json()) as ExecuteResponse & { is_transient?: boolean };
+        if (!mountedRef.current) {
+          throw new Error("Workflow run cancelled because its component unmounted");
+        }
         const execId = body.execution_id;
         if (seq === seqRef.current && execId) setExecutionId(execId);
 
@@ -175,94 +280,35 @@ export function useWorkflow<T = unknown>(workflowRef: string): UseWorkflowState<
           return result;
         }
 
-        const result = await new Promise<T>((resolve, reject) => {
-          let settled = false;
-          let pollTimer: ReturnType<typeof setInterval> | null = null;
-          let unsubscribe: () => void = () => {};
-          // Set once a terminal ws frame has been seen. There's no client
-          // deadline, so if the one post-terminal fetch fails transiently we
-          // must not just give up — arm the poll fallback so the run still
-          // settles instead of hanging forever.
-          let sawTerminal = false;
-          const settle = (fn: () => void) => {
-            if (settled) return;
-            settled = true;
-            if (pollTimer) clearInterval(pollTimer);
-            unsubscribe();
-            fn();
-          };
-          const checkOnce = async () => {
-            if (settled) return;
-            try {
-              const exec = await fetchExecution(execId);
-              // Another concurrent check (ready ack, terminal frame, or poll)
-              // may have settled while this request was in flight. Never let
-              // its older snapshot regress terminal state after resolution.
-              if (settled) return;
-              if (seq === seqRef.current && exec.status) setStatus(exec.status);
-              if (exec.status && TERMINAL_STATUSES.has(exec.status)) {
-                settle(() => {
-                  try {
-                    resolve(settleFromExecution(exec));
-                  } catch (e) {
-                    reject(e);
-                  }
-                });
-              }
-            } catch (fetchError) {
-              if (settled) return;
-              if (fetchError instanceof ExecutionFetchError && !fetchError.retryable) {
-                settle(() => reject(fetchError));
-                return;
-              }
-              // Transient fetch failure — the stream/poll keeps driving.
-              // If this was the post-terminal-event fetch, there's no further
-              // status frame coming and the socket may stay open (so
-              // onSocketDown never fires) — arm the poll fallback so the run
-              // still settles instead of hanging forever.
-              if (sawTerminal && !pollTimer) {
-                pollTimer = setInterval(checkOnce, POLL_INTERVAL_MS);
-              }
+        const executionWait = waitForExecution(
+          execId,
+          fetchExecution,
+          settleFromExecution,
+          (nextStatus) => {
+            if (mountedRef.current && seq === seqRef.current) setStatus(nextStatus);
+          },
+          (log) => {
+            if (mountedRef.current && seq === seqRef.current) {
+              setLogs((previousLogs) => [...previousLogs, log]);
             }
-          };
-          unsubscribe = subscribeToExecution(
-            execId,
-            (evt: ExecutionStreamEvent) => {
-              if (evt.type === "ready") {
-                // The server has installed the subscription. Re-check now so a
-                // terminal transition between the initial GET and this ack
-                // cannot be lost forever.
-                void checkOnce();
-              }
-              if (evt.type === "log" && evt.log && seq === seqRef.current) {
-                const log = evt.log;
-                setLogs((prev) => [...prev, log]);
-              }
-              if (evt.type === "status") {
-                if (seq === seqRef.current && evt.status) setStatus(evt.status);
-                if (evt.isTerminal) {
-                  sawTerminal = true;
-                  void checkOnce();
-                }
-              }
-            },
-            () => {
-              // Socket died — degrade to polling. No deadline: the server
-              // enforces the workflow's own timeout and will flip it terminal.
-              if (!settled && !pollTimer) pollTimer = setInterval(checkOnce, POLL_INTERVAL_MS);
-            },
-          );
-          void checkOnce(); // fast runs can finish before the socket opens
-        });
+          },
+        );
+        activeCancelsRef.current.add(executionWait.cancel);
+        let result: T;
+        try {
+          result = await executionWait.promise;
+        } finally {
+          activeCancelsRef.current.delete(executionWait.cancel);
+        }
 
-        if (seq === seqRef.current) setData(result);
+        if (mountedRef.current && seq === seqRef.current) setData(result);
         return result;
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
-        if (seq === seqRef.current) setError(err);
+        if (mountedRef.current && seq === seqRef.current) setError(err);
         throw err;
       } finally {
-        if (seq === seqRef.current) setLoading(false);
+        if (mountedRef.current && seq === seqRef.current) setLoading(false);
       }
     },
     [authedFetch, workflowRef, appId],
