@@ -61,6 +61,10 @@ class UserPrincipal:
     app_id: str | None = None  # App ID for embed tokens
     form_id: str | None = None  # Form ID for form embed tokens
     verified_params: dict[str, str] | None = None  # HMAC-verified query params
+    # Explicit marker for the internal workflow-engine transport token. The
+    # engine and embed sessions intentionally share SYSTEM_USER_ID, so the
+    # subject alone cannot identify an engine delegation safely.
+    is_engine_token: bool = False
     # Original caller identity carried only by the internal workflow-engine
     # token. The token retains transport authority, while delegated execution
     # authorization and audit identity use these claims instead of the engine.

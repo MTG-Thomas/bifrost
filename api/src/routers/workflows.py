@@ -719,9 +719,7 @@ def _validate_execution_identity_overrides(
     run_as: str | None,
 ) -> None:
     """Keep delegated engine calls inside the parent execution identity."""
-    from src.core.security import ENGINE_USER_ID
-
-    if str(ctx.user.user_id) == ENGINE_USER_ID:
+    if ctx.user.is_engine_token:
         crosses_org = org_id is not None and org_id != (
             str(ctx.org_id) if ctx.org_id is not None else None
         )
@@ -742,9 +740,7 @@ def _validate_execution_identity_overrides(
 def _effective_execution_user(ctx: Context):
     """Return the original caller for an internal engine delegation."""
     from src.core.principal import UserPrincipal
-    from src.core.security import ENGINE_USER_ID
-
-    if str(ctx.user.user_id) != ENGINE_USER_ID:
+    if not ctx.user.is_engine_token:
         return ctx.user
 
     if ctx.user.delegated_user_id is None:

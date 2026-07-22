@@ -433,6 +433,7 @@ def mint_engine_token(
         "email": "engine@bifrost.internal",
         "name": "Bifrost Engine",
         "is_superuser": True,
+        "engine": True,
     }
     if organization_id is not None:
         token_data["org_id"] = str(organization_id)
@@ -477,6 +478,7 @@ def authenticate_engine() -> None:
         "email": "engine@bifrost.internal",
         "name": "Bifrost Engine",
         "is_superuser": True,
+        "engine": True,
     }
 
     token = create_access_token(

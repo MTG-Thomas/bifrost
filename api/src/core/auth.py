@@ -201,6 +201,7 @@ async def get_current_user_optional(
         app_id=payload.get("app_id"),
         form_id=payload.get("form_id"),
         verified_params=payload.get("verified_params"),
+        is_engine_token=payload.get("engine", False) is True,
         delegated_user_id=delegated_user_id,
         delegated_email=payload.get("delegated_email", ""),
         delegated_name=payload.get("delegated_name", ""),

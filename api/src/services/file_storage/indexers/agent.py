@@ -110,6 +110,20 @@ class AgentIndexer:
         if not isinstance(knowledge_sources, list):
             knowledge_sources = []
 
+        # Agent manifests may carry portable, non-privileged built-in tools,
+        # but file sync is not an authorization surface. Drop admin-only tools
+        # before the upsert so a repository change cannot grant them.
+        from src.core.system_agents import PLATFORM_ADMIN_SYSTEM_TOOLS
+
+        raw_system_tools = agent_data.get("system_tools", [])
+        if not isinstance(raw_system_tools, list):
+            raw_system_tools = []
+        system_tools = [
+            tool
+            for tool in raw_system_tools
+            if isinstance(tool, str) and tool not in PLATFORM_ADMIN_SYSTEM_TOOLS
+        ]
+
         now = datetime.now(timezone.utc)
 
         # Upsert agent - updates definition but NOT organization_id or access_level
@@ -139,8 +153,7 @@ class AgentIndexer:
                 if agent_data.get("max_token_budget") is not None
                 else {}
             ),
-            # System tools are environment-specific privileges. New agents get
-            # the model default; file sync must not import YAML-controlled grants.
+            system_tools=system_tools,
             created_by="file_sync",
         ).on_conflict_do_update(
             index_elements=[Agent.id],
@@ -170,6 +183,7 @@ class AgentIndexer:
                     if agent_data.get("max_token_budget") is not None
                     else {}
                 ),
+                "system_tools": system_tools,
                 "updated_at": now,
                 # NOTE: organization_id and access_level are NOT updated
                 # These are preserved from the database (env-specific)
