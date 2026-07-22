@@ -665,6 +665,8 @@ async def _insert_scheduled_execution(
     form_id: UUID | None,
     api_key_id: UUID | None,
     is_platform_admin: bool,
+    is_provider_org: bool = False,
+    is_external: bool = False,
 ) -> UUID:
     """Insert a SCHEDULED execution row.
 
@@ -683,7 +685,11 @@ async def _insert_scheduled_execution(
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
 
     runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
-    execution_context: dict[str, object] = {"is_platform_admin": is_platform_admin}
+    execution_context: dict[str, object] = {
+        "is_platform_admin": is_platform_admin,
+        "is_provider_org": is_provider_org,
+        "is_external": is_external,
+    }
     if runtime_evidence is not None:
         execution_context["runtime_evidence"] = runtime_evidence
     db.add(
@@ -744,12 +750,25 @@ async def execute_workflow(
     )
     from src.repositories import AccessDeniedError, WorkflowRepository
     from src.core.org_filter import resolve_target_org
+    from src.services.execution.delegation_authorization import (
+        DelegationAuthorizationError,
+        effective_execution_user,
+        validate_execution_identity_overrides,
+    )
+
+    try:
+        effective_user = effective_execution_user(ctx.user, ctx.org_id)
+    except DelegationAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
 
     # Resolve org scope for workflow lookup — follows the same pattern as
     # configs, tables, etc. Superusers can pass org_id to search that org;
     # regular users always use their own org.
     lookup_org_id = resolve_target_org(
-        user=user,
+        user=effective_user,
         scope=request.org_id,
         default_org_id=ctx.org_id,
     )
@@ -757,14 +776,14 @@ async def execute_workflow(
     workflow_repo = WorkflowRepository(
         session=db,
         org_id=lookup_org_id,
-        user_id=ctx.user.user_id,
-        is_superuser=ctx.user.is_superuser,
+        user_id=effective_user.user_id,
+        is_superuser=effective_user.is_superuser,
         # Embed principals carry is_external=True (OPEN-D: external-equivalent
         # for the config/knowledge/table data gates), but workflow execution
         # is the HMAC-pre-authorized app function-call channel — deliberately
         # allowlisted by EmbedScopeMiddleware and execution-scoped by jti.
         # Keep the pre-OPEN-D resolution semantics for embed sessions here.
-        is_external=ctx.user.is_external and not ctx.user.embed,
+        is_external=effective_user.is_external and not effective_user.embed,
     )
 
     # A Solution caller's path::fn ref carries no install id (it can't know the
@@ -809,7 +828,7 @@ async def execute_workflow(
     # Authorization check
     if request.code:
         # Inline code execution requires platform admin
-        if not ctx.user.is_superuser:
+        if not effective_user.is_superuser:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Inline code execution requires platform admin access",
@@ -831,18 +850,26 @@ async def execute_workflow(
             detail="Either workflow_id or code must be provided",
         )
 
-    # Validate admin-only overrides (org_id, run_as)
-    if (request.org_id or request.run_as) and not ctx.user.is_superuser:
+    try:
+        validate_execution_identity_overrides(
+            ctx.user,
+            ctx.org_id,
+            requested_org_id=request.org_id,
+            run_as=request.run_as,
+        )
+    except DelegationAuthorizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="org_id and run_as overrides require platform admin",
-        )
+            detail=str(exc),
+        ) from exc
 
     # Resolve run_as user if provided
-    exec_user_id = str(ctx.user.user_id)
-    exec_user_name = ctx.user.name or ctx.user.email or "Unknown"
-    exec_user_email = ctx.user.email or ""
-    exec_is_admin = ctx.user.is_superuser
+    exec_user_id = str(effective_user.user_id)
+    exec_user_name = effective_user.name or effective_user.email or "Unknown"
+    exec_user_email = effective_user.email or ""
+    exec_is_admin = effective_user.is_superuser
+    exec_is_provider_org = effective_user.is_provider_org
+    exec_is_external = effective_user.is_external
 
     if request.run_as:
         from src.models.orm.users import User
@@ -859,6 +886,13 @@ async def execute_workflow(
         exec_user_name = run_as_user.name or run_as_user.email or "Unknown"
         exec_user_email = run_as_user.email or ""
         exec_is_admin = run_as_user.is_superuser
+        from shared.external_access import (
+            resolve_external_claim,
+            resolve_provider_org_claim,
+        )
+
+        exec_is_provider_org = await resolve_provider_org_claim(db, run_as_user)
+        exec_is_external = await resolve_external_claim(db, run_as_user)
         logger.info(f"Impersonating user: {exec_user_id} ({exec_user_email})")
 
     # Determine execution org_id
@@ -899,6 +933,8 @@ async def execute_workflow(
             form_id=UUID(request.form_id) if request.form_id else None,
             api_key_id=None,  # API-key-triggered scheduling not supported in v1
             is_platform_admin=exec_is_admin,
+            is_provider_org=exec_is_provider_org,
+            is_external=exec_is_external,
         )
         return WorkflowExecutionResponse(
             execution_id=str(exec_id),
@@ -933,6 +969,8 @@ async def execute_workflow(
         is_platform_admin=exec_is_admin,
         is_function_key=False,
         execution_id=str(uuid4()),
+        is_provider_org=exec_is_provider_org,
+        is_external=exec_is_external,
     )
 
     try:

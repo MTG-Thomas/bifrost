@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.core.system_agents import PLATFORM_ADMIN_SYSTEM_TOOLS
 from src.models.contracts.agents import ToolInfo
 from src.models.enums import AgentAccessLevel
 from src.models.orm.agents import Agent
@@ -116,6 +117,8 @@ class MCPToolAccessService:
             # auto-injected when the agent has knowledge_sources. Mirrors the
             # native chat path in agent_helpers.py so MCP listing matches.
             for system_tool_id in self._effective_system_tool_ids(agent):
+                if not is_superuser and system_tool_id in PLATFORM_ADMIN_SYSTEM_TOOLS:
+                    continue
                 if system_tool_id in seen_tool_ids:
                     continue
                 seen_tool_ids.add(system_tool_id)
@@ -250,6 +253,8 @@ class MCPToolAccessService:
         tools: list[ToolInfo] = []
 
         for system_tool_id in self._effective_system_tool_ids(agent):
+            if not is_superuser and system_tool_id in PLATFORM_ADMIN_SYSTEM_TOOLS:
+                continue
             if system_tool_id in self._SYSTEM_TOOL_MAP:
                 tools.append(self._SYSTEM_TOOL_MAP[system_tool_id])
             else:

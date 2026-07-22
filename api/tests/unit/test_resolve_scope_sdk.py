@@ -52,6 +52,7 @@ def _make_ctx(
         is_platform_admin=is_platform_admin,
         is_function_key=False,
         execution_id="00000000-0000-0000-0000-000000000111",
+        is_provider_org=is_provider,
         workflow_name="wf",
         public_url="http://localhost",
     )

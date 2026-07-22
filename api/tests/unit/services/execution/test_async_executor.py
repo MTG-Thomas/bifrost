@@ -52,10 +52,14 @@ async def test_publish_pending_writes_redis_then_publishes():
             api_key_id=None,
             sync=False,
             is_platform_admin=False,
+            is_provider_org=False,
+            is_external=True,
             file_path=None,
         )
 
     redis.set_pending_execution.assert_awaited_once()
+    assert redis.set_pending_execution.await_args.kwargs["is_provider_org"] is False
+    assert redis.set_pending_execution.await_args.kwargs["is_external"] is True
     q.assert_awaited_once_with("e1")
     pub.assert_awaited_once()
     queue_name, message = pub.await_args.args

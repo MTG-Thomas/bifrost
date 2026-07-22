@@ -363,6 +363,63 @@ class TestGetAccessibleTools:
         assert tool_ids == {"execute_workflow", "list_workflows"}
 
     @pytest.mark.asyncio
+    async def test_non_admin_cannot_receive_platform_admin_system_tools(
+        self, service, mock_session, mock_agent
+    ):
+        agent = mock_agent(
+            access_level=AgentAccessLevel.AUTHENTICATED,
+            system_tools=["list_organizations", "search_knowledge"],
+        )
+        mock_session.execute = AsyncMock(return_value=mock_query_result([agent]))
+
+        with patch.object(
+            service, "_apply_config_filters", side_effect=lambda tools, _config: tools
+        ):
+            with patch(
+                "src.services.mcp_server.tool_access.MCPConfigService"
+            ) as mock_config_service:
+                mock_config_service.return_value.get_config = AsyncMock(
+                    return_value=MagicMock()
+                )
+                result = await service.get_accessible_tools(
+                    user_roles=[],
+                    is_superuser=False,
+                )
+
+        assert {tool.id for tool in result.tools} == {"search_knowledge"}
+
+    @pytest.mark.asyncio
+    async def test_agent_scope_filters_platform_admin_system_tools(
+        self, service, mock_session, mock_agent
+    ):
+        agent = mock_agent(
+            access_level=AgentAccessLevel.AUTHENTICATED,
+            system_tools=["list_organizations", "search_knowledge"],
+        )
+        agent.system_prompt = "Search only"
+        result = MagicMock()
+        result.scalars.return_value.unique.return_value.first.return_value = agent
+        mock_session.execute = AsyncMock(return_value=result)
+
+        with patch.object(
+            service, "_apply_config_filters", side_effect=lambda tools, _config: tools
+        ):
+            with patch(
+                "src.services.mcp_server.tool_access.MCPConfigService"
+            ) as mock_config_service:
+                mock_config_service.return_value.get_config = AsyncMock(
+                    return_value=MagicMock()
+                )
+                scoped = await service.get_tools_for_agent(
+                    agent_id=agent.id,
+                    user_roles=[],
+                    is_superuser=False,
+                )
+
+        assert scoped is not None
+        assert {tool.id for tool in scoped.tools} == {"search_knowledge"}
+
+    @pytest.mark.asyncio
     async def test_collects_workflow_tools_from_agents(self, service, mock_session, mock_agent, mock_workflow):
         """Should collect workflow tools from accessible agents."""
         workflow = mock_workflow(name="my_workflow", description="My workflow tool")

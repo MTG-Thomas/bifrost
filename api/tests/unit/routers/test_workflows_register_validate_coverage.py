@@ -481,6 +481,8 @@ async def test_execute_workflow_runs_as_user_and_publishes_terminal_result() -> 
         name=None,
         email="delegate@example.com",
         is_superuser=False,
+        is_external=False,
+        organization_id=None,
     )
     workflow = _workflow(type="workflow", organization_id=None)
     repo = _WorkflowRepo(workflow=workflow)

@@ -102,6 +102,8 @@ async def _publish_pending(
     sync: bool,
     is_platform_admin: bool,
     file_path: str | None,
+    is_provider_org: bool = False,
+    is_external: bool = False,
     event: dict[str, Any] | None = None,
     solution_deployment_id: str | None = None,
     runtime_evidence: dict[str, Any] | None = None,
@@ -146,6 +148,8 @@ async def _publish_pending(
                 api_key_id=api_key_id,
                 sync=sync,
                 is_platform_admin=is_platform_admin,
+                is_provider_org=is_provider_org,
+                is_external=is_external,
                 event=event,
                 solution_deployment_id=solution_deployment_id,
                 runtime_evidence=runtime_evidence,
@@ -237,6 +241,8 @@ async def enqueue_workflow_execution(
         api_key_id=api_key_id,
         sync=sync,
         is_platform_admin=context.is_platform_admin,
+        is_provider_org=getattr(context, "is_provider_org", False),
+        is_external=getattr(context, "is_external", False),
         file_path=file_path,
         event=event_payload,
         solution_deployment_id=solution_deployment_id,
@@ -298,6 +304,9 @@ async def enqueue_code_execution(
         user_name=context.name,
         user_email=context.email,
         form_id=None,
+        is_platform_admin=context.is_platform_admin,
+        is_provider_org=getattr(context, "is_provider_org", False),
+        is_external=getattr(context, "is_external", False),
     )
 
     # Add to queue tracking

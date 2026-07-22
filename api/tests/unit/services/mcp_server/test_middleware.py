@@ -221,6 +221,26 @@ class TestOnCallTool:
         call_next.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_non_admin_platform_tool_is_denied_before_agent_lookup(
+        self, mock_context, mock_access_token
+    ):
+        from src.services.mcp_server.middleware import ToolFilterMiddleware
+
+        middleware = ToolFilterMiddleware()
+        mock_context.message.name = "list_organizations"
+        call_next = AsyncMock()
+        token = mock_access_token(is_superuser=False)
+
+        with patch(
+            "src.services.mcp_server.middleware.get_access_token",
+            return_value=token,
+        ):
+            with pytest.raises(Exception, match="Access denied"):
+                await middleware.on_call_tool(mock_context, call_next)
+
+        call_next.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_allows_authorized_tool_call(
         self, mock_context, mock_access_token, mock_tool_info
     ):

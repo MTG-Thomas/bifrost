@@ -21,6 +21,8 @@ from pwdlib.hashers.bcrypt import BcryptHasher
 
 from src.config import get_settings
 
+ENGINE_USER_ID = "00000000-0000-0000-0000-000000000001"
+
 # Password hashing using pwdlib with bcrypt
 # This is the modern replacement for passlib, recommended by FastAPI
 # We explicitly use BcryptHasher to avoid requiring argon2 dependency
@@ -405,7 +407,16 @@ def validate_csrf_token(cookie_token: str, header_token: str) -> bool:
     return secrets.compare_digest(cookie_token, header_token)
 
 
-def mint_engine_token() -> tuple[str, str]:
+def mint_engine_token(
+    *,
+    organization_id: str | None = None,
+    delegated_user_id: str | None = None,
+    delegated_email: str = "",
+    delegated_name: str = "",
+    delegated_is_superuser: bool = False,
+    delegated_is_provider_org: bool = False,
+    delegated_is_external: bool = False,
+) -> tuple[str, str]:
     """
     Mint a long-lived engine token (30 days) parent-side.
 
@@ -418,14 +429,26 @@ def mint_engine_token() -> tuple[str, str]:
     Returns:
         (token, expires_at_iso): JWT string and ISO-8601 expiry timestamp.
     """
-    ENGINE_USER_ID = "00000000-0000-0000-0000-000000000001"
-
     token_data = {
         "sub": ENGINE_USER_ID,
         "email": "engine@bifrost.internal",
         "name": "Bifrost Engine",
         "is_superuser": True,
+        "engine": True,
     }
+    if organization_id is not None:
+        token_data["org_id"] = str(organization_id)
+    if delegated_user_id is not None:
+        token_data.update(
+            {
+                "delegated_user_id": str(delegated_user_id),
+                "delegated_email": delegated_email,
+                "delegated_name": delegated_name,
+                "delegated_is_superuser": delegated_is_superuser,
+                "delegated_is_provider_org": delegated_is_provider_org,
+                "delegated_is_external": delegated_is_external,
+            }
+        )
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=30)
     token = create_access_token(token_data, expires_delta=timedelta(days=30))
@@ -450,10 +473,6 @@ def authenticate_engine() -> None:
 
     from bifrost.credentials import save_credentials
 
-    # Use a fixed UUID for the engine service account
-    # This is a well-known UUID that represents the execution engine
-    ENGINE_USER_ID = "00000000-0000-0000-0000-000000000001"
-
     # Create a long-lived superuser token (30 days)
     # is_superuser=True with no org_id = system account with global access
     token_data = {
@@ -461,6 +480,7 @@ def authenticate_engine() -> None:
         "email": "engine@bifrost.internal",
         "name": "Bifrost Engine",
         "is_superuser": True,
+        "engine": True,
     }
 
     token = create_access_token(

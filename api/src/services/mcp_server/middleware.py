@@ -242,6 +242,17 @@ class ToolFilterMiddleware(Middleware):
         user_id = token.claims.get("user_id")
         org_id = token.claims.get("org_id")
 
+        from src.core.system_agents import PLATFORM_ADMIN_SYSTEM_TOOLS
+
+        if not is_superuser and tool_name in PLATFORM_ADMIN_SYSTEM_TOOLS:
+            logger.warning(
+                f"MCP tools/call: Platform-admin tool denied for user {user_email} "
+                f"to tool '{tool_name}'"
+            )
+            raise ToolError(
+                f"Access denied: You don't have permission to use '{tool_name}'"
+            )
+
         agent_id = _get_agent_id_from_scope()
 
         # Check if user has access to this tool

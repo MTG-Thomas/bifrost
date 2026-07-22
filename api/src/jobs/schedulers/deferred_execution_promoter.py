@@ -84,6 +84,12 @@ async def promote_due_executions() -> tuple[int, int]:
                     is_platform_admin=bool(
                         (row.execution_context or {}).get("is_platform_admin", False)
                     ),
+                    is_provider_org=bool(
+                        (row.execution_context or {}).get("is_provider_org", False)
+                    ),
+                    is_external=bool(
+                        (row.execution_context or {}).get("is_external", False)
+                    ),
                     file_path=None,
                     solution_deployment_id=str(row.solution_deployment_id) if row.solution_deployment_id else None,
                     runtime_evidence=(row.execution_context or {}).get("runtime_evidence"),

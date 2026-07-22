@@ -150,8 +150,7 @@ def resolve_scope(scope: str | None) -> str | None:
     if ctx is None:
         return scope  # CLI mode — user authenticates with their own JWT
     is_platform_admin = bool(getattr(ctx, "is_platform_admin", False))
-    is_provider_org = bool(ctx.organization and ctx.organization.is_provider)
-    if is_platform_admin or is_provider_org:
+    if is_platform_admin or ctx.is_provider_org:
         return scope
     raise PermissionError(
         f"Scope override to '{scope}' denied. "

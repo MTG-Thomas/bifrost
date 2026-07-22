@@ -78,7 +78,7 @@ tools:
 delegated_agent_ids:
   - {child_id}
   - bad-child
-system_tools: [search]
+system_tools: [search_knowledge, execute_workflow]
 max_iterations: 8
 max_token_budget: 1234
 """.encode()
@@ -99,6 +99,10 @@ max_token_budget: 1234
     assert added_delegations[0].parent_agent_id == agent_id
     assert added_delegations[0].child_agent_id == child_id
     assert db.execute.await_count == 5
+    upsert = db.execute.await_args_list[0].args[0]
+    compiled = upsert.compile()
+    assert compiled.params["system_tools"] == ["search_knowledge"]
+    assert "system_tools" in str(upsert).split("DO UPDATE SET", maxsplit=1)[1]
 
 
 @pytest.mark.asyncio

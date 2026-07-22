@@ -224,7 +224,7 @@ async def write_cmd(
     if content_flag is not None:
         content = content_flag
     elif from_file is not None:
-        content = Path(from_file).read_text()
+        content = Path(from_file).read_text(encoding="utf-8")
     elif source == "-":
         content = sys.stdin.read()
     else:
