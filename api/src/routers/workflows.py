@@ -1323,6 +1323,38 @@ async def register_workflow(
     )
     existing_wf = existing.scalar_one_or_none()
 
+    requested_workflow_id: UUID | None = None
+    if request.id:
+        try:
+            requested_workflow_id = UUID(request.id)
+        except (ValueError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid workflow ID: '{request.id}' (expected a UUID)",
+            ) from exc
+
+        if existing_wf and existing_wf.id != requested_workflow_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Workflow '{request.function_name}' in {request.path} is already "
+                    f"registered with UUID {existing_wf.id}, not {requested_workflow_id}"
+                ),
+            )
+
+        id_result = await db.execute(
+            select(WorkflowORM).where(WorkflowORM.id == requested_workflow_id)
+        )
+        id_owner = id_result.scalar_one_or_none()
+        if id_owner and (not existing_wf or id_owner.id != existing_wf.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Workflow UUID {requested_workflow_id} is already used by "
+                    f"{id_owner.path}::{id_owner.function_name}"
+                ),
+            )
+
     wf_type = "data_provider" if target_decorator_type == "data_provider" else (
         "tool" if target_decorator_type == "tool" else "workflow"
     )
@@ -1380,7 +1412,10 @@ async def register_workflow(
         await db.flush()
     else:
         # 4. Create minimal DB record
-        workflow_id = uuid4()
+        # A supplied ID must already have been assigned by another Bifrost
+        # instance and is used only for cross-instance promotion. Normal
+        # first-time registration still lets this instance assign the UUID.
+        workflow_id = requested_workflow_id or uuid4()
         new_wf = WorkflowORM(
             id=workflow_id,
             name=request.function_name,

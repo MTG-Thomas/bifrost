@@ -19923,6 +19923,11 @@ export interface components {
              */
             function_name: string;
             /**
+             * Id
+             * @description Previously platform-assigned workflow UUID to preserve during cross-instance promotion. Omit for first-time creation.
+             */
+            id?: string | null;
+            /**
              * Organization Id
              * @description Organization ID to scope the workflow to, or null for global scope
              */

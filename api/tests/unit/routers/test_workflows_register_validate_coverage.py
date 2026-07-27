@@ -291,6 +291,83 @@ async def test_register_workflow_rejects_invalid_access_role_and_duplicate() -> 
 
 
 @pytest.mark.asyncio
+async def test_register_workflow_validates_and_preserves_promoted_uuid() -> None:
+    content = b"@workflow\ndef run(): pass"
+    service = SimpleNamespace(read_file=AsyncMock(return_value=(content, None)))
+
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                RegisterWorkflowRequest(
+                    path="workflows/run.py",
+                    function_name="run",
+                    id="not-a-uuid",
+                ),
+                _Db(None),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Invalid workflow ID" in exc.value.detail
+
+    requested_id = uuid4()
+    collision = SimpleNamespace(
+        id=requested_id,
+        path="workflows/other.py",
+        function_name="other",
+    )
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                RegisterWorkflowRequest(
+                    path="workflows/run.py",
+                    function_name="run",
+                    id=str(requested_id),
+                ),
+                _Db(None, collision),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert "already used by workflows/other.py::other" in exc.value.detail
+
+    created = SimpleNamespace(
+        id=requested_id,
+        name="run",
+        function_name="run",
+        path="workflows/run.py",
+        type="workflow",
+        description=None,
+        organization_id=None,
+    )
+    db = _Db(None, None, created)
+    indexer = SimpleNamespace(index_python_file=AsyncMock())
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch(
+            "src.services.file_storage.indexers.workflow.WorkflowIndexer",
+            return_value=indexer,
+        ),
+        patch("src.services.mcp_server.server.refresh_workflow_tools", AsyncMock()),
+    ):
+        result = await workflows.register_workflow(
+            RegisterWorkflowRequest(
+                path="workflows/run.py",
+                function_name="run",
+                id=str(requested_id),
+                organization_id=None,
+            ),
+            db,
+            _admin(),
+        )
+
+    assert result.id == str(requested_id)
+    assert db.added[0].id == requested_id
+    assert db.committed is True
+    indexer.index_python_file.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_update_workflow_validates_name_access_and_methods() -> None:
     workflow_id = uuid4()
     workflow = SimpleNamespace(id=workflow_id, solution_id=None, name="run")
