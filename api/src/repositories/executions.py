@@ -118,6 +118,12 @@ class ExecutionRepository(BaseRepository[Execution]):
         # Parse api_key_id if present
         parsed_api_key_id = UUID(api_key_id) if api_key_id else None
 
+        # Workers receive raw parameters through the queue. The execution row is
+        # an audit surface, not a second credential or source-payload store.
+        persisted_parameters = _make_json_safe(
+            sanitize_execution_variables(parameters)
+        )
+
         # Parse workflow_id if present
         parsed_workflow_id = UUID(workflow_id) if workflow_id else None
         parsed_solution_deployment_id = UUID(solution_deployment_id) if solution_deployment_id else None
@@ -132,7 +138,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             existing.workflow_name = workflow_name
             existing.workflow_id = parsed_workflow_id
             existing.status = status
-            existing.parameters = parameters
+            existing.parameters = persisted_parameters
             existing.executed_by = parsed_user_id
             existing.executed_by_name = user_name
             existing.organization_id = parsed_org_id
@@ -155,7 +161,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             workflow_id=parsed_workflow_id,
             solution_deployment_id=parsed_solution_deployment_id,
             status=status,
-            parameters=parameters,
+            parameters=persisted_parameters,
             executed_by=parsed_user_id,
             executed_by_name=user_name,
             organization_id=parsed_org_id,

@@ -186,6 +186,36 @@ async def test_create_execution_adds_new_global_execution() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_execution_redacts_sensitive_endpoint_inputs() -> None:
+    execution_id = uuid4()
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.get = AsyncMock(return_value=None)
+    repo = ExecutionRepository(session)
+
+    result = await repo.create_execution(
+        execution_id=str(execution_id),
+        workflow_name="promote_source",
+        parameters={
+            "mode": "plan",
+            "github_oidc_token": "SYNTHETIC_OIDC_TOKEN",
+            "source_code": "SYNTHETIC_SOURCE_ARCHIVE",
+        },
+        org_id="GLOBAL",
+        user_id=str(uuid4()),
+        user_name="API Key",
+    )
+
+    assert result.parameters == {
+        "mode": "plan",
+        "github_oidc_token": "[REDACTED]",
+        "source_code": "[REDACTED]",
+    }
+    assert "SYNTHETIC_OIDC_TOKEN" not in json.dumps(result.parameters)
+    assert "SYNTHETIC_SOURCE_ARCHIVE" not in json.dumps(result.parameters)
+
+
+@pytest.mark.asyncio
 async def test_update_execution_sets_result_type_metrics_economics_and_logs() -> None:
     execution_id = uuid4()
     session = AsyncMock()
