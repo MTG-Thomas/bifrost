@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 
 from src.models.contracts.workflows import (
     RegisterWorkflowRequest,
@@ -36,12 +37,13 @@ class _ScalarResult:
 
 
 class _Db:
-    def __init__(self, *values):
+    def __init__(self, *values, flush_error=None):
         self.values = list(values)
         self.added = []
         self.flushed = False
         self.committed = False
         self.rolled_back = False
+        self.flush_error = flush_error
 
     async def execute(self, _stmt):
         if not self.values:
@@ -53,6 +55,10 @@ class _Db:
 
     async def flush(self):
         self.flushed = True
+        if self.flush_error is not None:
+            error = self.flush_error
+            self.flush_error = None
+            raise error
 
     async def commit(self):
         self.committed = True
@@ -62,6 +68,16 @@ class _Db:
 
     async def refresh(self, _value):
         return None
+
+    def begin_nested(self):
+        class _Savepoint:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, *_args):
+                return None
+
+        return _Savepoint()
 
 
 class _CancelDb:
@@ -288,6 +304,134 @@ async def test_register_workflow_rejects_invalid_access_role_and_duplicate() -> 
 
     assert exc.value.status_code == status.HTTP_409_CONFLICT
     assert exc.value.detail == "Workflow already registered"
+
+
+@pytest.mark.asyncio
+async def test_register_workflow_validates_and_preserves_promoted_uuid() -> None:
+    content = b"@workflow\ndef run(): pass"
+    service = SimpleNamespace(read_file=AsyncMock(return_value=(content, None)))
+    invalid_request = RegisterWorkflowRequest(
+        path="workflows/run.py",
+        function_name="run",
+        id="not-a-uuid",
+    )
+
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                invalid_request,
+                _Db(None),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Invalid workflow ID" in exc.value.detail
+
+    empty_request = RegisterWorkflowRequest(
+        path="workflows/run.py",
+        function_name="run",
+        id="",
+    )
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                empty_request,
+                _Db(None),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Invalid workflow ID" in exc.value.detail
+
+    requested_id = uuid4()
+    collision = SimpleNamespace(
+        id=requested_id,
+        path="workflows/other.py",
+        function_name="other",
+    )
+    collision_request = RegisterWorkflowRequest(
+        path="workflows/run.py",
+        function_name="run",
+        id=str(requested_id),
+    )
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                collision_request,
+                _Db(None, collision),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert "already used by workflows/other.py::other" in exc.value.detail
+
+    path_owner = SimpleNamespace(
+        id=uuid4(),
+        path="workflows/run.py",
+        function_name="run",
+    )
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                collision_request,
+                _Db(path_owner),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert f"already registered with UUID {path_owner.id}" in exc.value.detail
+
+    race_owner = SimpleNamespace(
+        id=requested_id,
+        path="workflows/racing.py",
+        function_name="racing",
+    )
+    race_error = IntegrityError("INSERT", {}, Exception("duplicate key"))
+    with patch("src.services.file_storage.FileStorageService", return_value=service):
+        with pytest.raises(HTTPException) as exc:
+            await workflows.register_workflow(
+                collision_request,
+                _Db(None, None, race_owner, flush_error=race_error),
+                _admin(),
+            )
+
+    assert exc.value.status_code == status.HTTP_409_CONFLICT
+    assert "already used by workflows/racing.py::racing" in exc.value.detail
+
+    created = SimpleNamespace(
+        id=requested_id,
+        name="run",
+        function_name="run",
+        path="workflows/run.py",
+        type="workflow",
+        description=None,
+        organization_id=None,
+    )
+    db = _Db(None, None, created)
+    indexer = SimpleNamespace(index_python_file=AsyncMock())
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch(
+            "src.services.file_storage.indexers.workflow.WorkflowIndexer",
+            return_value=indexer,
+        ),
+        patch("src.services.mcp_server.server.refresh_workflow_tools", AsyncMock()),
+    ):
+        result = await workflows.register_workflow(
+            RegisterWorkflowRequest(
+                path="workflows/run.py",
+                function_name="run",
+                id=str(requested_id),
+                organization_id=None,
+            ),
+            db,
+            _admin(),
+        )
+
+    assert result.id == str(requested_id)
+    assert db.added[0].id == requested_id
+    assert db.committed is True
+    indexer.index_python_file.assert_awaited_once()
 
 
 @pytest.mark.asyncio

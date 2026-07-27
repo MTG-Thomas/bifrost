@@ -59,6 +59,12 @@ from src.models.orm.forms import Form, FormField
 from src.models.orm.applications import Application
 from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.users import Role
+from src.services.workflow_registration import (
+    WorkflowRegistrationConflict,
+    WorkflowRegistrationIdInvalid,
+    add_workflow_registration,
+    resolve_workflow_registration_id,
+)
 from src.services.workflow_validation import _extract_relative_path
 from src.services.solution_scope import derive_execution_solution_scope
 from src.services.solutions.guard import (
@@ -1323,6 +1329,21 @@ async def register_workflow(
     )
     existing_wf = existing.scalar_one_or_none()
 
+    try:
+        requested_workflow_id = await resolve_workflow_registration_id(
+            db, request.id, existing_wf
+        )
+    except WorkflowRegistrationIdInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except WorkflowRegistrationConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
     wf_type = "data_provider" if target_decorator_type == "data_provider" else (
         "tool" if target_decorator_type == "tool" else "workflow"
     )
@@ -1380,7 +1401,10 @@ async def register_workflow(
         await db.flush()
     else:
         # 4. Create minimal DB record
-        workflow_id = uuid4()
+        # A supplied ID must already have been assigned by another Bifrost
+        # instance and is used only for cross-instance promotion. Normal
+        # first-time registration still lets this instance assign the UUID.
+        workflow_id = requested_workflow_id or uuid4()
         new_wf = WorkflowORM(
             id=workflow_id,
             name=request.function_name,
@@ -1391,8 +1415,17 @@ async def register_workflow(
             organization_id=org_uuid,
             access_level=request.access_level if request.access_level is not None else "role_based",
         )
-        db.add(new_wf)
-        await db.flush()
+        try:
+            await add_workflow_registration(
+                db,
+                new_wf,
+                requested_workflow_id,
+            )
+        except WorkflowRegistrationConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
 
     # Apply role assignments. Replaces any pre-existing rows when reactivating
     # an inactive workflow, so the caller's role list is authoritative.
