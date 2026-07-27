@@ -59,6 +59,12 @@ from src.models.orm.forms import Form, FormField
 from src.models.orm.applications import Application
 from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.users import Role
+from src.services.workflow_registration import (
+    WorkflowRegistrationConflict,
+    WorkflowRegistrationIdInvalid,
+    add_workflow_registration,
+    resolve_workflow_registration_id,
+)
 from src.services.workflow_validation import _extract_relative_path
 from src.services.solution_scope import derive_execution_solution_scope
 from src.services.solutions.guard import (
@@ -1323,37 +1329,20 @@ async def register_workflow(
     )
     existing_wf = existing.scalar_one_or_none()
 
-    requested_workflow_id: UUID | None = None
-    if request.id:
-        try:
-            requested_workflow_id = UUID(request.id)
-        except (ValueError, AttributeError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid workflow ID: '{request.id}' (expected a UUID)",
-            ) from exc
-
-        if existing_wf and existing_wf.id != requested_workflow_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Workflow '{request.function_name}' in {request.path} is already "
-                    f"registered with UUID {existing_wf.id}, not {requested_workflow_id}"
-                ),
-            )
-
-        id_result = await db.execute(
-            select(WorkflowORM).where(WorkflowORM.id == requested_workflow_id)
+    try:
+        requested_workflow_id = await resolve_workflow_registration_id(
+            db, request.id, existing_wf
         )
-        id_owner = id_result.scalar_one_or_none()
-        if id_owner and (not existing_wf or id_owner.id != existing_wf.id):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Workflow UUID {requested_workflow_id} is already used by "
-                    f"{id_owner.path}::{id_owner.function_name}"
-                ),
-            )
+    except WorkflowRegistrationIdInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except WorkflowRegistrationConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
     wf_type = "data_provider" if target_decorator_type == "data_provider" else (
         "tool" if target_decorator_type == "tool" else "workflow"
@@ -1426,8 +1415,17 @@ async def register_workflow(
             organization_id=org_uuid,
             access_level=request.access_level if request.access_level is not None else "role_based",
         )
-        db.add(new_wf)
-        await db.flush()
+        try:
+            await add_workflow_registration(
+                db,
+                new_wf,
+                requested_workflow_id,
+            )
+        except WorkflowRegistrationConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
 
     # Apply role assignments. Replaces any pre-existing rows when reactivating
     # an inactive workflow, so the caller's role list is authoritative.
