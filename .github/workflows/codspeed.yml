@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -37,7 +37,7 @@ jobs:
           ./.venv/bin/pip install --no-deps --require-hashes -r .github/requirements/codspeed.txt
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@f99becdce5e5d51fd556489ebef684f4ecfd6286 # v4.18.5
+        uses: CodSpeedHQ/action@9c498abf90f466ace8338cd5505d6ab277e1f9a3 # v4.19.0
         with:
           mode: simulation
           run: cd api && PYTHONPATH=. ../.venv/bin/python -m pytest benchmarks/ --codspeed
