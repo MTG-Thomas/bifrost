@@ -104,6 +104,10 @@ async def test_begin_uses_canonical_revision_and_rejects_stale_revision():
     )
     state = await svc.state("features")
     assert state.storage_root == "_repo"
+    assert state.file_hashes == {
+        "features/a.py": "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed",
+        "features/b.py": "3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3",
+    }
     row = await svc.begin(
         WorkspaceRepoChangesetBegin(
             scope="features", base_revision=state.revision, worker_id="worker-1"

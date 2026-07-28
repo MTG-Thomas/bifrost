@@ -129,6 +129,7 @@ class WorkspaceRepoChangesetService:
             scope=scope,
             revision=revision,
             file_count=len(files),
+            file_hashes=files,
             dirty=workspace_dirty or count > 0,
             open_changesets=count,
             git_status=git_status,
