@@ -195,6 +195,25 @@ class TestOAuthTokenRepositoryCrossTenantIsolation:
         query = str(session.execute.call_args.args[0])
         assert "FOR UPDATE" in query
 
+    async def test_for_update_locks_org_token_without_global_fallback(
+        self, session
+    ) -> None:
+        """An org token wins and is locked before any global lookup."""
+        provider_id = uuid4()
+        org_token = MagicMock(organization_id=ORG_A)
+        session.execute.return_value = _result_returning(org_token)
+
+        repo = OAuthTokenRepository(session, org_id=ORG_A, is_superuser=True)
+        result = await repo.get_org_level_for_provider(
+            provider_id,
+            for_update=True,
+        )
+
+        assert result is org_token
+        assert session.execute.call_count == 1
+        query = str(session.execute.call_args.args[0])
+        assert "FOR UPDATE" in query
+
 
 class TestOAuthProviderRepositoryCascade:
     """Provider lookup also gets cascade for the same reasons as token."""
