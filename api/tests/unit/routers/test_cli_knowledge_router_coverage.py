@@ -178,6 +178,7 @@ class TestCLIKnowledgeSearchAndDelete:
         embedder.embed_single.assert_awaited_once_with("how do I fix it?")
         repo.search.assert_awaited_once_with(
             query_embedding=[0.1, 0.2, 0.3],
+            query_text="how do I fix it?",
             namespace=["kb"],
             limit=3,
             min_score=0.5,

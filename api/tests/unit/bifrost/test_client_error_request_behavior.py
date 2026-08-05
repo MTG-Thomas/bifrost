@@ -86,37 +86,15 @@ async def test_refresh_tokens_returns_false_for_non_200_refresh_response(monkeyp
             "expires_at": "already-expired",
         },
     )
-    monkeypatch.setattr(
-        client_mod,
-        "get_ephemeral_credentials_source",
-        lambda _api_url: None,
-    )
-
-    class RefreshClient:
-        def __init__(self, **kwargs):
-            assert kwargs["base_url"] == "https://api.example.test"
-            assert kwargs["trust_env"] is False
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-        async def post(self, path, json):
-            assert path == "/auth/refresh"
-            assert json == {"refresh_token": "old-refresh"}
-            return httpx.Response(401)
-
-    monkeypatch.setattr(client_mod.httpx, "AsyncClient", RefreshClient)
+    refresh = AsyncMock(return_value=None)
+    monkeypatch.setattr(client_mod, "refresh_connection_access_token", refresh)
 
     assert await client_mod.refresh_tokens() is False
+    refresh.assert_awaited_once_with("https://api.example.test", "old-access")
 
 
 @pytest.mark.asyncio
-async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypatch):
-    saved: list[dict[str, str]] = []
-    ephemeral_saved: list[dict[str, str]] = []
+async def test_refresh_tokens_delegates_successful_refresh(monkeypatch):
     monkeypatch.setattr(
         client_mod,
         "get_credentials",
@@ -127,48 +105,11 @@ async def test_refresh_tokens_saves_file_credentials_when_not_ephemeral(monkeypa
             "expires_at": "already-expired",
         },
     )
-    monkeypatch.setattr(
-        client_mod,
-        "get_ephemeral_credentials_source",
-        lambda _api_url: None,
-    )
-    monkeypatch.setattr(client_mod, "save_credentials", lambda **kwargs: saved.append(kwargs))
-    monkeypatch.setattr(
-        client_mod,
-        "save_ephemeral_credentials",
-        lambda **kwargs: ephemeral_saved.append(kwargs),
-    )
-
-    class RefreshClient:
-        def __init__(self, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-        async def post(self, path, json):
-            assert path == "/auth/refresh"
-            assert json == {"refresh_token": "old-refresh"}
-            return httpx.Response(
-                200,
-                json={
-                    "access_token": "new-access",
-                    "refresh_token": "new-refresh",
-                    "expires_in": 60,
-                },
-            )
-
-    monkeypatch.setattr(client_mod.httpx, "AsyncClient", RefreshClient)
+    refresh = AsyncMock(return_value="new-access")
+    monkeypatch.setattr(client_mod, "refresh_connection_access_token", refresh)
 
     assert await client_mod.refresh_tokens() is True
-    assert saved[0]["api_url"] == "https://api.example.test"
-    assert saved[0]["access_token"] == "new-access"
-    assert saved[0]["refresh_token"] == "new-refresh"
-    assert saved[0]["expires_at"]
-    assert ephemeral_saved == []
+    refresh.assert_awaited_once_with("https://api.example.test/", "old-access")
 
 
 @pytest.mark.asyncio

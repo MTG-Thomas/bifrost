@@ -19,7 +19,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import type { UsageTrend } from "@/services/usage";
 import { toFiniteNumber } from "@/lib/chart-values";
-import { formatCurrency, formatNumber } from "./formatters";
+import {
+	formatChartDateLabel,
+	formatCurrency,
+	formatNumber,
+} from "./formatters";
 
 export interface UsageChartsProps {
 	trends: UsageTrend[] | undefined;
@@ -76,9 +80,7 @@ export function UsageCharts({ trends, isLoading }: UsageChartsProps) {
 										return [formatCurrency(safeValue), "AI Cost"];
 									return [formatNumber(safeValue), name];
 								}}
-								labelFormatter={(label) =>
-									format(new Date(label), "PPP")
-								}
+								labelFormatter={formatChartDateLabel}
 							/>
 							<Legend
 								formatter={(value) => {

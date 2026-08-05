@@ -195,7 +195,7 @@ class TestVariableCaptureOnError:
             assert result.variables is not None
             assert "oauth_response" in result.variables
             assert result.variables["oauth_response"] == {
-                "access_token": "test_token_123",
+                "access_token": "[REDACTED]",
                 "expires_in": 3600
             }
             assert "url" in result.variables  # noqa: F821

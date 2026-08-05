@@ -247,7 +247,6 @@ def _check_cli_version() -> None:
     # Re-load only the CLI-safe allowlist so an opted-in CWD .env can set
     # BIFROST_API_URL without importing tokens, proxy settings, or CA paths.
     credentials.load_allowed_dotenv(override=True)
-
     # Use credentials._resolve_url (not get_credentials) because the version
     # check only needs the URL — get_credentials returns None unless full
     # tokens are present too, which would skip the check on a logged-out CLI.
@@ -624,11 +623,10 @@ async def device_login_flow(api_url: str | None = None, auto_open: bool = True) 
 
 async def password_login_flow(api_url: str, email: str, password: str) -> tuple[int, dict | None]:
     """
-    Password-grant login. Tokens are returned to the caller; the caller
-    decides where to persist them. The CLI's `bifrost login` command writes
-    BIFROST_API_URL + the two tokens to .env in CWD so subsequent commands
-    in that directory inherit them. Suitable only for isolated development
-    stacks with MFA disabled.
+    Password-grant login. Tokens are returned to the caller for storage in the
+    global URL-keyed credential backend. The CLI writes only BIFROST_API_URL to
+    CWD's .env so commands there select the development instance. Suitable only
+    for isolated development stacks with MFA disabled.
 
     Returns (exit_code, payload). On success, payload is the parsed JSON
     response from /auth/login containing access_token / refresh_token.
@@ -775,12 +773,12 @@ def _line_assigns_env_var(line: str, key: str) -> bool:
 
 def _remove_env_connection(api_url: str) -> bool:
     """
-    Remove a matching folder-local Bifrost connection from CWD's .env.
+    Remove a matching folder-local Bifrost URL selector from CWD's .env.
 
     The URL is the binding key. Only when it matches ``api_url`` do we remove
-    the URL plus any password-grant access and refresh tokens from that file.
-    Browser login writes only the URL, while password-grant login writes all
-    three values.
+    the URL plus any legacy access and refresh token lines from that file.
+    Current login flows store credentials globally by URL and write only the
+    URL selector to .env.
 
     Returns True if a matching connection was removed.
     """
@@ -1247,11 +1245,12 @@ Examples:
             file=sys.stderr,
         )
         return 1
+    environment_url = credentials.resolve_environment_url()
 
     if is_password_grant:
         # Resolve URL: --url > BIFROST_API_URL env var > error. No default.
         if not api_url:
-            api_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
+            api_url = environment_url
         if not api_url:
             print(
                 "Error: password-grant login requires --url or BIFROST_API_URL env var "
@@ -1265,9 +1264,8 @@ Examples:
         assert password is not None
         rc, data = asyncio.run(password_login_flow(api_url, email, password))
         if rc == 0 and data is not None:
-            # Persist URL + tokens to CWD's .env so subsequent `bifrost`
-            # commands from this directory just work — no shell-eval needed.
-            # Isolation is by directory: each sandbox dir has its own .env.
+            # Persist URL + tokens to CWD's .env so subsequent commands from
+            # this isolated scratch directory reuse the unattended session.
             try:
                 _write_env_url(api_url)
                 _upsert_env_vars(
@@ -1281,7 +1279,6 @@ Examples:
                     f"Warning: could not update .env in current directory: {e}",
                     file=sys.stderr,
                 )
-                # Fall back to printing so the caller can eval them.
                 print(f"BIFROST_API_URL={api_url}")
                 print(f"BIFROST_ACCESS_TOKEN={data['access_token']}")
                 print(f"BIFROST_REFRESH_TOKEN={data['refresh_token']}")
@@ -1343,9 +1340,8 @@ If --url is omitted, logs out from the URL resolved by the same rules as
 connection).
 
 After clearing persistent credentials, if the current directory's .env is
-bound to that URL, you'll be prompted to remove the complete folder binding.
-For browser login this is the URL; for password login it also includes the
-folder-local access and refresh tokens.
+bound to that URL, you'll be prompted to remove its URL selector. Legacy token
+lines in that same file are removed as cleanup.
 
 Options:
   --url, -u URL   Specific URL to log out from
@@ -4343,6 +4339,20 @@ async def _api_request(method: str, endpoint: str, body: Any | None, client: "Bi
     try:
         response = await http_fn(endpoint, **kwargs)
         return await _print_api_response(response, client, execution_id)
+    except httpx.TimeoutException:
+        if execution_id and await _recover_api_transport_failure(client, execution_id):
+            return 0
+        print(
+            "Error: request timed out after 30 seconds. The server may still "
+            "be processing it; check operation status before retrying.",
+            file=sys.stderr,
+        )
+        return 1
+    except httpx.ConnectError:
+        if execution_id and await _recover_api_transport_failure(client, execution_id):
+            return 0
+        print("Error: could not connect to Bifrost API.", file=sys.stderr)
+        return 1
     except httpx.TransportError as exc:
         if execution_id and await _recover_api_transport_failure(client, execution_id):
             return 0

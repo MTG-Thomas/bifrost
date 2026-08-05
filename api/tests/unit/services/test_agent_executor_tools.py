@@ -15,12 +15,16 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
+from src.models.contracts.agents import ToolResult
+from src.repositories.knowledge import KnowledgeDocument
 from src.services.agent_executor import (
     FALLBACK_SYSTEM_PROMPT,
     AgentExecutor,
     _serialize_for_json,
+    _serialize_tool_result_for_history,
 )
-from src.services.llm import ToolDefinition
+from src.services.execution.autonomous_agent_executor import DelegationOutcome
+from src.services.llm import ToolCallRequest, ToolDefinition
 
 
 @pytest.fixture
@@ -120,6 +124,157 @@ class TestAutoAddSearchKnowledge:
 
         tool_names = [t.name for t in tools]
         assert "search_knowledge" not in tool_names
+
+
+class TestKnowledgeSearchBudget:
+    """Knowledge searches stay bounded within one chat turn."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_query_returns_short_skip_without_embedding(
+        self, executor, mock_agent
+    ):
+        mock_agent.knowledge_sources = ["halo_kb"]
+        executor._knowledge_search_budget.reserve("contact roles")
+        tool_call = ToolCallRequest(
+            id="duplicate",
+            name="search_knowledge",
+            arguments={"query": "  CONTACT   ROLES ", "limit": 10},
+        )
+
+        result = await executor._execute_knowledge_search(tool_call, mock_agent)
+
+        assert result.error is None
+        assert result.result["search_skipped"] is True
+        assert result.result["reason"] == "duplicate_query"
+        assert result.result["documents"] == []
+
+    @pytest.mark.asyncio
+    async def test_result_limit_is_clamped_before_repository_search(
+        self, executor, mock_agent
+    ):
+        mock_agent.knowledge_sources = ["halo_kb"]
+        mock_agent.organization_id = uuid4()
+        tool_call = ToolCallRequest(
+            id="oversized",
+            name="search_knowledge",
+            arguments={"query": "contact roles", "limit": 1000},
+        )
+        embedding_client = MagicMock()
+        embedding_client.embed_single = AsyncMock(return_value=[0.1, 0.2])
+        repository = MagicMock()
+        repository.search = AsyncMock(return_value=[])
+
+        with patch(
+            "src.services.embeddings.get_embedding_client",
+            new_callable=AsyncMock,
+            return_value=embedding_client,
+        ), patch(
+            "src.repositories.knowledge.KnowledgeRepository",
+            return_value=repository,
+        ):
+            result = await executor._execute_knowledge_search(tool_call, mock_agent)
+
+        assert result.error is None
+        repository.search.assert_awaited_once()
+        assert repository.search.await_args.kwargs["limit"] == 5
+        assert result.result["searches_used"] == 1
+        assert result.result["searches_remaining"] == 7
+        assert repository.search.await_args.kwargs["query_text"] == "contact roles"
+
+    @pytest.mark.asyncio
+    async def test_distinct_queries_do_not_return_the_same_chunk_twice(
+        self, executor, mock_agent
+    ):
+        mock_agent.knowledge_sources = ["halo_kb"]
+        mock_agent.organization_id = uuid4()
+        embedding_client = MagicMock()
+        embedding_client.embed_single = AsyncMock(return_value=[0.1, 0.2])
+        document = KnowledgeDocument(
+            id="chunk-1",
+            content="Configure Technical POC with Contact Types.",
+            namespace="halo_kb",
+            score=0.9,
+            key="contact-types",
+            metadata={"title": "Contact Types"},
+        )
+        repository = MagicMock()
+        repository.search = AsyncMock(return_value=[document])
+
+        with patch(
+            "src.services.embeddings.get_embedding_client",
+            new_callable=AsyncMock,
+            return_value=embedding_client,
+        ), patch(
+            "src.repositories.knowledge.KnowledgeRepository",
+            return_value=repository,
+        ):
+            first = await executor._execute_knowledge_search(
+                ToolCallRequest(
+                    id="first",
+                    name="search_knowledge",
+                    arguments={"query": "technical poc"},
+                ),
+                mock_agent,
+            )
+            second = await executor._execute_knowledge_search(
+                ToolCallRequest(
+                    id="second",
+                    name="search_knowledge",
+                    arguments={"query": "billing contact role"},
+                ),
+                mock_agent,
+            )
+
+        assert first.result["count"] == 1
+        assert second.result["count"] == 0
+        assert second.result["omitted_duplicate_evidence"] == 1
+        assert repository.search.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_agent_evidence_omits_bulky_image_metadata(
+        self, executor, mock_agent
+    ):
+        mock_agent.knowledge_sources = ["halo_kb"]
+        mock_agent.organization_id = uuid4()
+        embedding_client = MagicMock()
+        embedding_client.embed_single = AsyncMock(return_value=[0.1, 0.2])
+        repository = MagicMock()
+        repository.search = AsyncMock(
+            return_value=[
+                KnowledgeDocument(
+                    id="chunk-1",
+                    content="Use Site Contact Types.",
+                    namespace="halo_kb",
+                    score=0.9,
+                    key="site-contact-types",
+                    metadata={
+                        "title": "Site Contact Types",
+                        "image_uuids": ["image-id"] * 1_000,
+                    },
+                )
+            ]
+        )
+
+        with patch(
+            "src.services.embeddings.get_embedding_client",
+            new_callable=AsyncMock,
+            return_value=embedding_client,
+        ), patch(
+            "src.repositories.knowledge.KnowledgeRepository",
+            return_value=repository,
+        ):
+            result = await executor._execute_knowledge_search(
+                ToolCallRequest(
+                    id="metadata",
+                    name="search_knowledge",
+                    arguments={"query": "site contact types"},
+                ),
+                mock_agent,
+            )
+
+        assert result.result["documents"][0]["metadata"] == {
+            "title": "Site Contact Types"
+        }
 
 
 class TestToolConflictDetection:
@@ -581,44 +736,8 @@ class TestChatDelegation:
     """Test that chat _execute_delegation uses AutonomousAgentExecutor."""
 
     @pytest.mark.asyncio
-    async def test_delegation_rechecks_reference_access_at_dispatch(self, executor):
-        """A stale or forged delegation call is denied before child execution."""
-        from src.services.llm.base import ToolCallRequest
-
-        organization_id = uuid4()
-        delegated = MagicMock()
-        delegated.id = uuid4()
-        delegated.name = "Restricted Agent"
-        delegated.is_active = True
-        delegated.organization_id = organization_id
-
-        agent = MagicMock()
-        agent.organization_id = organization_id
-        agent.delegated_agents = [delegated]
-
-        with patch(
-            "src.services.agent_executor.caller_can_access_delegated_agent",
-            new_callable=AsyncMock,
-            return_value=False,
-        ) as check_access, patch(
-            "src.services.agent_executor.AutonomousAgentExecutor"
-        ) as autonomous_executor:
-            result = await executor._execute_delegation(
-                ToolCallRequest(
-                    id="tc_restricted",
-                    name="delegate_to_restricted_agent",
-                    arguments={"task": "restricted"},
-                ),
-                agent,
-            )
-
-        check_access.assert_awaited_once()
-        autonomous_executor.assert_not_called()
-        assert result.error == "Delegated agent not found: delegate_to_restricted_agent"
-
-    @pytest.mark.asyncio
     async def test_delegation_calls_autonomous_executor(self, executor, mock_session):
-        """Chat delegation dispatches to AutonomousAgentExecutor.run()."""
+        """Chat delegation dispatches through the shared durable runner."""
         from src.services.llm.base import ToolCallRequest
 
         delegated = MagicMock()
@@ -629,21 +748,22 @@ class TestChatDelegation:
 
         agent = MagicMock()
         agent.organization_id = delegated.organization_id
+        agent.name = "Coordinator"
         agent.delegated_agents = [delegated]
+        conversation = MagicMock()
+        conversation.id = uuid4()
+        caller = {
+            "user_id": str(uuid4()),
+            "email": "person@example.com",
+            "name": "Person",
+        }
 
         tool_call = ToolCallRequest(
             id="tc1",
             name="delegate_to_data_analyst",
             arguments={"task": "Analyze revenue trends"},
         )
-
-        # Mock the re-fetch query that loads the delegated agent with relationships
-        refetched = MagicMock()
-        refetched.id = delegated.id
-        refetched.name = "Data Analyst"
-        mock_refetch_result = MagicMock()
-        mock_refetch_result.scalar_one.return_value = refetched
-        mock_session.execute = AsyncMock(return_value=mock_refetch_result)
+        child_run_id = uuid4()
 
         with patch(
             "src.services.agent_executor.AutonomousAgentExecutor"
@@ -652,32 +772,59 @@ class TestChatDelegation:
         ) as mock_get_redis:
             mock_get_redis.return_value = MagicMock()
             mock_sub = AsyncMock()
-            mock_sub.run = AsyncMock(return_value={
-                "output": "Revenue is up 15%",
-                "status": "completed",
-                "iterations_used": 3,
-                "tokens_used": 500,
-            })
+            mock_sub.run_delegation = AsyncMock(
+                return_value=DelegationOutcome(
+                    child_run_id=child_run_id,
+                    agent_name="Data Analyst",
+                    status="completed",
+                    output="Revenue is up 15%",
+                    error=None,
+                    duration_ms=15,
+                )
+            )
             MockExecutorClass.return_value = mock_sub
 
-            result = await executor._execute_delegation(tool_call, agent)
+            result = await executor._execute_delegation(
+                tool_call,
+                agent,
+                conversation=conversation,
+                caller=caller,
+            )
 
         assert result.error is None
         assert result.result["response"] == "Revenue is up 15%"
         assert result.result["agent"] == "Data Analyst"
-        # The sub-executor receives the re-fetched agent, not the original
-        mock_sub.run.assert_awaited_once_with(
-            agent=refetched,
-            input_data={"task": "Analyze revenue trends", "_delegated_from": agent.name},
+        assert result.result["status"] == "completed"
+        assert result.result["child_run_id"] == str(child_run_id)
+        assert result.metadata == {
+            "child_run_id": str(child_run_id),
+            "agent": "Data Analyst",
+            "status": "completed",
+        }
+        mock_sub.run_delegation.assert_awaited_once_with(
+            parent_agent=agent,
+            tool_call=tool_call,
+            conversation_id=conversation.id,
+            caller=caller,
+        )
+
+    def test_parent_history_prefers_error_over_partial_result(self):
+        """A failed child must not look successful merely because it returned data."""
+        tool_result = ToolResult(
+            tool_call_id="tc1",
+            tool_name="delegate_to_specialist",
+            result={"response": "partial answer"},
+            error="Specialist failed after producing a partial answer",
+        )
+
+        assert _serialize_tool_result_for_history(tool_result) == (
+            "Specialist failed after producing a partial answer"
         )
 
     @pytest.mark.asyncio
-    async def test_delegation_refetches_agent_with_relationships(self, executor, mock_session):
-        """Delegation re-fetches the target agent to ensure relationships are loaded.
-
-        Without this re-fetch, accessing agent.tools or agent.delegated_agents
-        on a child loaded via selectinload causes greenlet_spawn errors in async.
-        """
+    async def test_delegation_without_conversation_still_uses_shared_runner(
+        self, executor
+    ):
         from src.services.llm.base import ToolCallRequest
 
         delegated = MagicMock()
@@ -696,13 +843,6 @@ class TestChatDelegation:
             arguments={"task": "Fix the issue"},
         )
 
-        refetched = MagicMock()
-        refetched.id = delegated.id
-        refetched.name = "Troubleshooting Agent"
-        mock_refetch_result = MagicMock()
-        mock_refetch_result.scalar_one.return_value = refetched
-        mock_session.execute = AsyncMock(return_value=mock_refetch_result)
-
         with patch(
             "src.services.agent_executor.AutonomousAgentExecutor"
         ) as MockExecutorClass, patch(
@@ -710,22 +850,25 @@ class TestChatDelegation:
         ) as mock_get_redis:
             mock_get_redis.return_value = MagicMock()
             mock_sub = AsyncMock()
-            mock_sub.run = AsyncMock(return_value={
-                "output": "Fixed",
-                "status": "completed",
-                "iterations_used": 1,
-                "tokens_used": 100,
-            })
+            mock_sub.run_delegation = AsyncMock(
+                return_value=DelegationOutcome(
+                    child_run_id=uuid4(),
+                    agent_name="Troubleshooting Agent",
+                    status="completed",
+                    output="Fixed",
+                    error=None,
+                    duration_ms=10,
+                )
+            )
             MockExecutorClass.return_value = mock_sub
 
             result = await executor._execute_delegation(tool_call, agent)
 
-        # Verify session.execute was called (the re-fetch query)
-        mock_session.execute.assert_awaited()
-        # Verify the sub-executor got the re-fetched agent
-        mock_sub.run.assert_awaited_once_with(
-            agent=refetched,
-            input_data={"task": "Fix the issue", "_delegated_from": agent.name},
+        mock_sub.run_delegation.assert_awaited_once_with(
+            parent_agent=agent,
+            tool_call=tool_call,
+            conversation_id=None,
+            caller=None,
         )
         assert result.error is None
 
@@ -790,9 +933,58 @@ class TestChatDelegation:
             arguments={"task": "Do something"},
         )
 
-        mock_refetch_result = MagicMock()
-        mock_refetch_result.scalar_one.return_value = delegated
-        mock_session.execute = AsyncMock(return_value=mock_refetch_result)
+        with patch(
+            "src.services.agent_executor.AutonomousAgentExecutor"
+        ) as MockExecutorClass, patch(
+            "src.core.cache.get_shared_redis", new_callable=AsyncMock
+        ) as mock_get_redis:
+            mock_get_redis.return_value = MagicMock()
+            mock_sub = AsyncMock()
+            child_run_id = uuid4()
+            mock_sub.run_delegation = AsyncMock(
+                return_value=DelegationOutcome(
+                    child_run_id=child_run_id,
+                    agent_name="Broken Agent",
+                    status="failed",
+                    output=None,
+                    error="LLM call failed",
+                    duration_ms=10,
+                )
+            )
+            MockExecutorClass.return_value = mock_sub
+
+            result = await executor._execute_delegation(tool_call, agent)
+
+        assert result.error == "LLM call failed"
+        assert result.result is None
+        assert result.metadata == {
+            "child_run_id": str(child_run_id),
+            "agent": "Broken Agent",
+            "status": "failed",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "error"),
+        [
+            ("cancelled", "Delegation was cancelled"),
+            ("paused", "Delegated agent is paused"),
+            ("budget_exceeded", "Delegated agent exceeded its budget"),
+            ("timeout", "Delegation timed out"),
+        ],
+    )
+    async def test_delegation_propagates_every_non_success_status(
+        self, executor, status, error
+    ):
+        from src.services.llm.base import ToolCallRequest
+
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Lifecycle Agent"
+        delegated.is_active = True
+        agent = MagicMock()
+        agent.delegated_agents = [delegated]
+        child_run_id = uuid4()
 
         with patch(
             "src.services.agent_executor.AutonomousAgentExecutor"
@@ -801,18 +993,34 @@ class TestChatDelegation:
         ) as mock_get_redis:
             mock_get_redis.return_value = MagicMock()
             mock_sub = AsyncMock()
-            mock_sub.run = AsyncMock(return_value={
-                "output": None,
-                "status": "failed",
-                "error": "LLM call failed",
-                "iterations_used": 0,
-                "tokens_used": 0,
-            })
+            mock_sub.run_delegation = AsyncMock(
+                return_value=DelegationOutcome(
+                    child_run_id=child_run_id,
+                    agent_name="Lifecycle Agent",
+                    status=status,
+                    output=None,
+                    error=error,
+                    duration_ms=10,
+                )
+            )
             MockExecutorClass.return_value = mock_sub
 
-            result = await executor._execute_delegation(tool_call, agent)
+            result = await executor._execute_delegation(
+                ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_lifecycle_agent",
+                    arguments={"task": "Exercise lifecycle"},
+                ),
+                agent,
+            )
 
-        assert result.error == "LLM call failed"
+        assert result.result is None
+        assert result.error == error
+        assert result.metadata == {
+            "child_run_id": str(child_run_id),
+            "agent": "Lifecycle Agent",
+            "status": status,
+        }
 
     @pytest.mark.asyncio
     async def test_delegation_handles_exception(self, executor, mock_session):
@@ -835,10 +1043,6 @@ class TestChatDelegation:
             arguments={"task": "Crash please"},
         )
 
-        mock_refetch_result = MagicMock()
-        mock_refetch_result.scalar_one.return_value = delegated
-        mock_session.execute = AsyncMock(return_value=mock_refetch_result)
-
         with patch(
             "src.services.agent_executor.AutonomousAgentExecutor"
         ) as MockExecutorClass, patch(
@@ -846,7 +1050,9 @@ class TestChatDelegation:
         ) as mock_get_redis:
             mock_get_redis.return_value = MagicMock()
             mock_sub = AsyncMock()
-            mock_sub.run = AsyncMock(side_effect=RuntimeError("Connection lost"))
+            mock_sub.run_delegation = AsyncMock(
+                side_effect=RuntimeError("Connection lost")
+            )
             MockExecutorClass.return_value = mock_sub
 
             result = await executor._execute_delegation(tool_call, agent)
@@ -857,7 +1063,6 @@ class TestChatDelegation:
     @pytest.mark.asyncio
     async def test_delegation_timeout_returns_error(self, executor, mock_session):
         """Delegation returns timeout error when sub-executor takes too long."""
-        import asyncio
         from src.services.llm.base import ToolCallRequest
 
         delegated = MagicMock()
@@ -876,20 +1081,25 @@ class TestChatDelegation:
             arguments={"task": "Take forever"},
         )
 
-        mock_refetch_result = MagicMock()
-        mock_refetch_result.scalar_one.return_value = delegated
-        mock_session.execute = AsyncMock(return_value=mock_refetch_result)
-
         with patch(
             "src.services.agent_executor.AutonomousAgentExecutor"
         ) as MockExecutorClass, patch(
             "src.core.cache.get_shared_redis", new_callable=AsyncMock
-        ) as mock_get_redis, patch(
-            "src.services.agent_executor.asyncio.wait_for",
-            side_effect=asyncio.TimeoutError(),
-        ):
+        ) as mock_get_redis:
             mock_get_redis.return_value = MagicMock()
-            MockExecutorClass.return_value = AsyncMock()
+            child_run_id = uuid4()
+            mock_sub = AsyncMock()
+            mock_sub.run_delegation = AsyncMock(
+                return_value=DelegationOutcome(
+                    child_run_id=child_run_id,
+                    agent_name="Slow Agent",
+                    status="timeout",
+                    output=None,
+                    error="Delegation to Slow Agent timed out after 600s",
+                    duration_ms=600_000,
+                )
+            )
+            MockExecutorClass.return_value = mock_sub
 
             result = await executor._execute_delegation(tool_call, agent)
 
@@ -1047,29 +1257,35 @@ class TestKnowledgeSearch:
             )
 
         assert result.error is None
-        assert result.result == {
-            "documents": [
-                {
-                    "content": "Use targeted tests.",
-                    "namespace": "docs",
-                    "score": 0.8765,
-                    "key": "testing.md",
-                    "metadata": {"section": "unit"},
-                },
-                {
-                    "content": "No score document.",
-                    "namespace": "runbooks",
-                    "score": None,
-                    "key": "runbook.md",
-                    "metadata": {},
-                },
-            ],
-            "count": 2,
-        }
+        assert result.result is not None
+        assert result.result["documents"] == [
+            {
+                "content": "Use targeted tests.",
+                "namespace": "docs",
+                "score": 0.8765,
+                "key": "testing.md",
+                "metadata": {"section": "unit"},
+            },
+            {
+                "content": "No score document.",
+                "namespace": "runbooks",
+                "score": None,
+                "key": "runbook.md",
+                "metadata": {},
+            },
+        ]
+        assert result.result["count"] == 2
+        assert result.result["omitted_duplicate_evidence"] == 0
+        assert result.result["omitted_for_evidence_budget"] == 0
+        assert result.result["searches_used"] == 1
+        assert result.result["searches_remaining"] == 7
+        assert result.result["evidence_chars_used"] > 0
+        assert result.result["evidence_chars_remaining"] < 40_000
         mock_embedding_client.embed_single.assert_awaited_once_with("coverage")
         mock_repo.search.assert_awaited_once_with(
             query_embedding=[0.1, 0.2],
             namespace=["docs", "runbooks"],
+            query_text="coverage",
             limit=2,
             fallback=True,
         )

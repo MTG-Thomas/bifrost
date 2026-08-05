@@ -43,23 +43,35 @@ def test_convert_tools() -> None:
 async def test_complete_parses_text_tool_calls_usage_and_kwargs() -> None:
     calls: list[dict] = []
 
+    final_message = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="text", text="hello"),
+            SimpleNamespace(
+                type="tool_use",
+                id="tool-1",
+                name="lookup",
+                input={"ticket": 123},
+            ),
+        ],
+        stop_reason="tool_use",
+        usage=SimpleNamespace(input_tokens=11, output_tokens=4),
+        model="claude-test",
+    )
+
+    class FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def get_final_message(self):
+            return final_message
+
     class FakeMessages:
-        async def create(self, **kwargs):
+        def stream(self, **kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(
-                content=[
-                    SimpleNamespace(type="text", text="hello"),
-                    SimpleNamespace(
-                        type="tool_use",
-                        id="tool-1",
-                        name="lookup",
-                        input={"ticket": 123},
-                    ),
-                ],
-                stop_reason="tool_use",
-                usage=SimpleNamespace(input_tokens=11, output_tokens=4),
-                model="claude-test",
-            )
+            return FakeStream()
 
     client = _client()
     client.client = SimpleNamespace(messages=FakeMessages())
@@ -101,14 +113,24 @@ async def test_complete_parses_text_tool_calls_usage_and_kwargs() -> None:
 
 @pytest.mark.asyncio
 async def test_complete_handles_no_text_or_tool_calls() -> None:
-    class FakeMessages:
-        async def create(self, **kwargs):
+    class FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def get_final_message(self):
             return SimpleNamespace(
                 content=[],
                 stop_reason="stop",
                 usage=SimpleNamespace(input_tokens=1, output_tokens=2),
                 model="claude-test",
             )
+
+    class FakeMessages:
+        def stream(self, **kwargs):
+            return FakeStream()
 
     client = _client()
     client.client = SimpleNamespace(messages=FakeMessages())

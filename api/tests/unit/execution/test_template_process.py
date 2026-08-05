@@ -16,7 +16,7 @@ import pytest
 from src.services.execution.template_process import (
     TemplateProcess,
     _load_execution_infrastructure,
-    _reap_exited_children,
+    _reap_children,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,24 @@ def _wait_for_pid_to_die(pid: int, timeout: float = 5.0) -> None:
         except OSError:
             return  # Process is gone
     # Best-effort — don't raise if still alive (zombie will be reaped by template)
+
+
+def _wait_for_pid_to_disappear(pid: int, timeout: float = 5.0) -> None:
+    """Wait until a template child is gone from the process table."""
+    deadline = time.monotonic() + timeout
+    last_state = "unknown"
+    while time.monotonic() < deadline:
+        try:
+            with open(f"/proc/{pid}/stat") as stat_file:
+                last_state = stat_file.read().split()[2]
+        except FileNotFoundError:
+            return
+        time.sleep(0.05)
+
+    pytest.fail(
+        f"forked child PID {pid} remained in the process table "
+        f"with state {last_state}"
+    )
 
 
 class TestTemplateProcessLifecycle:
@@ -110,13 +128,15 @@ class TestTemplateProcessLifecycle:
 class TestTemplateProcessReaping:
     """Tests for zombie child reaping behavior in template process."""
 
-    def test_reap_exited_children_drains_until_no_more_exits(self):
+    def test_reap_children_drains_until_no_more_exits(self):
         """Should call waitpid repeatedly until no exited children remain."""
+        exit_statuses: dict[int, int] = {}
         with patch("src.services.execution.template_process.os.waitpid") as waitpid:
             waitpid.side_effect = [(101, 0), (102, 0), (0, 0)]
-            _reap_exited_children()
+            _reap_children(exit_statuses)
 
         assert waitpid.call_count == 3
+        assert exit_statuses == {101: 0, 102: 0}
 
 
 class TestTemplateProcessFork:
@@ -146,30 +166,57 @@ class TestTemplateProcessFork:
         template = TemplateProcess()
         template.start()
         children = []
-        queue_handles = []
         try:
             for _ in range(3):
                 child_pid, wq, rq = template.fork()
-                children.append(child_pid)
-                queue_handles.append((wq, rq))
+                children.append((child_pid, wq, rq))
 
             # All should be unique PIDs
-            assert len(set(children)) == 3
+            child_pids = [child_pid for child_pid, _, _ in children]
+            assert len(set(child_pids)) == 3
 
             # All should be alive
-            for pid in children:
+            for pid in child_pids:
                 os.kill(pid, 0)  # Should not raise
         finally:
-            for wq, rq in queue_handles:
-                wq.close()
-                rq.close()
-            for pid in children:
+            for pid, work_queue, result_queue in children:
                 try:
                     os.kill(pid, signal.SIGTERM)
                     _wait_for_pid_to_die(pid)
                 except OSError as e:
                     # Child already gone (race with shutdown) — fine
                     logger.debug(f"could not signal child {pid} during cleanup: {e}")
+                work_queue.close()
+                result_queue.close()
+            template.shutdown()
+
+    def test_exited_child_is_reaped_by_template(self):
+        """A one-shot child must not remain as a zombie under the template."""
+        template = TemplateProcess()
+        template.start()
+        child_pid = None
+        work_queue = None
+        result_queue = None
+        try:
+            child_pid, work_queue, result_queue = template.fork()
+
+            # Closing the only sending end makes the idle child receive EOF and
+            # exit without requiring a full workflow execution.
+            work_queue.close()
+
+            _wait_for_pid_to_disappear(child_pid)
+            assert template.collect_child_exit_statuses()[child_pid] == 0
+        finally:
+            if work_queue is not None:
+                work_queue.close()
+            if result_queue is not None:
+                result_queue.close()
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    # Expected once the template has already reaped the child.
+                    pass
             template.shutdown()
 
     def test_forked_child_can_execute_and_return_result(self):
@@ -282,23 +329,21 @@ class TestForkPerformance:
         template = TemplateProcess()
         template.start()
         children = []
-        queue_handles = []
         try:
             template_rss_kb = _get_rss_kb(template.pid)
             template_rss_mb = template_rss_kb / 1024 if template_rss_kb > 0 else -1
 
             start = time.monotonic()
             for i in range(10):
-                child_pid, wq, rq = template.fork(
+                child_pid, work_queue, result_queue = template.fork(
                     worker_id=f"mem-{i}", persistent=True,
                 )
-                children.append(child_pid)
-                queue_handles.append((wq, rq))
+                children.append((child_pid, work_queue, result_queue))
             fork_all_ms = (time.monotonic() - start) * 1000
 
             time.sleep(0.1)
 
-            alive = sum(1 for pid in children if _is_pid_alive(pid))
+            alive = sum(1 for pid, _, _ in children if _is_pid_alive(pid))
 
             print(f"\n  Template RSS: {template_rss_mb:.0f}MB")
             print(f"  Forked 10 children in {fork_all_ms:.0f}ms ({alive} alive)")
@@ -307,15 +352,14 @@ class TestForkPerformance:
 
             assert alive >= 8, f"Only {alive}/10 children alive"
         finally:
-            for wq, rq in queue_handles:
-                wq.close()
-                rq.close()
-            for pid in children:
+            for pid, work_queue, result_queue in children:
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except OSError as e:
                     # Child already gone — fine
                     logger.debug(f"could not signal child {pid} during cleanup: {e}")
+                work_queue.close()
+                result_queue.close()
             time.sleep(0.3)
             template.shutdown()
 

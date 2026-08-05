@@ -15,6 +15,8 @@ import uuid
 
 import pytest
 
+from src.models.enums import EventDeliveryStatus
+from src.models.orm.events import EventDelivery
 from tests.e2e.conftest import poll_until, write_and_register
 
 
@@ -923,62 +925,57 @@ class TestEventDelivery:
 class TestDeliveryRetry:
     """Test delivery retry functionality."""
 
-    @pytest.mark.usefixtures("subscription")
-    def test_cannot_retry_pending_delivery(
-        self, e2e_client, platform_admin, event_source
+    async def test_cannot_retry_pending_delivery(
+        self,
+        e2e_client,
+        platform_admin,
+        event_source,
+        subscription,
+        db_session,
     ):
         """Cannot retry a delivery that's not failed."""
         source_id = event_source["id"]
 
-        # Send webhook
-        e2e_client.post(
+        webhook_response = e2e_client.post(
             f"/api/hooks/{source_id}",
             json={"retry_test": True},
         )
+        assert webhook_response.status_code == 202, webhook_response.text
 
-        # Poll until event is created with deliveries
-        def find_event_with_deliveries():
+        def find_event():
             response = e2e_client.get(
                 f"/api/events/sources/{source_id}/events",
                 headers=platform_admin.headers,
             )
             if response.status_code != 200:
                 return None
-            events = response.json()["items"]
-            matching = [
-                e for e in events
-                if e.get("data", {}).get("retry_test") is True
-            ]
-            if not matching:
-                return None
-            event = matching[0]
-
-            # Check if deliveries exist
-            del_response = e2e_client.get(
-                f"/api/events/{event['id']}/deliveries",
-                headers=platform_admin.headers,
+            return next(
+                (
+                    event
+                    for event in response.json()["items"]
+                    if event.get("data", {}).get("retry_test") is True
+                ),
+                None,
             )
-            if del_response.status_code == 200:
-                deliveries = del_response.json()["items"]
-                if deliveries:
-                    return {"event": event, "deliveries": deliveries}
-            return None
 
-        result = poll_until(find_event_with_deliveries, max_wait=15.0)
+        event = poll_until(find_event, max_wait=15.0)
+        assert event is not None, "Webhook event was not persisted"
 
-        assert result is not None, "No deliveries created within timeout - event delivery may be broken"
-
-        deliveries = result["deliveries"]
-        delivery = deliveries[0]
-
-        # If delivery already raced to failed/skipped, the retry test is moot
-        if delivery["status"] in ["failed", "skipped"]:
-            pytest.skip(
-                f"Delivery already reached '{delivery['status']}' before retry test could run (race condition)"
-            )
+        # The webhook-created delivery is queued immediately and can reach a
+        # terminal state before the retry request. Insert a pending delivery
+        # that has not been handed to the processor so this state check is
+        # deterministic.
+        delivery = EventDelivery(
+            event_id=uuid.UUID(event["id"]),
+            event_subscription_id=uuid.UUID(subscription["id"]),
+            workflow_id=uuid.UUID(subscription["workflow_id"]),
+            status=EventDeliveryStatus.PENDING,
+        )
+        db_session.add(delivery)
+        await db_session.commit()
 
         response = e2e_client.post(
-            f"/api/events/deliveries/{delivery['id']}/retry",
+            f"/api/events/deliveries/{delivery.id}/retry",
             headers=platform_admin.headers,
         )
         assert response.status_code == 400, f"Expected 400 for non-failed delivery: {response.text}"

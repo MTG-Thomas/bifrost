@@ -196,13 +196,9 @@ class TestAppToolImpl:
         lowest_row = _pick_slug_row([other_row, SimpleNamespace(id="0", organization_id=uuid4())], org_id)
         assert cast(Any, lowest_row).id == "0"
 
-    def test_guard_message_and_first_row_helpers(self):
-        from fastapi import HTTPException
+    def test_first_row_helper(self):
+        from src.services.mcp_server.tools.apps import _first_row
 
-        from src.services.mcp_server.tools.apps import _first_row, _guard_message
-
-        assert _guard_message(HTTPException(status_code=409, detail="locked")) == "locked"
-        assert _guard_message(RuntimeError("plain")) == "plain"
         assert _first_row(_FirstResult("first")) == "first"
         assert _first_row(_ScalarsFirstResult("scalar")) == "scalar"
         assert _first_row(object()) is None
@@ -255,7 +251,6 @@ class TestAppToolImpl:
         missing_lookup = await apps.get_app(context)
         bad_get_id = await apps.get_app(context, app_id="not-a-uuid")
         bad_update_id = await apps.update_app(context, app_id="not-a-uuid", name="New")
-        bad_publish_id = await apps.publish_app(context, app_id="not-a-uuid")
         missing_replace_id = await apps.replace_app(context, "", repo_path="apps/new")
         missing_replace_path = await apps.replace_app(context, "app-1", repo_path="")
 
@@ -263,12 +258,13 @@ class TestAppToolImpl:
             return 409, {"detail": "conflict", "body": json_body}
 
         with patch("src.services.mcp_server.tools.apps.call_rest", fake_call_rest):
+            bad_publish_id = await apps.publish_app(context, app_id="not-a-uuid")
             failed_replace = await apps.replace_app(context, "app-1", repo_path="apps/new", force=True)
 
         assert "Either app_id or app_slug is required" in missing_lookup.structured_content["error"]
         assert "Invalid app_id format" in bad_get_id.structured_content["error"]
         assert "Invalid app_id format" in bad_update_id.structured_content["error"]
-        assert "Invalid app_id format" in bad_publish_id.structured_content["error"]
+        assert "publish_app failed: HTTP 409" in bad_publish_id.structured_content["error"]
         assert missing_replace_id.structured_content["error"] == "app_id is required"
         assert missing_replace_path.structured_content["error"] == "repo_path is required"
         assert "replace_app failed: HTTP 409" in failed_replace.structured_content["error"]

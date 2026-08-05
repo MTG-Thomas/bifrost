@@ -273,6 +273,10 @@
 | DELETE | `/api/mcp/config` |
 | GET | `/api/mcp/config` |
 | PUT | `/api/mcp/config` |
+| GET | `/api/mcp/gateway/agents` |
+| GET | `/api/mcp/gateway/agents/{agent_id}` |
+| GET | `/api/mcp/gateway/agents/{agent_id}/tools/{tool_ref}` |
+| POST | `/api/mcp/gateway/agents/{agent_id}/tools/{tool_ref}/execute` |
 | GET | `/api/mcp/status` |
 | GET | `/api/mcp/tools` |
 | GET | `/api/me/mcp-connections` |
@@ -280,6 +284,7 @@
 | GET | `/api/me/mcp-connections/{connection_id}/connect` |
 | GET | `/api/metrics` |
 | GET | `/api/metrics/executions/daily` |
+| GET | `/api/metrics/executions/timeseries` |
 | GET | `/api/metrics/organizations` |
 | GET | `/api/metrics/resources` |
 | GET | `/api/metrics/snapshot` |
@@ -309,6 +314,9 @@
 | POST | `/api/packages/install` |
 | GET | `/api/packages/updates` |
 | DELETE | `/api/packages/{package_name}` |
+| GET | `/api/platform-jobs` |
+| GET | `/api/platform-jobs/{job_id}` |
+| POST | `/api/platform-jobs/{job_id}/cancel` |
 | GET | `/api/platform/queue` |
 | GET | `/api/platform/stuck-history` |
 | GET | `/api/platform/workers` |

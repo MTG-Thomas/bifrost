@@ -66,7 +66,10 @@ from src.services.workflow_registration import (
     resolve_workflow_registration_id,
 )
 from src.services.workflow_validation import _extract_relative_path
-from src.services.solution_scope import derive_execution_solution_scope
+from src.services.solution_scope import (
+    derive_execution_solution_scope,
+    solution_allows_global,
+)
 from src.services.solutions.guard import (
     assert_entity_id_not_solution_managed,
     assert_not_solution_managed,
@@ -129,7 +132,10 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         public_endpoint=workflow.public_endpoint or False,
         is_tool=workflow.type == "tool",  # Derive from type field
         tool_description=workflow.tool_description,
-        cache_ttl_seconds=workflow.cache_ttl_seconds or 300,
+        # NOT `or 300` — 0 means "never cache" and `or` would clobber it.
+        cache_ttl_seconds=(
+            workflow.cache_ttl_seconds if workflow.cache_ttl_seconds is not None else 300
+        ),
         time_saved=workflow.time_saved or 0,
         value=float(workflow.value or 0.0),
         used_by_count=used_by_count,
@@ -808,12 +814,18 @@ async def execute_workflow(
         form_id=request.form_id,
         app_id=request.app_id,
     )
+    allow_shared_workflow = (
+        solution_scope is None
+        or await solution_allows_global(db, solution_scope)
+    )
 
     # Look up workflow metadata for type checking (needed for data provider handling)
     workflow = None
     if request.workflow_id:
         workflow = await workflow_repo.resolve(
-            request.workflow_id, solution_scope=solution_scope
+            request.workflow_id,
+            solution_scope=solution_scope,
+            allow_shared_fallback=allow_shared_workflow,
         )
         if not workflow:
             # A resolution miss must identify its scope inputs: a dropped or

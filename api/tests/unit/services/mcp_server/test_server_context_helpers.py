@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from src.services.mcp_server import server
+from src.services.mcp_server import agent_scope, server
 
 
 class FakeToolError(Exception):
@@ -17,15 +17,16 @@ class FakeSQLAlchemyError(Exception):
     """Stand-in for sqlalchemy.exc.SQLAlchemyError in isolated unit tests."""
 
 
-def test_get_agent_id_from_scope_returns_uuid(monkeypatch):
+def test_get_scoped_agent_id_returns_uuid(monkeypatch):
     agent_id = uuid4()
 
     monkeypatch.setattr(
-        "fastmcp.server.dependencies.get_http_request",
+        agent_scope,
+        "get_http_request",
         lambda: SimpleNamespace(scope={"mcp_agent_id": str(agent_id)}),
     )
 
-    assert server._get_agent_id_from_scope() == agent_id
+    assert agent_scope.get_scoped_agent_id() == agent_id
 
 
 @pytest.mark.parametrize(
@@ -36,13 +37,13 @@ def test_get_agent_id_from_scope_returns_uuid(monkeypatch):
         lambda: SimpleNamespace(scope=None),
     ],
 )
-def test_get_agent_id_from_scope_handles_missing_or_invalid_request(
+def test_get_scoped_agent_id_handles_missing_or_invalid_request(
     monkeypatch,
     request_factory,
 ):
-    monkeypatch.setattr("fastmcp.server.dependencies.get_http_request", request_factory)
+    monkeypatch.setattr(agent_scope, "get_http_request", request_factory)
 
-    assert server._get_agent_id_from_scope() is None
+    assert agent_scope.get_scoped_agent_id() is None
 
 
 def test_has_http_request_context(monkeypatch):
@@ -158,7 +159,7 @@ async def test_get_runtime_context_uses_agent_scoped_namespaces(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_runtime_context_uses_union_namespaces_without_agent(monkeypatch):
+async def test_get_runtime_context_defers_namespaces_without_agent(monkeypatch):
     user_id = uuid4()
     token = SimpleNamespace(
         claims={
@@ -169,49 +170,14 @@ async def test_get_runtime_context_uses_union_namespaces_without_agent(monkeypat
             "org_id": None,
         }
     )
-    service_calls = []
-
-    class FakeService:
-        def __init__(self, db):
-            self.db = db
-
-        async def get_tools_for_agent(self, **kwargs):
-            service_calls.append(("agent", kwargs))
-            return None
-
-        async def get_accessible_tools(self, **kwargs):
-            service_calls.append(("union", kwargs))
-            return SimpleNamespace(accessible_namespaces=["global"])
-
-    @asynccontextmanager
-    async def fake_db_context():
-        yield object()
-
     monkeypatch.setattr("fastmcp.server.dependencies.get_access_token", lambda: token)
     monkeypatch.setattr(server, "_get_agent_id_from_scope", lambda: None)
-    monkeypatch.setattr("src.core.database.get_db_context", lambda: fake_db_context())
-    monkeypatch.setattr(
-        "src.services.mcp_server.tool_access.MCPToolAccessService",
-        FakeService,
-    )
     monkeypatch.setattr("fastmcp.exceptions.ToolError", FakeToolError)
 
     context = await server._get_runtime_context()
 
-    assert context.accessible_namespaces == ["global"]
+    assert context.accessible_namespaces == []
     assert context.is_platform_admin is True
-    assert service_calls == [
-        (
-            "union",
-            {
-                "user_roles": ["admin"],
-                "is_superuser": True,
-                "user_id": str(user_id),
-                "org_id": None,
-                "is_external": False,
-            },
-        )
-    ]
 
 
 @pytest.mark.asyncio
@@ -266,7 +232,7 @@ async def test_get_runtime_context_wraps_database_errors(monkeypatch):
         def __init__(self, db):
             self.db = db
 
-        async def get_accessible_tools(self, **kwargs):
+        async def get_tools_for_agent(self, **kwargs):
             raise FakeSQLAlchemyError("db unavailable")
 
     @asynccontextmanager
@@ -274,7 +240,7 @@ async def test_get_runtime_context_wraps_database_errors(monkeypatch):
         yield object()
 
     monkeypatch.setattr("fastmcp.server.dependencies.get_access_token", lambda: token)
-    monkeypatch.setattr(server, "_get_agent_id_from_scope", lambda: None)
+    monkeypatch.setattr(server, "_get_agent_id_from_scope", uuid4)
     monkeypatch.setattr("src.core.database.get_db_context", lambda: fake_db_context())
     monkeypatch.setattr(
         "src.services.mcp_server.tool_access.MCPToolAccessService",
@@ -288,30 +254,25 @@ async def test_get_runtime_context_wraps_database_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_user_mcp_server_sets_context_and_filters_tool_names():
-    enabled_tools = ["list_workflows", "execute_workflow"]
+async def test_bifrost_mcp_server_preserves_default_context():
     user_id = uuid4()
     org_id = uuid4()
 
-    mcp_server = await server.create_user_mcp_server(
+    context = server.MCPContext(
         user_id=user_id,
         org_id=org_id,
         is_platform_admin=True,
-        enabled_tools=enabled_tools,
         user_email="admin@example.com",
         user_name="Admin User",
     )
+    mcp_server = server.BifrostMCPServer(context)
 
-    assert mcp_server.context.user_id == user_id
-    assert mcp_server.context.org_id == org_id
+    assert mcp_server.context is context
+    assert context.user_id == user_id
+    assert context.org_id == org_id
     assert mcp_server.context.is_platform_admin is True
-    assert mcp_server.context.enabled_system_tools == enabled_tools
     assert mcp_server.context.user_email == "admin@example.com"
     assert mcp_server.context.user_name == "Admin User"
-    assert set(mcp_server.get_tool_names()) == {
-        "mcp__bifrost__list_workflows",
-        "mcp__bifrost__execute_workflow",
-    }
 
 
 def test_get_system_tool_function_returns_callable_or_none():

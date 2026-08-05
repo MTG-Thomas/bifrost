@@ -1,13 +1,21 @@
 """Unit tests for AutonomousAgentExecutor."""
 import asyncio
+import json
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from src.core.constants import SYSTEM_USER_EMAIL, SYSTEM_USER_ID
+from src.models.contracts.executions import WorkflowExecutionResponse
+from src.models.enums import ExecutionStatus
+from src.models.orm.agent_runs import AgentRun
+from src.models.orm.users import User
+from src.repositories.knowledge import KnowledgeDocument
 from src.services.execution.agent_helpers import find_delegated_agent
 from src.services.execution.autonomous_agent_executor import (
     AutonomousAgentExecutor,
+    DelegationOutcome,
     MAX_DELEGATION_DEPTH,
     ToolError,
 )
@@ -58,40 +66,6 @@ def mock_agent():
 
 class TestAutonomousAgentExecutor:
     @pytest.mark.asyncio
-    async def test_workflow_tool_uses_agent_identity_not_system_user(
-        self, mock_session, mock_agent
-    ):
-        """Autonomous workflow tools should not silently inherit system identity."""
-        workflow_id = uuid4()
-        executor = AutonomousAgentExecutor(mock_session)
-        executor._tool_workflow_id_map["do_work"] = workflow_id
-
-        workflow = MagicMock()
-        workflow.id = workflow_id
-        workflow.organization_id = mock_agent.organization_id
-        mock_session._mock_session.get = AsyncMock(return_value=workflow)
-
-        response = MagicMock()
-        response.status.value = "Success"
-        response.result = {"ok": True}
-
-        with patch(
-            "src.services.execution.service.execute_tool",
-            new_callable=AsyncMock,
-            return_value=response,
-        ) as mock_execute:
-            result = await executor._execute_tool(
-                ToolCallRequest(id="tc1", name="do_work", arguments={}),
-                mock_agent,
-            )
-
-        assert result == '{"ok": true}'
-        kwargs = mock_execute.await_args.kwargs
-        assert kwargs["user_id"] == str(mock_agent.id)
-        assert kwargs["user_email"] != "system@internal.gobifrost.com"
-        assert kwargs["is_platform_admin"] is False
-
-    @pytest.mark.asyncio
     async def test_workflow_tool_rechecks_reference_access_at_dispatch(
         self, mock_session, mock_agent
     ):
@@ -126,7 +100,10 @@ class TestAutonomousAgentExecutor:
         executor = AutonomousAgentExecutor(mock_session)
         executor._current_run_id = str(uuid4())
 
-        with pytest.raises(ToolError, match="not found"):
+        with pytest.raises(
+            ToolError,
+            match="outside the parent agent's organization",
+        ):
             await executor._execute_delegation(
                 ToolCallRequest(
                     id="tc1",
@@ -135,6 +112,61 @@ class TestAutonomousAgentExecutor:
                 ),
                 mock_agent,
             )
+
+    @pytest.mark.asyncio
+    async def test_knowledge_search_deduplicates_evidence_across_queries(
+        self,
+        mock_session,
+        mock_agent,
+    ):
+        mock_agent.knowledge_sources = ["halo_kb"]
+        embedding_client = MagicMock()
+        embedding_client.embed_single = AsyncMock(return_value=[0.1, 0.2])
+        document = KnowledgeDocument(
+            id="chunk-1",
+            content="Configure Technical POC with Contact Types.",
+            namespace="halo_kb",
+            score=0.9,
+            key="contact-types",
+            metadata={"title": "Contact Types"},
+        )
+        repository = MagicMock()
+        repository.search = AsyncMock(return_value=[document])
+        executor = AutonomousAgentExecutor(mock_session)
+
+        with patch(
+            "src.services.embeddings.get_embedding_client",
+            new_callable=AsyncMock,
+            return_value=embedding_client,
+        ), patch(
+            "src.repositories.knowledge.KnowledgeRepository",
+            return_value=repository,
+        ):
+            first = json.loads(
+                await executor._execute_knowledge_search(
+                    ToolCallRequest(
+                        id="first",
+                        name="search_knowledge",
+                        arguments={"query": "technical poc"},
+                    ),
+                    mock_agent,
+                )
+            )
+            second = json.loads(
+                await executor._execute_knowledge_search(
+                    ToolCallRequest(
+                        id="second",
+                        name="search_knowledge",
+                        arguments={"query": "billing contact role"},
+                    ),
+                    mock_agent,
+                )
+            )
+
+        assert first["count"] == 1
+        assert second["count"] == 0
+        assert second["omitted_duplicate_evidence"] == 1
+        assert repository.search.call_count == 2
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
@@ -164,6 +196,613 @@ class TestAutonomousAgentExecutor:
         assert result["output"] == "Hello world"
         assert result["iterations_used"] == 1
         assert result["tokens_used"] == 150
+
+    @pytest.mark.asyncio
+    async def test_run_delegation_persists_chat_child_and_caller(
+        self, mock_session, mock_agent
+    ):
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Chat Specialist"
+        delegated.description = "Handles chat work"
+        delegated.is_active = True
+        delegated.system_prompt = "Do specialist work."
+        delegated.tools = []
+        delegated.system_tools = []
+        delegated.knowledge_sources = []
+        delegated.delegated_agents = []
+        delegated.max_iterations = 5
+        delegated.max_token_budget = 1000
+        delegated.llm_model = "cheap-model"
+        delegated.llm_max_tokens = 200
+        # Global specialists remain valid delegates for an org-scoped parent.
+        delegated.organization_id = None
+        mock_agent.delegated_agents = [delegated]
+
+        query_result = MagicMock()
+        query_result.scalar_one_or_none.return_value = delegated
+        mock_session._mock_session.execute = AsyncMock(return_value=query_result)
+
+        created_runs: list[AgentRun] = []
+
+        def capture_add(value):
+            if isinstance(value, AgentRun):
+                created_runs.append(value)
+
+        mock_session._mock_session.add.side_effect = capture_add
+
+        async def get_created(model, run_id):
+            if model is AgentRun and created_runs and created_runs[0].id == run_id:
+                return created_runs[0]
+            return None
+
+        mock_session._mock_session.get.side_effect = get_created
+
+        conversation_id = uuid4()
+        caller = {
+            "user_id": str(uuid4()),
+            "email": "person@example.com",
+            "name": "Person",
+        }
+        tool_call = ToolCallRequest(
+            id="tc1",
+            name="delegate_to_chat_specialist",
+            arguments={"task": "Investigate the request"},
+        )
+        executor = AutonomousAgentExecutor(mock_session)
+
+        with (
+            patch.object(
+                AutonomousAgentExecutor,
+                "run",
+                new_callable=AsyncMock,
+                return_value={
+                    "output": "Investigation complete",
+                    "status": "completed",
+                    "iterations_used": 2,
+                    "tokens_used": 123,
+                    "llm_model": "cheap-model",
+                },
+            ) as mock_child_run,
+            patch(
+                "src.services.execution.run_summarizer.enqueue_summarize",
+                new_callable=AsyncMock,
+            ) as mock_enqueue_summarize,
+        ):
+            outcome = await executor.run_delegation(
+                parent_agent=mock_agent,
+                tool_call=tool_call,
+                conversation_id=conversation_id,
+                caller=caller,
+            )
+
+        assert outcome.status == "completed"
+        assert outcome.output == "Investigation complete"
+        assert len(created_runs) == 1
+        child_run = created_runs[0]
+        assert child_run.trigger_type == "delegation"
+        assert child_run.parent_run_id is None
+        assert child_run.conversation_id == conversation_id
+        assert child_run.caller_user_id == caller["user_id"]
+        assert child_run.caller_email == caller["email"]
+        assert child_run.caller_name == caller["name"]
+        assert child_run.status == "completed"
+        assert child_run.completed_at is not None
+        mock_enqueue_summarize.assert_awaited_once_with(child_run.id)
+        mock_child_run.assert_awaited_once_with(
+            agent=delegated,
+            input_data={
+                "task": "Investigate the request",
+                "_delegated_from": mock_agent.name,
+            },
+            run_id=str(child_run.id),
+            _caller=caller,
+        )
+
+    @pytest.mark.asyncio
+    async def test_delegated_workflow_inherits_caller_identity(
+        self,
+        mock_session,
+        mock_agent,
+    ):
+        workflow_id = uuid4()
+        caller_user_id = uuid4()
+        executor = AutonomousAgentExecutor(mock_session)
+        executor._tool_workflow_id_map = {"specialist_tool": workflow_id}
+        executor._caller_user_id = caller_user_id
+        executor._caller = {
+            "user_id": str(caller_user_id),
+            "email": "person@example.com",
+            "name": "Person",
+            "is_platform_admin": True,
+        }
+        executor._caller_is_platform_admin = True
+        workflow = MagicMock()
+        workflow.id = workflow_id
+        workflow.organization_id = mock_agent.organization_id
+        mock_session._mock_session.get = AsyncMock(return_value=workflow)
+
+        with (
+            patch(
+                "src.services.execution.autonomous_agent_executor."
+                "caller_can_access_workflow_tool",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "src.services.execution.service.execute_tool",
+                new_callable=AsyncMock,
+                return_value=MagicMock(
+                    execution_id=str(uuid4()),
+                    status=ExecutionStatus.SUCCESS,
+                    result={"ok": True},
+                ),
+            ) as mock_execute_tool,
+        ):
+            result = await executor._execute_tool(
+                ToolCallRequest(
+                    id="tc1",
+                    name="specialist_tool",
+                    arguments={"value": 1},
+                ),
+                mock_agent,
+            )
+
+        assert result == '{"ok": true}'
+        mock_execute_tool.assert_awaited_once_with(
+            workflow_id=str(workflow_id),
+            workflow_name="specialist_tool",
+            parameters={"value": 1},
+            user_id=str(caller_user_id),
+            user_email="person@example.com",
+            user_name="Person",
+            org_id=str(mock_agent.organization_id),
+            is_platform_admin=True,
+            is_agent=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_autonomous_workflow_without_caller_uses_system_identity(
+        self,
+        mock_session,
+        mock_agent,
+    ):
+        workflow_id = uuid4()
+        executor = AutonomousAgentExecutor(mock_session)
+        executor._tool_workflow_id_map = {"scheduled_tool": workflow_id}
+        workflow = MagicMock()
+        workflow.id = workflow_id
+        workflow.organization_id = mock_agent.organization_id
+        mock_session._mock_session.get = AsyncMock(return_value=workflow)
+
+        with (
+            patch(
+                "src.services.execution.autonomous_agent_executor."
+                "caller_can_access_workflow_tool",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "src.services.execution.service.execute_tool",
+                new_callable=AsyncMock,
+                return_value=MagicMock(
+                    execution_id=str(uuid4()),
+                    status=ExecutionStatus.SUCCESS,
+                    result={"ok": True},
+                ),
+            ) as mock_execute_tool,
+        ):
+            result = await executor._execute_tool(
+                ToolCallRequest(
+                    id="tc1",
+                    name="scheduled_tool",
+                    arguments={"value": 1},
+                ),
+                mock_agent,
+            )
+
+        assert result == '{"ok": true}'
+        mock_execute_tool.assert_awaited_once_with(
+            workflow_id=str(workflow_id),
+            workflow_name="scheduled_tool",
+            parameters={"value": 1},
+            user_id=SYSTEM_USER_ID,
+            user_email=SYSTEM_USER_EMAIL,
+            user_name=mock_agent.name,
+            org_id=str(mock_agent.organization_id),
+            is_platform_admin=False,
+            is_agent=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_delegated_system_tool_inherits_caller_identity(
+        self,
+        mock_session,
+        mock_agent,
+    ):
+        caller_user_id = uuid4()
+        captured_context = None
+
+        async def system_tool(context, **_arguments):
+            nonlocal captured_context
+            captured_context = context
+            return "ok"
+
+        executor = AutonomousAgentExecutor(mock_session)
+        executor._caller_user_id = caller_user_id
+        executor._caller = {
+            "user_id": str(caller_user_id),
+            "email": "person@example.com",
+            "name": "Person",
+            "is_platform_admin": True,
+        }
+        executor._caller_is_platform_admin = True
+
+        with patch(
+            "src.services.mcp_server.server.get_system_tool_function",
+            return_value=system_tool,
+        ):
+            await executor._execute_system_tool(
+                ToolCallRequest(
+                    id="tc1",
+                    name="specialist_system_tool",
+                    arguments={},
+                ),
+                mock_agent,
+            )
+
+        assert captured_context is not None
+        assert captured_context.user_id == caller_user_id
+        assert captured_context.user_email == "person@example.com"
+        assert captured_context.user_name == "Person"
+        assert captured_context.is_platform_admin is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("child_result", "expected_status", "expected_error"),
+        [
+            (
+                {
+                    "output": None,
+                    "status": "failed",
+                    "error": "Provider unavailable",
+                },
+                "failed",
+                "Provider unavailable",
+            ),
+            (
+                {
+                    "output": None,
+                    "status": "cancelled",
+                },
+                "cancelled",
+                "was cancelled",
+            ),
+            (
+                {
+                    "output": None,
+                    "status": "paused",
+                    "message": "Specialist is paused",
+                },
+                "paused",
+                "Specialist is paused",
+            ),
+            (
+                {
+                    "output": None,
+                    "status": "budget_exceeded",
+                },
+                "budget_exceeded",
+                "exceeded its budget",
+            ),
+        ],
+    )
+    async def test_run_delegation_terminalizes_non_success_statuses(
+        self,
+        mock_session,
+        mock_agent,
+        child_result,
+        expected_status,
+        expected_error,
+    ):
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Lifecycle Specialist"
+        delegated.is_active = True
+        delegated.tools = []
+        delegated.delegated_agents = []
+        delegated.max_iterations = 5
+        delegated.max_token_budget = 1000
+        delegated.organization_id = mock_agent.organization_id
+        mock_agent.delegated_agents = [delegated]
+
+        query_result = MagicMock()
+        query_result.scalar_one_or_none.return_value = delegated
+        mock_session._mock_session.execute = AsyncMock(return_value=query_result)
+
+        created_runs: list[AgentRun] = []
+        mock_session._mock_session.add.side_effect = (
+            lambda value: created_runs.append(value)
+            if isinstance(value, AgentRun)
+            else None
+        )
+        parent_run_id = str(uuid4())
+        parent_run = MagicMock()
+        parent_run.org_id = mock_agent.organization_id
+        parent_run.caller_user_id = None
+        parent_run.caller_email = None
+        parent_run.caller_name = None
+
+        async def get_run(model, run_id):
+            if model is AgentRun and str(run_id) == parent_run_id:
+                return parent_run
+            if model is AgentRun and created_runs and run_id == created_runs[0].id:
+                return created_runs[0]
+            return None
+
+        mock_session._mock_session.get.side_effect = get_run
+
+        executor = AutonomousAgentExecutor(mock_session)
+        tool_call = ToolCallRequest(
+            id="tc1",
+            name="delegate_to_lifecycle_specialist",
+            arguments={"task": "Exercise lifecycle"},
+        )
+
+        with patch.object(
+            AutonomousAgentExecutor,
+            "run",
+            new_callable=AsyncMock,
+            return_value={
+                **child_result,
+                "iterations_used": 1,
+                "tokens_used": 10,
+                "llm_model": "cheap-model",
+            },
+        ):
+            outcome = await executor.run_delegation(
+                parent_agent=mock_agent,
+                tool_call=tool_call,
+                parent_run_id=parent_run_id,
+            )
+
+        assert outcome.status == expected_status
+        assert expected_error in (outcome.error or "")
+        assert created_runs[0].status == expected_status
+        assert expected_error in (created_runs[0].error or "")
+        assert created_runs[0].completed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_run_delegation_terminalizes_unexpected_exception(
+        self, mock_session, mock_agent
+    ):
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Crasher"
+        delegated.is_active = True
+        delegated.tools = []
+        delegated.delegated_agents = []
+        delegated.max_iterations = 5
+        delegated.max_token_budget = 1000
+        delegated.organization_id = mock_agent.organization_id
+        mock_agent.delegated_agents = [delegated]
+
+        query_result = MagicMock()
+        query_result.scalar_one_or_none.return_value = delegated
+        mock_session._mock_session.execute = AsyncMock(return_value=query_result)
+        created_runs: list[AgentRun] = []
+        mock_session._mock_session.add.side_effect = (
+            lambda value: created_runs.append(value)
+            if isinstance(value, AgentRun)
+            else None
+        )
+        parent_run_id = str(uuid4())
+        parent_run = MagicMock()
+        parent_run.org_id = mock_agent.organization_id
+        parent_run.caller_user_id = None
+        parent_run.caller_email = None
+        parent_run.caller_name = None
+
+        async def get_run(model, run_id):
+            if model is AgentRun and str(run_id) == parent_run_id:
+                return parent_run
+            if model is AgentRun and created_runs and run_id == created_runs[0].id:
+                return created_runs[0]
+            return None
+
+        mock_session._mock_session.get.side_effect = get_run
+
+        executor = AutonomousAgentExecutor(mock_session)
+        with patch.object(
+            AutonomousAgentExecutor,
+            "run",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Connection lost"),
+        ):
+            outcome = await executor.run_delegation(
+                parent_agent=mock_agent,
+                tool_call=ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_crasher",
+                    arguments={"task": "Crash"},
+                ),
+                parent_run_id=parent_run_id,
+            )
+
+        assert outcome.status == "failed"
+        assert outcome.error == "Connection lost"
+        assert created_runs[0].status == "failed"
+        assert created_runs[0].error == "Connection lost"
+        assert created_runs[0].completed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_run_delegation_rejects_cross_org_target(
+        self, mock_session, mock_agent
+    ):
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Other Org Specialist"
+        delegated.is_active = True
+        delegated.organization_id = uuid4()
+        mock_agent.delegated_agents = [delegated]
+
+        executor = AutonomousAgentExecutor(mock_session)
+        with pytest.raises(ToolError, match="outside the parent agent's organization"):
+            await executor.run_delegation(
+                parent_agent=mock_agent,
+                tool_call=ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_other_org_specialist",
+                    arguments={"task": "Cross a boundary"},
+                ),
+                parent_run_id=str(uuid4()),
+            )
+
+        mock_session._mock_session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_delegation_revalidates_current_link_and_scope(
+        self,
+        mock_session,
+        mock_agent,
+    ):
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Former Specialist"
+        delegated.is_active = True
+        delegated.organization_id = mock_agent.organization_id
+        mock_agent.delegated_agents = [delegated]
+
+        query_result = MagicMock()
+        query_result.scalar_one_or_none.return_value = None
+        mock_session._mock_session.execute = AsyncMock(return_value=query_result)
+
+        executor = AutonomousAgentExecutor(mock_session)
+        with pytest.raises(
+            ToolError,
+            match="no longer active, authorized, or in scope",
+        ):
+            await executor.run_delegation(
+                parent_agent=mock_agent,
+                tool_call=ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_former_specialist",
+                    arguments={"task": "Use a stale parent relationship"},
+                ),
+                parent_run_id=str(uuid4()),
+            )
+
+        statement = mock_session._mock_session.execute.await_args.args[0]
+        compiled = str(statement)
+        assert "JOIN agent_delegations" in compiled
+        assert "agent_delegations.parent_agent_id" in compiled
+        assert "FOR UPDATE" in compiled
+        mock_session._mock_session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_delegation_terminalizes_then_reraises_parent_cancellation(
+        self, mock_session, mock_agent
+    ):
+        delegated = MagicMock()
+        delegated.id = uuid4()
+        delegated.name = "Cancelled Specialist"
+        delegated.is_active = True
+        delegated.tools = []
+        delegated.delegated_agents = []
+        delegated.max_iterations = 5
+        delegated.max_token_budget = 1000
+        delegated.organization_id = mock_agent.organization_id
+        mock_agent.delegated_agents = [delegated]
+
+        query_result = MagicMock()
+        query_result.scalar_one_or_none.return_value = delegated
+        mock_session._mock_session.execute = AsyncMock(return_value=query_result)
+        created_runs: list[AgentRun] = []
+        mock_session._mock_session.add.side_effect = (
+            lambda value: created_runs.append(value)
+            if isinstance(value, AgentRun)
+            else None
+        )
+        parent_run_id = str(uuid4())
+        parent_run = MagicMock()
+        parent_run.org_id = mock_agent.organization_id
+        parent_run.caller_user_id = None
+        parent_run.caller_email = None
+        parent_run.caller_name = None
+
+        async def get_run(model, run_id):
+            if model is AgentRun and str(run_id) == parent_run_id:
+                return parent_run
+            if model is AgentRun and created_runs and run_id == created_runs[0].id:
+                return created_runs[0]
+            return None
+
+        mock_session._mock_session.get.side_effect = get_run
+
+        executor = AutonomousAgentExecutor(mock_session)
+        with patch.object(
+            AutonomousAgentExecutor,
+            "run",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError(),
+        ), pytest.raises(asyncio.CancelledError):
+            await executor.run_delegation(
+                parent_agent=mock_agent,
+                tool_call=ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_cancelled_specialist",
+                    arguments={"task": "Wait"},
+                ),
+                parent_run_id=parent_run_id,
+            )
+
+        assert created_runs[0].status == "cancelled"
+        assert created_runs[0].completed_at is not None
+
+    @pytest.mark.asyncio
+    async def test_child_checks_ancestor_cancel_flags(self, mock_session):
+        child_run_id = str(uuid4())
+        root_run_id = str(uuid4())
+        redis = AsyncMock()
+        redis.get = AsyncMock(side_effect=[None, b"1"])
+        executor = AutonomousAgentExecutor(
+            mock_session,
+            redis_client=redis,
+            _ancestor_run_ids=(root_run_id,),
+        )
+
+        assert await executor._check_cancelled(child_run_id) is True
+        assert redis.get.await_args_list == [
+            ((f"bifrost:agent_run:{child_run_id}:cancel",),),
+            ((f"bifrost:agent_run:{root_run_id}:cancel",),),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_autonomous_delegation_raises_tool_error_for_failed_child(
+        self, mock_session, mock_agent
+    ):
+        executor = AutonomousAgentExecutor(mock_session)
+        executor._current_run_id = str(uuid4())
+        executor._caller = {"user_id": str(uuid4())}
+        failed = DelegationOutcome(
+            child_run_id=uuid4(),
+            agent_name="Broken Specialist",
+            status="failed",
+            output=None,
+            error="Provider unavailable",
+            duration_ms=12,
+        )
+        executor.run_delegation = AsyncMock(return_value=failed)
+
+        with pytest.raises(ToolError, match="Provider unavailable"):
+            await executor._execute_delegation(
+                ToolCallRequest(
+                    id="tc1",
+                    name="delegate_to_broken_specialist",
+                    arguments={"task": "Do work"},
+                ),
+                mock_agent,
+            )
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
@@ -201,8 +840,10 @@ class TestAutonomousAgentExecutor:
     async def test_run_with_tool_calls(self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent):
         """Run executes tools and continues the loop until no more tool calls."""
         workflow_id = uuid4()
+        workflow_execution_id = str(uuid4())
+        mock_agent.system_tools = ["system_tool"]
         mock_resolve_tools.return_value = (
-            [MagicMock(name="my_tool")],
+            [MagicMock(name="my_tool"), MagicMock(name="system_tool")],
             {"my_tool": workflow_id},
         )
 
@@ -211,7 +852,10 @@ class TestAutonomousAgentExecutor:
         mock_llm.complete = AsyncMock(side_effect=[
             LLMResponse(
                 content=None,
-                tool_calls=[ToolCallRequest(id="tc1", name="my_tool", arguments={"x": 1})],
+                tool_calls=[
+                    ToolCallRequest(id="tc1", name="my_tool", arguments={"x": 1}),
+                    ToolCallRequest(id="tc2", name="system_tool", arguments={}),
+                ],
                 finish_reason="tool_use",
                 input_tokens=100,
                 output_tokens=50,
@@ -225,12 +869,29 @@ class TestAutonomousAgentExecutor:
             ),
         ])
         mock_get_llm.return_value = mock_llm
+        workflow = MagicMock()
+        workflow.id = workflow_id
+        workflow.organization_id = mock_agent.organization_id
+        mock_session._mock_session.get = AsyncMock(return_value=workflow)
 
         # Mock the workflow tool execution (imported inside _execute_tool)
-        with patch("src.services.execution.service.execute_tool") as mock_exec_tool:
-            mock_exec_tool.return_value = MagicMock(result="tool output", status=MagicMock(value="completed"))
+        with (
+            patch(
+                "src.services.execution.autonomous_agent_executor."
+                "caller_can_access_workflow_tool",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("src.services.execution.service.execute_tool") as mock_exec_tool,
+        ):
+            mock_exec_tool.return_value = WorkflowExecutionResponse(
+                execution_id=workflow_execution_id,
+                status=ExecutionStatus.SUCCESS,
+                result="tool output",
+            )
 
             executor = AutonomousAgentExecutor(mock_session)
+            executor._execute_system_tool = AsyncMock(return_value="system output")
             result = await executor.run(
                 agent=mock_agent,
                 input_data={"task": "do something"},
@@ -241,6 +902,101 @@ class TestAutonomousAgentExecutor:
         assert result["output"] == "Final answer"
         assert result["iterations_used"] == 2
         assert result["tokens_used"] == 450  # 150 + 300
+        tool_result_steps = {
+            step["content"]["tool_name"]: step["content"]
+            for step in executor._pending_steps
+            if step["type"] == "tool_result"
+        }
+        assert tool_result_steps["my_tool"]["execution_id"] == workflow_execution_id
+        assert tool_result_steps["my_tool"]["is_error"] is False
+        assert "execution_id" not in tool_result_steps["system_tool"]
+        assert tool_result_steps["system_tool"]["is_error"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "workflow_status",
+        [
+            ExecutionStatus.FAILED,
+            ExecutionStatus.TIMEOUT,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.COMPLETED_WITH_ERRORS,
+        ],
+    )
+    @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
+    @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
+    async def test_run_marks_terminal_workflow_failures_as_errored_results(
+        self,
+        mock_resolve_tools,
+        mock_get_llm,
+        mock_session,
+        mock_agent,
+        workflow_status,
+    ):
+        """Terminal non-success workflow responses retain their ID and record an error."""
+        workflow_execution_id = str(uuid4())
+        workflow_id = uuid4()
+        mock_resolve_tools.return_value = (
+            [MagicMock(name="my_tool")],
+            {"my_tool": workflow_id},
+        )
+
+        mock_llm = AsyncMock()
+        mock_llm.complete = AsyncMock(
+            side_effect=[
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="tc1",
+                            name="my_tool",
+                            arguments={},
+                        )
+                    ],
+                    finish_reason="tool_use",
+                    input_tokens=10,
+                    output_tokens=5,
+                ),
+                LLMResponse(
+                    content="Handled failure",
+                    tool_calls=None,
+                    finish_reason="end_turn",
+                    input_tokens=10,
+                    output_tokens=5,
+                ),
+            ]
+        )
+        mock_get_llm.return_value = mock_llm
+        workflow = MagicMock()
+        workflow.id = workflow_id
+        workflow.organization_id = mock_agent.organization_id
+        mock_session._mock_session.get = AsyncMock(return_value=workflow)
+
+        with (
+            patch(
+                "src.services.execution.autonomous_agent_executor."
+                "caller_can_access_workflow_tool",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("src.services.execution.service.execute_tool") as mock_exec_tool,
+        ):
+            mock_exec_tool.return_value = WorkflowExecutionResponse(
+                execution_id=workflow_execution_id,
+                status=workflow_status,
+                error=f"Workflow ended with {workflow_status.value}",
+            )
+
+            executor = AutonomousAgentExecutor(mock_session)
+            await executor.run(agent=mock_agent, run_id=str(uuid4()))
+
+        tool_result = next(
+            step["content"]
+            for step in executor._pending_steps
+            if step["type"] == "tool_result"
+        )
+        assert tool_result["execution_id"] == workflow_execution_id
+        assert tool_result["is_error"] is True
+        assert tool_result["result"].startswith("Error:")
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
@@ -408,7 +1164,7 @@ class TestAutonomousAgentExecutor:
 
         # Mock session.execute to return the re-fetched delegated agent
         mock_result = MagicMock()
-        mock_result.scalar_one.return_value = delegated
+        mock_result.scalar_one_or_none.return_value = delegated
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         mock_llm = AsyncMock()
@@ -580,7 +1336,7 @@ class TestAutonomousAgentExecutor:
         )
 
         mock_result = MagicMock()
-        mock_result.scalar_one.return_value = delegated
+        mock_result.scalar_one_or_none.return_value = delegated
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         mock_llm = AsyncMock()
@@ -607,6 +1363,28 @@ class TestAutonomousAgentExecutor:
         ])
         mock_get_llm.return_value = mock_llm
 
+        parent_run_id = str(uuid4())
+        parent_run = MagicMock()
+        parent_run.org_id = mock_agent.organization_id
+        parent_run.caller_user_id = None
+        parent_run.caller_email = None
+        parent_run.caller_name = None
+        created_runs: list[AgentRun] = []
+        mock_session._mock_session.add.side_effect = (
+            lambda value: created_runs.append(value)
+            if isinstance(value, AgentRun)
+            else None
+        )
+
+        async def get_run(model, run_id):
+            if model is AgentRun and str(run_id) == parent_run_id:
+                return parent_run
+            if model is AgentRun and created_runs and run_id == created_runs[0].id:
+                return created_runs[0]
+            return None
+
+        mock_session._mock_session.get.side_effect = get_run
+
         mock_redis = MagicMock()
         executor = AutonomousAgentExecutor(mock_session, redis_client=mock_redis)
 
@@ -618,7 +1396,7 @@ class TestAutonomousAgentExecutor:
             result = await executor.run(
                 agent=mock_agent,
                 input_data={"task": "Delegate"},
-                run_id=str(uuid4()),
+                run_id=parent_run_id,
             )
 
         assert result["status"] == "completed"
@@ -718,7 +1496,7 @@ class TestAutonomousAgentExecutor:
         )
 
         mock_result = MagicMock()
-        mock_result.scalar_one.return_value = delegated
+        mock_result.scalar_one_or_none.return_value = delegated
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         mock_llm = AsyncMock()
@@ -824,13 +1602,12 @@ class TestAutonomousAgentExecutor:
         mock_system_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("parent_exists", [True, False])
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")
     @patch("src.services.execution.autonomous_agent_executor.resolve_agent_tools")
     async def test_delegation_creates_child_agent_run(
-        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent, parent_exists
+        self, mock_resolve_tools, mock_get_llm, mock_session, mock_agent
     ):
-        """Delegation creates a child run with inherited or fallback audit scope."""
+        """Delegation creates a child run with inherited parent audit scope."""
         delegated = MagicMock()
         delegated.id = uuid4()
         delegated.name = "Child Agent"
@@ -854,7 +1631,7 @@ class TestAutonomousAgentExecutor:
         )
 
         mock_result = MagicMock()
-        mock_result.scalar_one.return_value = delegated
+        mock_result.scalar_one_or_none.return_value = delegated
         mock_session._mock_session.execute = AsyncMock(return_value=mock_result)
 
         fallback_org_id = uuid4()
@@ -875,13 +1652,21 @@ class TestAutonomousAgentExecutor:
         parent_run.caller_name = "Example Operator"
         validated_caller = MagicMock()
         validated_caller.is_superuser = False
-        mock_session._mock_session.get = AsyncMock(
-            side_effect=[
-                validated_caller,
-                parent_run if parent_exists else None,
-                MagicMock(),
-            ]
-        )
+        parent_run_id = str(uuid4())
+
+        async def get_run(model, run_id):
+            if model is User:
+                return validated_caller
+            if model is AgentRun and str(run_id) == parent_run_id:
+                return parent_run
+            if model is AgentRun:
+                for call in reversed(mock_session._mock_session.add.call_args_list):
+                    value = call.args[0]
+                    if isinstance(value, AgentRun) and value.id == run_id:
+                        return value
+            return None
+
+        mock_session._mock_session.get = AsyncMock(side_effect=get_run)
 
         mock_llm = AsyncMock()
         mock_llm.complete = AsyncMock(side_effect=[
@@ -909,19 +1694,23 @@ class TestAutonomousAgentExecutor:
         ])
         mock_get_llm.return_value = mock_llm
 
-        parent_run_id = str(uuid4())
         executor = AutonomousAgentExecutor(mock_session)
-        result = await executor.run(
-            agent=mock_agent,
-            input_data={"task": "Delegate"},
-            run_id=parent_run_id,
-            _caller=fallback_caller,
-        )
+        with patch(
+            "src.services.execution.autonomous_agent_executor."
+            "caller_can_access_delegated_agent",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            result = await executor.run(
+                agent=mock_agent,
+                input_data={"task": "Delegate"},
+                run_id=parent_run_id,
+                _caller=fallback_caller,
+            )
 
         assert result["status"] == "completed"
 
         # Find AgentRun objects added to session (not AgentRunStep)
-        from src.models.orm.agent_runs import AgentRun
         add_calls = mock_session._mock_session.add.call_args_list
         agent_run_adds = [
             c[0][0] for c in add_calls
@@ -934,16 +1723,10 @@ class TestAutonomousAgentExecutor:
         assert child_run.parent_run_id is not None
         assert str(child_run.parent_run_id) == parent_run_id
         assert child_run.agent_id == delegated.id
-        assert child_run.org_id == (parent_org_id if parent_exists else fallback_org_id)
-        assert child_run.caller_user_id == (
-            parent_caller_user_id if parent_exists else fallback_caller_user_id
-        )
-        assert child_run.caller_email == (
-            "operator@example.com" if parent_exists else "fallback@example.com"
-        )
-        assert child_run.caller_name == (
-            "Example Operator" if parent_exists else "Fallback Operator"
-        )
+        assert child_run.org_id == parent_org_id
+        assert child_run.caller_user_id == parent_caller_user_id
+        assert child_run.caller_email == "operator@example.com"
+        assert child_run.caller_name == "Example Operator"
 
     @pytest.mark.asyncio
     @patch("src.services.execution.autonomous_agent_executor.get_llm_client")

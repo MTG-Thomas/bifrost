@@ -196,6 +196,8 @@ async def test_switch_agent_persists_only_access_checked_agent(executor, mock_se
         organization_id=uuid4(),
         is_superuser=False,
         is_external=False,
+        email="user@example.test",
+        name="Test User",
     )
 
     mock_session.get = AsyncMock(return_value=persisted_conversation)
@@ -653,6 +655,8 @@ async def test_chat_applies_mention_switch_before_saving_user_message(executor):
         organization_id=uuid4(),
         is_superuser=False,
         is_external=False,
+        email="user@example.test",
+        name="Test User",
     )
     user_msg = SimpleNamespace(id=uuid4())
     assistant_msg = SimpleNamespace(id=uuid4())
