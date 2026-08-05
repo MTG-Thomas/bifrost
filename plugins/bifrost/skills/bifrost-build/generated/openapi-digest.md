@@ -106,6 +106,13 @@
 | GET | `/api/claims/{name}` |
 | PATCH | `/api/claims/{name}` |
 | GET | `/api/cli/download` |
+| GET | `/api/codex-gateway/keys` |
+| POST | `/api/codex-gateway/keys` |
+| DELETE | `/api/codex-gateway/keys/{key_id}` |
+| DELETE | `/api/codex-gateway/oauth` |
+| POST | `/api/codex-gateway/oauth/connect` |
+| POST | `/api/codex-gateway/oauth/import-auth-cache` |
+| GET | `/api/codex-gateway/oauth/status` |
 | GET | `/api/config` |
 | POST | `/api/config` |
 | DELETE | `/api/config/{config_id}` |
@@ -432,6 +439,11 @@
 | POST | `/api/solutions/{solution_id}/capture/preview` |
 | GET | `/api/solutions/{solution_id}/deletion-summary` |
 | POST | `/api/solutions/{solution_id}/deploy` |
+| POST | `/api/solutions/{solution_id}/deployments` |
+| GET | `/api/solutions/{solution_id}/deployments/capabilities` |
+| GET | `/api/solutions/{solution_id}/deployments/{deployment_id}` |
+| POST | `/api/solutions/{solution_id}/deployments/{deployment_id}/activate` |
+| POST | `/api/solutions/{solution_id}/deployments/{deployment_id}/rollback` |
 | GET | `/api/solutions/{solution_id}/entities` |
 | POST | `/api/solutions/{solution_id}/export` |
 | GET | `/api/solutions/{solution_id}/export-jobs` |
@@ -472,6 +484,7 @@
 | POST | `/api/users/{user_id}/invite/resend` |
 | POST | `/api/users/{user_id}/invite/send` |
 | GET | `/api/users/{user_id}/roles` |
+| POST | `/api/v1/responses` |
 | GET | `/api/version` |
 | GET | `/api/workflow-keys` |
 | POST | `/api/workflow-keys` |
@@ -493,7 +506,18 @@
 | GET | `/api/workflows/{workflow_id}/roles` |
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
+| POST | `/api/workspace-repo-changesets` |
+| GET | `/api/workspace-repo-changesets/state` |
+| GET | `/api/workspace-repo-changesets/{changeset_id}` |
+| POST | `/api/workspace-repo-changesets/{changeset_id}/abort` |
+| POST | `/api/workspace-repo-changesets/{changeset_id}/activate` |
+| GET | `/api/workspace-repo-changesets/{changeset_id}/diff` |
+| POST | `/api/workspace-repo-changesets/{changeset_id}/files` |
+| POST | `/api/workspace-repo-changesets/{changeset_id}/validate` |
 | POST | `/auth/admin/revoke-user` |
+| GET | `/auth/cli/authorize` |
+| POST | `/auth/cli/start` |
+| POST | `/auth/cli/token` |
 | POST | `/auth/device/authorize` |
 | POST | `/auth/device/code` |
 | POST | `/auth/device/token` |
@@ -538,3 +562,4 @@
 | GET | `/health/detailed` |
 | GET | `/health/live` |
 | GET | `/health/ready` |
+| POST | `/v1/responses` |
