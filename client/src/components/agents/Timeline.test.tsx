@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { Route, Routes, useLocation } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router";
 
 import type { components } from "@/lib/v1";
 import { renderWithProviders, screen } from "@/test-utils";

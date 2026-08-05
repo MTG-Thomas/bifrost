@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
 	ArrowUp,

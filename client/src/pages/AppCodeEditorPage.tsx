@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import { useNavigate, useParams, useLocation } from "react-router-dom";
+import { useNavigate, useParams, useLocation } from "react-router";
 import { parseSolutionFrom } from "@/lib/solution-back-nav";
 import { ArrowLeft, Upload, Settings, Loader2, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";

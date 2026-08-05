@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router";
 import { renderWithProviders, screen, waitFor, fireEvent } from "@/test-utils";
 
 // -----------------------------------------------------------------------------

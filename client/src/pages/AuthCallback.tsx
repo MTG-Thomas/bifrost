@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useState, useRef } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { useAuth } from "@/contexts/AuthContext";
 import { hashOAuthState } from "@/services/auth";
 import { Loader2, AlertCircle } from "lucide-react";

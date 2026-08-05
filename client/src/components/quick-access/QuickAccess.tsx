@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { Search, FileText, Workflow, FileCode, Loader2 } from "lucide-react";
 import { useEditorStore } from "@/stores/editorStore";
 import { useAuth } from "@/contexts/AuthContext";

@@ -5,7 +5,7 @@
  * Returns URL path parameters as a Record<string, string>.
  */
 
-import { useParams as useRouterParams } from "react-router-dom";
+import { useParams as useRouterParams } from "react-router";
 
 /**
  * Get URL path parameters from the current route

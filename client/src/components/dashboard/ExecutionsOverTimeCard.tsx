@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import { AlertCircle } from "lucide-react";
 import {

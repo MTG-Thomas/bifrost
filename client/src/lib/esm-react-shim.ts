@@ -22,7 +22,7 @@ import * as ReactDOM from "react-dom";
 import * as ReactDOMClient from "react-dom/client";
 import * as ReactJSXRuntime from "react/jsx-runtime";
 import * as ReactJSXDevRuntime from "react/jsx-dev-runtime";
-import * as ReactRouterDOM from "react-router-dom";
+import * as ReactRouterDOM from "react-router";
 import * as LucideReact from "lucide-react";
 import { $ as platformScope } from "./app-code-runtime";
 import { Link, NavLink, Navigate } from "./app-code-platform/navigation";

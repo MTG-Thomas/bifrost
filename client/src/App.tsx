@@ -5,7 +5,7 @@ import {
 	Route,
 	useLocation,
 	matchPath,
-} from "react-router-dom";
+} from "react-router";
 import { Layout } from "@/components/layout/Layout";
 import { ContentLayout } from "@/components/layout/ContentLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";

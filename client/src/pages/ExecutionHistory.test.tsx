@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import { renderWithProviders, screen, waitFor, within } from "@/test-utils";
 
 // -----------------------------------------------------------------------------

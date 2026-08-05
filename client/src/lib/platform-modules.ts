@@ -26,6 +26,11 @@ export interface PlatformModule {
 	 */
 	specifier: string;
 	/**
+	 * The installed host package used to enumerate exports when it differs
+	 * from the stable app-facing specifier.
+	 */
+	hostSpecifier?: string;
+	/**
 	 * The globalThis key that holds the host SPA's copy of this module.
 	 * Read by the stub at `/__bifrost_modules/<fileName>`.
 	 */
@@ -38,7 +43,11 @@ export const PLATFORM_MODULES: PlatformModule[] = [
 	{ specifier: "react-dom/client", globalKey: "__bifrost_react_dom_client" },
 	{ specifier: "react/jsx-runtime", globalKey: "__bifrost_react_jsx_runtime" },
 	{ specifier: "react/jsx-dev-runtime", globalKey: "__bifrost_react_jsx_dev_runtime" },
-	{ specifier: "react-router-dom", globalKey: "__bifrost_react_router_dom" },
+	{
+		specifier: "react-router-dom",
+		hostSpecifier: "react-router",
+		globalKey: "__bifrost_react_router_dom",
+	},
 	{ specifier: "lucide-react", globalKey: "__bifrost_lucide_react" },
 ];
 

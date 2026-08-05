@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ChevronDown, ThumbsDown } from "lucide-react";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 
 import { getLocationHref } from "@/lib/agent-run-navigation";
 import { cn } from "@/lib/utils";

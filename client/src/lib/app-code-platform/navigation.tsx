@@ -17,7 +17,7 @@ import {
 	type LinkProps,
 	type NavLinkProps,
 	type NavigateProps,
-} from "react-router-dom";
+} from "react-router";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 
 /**

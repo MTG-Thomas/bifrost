@@ -9,7 +9,7 @@
  * runs tab.
  */
 
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router";
 import { toast } from "sonner";
 import {
 	AlertCircle,

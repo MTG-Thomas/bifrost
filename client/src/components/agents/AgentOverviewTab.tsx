@@ -6,7 +6,7 @@
  *   side column  →  needs-attention card (red), Configuration KV, Budgets KV
  */
 
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router";
 import {
 	Activity,
 	AlertTriangle,

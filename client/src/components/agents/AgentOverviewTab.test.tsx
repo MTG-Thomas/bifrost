@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Route, Routes, useLocation } from "react-router-dom";
+import { Route, Routes, useLocation } from "react-router";
 import { renderWithProviders, screen } from "@/test-utils";
 
 function NavigationStateProbe() {

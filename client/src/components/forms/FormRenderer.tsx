@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, memo } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router";
 import {
 	useForm,
 	useWatch,

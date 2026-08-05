@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ArrowLeft, Sparkles } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatNumber, formatRelativeTime } from "@/lib/utils";

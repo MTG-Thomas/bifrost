@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Link, Routes, Route } from "react-router-dom";
+import { Link, Routes, Route } from "react-router";
 import { renderWithProviders, screen, waitFor } from "@/test-utils";
 import { createAgentRunNavigationState } from "@/lib/agent-run-navigation";
 

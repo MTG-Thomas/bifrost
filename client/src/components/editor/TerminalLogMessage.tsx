@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useEditorStore } from "@/stores/editorStore";
 
 interface TerminalLogMessageProps {

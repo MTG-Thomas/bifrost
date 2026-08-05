@@ -10,7 +10,7 @@
  * same human-readable action fallback, same verdict capture bar.
  */
 
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import {
 	User,
 	Bot,
