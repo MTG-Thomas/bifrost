@@ -9,13 +9,18 @@ import stat
 import time
 from pathlib import Path
 
-HEARTBEAT_PATH = Path(os.environ.get("BIFROST_RUNTIME_DIR", "/run/bifrost")) / "scheduler-heartbeat"
+HEARTBEAT_PATH = Path(
+    os.environ.get(
+        "BIFROST_RUNTIME_DIR",
+        Path.home() / ".cache" / "bifrost" / "runtime",
+    )
+) / "scheduler-heartbeat"
 
 
 def _ensure_private_runtime_directory() -> None:
     runtime_directory = HEARTBEAT_PATH.parent
     try:
-        runtime_directory.mkdir(mode=0o700)
+        runtime_directory.mkdir(mode=0o700, parents=True)
     except FileExistsError:
         if not runtime_directory.is_dir():
             raise
