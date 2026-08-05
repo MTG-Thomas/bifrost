@@ -17,7 +17,8 @@ def _ensure_private_runtime_directory() -> None:
     try:
         runtime_directory.mkdir(mode=0o700)
     except FileExistsError:
-        pass
+        if not runtime_directory.is_dir():
+            raise
 
     directory_stat = runtime_directory.lstat()
     if (

@@ -43,13 +43,6 @@ def agent_access_conditions(user: UserPrincipal) -> list:
     if user.organization_id is None:
         return [false()]
 
-    in_scope = or_(
-        Agent.organization_id == user.organization_id,
-        Agent.organization_id.is_(None),
-    )
-    if user.is_superuser:
-        return [in_scope]
-
     private_owner = and_(
         Agent.access_level == AgentAccessLevel.PRIVATE,
         Agent.owner_user_id == user.user_id,

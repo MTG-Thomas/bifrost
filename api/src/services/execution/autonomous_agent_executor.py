@@ -898,7 +898,6 @@ class AutonomousAgentExecutor:
         )
 
         sub_start = time.time()
-        cancellation: asyncio.CancelledError | None = None
         try:
             sub_result = await asyncio.wait_for(
                 sub_executor.run(
@@ -928,8 +927,7 @@ class AutonomousAgentExecutor:
                     f"{DELEGATION_TIMEOUT_SECONDS}s"
                 ),
             }
-        except asyncio.CancelledError as exc:
-            cancellation = exc
+        except asyncio.CancelledError:
             sub_result = {
                 "output": None,
                 "iterations_used": 0,
@@ -938,6 +936,14 @@ class AutonomousAgentExecutor:
                 "llm_model": target_agent.llm_model,
                 "error": f"Delegation to {target_agent.name} was cancelled",
             }
+            await self._finalize_delegation(
+                sub_executor=sub_executor,
+                sub_run_id=sub_run_id,
+                target_agent=target_agent,
+                sub_result=sub_result,
+                sub_start=sub_start,
+            )
+            raise
         except Exception as exc:
             logger.error(
                 f"Delegation to '{target_agent.name}' failed: {exc}",
@@ -952,6 +958,23 @@ class AutonomousAgentExecutor:
                 "error": str(exc),
             }
 
+        return await self._finalize_delegation(
+            sub_executor=sub_executor,
+            sub_run_id=sub_run_id,
+            target_agent=target_agent,
+            sub_result=sub_result,
+            sub_start=sub_start,
+        )
+
+    async def _finalize_delegation(
+        self,
+        *,
+        sub_executor: "AutonomousAgentExecutor",
+        sub_run_id: UUID,
+        target_agent: Agent,
+        sub_result: dict[str, Any],
+        sub_start: float,
+    ) -> DelegationOutcome:
         duration_ms = int((time.time() - sub_start) * 1000)
         status = str(sub_result.get("status") or "completed")
         if status not in {
@@ -1026,9 +1049,6 @@ class AutonomousAgentExecutor:
         logger.info(
             f"Delegation to '{target_agent.name}' completed with status={status}"
         )
-
-        if cancellation is not None:
-            raise cancellation
         return outcome
 
     @staticmethod

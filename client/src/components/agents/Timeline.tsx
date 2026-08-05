@@ -721,7 +721,7 @@ function runStatusLabel(status: string): string {
 		case "completed":
 			return "Completed";
 		default:
-			return status.replace(/_/g, " ");
+			return status.replaceAll("_", " ");
 	}
 }
 
