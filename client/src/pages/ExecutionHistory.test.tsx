@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import { renderWithProviders, screen, waitFor, within } from "@/test-utils";
 
 // -----------------------------------------------------------------------------
@@ -99,7 +99,7 @@ vi.mock("@/components/ui/date-range-picker", () => ({
 	DateRangePicker: () => null,
 }));
 
-const executionHistoryModule = import("./ExecutionHistory");
+import { ExecutionHistory } from "./ExecutionHistory";
 
 // -----------------------------------------------------------------------------
 // Fixtures
@@ -169,7 +169,6 @@ function LocationProbe() {
 }
 
 async function renderPage(initialEntries?: string[]) {
-	const { ExecutionHistory } = await executionHistoryModule;
 	return renderWithProviders(
 		<>
 			<ExecutionHistory />

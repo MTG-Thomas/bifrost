@@ -135,6 +135,17 @@ from src.models.contracts.applications import (
     VersionHistoryResponse,
 )
 
+# Durable scheduler-owned platform jobs
+from src.models.contracts.platform_jobs import (
+    PlatformJobAccepted,
+    PlatformJobCancelResponse,
+    PlatformJobError,
+    PlatformJobListResponse,
+    PlatformJobProgress,
+    PlatformJobPublic,
+    PlatformJobStatus,
+)
+
 # Agents & Chat
 from src.models.contracts.agents import (
     AgentCreate,
@@ -255,6 +266,8 @@ from src.models.contracts.dashboard import (
     DailyMetricsEntry,
     DailyMetricsResponse,
     DashboardMetricsResponse,
+    ExecutionTimeSeriesBucket,
+    ExecutionTimeSeriesResponse,
     ROISnapshot,
     ExecutionStats,
     OrganizationMetricsResponse,
@@ -754,6 +767,8 @@ __all__ = [
     "RecentFailure",
     "ROISnapshot",
     "DashboardMetricsResponse",
+    "ExecutionTimeSeriesBucket",
+    "ExecutionTimeSeriesResponse",
     "PlatformMetricsResponse",
     "DailyMetricsEntry",
     "DailyMetricsResponse",
@@ -1054,6 +1069,14 @@ __all__ = [
     "AppFileUpdate",
     "AppFileResponse",
     "AppFileListResponse",
+    # Durable scheduler-owned platform jobs
+    "PlatformJobAccepted",
+    "PlatformJobCancelResponse",
+    "PlatformJobError",
+    "PlatformJobListResponse",
+    "PlatformJobProgress",
+    "PlatformJobPublic",
+    "PlatformJobStatus",
     # Platform Admin
     "PoolDetail",
     "PoolsListResponse",

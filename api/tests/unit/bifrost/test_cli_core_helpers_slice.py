@@ -165,8 +165,7 @@ async def test_api_request_formats_json_text_http_errors_and_client_lookup(monke
         client=Client(error=httpx.ConnectError("offline")),
     ) == 1
     connect_error = capsys.readouterr().err
-    assert "ConnectError" in connect_error
-    assert "GET /api/demo" in connect_error
+    assert "could not connect to Bifrost API" in connect_error
 
     monkeypatch.setattr(
         cli.BifrostClient,

@@ -14,7 +14,7 @@ from src.services.execution.template_process import (
     _RecvQueue,
     _SendQueue,
     _load_execution_infrastructure,
-    _reap_exited_children,
+    _reap_children,
     _run_forked_child,
 )
 
@@ -86,21 +86,25 @@ def test_recv_queue_ignores_close_errors() -> None:
     assert conn.closed is True
 
 
-def test_reap_exited_children_stops_on_no_children_and_oserror() -> None:
+def test_reap_children_stops_on_no_children_and_oserror() -> None:
+    exit_statuses: dict[int, int] = {}
     with (
         patch("src.services.execution.template_process.os.WNOHANG", 1, create=True),
         patch("src.services.execution.template_process.os.waitpid", side_effect=ChildProcessError),
     ):
-        _reap_exited_children()
+        _reap_children(exit_statuses)
 
     with (
         patch("src.services.execution.template_process.os.WNOHANG", 1, create=True),
         patch("src.services.execution.template_process.os.waitpid", side_effect=OSError("wait failed")),
     ):
-        _reap_exited_children()
+        _reap_children(exit_statuses)
+
+    assert exit_statuses == {}
 
 
-def test_reap_exited_children_drains_exited_children() -> None:
+def test_reap_children_drains_exited_children() -> None:
+    exit_statuses: dict[int, int] = {}
     with (
         patch("src.services.execution.template_process.os.WNOHANG", 1, create=True),
         patch(
@@ -108,9 +112,10 @@ def test_reap_exited_children_drains_exited_children() -> None:
             side_effect=[(101, 0), (102, 0), (0, 0)],
         ) as waitpid,
     ):
-        _reap_exited_children()
+        _reap_children(exit_statuses)
 
     assert waitpid.call_count == 3
+    assert exit_statuses == {101: 0, 102: 0}
 
 
 def test_load_execution_infrastructure_installs_requirements_and_user_site(monkeypatch) -> None:

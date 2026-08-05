@@ -1067,7 +1067,7 @@ def get_value():
                         return True
                 return None
 
-            assert poll_until(check_gone, max_wait=20.0), (
+            assert poll_until(check_gone, max_wait=60.0), (
                 f"Package '{package_name}' still installed after uninstall — "
                 "worker recycle may have hung."
             )

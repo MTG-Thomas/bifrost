@@ -262,6 +262,9 @@ class TestUrlResolution:
         # Make sure the env var isn't already set in the test process so we
         # know the value got there via dotenv, not inheritance.
         monkeypatch.delenv("BIFROST_API_URL", raising=False)
+        monkeypatch.delenv("BIFROST_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("BIFROST_REFRESH_TOKEN", raising=False)
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
         monkeypatch.setenv("BIFROST_LOAD_CWD_ENV", "1")
 
         _patch_version(monkeypatch, "1.2.3")

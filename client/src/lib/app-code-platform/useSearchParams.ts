@@ -5,7 +5,7 @@
  * Returns URLSearchParams for query string access.
  */
 
-import { useSearchParams as useRouterSearchParams } from "react-router-dom";
+import { useSearchParams as useRouterSearchParams } from "react-router";
 
 /**
  * Get query string parameters from the current URL

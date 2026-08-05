@@ -14,7 +14,7 @@
 import React from "react";
 import {
 	// Exclude: Link, NavLink, Navigate, useNavigate (wrapped in platform scope)
-	// Include everything else from react-router-dom
+	// Include everything else from react-router
 	BrowserRouter,
 	HashRouter,
 	MemoryRouter,
@@ -68,7 +68,7 @@ import {
 	UNSAFE_NavigationContext,
 	UNSAFE_LocationContext,
 	UNSAFE_RouteContext,
-} from "react-router-dom";
+} from "react-router";
 import * as LucideIcons from "lucide-react";
 /**
  * Wrap compiled code in a component factory.

@@ -15,7 +15,7 @@
  * - "/customers" -> "/apps/my-app/customers" (in published mode)
  */
 
-import { useNavigate as useRouterNavigate } from "react-router-dom";
+import { useNavigate as useRouterNavigate } from "react-router";
 import { useCallback } from "react";
 import { useAppBuilderStore } from "@/stores/app-builder.store";
 import { transformPath } from "./navigation";

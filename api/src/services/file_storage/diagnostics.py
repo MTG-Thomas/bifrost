@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.log_safety import log_safe
 from src.services.sdk_reference_scanner import SDKReferenceScanner
 from src.services.notification_service import get_notification_service
 from src.models.contracts.notifications import (
@@ -18,7 +19,6 @@ from src.models.contracts.notifications import (
     NotificationCategory,
     NotificationStatus,
 )
-from src.core.log_safety import log_safe
 
 logger = logging.getLogger(__name__)
 

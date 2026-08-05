@@ -6,7 +6,7 @@
  */
 
 import { useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link } from "react-router";
 import { Bot, Settings } from "lucide-react";
 import { ChatLayout } from "@/components/chat";
 import { useChatStore } from "@/stores/chatStore";

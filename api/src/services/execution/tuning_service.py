@@ -37,12 +37,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.log_safety import log_safe
+from src.core.principal import UserPrincipal
 from src.jobs.rabbitmq import publish_message
 from src.models.orm.agent_prompt_history import AgentPromptHistory
 from src.models.orm.agent_run_flag_conversations import AgentRunFlagConversation
 from src.models.orm.agent_runs import AgentRun
 from src.models.orm.agents import Agent
 from src.models.orm.ai_usage import AIUsage
+from src.services.execution.agent_run_access import agent_run_visibility_conditions
 from src.services.execution.dry_run import evaluate_against_prompt
 from src.services.execution.model_selection import get_tuning_client
 from src.services.llm import LLMMessage
@@ -212,27 +214,19 @@ class AppliedTuning:
 async def _load_flagged_runs_with_conversations(
     agent_id: UUID,
     db: AsyncSession,
-    *,
-    org_id: UUID | None = None,
-    restrict_to_org: bool = False,
+    user: UserPrincipal,
 ) -> list[tuple[AgentRun, AgentRunFlagConversation | None]]:
     """Load all completed thumbs-down runs for ``agent_id`` and their conversations."""
-    stmt = (
-        select(AgentRun)
-        .where(AgentRun.agent_id == agent_id)
-        .where(AgentRun.verdict == "down")
-        .where(AgentRun.status == "completed")
-        .order_by(AgentRun.created_at)
-    )
-    if restrict_to_org:
-        if org_id is None:
-            stmt = stmt.where(AgentRun.org_id.is_(None))
-        else:
-            stmt = stmt.where(AgentRun.org_id == org_id)
-
     runs = (
         (
-            await db.execute(stmt)
+            await db.execute(
+                select(AgentRun)
+                .where(AgentRun.agent_id == agent_id)
+                .where(AgentRun.verdict == "down")
+                .where(AgentRun.status == "completed")
+                .where(*agent_run_visibility_conditions(user))
+                .order_by(AgentRun.created_at)
+            )
         )
         .scalars()
         .all()
@@ -259,9 +253,7 @@ async def _load_flagged_runs_with_conversations(
 async def propose_consolidated_tuning(
     agent_id: UUID,
     db: AsyncSession,
-    *,
-    org_id: UUID | None = None,
-    restrict_to_org: bool = False,
+    user: UserPrincipal,
 ) -> ConsolidatedProposal:
     """Single LLM call across all flagged runs; returns one consolidated proposal.
 
@@ -273,12 +265,7 @@ async def propose_consolidated_tuning(
     if agent is None:
         raise LookupError(f"Agent {agent_id} not found")
 
-    pairs = await _load_flagged_runs_with_conversations(
-        agent_id,
-        db,
-        org_id=org_id,
-        restrict_to_org=restrict_to_org,
-    )
+    pairs = await _load_flagged_runs_with_conversations(agent_id, db, user)
     if not pairs:
         raise LookupError(
             f"Agent {agent_id} has no flagged (thumbs-down) runs to tune"
@@ -344,21 +331,14 @@ async def dry_run_consolidated(
     proposed_prompt: str,
     db: AsyncSession,
     session_factory: async_sessionmaker[AsyncSession],
-    *,
-    org_id: UUID | None = None,
-    restrict_to_org: bool = False,
+    user: UserPrincipal,
 ) -> list[tuple[UUID, bool, str, float]]:
     """Run :func:`evaluate_against_prompt` for each flagged run (capped).
 
     Returns a list of ``(run_id, would_still_decide_same, reasoning, confidence)``
     tuples, capped at :data:`CONSOLIDATED_DRY_RUN_LIMIT` runs to bound cost.
     """
-    pairs = await _load_flagged_runs_with_conversations(
-        agent_id,
-        db,
-        org_id=org_id,
-        restrict_to_org=restrict_to_org,
-    )
+    pairs = await _load_flagged_runs_with_conversations(agent_id, db, user)
     capped = pairs[:CONSOLIDATED_DRY_RUN_LIMIT]
     results: list[tuple[UUID, bool, str, float]] = []
     for run, _conv in capped:
@@ -384,9 +364,7 @@ async def apply_consolidated_tuning(
     reason: str | None,
     user_id: UUID | None,
     db: AsyncSession,
-    *,
-    org_id: UUID | None = None,
-    restrict_to_org: bool = False,
+    user: UserPrincipal,
 ) -> AppliedTuning:
     """Apply a consolidated tuning proposal.
 
@@ -400,12 +378,7 @@ async def apply_consolidated_tuning(
     if agent is None:
         raise LookupError(f"Agent {agent_id} not found")
 
-    pairs = await _load_flagged_runs_with_conversations(
-        agent_id,
-        db,
-        org_id=org_id,
-        restrict_to_org=restrict_to_org,
-    )
+    pairs = await _load_flagged_runs_with_conversations(agent_id, db, user)
     affected_ids = [r.id for r, _ in pairs]
 
     previous_prompt = agent.system_prompt

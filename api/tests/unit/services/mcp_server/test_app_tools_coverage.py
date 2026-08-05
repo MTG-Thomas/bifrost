@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
 
 from src.services.mcp_server.server import MCPContext
 from src.services.mcp_server.tools import apps
@@ -274,44 +273,42 @@ async def test_update_app_validates_id_and_shapes_repository_errors():
 
 
 @pytest.mark.asyncio
-async def test_publish_app_updates_snapshot_and_publishes_notification():
-    app = _app(name="Portal")
-    db = _Db([_ScalarResult(app)])
-    storage = MagicMock()
-    storage.publish = AsyncMock(return_value=2)
-    storage.list_files = AsyncMock(return_value=["_layout.tsx", "pages/index.tsx"])
+async def test_publish_app_queues_canonical_rest_job():
+    app_id = str(uuid4())
+    body = {"job_id": str(uuid4()), "status": "queued"}
 
-    with (
-        patch.object(apps, "get_tool_db", _tool_db(db)),
-        patch("src.services.solutions.guard.assert_not_solution_managed"),
-        patch("src.services.app_storage.AppStorageService", return_value=storage),
-        patch.object(apps, "publish_app_published", new=AsyncMock()) as publish,
-    ):
-        result = await apps.publish_app(_context(admin=True), str(app.id))
+    with patch.object(apps, "call_rest", new=AsyncMock(return_value=(202, body))) as call:
+        result = await apps.publish_app(_context(admin=True), app_id)
 
-    assert db.committed is True
-    assert app.published_snapshot == {"_layout.tsx": "", "pages/index.tsx": ""}
-    assert app.published_at is not None
-    assert result.structured_content["files_published"] == 2
-    publish.assert_awaited_once()
+    call.assert_awaited_once_with(
+        call.call_args.args[0],
+        "POST",
+        f"/api/applications/{app_id}/publish",
+        json_body={},
+    )
+    assert result.structured_content == body
+    assert body["job_id"] in result.content[0].text
 
 
 @pytest.mark.asyncio
-async def test_publish_app_reports_no_files_without_commit():
-    app = _app(name="Empty")
-    db = _Db([_ScalarResult(app)])
-    storage = MagicMock()
-    storage.publish = AsyncMock(return_value=0)
-
-    with (
-        patch.object(apps, "get_tool_db", _tool_db(db)),
-        patch("src.services.solutions.guard.assert_not_solution_managed"),
-        patch("src.services.app_storage.AppStorageService", return_value=storage),
+async def test_publish_app_reports_nonaccepted_or_malformed_rest_response():
+    with patch.object(
+        apps,
+        "call_rest",
+        new=AsyncMock(return_value=(409, {"detail": "locked"})),
     ):
-        result = await apps.publish_app(_context(admin=True), str(app.id))
+        rejected = await apps.publish_app(_context(), "app-1")
 
-    assert db.committed is False
-    assert result.structured_content["error"] == "No files found to publish"
+    with patch.object(
+        apps,
+        "call_rest",
+        new=AsyncMock(return_value=(202, "not-json")),
+    ):
+        malformed = await apps.publish_app(_context(), "app-1")
+
+    assert rejected.structured_content["error"] == "publish_app failed: HTTP 409"
+    assert rejected.structured_content["body"] == {"detail": "locked"}
+    assert malformed.structured_content["error"] == "publish_app failed: HTTP 202"
 
 
 @pytest.mark.asyncio
@@ -478,40 +475,18 @@ async def test_create_app_shapes_scaffold_storage_errors():
 
 
 @pytest.mark.asyncio
-async def test_publish_app_reports_missing_invalid_guard_and_storage_errors():
-    bad_id = await apps.publish_app(_context(), "not-a-uuid")
+async def test_publish_app_forwards_identifier_validation_to_rest_router():
+    with patch.object(
+        apps,
+        "call_rest",
+        new=AsyncMock(return_value=(422, {"detail": "invalid app id"})),
+    ) as call:
+        result = await apps.publish_app(_context(), "not-a-uuid")
 
-    missing_db = _Db([_ScalarResult(None)])
-    with patch.object(apps, "get_tool_db", _tool_db(missing_db)):
-        missing = await apps.publish_app(_context(), str(uuid4()))
-
-    managed_app = _app()
-    managed_db = _Db([_ScalarResult(managed_app)])
-    with (
-        patch.object(apps, "get_tool_db", _tool_db(managed_db)),
-        patch(
-            "src.services.solutions.guard.assert_not_solution_managed",
-            side_effect=HTTPException(status_code=409, detail="locked by solution"),
-        ),
-    ):
-        managed = await apps.publish_app(_context(admin=True), str(managed_app.id))
-
-    storage_app = _app()
-    storage_db = _Db([_ScalarResult(storage_app)])
-    storage = MagicMock()
-    storage.publish = AsyncMock(side_effect=RuntimeError("s3 offline"))
-    with (
-        patch.object(apps, "get_tool_db", _tool_db(storage_db)),
-        patch("src.services.solutions.guard.assert_not_solution_managed"),
-        patch("src.services.app_storage.AppStorageService", return_value=storage),
-    ):
-        failed = await apps.publish_app(_context(admin=True), str(storage_app.id))
-
-    assert "Invalid app_id format" in bad_id.structured_content["error"]
-    assert "Application not found" in missing.structured_content["error"]
-    assert managed.structured_content["error"] == "locked by solution"
-    assert "Error publishing app" in failed.structured_content["error"]
-    assert "s3 offline" in failed.structured_content["error"]
+    call.assert_awaited_once()
+    assert call.call_args.args[2] == "/api/applications/not-a-uuid/publish"
+    assert result.structured_content["error"] == "publish_app failed: HTTP 422"
+    assert result.structured_content["body"] == {"detail": "invalid app id"}
 
 
 @pytest.mark.asyncio

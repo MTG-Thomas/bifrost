@@ -20,7 +20,7 @@ export default defineConfig({
 				manualChunks: (id) => {
 					const chunkGroups: Record<string, string[]> = {
 						// React core - always needed
-						"react-vendor": ["react", "react-dom", "react-router-dom"],
+						"react-vendor": ["react", "react-dom", "react-router"],
 
 						// Monaco Editor - large dependency, split separately
 						monaco: ["monaco-editor", "@monaco-editor/react"],
@@ -101,7 +101,7 @@ export default defineConfig({
 			"react",
 			"react-dom",
 			"react-dom/client",
-			"react-router-dom",
+			"react-router",
 
 			// State management
 			"zustand",

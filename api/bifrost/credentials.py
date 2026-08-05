@@ -25,7 +25,11 @@ from typing import Literal, Protocol
 
 KEYRING_SERVICE = "bifrost"
 _DOTENV_ALLOWED_KEYS: frozenset[str] = frozenset({"BIFROST_API_URL"})
-
+AUTH_ENV_KEYS = frozenset({
+    "BIFROST_API_URL",
+    "BIFROST_ACCESS_TOKEN",
+    "BIFROST_REFRESH_TOKEN",
+})
 
 # --------------------------------------------------------------------------- #
 # Public dataclass
@@ -52,6 +56,17 @@ class Credentials:
             refresh_token=data["refresh_token"],
             expires_at=data["expires_at"],
         )
+
+
+CredentialSource = Literal["process", "cwd_dotenv", "persistent", "legacy"]
+
+
+@dataclass(frozen=True)
+class ResolvedCredentials:
+    """One complete credential tuple plus the source that owns it."""
+
+    credentials: Credentials
+    source: CredentialSource
 
 
 # --------------------------------------------------------------------------- #
@@ -102,6 +117,61 @@ def load_allowed_dotenv(
 
 def get_config_path() -> Path:
     return get_config_dir() / "config.json"
+
+
+def _current_dotenv_values() -> tuple[Path, dict[str, str | None]] | None:
+    """Read only ``./.env`` without copying values into the process.
+
+    Ancestor dotenv files are ambient state, not an explicit connection choice
+    for this invocation. Local-development scratch directories remain supported
+    because their commands run from the directory that owns the dotenv.
+    """
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        return None
+
+    env_path = Path.cwd() / ".env"
+    if not env_path.is_file():
+        return None
+    try:
+        values = dotenv_values(env_path)
+    except OSError:
+        return None
+    return env_path, dict(values)
+
+
+def _current_dotenv_url() -> str | None:
+    snapshot = _current_dotenv_values()
+    if snapshot is None:
+        return None
+    _path, values = snapshot
+    api_url = str(values.get("BIFROST_API_URL") or "").rstrip("/")
+    return api_url or None
+
+
+def load_dotenv_context() -> None:
+    """Load current-directory non-auth context without mixing credentials.
+
+    Bifrost URL and token fields are deliberately excluded. The URL is read
+    separately as a selector; credentials always come from process state or
+    the global URL-keyed store. Ancestor dotenv files are never loaded.
+    """
+    snapshot = _current_dotenv_values()
+    if snapshot is None:
+        return
+    _path, values = snapshot
+    for key, value in values.items():
+        if key not in AUTH_ENV_KEYS and value is not None:
+            os.environ.setdefault(key, value)
+
+
+def resolve_environment_url() -> str | None:
+    """Resolve only the process/current-directory URL, without stored defaults."""
+    process_url = os.environ.get("BIFROST_API_URL", "").rstrip("/")
+    if process_url:
+        return process_url
+    return _current_dotenv_url()
 
 
 # --------------------------------------------------------------------------- #
@@ -650,13 +720,13 @@ def _try_migrate_legacy() -> Credentials | None:
     return legacy
 
 
-def get_credentials(
+def resolve_credentials(
     api_url: str | None = None,
     *,
     prompt_for_default: bool = False,
-) -> dict | None:
+) -> ResolvedCredentials | None:
     """
-    Resolve credentials for a given API URL.
+    Resolve one provenance-bound credential tuple for a given API URL.
 
     Resolution order:
       1. Env vars (EnvBackend) — for ephemeral sessions.
@@ -664,15 +734,10 @@ def get_credentials(
       3. Persistent backend (keychain or JSON) — for long-lived sessions.
       4. Legacy single-record JSON — lazily migrated.
 
-    If api_url is None, the URL is resolved via _resolve_url(). When even
-    that fails, we fall through to the legacy file as a last resort to
-    learn the URL.
-
-    Returns: dict with keys api_url/access_token/refresh_token/expires_at,
-    or None. Returns dict (not Credentials) for back-compat with existing
-    callers in client.py / cli.py.
+    If api_url is None, the URL is resolved via ``resolve_current_connection``.
+    When even that fails, the legacy file is a last resort for learning one.
     """
-    resolved, _source = resolve_current_connection(
+    resolved, _target_source = resolve_current_connection(
         api_url,
         prompt_for_default=prompt_for_default,
     )
@@ -682,28 +747,43 @@ def get_credentials(
         legacy = _try_migrate_legacy()
         if legacy is None:
             return None
-        return legacy.to_dict()
+        return ResolvedCredentials(legacy, "legacy")
 
-    # 1. Env vars
+    # 1. A complete process tuple always wins when its URL matches.
     env_creds = EnvBackend().get(resolved)
     if env_creds is not None:
-        return env_creds.to_dict()
+        return ResolvedCredentials(env_creds, "process")
 
     # 2. CWD .env (password-grant ephemeral sessions)
     dotenv_creds = _get_cwd_dotenv_credentials(resolved)
     if dotenv_creds is not None:
-        return dotenv_creds.to_dict()
+        return ResolvedCredentials(dotenv_creds, "cwd_dotenv")
 
     # 3. Persistent backend
     creds = get_persistent_backend().get(resolved)
     if creds is not None:
-        return creds.to_dict()
+        return ResolvedCredentials(creds, "persistent")
 
     # 4. Legacy fallback (and migrate if found)
     legacy = _try_migrate_legacy()
     if legacy is not None and legacy.api_url.rstrip("/") == resolved:
-        return legacy.to_dict()
+        return ResolvedCredentials(legacy, "legacy")
     return None
+
+
+def get_credentials(
+    api_url: str | None = None,
+    *,
+    prompt_for_default: bool = False,
+) -> dict | None:
+    """Return the resolved tuple as the historical four-key dictionary."""
+    resolved = resolve_credentials(
+        api_url,
+        prompt_for_default=prompt_for_default,
+    )
+    if resolved is None:
+        return None
+    return resolved.credentials.to_dict()
 
 
 def save_credentials(
@@ -722,63 +802,52 @@ def save_credentials(
     get_persistent_backend().save(creds)
 
 
-def replace_env_credentials(
-    api_url: str,
+def save_refreshed_credentials(
+    resolved: ResolvedCredentials,
     observed_access_token: str,
     observed_refresh_token: str,
     access_token: str,
     refresh_token: str,
+    expires_at: str,
 ) -> bool:
-    """Replace one rotating credential generation sourced from environment.
+    """Write a rotated token generation back to the source that owns it."""
+    credentials = resolved.credentials
+    normalized_url = credentials.api_url.rstrip("/")
 
-    Password-grant development sessions are loaded from a workspace ``.env``.
-    Their backend is intentionally isolated from the persistent keychain/store,
-    but a read-only environment snapshot cannot survive refresh-token rotation.
-    Update the current process and, when the same generation came from the
-    nearest ``.env``, update that file so the next CLI process can continue it.
+    if resolved.source == "process":
+        current = EnvBackend().get(normalized_url)
+        if (
+            current is None
+            or current.access_token != observed_access_token
+            or current.refresh_token != observed_refresh_token
+        ):
+            return False
+        os.environ["BIFROST_ACCESS_TOKEN"] = access_token
+        os.environ["BIFROST_REFRESH_TOKEN"] = refresh_token
+        return True
 
-    Returns ``True`` only when the observed generation is the active env source.
-    """
-    normalized_url = api_url.rstrip("/")
-    current = EnvBackend().get(normalized_url)
-    if (
-        current is None
-        or current.access_token != observed_access_token
-        or current.refresh_token != observed_refresh_token
-    ):
-        return False
+    if resolved.source == "cwd_dotenv":
+        current = _get_cwd_dotenv_credentials(normalized_url)
+        if (
+            current is None
+            or current.access_token != observed_access_token
+            or current.refresh_token != observed_refresh_token
+        ):
+            return False
+        save_ephemeral_credentials(
+            normalized_url,
+            access_token,
+            refresh_token,
+            source="cwd_dotenv",
+        )
+        return True
 
-    try:
-        from dotenv import dotenv_values, find_dotenv, set_key
-
-        env_path = find_dotenv(usecwd=True)
-        if env_path:
-            values = dotenv_values(env_path)
-            file_url = str(values.get("BIFROST_API_URL") or "").rstrip("/")
-            if (
-                file_url == normalized_url
-                and values.get("BIFROST_ACCESS_TOKEN") == observed_access_token
-                and values.get("BIFROST_REFRESH_TOKEN") == observed_refresh_token
-            ):
-                set_key(
-                    env_path,
-                    "BIFROST_ACCESS_TOKEN",
-                    access_token,
-                    quote_mode="never",
-                )
-                set_key(
-                    env_path,
-                    "BIFROST_REFRESH_TOKEN",
-                    refresh_token,
-                    quote_mode="never",
-                )
-    except OSError:
-        # The running process can still continue even if its source file became
-        # unwritable after login.
-        pass
-
-    os.environ["BIFROST_ACCESS_TOKEN"] = access_token
-    os.environ["BIFROST_REFRESH_TOKEN"] = refresh_token
+    save_credentials(
+        api_url=normalized_url,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+    )
     return True
 
 
@@ -787,7 +856,7 @@ def clear_credentials(api_url: str | None = None) -> None:
     Remove a single URL's credentials from the persistent backend.
 
     No-arg behavior uses the same resolution as get_credentials(): an explicit
-    environment/folder binding, the saved default, or the sole stored URL. So
+    environment/folder URL selector, the saved default, or the sole stored URL. So
     a `bifrost logout` targets the same connection `get_credentials()` would
     have returned.
     """

@@ -1,5 +1,5 @@
 import { useState, useCallback, type ComponentType, type SVGProps } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import {
 	Bell,
 	X,
@@ -480,7 +480,12 @@ export function NotificationCenter() {
 	return (
 		<Popover open={isOpen} onOpenChange={setIsOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="ghost" size="icon" className="relative">
+				<Button
+					variant="ghost"
+					size="icon"
+					className="relative"
+					aria-label="Notifications"
+				>
 					<Bell className="h-4 w-4" />
 					{totalCount > 0 && (
 						<Badge

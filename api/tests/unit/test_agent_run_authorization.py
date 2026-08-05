@@ -263,7 +263,7 @@ async def test_user_with_agent_role_can_list_agent_run(db_session: AsyncSession)
     assert response.items[0].id == run.id
 
 
-async def test_org_platform_admin_list_agent_runs_hides_foreign_org_runs(
+async def test_platform_admin_list_agent_runs_includes_foreign_org_runs(
     db_session: AsyncSession,
 ):
     admin_org = await _make_org(db_session, "AdminOrg")
@@ -279,12 +279,11 @@ async def test_org_platform_admin_list_agent_runs_hides_foreign_org_runs(
         _principal(admin_user.id, admin_org.id, is_superuser=True),
     )
 
-    assert response.total == 1
-    assert [item.id for item in response.items] == [admin_run.id]
-    assert foreign_run.id not in {item.id for item in response.items}
+    assert response.total == 2
+    assert {item.id for item in response.items} == {admin_run.id, foreign_run.id}
 
 
-async def test_org_platform_admin_cannot_rerun_foreign_org_run(
+async def test_platform_admin_can_rerun_foreign_org_run(
     db_session: AsyncSession,
 ):
     admin_org = await _make_org(db_session, "AdminOrg")
@@ -293,14 +292,19 @@ async def test_org_platform_admin_cannot_rerun_foreign_org_run(
     foreign_agent, _foreign_role = await _make_role_based_agent(db_session, foreign_org)
     foreign_run = await _make_run(db_session, foreign_agent, foreign_org)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await rerun_agent_run(
+    new_run_id = uuid4()
+    with patch(
+        "src.routers.agent_runs.enqueue_agent_run",
+        new=AsyncMock(return_value=str(new_run_id)),
+    ) as enqueue:
+        response = await rerun_agent_run(
             foreign_run.id,
             db_session,
             _principal(admin_user.id, admin_org.id, is_superuser=True),
         )
 
-    assert exc_info.value.status_code == 404
+    assert response.run_id == new_run_id
+    enqueue.assert_awaited_once()
 
 
 async def test_org_platform_admin_can_list_same_org_role_based_run_without_agent_role(

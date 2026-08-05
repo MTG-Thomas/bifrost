@@ -89,7 +89,7 @@ export {
 	UNSAFE_NavigationContext,
 	UNSAFE_LocationContext,
 	UNSAFE_RouteContext,
-} from "react-router-dom";
+} from "react-router";
 
 // Lucide icons — wildcard re-export so any icon name is available from "bifrost".
 // Migrated apps import from "lucide-react" directly; this keeps un-migrated apps

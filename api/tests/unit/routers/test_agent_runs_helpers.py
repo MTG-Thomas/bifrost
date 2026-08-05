@@ -179,7 +179,18 @@ async def test_get_agent_run_returns_completed_run_with_db_steps_and_child_runs(
 ) -> None:
     run = _run(steps=[_step(step_number=1), _step(step_number=2)])
     child_id = uuid4()
-    db = _FakeDb([[], [(child_id,)]])
+    child = SimpleNamespace(
+        id=child_id,
+        agent_id=uuid4(),
+        agent=SimpleNamespace(name="Child Agent"),
+        status="completed",
+        asked="Do the delegated work",
+        did="Completed it",
+        answered="Done",
+        duration_ms=25,
+        created_at=datetime.now(timezone.utc),
+    )
+    db = _FakeDb([[], [child]])
 
     async def fake_load_agent_run_for_user(*args, **kwargs):
         return run
@@ -194,6 +205,7 @@ async def test_get_agent_run_returns_completed_run_with_db_steps_and_child_runs(
 
     assert response.id == run.id
     assert response.child_run_ids == [child_id]
+    assert response.child_runs[0].agent_name == "Child Agent"
     assert [step.step_number for step in response.steps] == [1, 2]
     assert response.ai_usage is None
     assert response.ai_totals is None

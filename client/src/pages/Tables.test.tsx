@@ -59,9 +59,12 @@ async function renderPage() {
 describe("Tables — list", () => {
 	it("fetches without include_orphaned (orphaned UI stripped)", async () => {
 		await renderPage();
-		// useTables(scope, include_orphaned)
-		expect(mockUseTables).toHaveBeenLastCalledWith(undefined, false);
-		expect(screen.getByRole("checkbox", { name: /show orphaned/i })).not.toBeChecked();
+		// useTables(scope) — no include_orphaned param
+		expect(mockUseTables).toHaveBeenLastCalledWith(undefined);
+		// No show-orphaned toggle visible
+		expect(
+			screen.queryByRole("checkbox", { name: /show orphaned/i }),
+		).toBeNull();
 	});
 });
 

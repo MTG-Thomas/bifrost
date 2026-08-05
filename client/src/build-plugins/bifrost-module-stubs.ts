@@ -54,8 +54,8 @@ export interface StubManifest {
 
 export async function collectPlatformStubs(): Promise<StubManifest[]> {
 	const result: StubManifest[] = [];
-	for (const { specifier, globalKey } of PLATFORM_MODULES) {
-		const namedExports = await loadExports(specifier);
+	for (const { specifier, hostSpecifier, globalKey } of PLATFORM_MODULES) {
+		const namedExports = await loadExports(hostSpecifier ?? specifier);
 		result.push({
 			specifier,
 			globalKey,

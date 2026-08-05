@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route } from "react-router";
 import { renderWithProviders, screen } from "@/test-utils";
 
 const mockUseTable = vi.fn();

@@ -69,7 +69,7 @@ import {
 	Check,
 	ArrowRight,
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { $api, authFetch } from "@/lib/api-client";
 import { useNotificationStore } from "@/stores/notificationStore";
 import {

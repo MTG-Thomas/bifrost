@@ -64,6 +64,8 @@ class TestEnvBackend:
         assert backend.get("http://localhost:38421") is None
 
     def test_save_is_noop(self, monkeypatch):
+        monkeypatch.delenv("BIFROST_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("BIFROST_REFRESH_TOKEN", raising=False)
         backend = EnvBackend()
         # Should not raise; env backend is read-only
         backend.save(Credentials("http://x", "at", "rt", "2030-01-01T00:00:00+00:00"))

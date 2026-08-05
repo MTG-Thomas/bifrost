@@ -25,6 +25,31 @@ Assume **Persona A** unless the task clearly changes `api/`, `client/`, migratio
 - New MCP tools must be thin HTTP wrappers around REST endpoints. Do not add direct ORM/repository access in MCP tools.
 - When merging upstream `gobifrost/bifrost` changes into this fork, do not recreate or re-enable DigitalOcean deployment CI/CD for `MTG-Thomas/bifrost`. MTG deploys from `bifrost-infra` to Azure. Keep the `.github/workflows/ci.yml` `deploy-dev` job guarded with `github.repository == 'gobifrost/bifrost'`; CI runs `api/scripts/check_mtg_ci_boundaries.py` to fail fast if that guard is removed or weakened.
 
+## Long-running platform jobs (CRITICAL)
+
+`PlatformJob` is the canonical system for durable, non-workflow work that can
+outlive an HTTP request. Read
+[`docs/architecture/platform-jobs.md`](docs/architecture/platform-jobs.md)
+before adding or changing background work.
+
+- Use a platform job for user-initiated platform operations that need durable
+  status, progress, retries, cancellation, deduplication, or resource
+  protection.
+- Do **not** create a feature-specific job table, worker/container, status
+  contract, status endpoint, WebSocket event, or browser polling loop. Extend
+  the platform-job definition, registry, runner policy, and shared transports.
+- The UI receives platform-job progress through the existing notification
+  WebSocket system. The CLI may poll the shared
+  `/api/platform-jobs/{job_id}` endpoint with short requests.
+- Workflow and agent execution still use the execution worker infrastructure.
+  Short request-scoped work remains synchronous. Recurring scheduler triggers
+  may enqueue platform jobs when their units of work need this durability.
+- Existing bespoke job systems are migration candidates, not templates for new
+  work. If the shared platform-job system cannot express a requirement, propose
+  an extension to it instead of building a parallel system.
+
+Keep this section identical in `AGENTS.md` and `CLAUDE.md`.
+
 ## Development Environment (Persona B only)
 
 Platform work runs in **Docker on a Linux host** (shared `pve-t340` dev guest or CI). Do **not** ask Windows teammates to install Docker Desktop for routine work.

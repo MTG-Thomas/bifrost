@@ -25,11 +25,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MCPToolAccessResult:
-    """Result of computing accessible MCP tools."""
+    """Underlying tool inventory used by MCP access configuration."""
 
     tools: list[ToolInfo]
-    accessible_agent_ids: list[UUID]
-    accessible_namespaces: list[str]  # Knowledge namespaces from accessible agents
 
 
 @dataclass
@@ -37,9 +35,6 @@ class AgentScopedToolResult:
     """Result of computing tools for a specific agent."""
 
     tools: list[ToolInfo]
-    agent_id: UUID
-    agent_name: str
-    system_prompt: str
     accessible_namespaces: list[str]
 
 
@@ -92,7 +87,7 @@ class MCPToolAccessService:
                 check cannot evaluate.
 
         Returns:
-            MCPToolAccessResult with tools and accessible agent IDs
+            MCPToolAccessResult containing the filtered tool inventory
         """
         # Step 1: Get accessible agents
         accessible_agents = await self._get_accessible_agents(
@@ -150,17 +145,7 @@ class MCPToolAccessService:
         config = await config_service.get_config()
         tools = self._apply_config_filters(tools, config)
 
-        # Collect knowledge namespaces from accessible agents
-        seen_namespaces: set[str] = set()
-        for agent in accessible_agents:
-            for ns in agent.knowledge_sources or []:
-                seen_namespaces.add(ns)
-
-        return MCPToolAccessResult(
-            tools=tools,
-            accessible_agent_ids=[agent.id for agent in accessible_agents],
-            accessible_namespaces=list(seen_namespaces),
-        )
+        return MCPToolAccessResult(tools=tools)
 
     async def get_tools_for_agent(
         self,
@@ -202,18 +187,6 @@ class MCPToolAccessService:
             .where(Agent.is_active.is_(True))
         )
         query = self._apply_agent_org_scope(query, org_id=org_id, is_superuser=is_superuser)
-
-        if not is_superuser:
-            scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
-            if scope_org is not None:
-                query = query.where(
-                    or_(
-                        Agent.organization_id == scope_org,
-                        Agent.organization_id.is_(None),
-                    )
-                )
-            else:
-                query = query.where(Agent.organization_id.is_(None))
 
         if not is_superuser:
             scope_org = UUID(org_id) if isinstance(org_id, str) and org_id else org_id
@@ -290,9 +263,6 @@ class MCPToolAccessService:
 
         return AgentScopedToolResult(
             tools=tools,
-            agent_id=agent.id,
-            agent_name=agent.name,
-            system_prompt=agent.system_prompt,
             accessible_namespaces=namespaces,
         )
 

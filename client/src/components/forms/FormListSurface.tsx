@@ -262,6 +262,7 @@ export function FormListSurface({
 				return (
 					<Card
 						key={form.id}
+						data-testid="form-card"
 						className="hover:border-primary transition-colors flex flex-col"
 					>
 						<CardHeader className="pb-3">
