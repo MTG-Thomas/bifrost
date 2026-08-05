@@ -109,7 +109,8 @@ RUN useradd --no-log-init -m -u 1000 bifrost && \
 
 # Create directories for workspace and temp
 RUN mkdir -p /workspace /tmp/bifrost && \
-    chown -R bifrost:bifrost /workspace /tmp/bifrost
+    chown -R bifrost:bifrost /workspace /tmp/bifrost && \
+    chmod 700 /tmp/bifrost
 
 # Copy entrypoint script
 COPY api/entrypoint.sh /entrypoint.sh
@@ -123,6 +124,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 # Environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV BIFROST_RUNTIME_DIR=/tmp/bifrost
 
 ARG BIFROST_VERSION=unknown
 ENV BIFROST_VERSION=${BIFROST_VERSION}
