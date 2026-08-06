@@ -6,7 +6,7 @@
 # Stage 1: Builder
 # =============================================================================
 # python:3.14-slim
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS builder
+FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS builder
 
 WORKDIR /app
 
@@ -32,7 +32,7 @@ RUN pip install --no-cache-dir --only-binary :all: --require-hashes -r requireme
 # Stage 2: Runtime
 # =============================================================================
 # python:3.14-slim
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS runtime
+FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
 
 WORKDIR /app
 
@@ -109,7 +109,8 @@ RUN useradd --no-log-init -m -u 1000 bifrost && \
 
 # Create directories for workspace and temp
 RUN mkdir -p /workspace /tmp/bifrost && \
-    chown -R bifrost:bifrost /workspace /tmp/bifrost
+    chown -R bifrost:bifrost /workspace /tmp/bifrost && \
+    chmod 700 /tmp/bifrost
 
 # Copy entrypoint script
 COPY api/entrypoint.sh /entrypoint.sh
@@ -123,6 +124,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 # Environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV BIFROST_RUNTIME_DIR=/tmp/bifrost
 
 ARG BIFROST_VERSION=unknown
 ENV BIFROST_VERSION=${BIFROST_VERSION}

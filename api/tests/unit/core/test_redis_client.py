@@ -134,6 +134,8 @@ class TestRedisClient:
             startup={"ready": True},
             sync=True,
             is_platform_admin=True,
+            is_provider_org=True,
+            is_external=True,
             event={"kind": "webhook"},
         )
 
@@ -148,6 +150,8 @@ class TestRedisClient:
         assert payload["parameters"] == {"answer": 42}
         assert payload["sync"] is True
         assert payload["is_platform_admin"] is True
+        assert payload["is_provider_org"] is True
+        assert payload["is_external"] is True
         assert payload["event"] == {"kind": "webhook"}
         assert payload["cancelled"] is False
         assert payload["created_at"]

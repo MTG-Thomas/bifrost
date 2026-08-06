@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink } from "react-router";
 import {
 	LayoutDashboard,
 	Workflow,
@@ -200,12 +200,6 @@ const navSections: NavSection[] = [
 				title: "Diagnostics",
 				href: "/diagnostics",
 				icon: Stethoscope,
-				requiresPlatformAdmin: true,
-			},
-			{
-				title: "Infrastructure",
-				href: "/infrastructure",
-				icon: ServerCog,
 				requiresPlatformAdmin: true,
 			},
 			{

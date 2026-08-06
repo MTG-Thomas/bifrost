@@ -38,6 +38,10 @@ from src.models.contracts.applications import (  # noqa: E402
     ApplicationCreate,
     ApplicationUpdate,
 )
+from src.models.contracts.platform_jobs import (  # noqa: E402
+    PlatformJobAccepted,
+    PlatformJobPublic,
+)
 from src.models.contracts.claims import CustomClaimCreate, CustomClaimUpdate  # noqa: E402
 from src.models.contracts.config import ConfigCreate, ConfigUpdate  # noqa: E402
 from src.models.contracts.events import (  # noqa: E402
@@ -95,6 +99,8 @@ _COMMAND_DTOS: list[type] = [
     AgentUpdate,
     ApplicationCreate,
     ApplicationUpdate,
+    PlatformJobAccepted,
+    PlatformJobPublic,
     IntegrationCreate,
     IntegrationUpdate,
     IntegrationMappingCreate,
@@ -178,7 +184,11 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # install_id widened to nullable (a zip install resolves its target inside the
     # job) — a response-shape change the CLI parses (2026-07-02).
     # CONTRACT_VERSION bumped to 7.
-    "0e3fbaba5c682b5839177c65f6d981dc46850be54e47f6743cca14f67413717d"
+    #
+    # Application publish now returns 202 + a standardized platform job instead
+    # of ApplicationPublic, and the CLI polls PlatformJobPublic for durable
+    # progress/result/error (2026-07-28). CONTRACT_VERSION bumped to 8.
+    "fa30c2a79e86fe1a737e2f730f0afb391d028959b549f0de1a027b026295fda9"
 )
 
 

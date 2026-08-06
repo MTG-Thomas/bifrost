@@ -199,6 +199,8 @@ def set_dev_execution_context(
         is_platform_admin=user.get("is_superuser", False),
         is_function_key=False,
         execution_id=f"solution-start-{_uuid.uuid4()}",
+        is_provider_org=user.get("is_provider_org", False),
+        is_external=user.get("is_external", False),
         workflow_name="solution-start",
         solution_id=solution_id,
     )

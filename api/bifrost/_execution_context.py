@@ -105,6 +105,10 @@ class ExecutionContext:
 
     # ==================== EXECUTION ====================
     execution_id: str
+    # Trusted original-caller attributes carried across queued/delegated calls.
+    # They are distinct from the target execution organization.
+    is_provider_org: bool = False
+    is_external: bool = False
     workflow_name: str = field(default="")  # Name of the executing workflow
     is_agent: bool = False  # True when triggered by an autonomous agent
     # The install this execution belongs to, when the workflow is solution-managed.
@@ -171,7 +175,7 @@ class ExecutionContext:
 
         C2 rule (matches ``resolve_scope`` and ``_resolve_sdk_org_id``):
         platform admins (``is_platform_admin``) AND provider-org members
-        (``organization.is_provider``) can both override to another org.
+        (``is_provider_org``) can both override to another org.
         Pass None to reset to the original scope.
         """
         if org_id is None:
@@ -181,8 +185,7 @@ class ExecutionContext:
         if org_id == original_org_id:
             self._scope_override = None
             return
-        is_provider_org = bool(self.organization and self.organization.is_provider)
-        if not (self.is_platform_admin or is_provider_org):
+        if not (self.is_platform_admin or self.is_provider_org):
             raise PermissionError(
                 f"Scope override to '{org_id}' denied. "
                 "Platform admins or provider-org members only."
@@ -234,6 +237,8 @@ class ExecutionContext:
             } if self.organization else None,
             "is_platform_admin": self.is_platform_admin,
             "is_function_key": self.is_function_key,
+            "is_provider_org": self.is_provider_org,
+            "is_external": self.is_external,
             "execution_id": self.execution_id,
             "workflow_name": self.workflow_name,
             "is_agent": self.is_agent,

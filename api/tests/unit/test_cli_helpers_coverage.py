@@ -467,7 +467,8 @@ async def test_api_request_prints_json_text_and_connection_errors(capsys):
 
     connect_error = Client(exc=httpx.ConnectError("down"))
     assert await cli._api_request("GET", "/api/x", None, client=connect_error) == 1
-    assert "could not connect" in capsys.readouterr().err
+    connect_stderr = capsys.readouterr().err
+    assert "could not connect to Bifrost API" in connect_stderr
 
     generic_error = Client(exc=RuntimeError("boom"))
     assert await cli._api_request("GET", "/api/x", None, client=generic_error) == 1

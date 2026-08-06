@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _parse_delegated_user_id(payload: dict, token_user_id: UUID) -> tuple[UUID | None, bool]:
+    """Parse the optional delegated caller claim and report validity."""
+    value = payload.get("delegated_user_id")
+    if not value:
+        return None, True
+    try:
+        return UUID(value), True
+    except ValueError:
+        logger.warning(
+            "Token for user %s has invalid delegated_user_id format: %s",
+            token_user_id,
+            value,
+        )
+        return None, False
+
+
 @dataclass
 class ExecutionContext:
     """
@@ -173,6 +189,13 @@ async def get_current_user_optional(
     # else: superuser with no org = system account (valid)
     # else: embed token without org = valid (HMAC-verified)
 
+    delegated_user_id, delegated_user_id_valid = _parse_delegated_user_id(
+        payload,
+        user_id,
+    )
+    if not delegated_user_id_valid:
+        return None
+
     return UserPrincipal(
         user_id=user_id,
         email=payload.get("email", ""),
@@ -189,6 +212,15 @@ async def get_current_user_optional(
         app_id=payload.get("app_id"),
         form_id=payload.get("form_id"),
         verified_params=payload.get("verified_params"),
+        is_engine_token=payload.get("engine", False) is True,
+        delegated_user_id=delegated_user_id,
+        delegated_email=payload.get("delegated_email", ""),
+        delegated_name=payload.get("delegated_name", ""),
+        delegated_is_superuser=payload.get("delegated_is_superuser", False),
+        delegated_is_provider_org=payload.get(
+            "delegated_is_provider_org", False
+        ),
+        delegated_is_external=payload.get("delegated_is_external", False),
     )
 
 

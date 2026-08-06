@@ -82,7 +82,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Trash2 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import type { components } from "@/lib/v1";
 
 type RolePublic = components["schemas"]["RolePublic"];

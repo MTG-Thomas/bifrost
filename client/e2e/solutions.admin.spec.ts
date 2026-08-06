@@ -44,7 +44,7 @@ test.describe("Solutions management (admin)", () => {
 		await expect(page.locator('[data-testid="install-dropzone"]')).toBeVisible();
 	});
 
-	test("empty state invites an install when no solutions exist", async ({
+	test("list shows installs or invites the first install", async ({
 		page,
 	}) => {
 		await page.goto("/solutions");
@@ -52,10 +52,11 @@ test.describe("Solutions management (admin)", () => {
 			page.getByRole("heading", { name: "Solutions", exact: true }),
 		).toBeVisible({ timeout: 10000 });
 
-		// A clean test stack has no installs → either the empty-state copy or
-		// at least zero install cards. Assert no install cards render; if the
-		// empty-state node is present, assert it mentions installing.
+		// Other specs may install a Solution while this file runs in parallel,
+		// so accept either stable list state after loading finishes.
 		const cards = page.locator('[data-testid="install-card"]');
-		await expect(cards).toHaveCount(0);
+		await expect(
+			cards.first().or(page.getByText(/No Solutions installed yet/i)),
+		).toBeVisible({ timeout: 10_000 });
 	});
 });

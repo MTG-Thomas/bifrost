@@ -22,6 +22,7 @@ class TestSetScope:
             is_platform_admin=False,
             is_function_key=False,
             execution_id="exec-1",
+            is_provider_org=is_provider,
         )
 
     def test_provider_can_override_scope(self):
@@ -67,6 +68,7 @@ class TestSetScope:
             is_platform_admin=True,
             is_function_key=False,
             execution_id="exec-1",
+            is_provider_org=False,
         )
         ctx.set_scope("org-2")
         assert ctx.org_id == "org-2"
@@ -86,6 +88,7 @@ class TestSetScope:
             is_platform_admin=False,
             is_function_key=False,
             execution_id="exec-1",
+            is_provider_org=False,
         )
         with pytest.raises(PermissionError):
             ctx.set_scope("org-2")
@@ -114,6 +117,7 @@ class TestResolveScope:
             is_platform_admin=False,
             is_function_key=False,
             execution_id="exec-1",
+            is_provider_org=is_provider,
         )
 
     def test_none_returns_default(self):

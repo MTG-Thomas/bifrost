@@ -875,8 +875,18 @@ async def execute_form(
     # form's org. Caller identity was already used for AUTHORIZATION above.
     anchor_org_id = form.organization_id if form.organization_id is not None else ctx.org_id
 
+    from src.services.solution_scope import solution_allows_global
+
     _wf_repo = WorkflowRepository(db, org_id=anchor_org_id, is_superuser=True)
-    _resolved_wf = await _wf_repo.resolve(form.workflow_id, solution_scope=form.solution_id)
+    allow_shared_workflow = (
+        form.solution_id is None
+        or await solution_allows_global(db, form.solution_id)
+    )
+    _resolved_wf = await _wf_repo.resolve(
+        form.workflow_id,
+        solution_scope=form.solution_id,
+        allow_shared_fallback=allow_shared_workflow,
+    )
     if _resolved_wf is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -910,8 +920,9 @@ async def execute_form(
             executed_by=ctx.user.user_id,
             executed_by_name=ctx.user.name or ctx.user.email or "Unknown",
             form_id=form.id,
-            api_key_id=None,
             is_platform_admin=ctx.user.is_superuser,
+            is_provider_org=getattr(ctx.user, "is_provider_org", False),
+            is_external=getattr(ctx.user, "is_external", False),
         )
         logger.info(
             f"Form {log_safe(form_id)} scheduled by user {ctx.user.email}, "
@@ -939,6 +950,8 @@ async def execute_form(
         scope=str(anchor_org_id) if anchor_org_id else "GLOBAL",
         organization=org,
         is_platform_admin=ctx.user.is_superuser,
+        is_provider_org=getattr(ctx.user, "is_provider_org", False),
+        is_external=getattr(ctx.user, "is_external", False),
         is_function_key=False,
         execution_id=str(uuid4()),
         startup=request.startup_data,
@@ -1107,6 +1120,8 @@ async def execute_startup_workflow(
         scope=str(launch_anchor_org_id) if launch_anchor_org_id else "GLOBAL",
         organization=org,
         is_platform_admin=ctx.user.is_superuser,
+        is_provider_org=getattr(ctx.user, "is_provider_org", False),
+        is_external=getattr(ctx.user, "is_external", False),
         is_function_key=False,
         execution_id=str(uuid4()),
     )

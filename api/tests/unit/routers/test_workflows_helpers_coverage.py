@@ -265,7 +265,6 @@ async def test_insert_scheduled_execution_persists_expected_execution_fields():
         executed_by=executed_by,
         executed_by_name="Ada",
         form_id=form_id,
-        api_key_id=None,
         is_platform_admin=True,
     )
 
@@ -283,4 +282,8 @@ async def test_insert_scheduled_execution_persists_expected_execution_fields():
     assert execution.executed_by == executed_by
     assert execution.executed_by_name == "Ada"
     assert execution.form_id == form_id
-    assert execution.execution_context == {"is_platform_admin": True}
+    assert execution.execution_context == {
+        "is_platform_admin": True,
+        "is_provider_org": False,
+        "is_external": False,
+    }

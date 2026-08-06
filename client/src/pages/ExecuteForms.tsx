@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { PlayCircle, FileCode, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {

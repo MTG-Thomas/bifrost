@@ -248,6 +248,10 @@ IDENTITY_MODELS: set[str] = {
     # within an explicit organization scope. They are never resolved through
     # the org-to-global execution cascade.
     "WorkspaceRepoChangeset",
+    # Platform jobs are requester-owned durable operation records. They are
+    # looked up by id with requester/admin authorization, never name-resolved
+    # through the org-to-global execution cascade.
+    "PlatformJob",
     # File policies resolve with the SAME org→global cascade-and-override as
     # OrgScopedRepository (org-specific prefix wins; fall back to the global
     # (org=NULL) prefix), so a global `shared/<prefix>` policy cascades to every

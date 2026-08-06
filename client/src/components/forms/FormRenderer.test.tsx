@@ -9,7 +9,7 @@
  * - useSubmitForm — the submit mutation
  * - useLaunchWorkflow — launch workflow side-effect (noop)
  * - JsxTemplateRenderer, FileUploadField, framer-motion — keep DOM simple
- * - react-router-dom useNavigate — to assert navigation targets
+ * - react-router useNavigate — to assert navigation targets
  * - sonner toast — to assert the scheduled-success toast
  *
  * Tests cover:
@@ -39,9 +39,9 @@ vi.mock("@/hooks/useForms", () => ({
 // Navigation mock — FormRenderer navigates to /history/{id} on run-now
 // and /history on scheduled submits.
 const mockNavigate = vi.fn();
-vi.mock("react-router-dom", async () => {
-	const actual = await vi.importActual<typeof import("react-router-dom")>(
-		"react-router-dom",
+vi.mock("react-router", async () => {
+	const actual = await vi.importActual<typeof import("react-router")>(
+		"react-router",
 	);
 	return {
 		...actual,

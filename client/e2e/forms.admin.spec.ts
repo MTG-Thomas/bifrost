@@ -50,13 +50,9 @@ test.describe("Form Listing", () => {
 			"table tbody tr, [data-testid='form-card'], [data-testid='form-row']",
 		);
 
-		const hasforms = await formContent.count().catch(() => 0);
-		const hasEmptyState = await page
-			.getByText(/no forms|create your first/i)
-			.isVisible()
-			.catch(() => false);
-
-		expect(hasforms > 0 || hasEmptyState).toBe(true);
+		await expect(
+			formContent.first().or(page.getByText(/no forms|create your first/i).first()),
+		).toBeVisible({ timeout: 10_000 });
 	});
 });
 

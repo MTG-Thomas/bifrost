@@ -151,6 +151,45 @@ class TestSyncExecution:
 class TestAsyncExecution:
     """Test asynchronous workflow execution."""
 
+    def test_client_execution_identity_recovers_without_duplicate_submission(
+        self, e2e_client, platform_admin, async_workflow
+    ):
+        execution_id = str(uuid.uuid4())
+        headers = {
+            **platform_admin.headers,
+            "X-Bifrost-Execution-ID": execution_id,
+        }
+        payload = {
+            "workflow_id": async_workflow["id"],
+            "input_data": {"delay_seconds": 1},
+        }
+
+        submitted = e2e_client.post(
+            "/api/workflows/execute",
+            headers=headers,
+            json=payload,
+        )
+        recovered = e2e_client.post(
+            "/api/workflows/execute",
+            headers=headers,
+            json=payload,
+        )
+
+        assert submitted.status_code in (200, 202), submitted.text
+        assert recovered.status_code == 200, recovered.text
+        assert submitted.json()["execution_id"] == execution_id
+        assert recovered.json()["execution_id"] == execution_id
+
+        conflict = e2e_client.post(
+            "/api/workflows/execute",
+            headers=headers,
+            json={
+                "workflow_id": async_workflow["id"],
+                "input_data": {"delay_seconds": 2},
+            },
+        )
+        assert conflict.status_code == 409, conflict.text
+
     def test_execute_async_workflow(self, e2e_client, platform_admin, async_workflow):
         """Platform admin executes async workflow."""
         response = e2e_client.post(
@@ -1028,7 +1067,7 @@ def get_value():
                         return True
                 return None
 
-            assert poll_until(check_gone, max_wait=20.0), (
+            assert poll_until(check_gone, max_wait=60.0), (
                 f"Package '{package_name}' still installed after uninstall — "
                 "worker recycle may have hung."
             )

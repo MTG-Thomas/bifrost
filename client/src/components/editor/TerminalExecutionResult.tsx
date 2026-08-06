@@ -3,7 +3,7 @@ import { useExecutionResult } from "@/hooks/useExecutions";
 import { Loader2, FileText, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TerminalResultModal } from "./TerminalResultModal";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 
 interface TerminalExecutionResultProps {
 	executionId: string;

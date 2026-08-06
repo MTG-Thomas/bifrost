@@ -334,6 +334,8 @@ async def get_dev_context(
             "email": current_user.email,
             "name": current_user.name,
             "is_superuser": current_user.is_superuser,
+            "is_provider_org": current_user.is_provider_org,
+            "is_external": current_user.is_external,
         },
         organization=org_data,
         default_parameters={},
@@ -1379,7 +1381,13 @@ async def sdk_integrations_refresh_token(
         )
         stored_token = None
         if provider.oauth_flow_type == "authorization_code":
-            stored_token = await token_repo.get_org_level_for_provider(provider.id)
+            # Providers may rotate refresh tokens. Hold a row lock through
+            # refresh + persistence so concurrent workflow 401 retries cannot
+            # both submit the same one-time refresh token.
+            stored_token = await token_repo.get_org_level_for_provider(
+                provider.id,
+                for_update=True,
+            )
             if not stored_token or not stored_token.encrypted_refresh_token:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -2406,14 +2414,14 @@ async def cli_knowledge_store_many(
 
 @router.post(
     "/knowledge/search",
-    summary="Search for similar documents",
+    summary="Hybrid-search knowledge documents",
 )
 async def cli_knowledge_search(
     request: "CLIKnowledgeSearchRequest",
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
 ) -> list[CLIKnowledgeDocumentResponse]:
-    """Search for similar documents using vector similarity."""
+    """Search knowledge using fused lexical and vector rankings."""
     _deny_external_knowledge(current_user)
     from src.models.contracts.cli import CLIKnowledgeDocumentResponse
     from src.repositories.knowledge import KnowledgeRepository
@@ -2441,6 +2449,7 @@ async def cli_knowledge_search(
         results = await repo.search(
             query_embedding=query_embedding,
             namespace=request.namespace,
+            query_text=request.query,
             limit=request.limit,
             min_score=request.min_score,
             metadata_filter=request.metadata_filter,

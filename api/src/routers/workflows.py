@@ -14,12 +14,12 @@ Organization Scoping:
 """
 
 import logging
-from typing import Any, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, distinct, func, or_, select, union_all, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,8 +59,17 @@ from src.models.orm.forms import Form, FormField
 from src.models.orm.applications import Application
 from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.users import Role
+from src.services.workflow_registration import (
+    WorkflowRegistrationConflict,
+    WorkflowRegistrationIdInvalid,
+    add_workflow_registration,
+    resolve_workflow_registration_id,
+)
 from src.services.workflow_validation import _extract_relative_path
-from src.services.solution_scope import derive_execution_solution_scope
+from src.services.solution_scope import (
+    derive_execution_solution_scope,
+    solution_allows_global,
+)
 from src.services.solutions.guard import (
     assert_entity_id_not_solution_managed,
     assert_not_solution_managed,
@@ -123,7 +132,10 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         public_endpoint=workflow.public_endpoint or False,
         is_tool=workflow.type == "tool",  # Derive from type field
         tool_description=workflow.tool_description,
-        cache_ttl_seconds=workflow.cache_ttl_seconds or 300,
+        # NOT `or 300` — 0 means "never cache" and `or` would clobber it.
+        cache_ttl_seconds=(
+            workflow.cache_ttl_seconds if workflow.cache_ttl_seconds is not None else 300
+        ),
         time_saved=workflow.time_saved or 0,
         value=float(workflow.value or 0.0),
         used_by_count=used_by_count,
@@ -663,8 +675,10 @@ async def _insert_scheduled_execution(
     executed_by: UUID,
     executed_by_name: str,
     form_id: UUID | None,
-    api_key_id: UUID | None,
     is_platform_admin: bool,
+    is_provider_org: bool = False,
+    is_external: bool = False,
+    execution_id: UUID | None = None,
 ) -> UUID:
     """Insert a SCHEDULED execution row.
 
@@ -675,7 +689,7 @@ async def _insert_scheduled_execution(
 
     from src.models.orm.executions import Execution
 
-    exec_id = uuid4()
+    exec_id = execution_id or uuid4()
     from src.services.solutions.deployment_runtime import pin_workflow_runtime
 
     pinned_runtime = await pin_workflow_runtime(db, workflow_id)
@@ -683,7 +697,11 @@ async def _insert_scheduled_execution(
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
 
     runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
-    execution_context: dict[str, object] = {"is_platform_admin": is_platform_admin}
+    execution_context: dict[str, object] = {
+        "is_platform_admin": is_platform_admin,
+        "is_provider_org": is_provider_org,
+        "is_external": is_external,
+    }
     if runtime_evidence is not None:
         execution_context["runtime_evidence"] = runtime_evidence
     db.add(
@@ -698,7 +716,7 @@ async def _insert_scheduled_execution(
             executed_by=executed_by,
             executed_by_name=executed_by_name,
             form_id=form_id,
-            api_key_id=api_key_id,
+            api_key_id=None,
             solution_deployment_id=pinned_runtime.deployment_id if pinned_runtime else None,
             runtime_mode=runtime_mode,
             runtime_evidence=runtime_evidence,
@@ -723,6 +741,10 @@ async def execute_workflow(
     ctx: Context,
     db: DbSession,
     user: CurrentActiveUser,  # Changed from CurrentSuperuser - auth check below
+    execution_request_id: Annotated[
+        UUID | None,
+        Header(alias="X-Bifrost-Execution-ID"),
+    ] = None,
 ) -> WorkflowExecutionResponse:
     """Execute a workflow, data provider, or inline script.
 
@@ -744,12 +766,25 @@ async def execute_workflow(
     )
     from src.repositories import AccessDeniedError, WorkflowRepository
     from src.core.org_filter import resolve_target_org
+    from src.services.execution.delegation_authorization import (
+        DelegationAuthorizationError,
+        effective_execution_user,
+        validate_execution_identity_overrides,
+    )
+
+    try:
+        effective_user = effective_execution_user(ctx.user, ctx.org_id)
+    except DelegationAuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
 
     # Resolve org scope for workflow lookup — follows the same pattern as
     # configs, tables, etc. Superusers can pass org_id to search that org;
     # regular users always use their own org.
     lookup_org_id = resolve_target_org(
-        user=user,
+        user=effective_user,
         scope=request.org_id,
         default_org_id=ctx.org_id,
     )
@@ -757,14 +792,14 @@ async def execute_workflow(
     workflow_repo = WorkflowRepository(
         session=db,
         org_id=lookup_org_id,
-        user_id=ctx.user.user_id,
-        is_superuser=ctx.user.is_superuser,
+        user_id=effective_user.user_id,
+        is_superuser=effective_user.is_superuser,
         # Embed principals carry is_external=True (OPEN-D: external-equivalent
         # for the config/knowledge/table data gates), but workflow execution
         # is the HMAC-pre-authorized app function-call channel — deliberately
         # allowlisted by EmbedScopeMiddleware and execution-scoped by jti.
         # Keep the pre-OPEN-D resolution semantics for embed sessions here.
-        is_external=ctx.user.is_external and not ctx.user.embed,
+        is_external=effective_user.is_external and not effective_user.embed,
     )
 
     # A Solution caller's path::fn ref carries no install id (it can't know the
@@ -779,12 +814,18 @@ async def execute_workflow(
         form_id=request.form_id,
         app_id=request.app_id,
     )
+    allow_shared_workflow = (
+        solution_scope is None
+        or await solution_allows_global(db, solution_scope)
+    )
 
     # Look up workflow metadata for type checking (needed for data provider handling)
     workflow = None
     if request.workflow_id:
         workflow = await workflow_repo.resolve(
-            request.workflow_id, solution_scope=solution_scope
+            request.workflow_id,
+            solution_scope=solution_scope,
+            allow_shared_fallback=allow_shared_workflow,
         )
         if not workflow:
             # A resolution miss must identify its scope inputs: a dropped or
@@ -809,7 +850,7 @@ async def execute_workflow(
     # Authorization check
     if request.code:
         # Inline code execution requires platform admin
-        if not ctx.user.is_superuser:
+        if not effective_user.is_superuser:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Inline code execution requires platform admin access",
@@ -831,18 +872,26 @@ async def execute_workflow(
             detail="Either workflow_id or code must be provided",
         )
 
-    # Validate admin-only overrides (org_id, run_as)
-    if (request.org_id or request.run_as) and not ctx.user.is_superuser:
+    try:
+        validate_execution_identity_overrides(
+            ctx.user,
+            ctx.org_id,
+            requested_org_id=request.org_id,
+            run_as=request.run_as,
+        )
+    except DelegationAuthorizationError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="org_id and run_as overrides require platform admin",
-        )
+            detail=str(exc),
+        ) from exc
 
     # Resolve run_as user if provided
-    exec_user_id = str(ctx.user.user_id)
-    exec_user_name = ctx.user.name or ctx.user.email or "Unknown"
-    exec_user_email = ctx.user.email or ""
-    exec_is_admin = ctx.user.is_superuser
+    exec_user_id = str(effective_user.user_id)
+    exec_user_name = effective_user.name or effective_user.email or "Unknown"
+    exec_user_email = effective_user.email or ""
+    exec_is_admin = effective_user.is_superuser
+    exec_is_provider_org = effective_user.is_provider_org
+    exec_is_external = effective_user.is_external
 
     if request.run_as:
         from src.models.orm.users import User
@@ -859,6 +908,13 @@ async def execute_workflow(
         exec_user_name = run_as_user.name or run_as_user.email or "Unknown"
         exec_user_email = run_as_user.email or ""
         exec_is_admin = run_as_user.is_superuser
+        from shared.external_access import (
+            resolve_external_claim,
+            resolve_provider_org_claim,
+        )
+
+        exec_is_provider_org = await resolve_provider_org_claim(db, run_as_user)
+        exec_is_external = await resolve_external_claim(db, run_as_user)
         logger.info(f"Impersonating user: {exec_user_id} ({exec_user_email})")
 
     # Determine execution org_id
@@ -877,6 +933,38 @@ async def execute_workflow(
         logger.info(f"Using workflow's organization: {execution_org_id}")
     else:
         execution_org_id = ctx.org_id
+
+    if execution_request_id is not None:
+        if request.transient or workflow is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "X-Bifrost-Execution-ID requires a persisted registered "
+                    "workflow execution"
+                ),
+            )
+        from src.services.execution.submission_recovery import (
+            ExecutionSubmissionConflictError,
+            recover_execution_submission,
+        )
+
+        try:
+            recovered = await recover_execution_submission(
+                db,
+                execution_id=execution_request_id,
+                workflow_id=workflow.id,
+                parameters=request.input_data,
+                executed_by=UUID(exec_user_id),
+                organization_id=execution_org_id,
+                form_id=UUID(request.form_id) if request.form_id else None,
+            )
+        except ExecutionSubmissionConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        if recovered is not None:
+            return recovered
 
     # Scheduled execution: normalize delay_seconds -> scheduled_at and insert row.
     # The deferred_execution_promoter job will publish this row when it matures.
@@ -897,8 +985,10 @@ async def execute_workflow(
             executed_by=UUID(exec_user_id),
             executed_by_name=exec_user_name,
             form_id=UUID(request.form_id) if request.form_id else None,
-            api_key_id=None,  # API-key-triggered scheduling not supported in v1
             is_platform_admin=exec_is_admin,
+            is_provider_org=exec_is_provider_org,
+            is_external=exec_is_external,
+            execution_id=execution_request_id,
         )
         return WorkflowExecutionResponse(
             execution_id=str(exec_id),
@@ -932,7 +1022,9 @@ async def execute_workflow(
         organization=org,
         is_platform_admin=exec_is_admin,
         is_function_key=False,
-        execution_id=str(uuid4()),
+        execution_id=str(execution_request_id or uuid4()),
+        is_provider_org=exec_is_provider_org,
+        is_external=exec_is_external,
     )
 
     try:
@@ -1249,6 +1341,21 @@ async def register_workflow(
     )
     existing_wf = existing.scalar_one_or_none()
 
+    try:
+        requested_workflow_id = await resolve_workflow_registration_id(
+            db, request.id, existing_wf
+        )
+    except WorkflowRegistrationIdInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except WorkflowRegistrationConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
     wf_type = "data_provider" if target_decorator_type == "data_provider" else (
         "tool" if target_decorator_type == "tool" else "workflow"
     )
@@ -1306,7 +1413,10 @@ async def register_workflow(
         await db.flush()
     else:
         # 4. Create minimal DB record
-        workflow_id = uuid4()
+        # A supplied ID must already have been assigned by another Bifrost
+        # instance and is used only for cross-instance promotion. Normal
+        # first-time registration still lets this instance assign the UUID.
+        workflow_id = requested_workflow_id or uuid4()
         new_wf = WorkflowORM(
             id=workflow_id,
             name=request.function_name,
@@ -1317,8 +1427,17 @@ async def register_workflow(
             organization_id=org_uuid,
             access_level=request.access_level if request.access_level is not None else "role_based",
         )
-        db.add(new_wf)
-        await db.flush()
+        try:
+            await add_workflow_registration(
+                db,
+                new_wf,
+                requested_workflow_id,
+            )
+        except WorkflowRegistrationConflict as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
 
     # Apply role assignments. Replaces any pre-existing rows when reactivating
     # an inactive workflow, so the caller's role list is authoritative.

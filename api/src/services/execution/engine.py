@@ -25,6 +25,7 @@ from src.sdk.error_handling import WorkflowError
 from src.sdk.errors import UserError, WorkflowExecutionException
 from src.models.enums import ExecutionStatus
 from src.core.cache import get_cached_data_provider, cache_data_provider_result
+from src.core.execution_variable_safety import sanitize_execution_variables
 from src.core.secret_string import redact_secrets
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,8 @@ class ExecutionRequest:
     transient: bool = False              # Don't write to DB
     no_cache: bool = False               # For data providers
     is_platform_admin: bool = False       # For platform admin executions
+    is_provider_org: bool = False         # Original caller's provider membership
+    is_external: bool = False             # Original caller's external restriction
 
     # Real-time updates
     broadcaster: Any = None              # WebPubSubBroadcaster for streaming logs
@@ -247,12 +250,17 @@ def _scrub_outputs(
     error_message: str | None = None,
 ) -> tuple[Any, dict[str, Any] | None, list[dict[str, Any]] | None, str | None]:
     """Scrub secret values from execution outputs before returning."""
+    safe_variables = (
+        sanitize_execution_variables(variables) if variables is not None else None
+    )
     secret_values = context._collect_secret_values()
     if not secret_values:
-        return result, variables, logs, error_message
+        return result, safe_variables, logs, error_message
     return (
         redact_secrets(result, secret_values) if result is not None else None,
-        redact_secrets(variables, secret_values) if variables is not None else None,
+        redact_secrets(safe_variables, secret_values)
+        if safe_variables is not None
+        else None,
         redact_secrets(logs, secret_values) if logs is not None else None,
         redact_secrets(error_message, secret_values) if error_message is not None else None,
     )
@@ -315,6 +323,8 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         scope=request.organization.id if request.organization else "GLOBAL",
         organization=request.organization,
         is_platform_admin=request.is_platform_admin,
+        is_provider_org=request.is_provider_org,
+        is_external=request.is_external,
         is_function_key=False,  # Engine executions are not function key based
         execution_id=request.execution_id,
         workflow_name=request.name or "",  # Workflow/script name for context

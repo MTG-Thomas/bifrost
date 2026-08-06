@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -11,6 +12,10 @@ from src.services.sdk_package import sdk_contract_version, sdk_fingerprint
 router = APIRouter(prefix="/api/version", tags=["version"])
 
 logger = logging.getLogger(__name__)
+
+_SDK_FINGERPRINT_UNSET = object()
+_sdk_fingerprint_value: str | object = _SDK_FINGERPRINT_UNSET
+_sdk_fingerprint_lock = threading.Lock()
 
 
 class VersionResponse(BaseModel):
@@ -32,11 +37,23 @@ def get_sdk_fingerprint() -> str:
     the same way, and the exception is logged so the underlying cause is
     still visible.
     """
-    try:
-        return sdk_fingerprint(get_version())
-    except Exception:  # noqa: BLE001 - build-toolchain failure must degrade, not 500 /api/version; logged below
-        logger.exception("failed to compute SDK fingerprint")
-        return "unavailable"
+    global _sdk_fingerprint_value
+
+    if _sdk_fingerprint_value is not _SDK_FINGERPRINT_UNSET:
+        return str(_sdk_fingerprint_value)
+
+    # functools.lru_cache does not coalesce concurrent misses and does not
+    # cache failures. Keep the expensive Node/esbuild cold path single-flight
+    # and memoize its degraded result for the lifetime of this API process.
+    with _sdk_fingerprint_lock:
+        if _sdk_fingerprint_value is not _SDK_FINGERPRINT_UNSET:
+            return str(_sdk_fingerprint_value)
+        try:
+            _sdk_fingerprint_value = sdk_fingerprint(get_version())
+        except Exception:  # noqa: BLE001 - build-toolchain failure must degrade, not 500 /api/version; logged below
+            logger.exception("failed to compute SDK fingerprint")
+            _sdk_fingerprint_value = "unavailable"
+        return str(_sdk_fingerprint_value)
 
 
 @router.get("", response_model=VersionResponse)

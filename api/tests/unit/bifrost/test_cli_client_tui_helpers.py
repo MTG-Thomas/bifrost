@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 import httpx
 import pytest
 from unittest.mock import AsyncMock
@@ -80,6 +81,26 @@ async def test_send_with_5xx_retry_uses_backoff_until_success(monkeypatch):
 
     assert response.status_code == 200
     assert sleeps == list(client.SDK_RETRY_BACKOFF_SECONDS[:2])
+
+
+@pytest.mark.asyncio
+async def test_get_once_bypasses_refresh_and_retry_policy(monkeypatch):
+    bifrost_client = object.__new__(client.BifrostClient)
+    response = httpx.Response(503)
+    raw_get = AsyncMock(return_value=response)
+    monkeypatch.setattr(
+        bifrost_client,
+        "_get_async_client",
+        lambda: SimpleNamespace(get=raw_get),
+    )
+    refresh_request = AsyncMock()
+    monkeypatch.setattr(bifrost_client, "_request_with_refresh", refresh_request)
+
+    result = await bifrost_client.get_once("/api/executions/known-id")
+
+    assert result is response
+    raw_get.assert_awaited_once_with("/api/executions/known-id")
+    refresh_request.assert_not_awaited()
 
 
 def test_send_sync_with_5xx_retry_exhausts_retry_budget(monkeypatch):

@@ -10,7 +10,7 @@
  */
 
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Loader2, PlayCircle, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";

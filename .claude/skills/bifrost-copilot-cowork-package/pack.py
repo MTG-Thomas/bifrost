@@ -157,7 +157,7 @@ def load_skill_source(path: Path) -> tuple[Path, str, str, Path | None]:
             else:
                 desc_lines.append(line.strip())
     if desc_lines:
-        desc = " ".join(l for l in desc_lines if l)
+        desc = " ".join(line for line in desc_lines if line)
     if not name:
         raise RuntimeError("SKILL.md frontmatter missing `name:`")
     return skill_dir, name, desc, cleanup

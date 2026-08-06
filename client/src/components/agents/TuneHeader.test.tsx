@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import { render, screen } from "@testing-library/react";
 
 import { TuneHeader } from "./TuneHeader";

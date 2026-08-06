@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -163,7 +164,8 @@ async def test_api_request_formats_json_text_http_errors_and_client_lookup(monke
         None,
         client=Client(error=httpx.ConnectError("offline")),
     ) == 1
-    assert "could not connect" in capsys.readouterr().err
+    connect_error = capsys.readouterr().err
+    assert "could not connect to Bifrost API" in connect_error
 
     monkeypatch.setattr(
         cli.BifrostClient,
@@ -172,3 +174,129 @@ async def test_api_request_formats_json_text_http_errors_and_client_lookup(monke
     )
     assert await cli._api_request("GET", "/api/demo", None, client=None) == 1
     assert "no creds" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_api_request_recovers_exact_execution_after_response_loss(capsys):
+    class Client:
+        def __init__(self):
+            self.execution_id = None
+            self.post_count = 0
+            self.get_paths = []
+
+        async def post(self, _endpoint, **kwargs):
+            self.post_count += 1
+            self.execution_id = kwargs["headers"][cli._EXECUTION_ID_HEADER]
+            raise httpx.ReadError("")
+
+        async def get(self, endpoint, **_kwargs):
+            self.get_paths.append(endpoint)
+            return httpx.Response(
+                200,
+                json={
+                    "execution_id": self.execution_id,
+                    "status": "Success",
+                    "result": {"covered": True},
+                },
+                request=httpx.Request("GET", f"https://api.example{endpoint}"),
+            )
+
+    client = Client()
+    result = await cli._api_request(
+        "POST",
+        "/api/workflows/execute",
+        {"workflow_id": "reconcile", "input_data": {}},
+        client=client,
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["execution_id"] == client.execution_id
+    assert payload["status"] == "Success"
+    assert client.post_count == 1
+    assert client.get_paths == [f"/api/executions/{client.execution_id}"]
+    assert captured.err == ""
+
+
+@pytest.mark.asyncio
+async def test_api_request_fails_closed_before_missing_id_poll(capsys):
+    class Client:
+        def __init__(self):
+            self.execution_id = None
+            self.get_paths = []
+
+        async def post(self, endpoint, **kwargs):
+            self.execution_id = kwargs["headers"][cli._EXECUTION_ID_HEADER]
+            return httpx.Response(
+                200,
+                json={"status": "Success"},
+                request=httpx.Request("POST", f"https://api.example{endpoint}"),
+            )
+
+        async def get(self, endpoint, **_kwargs):
+            self.get_paths.append(endpoint)
+            return httpx.Response(
+                404,
+                text="Not Found",
+                request=httpx.Request("GET", f"https://api.example{endpoint}"),
+            )
+
+    client = Client()
+    result = await cli._api_request(
+        "POST",
+        "/api/workflows/execute",
+        {"workflow_id": "reconcile", "input_data": {}},
+        client=client,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert client.get_paths == [f"/api/executions/{client.execution_id}"]
+    assert "/api/executions/ did not" not in captured.err
+    assert f"/api/executions/{client.execution_id}" in captured.err
+    assert "ValueError" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_api_request_diagnostics_keep_context_and_scrub_secrets(capsys):
+    class Client:
+        async def get(self, _endpoint, **_kwargs):
+            raise RuntimeError(
+                "Bearer bearer-value password=hunter2 "
+                "https://api.example/api/demo?access_token=query-value"
+            )
+
+    result = await cli._api_request(
+        "GET",
+        "/api/demo?api_key=endpoint-value",
+        None,
+        client=Client(),
+    )
+
+    error = capsys.readouterr().err
+    assert result == 1
+    assert "RuntimeError" in error
+    assert "GET /api/demo?<redacted>" in error
+    assert "bearer-value" not in error
+    assert "hunter2" not in error
+    assert "query-value" not in error
+    assert "endpoint-value" not in error
+
+
+@pytest.mark.asyncio
+async def test_api_request_rejects_non_finite_json(capsys):
+    class Client:
+        async def get(self, endpoint, **_kwargs):
+            return httpx.Response(
+                200,
+                json={"value": float("nan")},
+                request=httpx.Request("GET", f"https://api.example{endpoint}"),
+            )
+
+    assert await cli._api_request("GET", "/api/demo", None, client=Client()) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "ValueError" in captured.err
+    assert "GET /api/demo" in captured.err

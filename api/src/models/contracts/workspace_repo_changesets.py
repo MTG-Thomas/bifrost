@@ -26,6 +26,7 @@ class WorkspaceRepoStateResponse(BaseModel):
     scope: str
     revision: str
     file_count: int
+    file_hashes: dict[str, str] = Field(default_factory=dict)
     dirty: bool
     open_changesets: int
     git_status: dict | None = None

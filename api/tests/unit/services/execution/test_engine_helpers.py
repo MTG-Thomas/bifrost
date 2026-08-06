@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -62,6 +63,28 @@ def test_scrub_outputs_redacts_context_secret_values():
     assert variables == {"seen": "[REDACTED]"}
     assert logs == [{"message": "used [REDACTED]"}]
     assert error == "failed with [REDACTED]"
+
+
+def test_scrub_outputs_redacts_generated_scripts_without_registered_secrets():
+    context = ExecutionContext(
+        execution_id="exec-1",
+        user_id="user-1",
+        email="user@example.com",
+        name="User One",
+        scope="org-1",
+        organization=Organization(id="org-1", name="Org One"),
+        is_platform_admin=False,
+        is_function_key=False,
+    )
+    marker = "SYNTHETIC_EXECUTION_SCRIPT_MARKER"
+
+    _, variables, _, _ = engine._scrub_outputs(
+        context,
+        variables={"script": marker, "status": "safe"},
+    )
+
+    assert variables == {"script": "[REDACTED]", "status": "safe"}
+    assert marker not in json.dumps(variables)
 
 
 def test_build_cached_result_normalizes_expiry_and_marks_cached():

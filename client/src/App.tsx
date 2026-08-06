@@ -5,7 +5,7 @@ import {
 	Route,
 	useLocation,
 	matchPath,
-} from "react-router-dom";
+} from "react-router";
 import { Layout } from "@/components/layout/Layout";
 import { ContentLayout } from "@/components/layout/ContentLayout";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
@@ -127,11 +127,6 @@ const UserSettings = lazyWithReload(() =>
 const DiagnosticsPage = lazyWithReload(() =>
 	import("@/pages/diagnostics/DiagnosticsPage").then((m) => ({
 		default: m.DiagnosticsPage,
-	})),
-);
-const InfrastructureStatus = lazyWithReload(() =>
-	import("@/pages/InfrastructureStatus").then((m) => ({
-		default: m.InfrastructureStatus,
 	})),
 );
 const AuditLogPage = lazyWithReload(() =>
@@ -696,16 +691,6 @@ function AppRoutes() {
 							element={
 								<ProtectedRoute requirePlatformAdmin>
 									<DiagnosticsPage />
-								</ProtectedRoute>
-							}
-						/>
-
-						{/* Infrastructure Status - PlatformAdmin only */}
-						<Route
-							path="infrastructure"
-							element={
-								<ProtectedRoute requirePlatformAdmin>
-									<InfrastructureStatus />
 								</ProtectedRoute>
 							}
 						/>
