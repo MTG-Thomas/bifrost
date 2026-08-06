@@ -12,18 +12,50 @@ import pytest
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
 @pytest.mark.skipif(os.name == "nt", reason="script is exercised in Linux CI")
 @pytest.mark.parametrize(
-    ("dependency_path", "initial", "updated"),
+    (
+        "dependency_path",
+        "initial",
+        "updated",
+        "expected_api",
+        "expected_client",
+        "expected_playwright",
+    ),
     [
-        ("requirements.lock", "pytest==1\n", "pytest==2\n"),
+        ("requirements.lock", "pytest==1\n", "pytest==2\n", True, False, False),
         (
             "api/src/services/sdk_package/package-lock.json",
             '{"lockfileVersion": 3, "packages": {}}\n',
             '{"lockfileVersion": 3, "packages": {"node_modules/esbuild": {}}}\n',
+            True,
+            False,
+            False,
+        ),
+        (
+            "client/Dockerfile.playwright",
+            "FROM example.invalid/playwright:1\n",
+            "FROM example.invalid/playwright:2\n",
+            False,
+            False,
+            True,
+        ),
+        (
+            "client/package-lock.json",
+            '{"lockfileVersion": 3, "packages": {}}\n',
+            '{"lockfileVersion": 3, "packages": {"node_modules/vite": {}}}\n',
+            False,
+            True,
+            True,
         ),
     ],
 )
 def test_pull_request_head_ref_detects_dependency_changes(
-    tmp_path: Path, dependency_path: str, initial: str, updated: str
+    tmp_path: Path,
+    dependency_path: str,
+    initial: str,
+    updated: str,
+    expected_api: bool,
+    expected_client: bool,
+    expected_playwright: bool,
 ):
     repo = tmp_path / "repo"
     origin = tmp_path / "origin.git"
@@ -65,5 +97,7 @@ def test_pull_request_head_ref_detects_dependency_changes(
     subprocess.run(["bash", "scripts/ci/detect-test-image-inputs.sh"], cwd=repo, env=env, check=True)
 
     output_path = repo / "github-output.txt"
-    assert "api_changed=true" in output_path.read_text()
-    assert "client_changed=false" in output_path.read_text()
+    output = output_path.read_text()
+    assert f"api_changed={str(expected_api).lower()}" in output
+    assert f"client_changed={str(expected_client).lower()}" in output
+    assert f"playwright_changed={str(expected_playwright).lower()}" in output

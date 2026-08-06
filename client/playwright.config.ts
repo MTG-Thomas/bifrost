@@ -29,9 +29,10 @@ function parseWorkers(value: string | undefined): number {
  */
 export default defineConfig({
 	testDir: "./e2e",
+	outputDir: "playwright-results/test-results",
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
-	retries: process.env.CI ? 2 : 0,
+	retries: 0,
 	workers: parseWorkers(process.env.PLAYWRIGHT_WORKERS),
 	timeout: 30000,
 
@@ -44,7 +45,7 @@ export default defineConfig({
 	use: {
 		// Use environment variable for Docker, fallback to localhost for local dev
 		baseURL: process.env.TEST_BASE_URL || "http://localhost:3000",
-		trace: "on-first-retry",
+		trace: "retain-on-failure",
 		// PLAYWRIGHT_SCREENSHOT_ALL=1 (set by `./test.sh client e2e --screenshots`)
 		// captures a screenshot for every test instead of only on failure.
 		// Used by the bifrost-testing skill's UX review workflow.
@@ -52,7 +53,7 @@ export default defineConfig({
 			process.env.PLAYWRIGHT_SCREENSHOT_ALL === "1"
 				? "on"
 				: "only-on-failure",
-		video: "on-first-retry",
+		video: "retain-on-failure",
 	},
 
 	projects: [

@@ -294,6 +294,7 @@ run_pytest() {
 # no coverage is dropped — just moved off the per-PR critical path. A caller can
 # re-include them ad hoc with `./test.sh unit -m slow` or `-m ""`.
 cmd_unit() { run_pytest tests/ --ignore=tests/e2e/ -m "not slow" -v "$@"; }
+cmd_unit_all() { run_pytest tests/ --ignore=tests/e2e/ -v "$@"; }
 cmd_e2e()  { run_pytest tests/e2e/ -v "$@"; }
 cmd_all()  { run_pytest tests/ -v "$@"; }
 cmd_coverage() {
@@ -387,7 +388,7 @@ client_e2e() {
             playwright-runner npx playwright test "${passthrough[@]}"
     else
         docker compose -f "$COMPOSE_FILE" --profile client run --rm "${env_args[@]}" \
-            playwright-runner npx playwright test --reporter=list,html \
+            playwright-runner npx playwright test \
                 --project=platform-admin \
                 --project=org-user \
                 --project=unauthenticated \
@@ -431,7 +432,12 @@ cmd_ci() {
     # down the partially-booted stack instead of leaking containers/volumes.
     trap 'export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; stack_down' EXIT
     stack_up
-    cmd_all
+    # Keep backend unit and e2e suites in separate pytest processes. E2E tests
+    # intentionally replace modules and create long-lived async resources;
+    # sharing one interpreter can leak those fixtures into later unit tests.
+    # This still includes the slow unit tests while matching CI's isolation.
+    cmd_unit_all
+    cmd_e2e
     client_unit
     client_e2e
 }

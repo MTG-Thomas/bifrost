@@ -1,6 +1,7 @@
 """Static checks for repo and dev-surface hardening invariants."""
 
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -31,6 +32,31 @@ def test_pull_request_ci_does_not_use_noop_path_ignore() -> None:
     pull_request = ci[True]["pull_request"]
 
     assert "paths-ignore" not in pull_request
+
+
+def test_required_e2e_gate_includes_playwright() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    jobs = ci["jobs"]
+
+    assert jobs["test-client-e2e"]["name"] == "Client E2E Tests"
+    assert set(jobs["test-e2e-gate"]["needs"]) == {
+        "test-e2e",
+        "test-client-e2e",
+    }
+
+
+def test_playwright_suite_has_no_retries_or_skipped_tests() -> None:
+    config = _read("client/playwright.config.ts")
+    e2e_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((REPO_ROOT / "client" / "e2e").rglob("*.ts"))
+    )
+
+    retry_values = re.findall(r"\bretries:\s*([^,\n]+)", config)
+    assert retry_values
+    assert all(value.strip() == "0" for value in retry_values)
+    assert 'outputDir: "playwright-results/test-results"' in config
+    assert not re.search(r"\b(?:test|describe)\.(?:skip|fixme)\b", e2e_source)
 
 
 def test_docs_noop_workflow_cannot_spoof_required_ci_check_names() -> None:

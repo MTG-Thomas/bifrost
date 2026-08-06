@@ -22,6 +22,7 @@ env:
   WORKER_IMAGE: mtg-thomas/bifrost-worker
   CI_API_TEST_IMAGE: mtg-thomas/bifrost-ci-api-dev
   CI_CLIENT_TEST_IMAGE: mtg-thomas/bifrost-ci-client-dev
+  CI_PLAYWRIGHT_TEST_IMAGE: mtg-thomas/bifrost-ci-playwright
 
 jobs:
   # =============================================================================
@@ -74,6 +75,19 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=test-client-dev
           cache-to: type=gha,scope=test-client-dev,mode=max
+
+      - name: Build and push Playwright CI test image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./client
+          file: ./client/Dockerfile.playwright
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:main
+            ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=test-playwright
+          cache-to: type=gha,scope=test-playwright,mode=max
 
   # =============================================================================
   # Lint & Type Check - Fast, gates all builds alongside unit tests
@@ -377,12 +391,125 @@ jobs:
           name: api-e2e-coverage-${{ matrix.shard }}
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  # =============================================================================
+  # Client E2E Tests - Playwright browser coverage in the Docker test stack.
+  # Source and specs are bind-mounted from the checkout; dependency-heavy
+  # API, client, and browser images are pulled from main or rebuilt with
+  # persistent BuildKit caches when their baked inputs change.
+  # =============================================================================
+  test-client-e2e:
+    runs-on: ubuntu-latest
+    name: Client E2E Tests
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BIFROST_SKIP_BUILD: "1"
+      PLAYWRIGHT_RESULTS_MOUNT: ${{ github.workspace }}/client/playwright-results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Detect test image input changes
+        id: test-image-inputs
+        run: bash scripts/ci/detect-test-image-inputs.sh
+
+      - name: Pull API CI test image
+        id: pull-api-ci-image
+        if: steps.test-image-inputs.outputs.api_changed != 'true'
+        continue-on-error: true
+        env:
+          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+        run: |
+          docker pull "$API_CI_IMAGE_REF"
+          docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
+
+      - name: Build API dev image
+        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./api/Dockerfile.dev
+          load: true
+          tags: bifrost-test-api-dev:latest
+          cache-from: type=gha,scope=test-api-dev
+          cache-to: type=gha,scope=test-api-dev,mode=max
+
+      - name: Pull client CI test image
+        id: pull-client-ci-image
+        if: steps.test-image-inputs.outputs.client_changed != 'true'
+        continue-on-error: true
+        env:
+          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+        run: |
+          docker pull "$CLIENT_CI_IMAGE_REF"
+          docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
+
+      - name: Build client dev image
+        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./client
+          file: ./client/Dockerfile.dev
+          load: true
+          tags: bifrost-test-client-dev:latest
+          cache-from: type=gha,scope=test-client-dev
+          cache-to: type=gha,scope=test-client-dev,mode=max
+
+      - name: Pull Playwright CI test image
+        id: pull-playwright-ci-image
+        if: steps.test-image-inputs.outputs.playwright_changed != 'true'
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:main
+        run: |
+          docker pull "$PLAYWRIGHT_CI_IMAGE_REF"
+          docker tag "$PLAYWRIGHT_CI_IMAGE_REF" bifrost-test-playwright-runner:latest
+
+      - name: Build Playwright test image
+        if: steps.test-image-inputs.outputs.playwright_changed == 'true' || steps.pull-playwright-ci-image.outcome == 'failure' || steps.pull-playwright-ci-image.outcome == 'skipped'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: ./client
+          file: ./client/Dockerfile.playwright
+          load: true
+          tags: bifrost-test-playwright-runner:latest
+          cache-from: type=gha,scope=test-playwright
+          cache-to: type=gha,scope=test-playwright,mode=max
+
+      - name: Run Playwright tests
+        run: |
+          mkdir -p client/playwright-results
+          chmod 777 client/playwright-results
+          chmod +x test.sh
+          ./test.sh stack up
+          ./test.sh client e2e
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-results
+          path: client/playwright-results
+          if-no-files-found: warn
+          retention-days: 7
+
   # Aggregate gate — required check named "E2E Tests" (matches ruleset 15329014).
-  # Fails if any shard failed or was cancelled. Runs even when shards fail
+  # Fails if any backend shard or the Playwright job failed or was cancelled.
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
     if: always()
-    needs: [test-e2e]
+    needs: [test-e2e, test-client-e2e]
     runs-on: ubuntu-latest
     name: E2E Tests
     steps:
@@ -392,7 +519,11 @@ jobs:
             echo "One or more e2e shards failed or were cancelled (result: ${{ needs.test-e2e.result }})"
             exit 1
           fi
-          echo "All e2e shards passed."
+          if [ "${{ needs.test-client-e2e.result }}" != "success" ]; then
+            echo "Client e2e tests failed or were cancelled (result: ${{ needs.test-client-e2e.result }})"
+            exit 1
+          fi
+          echo "All backend e2e shards and client Playwright tests passed."
 
   # =============================================================================
   # Dev Build - Every push to main, gated by unit tests only

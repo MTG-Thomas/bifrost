@@ -272,6 +272,7 @@ services:
       BIFROST_REDIS_URL: redis://redis:6379/0
       BIFROST_SECRET_KEY: test-secret-key-for-e2e-testing-must-be-32-chars
       BIFROST_ENVIRONMENT: testing
+      BIFROST_DEFERRED_EXECUTION_PROMOTER_INTERVAL_SECONDS: "2"
       # S3-compatible object storage
       BIFROST_S3_BUCKET: bifrost-test
       BIFROST_S3_ENDPOINT_URL: http://seaweedfs:8333
@@ -380,6 +381,8 @@ services:
       - ./debug.sh:/app/debug.sh:ro
       - ./docker-compose.debug.yml:/app/docker-compose.debug.yml:ro
       - ./docker-compose.debug.port.yml:/app/docker-compose.debug.port.yml:ro
+      - ./client/playwright.config.ts:/app/client/playwright.config.ts:ro
+      - ./client/e2e:/app/client/e2e:ro
       - ./client/src:/client/src:ro  # Read-only — the drift test in
                                       # tests/unit/test_platform_names_match_runtime.py
                                       # parses app-code-runtime.ts to detect new platform exports.
@@ -452,6 +455,7 @@ services:
   # Playwright E2E test runner
   # Runs browser tests against the client service
   playwright-runner:
+    image: bifrost-test-playwright-runner:latest
     build:
       context: ./client
       dockerfile: Dockerfile.playwright
@@ -467,7 +471,7 @@ services:
       - ./client/tsconfig.json:/app/tsconfig.json:ro
       - ./client/tsconfig.app.json:/app/tsconfig.app.json:ro
       - ./client/tsconfig.node.json:/app/tsconfig.node.json:ro
-      - playwright-results:/app/playwright-results
+      - ${PLAYWRIGHT_RESULTS_MOUNT:-playwright-results}:/app/playwright-results
     depends_on:
       client:
         condition: service_healthy

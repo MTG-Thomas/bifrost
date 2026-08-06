@@ -11,12 +11,14 @@ github_step_summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 api_changed=false
 client_changed=false
+playwright_changed=false
 
 if [ "$event_name" = "merge_group" ]; then
   # Merge queue refs can contain multiple PRs. Rebuild there so dependency or
   # Dockerfile changes from any queued PR are tested against their own image.
   api_changed=true
   client_changed=true
+  playwright_changed=true
 elif [ "$event_name" = "pull_request" ]; then
   base_ref="${GITHUB_BASE_REF:-main}"
   head_ref="${GITHUB_HEAD_REF:-}"
@@ -39,6 +41,7 @@ elif [ "$event_name" = "pull_request" ]; then
 
   api_pattern='^(api/Dockerfile\.dev|pyproject\.toml|requirements(-pyright)?\.lock|api/src/services/app_compiler/(package(-lock)?\.json|compile\.js|tailwind\.js)|api/src/services/app_bundler/package(-lock)?\.json|api/src/services/sdk_package/(package(-lock)?\.json|build_sdk\.js)|client/src/lib/app-sdk/.*)$'
   client_pattern='^(client/Dockerfile\.dev|client/package(-lock)?\.json)$'
+  playwright_pattern='^(client/Dockerfile\.playwright|client/package(-lock)?\.json)$'
 
   if printf '%s\n' "$changed_files" | grep -Eq "$api_pattern"; then
     api_changed=true
@@ -46,11 +49,15 @@ elif [ "$event_name" = "pull_request" ]; then
   if printf '%s\n' "$changed_files" | grep -Eq "$client_pattern"; then
     client_changed=true
   fi
+  if printf '%s\n' "$changed_files" | grep -Eq "$playwright_pattern"; then
+    playwright_changed=true
+  fi
 fi
 
 {
   echo "api_changed=$api_changed"
   echo "client_changed=$client_changed"
+  echo "playwright_changed=$playwright_changed"
 } >> "$github_output"
 
 {
@@ -58,4 +65,5 @@ fi
   echo ""
   echo "- API image rebuild required: \`$api_changed\`"
   echo "- Client image rebuild required: \`$client_changed\`"
+  echo "- Playwright image rebuild required: \`$playwright_changed\`"
 } >> "$github_step_summary"
