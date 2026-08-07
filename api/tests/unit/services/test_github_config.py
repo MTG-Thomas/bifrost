@@ -11,6 +11,7 @@ from src.services import github_config
 from src.services.github_config import (
     GitHubConfig,
     _parse_org_id,
+    build_authenticated_github_url,
     delete_github_config,
     get_github_config,
     save_github_config,
@@ -65,6 +66,25 @@ def test_parse_org_id_accepts_global_none_uuid_and_invalid() -> None:
     assert _parse_org_id(org_uuid) == org_uuid
     assert _parse_org_id(str(org_uuid)) == org_uuid
     assert _parse_org_id("not-a-uuid") is None
+
+
+@pytest.mark.parametrize(
+    ("repo_url", "expected_repository"),
+    [
+        ("https://github.com/example/repo", "example/repo"),
+        ("https://github.com/example/repo.git", "example/repo"),
+        ("example/repo", "example/repo"),
+    ],
+)
+def test_build_authenticated_github_url_normalizes_repo_and_encodes_token(
+    repo_url: str, expected_repository: str
+) -> None:
+    result = build_authenticated_github_url(repo_url, "token:/@ value")
+
+    assert result == (
+        f"https://x-access-token:token%3A%2F%40%20value@github.com/"
+        f"{expected_repository}.git"
+    )
 
 
 @pytest.mark.asyncio

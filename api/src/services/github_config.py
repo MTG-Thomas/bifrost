@@ -6,6 +6,7 @@ Handles encrypted storage of GitHub integration configuration.
 
 import base64
 import logging
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -29,6 +30,16 @@ class GitHubConfig:
     branch: str
     status: str
     last_synced_at: str | None = None
+
+
+def build_authenticated_github_url(repo_url: str, token: str) -> str:
+    """Return the authenticated HTTPS URL used by GitPython operations."""
+    normalized = repo_url.strip()
+    prefix = "https://github.com/"
+    repository = normalized[len(prefix) :] if normalized.startswith(prefix) else normalized
+    repository = repository.removesuffix(".git").strip("/")
+    encoded_token = urllib.parse.quote(token, safe="")
+    return f"https://x-access-token:{encoded_token}@github.com/{repository}.git"
 
 
 def _get_fernet() -> Fernet:
