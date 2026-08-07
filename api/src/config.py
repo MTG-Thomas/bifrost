@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     execution_timeout_seconds: int = Field(
         default=300, description="Default execution timeout in seconds (5 minutes)"
     )
+    deferred_execution_promoter_interval_seconds: int = Field(
+        default=60,
+        ge=1,
+        description="Interval between checks for due scheduled executions",
+    )
     graceful_shutdown_seconds: int = Field(
         default=5, description="Seconds to wait after SIGTERM before SIGKILL"
     )

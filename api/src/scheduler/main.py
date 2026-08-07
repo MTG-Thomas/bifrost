@@ -120,21 +120,25 @@ class Scheduler:
             **misfire_options,
         )
 
-        # Deferred execution promoter — every 60s.
+        # Deferred execution promoter.
         from src.jobs.schedulers.deferred_execution_promoter import (
             promote_due_executions,
         )
 
+        promoter_interval = self.settings.deferred_execution_promoter_interval_seconds
         scheduler.add_job(
             promote_due_executions,
-            IntervalTrigger(seconds=60),
+            IntervalTrigger(seconds=promoter_interval),
             id="deferred_execution_promoter",
             name="Promote due scheduled executions",
             replace_existing=True,
             next_run_time=datetime.now(timezone.utc),
             **misfire_options,
         )
-        logger.info("Deferred execution promoter scheduled (every 60s)")
+        logger.info(
+            "Deferred execution promoter scheduled (every %ss)",
+            promoter_interval,
+        )
 
         # Execution cleanup - every 5 minutes (run immediately at startup)
         scheduler.add_job(

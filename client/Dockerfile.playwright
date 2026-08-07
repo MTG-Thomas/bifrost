@@ -10,15 +10,16 @@ FROM mcr.microsoft.com/playwright:v1.62.1-jammy@sha256:b3251f7ff1a9fa559a28d1c67
 WORKDIR /app
 
 # Copy package files and install dependencies
-COPY package*.json ./
+RUN chown pwuser:pwuser /app
+USER pwuser
+
+COPY --chown=pwuser:pwuser package*.json ./
 RUN npm ci
 
 # Install only Chromium browser (faster than installing all browsers)
 RUN npx playwright install chromium
 
-RUN mkdir -p /app/playwright-results && chown -R pwuser:pwuser /app
-
-USER pwuser
+RUN mkdir -p /app/playwright-results
 
 # Test files, config, and fixtures come from volume mounts
 # This allows live editing without rebuilding the image

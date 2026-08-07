@@ -48,7 +48,11 @@ class FakeListener:
 
 @pytest.fixture
 def settings() -> SimpleNamespace:
-    return SimpleNamespace(environment="test", redis_url="redis://example/0")
+    return SimpleNamespace(
+        environment="test",
+        redis_url="redis://example/0",
+        deferred_execution_promoter_interval_seconds=7,
+    )
 
 
 @pytest.fixture
@@ -98,6 +102,10 @@ async def test_start_scheduler_adds_core_jobs_and_starts_scheduler(
     assert "schedule_processor" in job_ids
     assert "deferred_execution_promoter" in job_ids
     assert "execution_cleanup" in job_ids
+    promoter = next(
+        job for job in fake.jobs if job["id"] == "deferred_execution_promoter"
+    )
+    assert promoter["trigger"].interval.total_seconds() == 7
 
 
 @pytest.mark.asyncio
