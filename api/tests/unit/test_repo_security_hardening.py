@@ -49,6 +49,11 @@ def test_required_e2e_gate_includes_playwright() -> None:
         == "github.repository == 'gobifrost/bifrost' && github.event_name == 'workflow_dispatch'"
     )
 
+    compose = yaml.safe_load(_read("docker-compose.test.yml"))
+    assert compose["services"]["playwright-runner"]["tmpfs"] == [
+        "/app/e2e/.auth:uid=1000,gid=1000,mode=0700"
+    ]
+
 
 def test_playwright_suite_has_no_retries_or_skipped_tests() -> None:
     config = _read("client/playwright.config.ts")

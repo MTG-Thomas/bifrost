@@ -472,6 +472,8 @@ services:
       - ./client/tsconfig.app.json:/app/tsconfig.app.json:ro
       - ./client/tsconfig.node.json:/app/tsconfig.node.json:ro
       - ${PLAYWRIGHT_RESULTS_MOUNT:-playwright-results}:/app/playwright-results
+    tmpfs:
+      - /app/e2e/.auth:uid=1000,gid=1000,mode=0700
     depends_on:
       client:
         condition: service_healthy
