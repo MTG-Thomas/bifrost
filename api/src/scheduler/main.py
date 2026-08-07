@@ -72,6 +72,7 @@ class Scheduler:
         self._scheduler: AsyncIOScheduler | None = None
         self._pubsub_listener: ResilientPubSubListener | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the scheduler."""
@@ -633,7 +634,7 @@ class Scheduler:
     def handle_signal(self, signum: int, frame) -> None:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}, initiating shutdown...")
-        asyncio.create_task(self.stop())
+        self._shutdown_task = asyncio.create_task(self.stop())
 
 
 async def main() -> None:

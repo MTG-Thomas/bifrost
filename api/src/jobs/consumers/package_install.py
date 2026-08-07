@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import sys
+import tempfile
 from typing import Any
 
 from src.jobs.rabbitmq import BroadcastConsumer
@@ -28,6 +29,21 @@ logger = logging.getLogger(__name__)
 
 # Exchange name for broadcast
 EXCHANGE_NAME = "package-installations"
+
+
+def _write_temp_requirements(content: str) -> str:
+    """Write requirements content off the event loop and return its path."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as file:
+        file.write(content)
+        return file.name
+
+
+def _remove_temp_file(path: str) -> None:
+    """Remove a temporary file without masking the install result."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
 
 
 class PackageInstallConsumer(BroadcastConsumer):
@@ -127,8 +143,6 @@ class PackageInstallConsumer(BroadcastConsumer):
 
         Returns None on success, or the error message on failure.
         """
-        import tempfile
-
         from src.core.requirements_cache import get_requirements
 
         cached = await get_requirements()
@@ -136,21 +150,17 @@ class PackageInstallConsumer(BroadcastConsumer):
             logger.info("No cached requirements.txt to install from")
             return None
 
+        temp_path = await asyncio.to_thread(
+            _write_temp_requirements,
+            cached["content"],
+        )
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", delete=False
-            ) as f:
-                f.write(cached["content"])
-                temp_path = f.name
-
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "pip", "install", "-r", temp_path, "--quiet",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-
-            os.unlink(temp_path)
 
             if proc.returncode == 0:
                 pkg_count = len([
@@ -168,6 +178,8 @@ class PackageInstallConsumer(BroadcastConsumer):
         except Exception as e:
             logger.error(f"pip install -r requirements.txt error: {e}")
             return f"pip install -r requirements.txt error: {e}"
+        finally:
+            await asyncio.to_thread(_remove_temp_file, temp_path)
 
     async def _update_pool_packages(self) -> None:
         """Update the pool's packages in Redis after installation."""

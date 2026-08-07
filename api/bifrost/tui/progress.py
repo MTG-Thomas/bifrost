@@ -164,7 +164,7 @@ class ProgressApp(BifrostApp[list[str]]):
                 i += 1
                 await asyncio.sleep(0.08)
         except asyncio.CancelledError:
-            pass
+            raise
 
     def action_dismiss(self) -> None:
         if self._done:

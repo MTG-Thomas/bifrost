@@ -20,13 +20,11 @@ interface ChatLayoutProps {
 	initialConversationId?: string;
 }
 
-export function ChatLayout({
-	initialConversationId,
-}: ChatLayoutProps) {
+export function ChatLayout({ initialConversationId }: ChatLayoutProps) {
 	const isDesktop = useMediaQuery("(min-width: 1024px)");
-	const [sidebarState, setSidebarState] = useState<"auto" | "open" | "closed">(
-		"auto",
-	);
+	const [sidebarState, setSidebarState] = useState<
+		"auto" | "open" | "closed"
+	>("auto");
 	const isSidebarOpen =
 		sidebarState === "auto" ? isDesktop : sidebarState === "open";
 
@@ -119,7 +117,9 @@ export function ChatLayout({
 
 			{/* Mobile Overlay */}
 			{isSidebarOpen && (
-				<div
+				<button
+					type="button"
+					aria-label="Close chat sidebar"
 					className="fixed inset-0 bg-black/50 z-40 lg:hidden"
 					onClick={() => setSidebarState("closed")}
 				/>

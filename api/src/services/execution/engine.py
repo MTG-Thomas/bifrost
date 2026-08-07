@@ -379,11 +379,13 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
 
             # Convert scripts to callables for unified execution
             if is_script:
-                assert request.code is not None
+                if request.code is None:
+                    raise ValueError("Script execution requires source code")
                 func = _script_to_callable(request.code, request.name or "script")
 
             # Unified execution path for both workflows and scripts
-            assert func is not None
+            if func is None:
+                raise ValueError("Execution requires a workflow or script callable")
 
             # Always capture logs AND variables for all executions
             # Filtering based on permissions happens at API response level

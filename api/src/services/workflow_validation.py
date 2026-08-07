@@ -4,8 +4,10 @@ Workflow Validation Service
 Validates workflow files for syntax errors, decorator issues, and Pydantic validation.
 """
 
+import asyncio
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,13 @@ from typing import Any
 from src.models import WorkflowMetadata as WorkflowMetadataModel
 
 logger = logging.getLogger(__name__)
+
+
+def _write_temp_workflow(content: str) -> Path:
+    """Write workflow source off the event loop and return its path."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as file:
+        file.write(content)
+        return Path(file.name)
 
 
 def _extract_relative_path(source_file_path: str | None) -> str | None:
@@ -114,7 +123,6 @@ async def validate_workflow_file(path: str, content: str | None = None):
         validation - all code is stored in the database. If content is not provided,
         the function will attempt to load it from the database.
     """
-    import tempfile
     import re
     from pydantic import ValidationError
     from src.models import WorkflowValidationResponse, ValidationIssue
@@ -150,12 +158,8 @@ async def validate_workflow_file(path: str, content: str | None = None):
             ))
             return WorkflowValidationResponse(valid=False, issues=issues, metadata=None)
 
-    # Create a temporary file with the content for validation
-    temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
     try:
-        temp_file.write(content)
-        temp_file.close()
-        file_to_validate = Path(temp_file.name)
+        file_to_validate = await asyncio.to_thread(_write_temp_workflow, content)
         file_content = content
     except Exception as e:
         issues.append(ValidationIssue(
@@ -300,9 +304,9 @@ async def validate_workflow_file(path: str, content: str | None = None):
         # Clean up temporary file if created
         if content is not None:
             try:
-                os.unlink(temp_file.name)
+                await asyncio.to_thread(os.unlink, file_to_validate)
             except OSError as e:
                 # Temp file may already be gone or permissions changed — non-fatal
-                logger.debug(f"could not remove temp validation file {temp_file.name}: {e}")
+                logger.debug(f"could not remove temp validation file {file_to_validate}: {e}")
 
     return WorkflowValidationResponse(valid=valid, issues=issues, metadata=metadata)

@@ -3101,7 +3101,7 @@ async def _ws_listener(state: _WatchState, client: "BifrostClient") -> None:
                         if paths:
                             state.queue_incoming_deletes(paths, user_name)
         except asyncio.CancelledError:
-            return
+            raise
         except Exception as e:
             # Handle token expiry (server sends close code 4001)
             close_code = getattr(getattr(e, "rcvd", None), "code", None)

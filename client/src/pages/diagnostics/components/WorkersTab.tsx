@@ -11,175 +11,178 @@ import { ContainerTable, getPoolCounts } from "./ContainerTable";
 import { useWorkerWebSocket } from "../hooks/useWorkerWebSocket";
 
 export function WorkersTab() {
-    const {
-        data: poolsData,
-        isLoading: poolsLoading,
-        error: poolsError,
-        refetch: refetchPools,
-    } = usePools();
+	const {
+		data: poolsData,
+		isLoading: poolsLoading,
+		error: poolsError,
+		refetch: refetchPools,
+	} = usePools();
 
-    const {
-        data: queueData,
-        isLoading: queueLoading,
-        refetch: refetchQueue,
-    } = useQueueStatus({ limit: 50 });
+	const {
+		data: queueData,
+		isLoading: queueLoading,
+		refetch: refetchQueue,
+	} = useQueueStatus({ limit: 50 });
 
-    const { pools: wsPools, isConnected } = useWorkerWebSocket();
+	const { pools: wsPools, isConnected } = useWorkerWebSocket();
 
-    const [isRefreshing, setIsRefreshing] = useState(false);
+	const [isRefreshing, setIsRefreshing] = useState(false);
 
-    const handleRefresh = async () => {
-        setIsRefreshing(true);
-        try {
-            await Promise.all([refetchPools(), refetchQueue()]);
-        } finally {
-            setIsRefreshing(false);
-        }
-    };
+	const handleRefresh = async () => {
+		setIsRefreshing(true);
+		try {
+			await Promise.all([refetchPools(), refetchQueue()]);
+		} finally {
+			setIsRefreshing(false);
+		}
+	};
 
-    // Merge REST snapshot + WS heartbeats by worker_id. The REST call returns
-    // the full container list on mount (fast — Redis SCAN); WS heartbeats then
-    // upgrade individual rows with live process/memory data as they arrive.
-    // Using either/or here caused containers to "trickle in" because the first
-    // WS heartbeat would replace the full REST list with a single-container WS list.
-    const pools = useMemo(() => {
-        const byId = new Map<string, PoolSummary | typeof wsPools[number]>();
-        for (const p of poolsData?.pools ?? []) byId.set(p.worker_id, p);
-        for (const p of wsPools) {
-            const existing = byId.get(p.worker_id);
-            if (!existing) {
-                byId.set(p.worker_id, p);
-                continue;
-            }
-            const runtime = p.runtime ?? existing.runtime;
-            const runtimeChanged =
-                p.runtime != null && p.runtime !== existing.runtime;
-            byId.set(p.worker_id, {
-                ...existing,
-                ...p,
-                runtime,
-                runtime_label:
-                    p.runtime_label ??
-                    (runtimeChanged ? null : existing.runtime_label),
-            });
-        }
-        return [...byId.values()];
-    }, [poolsData, wsPools]);
-    const queueItems = queueData?.items || [];
+	// Merge REST snapshot + WS heartbeats by worker_id. The REST call returns
+	// the full container list on mount (fast — Redis SCAN); WS heartbeats then
+	// upgrade individual rows with live process/memory data as they arrive.
+	// Using either/or here caused containers to "trickle in" because the first
+	// WS heartbeat would replace the full REST list with a single-container WS list.
+	const pools = useMemo(() => {
+		const byId = new Map<string, PoolSummary | (typeof wsPools)[number]>();
+		for (const p of poolsData?.pools ?? []) byId.set(p.worker_id, p);
+		for (const p of wsPools) {
+			const existing = byId.get(p.worker_id);
+			if (!existing) {
+				byId.set(p.worker_id, p);
+				continue;
+			}
+			const runtime = p.runtime ?? existing.runtime;
+			const runtimeChanged =
+				p.runtime != null && p.runtime !== existing.runtime;
+			byId.set(p.worker_id, {
+				...existing,
+				...p,
+				runtime,
+				runtime_label:
+					p.runtime_label ??
+					(runtimeChanged ? null : existing.runtime_label),
+			});
+		}
+		return [...byId.values()];
+	}, [poolsData, wsPools]);
+	const queueItems = queueData?.items || [];
 
-    // Stable sorted worker IDs for consistent color assignment
-    const workerIds = useMemo(
-        () => [...new Set(pools.map((p) => p.worker_id))].sort(),
-        [pools]
-    );
+	// Stable sorted worker IDs for consistent color assignment
+	const workerIds = useMemo(
+		() =>
+			[...new Set(pools.map((p) => p.worker_id))].sort((left, right) =>
+				left.localeCompare(right),
+			),
+		[pools],
+	);
 
-    // Compute summary stats
-    const stats = useMemo(() => {
-        let totalForks = 0;
-        let totalCapacity = 0;
-        let totalBusy = 0;
-        let allCapacityKnown = true;
-        for (const pool of pools) {
-            const counts = getPoolCounts(pool);
-            totalForks += counts.total;
-            if (counts.capacity == null) {
-                allCapacityKnown = false;
-            } else {
-                totalCapacity += counts.capacity;
-            }
-            totalBusy += counts.busy;
-        }
-        return {
-            containers: pools.length,
-            forks: totalForks,
-            capacity: totalCapacity,
-            busy: totalBusy,
-            allCapacityKnown,
-        };
-    }, [pools]);
+	// Compute summary stats
+	const stats = useMemo(() => {
+		let totalForks = 0;
+		let totalCapacity = 0;
+		let totalBusy = 0;
+		let allCapacityKnown = true;
+		for (const pool of pools) {
+			const counts = getPoolCounts(pool);
+			totalForks += counts.total;
+			if (counts.capacity == null) {
+				allCapacityKnown = false;
+			} else {
+				totalCapacity += counts.capacity;
+			}
+			totalBusy += counts.busy;
+		}
+		return {
+			containers: pools.length,
+			forks: totalForks,
+			capacity: totalCapacity,
+			busy: totalBusy,
+			allCapacityKnown,
+		};
+	}, [pools]);
 
-    return (
-        <div className="max-w-[900px] mx-auto space-y-6">
-            {/* Connection Status Banner */}
-            {!isConnected && (
-                <Alert className="border-amber-500/50 text-amber-700 dark:text-amber-400 [&>svg]:text-amber-600">
-                    <WifiOff className="h-4 w-4" />
-                    <AlertDescription>
-                        Connecting to real-time worker updates... Data may not be
-                        current.
-                    </AlertDescription>
-                </Alert>
-            )}
+	return (
+		<div className="max-w-[900px] mx-auto space-y-6">
+			{/* Connection Status Banner */}
+			{!isConnected && (
+				<Alert className="border-amber-500/50 text-amber-700 dark:text-amber-400 [&>svg]:text-amber-600">
+					<WifiOff className="h-4 w-4" />
+					<AlertDescription>
+						Connecting to real-time worker updates... Data may not
+						be current.
+					</AlertDescription>
+				</Alert>
+			)}
 
-            {/* Error State */}
-            {poolsError && (
-                <Alert variant="destructive">
-                    <AlertDescription>
-                        Failed to load pools:{" "}
-                        {getErrorMessage(poolsError, "Unknown error")}
-                    </AlertDescription>
-                </Alert>
-            )}
+			{/* Error State */}
+			{poolsError && (
+				<Alert variant="destructive">
+					<AlertDescription>
+						Failed to load pools:{" "}
+						{getErrorMessage(poolsError, "Unknown error")}
+					</AlertDescription>
+				</Alert>
+			)}
 
-            {/* Header */}
-            <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                    <h2 className="text-lg font-semibold">Process Pools</h2>
-                    {isConnected && (
-                        <span className="flex items-center gap-1 text-xs text-green-600">
-                            <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                            Live
-                        </span>
-                    )}
-                    <QueueBadge items={queueItems} isLoading={queueLoading} />
-                </div>
-                <div className="flex items-center gap-3">
-                    <span className="text-sm text-muted-foreground">
-                        {stats.containers} container{stats.containers !== 1 ? "s" : ""}{" "}
-                        &middot;{" "}
-                        {stats.allCapacityKnown
-                            ? `${stats.forks}/${stats.capacity} active forks`
-                            : `${stats.forks} active forks`}
-                    </span>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleRefresh}
-                        disabled={isRefreshing || poolsLoading}
-                    >
-                        <RefreshCw
-                            className={`h-4 w-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`}
-                        />
-                        Refresh
-                    </Button>
-                </div>
-            </div>
+			{/* Header */}
+			<div className="flex items-center justify-between">
+				<div className="flex items-center gap-3">
+					<h2 className="text-lg font-semibold">Process Pools</h2>
+					{isConnected && (
+						<span className="flex items-center gap-1 text-xs text-green-600">
+							<span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+							Live
+						</span>
+					)}
+					<QueueBadge items={queueItems} isLoading={queueLoading} />
+				</div>
+				<div className="flex items-center gap-3">
+					<span className="text-sm text-muted-foreground">
+						{stats.containers} container
+						{stats.containers !== 1 ? "s" : ""} &middot;{" "}
+						{stats.allCapacityKnown
+							? `${stats.forks}/${stats.capacity} active forks`
+							: `${stats.forks} active forks`}
+					</span>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={handleRefresh}
+						disabled={isRefreshing || poolsLoading}
+					>
+						<RefreshCw
+							className={`h-4 w-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`}
+						/>
+						Refresh
+					</Button>
+				</div>
+			</div>
 
-            {/* Memory Chart */}
-            <MemoryChart livePools={pools} />
+			{/* Memory Chart */}
+			<MemoryChart livePools={pools} />
 
-            {/* Container Table */}
-            {poolsLoading && pools.length === 0 ? (
-                <div className="flex items-center justify-center py-12">
-                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                </div>
-            ) : pools.length === 0 ? (
-                <Card>
-                    <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                        <Server className="h-12 w-12 text-muted-foreground mb-4" />
-                        <h3 className="text-lg font-semibold">
-                            No containers connected
-                        </h3>
-                        <p className="mt-2 text-sm text-muted-foreground max-w-md">
-                            Worker containers register themselves on startup.
-                            If you expect containers to be running, check the
-                            worker logs for connection issues.
-                        </p>
-                    </CardContent>
-                </Card>
-            ) : (
-                <ContainerTable pools={pools} workerIds={workerIds} />
-            )}
-        </div>
-    );
+			{/* Container Table */}
+			{poolsLoading && pools.length === 0 ? (
+				<div className="flex items-center justify-center py-12">
+					<Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+				</div>
+			) : pools.length === 0 ? (
+				<Card>
+					<CardContent className="flex flex-col items-center justify-center py-12 text-center">
+						<Server className="h-12 w-12 text-muted-foreground mb-4" />
+						<h3 className="text-lg font-semibold">
+							No containers connected
+						</h3>
+						<p className="mt-2 text-sm text-muted-foreground max-w-md">
+							Worker containers register themselves on startup. If
+							you expect containers to be running, check the
+							worker logs for connection issues.
+						</p>
+					</CardContent>
+				</Card>
+			) : (
+				<ContainerTable pools={pools} workerIds={workerIds} />
+			)}
+		</div>
+	);
 }

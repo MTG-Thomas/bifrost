@@ -37,6 +37,7 @@ import signal
 import subprocess
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -586,11 +587,8 @@ class ProcessPoolManager:
         for task in tasks:
             if task and not task.done():
                 task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    # Expected — we just cancelled the task; no log needed
-                    pass
 
         # Terminate all processes
         for handle in list(self.processes.values()):

@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -146,11 +147,8 @@ class AgentRunConsumer(BaseConsumer):
                     )
                 except asyncio.TimeoutError:
                     executor_task.cancel()
-                    try:
+                    with suppress(asyncio.CancelledError):
                         await executor_task
-                    except asyncio.CancelledError:
-                        # Expected — we just cancelled the task on timeout
-                        pass
                     run_result = {
                         "output": None,
                         "iterations_used": 0,
@@ -159,7 +157,7 @@ class AgentRunConsumer(BaseConsumer):
                         "llm_model": None,
                         "error": f"Agent run timed out after {run_timeout}s",
                     }
-                except asyncio.CancelledError:
+                except asyncio.CancelledError:  # NOSONAR -- persist the cancelled run before returning.
                     run_result = {
                         "output": None,
                         "iterations_used": 0,
@@ -169,11 +167,8 @@ class AgentRunConsumer(BaseConsumer):
                     }
                 finally:
                     cancel_watcher.cancel()
-                    try:
+                    with suppress(asyncio.CancelledError):
                         await cancel_watcher
-                    except asyncio.CancelledError:
-                        # Expected — we just cancelled the watcher
-                        pass
 
             # Update run record and flush buffered steps (brief DB session)
             duration_ms = int((time.time() - start_time) * 1000)
@@ -327,7 +322,7 @@ class AgentRunConsumer(BaseConsumer):
                     pass  # Don't let Redis errors kill the watcher
                 await asyncio.sleep(CANCEL_CHECK_INTERVAL)
         except asyncio.CancelledError:
-            pass  # Normal cleanup when executor finishes
+            raise  # Normal task cancellation when the executor finishes.
 
     @staticmethod
     async def _update_event_delivery(

@@ -135,10 +135,7 @@ export function ChatSidebar({
 						</Button>
 					)}
 				</div>
-				<Button
-					className="w-full gap-2"
-					onClick={handleNewChat}
-				>
+				<Button className="w-full gap-2" onClick={handleNewChat}>
 					<Plus className="h-4 w-4" />
 					New Chat
 				</Button>
@@ -179,6 +176,17 @@ export function ChatSidebar({
 									onClick={() =>
 										handleSelectConversation(conv)
 									}
+									onKeyDown={(event) => {
+										if (
+											event.key === "Enter" ||
+											event.key === " "
+										) {
+											event.preventDefault();
+											handleSelectConversation(conv);
+										}
+									}}
+									role="button"
+									tabIndex={0}
 								>
 									<MessageSquare className="h-4 w-4 mt-1 text-muted-foreground shrink-0" />
 									<div className="flex-1 min-w-0">

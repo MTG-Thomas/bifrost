@@ -92,10 +92,7 @@ export function RunCard({
 					}
 				/>
 
-				<div
-					className="flex shrink-0 items-center"
-					onClick={(e) => e.stopPropagation()}
-				>
+				<div className="flex shrink-0 items-center">
 					{canVerdict && onVerdict ? (
 						<div className="flex gap-1">
 							<button

@@ -191,7 +191,7 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.warning(f"File index reconciliation failed: {e}")
 
-    asyncio.create_task(_run_reconciler())
+    _reconciler_task = asyncio.create_task(_run_reconciler())
 
     logger.info(f"Bifrost API started in {settings.environment} mode")
 

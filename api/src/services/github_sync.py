@@ -11,6 +11,7 @@ Key principles:
 5. Preflight validates repo health (syntax, lint, refs, orphans)
 """
 
+import asyncio
 import hashlib
 import logging
 import subprocess
@@ -59,6 +60,20 @@ from src.services.manifest_import import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _run_ruff_check(
+    repo_dir: Path,
+    py_files: list[str],
+) -> subprocess.CompletedProcess[str]:
+    """Run Ruff synchronously; callers dispatch this helper off the event loop."""
+    return subprocess.run(
+        ["ruff", "check", "--output-format=json", "--no-fix", *py_files],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(repo_dir),
+    )
 
 
 # =============================================================================
@@ -1560,13 +1575,7 @@ class GitHubSyncService:
         ]
         if py_files:
             try:
-                result = subprocess.run(
-                    ["ruff", "check", "--output-format=json", "--no-fix", *py_files],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    cwd=str(repo_dir),
-                )
+                result = await asyncio.to_thread(_run_ruff_check, repo_dir, py_files)
                 if result.stdout.strip():
                     import json
                     for violation in json.loads(result.stdout):

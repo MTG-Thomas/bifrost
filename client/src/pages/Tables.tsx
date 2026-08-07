@@ -220,13 +220,19 @@ export function Tables() {
 				</div>
 			</div>
 
-			<Tabs defaultValue="tables" className="flex flex-1 min-h-0 flex-col">
+			<Tabs
+				defaultValue="tables"
+				className="flex flex-1 min-h-0 flex-col"
+			>
 				<TabsList className="w-fit">
 					<TabsTrigger value="tables">Tables</TabsTrigger>
 					<TabsTrigger value="claims">Custom Claims</TabsTrigger>
 				</TabsList>
 
-				<TabsContent value="tables" className="flex flex-1 min-h-0 flex-col space-y-6">
+				<TabsContent
+					value="tables"
+					className="flex flex-1 min-h-0 flex-col space-y-6"
+				>
 					{/* Search and Filters */}
 					<div className="flex items-center gap-4">
 						<SearchBox
@@ -336,7 +342,9 @@ export function Tables() {
 																table.id,
 															)
 														}
-														onClick={(e: React.MouseEvent) =>
+														onClick={(
+															e: React.MouseEvent,
+														) =>
 															e.stopPropagation()
 														}
 													/>
@@ -370,7 +378,9 @@ export function Tables() {
 													{table.name}
 													{table.is_solution_managed && (
 														<SolutionManagedBadge
-															solutionId={table.solution_id}
+															solutionId={
+																table.solution_id
+															}
 														/>
 													)}
 												</span>
@@ -382,20 +392,16 @@ export function Tables() {
 												{formatDate(table.created_at)}
 											</DataTableCell>
 											<DataTableCell className="w-0 whitespace-nowrap text-right">
-												<div
-													className="flex justify-end gap-2"
-													onClick={(e: React.MouseEvent) =>
-														e.stopPropagation()
-													}
-												>
+												<div className="flex justify-end gap-2">
 													<Button
 														variant="ghost"
 														size="icon"
-														onClick={() =>
+														onClick={(event) => {
+															event.stopPropagation();
 															handleViewDocuments(
 																table,
-															)
-														}
+															);
+														}}
 														title="View documents"
 														aria-label="View documents"
 													>
@@ -404,9 +410,10 @@ export function Tables() {
 													<Button
 														variant="ghost"
 														size="icon"
-														onClick={() =>
-															handleEdit(table)
-														}
+														onClick={(event) => {
+															event.stopPropagation();
+															handleEdit(table);
+														}}
 														disabled={
 															table.is_solution_managed
 														}
@@ -422,9 +429,10 @@ export function Tables() {
 													<Button
 														variant="ghost"
 														size="icon"
-														onClick={() =>
-															handleDelete(table)
-														}
+														onClick={(event) => {
+															event.stopPropagation();
+															handleDelete(table);
+														}}
 														disabled={
 															table.is_solution_managed
 														}
