@@ -742,6 +742,13 @@ class GitHubSyncService:
             repo.remotes.origin.fetch(self.branch)
             commits_behind = int(repo.git.rev_list("--count", f"HEAD..{remote_ref}"))
         except Exception as exc:
+            error_text = str(exc).lower()
+            if (
+                "not found" in error_text
+                or "empty" in error_text
+                or "couldn't find remote ref" in error_text
+            ):
+                return None
             return f"Failed to fetch remote branch before workspace push: {exc}"
 
         if commits_behind == 0:

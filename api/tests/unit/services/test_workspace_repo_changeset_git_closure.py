@@ -119,6 +119,36 @@ async def test_workspace_repo_commit_closure_returns_remote_reconciliation_error
     service._do_push.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_workspace_repo_commit_closure_pushes_when_remote_branch_is_missing(
+    tmp_path,
+):
+    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+
+    @asynccontextmanager
+    async def checkout():
+        yield tmp_path
+
+    service.repo_manager = SimpleNamespace(checkout=checkout)
+    repo = Mock()
+    repo.remotes.origin.fetch.side_effect = RuntimeError(
+        "couldn't find remote ref production-live"
+    )
+    service._open_or_init = Mock(return_value=repo)
+    service._do_commit = AsyncMock(
+        return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
+    )
+    service._do_push = Mock(
+        return_value=SimpleNamespace(success=True, commit_sha="b" * 40, error=None)
+    )
+
+    sha, push_error = await service.commit_workspace_changes("agent change", push=True)
+
+    assert sha == "b" * 40
+    assert push_error is None
+    service._do_push.assert_called_once_with(tmp_path, repo)
+
+
 def test_workspace_repo_remote_reconciliation_merges_advanced_branch(tmp_path):
     service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
     service.branch = "production-live"
