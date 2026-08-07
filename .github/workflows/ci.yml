@@ -1344,7 +1344,24 @@ jobs:
               --owner ${{ github.repository_owner }}
             ```
 
-          draft: false
+          # Immutable releases only accept asset uploads while they are drafts.
+          # Publish in the next step after every asset has been uploaded.
+          draft: true
           prerelease: ${{ steps.get_version.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+          PRERELEASE: ${{ steps.get_version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(--draft=false)
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+          gh release edit "$VERSION" "${args[@]}"
