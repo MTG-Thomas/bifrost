@@ -87,9 +87,18 @@ def test_release_assets_upload_before_immutable_release_publication() -> None:
         index for index, step in enumerate(steps) if step["name"] == "Publish release"
     )
 
-    assert steps[create_index]["with"]["draft"] is True
+    create_with = steps[create_index]["with"]
+    publish_run = steps[publish_index]["run"]
+
+    assert create_with["draft"] is True
+    assert "${{ steps.source_tarball.outputs.tarball }}" in create_with["files"]
+    assert "${{ steps.source_tarball.outputs.tarball }}.sha256" in create_with["files"]
+    assert "${{ steps.source_tarball.outputs.tarball }}.sigstore" in create_with["files"]
     assert publish_index > create_index
-    assert 'gh release edit "$VERSION" "${args[@]}"' in steps[publish_index]["run"]
+    assert "--draft=false" in publish_run
+    assert "args+=(--prerelease)" in publish_run
+    assert "args+=(--latest)" in publish_run
+    assert 'gh release edit "$VERSION" "${args[@]}"' in publish_run
 
 
 def test_dependabot_lock_validation_does_not_commit_to_pr_branch() -> None:
