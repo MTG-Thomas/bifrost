@@ -96,7 +96,9 @@ function VariableItem({ name, value, depth }: VariableItemProps) {
 			>
 				<div className="flex items-center pr-8">
 					{/* Expand/collapse icon */}
-					<div
+					<button
+						type="button"
+						disabled={!isExpandable}
 						className="cursor-pointer flex items-center"
 						onClick={() =>
 							isExpandable && setIsExpanded(!isExpanded)
@@ -125,7 +127,7 @@ function VariableItem({ name, value, depth }: VariableItemProps) {
 								{getDisplayValue()}
 							</span>
 						)}
-					</div>
+					</button>
 
 					{/* Copy button - shown on hover, positioned at the right edge */}
 					{isHovering && (

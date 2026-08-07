@@ -1,5 +1,6 @@
 """Additional desktop GitHub sync orchestration coverage using fakes only."""
 
+import asyncio
 import sys
 import types
 from pathlib import Path
@@ -12,6 +13,7 @@ from src.models.contracts.github import PullResult, PushResult
 from src.services.github_sync import (
     GitHubSyncService,
     SyncError,
+    _run_ruff_check,
     _auto_resolve_manifest_conflicts,
     _classify_conflict_type,
     _deleted_paths_in_head,
@@ -250,7 +252,7 @@ async def test_run_preflight_reports_invalid_manifest_syntax_and_lint(
     workflow.parent.mkdir()
     workflow.write_text("def broken(:\n")
 
-    def fake_run(*args, **kwargs):
+    async def fake_run(*args, **kwargs):
         return SimpleNamespace(
             stdout=(
                 '[{"filename":"'
@@ -259,7 +261,7 @@ async def test_run_preflight_reports_invalid_manifest_syntax_and_lint(
             )
         )
 
-    monkeypatch.setattr(github_sync.subprocess, "run", fake_run)
+    monkeypatch.setattr(github_sync, "_run_ruff_check", fake_run)
     service = object.__new__(GitHubSyncService)
 
     result = await service._run_preflight(tmp_path)
@@ -280,16 +282,58 @@ async def test_run_preflight_allows_missing_ruff(tmp_path: Path, monkeypatch) ->
 
     (tmp_path / "workflow.py").write_text("VALUE = 1\n")
 
-    def missing_ruff(*args, **kwargs):
+    async def missing_ruff(*args, **kwargs):
         raise FileNotFoundError("ruff")
 
-    monkeypatch.setattr(github_sync.subprocess, "run", missing_ruff)
+    monkeypatch.setattr(github_sync, "_run_ruff_check", missing_ruff)
     service = object.__new__(GitHubSyncService)
 
     result = await service._run_preflight(tmp_path)
 
     assert result.valid is True
     assert result.issues == []
+
+
+@pytest.mark.asyncio
+async def test_ruff_process_is_reaped_when_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    communicate_started = asyncio.Event()
+    wait_finished = asyncio.Event()
+
+    class Process:
+        returncode = None
+        terminated = False
+
+        async def communicate(self):
+            communicate_started.set()
+            await asyncio.Future()
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        async def wait(self) -> int:
+            self.returncode = -15
+            wait_finished.set()
+            return self.returncode
+
+    process = Process()
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+
+    task = asyncio.create_task(_run_ruff_check(tmp_path, ["workflow.py"]))
+    await communicate_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert process.terminated is True
+    assert wait_finished.is_set()
 
 
 @pytest.mark.asyncio

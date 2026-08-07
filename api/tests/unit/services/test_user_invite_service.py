@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -47,7 +48,8 @@ def _invite(**overrides):
 
 
 def test_hash_token_is_stable_sha256_hex_digest() -> None:
-    assert _hash_token("invite-token") == _hash_token("invite-token")
+    expected = hashlib.sha256(b"invite-token").hexdigest()
+    assert _hash_token("invite-token") == expected
     assert _hash_token("invite-token") != "invite-token"
     assert len(_hash_token("invite-token")) == 64
 

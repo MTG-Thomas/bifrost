@@ -101,6 +101,13 @@ function FolderRow({
 					e.stopPropagation();
 					onToggle(node.path);
 				}}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						e.stopPropagation();
+						onToggle(node.path);
+					}
+				}}
 			>
 				{loading ? (
 					<Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
@@ -211,7 +218,10 @@ function FolderPicker({
 		}
 	}
 
-	const renderLevel = (parentPath: string, level: number): React.ReactNode => {
+	const renderLevel = (
+		parentPath: string,
+		level: number,
+	): React.ReactNode => {
 		const nodes = childrenByPath[parentPath];
 		if (!nodes) return null;
 		const folders = nodes.filter((n) => n.type === "folder");
@@ -288,7 +298,10 @@ function ValidationResultsPanel({
 	return (
 		<div className="space-y-3">
 			{sections.map((section) => (
-				<div key={section.title} className="overflow-hidden rounded-md ring-1 ring-foreground/5">
+				<div
+					key={section.title}
+					className="overflow-hidden rounded-md ring-1 ring-foreground/5"
+				>
 					<div
 						className={cn(
 							"px-3 py-2 text-sm font-medium border-b flex items-center gap-2",
@@ -308,15 +321,21 @@ function ValidationResultsPanel({
 						{section.issues.map((issue, idx) => (
 							<li key={idx} className="px-3 py-2">
 								<div className="flex items-start gap-2">
-									<Badge variant="outline" className="text-xs shrink-0">
+									<Badge
+										variant="outline"
+										className="text-xs shrink-0"
+									>
 										{issue.severity}
 									</Badge>
 									<div className="min-w-0 flex-1">
 										<div className="font-mono text-xs text-muted-foreground truncate">
 											{issue.file}
-											{issue.line != null && `:${issue.line}`}
+											{issue.line != null &&
+												`:${issue.line}`}
 										</div>
-										<div className="text-sm">{issue.message}</div>
+										<div className="text-sm">
+											{issue.message}
+										</div>
 									</div>
 								</div>
 							</li>
@@ -382,14 +401,18 @@ function AppReplacePathDialogBody({
 
 	// Client-side pre-flight warnings so the user sees feedback before submitting.
 	const warnings = useMemo(() => {
-		const out: { kind: "uniqueness" | "nesting" | "empty"; message: string }[] =
-			[];
+		const out: {
+			kind: "uniqueness" | "nesting" | "empty";
+			message: string;
+		}[] = [];
 		if (!targetPath) return out;
 		const normalized = targetPath.replace(/\/$/, "");
 		if (normalized === app.repo_path) {
 			return out;
 		}
-		const others = (appList?.applications ?? []).filter((a) => a.id !== app.id);
+		const others = (appList?.applications ?? []).filter(
+			(a) => a.id !== app.id,
+		);
 		const exactMatch = others.find((a) => a.repo_path === normalized);
 		if (exactMatch) {
 			out.push({
@@ -472,141 +495,143 @@ function AppReplacePathDialogBody({
 			</DialogHeader>
 
 			{phase === "validated" ? (
-					<div className="space-y-4">
-						<div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm">
-							<CheckCircle2 className="h-4 w-4 text-green-600" />
-							Path replaced. Now pointing to{" "}
-							<code className="bg-background px-1 py-0.5 rounded text-xs">
-								{targetPath}
-							</code>
-						</div>
-						<ValidationResultsPanel result={validationResult} />
-						<DialogFooter>
-							<Button variant="outline" onClick={handleClose}>
-								Close
-							</Button>
-							<Button
-								onClick={() => {
-									navigate(`/apps/${app.slug}/edit`);
-									handleClose();
-								}}
-							>
-								Open app
-							</Button>
-						</DialogFooter>
+				<div className="space-y-4">
+					<div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm">
+						<CheckCircle2 className="h-4 w-4 text-green-600" />
+						Path replaced. Now pointing to{" "}
+						<code className="bg-background px-1 py-0.5 rounded text-xs">
+							{targetPath}
+						</code>
 					</div>
-				) : (
-					<div className="space-y-4">
-						<div className="space-y-2">
-							<label
-								htmlFor="target-path"
-								className="text-sm font-medium"
-							>
-								New path
-							</label>
-							<Input
-								id="target-path"
-								value={targetPath}
-								onChange={(e) => setTargetPath(e.target.value)}
-								placeholder="apps/my-app-v2"
-								className="font-mono text-sm"
-								disabled={phase === "replacing"}
-							/>
-							<FolderPicker
-								selectedPath={targetPath}
-								onSelectPath={setTargetPath}
-							/>
-						</div>
-
-						{warnings.length > 0 && (
-							<div className="space-y-2">
-								{warnings.map((w) => (
-									<div
-										key={w.kind}
-										className={cn(
-											"flex items-start gap-2 p-3 rounded-md text-sm",
-											w.kind === "empty"
-												? "bg-yellow-50 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300"
-												: "bg-destructive/10 text-destructive",
-										)}
-									>
-										<AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-										<span>{w.message}</span>
-									</div>
-								))}
-							</div>
-						)}
-
-						<Collapsible
-							open={advancedOpen}
-							onOpenChange={setAdvancedOpen}
+					<ValidationResultsPanel result={validationResult} />
+					<DialogFooter>
+						<Button variant="outline" onClick={handleClose}>
+							Close
+						</Button>
+						<Button
+							onClick={() => {
+								navigate(`/apps/${app.slug}/edit`);
+								handleClose();
+							}}
 						>
-							<CollapsibleTrigger asChild>
-								<button
-									type="button"
-									className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-								>
-									{advancedOpen ? (
-										<ChevronDown className="h-3 w-3" />
-									) : (
-										<ChevronRight className="h-3 w-3" />
-									)}
-									Advanced
-								</button>
-							</CollapsibleTrigger>
-							<CollapsibleContent className="pt-3">
-								<label className="flex items-start gap-2 text-sm">
-									<Checkbox
-										checked={force}
-										onCheckedChange={(v) => setForce(v === true)}
-										disabled={phase === "replacing"}
-										className="mt-0.5"
-									/>
-									<span>
-										<span className="font-medium">
-											Force (skip validation)
-										</span>
-										<span className="block text-xs text-muted-foreground">
-											Bypass uniqueness, nesting, and source-exists
-											checks. Matches the CLI's{" "}
-											<code className="bg-muted px-1 rounded">
-												--force
-											</code>{" "}
-											flag — use when repointing before files are
-											pushed.
-										</span>
-									</span>
-								</label>
-							</CollapsibleContent>
-						</Collapsible>
-
-						<DialogFooter>
-							<Button
-								variant="outline"
-								onClick={handleClose}
-								disabled={phase === "replacing"}
-							>
-								Cancel
-							</Button>
-							<Button
-								onClick={handleReplace}
-								disabled={!canReplace || phase === "replacing"}
-							>
-								{phase === "replacing" ? (
-									<>
-										<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-										Replacing…
-									</>
-								) : (
-									<>
-										<ArrowRightLeft className="mr-2 h-4 w-4" />
-										Replace
-									</>
-								)}
-							</Button>
-						</DialogFooter>
+							Open app
+						</Button>
+					</DialogFooter>
+				</div>
+			) : (
+				<div className="space-y-4">
+					<div className="space-y-2">
+						<label
+							htmlFor="target-path"
+							className="text-sm font-medium"
+						>
+							New path
+						</label>
+						<Input
+							id="target-path"
+							value={targetPath}
+							onChange={(e) => setTargetPath(e.target.value)}
+							placeholder="apps/my-app-v2"
+							className="font-mono text-sm"
+							disabled={phase === "replacing"}
+						/>
+						<FolderPicker
+							selectedPath={targetPath}
+							onSelectPath={setTargetPath}
+						/>
 					</div>
-				)}
+
+					{warnings.length > 0 && (
+						<div className="space-y-2">
+							{warnings.map((w) => (
+								<div
+									key={w.kind}
+									className={cn(
+										"flex items-start gap-2 p-3 rounded-md text-sm",
+										w.kind === "empty"
+											? "bg-yellow-50 dark:bg-yellow-950 text-yellow-700 dark:text-yellow-300"
+											: "bg-destructive/10 text-destructive",
+									)}
+								>
+									<AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+									<span>{w.message}</span>
+								</div>
+							))}
+						</div>
+					)}
+
+					<Collapsible
+						open={advancedOpen}
+						onOpenChange={setAdvancedOpen}
+					>
+						<CollapsibleTrigger asChild>
+							<button
+								type="button"
+								className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+							>
+								{advancedOpen ? (
+									<ChevronDown className="h-3 w-3" />
+								) : (
+									<ChevronRight className="h-3 w-3" />
+								)}
+								Advanced
+							</button>
+						</CollapsibleTrigger>
+						<CollapsibleContent className="pt-3">
+							<label className="flex items-start gap-2 text-sm">
+								<Checkbox
+									checked={force}
+									onCheckedChange={(v) =>
+										setForce(v === true)
+									}
+									disabled={phase === "replacing"}
+									className="mt-0.5"
+								/>
+								<span>
+									<span className="font-medium">
+										Force (skip validation)
+									</span>
+									<span className="block text-xs text-muted-foreground">
+										Bypass uniqueness, nesting, and
+										source-exists checks. Matches the CLI's{" "}
+										<code className="bg-muted px-1 rounded">
+											--force
+										</code>{" "}
+										flag — use when repointing before files
+										are pushed.
+									</span>
+								</span>
+							</label>
+						</CollapsibleContent>
+					</Collapsible>
+
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={handleClose}
+							disabled={phase === "replacing"}
+						>
+							Cancel
+						</Button>
+						<Button
+							onClick={handleReplace}
+							disabled={!canReplace || phase === "replacing"}
+						>
+							{phase === "replacing" ? (
+								<>
+									<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+									Replacing…
+								</>
+							) : (
+								<>
+									<ArrowRightLeft className="mr-2 h-4 w-4" />
+									Replace
+								</>
+							)}
+						</Button>
+					</DialogFooter>
+				</div>
+			)}
 		</DialogContent>
 	);
 }

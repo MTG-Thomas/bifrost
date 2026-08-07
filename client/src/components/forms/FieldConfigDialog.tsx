@@ -488,19 +488,33 @@ function FieldConfigDialogContent({
 											const prevType = type;
 											setType(newType);
 											// Reset default value when switching to/from checkbox
-											if (newType === "checkbox" && typeof defaultValue !== "boolean") {
+											if (
+												newType === "checkbox" &&
+												typeof defaultValue !==
+													"boolean"
+											) {
 												setDefaultValue(false);
-											} else if (newType !== "checkbox" && typeof defaultValue === "boolean") {
+											} else if (
+												newType !== "checkbox" &&
+												typeof defaultValue ===
+													"boolean"
+											) {
 												setDefaultValue("");
 											}
 											// Reset default value when switching into or out of
 											// multi_select (comma-separated list won't map
 											// cleanly to/from a single-value string).
 											if (
-												(newType === "multi_select" || prevType === "multi_select") &&
+												(newType === "multi_select" ||
+													prevType ===
+														"multi_select") &&
 												newType !== prevType
 											) {
-												setDefaultValue(newType === "checkbox" ? false : "");
+												setDefaultValue(
+													newType === "checkbox"
+														? false
+														: "",
+												);
 											}
 										}}
 									>
@@ -682,13 +696,11 @@ function FieldConfigDialogContent({
 										(p.id ?? p.name) === dataProvider,
 								) && (
 									<DataProviderInputsConfig
-										provider={
-											dataProviders.find(
-												(p: DataProvider) =>
-													(p.id ?? p.name) ===
-													dataProvider,
-											)!
-										}
+										provider={dataProviders.find(
+											(p: DataProvider) =>
+												(p.id ?? p.name) ===
+												dataProvider,
+										)!}
 										inputs={dataProviderInputs}
 										onChange={setDataProviderInputs}
 										availableFields={(
@@ -711,7 +723,9 @@ function FieldConfigDialogContent({
 												id="defaultValue"
 												checked={defaultValue === true}
 												onCheckedChange={(checked) =>
-													setDefaultValue(checked === true)
+													setDefaultValue(
+														checked === true,
+													)
 												}
 											/>
 											<Label
@@ -1054,7 +1068,9 @@ function FieldConfigDialogContent({
 				{showContextSidebar && (
 					<>
 						{/* Backdrop */}
-						<div
+						<button
+							type="button"
+							aria-label="Close context sidebar"
 							className="lg:hidden fixed inset-0 bg-black/50 z-50"
 							onClick={() => setShowContextSidebar(false)}
 						/>

@@ -1596,7 +1596,7 @@ async def _process_chat_message(
                 })
             except Exception:
                 pass  # WebSocket may already be closed
-            return
+            raise
 
         # Generate title if this is a new conversation (no title yet)
         if needs_title:

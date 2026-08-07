@@ -48,7 +48,11 @@ export function FileTabs() {
 
 		// If content already loaded, check for conflicts before switching
 		// Skip conflict check during indexing (server modifies file, creating etag mismatch)
-		if (tab.content !== "" && tab.etag && !useEditorStore.getState().isIndexing) {
+		if (
+			tab.content !== "" &&
+			tab.etag &&
+			!useEditorStore.getState().isIndexing
+		) {
 			try {
 				const serverFile = await fileService.readFile(tab.file.path);
 
@@ -131,9 +135,7 @@ interface FileTabProps {
 		unsavedChanges: boolean;
 		saveState?: "clean" | "dirty" | "saving" | "saved" | "conflict";
 		conflictReason?:
-			| "content_changed"
-			| "path_not_found"
-			| "workflows_would_deactivate";
+			"content_changed" | "path_not_found" | "workflows_would_deactivate";
 		serverContentDiffers?: boolean;
 	};
 	index: number;
@@ -214,6 +216,14 @@ function FileTab({
 					{/* Clickable area for tab */}
 					<div
 						onClick={onTabClick}
+						onKeyDown={(event) => {
+							if (event.key === "Enter" || event.key === " ") {
+								event.preventDefault();
+								onTabClick();
+							}
+						}}
+						role="button"
+						tabIndex={0}
 						className="flex items-center gap-2 flex-1 min-w-0"
 					>
 						{/* Save state icon - always show cloud */}

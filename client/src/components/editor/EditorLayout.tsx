@@ -12,13 +12,7 @@ import { FileTabs } from "./FileTabs";
 import { useEditorSession } from "@/hooks/useEditorSession";
 import { useCmdCtrlShortcut } from "@/contexts/KeyboardContext";
 import { useUploadStore } from "@/stores/uploadStore";
-import {
-	X,
-	Save,
-	Minus,
-	PanelLeftClose,
-	PanelLeft,
-} from "lucide-react";
+import { X, Save, Minus, PanelLeftClose, PanelLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import {
@@ -250,12 +244,16 @@ export function EditorLayout() {
 							style={{ width: `${sidebarWidth}px` }}
 						>
 							<div className="flex-1 overflow-hidden">
-								{sidebarPanel === "files" && <WorkspaceFileTree />}
+								{sidebarPanel === "files" && (
+									<WorkspaceFileTree />
+								)}
 								{sidebarPanel === "search" && <SearchPanel />}
 								{sidebarPanel === "sourceControl" && (
 									<SourceControlPanel />
 								)}
-								{sidebarPanel === "run" && <RunPanel executeRef={executeRef} />}
+								{sidebarPanel === "run" && (
+									<RunPanel executeRef={executeRef} />
+								)}
 								{sidebarPanel === "packages" && (
 									<PackagePanel />
 								)}
@@ -265,11 +263,7 @@ export function EditorLayout() {
 							<div
 								className="absolute top-0 right-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 active:bg-primary transition-colors"
 								onMouseDown={handleMouseDown}
-								style={{
-									cursor: isResizing
-										? "col-resize"
-										: "col-resize",
-								}}
+								style={{ cursor: "col-resize" }}
 							/>
 						</div>
 					)}

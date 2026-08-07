@@ -189,25 +189,28 @@ def _assert_entity_fields(
                 continue
             if override == "absent":
                 # Scope-inherited field: never serialized into the bundle entry.
-                assert before.get(field) in (None, [], {}, ""), (
-                    f"{model.__name__}.{field} (override=absent) was present in the "
-                    f"source bundle entry: {before.get(field)!r}"
-                )
-                assert after.get(field) in (None, [], {}, ""), (
-                    f"{model.__name__}.{field} (override=absent) appeared in the "
-                    f"installed bundle entry: {after.get(field)!r}"
-                )
+                if before.get(field) not in (None, [], {}, ""):
+                    raise AssertionError(
+                        f"{model.__name__}.{field} (override=absent) was present in the "
+                        "source bundle entry"
+                    )
+                if after.get(field) not in (None, [], {}, ""):
+                    raise AssertionError(
+                        f"{model.__name__}.{field} (override=absent) appeared in the "
+                        "installed bundle entry"
+                    )
             elif override == "scrub":
                 aval = after.get(field)
-                assert aval in (None, [], {}, ""), (
-                    f"{model.__name__}.{field} (override=scrub) leaked: {aval!r}"
-                )
+                if aval not in (None, [], {}, ""):
+                    raise AssertionError(
+                        f"{model.__name__}.{field} (override=scrub) leaked"
+                    )
             elif override == "keep_env_ref":
                 # Env-scoped grant: value preserved as-is (NOT solution-remapped).
-                assert after.get(field) == before.get(field), (
-                    f"{model.__name__}.{field} (override=keep_env_ref) changed "
-                    f"{before.get(field)!r} -> {after.get(field)!r}"
-                )
+                if after.get(field) != before.get(field):
+                    raise AssertionError(
+                        f"{model.__name__}.{field} (override=keep_env_ref) changed"
+                    )
             else:
                 assert_field_roundtrip(
                     model, field, before, after, policy, row=before, remap=remap

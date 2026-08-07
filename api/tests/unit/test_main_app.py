@@ -109,10 +109,12 @@ async def test_app_lifespan_runs_startup_reconciliation_and_shutdown(
     )
     policy_service = SimpleNamespace(seed_builtin_admin_bypass=AsyncMock())
     created_tasks = []
+    create_task = main.asyncio.create_task
 
     def capture_task(coro):
-        created_tasks.append(coro)
-        return SimpleNamespace(cancel=Mock())
+        task = create_task(coro)
+        created_tasks.append(task)
+        return task
 
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(main, "configure_opentelemetry", Mock())
@@ -170,10 +172,12 @@ async def test_app_lifespan_logs_optional_startup_failures(monkeypatch, caplog):
         environment="unit",
     )
     created_tasks = []
+    create_task = main.asyncio.create_task
 
     def capture_task(coro):
-        created_tasks.append(coro)
-        return SimpleNamespace(cancel=Mock())
+        task = create_task(coro)
+        created_tasks.append(task)
+        return task
 
     def failing_session_factory():
         raise RuntimeError("session factory offline")

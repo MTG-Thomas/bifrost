@@ -226,7 +226,7 @@ class WatchApp(BifrostApp[None]):
                 i += 1
                 await asyncio.sleep(0.08)
         except asyncio.CancelledError:
-            pass
+            raise
 
     def log_push(self, filename: str) -> None:
         self._add_row("push", "\u2192", "Push", filename)

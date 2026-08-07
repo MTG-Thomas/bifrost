@@ -123,8 +123,8 @@ class ConnectionManager:
                         continue
                     await dispatcher(channel, message)
                 else:
-                    assert message_json is not None
-                    await websocket.send_text(message_json)
+                    if message_json is not None:
+                        await websocket.send_text(message_json)
             except Exception:
                 dead_connections.add(websocket)
 

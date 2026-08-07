@@ -288,6 +288,7 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
     # Resolve what we're executing
     func = None
     is_script = False
+    script_source: str | None = None
     is_data_provider = "data_provider" in request.tags
 
     if request.func and request.code:
@@ -298,9 +299,12 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
         # Direct function execution (from discovery)
         func = request.func
         is_script = False
-    elif request.code:
+    elif request.code is not None:
         # Executing inline script
+        if not request.code:
+            raise ValueError("Script execution requires source code")
         is_script = True
+        script_source = request.code
         func = None
     else:
         raise ValueError("Must provide either func or code")
@@ -378,12 +382,12 @@ async def execute(request: ExecutionRequest) -> ExecutionResult:
                     )
 
             # Convert scripts to callables for unified execution
-            if is_script:
-                assert request.code is not None
-                func = _script_to_callable(request.code, request.name or "script")
+            if script_source is not None:
+                func = _script_to_callable(script_source, request.name or "script")
 
             # Unified execution path for both workflows and scripts
-            assert func is not None
+            if func is None:
+                raise ValueError("Execution requires a workflow or script callable")
 
             # Always capture logs AND variables for all executions
             # Filtering based on permissions happens at API response level

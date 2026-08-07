@@ -140,7 +140,9 @@ export function Branding() {
 			});
 			setBranding(updated);
 			setTerminology(
-				mergeTerminology(updated.terminology as BrandingTerminologyInput),
+				mergeTerminology(
+					updated.terminology as BrandingTerminologyInput,
+				),
 			);
 			applyBrandingTheme(updated as BrandingSettings);
 			refreshBranding();
@@ -233,11 +235,8 @@ export function Branding() {
 				},
 				[key]: {
 					singular:
-						field === "singular"
-							? value
-							: current[key].singular,
-					plural:
-						field === "plural" ? value : current[key].plural,
+						field === "singular" ? value : current[key].singular,
+					plural: field === "plural" ? value : current[key].plural,
 				},
 			}),
 		);
@@ -419,9 +418,7 @@ export function Branding() {
 							id="applicationName"
 							type="text"
 							value={applicationName}
-							onChange={(e) =>
-								setApplicationName(e.target.value)
-							}
+							onChange={(e) => setApplicationName(e.target.value)}
 							placeholder="Bifrost"
 							maxLength={40}
 							className="max-w-sm"
@@ -654,6 +651,19 @@ export function Branding() {
 										.getElementById("squareLogoInput")
 										?.click()
 								}
+								onKeyDown={(event) => {
+									if (
+										event.key === "Enter" ||
+										event.key === " "
+									) {
+										event.preventDefault();
+										document
+											.getElementById("squareLogoInput")
+											?.click();
+									}
+								}}
+								role="button"
+								tabIndex={0}
 							>
 								<input
 									id="squareLogoInput"
@@ -742,6 +752,21 @@ export function Branding() {
 										.getElementById("rectangleLogoInput")
 										?.click()
 								}
+								onKeyDown={(event) => {
+									if (
+										event.key === "Enter" ||
+										event.key === " "
+									) {
+										event.preventDefault();
+										document
+											.getElementById(
+												"rectangleLogoInput",
+											)
+											?.click();
+									}
+								}}
+								role="button"
+								tabIndex={0}
 							>
 								<input
 									id="rectangleLogoInput"
