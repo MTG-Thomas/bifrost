@@ -1533,6 +1533,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/roles/scopes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List authorization scopes
+         * @description Get the code-owned authorization-scope catalog (Platform admin only)
+         */
+        get: operations["list_authorization_scopes_api_roles_scopes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/roles/{role_id}": {
         parameters: {
             query?: never;
@@ -3840,6 +3860,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/platform/scheduler": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Scheduler Diagnostics */
+        get: operations["get_scheduler_diagnostics_api_platform_scheduler_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/scheduler/tasks/{task_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Scheduler Task History */
+        get: operations["get_scheduler_task_history_api_platform_scheduler_tasks__task_id__runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/oauth/connections/{connection_name}": {
         parameters: {
             query?: never;
@@ -5052,6 +5106,78 @@ export interface paths {
          *     if they are still defined in the system agent definitions.
          */
         delete: operations["delete_agent_api_agents__agent_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/skill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspect an Agent's portable skill projection */
+        get: operations["get_agent_skill_api_agents__agent_id__skill_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/skill/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one file from an Agent Skill bundle */
+        get: operations["get_agent_skill_file_api_agents__agent_id__skill_file_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/skill/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Upload or replace an Agent Skill bundle */
+        put: operations["upload_agent_skill_api_agents__agent_id__skill_bundle_put"];
+        post?: never;
+        /** Detach an uploaded bundle and return the Agent to inline instructions */
+        delete: operations["detach_agent_skill_api_agents__agent_id__skill_bundle_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/skill/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download an Agent as a portable Agent Skill
+         * @description Stream ``SKILL.md`` plus companion bundle assets for an accessible Agent.
+         */
+        get: operations["download_agent_skill_api_agents__agent_id__skill_download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -8071,6 +8197,307 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/builder/solutions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's own private builder Solutions */
+        get: operations["list_solutions_api_builder_solutions_get"];
+        put?: never;
+        /** Create a private builder Solution owned by the caller */
+        post: operations["create_solution_api_builder_solutions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one private builder Solution (owner only) */
+        get: operations["get_solution_api_builder_solutions__solution_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete a private builder Solution and everything it owns (owner only) */
+        delete: operations["delete_solution_api_builder_solutions__solution_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/promotion-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ask a platform administrator to promote this Solution (owner only) */
+        post: operations["create_promotion_request_api_builder_solutions__solution_id__promotion_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the caller's builder chat sessions for this Solution */
+        get: operations["list_sessions_api_builder_solutions__solution_id__sessions_get"];
+        put?: never;
+        /** Open a builder chat session against this Solution (owner only) */
+        post: operations["create_session_api_builder_solutions__solution_id__sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List this Solution's source revisions, newest first */
+        get: operations["list_revisions_api_builder_solutions__solution_id__revisions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/revisions/{revision_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download one source revision as a zip (owner only) */
+        get: operations["download_revision_api_builder_solutions__solution_id__revisions__revision_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/revisions/{revision_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List files in one immutable source revision */
+        get: operations["get_revision_files_api_builder_solutions__solution_id__revisions__revision_id__files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/revisions/{revision_id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one bounded text file from a source revision */
+        get: operations["get_revision_file_api_builder_solutions__solution_id__revisions__revision_id__file_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/revisions/{revision_id}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Diff one source revision against its parent or another revision */
+        get: operations["get_revision_diff_api_builder_solutions__solution_id__revisions__revision_id__diff_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore an earlier revision as a new revision (owner only) */
+        post: operations["undo_to_revision_api_builder_solutions__solution_id__undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List this Solution's builder turns, newest first */
+        get: operations["list_turns_api_builder_solutions__solution_id__turns_get"];
+        put?: never;
+        /**
+         * Run one builder agent turn against this Solution (owner only)
+         * @description Send a message to the builder agent and apply whatever it changes.
+         *
+         *     The turn holds the per-Solution write lock for its duration, so a second
+         *     concurrent turn is refused with 409 rather than queued. A model or tool
+         *     failure still records a failed turn row and leaves the current revision
+         *     pointer untouched.
+         */
+        post: operations["run_turn_api_builder_solutions__solution_id__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/build-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one owner-scoped builder build job */
+        get: operations["get_build_job_api_builder_solutions__solution_id__build_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/deploy-jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one owner-scoped builder deploy job */
+        get: operations["get_deploy_job_api_builder_solutions__solution_id__deploy_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solution-promotions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Reviews */
+        get: operations["list_reviews_api_solution_promotions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solution-promotions/{solution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Review */
+        get: operations["get_review_api_solution_promotions__solution_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/solution-promotions/{solution_id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Promote */
+        post: operations["promote_api_solution_promotions__solution_id__promote_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/builder/solutions/{solution_id}/apps/{app_id}/launch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a one-time launch URL for a Solution app on the app origin */
+        post: operations["create_launch_api_builder_solutions__solution_id__apps__app_id__launch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/knowledge-sources": {
         parameters: {
             query?: never;
@@ -9984,6 +10411,11 @@ export interface components {
             description?: string | null;
             /** System Prompt */
             system_prompt: string;
+            /**
+             * Bundle Path
+             * @description Relative path to the agent's portable skill-bundle root.
+             */
+            bundle_path?: string | null;
             /** Channels */
             channels?: components["schemas"]["AgentChannel"][];
             /** @default role_based */
@@ -10073,6 +10505,8 @@ export interface components {
             description?: string | null;
             /** System Prompt */
             system_prompt: string;
+            /** Bundle Path */
+            bundle_path?: string | null;
             /** Channels */
             channels: string[];
             access_level?: components["schemas"]["AgentAccessLevel"] | null;
@@ -10431,6 +10865,51 @@ export interface components {
              */
             created_at: string;
         };
+        /**
+         * AgentSkillFilePublic
+         * @description One browser-readable file from an Agent Skill bundle.
+         */
+        AgentSkillFilePublic: {
+            /** Path */
+            path: string;
+            /**
+             * Encoding
+             * @enum {string}
+             */
+            encoding: "utf-8" | "base64";
+            /** Content */
+            content: string;
+        };
+        /**
+         * AgentSkillPublic
+         * @description Portable skill projection and companion-file inventory for one Agent.
+         */
+        AgentSkillPublic: {
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Bundle Path */
+            bundle_path?: string | null;
+            /** Skill Markdown */
+            skill_markdown: string;
+            /** Files */
+            files?: string[];
+            /** Companion Files */
+            companion_files?: string[];
+            /** Automatic Capabilities */
+            automatic_capabilities?: string[];
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "inline" | "upload" | "solution";
+            /**
+             * Is Managed
+             * @default false
+             */
+            is_managed: boolean;
+        };
         /** AgentStatsResponse */
         AgentStatsResponse: {
             /**
@@ -10519,6 +10998,11 @@ export interface components {
             description?: string | null;
             /** System Prompt */
             system_prompt?: string | null;
+            /**
+             * Bundle Path
+             * @description Relative path to the agent's portable skill-bundle root. Explicit null clears the bundle.
+             */
+            bundle_path?: string | null;
             /** Channels */
             channels?: components["schemas"]["AgentChannel"][] | null;
             access_level?: components["schemas"]["AgentAccessLevel"] | null;
@@ -11215,6 +11699,24 @@ export interface components {
             oauth_providers: components["schemas"]["src__models__contracts__auth__OAuthProviderInfo"][];
         };
         /**
+         * AuthorizationScopePublic
+         * @description Display metadata for one code-owned authorization scope.
+         */
+        AuthorizationScopePublic: {
+            /** Key */
+            key: string;
+            /** Display Name */
+            display_name: string;
+            /** Description */
+            description: string;
+            /** Category */
+            category: string;
+            /** Is Privileged */
+            is_privileged: boolean;
+            /** Assignable To Custom Roles */
+            assignable_to_custom_roles: boolean;
+        };
+        /**
          * AuthorizeResponse
          * @description Response for initiating OAuth authorization.
          */
@@ -11499,6 +12001,14 @@ export interface components {
              */
             file: string;
         };
+        /** Body_upload_agent_skill_api_agents__agent_id__skill_bundle_put */
+        Body_upload_agent_skill_api_agents__agent_id__skill_bundle_put: {
+            /**
+             * File
+             * @description .skill or .zip Agent Skill archive
+             */
+            file: string;
+        };
         /** Body_upload_application_logo_api_applications__app_id__logo_post */
         Body_upload_application_logo_api_applications__app_id__logo_post: {
             /**
@@ -11584,6 +12094,163 @@ export interface components {
             primary_color?: string | null;
             /** @description Fixed product terminology overrides for the platform UI */
             terminology?: components["schemas"]["BrandingTerminology"] | null;
+        };
+        /**
+         * BuildJobPublic
+         * @description Owner-visible build status used by builder polling.
+         */
+        BuildJobPublic: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** App Id */
+            app_id?: string | null;
+            /** Status */
+            status: string;
+            /** Error */
+            error?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+        };
+        /**
+         * BuilderProjectDTO
+         * @description Read-shape for a Solution's builder-project row.
+         */
+        BuilderProjectDTO: {
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /** Current Revision Id */
+            current_revision_id?: string | null;
+            /** Deployed Revision Id */
+            deployed_revision_id?: string | null;
+            /** Promotion Status */
+            promotion_status: string;
+            /** Promotion Revision Id */
+            promotion_revision_id?: string | null;
+            /** Promotion Requested By */
+            promotion_requested_by?: string | null;
+            /** Promotion Requested At */
+            promotion_requested_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * BuilderSessionDTO
+         * @description Read-shape for one builder chat session.
+         *
+         *     ``conversation_id`` is the Conversation the chat transcript hangs off; the
+         *     session row is the typed link between that Conversation and the Solution.
+         */
+        BuilderSessionDTO: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * BuilderSessionsList
+         * @description List envelope for the caller's sessions on one Solution.
+         */
+        BuilderSessionsList: {
+            /** Sessions */
+            sessions: components["schemas"]["BuilderSessionDTO"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * BuilderTurnDTO
+         * @description Read-shape for one builder turn.
+         */
+        BuilderTurnDTO: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Requested By */
+            requested_by?: string | null;
+            /** Base Revision Id */
+            base_revision_id?: string | null;
+            /** Output Revision Id */
+            output_revision_id?: string | null;
+            /** Build Job Id */
+            build_job_id?: string | null;
+            /** Deploy Job Id */
+            deploy_job_id?: string | null;
+            /** Status */
+            status: string;
+            /** Error */
+            error?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+        };
+        /**
+         * BuilderTurnsList
+         * @description List envelope for a Solution's turns, newest first.
+         */
+        BuilderTurnsList: {
+            /** Turns */
+            turns: components["schemas"]["BuilderTurnDTO"][];
+            /** Total */
+            total: number;
         };
         /** BulkExportRequest */
         BulkExportRequest: {
@@ -12809,6 +13476,18 @@ export interface components {
              * @description HTTPS clone URL
              */
             clone_url: string;
+        };
+        /**
+         * CreateSessionRequest
+         * @description Create-shape for a builder chat session.
+         *
+         *     Only the title is an input. The Solution comes from the path and the owner
+         *     from the caller, so a session can never be opened against somebody else's
+         *     Solution or on somebody else's behalf.
+         */
+        CreateSessionRequest: {
+            /** Title */
+            title?: string | null;
         };
         /**
          * CronValidationRequest
@@ -17559,6 +18238,11 @@ export interface components {
              * @description Model override for tuning chat + dry-run. Falls back to primary model if unset.
              */
             tuning_model?: string | null;
+            /**
+             * Builder Model
+             * @description Model override for the Solution builder Agent. Falls back to primary model if unset.
+             */
+            builder_model?: string | null;
         };
         /**
          * LLMConfigResponse
@@ -17585,6 +18269,8 @@ export interface components {
             summarization_model?: string | null;
             /** Tuning Model */
             tuning_model?: string | null;
+            /** Builder Model */
+            builder_model?: string | null;
             /**
              * Is Configured
              * @default true
@@ -19897,6 +20583,13 @@ export interface components {
             resource_type?: string | null;
             /** Resource Id */
             resource_id?: string | null;
+            /** Resource Lock Key */
+            resource_lock_key?: string | null;
+            /**
+             * Priority
+             * @default 100
+             */
+            priority: number;
             /** Title */
             title: string;
             /** Action Url */
@@ -19922,6 +20615,12 @@ export interface components {
             error?: components["schemas"]["PlatformJobError"] | null;
             /** Notification Id */
             notification_id?: string | null;
+            /** Memory Start Bytes */
+            memory_start_bytes?: number | null;
+            /** Memory Peak Bytes */
+            memory_peak_bytes?: number | null;
+            /** Memory Limit Bytes */
+            memory_limit_bytes?: number | null;
             /** Started At */
             started_at?: string | null;
             /** Completed At */
@@ -19941,7 +20640,7 @@ export interface components {
          * PlatformJobStatus
          * @enum {string}
          */
-        PlatformJobStatus: "queued" | "running" | "cancel_requested" | "succeeded" | "failed" | "cancelled";
+        PlatformJobStatus: "queued" | "running" | "waiting" | "cancel_requested" | "succeeded" | "failed" | "cancelled";
         /**
          * PlatformMetricsResponse
          * @description Platform metrics snapshot response.
@@ -20286,6 +20985,75 @@ export interface components {
             warnings?: components["schemas"]["PreflightIssueResponse"][];
         };
         /**
+         * PrivateSolutionCreate
+         * @description Create-shape for a private builder Solution.
+         *
+         *     Scope is not an input: a private Solution is always owned by the caller and
+         *     lives in the caller's own organization. ``slug`` is unique per owner, so two
+         *     users in one org may each hold a private Solution at the same slug.
+         */
+        PrivateSolutionCreate: {
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+        };
+        /**
+         * PrivateSolutionDTO
+         * @description Read-shape for a private builder Solution.
+         *
+         *     ``promotion_status`` comes from the Solution's builder-project row, not the
+         *     install row, and is flattened here because the builder UI treats the pair as
+         *     one object.
+         */
+        PrivateSolutionDTO: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Visibility */
+            visibility: string;
+            /** Owner User Id */
+            owner_user_id?: string | null;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** App Origin */
+            app_origin?: string | null;
+            /** Status */
+            status: string;
+            /** Promotion Status */
+            promotion_status: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * PrivateSolutionsList
+         * @description List envelope for the caller's own private Solutions.
+         */
+        PrivateSolutionsList: {
+            /** Solutions */
+            solutions: components["schemas"]["PrivateSolutionDTO"][];
+            /** Total */
+            total: number;
+            /** Ai Configured */
+            ai_configured: boolean;
+            /** Is Platform Admin */
+            is_platform_admin: boolean;
+        };
+        /**
          * ProcessInfo
          * @description Information about a worker process in the pool.
          */
@@ -20374,6 +21142,191 @@ export interface components {
              * @description Display name
              */
             name?: string | null;
+        };
+        /** PromotionEntityCounts */
+        PromotionEntityCounts: {
+            /**
+             * Workflows
+             * @default 0
+             */
+            workflows: number;
+            /**
+             * Tables
+             * @default 0
+             */
+            tables: number;
+            /**
+             * Apps
+             * @default 0
+             */
+            apps: number;
+            /**
+             * Forms
+             * @default 0
+             */
+            forms: number;
+            /**
+             * Agents
+             * @default 0
+             */
+            agents: number;
+            /**
+             * Claims
+             * @default 0
+             */
+            claims: number;
+            /**
+             * Configs
+             * @default 0
+             */
+            configs: number;
+            /**
+             * Files
+             * @default 0
+             */
+            files: number;
+            /**
+             * File Policies
+             * @default 0
+             */
+            file_policies: number;
+            /**
+             * Policy Rules
+             * @default 0
+             */
+            policy_rules: number;
+            /**
+             * Events
+             * @default 0
+             */
+            events: number;
+        };
+        /** PromotionResultDTO */
+        PromotionResultDTO: {
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /**
+             * Target
+             * @enum {string}
+             */
+            target: "company" | "global";
+            /**
+             * Visibility
+             * @constant
+             */
+            visibility: "shared";
+            /** Organization Id */
+            organization_id?: string | null;
+            /**
+             * Promoted Revision Id
+             * Format: uuid
+             */
+            promoted_revision_id: string;
+            /** Roles Created */
+            roles_created?: string[];
+        };
+        /**
+         * PromotionReviewDTO
+         * @description Pinned source and readiness facts shown on the admin review surface.
+         */
+        PromotionReviewDTO: {
+            /**
+             * Solution Id
+             * Format: uuid
+             */
+            solution_id: string;
+            /** Slug */
+            slug: string;
+            /** Name */
+            name: string;
+            /** Owner User Id */
+            owner_user_id?: string | null;
+            /** Organization Id */
+            organization_id?: string | null;
+            /** Promotion Status */
+            promotion_status: string;
+            /** Pinned Revision Id */
+            pinned_revision_id?: string | null;
+            /** Source Sha256 */
+            source_sha256?: string | null;
+            /** Source Size Bytes */
+            source_size_bytes?: number | null;
+            /** Prior Deployed Revision Id */
+            prior_deployed_revision_id?: string | null;
+            /** Changed Paths */
+            changed_paths?: string[];
+            /** Requested At */
+            requested_at?: string | null;
+            /** Requested By */
+            requested_by?: string | null;
+            /** Current Revision Id */
+            current_revision_id?: string | null;
+            /** Deployed Revision Id */
+            deployed_revision_id?: string | null;
+            /** Build Job Id */
+            build_job_id?: string | null;
+            /** Deploy Job Id */
+            deploy_job_id?: string | null;
+            /** Build Status */
+            build_status?: string | null;
+            /** Deploy Status */
+            deploy_status?: string | null;
+            entity_counts?: components["schemas"]["PromotionEntityCounts"];
+            /** Unresolved Roles */
+            unresolved_roles?: string[];
+            /** Connection Names */
+            connection_names?: string[];
+            /** Config Keys Requiring Reentry For Global */
+            config_keys_requiring_reentry_for_global?: string[];
+            /**
+             * Global Repo Access
+             * @default false
+             */
+            global_repo_access: boolean;
+            /**
+             * Ready
+             * @default false
+             */
+            ready: boolean;
+            /** Blockers */
+            blockers?: string[];
+        };
+        /** PromotionReviewsList */
+        PromotionReviewsList: {
+            /** Promotions */
+            promotions: components["schemas"]["PromotionReviewDTO"][];
+            /** Total */
+            total: number;
+        };
+        /**
+         * PromotionTargetRequest
+         * @description Administrator approval of one pinned private-Solution revision.
+         */
+        PromotionTargetRequest: {
+            /**
+             * Target
+             * @enum {string}
+             */
+            target: "company" | "global";
+            /**
+             * Approve Role Creation
+             * @default false
+             */
+            approve_role_creation: boolean;
+            /** Approved Connection Names */
+            approved_connection_names?: string[];
+            /**
+             * Allow Global Repo Access
+             * @default false
+             */
+            allow_global_repo_access: boolean;
+            /** Role User Assignments */
+            role_user_assignments?: {
+                [key: string]: string[];
+            };
         };
         /** ProposalTurn */
         ProposalTurn: {
@@ -20689,31 +21642,6 @@ export interface components {
             pid?: number | null;
         };
         /**
-         * RefreshAllResponse
-         * @description Response for triggering refresh of all tokens.
-         */
-        RefreshAllResponse: {
-            /** Triggered */
-            triggered: boolean;
-            /** Message */
-            message: string;
-            /**
-             * Connections Queued
-             * @default 0
-             */
-            connections_queued: number;
-            /**
-             * Refreshed Successfully
-             * @default 0
-             */
-            refreshed_successfully: number;
-            /**
-             * Refresh Failed
-             * @default 0
-             */
-            refresh_failed: number;
-        };
-        /**
          * RefreshJobRun
          * @description Details of a single refresh job run.
          */
@@ -20755,7 +21683,9 @@ export interface components {
             /** Error */
             error?: string | null;
             /** Errors */
-            errors?: string[];
+            errors?: (string | {
+                [key: string]: unknown;
+            })[];
         };
         /**
          * RefreshJobStatusResponse
@@ -21113,6 +22043,110 @@ export interface components {
              */
             max_backoff_seconds: number;
         };
+        /** RevisionDiffDTO */
+        RevisionDiffDTO: {
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Against Revision Id */
+            against_revision_id?: string | null;
+            /** Files */
+            files: components["schemas"]["RevisionDiffFileDTO"][];
+            /** Total */
+            total: number;
+            /**
+             * Additions
+             * @default 0
+             */
+            additions: number;
+            /**
+             * Deletions
+             * @default 0
+             */
+            deletions: number;
+        };
+        /** RevisionDiffFileDTO */
+        RevisionDiffFileDTO: {
+            /** Path */
+            path: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "added" | "modified" | "deleted";
+            /**
+             * Additions
+             * @default 0
+             */
+            additions: number;
+            /**
+             * Deletions
+             * @default 0
+             */
+            deletions: number;
+            /**
+             * Is Binary
+             * @default false
+             */
+            is_binary: boolean;
+            /** Diff */
+            diff?: string | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /** RevisionFileContentDTO */
+        RevisionFileContentDTO: {
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Path */
+            path: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * Encoding
+             * @enum {string}
+             */
+            encoding: "utf-8" | "binary";
+            /** Content */
+            content?: string | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /**
+         * RevisionFileDTO
+         * @description One regular file inside an immutable source revision.
+         */
+        RevisionFileDTO: {
+            /** Path */
+            path: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Is Text */
+            is_text: boolean;
+        };
+        /** RevisionFilesList */
+        RevisionFilesList: {
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Files */
+            files: components["schemas"]["RevisionFileDTO"][];
+            /** Total */
+            total: number;
+        };
         /**
          * RevokeAllResponse
          * @description Revoke all sessions response model.
@@ -21193,6 +22227,8 @@ export interface components {
             permissions?: {
                 [key: string]: unknown;
             } | null;
+            /** Scopes */
+            scopes?: string[];
         };
         /**
          * RoleFormsResponse
@@ -21244,10 +22280,24 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Key */
+            key?: string | null;
             /** Permissions */
             permissions?: {
                 [key: string]: unknown;
             };
+            /** Scopes */
+            scopes?: string[];
+            /**
+             * Is Builtin
+             * @default false
+             */
+            is_builtin: boolean;
+            /**
+             * Assignable To Resources
+             * @default true
+             */
+            assignable_to_resources: boolean;
             /** Created By */
             created_by: string;
             /** Created At */
@@ -21270,6 +22320,8 @@ export interface components {
             permissions?: {
                 [key: string]: unknown;
             } | null;
+            /** Scopes */
+            scopes?: string[] | null;
         };
         /**
          * RoleUsersResponse
@@ -21292,6 +22344,36 @@ export interface components {
              * @description Workflow IDs assigned to the role
              */
             workflow_ids: string[];
+        };
+        /**
+         * RunTurnRequest
+         * @description Ask the builder agent to change the workspace.
+         */
+        RunTurnRequest: {
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Message */
+            message: string;
+        };
+        /**
+         * RunTurnResponse
+         * @description What one agent turn produced.
+         *
+         *     ``revision_created`` is False for a turn the model answered without
+         *     editing anything (a question, or an edit that produced identical bytes);
+         *     the preview is unchanged in that case.
+         */
+        RunTurnResponse: {
+            turn: components["schemas"]["BuilderTurnDTO"];
+            /** Final Text */
+            final_text: string;
+            /** Tool Call Count */
+            tool_call_count: number;
+            /** Revision Created */
+            revision_created: boolean;
         };
         /**
          * SDKIntegrationsDeleteMappingRequest
@@ -21728,6 +22810,182 @@ export interface components {
              * @default skip
              */
             overlap_policy: components["schemas"]["ScheduleOverlapPolicy"];
+        };
+        /** SchedulerCapacityStatus */
+        SchedulerCapacityStatus: {
+            /** Replicas Online */
+            replicas_online: number;
+            /** Slots Total */
+            slots_total: number;
+            /** Slots Running */
+            slots_running: number;
+            /** Jobs Queued */
+            jobs_queued: number;
+            /** Jobs Waiting For Memory */
+            jobs_waiting_for_memory: number;
+            /** Oldest Queued Seconds */
+            oldest_queued_seconds?: number | null;
+            /** Max Memory Utilization Percent */
+            max_memory_utilization_percent?: number | null;
+        };
+        /** SchedulerDiagnosticsResponse */
+        SchedulerDiagnosticsResponse: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            leader: components["schemas"]["SchedulerLeaderStatus"];
+            capacity: components["schemas"]["SchedulerCapacityStatus"];
+            /** Replicas */
+            replicas: components["schemas"]["SchedulerReplicaStatus"][];
+            /** Tasks */
+            tasks: components["schemas"]["SchedulerTaskStatus"][];
+        };
+        /** SchedulerLeaderStatus */
+        SchedulerLeaderStatus: {
+            /** Owner Id */
+            owner_id?: string | null;
+            /** Lease Expires At */
+            lease_expires_at?: string | null;
+            /**
+             * Healthy
+             * @default false
+             */
+            healthy: boolean;
+        };
+        /** SchedulerReplicaStatus */
+        SchedulerReplicaStatus: {
+            /** Id */
+            id: string;
+            /** Hostname */
+            hostname: string;
+            /** Pid */
+            pid: number;
+            /** Job Slots */
+            job_slots: number;
+            /** Is Leader */
+            is_leader: boolean;
+            /** Online */
+            online: boolean;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /**
+             * Last Heartbeat At
+             * Format: date-time
+             */
+            last_heartbeat_at: string;
+            /** Memory Current Bytes */
+            memory_current_bytes?: number | null;
+            /** Memory Limit Bytes */
+            memory_limit_bytes?: number | null;
+            /** Active Platform Job Ids */
+            active_platform_job_ids: string[];
+            /**
+             * Active Platform Jobs
+             * @default 0
+             */
+            active_platform_jobs: number;
+        };
+        /** SchedulerTaskHistoryResponse */
+        SchedulerTaskHistoryResponse: {
+            /** Task Id */
+            task_id: string;
+            /** Name */
+            name: string;
+            /** Runs */
+            runs: components["schemas"]["SchedulerTaskRunDetail"][];
+        };
+        /** SchedulerTaskRunDetail */
+        SchedulerTaskRunDetail: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Status */
+            status: string;
+            /** Leader Owner Id */
+            leader_owner_id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Summary */
+            summary?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Platform Job Id */
+            platform_job_id?: string | null;
+            /** Platform Job Status */
+            platform_job_status?: string | null;
+            /** Platform Job Memory Start Bytes */
+            platform_job_memory_start_bytes?: number | null;
+            /** Platform Job Memory Peak Bytes */
+            platform_job_memory_peak_bytes?: number | null;
+            /** Platform Job Memory Limit Bytes */
+            platform_job_memory_limit_bytes?: number | null;
+            /** Logs */
+            logs: components["schemas"]["SystemDiagnosticLogPublic"][];
+        };
+        /** SchedulerTaskRunStatus */
+        SchedulerTaskRunStatus: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Status */
+            status: string;
+            /** Leader Owner Id */
+            leader_owner_id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Summary */
+            summary?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Platform Job Id */
+            platform_job_id?: string | null;
+            /** Platform Job Status */
+            platform_job_status?: string | null;
+            /** Platform Job Memory Start Bytes */
+            platform_job_memory_start_bytes?: number | null;
+            /** Platform Job Memory Peak Bytes */
+            platform_job_memory_peak_bytes?: number | null;
+            /** Platform Job Memory Limit Bytes */
+            platform_job_memory_limit_bytes?: number | null;
+        };
+        /** SchedulerTaskStatus */
+        SchedulerTaskStatus: {
+            /** Task Id */
+            task_id: string;
+            /** Name */
+            name: string;
+            /** Schedule */
+            schedule: string;
+            /** Execution Mode */
+            execution_mode: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Next Run At */
+            next_run_at?: string | null;
+            last_run?: components["schemas"]["SchedulerTaskRunStatus"] | null;
         };
         /**
          * SearchRequest
@@ -22561,8 +23819,8 @@ export interface components {
         };
         /**
          * SolutionDeployEnqueued
-         * @description Returned by ``POST /{id}/deploy`` — the deploy runs as a background job;
-         *     the caller polls ``GET /deploy-jobs/{deploy_job_id}`` for the result.
+         * @description Returned by ``POST /{id}/deploy`` — a durable worker executes the job
+         *     and the caller polls ``GET /deploy-jobs/{deploy_job_id}`` for the result.
          */
         SolutionDeployEnqueued: {
             /**
@@ -23062,6 +24320,52 @@ export interface components {
             solutions?: components["schemas"]["Solution"][];
         };
         /**
+         * SourceRevisionDTO
+         * @description Read-shape for one immutable source revision.
+         *
+         *     ``is_current`` and ``is_deployed`` are derived from the project's pointers
+         *     rather than stored on the revision, because a revision's identity is
+         *     immutable while which revision is current or deployed changes every turn.
+         */
+        SourceRevisionDTO: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Parent Revision Id */
+            parent_revision_id?: string | null;
+            /** Restored From Revision Id */
+            restored_from_revision_id?: string | null;
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Summary */
+            summary?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by?: string | null;
+            /** Is Current */
+            is_current: boolean;
+            /** Is Deployed */
+            is_deployed: boolean;
+        };
+        /**
+         * SourceRevisionsList
+         * @description List envelope for a Solution's revision history, newest first.
+         */
+        SourceRevisionsList: {
+            /** Revisions */
+            revisions: components["schemas"]["SourceRevisionDTO"][];
+            /** Total */
+            total: number;
+        };
+        /**
          * StuckExecutionsResponse
          * @description Response model for stuck executions query
          */
@@ -23162,6 +24466,28 @@ export interface components {
              * @default false
              */
             confirm_deletes: boolean;
+        };
+        /** SystemDiagnosticLogPublic */
+        SystemDiagnosticLogPublic: {
+            /** Id */
+            id: number;
+            /** Source */
+            source: string;
+            /** Level */
+            level: string;
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Scheduler Run Id */
+            scheduler_run_id?: string | null;
+            /** Platform Job Id */
+            platform_job_id?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /**
          * TableCreate
@@ -23503,6 +24829,25 @@ export interface components {
         UnassignWorkflowsFromRoleRequest: {
             /** Workflow Ids */
             workflow_ids: string[];
+        };
+        /**
+         * UndoRequest
+         * @description Restore an earlier revision's content as a new revision.
+         *
+         *     ``session_id`` is required because undo is a turn like any other and every
+         *     turn belongs to a chat session — the transcript has to show it happened.
+         */
+        UndoRequest: {
+            /**
+             * To Revision Id
+             * Format: uuid
+             */
+            to_revision_id: string;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
         };
         /**
          * UpdateConfigRequest
@@ -27118,6 +28463,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_authorization_scopes_api_roles_scopes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizationScopePublic"][];
                 };
             };
         };
@@ -31640,6 +33005,59 @@ export interface operations {
             };
         };
     };
+    get_scheduler_diagnostics_api_platform_scheduler_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulerDiagnosticsResponse"];
+                };
+            };
+        };
+    };
+    get_scheduler_task_history_api_platform_scheduler_tasks__task_id__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulerTaskHistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_connection_api_oauth_connections__connection_name__get: {
         parameters: {
             query?: never;
@@ -31965,7 +33383,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RefreshAllResponse"];
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
                 };
             };
         };
@@ -33720,6 +35138,165 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_skill_api_agents__agent_id__skill_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSkillPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_skill_file_api_agents__agent_id__skill_file_get: {
+        parameters: {
+            query: {
+                path: string;
+            };
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSkillFilePublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_agent_skill_api_agents__agent_id__skill_bundle_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_agent_skill_api_agents__agent_id__skill_bundle_put"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSkillPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    detach_agent_skill_api_agents__agent_id__skill_bundle_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_agent_skill_api_agents__agent_id__skill_download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
             };
             /** @description Validation Error */
             422: {
@@ -39219,6 +40796,666 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SolutionDeployEnqueued"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_solutions_api_builder_solutions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateSolutionsList"];
+                };
+            };
+        };
+    };
+    create_solution_api_builder_solutions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrivateSolutionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateSolutionDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_solution_api_builder_solutions__solution_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivateSolutionDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_solution_api_builder_solutions__solution_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_promotion_request_api_builder_solutions__solution_id__promotion_request_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProjectDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sessions_api_builder_solutions__solution_id__sessions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderSessionsList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_session_api_builder_solutions__solution_id__sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderSessionDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_revisions_api_builder_solutions__solution_id__revisions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceRevisionsList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_revision_api_builder_solutions__solution_id__revisions__revision_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+                revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_revision_files_api_builder_solutions__solution_id__revisions__revision_id__files_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+                revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionFilesList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_revision_file_api_builder_solutions__solution_id__revisions__revision_id__file_get: {
+        parameters: {
+            query: {
+                path: string;
+            };
+            header?: never;
+            path: {
+                solution_id: string;
+                revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionFileContentDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_revision_diff_api_builder_solutions__solution_id__revisions__revision_id__diff_get: {
+        parameters: {
+            query?: {
+                against_revision_id?: string | null;
+            };
+            header?: never;
+            path: {
+                solution_id: string;
+                revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionDiffDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_to_revision_api_builder_solutions__solution_id__undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UndoRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderTurnDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_turns_api_builder_solutions__solution_id__turns_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderTurnsList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_turn_api_builder_solutions__solution_id__turns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunTurnRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunTurnResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_build_job_api_builder_solutions__solution_id__build_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildJobPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_deploy_job_api_builder_solutions__solution_id__deploy_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SolutionDeployJobStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_reviews_api_solution_promotions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromotionReviewsList"];
+                };
+            };
+        };
+    };
+    get_review_api_solution_promotions__solution_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromotionReviewDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    promote_api_solution_promotions__solution_id__promote_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                solution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromotionTargetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromotionResultDTO"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_launch_api_builder_solutions__solution_id__apps__app_id__launch_post: {
+        parameters: {
+            query?: {
+                path?: string;
+            };
+            header?: never;
+            path: {
+                solution_id: string;
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
             /** @description Validation Error */

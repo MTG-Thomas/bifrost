@@ -1,136 +1,108 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
+from src.models.orm.platform_jobs import PlatformJob
 from src.models.orm.solution_deploy_jobs import SolutionDeployJob
 from src.models.orm.solutions import Solution
-from src.routers.solutions import (
-    DEPLOY_JOB_TIMEOUT,
-    _run_deploy_job,
-    expire_deploy_job_if_timed_out,
-    reconcile_orphaned_deploy_jobs,
+from src.services.solutions.deploy_jobs import (
+    create_staged_deploy_job,
+    execute_deploy_job,
 )
 
 
 @pytest.mark.asyncio
-async def test_reconcile_orphaned_deploy_jobs_fails_stale_non_terminal_jobs(db_session):
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    sol = Solution(slug="demo", name="Demo")
-    db_session.add(sol)
-    await db_session.flush()
-
-    stale_queued = SolutionDeployJob(
-        install_id=sol.id,
-        status="queued",
-        created_at=now - timedelta(minutes=30),
-        updated_at=now - timedelta(minutes=30),
-    )
-    stale_running = SolutionDeployJob(
-        install_id=sol.id,
-        status="running",
-        created_at=now - timedelta(minutes=30),
-        updated_at=now - timedelta(minutes=30),
-    )
-    fresh_queued = SolutionDeployJob(
-        install_id=sol.id,
-        status="queued",
-        created_at=now,
-        updated_at=now,
-    )
-    succeeded = SolutionDeployJob(
-        install_id=sol.id,
-        status="succeeded",
-        created_at=now - timedelta(minutes=30),
-        updated_at=now - timedelta(minutes=30),
-    )
-    db_session.add_all([stale_queued, stale_running, fresh_queued, succeeded])
-    await db_session.flush()
-
-    changed = await reconcile_orphaned_deploy_jobs(
-        db_session,
-        older_than=timedelta(minutes=10),
-        now=now,
-    )
-
-    assert changed == 2
-    assert stale_queued.status == "failed"
-    assert stale_running.status == "failed"
-    assert "API restarted" in (stale_queued.error or "")
-    assert "API restarted" in (stale_running.error or "")
-    assert fresh_queued.status == "queued"
-    assert fresh_queued.error is None
-    assert succeeded.status == "succeeded"
-
-
-@pytest.mark.asyncio
-async def test_expire_deploy_job_if_timed_out_marks_running_job_failed(db_session):
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    job = SolutionDeployJob(
-        install_id=None,
-        status="running",
-        result={"phase": "building app dist"},
-        created_at=now - DEPLOY_JOB_TIMEOUT - timedelta(seconds=1),
-        updated_at=now - DEPLOY_JOB_TIMEOUT - timedelta(seconds=1),
-    )
-    db_session.add(job)
-    await db_session.flush()
-
-    changed = expire_deploy_job_if_timed_out(job, now=now)
-
-    assert changed is True
-    assert job.status == "failed"
-    assert job.result is None
-    assert "15-minute" in (job.error or "")
-
-
-def test_expire_deploy_job_if_timed_out_leaves_terminal_job_unchanged():
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    job = SolutionDeployJob(
-        install_id=None,
-        status="succeeded",
-        result={"solution_id": "abc"},
-        created_at=now - DEPLOY_JOB_TIMEOUT - timedelta(seconds=1),
-        updated_at=now,
-    )
-
-    changed = expire_deploy_job_if_timed_out(job, now=now)
-
-    assert changed is False
-    assert job.status == "succeeded"
-    assert job.result == {"solution_id": "abc"}
-
-
-@pytest.mark.asyncio
-async def test_run_deploy_job_does_not_start_after_job_is_terminal(
-    tmp_path, monkeypatch
+async def test_create_job_stages_encrypted_central_job(
+    db_session, tmp_path, monkeypatch
 ):
-    job = SolutionDeployJob(id=uuid4(), install_id=None, status="failed")
+    solution = Solution(slug="demo", name="Demo")
+    db_session.add(solution)
+    await db_session.flush()
+    input_path = tmp_path / "input.zip"
+    input_path.write_bytes(b"validated")
+    write_path = AsyncMock(return_value=("a" * 64, len(b"validated")))
+    publish = AsyncMock()
+    monkeypatch.setattr(
+        "src.services.solutions.deploy_jobs.SolutionDeployJobStorage.write_path",
+        write_path,
+    )
+    monkeypatch.setattr(
+        "src.services.platform_jobs.publish_platform_job_update",
+        publish,
+    )
 
-    class FakeDB:
-        async def get(self, model, row_id):  # noqa: ANN001, ANN201
-            assert model is SolutionDeployJob
-            assert row_id == job.id
-            return job
+    job = await create_staged_deploy_job(
+        db_session,
+        kind="deploy",
+        install_id=solution.id,
+        organization_id=None,
+        requested_by_user_id=uuid4(),
+        requested_by_email="admin@example.com",
+        requested_by_name="Admin",
+        options={"password": "never-plaintext", "config_values": {"key": "secret"}},
+        input_path=input_path,
+    )
+
+    central = await db_session.get(PlatformJob, job.id)
+    assert central is not None
+    assert central.job_type == "solution.deploy"
+    assert central.payload == {"protected": True}
+    assert central.encrypted_payload is not None
+    assert "never-plaintext" not in central.encrypted_payload
+    assert "secret" not in central.encrypted_payload
+    assert central.resource_lock_key == f"solution:{solution.id}"
+    assert job.input_key == f"_solution_deploy_jobs/{job.id}/input.zip"
+    assert job.input_sha256 == "a" * 64
+    publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_terminal_projection_is_not_executed_again(
+    db_session,
+    async_session_factory,
+    monkeypatch,
+):
+    lease_token = uuid4()
+    job = SolutionDeployJob(status="succeeded", kind="deploy")
+    central = PlatformJob(
+        id=job.id,
+        job_type="solution.deploy",
+        payload_version=1,
+        payload={"protected": True},
+        requested_by_user_id=str(uuid4()),
+        requested_by_email="admin@example.com",
+        requested_by_name="Admin",
+        title="Deploy",
+        status="running",
+        lease_token=lease_token,
+    )
+    db_session.add_all([job, central])
+    await db_session.commit()
 
     @asynccontextmanager
-    async def fake_db_context():
-        yield FakeDB()
+    async def test_db_context():
+        async with async_session_factory() as db:
+            try:
+                yield db
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
-    from src.core import database
-    from src.services.solutions import zip_install
+    monkeypatch.setattr(
+        "src.services.solutions.deploy_jobs.get_db_context",
+        test_db_context,
+    )
+    execute = AsyncMock()
+    monkeypatch.setattr(
+        "src.services.solutions.deploy_jobs._run_claimed_job",
+        execute,
+    )
 
-    deploy = AsyncMock()
-    monkeypatch.setattr(database, "get_db_context", fake_db_context)
-    monkeypatch.setattr(zip_install, "deploy_zip_to_solution_path", deploy)
-    zip_path = tmp_path / "deploy.zip"
-    zip_path.write_bytes(b"not used")
+    await execute_deploy_job(job.id, lease_token)
 
-    await _run_deploy_job(job.id, uuid4(), zip_path, force=False)
-
-    deploy.assert_not_awaited()
-    assert not zip_path.exists()
+    execute.assert_not_awaited()

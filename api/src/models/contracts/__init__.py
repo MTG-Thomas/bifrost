@@ -27,6 +27,7 @@ from src.models.contracts.users import (
     AssignKnowledgeToRoleRequest,
     AssignUsersToRoleRequest,
     AssignWorkflowsToRoleRequest,
+    AuthorizationScopePublic,
     CreateRoleRequest,
     CreateUserRequest,
     GrantPermissionsRequest,
@@ -150,6 +151,15 @@ from src.models.contracts.platform_jobs import (
     PlatformJobProgress,
     PlatformJobPublic,
     PlatformJobStatus,
+)
+from src.models.contracts.scheduler_diagnostics import (
+    SchedulerCapacityStatus,
+    SchedulerDiagnosticsResponse,
+    SchedulerLeaderStatus,
+    SchedulerReplicaStatus,
+    SchedulerTaskRunStatus,
+    SchedulerTaskStatus,
+    SystemDiagnosticLogPublic,
 )
 
 # Agents & Chat
@@ -627,6 +637,7 @@ __all__ = [
     "RoleCreate",
     "RoleUpdate",
     "RolePublic",
+    "AuthorizationScopePublic",
     # User/Role assignments
     "UserPermission",
     "PermissionsData",
@@ -1055,6 +1066,13 @@ __all__ = [
     "PlatformJobProgress",
     "PlatformJobPublic",
     "PlatformJobStatus",
+    "SchedulerCapacityStatus",
+    "SchedulerDiagnosticsResponse",
+    "SchedulerLeaderStatus",
+    "SchedulerReplicaStatus",
+    "SchedulerTaskRunStatus",
+    "SchedulerTaskStatus",
+    "SystemDiagnosticLogPublic",
     # Platform Admin
     "PoolDetail",
     "PoolsListResponse",

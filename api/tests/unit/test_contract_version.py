@@ -189,9 +189,14 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # of ApplicationPublic, and the CLI polls PlatformJobPublic for durable
     # progress/result/error (2026-07-28). CONTRACT_VERSION bumped to 8.
     #
-    # Forms gained optional confirmation_markdown (2026-08-04). ADDITIVE: old
-    # clients omit it and continue receiving the prior default confirmation.
-    "b439c518e0e97014ae0db4629fd750640053ec5e0e9c6809bafc5bf427b5a2f6"
+    # AgentCreate/AgentUpdate gained optional bundle_path (2026-07-27).
+    # ADDITIVE: old CLIs omit it and retain inline-only Agent behavior.
+    #
+    # RoleCreate/RoleUpdate gained additive scopes fields (2026-07-30).
+    # Old CLIs omit them and retain empty-scope custom-role behavior.
+    # Forms also gained optional confirmation_markdown (2026-08-04). All are
+    # additive; fingerprint refreshed after merging the contract surfaces.
+    "5eb5b0397422bcc4d4b4d89b570f50ade471d109b2bc53e1858d2e4247e2e94b"
 )
 
 

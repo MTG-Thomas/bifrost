@@ -16,6 +16,13 @@ from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool, 
 from src.models.orm.ai_usage import AIModelPricing, AIUsage
 from src.models.orm.app_embed_secrets import AppEmbedSecret
 from src.models.orm.platform_jobs import PlatformJob
+from src.models.orm.scheduler_leases import SchedulerLease
+from src.models.orm.scheduler_diagnostics import (
+    SchedulerReplica,
+    SchedulerTaskRun,
+    SchedulerTaskState,
+    SystemDiagnosticLog,
+)
 from src.models.orm.form_embed_secrets import FormEmbedSecret
 from src.models.orm.form_publications import FormPublication
 from src.models.orm.app_roles import AppRole
@@ -49,6 +56,13 @@ from src.models.orm.solution_connection_schema import SolutionConnectionSchema
 from src.models.orm.solution_file_location import SolutionFileLocation
 from src.models.orm.solutions import Solution
 from src.models.orm.solution_export_jobs import SolutionExportJob
+from src.models.orm.solution_builder import (
+    SolutionBuilderProject,
+    SolutionBuilderSession,
+    SolutionBuilderTurn,
+    SolutionSourceRevision,
+)
+from src.models.orm.solution_build_jobs import SolutionBuildJob
 from src.models.orm.custom_claims import CustomClaim
 from src.models.orm.tables import Document, Table
 from src.models.orm.users import Role, User, UserRole
@@ -73,9 +87,20 @@ __all__ = [
     "SolutionDeployJob",
     "SolutionExportJob",
     "PendingCaptureORM",
+    # Private Solution builder
+    "SolutionBuildJob",
+    "SolutionBuilderProject",
+    "SolutionBuilderSession",
+    "SolutionBuilderTurn",
+    "SolutionSourceRevision",
     # Applications (App Builder)
     "Application",
     "PlatformJob",
+    "SchedulerLease",
+    "SchedulerReplica",
+    "SchedulerTaskRun",
+    "SchedulerTaskState",
+    "SystemDiagnosticLog",
     "AppEmbedSecret",
     "AppRole",
     # Users and Roles
