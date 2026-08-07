@@ -77,6 +77,30 @@ def test_docs_noop_workflow_cannot_spoof_required_ci_check_names() -> None:
     assert job_names.isdisjoint(REQUIRED_CI_CHECK_NAMES)
 
 
+def test_release_assets_upload_before_immutable_release_publication() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    steps = ci["jobs"]["create-release"]["steps"]
+    create_index = next(
+        index for index, step in enumerate(steps) if step["name"] == "Create release"
+    )
+    publish_index = next(
+        index for index, step in enumerate(steps) if step["name"] == "Publish release"
+    )
+
+    create_with = steps[create_index]["with"]
+    publish_run = steps[publish_index]["run"]
+
+    assert create_with["draft"] is True
+    assert "${{ steps.source_tarball.outputs.tarball }}" in create_with["files"]
+    assert "${{ steps.source_tarball.outputs.tarball }}.sha256" in create_with["files"]
+    assert "${{ steps.source_tarball.outputs.tarball }}.sigstore" in create_with["files"]
+    assert publish_index > create_index
+    assert "--draft=false" in publish_run
+    assert "args+=(--prerelease)" in publish_run
+    assert "args+=(--latest)" in publish_run
+    assert 'gh release edit "$VERSION" "${args[@]}"' in publish_run
+
+
 def test_dependabot_lock_validation_does_not_commit_to_pr_branch() -> None:
     workflow = _load_yaml(".github/workflows/dependabot-lockfile-regen.yml")
     text = _read(".github/workflows/dependabot-lockfile-regen.yml")
