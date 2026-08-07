@@ -44,6 +44,11 @@ def test_required_e2e_gate_includes_playwright() -> None:
         "test-client-e2e",
     }
 
+    assert (
+        jobs["deploy-dry-run"]["if"]
+        == "github.repository == 'gobifrost/bifrost' && github.event_name == 'workflow_dispatch'"
+    )
+
 
 def test_playwright_suite_has_no_retries_or_skipped_tests() -> None:
     config = _read("client/playwright.config.ts")

@@ -728,7 +728,7 @@ jobs:
   # confirm the deploy job will succeed when it fires for real.
   # =============================================================================
   deploy-dry-run:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.repository == 'gobifrost/bifrost' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     name: Deploy Dry Run
     permissions:

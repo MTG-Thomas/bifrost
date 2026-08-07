@@ -13,6 +13,10 @@ EXPECTED_DEPLOY_DEV_IF = (
     "&& github.event_name == 'push' "
     "&& github.ref == 'refs/heads/main'"
 )
+EXPECTED_DEPLOY_DRY_RUN_IF = (
+    "github.repository == 'gobifrost/bifrost' "
+    "&& github.event_name == 'workflow_dispatch'"
+)
 
 
 def _repo_root() -> Path:
@@ -59,6 +63,23 @@ def check_ci_workflow(path: Path) -> list[str]:
         return [f"{path}: workflow file does not exist"]
 
     lines = path.read_text(encoding="utf-8").splitlines()
+    deploy_dry_run = _job_block(lines, "deploy-dry-run")
+    if deploy_dry_run is None:
+        return [
+            f"{path}: deploy-dry-run job is missing; remove the MTG boundary guard "
+            "only if the upstream DigitalOcean dry-run lane has been deleted intentionally."
+        ]
+
+    dry_run_start_line, dry_run_block = deploy_dry_run
+    dry_run_if = _parse_if_line(dry_run_block)
+    if dry_run_if != EXPECTED_DEPLOY_DRY_RUN_IF:
+        return [
+            f"{path}:{dry_run_start_line}: deploy-dry-run must stay upstream-only for MTG-Thomas/bifrost.",
+            f"expected: if: {EXPECTED_DEPLOY_DRY_RUN_IF}",
+            f"actual:   if: {dry_run_if or '<missing>'}",
+            "MTG has no DigitalOcean deploy credentials; validate Azure deployments from bifrost-infra.",
+        ]
+
     deploy_dev = _job_block(lines, "deploy-dev")
     if deploy_dev is None:
         return [
