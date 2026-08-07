@@ -726,6 +726,42 @@ class GitHubSyncService:
             pushed_commits=ahead,
         )
 
+    def _reconcile_remote_before_workspace_push(
+        self, work_dir: Path, repo: GitRepo
+    ) -> str | None:
+        """Merge an advanced remote branch before closing a workspace commit.
+
+        A workspace changeset can remain activated while Git closure is retried
+        later. The configured production branch may advance during that gap, so
+        pushing the preserved local commit directly would be non-fast-forward.
+        Fetch and merge the remote history without replaying workspace
+        activation or importing remote files into the live workspace.
+        """
+        remote_ref = f"origin/{self.branch}"
+        try:
+            repo.remotes.origin.fetch(self.branch)
+            commits_behind = int(repo.git.rev_list("--count", f"HEAD..{remote_ref}"))
+        except Exception as exc:
+            return f"Failed to fetch remote branch before workspace push: {exc}"
+
+        if commits_behind == 0:
+            return None
+
+        try:
+            repo.git.merge("--no-edit", remote_ref)
+        except Exception as exc:
+            try:
+                if (work_dir / ".git" / "MERGE_HEAD").exists():
+                    repo.git.merge("--abort")
+            except Exception as abort_exc:
+                logger.error(
+                    "Failed to abort workspace Git closure merge: %s", abort_exc
+                )
+            return (
+                f"Failed to merge advanced remote branch before workspace push: {exc}"
+            )
+        return None
+
     # -----------------------------------------------------------------
     # Desktop-style operations: fetch, status, commit, sync, resolve, diff
     # -----------------------------------------------------------------
@@ -850,6 +886,11 @@ class GitHubSyncService:
                 raise RuntimeError(result.error or "Git commit failed")
             commit_sha = result.commit_sha
             if push:
+                reconciliation_error = self._reconcile_remote_before_workspace_push(
+                    work_dir, repo
+                )
+                if reconciliation_error:
+                    return commit_sha, reconciliation_error
                 pushed = self._do_push(work_dir, repo)
                 if not pushed.success:
                     return commit_sha, pushed.error or "Git push failed"
