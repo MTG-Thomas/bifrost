@@ -6,7 +6,7 @@ Main entry point for the FastAPI application.
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
@@ -195,15 +195,21 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info(f"Bifrost API started in {settings.environment} mode")
 
-    yield
+    try:
+        yield
+    finally:
+        # Shutdown
+        logger.info("Shutting down Bifrost API...")
 
-    # Shutdown
-    logger.info("Shutting down Bifrost API...")
+        if not _reconciler_task.done():
+            _reconciler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _reconciler_task
 
-    await pubsub_manager.close()
-    await close_health_check_clients()
-    await close_db()
-    logger.info("Bifrost API shutdown complete")
+        await pubsub_manager.close()
+        await close_health_check_clients()
+        await close_db()
+        logger.info("Bifrost API shutdown complete")
 
 
 # MCP ASGI app cached at module level for lifespan access

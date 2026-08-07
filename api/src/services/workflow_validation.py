@@ -19,9 +19,37 @@ logger = logging.getLogger(__name__)
 
 def _write_temp_workflow(content: str) -> Path:
     """Write workflow source off the event loop and return its path."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as file:
-        file.write(content)
-        return Path(file.name)
+    path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as file:
+            path = Path(file.name)
+            file.write(content)
+        return path
+    except Exception:
+        if path is not None:
+            try:
+                path.unlink()
+            except OSError as cleanup_error:
+                logger.warning("Could not remove incomplete validation file %s: %s", path, cleanup_error)
+        raise
+
+
+async def _write_temp_workflow_cancellation_safe(content: str) -> Path:
+    """Create a temp workflow without leaking it if the caller is cancelled."""
+    write_task = asyncio.create_task(asyncio.to_thread(_write_temp_workflow, content))
+    try:
+        return await asyncio.shield(write_task)
+    except asyncio.CancelledError:
+        try:
+            path = await write_task
+        except Exception as write_error:
+            logger.warning("Cancelled validation write failed before cleanup: %s", write_error)
+        else:
+            try:
+                await asyncio.to_thread(path.unlink)
+            except OSError as cleanup_error:
+                logger.warning("Could not remove cancelled validation file %s: %s", path, cleanup_error)
+        raise
 
 
 def _extract_relative_path(source_file_path: str | None) -> str | None:
@@ -159,7 +187,7 @@ async def validate_workflow_file(path: str, content: str | None = None):
             return WorkflowValidationResponse(valid=False, issues=issues, metadata=None)
 
     try:
-        file_to_validate = await asyncio.to_thread(_write_temp_workflow, content)
+        file_to_validate = await _write_temp_workflow_cancellation_safe(content)
         file_content = content
     except Exception as e:
         issues.append(ValidationIssue(

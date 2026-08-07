@@ -1,5 +1,6 @@
 """Tests for pure helper functions in workflow_validation service."""
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -9,8 +10,11 @@ import pytest
 from src.services.workflow_validation import (
     _convert_workflow_metadata_to_model,
     _extract_relative_path,
+    _write_temp_workflow,
+    _write_temp_workflow_cancellation_safe,
     validate_workflow_file,
 )
+from src.services import workflow_validation
 
 
 @dataclass
@@ -402,3 +406,35 @@ async def helper():
         assert result.metadata is None
         assert len(result.issues) == 1
         assert result.issues[0].message == "File not found in database: missing.py"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_temp_workflow_write_removes_completed_file(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    removed = asyncio.Event()
+
+    class TempPath:
+        def unlink(self):
+            return None
+
+    temp_path = TempPath()
+
+    async def fake_to_thread(func, *args):
+        if func is _write_temp_workflow:
+            started.set()
+            await release.wait()
+            return temp_path
+        removed.set()
+
+    monkeypatch.setattr(workflow_validation.asyncio, "to_thread", fake_to_thread)
+
+    task = asyncio.create_task(_write_temp_workflow_cancellation_safe("VALUE = 1"))
+    await started.wait()
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert removed.is_set()

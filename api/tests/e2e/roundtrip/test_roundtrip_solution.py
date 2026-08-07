@@ -192,25 +192,24 @@ def _assert_entity_fields(
                 if before.get(field) not in (None, [], {}, ""):
                     raise AssertionError(
                         f"{model.__name__}.{field} (override=absent) was present in the "
-                        f"source bundle entry: {before.get(field)!r}"
+                        "source bundle entry"
                     )
                 if after.get(field) not in (None, [], {}, ""):
                     raise AssertionError(
                         f"{model.__name__}.{field} (override=absent) appeared in the "
-                        f"installed bundle entry: {after.get(field)!r}"
+                        "installed bundle entry"
                     )
             elif override == "scrub":
                 aval = after.get(field)
                 if aval not in (None, [], {}, ""):
                     raise AssertionError(
-                        f"{model.__name__}.{field} (override=scrub) leaked: {aval!r}"
+                        f"{model.__name__}.{field} (override=scrub) leaked"
                     )
             elif override == "keep_env_ref":
                 # Env-scoped grant: value preserved as-is (NOT solution-remapped).
                 if after.get(field) != before.get(field):
                     raise AssertionError(
-                        f"{model.__name__}.{field} (override=keep_env_ref) changed "
-                        f"{before.get(field)!r} -> {after.get(field)!r}"
+                        f"{model.__name__}.{field} (override=keep_env_ref) changed"
                     )
             else:
                 assert_field_roundtrip(

@@ -169,50 +169,45 @@ export function ChatSidebar({
 								<div
 									key={conv.id}
 									className={cn(
-										"group flex items-start gap-2 p-2 rounded-lg cursor-pointer hover:bg-accent transition-colors",
+										"group flex items-start gap-1 p-1 rounded-lg hover:bg-accent transition-colors",
 										activeConversationId === conv.id &&
 											"bg-accent",
 									)}
-									onClick={() =>
-										handleSelectConversation(conv)
-									}
-									onKeyDown={(event) => {
-										if (
-											event.key === "Enter" ||
-											event.key === " "
-										) {
-											event.preventDefault();
-											handleSelectConversation(conv);
-										}
-									}}
-									role="button"
-									tabIndex={0}
 								>
-									<MessageSquare className="h-4 w-4 mt-1 text-muted-foreground shrink-0" />
-									<div className="flex-1 min-w-0">
-										<div className="flex items-center justify-between gap-2">
-											<span className="font-medium text-sm truncate">
-												{conv.title ||
-													conv.agent_name ||
-													"Untitled"}
-											</span>
-											<span className="text-xs text-muted-foreground shrink-0">
-												{formatTime(conv.updated_at)}
-											</span>
+									<button
+										type="button"
+										className="flex flex-1 min-w-0 items-start gap-2 rounded-md p-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										onClick={() =>
+											handleSelectConversation(conv)
+										}
+									>
+										<MessageSquare className="h-4 w-4 mt-1 text-muted-foreground shrink-0" />
+										<div className="flex-1 min-w-0">
+											<div className="flex items-center justify-between gap-2">
+												<span className="font-medium text-sm truncate">
+													{conv.title ||
+														conv.agent_name ||
+														"Untitled"}
+												</span>
+												<span className="text-xs text-muted-foreground shrink-0">
+													{formatTime(
+														conv.updated_at,
+													)}
+												</span>
+											</div>
+											{conv.last_message_preview && (
+												<p className="text-xs text-muted-foreground truncate">
+													{conv.last_message_preview}
+												</p>
+											)}
 										</div>
-										{conv.last_message_preview && (
-											<p className="text-xs text-muted-foreground truncate">
-												{conv.last_message_preview}
-											</p>
-										)}
-									</div>
+									</button>
 									<Button
 										variant="ghost"
 										size="icon-sm"
 										className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0"
 										aria-label={`Delete ${conv.title || conv.agent_name || "Untitled"}`}
-										onClick={(e) => {
-											e.stopPropagation();
+										onClick={() => {
 											setDeleteTarget(conv);
 										}}
 									>

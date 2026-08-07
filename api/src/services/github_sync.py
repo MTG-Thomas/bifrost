@@ -62,17 +62,34 @@ from src.services.manifest_import import (
 logger = logging.getLogger(__name__)
 
 
-def _run_ruff_check(
+async def _run_ruff_check(
     repo_dir: Path,
     py_files: list[str],
 ) -> subprocess.CompletedProcess[str]:
-    """Run Ruff synchronously; callers dispatch this helper off the event loop."""
-    return subprocess.run(
-        ["ruff", "check", "--output-format=json", "--no-fix", *py_files],
-        capture_output=True,
-        text=True,
-        timeout=60,
+    """Run Ruff without blocking, terminating it on timeout or cancellation."""
+    args = ["ruff", "check", "--output-format=json", "--no-fix", *py_files]
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
         cwd=str(repo_dir),
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        raise
+    return subprocess.CompletedProcess(
+        args=args,
+        returncode=proc.returncode,
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
     )
 
 
@@ -1575,7 +1592,7 @@ class GitHubSyncService:
         ]
         if py_files:
             try:
-                result = await asyncio.to_thread(_run_ruff_check, repo_dir, py_files)
+                result = await _run_ruff_check(repo_dir, py_files)
                 if result.stdout.strip():
                     import json
                     for violation in json.loads(result.stdout):
@@ -1588,7 +1605,7 @@ class GitHubSyncService:
                             category="lint",
                             fix_hint="This is a style warning and won't block your commit.",
                         ))
-            except (subprocess.TimeoutExpired, FileNotFoundError):
+            except (asyncio.TimeoutError, FileNotFoundError):
                 pass  # ruff not available or timed out — skip lint
 
         # 4. Ref resolution (UUID references in forms)
