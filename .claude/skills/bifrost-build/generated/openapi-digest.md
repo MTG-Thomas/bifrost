@@ -507,12 +507,14 @@
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
 | POST | `/api/workspace-repo-changesets` |
+| GET | `/api/workspace-repo-changesets/recoverable-git-closures` |
 | GET | `/api/workspace-repo-changesets/state` |
 | GET | `/api/workspace-repo-changesets/{changeset_id}` |
 | POST | `/api/workspace-repo-changesets/{changeset_id}/abort` |
 | POST | `/api/workspace-repo-changesets/{changeset_id}/activate` |
 | GET | `/api/workspace-repo-changesets/{changeset_id}/diff` |
 | POST | `/api/workspace-repo-changesets/{changeset_id}/files` |
+| POST | `/api/workspace-repo-changesets/{changeset_id}/retry-git-closure` |
 | POST | `/api/workspace-repo-changesets/{changeset_id}/validate` |
 | POST | `/auth/admin/revoke-user` |
 | GET | `/auth/cli/authorize` |
