@@ -439,6 +439,15 @@ class WorkspaceRepoChangesetService:
             )
         return await self._complete_git_closure(changeset_id, request)
 
+    async def recoverable_git_closures(
+        self, *, scope: str | None = None
+    ) -> list[WorkspaceRepoChangesetResponse]:
+        """List this organization's explicit failed Git closure records."""
+        rows = await self.rows.list_retryable_git_failures(
+            self.organization_id, scope=scope
+        )
+        return [self._response(row) for row in rows]
+
     async def _complete_git_closure(
         self,
         changeset_id: UUID,

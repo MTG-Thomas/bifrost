@@ -65,6 +65,18 @@ class MemoryRows:
             for row in self.items.values()
         )
 
+    async def list_retryable_git_failures(self, organization_id, *, scope=None):
+        return [
+            row
+            for row in self.items.values()
+            if row.organization_id == organization_id
+            and (scope is None or row.scope == scope)
+            and row.failure_detail
+            and row.failure_detail.get("state") == "failed"
+            and (row.status, row.failure_detail.get("phase"))
+            in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
+        ]
+
 
 class FakeDB:
     def __init__(self):
@@ -527,6 +539,25 @@ async def test_retry_committed_unpushed_requires_push():
             row.id,
             WorkspaceRepoActivateRequest(commit_message="release source"),
         )
+
+
+@pytest.mark.asyncio
+async def test_recoverable_git_closures_are_scope_bounded():
+    svc = service({"features/a.txt": b"a", "features/b.txt": b"b"})
+    first = await svc.begin(
+        WorkspaceRepoChangesetBegin(scope="features/a.txt"), uuid4()
+    )
+    second = await svc.begin(
+        WorkspaceRepoChangesetBegin(scope="features/b.txt"), uuid4()
+    )
+    for row in (first, second):
+        stored = svc.rows.items[row.id]
+        stored.status = "activated"
+        stored.failure_detail = {"phase": "git_closure", "state": "failed"}
+
+    result = await svc.recoverable_git_closures(scope="features/a.txt")
+
+    assert [row.id for row in result] == [first.id]
 
 
 @pytest.mark.asyncio

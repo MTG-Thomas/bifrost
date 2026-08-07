@@ -112,6 +112,24 @@ async def begin_workspace_repo_changeset(
         raise _translate(exc) from exc
 
 
+@router.get(
+    "/recoverable-git-closures",
+    response_model=list[WorkspaceRepoChangesetResponse],
+)
+async def list_recoverable_workspace_repo_git_closures(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+    scope: str | None = None,
+):
+    try:
+        return await (await _service(db, ctx.org_id)).recoverable_git_closures(
+            scope=scope
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
 @router.get("/{changeset_id}", response_model=WorkspaceRepoChangesetResponse)
 async def show_workspace_repo_changeset(
     changeset_id: UUID, ctx: Context, db: DbSession, user: CurrentSuperuser

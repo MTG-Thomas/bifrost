@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
@@ -40,3 +40,30 @@ class WorkspaceRepoChangesetRepository:
             )
         )
         return int((await self.db.execute(stmt)).scalar_one())
+
+    async def list_retryable_git_failures(
+        self, organization_id: UUID, *, scope: str | None = None
+    ) -> list[WorkspaceRepoChangeset]:
+        failure_phase = WorkspaceRepoChangeset.failure_detail["phase"].astext
+        failure_state = WorkspaceRepoChangeset.failure_detail["state"].astext
+        stmt = (
+            select(WorkspaceRepoChangeset)
+            .where(
+                WorkspaceRepoChangeset.organization_id == organization_id,
+                failure_state == "failed",
+                or_(
+                    and_(
+                        WorkspaceRepoChangeset.status == "activated",
+                        failure_phase == "git_closure",
+                    ),
+                    and_(
+                        WorkspaceRepoChangeset.status == "committed_unpushed",
+                        failure_phase == "git_push",
+                    ),
+                ),
+            )
+            .order_by(WorkspaceRepoChangeset.updated_at.desc())
+        )
+        if scope is not None:
+            stmt = stmt.where(WorkspaceRepoChangeset.scope == scope)
+        return list((await self.db.execute(stmt)).scalars().all())
