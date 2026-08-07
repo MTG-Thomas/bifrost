@@ -67,6 +67,10 @@ CommitCallback = Callable[[str, bool], Awaitable[tuple[str | None, str | None]]]
 class WorkspaceRepoChangesetService:
     ACTIVE = {"open", "staged", "validated"}
     ABORTABLE = ACTIVE | {"conflicted"}
+    RETRYABLE_GIT_FAILURES = {
+        ("activated", "git_closure"),
+        ("committed_unpushed", "git_push"),
+    }
 
     def __init__(
         self,
@@ -407,6 +411,49 @@ class WorkspaceRepoChangesetService:
                 raise RuntimeError(row.error) from exc
             raise
 
+        return await self._complete_git_closure(changeset_id, request)
+
+    async def retry_git_closure(
+        self,
+        changeset_id: UUID,
+        request: WorkspaceRepoActivateRequest,
+    ) -> WorkspaceRepoChangesetResponse:
+        """Retry only failed Git closure after workspace activation succeeded."""
+        await self.db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtext('bifrost:workspace-repo-changesets'))"
+            )
+        )
+        row = await self._required(changeset_id, for_update=True)
+        failure = row.failure_detail if isinstance(row.failure_detail, dict) else {}
+        retry_key = (row.status, str(failure.get("phase") or ""))
+        if retry_key not in self.RETRYABLE_GIT_FAILURES or failure.get("state") != "failed":
+            raise ChangesetInvalid(
+                f"changeset in {row.status!r} state does not have a retryable Git closure failure"
+            )
+        if not request.commit_message:
+            raise ChangesetInvalid("retrying Git closure requires commit_message")
+        if row.status == "committed_unpushed" and not request.push:
+            raise ChangesetInvalid(
+                "retrying an unpushed changeset requires push=true"
+            )
+        return await self._complete_git_closure(changeset_id, request)
+
+    async def recoverable_git_closures(
+        self, *, scope: str | None = None
+    ) -> list[WorkspaceRepoChangesetResponse]:
+        """List this organization's explicit failed Git closure records."""
+        rows = await self.rows.list_retryable_git_failures(
+            self.organization_id, scope=scope
+        )
+        return [self._response(row) for row in rows]
+
+    async def _complete_git_closure(
+        self,
+        changeset_id: UUID,
+        request: WorkspaceRepoActivateRequest,
+    ) -> WorkspaceRepoChangesetResponse:
+        row = await self._required(changeset_id, for_update=True)
         if not request.commit_message:
             return self._response(row)
         if self.commit_callback is None:

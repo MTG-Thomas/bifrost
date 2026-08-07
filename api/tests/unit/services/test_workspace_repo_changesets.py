@@ -65,6 +65,18 @@ class MemoryRows:
             for row in self.items.values()
         )
 
+    async def list_retryable_git_failures(self, organization_id, *, scope=None):
+        return [
+            row
+            for row in self.items.values()
+            if row.organization_id == organization_id
+            and (scope is None or row.scope == scope)
+            and row.failure_detail
+            and row.failure_detail.get("state") == "failed"
+            and (row.status, row.failure_detail.get("phase"))
+            in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
+        ]
+
 
 class FakeDB:
     def __init__(self):
@@ -430,6 +442,122 @@ async def test_git_commit_failure_preserves_activation_with_recovery_evidence(mo
         "message": "git commit failed",
         "activation_preserved": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatch):
+    callback_calls = []
+
+    async def failing_commit(message, push):
+        callback_calls.append((message, push))
+        raise RuntimeError("credentials unavailable")
+
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({"features/a.txt": b"a"}),
+        commit_callback=failing_commit,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path="features/a.txt",
+            operation="write",
+            content_base64=base64.b64encode(b"A").decode(),
+        ),
+    )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class CountingStorage:
+        writes = 0
+
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, path, content, **_kwargs):
+            type(self).writes += 1
+            await svc.repo.write(path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", CountingStorage
+    )
+    failed = await svc.activate(
+        row.id,
+        WorkspaceRepoActivateRequest(commit_message="release source", push=True),
+        "tester",
+    )
+    assert failed.status == "activated"
+    assert CountingStorage.writes == 1
+
+    async def successful_commit(message, push):
+        callback_calls.append((message, push))
+        return "b" * 40, None
+
+    svc.commit_callback = successful_commit
+    closed = await svc.retry_git_closure(
+        row.id,
+        WorkspaceRepoActivateRequest(commit_message="release source", push=True),
+    )
+
+    assert closed.status == "committed"
+    assert closed.commit_sha == "b" * 40
+    assert closed.failure_detail is None
+    assert CountingStorage.writes == 1
+    assert callback_calls == [
+        ("release source", True),
+        ("release source", True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_git_closure_rejects_non_retryable_state():
+    svc = service({"features/a.txt": b"a"})
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+
+    with pytest.raises(ChangesetInvalid, match="does not have a retryable"):
+        await svc.retry_git_closure(
+            row.id,
+            WorkspaceRepoActivateRequest(commit_message="release source", push=True),
+        )
+
+
+@pytest.mark.asyncio
+async def test_retry_committed_unpushed_requires_push():
+    svc = service({"features/a.txt": b"a"})
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    stored = svc.rows.items[row.id]
+    stored.status = "committed_unpushed"
+    stored.failure_detail = {"phase": "git_push", "state": "failed"}
+
+    with pytest.raises(ChangesetInvalid, match="requires push=true"):
+        await svc.retry_git_closure(
+            row.id,
+            WorkspaceRepoActivateRequest(commit_message="release source"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_recoverable_git_closures_are_scope_bounded():
+    svc = service({"features/a.txt": b"a", "features/b.txt": b"b"})
+    first = await svc.begin(
+        WorkspaceRepoChangesetBegin(scope="features/a.txt"), uuid4()
+    )
+    second = await svc.begin(
+        WorkspaceRepoChangesetBegin(scope="features/b.txt"), uuid4()
+    )
+    for row in (first, second):
+        stored = svc.rows.items[row.id]
+        stored.status = "activated"
+        stored.failure_detail = {"phase": "git_closure", "state": "failed"}
+
+    result = await svc.recoverable_git_closures(scope="features/a.txt")
+
+    assert [row.id for row in result] == [first.id]
 
 
 @pytest.mark.asyncio

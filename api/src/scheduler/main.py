@@ -386,17 +386,9 @@ class Scheduler:
     @staticmethod
     def _build_clone_url_from_config(config) -> str:
         """Build an authenticated git clone URL from a GitHubConfig object."""
-        repo_url = config.repo_url
+        from src.services.github_config import build_authenticated_github_url
 
-        # Extract owner/repo from URL
-        if repo_url.startswith("https://github.com/"):
-            repo = repo_url.replace("https://github.com/", "")
-            if repo.endswith(".git"):
-                repo = repo[:-4]
-        else:
-            repo = repo_url
-
-        return f"https://x-access-token:{config.token}@github.com/{repo}.git"
+        return build_authenticated_github_url(config.repo_url, config.token)
 
     async def _handle_reimport(self, data: dict) -> None:
         """
