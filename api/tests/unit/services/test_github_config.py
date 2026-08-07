@@ -73,6 +73,7 @@ def test_parse_org_id_accepts_global_none_uuid_and_invalid() -> None:
     [
         ("https://github.com/example/repo", "example/repo"),
         ("https://github.com/example/repo.git", "example/repo"),
+        ("https://github.com/example/repo.git/", "example/repo"),
         ("example/repo", "example/repo"),
     ],
 )

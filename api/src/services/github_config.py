@@ -37,7 +37,7 @@ def build_authenticated_github_url(repo_url: str, token: str) -> str:
     normalized = repo_url.strip()
     prefix = "https://github.com/"
     repository = normalized[len(prefix) :] if normalized.startswith(prefix) else normalized
-    repository = repository.removesuffix(".git").strip("/")
+    repository = repository.strip("/").removesuffix(".git")
     encoded_token = urllib.parse.quote(token, safe="")
     return f"https://x-access-token:{encoded_token}@github.com/{repository}.git"
 
