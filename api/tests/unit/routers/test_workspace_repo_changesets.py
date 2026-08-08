@@ -40,4 +40,8 @@ async def test_service_uses_authenticated_github_remote(monkeypatch):
         )
     ]
     assert result == ("a" * 40, None)
-    commit_workspace_changes.assert_awaited_once_with("release source", push=True)
+    commit_workspace_changes.assert_awaited_once_with(
+        "release source",
+        push=True,
+        expected_file_hashes={},
+    )
