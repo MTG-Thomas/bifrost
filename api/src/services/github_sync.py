@@ -999,27 +999,38 @@ class GitHubSyncService:
 
         mismatches: list[str] = []
         for path, expected_hash in expected_file_hashes.items():
-            try:
-                blob = repo.head.commit.tree / path
-            except KeyError:
-                blob = None
-            if expected_hash is None:
-                if blob is not None:
-                    mismatches.append(f"{path}: expected deletion")
-                continue
-            if blob is None or blob.type != "blob":
-                mismatches.append(f"{path}: missing from commit tree")
-                continue
-            actual_hash = hashlib.sha256(blob.data_stream.read()).hexdigest()
-            if actual_hash != expected_hash:
-                mismatches.append(
-                    f"{path}: expected {expected_hash}, committed {actual_hash}"
-                )
+            mismatch = GitHubSyncService._expected_workspace_tree_mismatch(
+                repo,
+                path,
+                expected_hash,
+            )
+            if mismatch:
+                mismatches.append(mismatch)
         if mismatches:
             raise RuntimeError(
                 "Workspace Git commit does not match activated changeset: "
                 + "; ".join(mismatches)
             )
+
+    @staticmethod
+    def _expected_workspace_tree_mismatch(
+        repo: GitRepo,
+        path: str,
+        expected_hash: str | None,
+    ) -> str | None:
+        """Return the path-specific commit-tree contract violation, if any."""
+        try:
+            blob = repo.head.commit.tree / path
+        except KeyError:
+            blob = None
+        if expected_hash is None:
+            return f"{path}: expected deletion" if blob is not None else None
+        if blob is None or blob.type != "blob":
+            return f"{path}: missing from commit tree"
+        actual_hash = hashlib.sha256(blob.data_stream.read()).hexdigest()
+        if actual_hash != expected_hash:
+            return f"{path}: expected {expected_hash}, committed {actual_hash}"
+        return None
 
     async def desktop_sync(self, job_id: str | None = None, confirm_deletes: bool = False) -> "SyncResult":
         """Combined pull + push. The ONLY place entity import + S3 sync-up happen.
