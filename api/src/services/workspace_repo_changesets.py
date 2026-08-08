@@ -61,7 +61,10 @@ def require_organization_id(organization_id: UUID | None) -> UUID:
     return organization_id
 
 
-CommitCallback = Callable[[str, bool], Awaitable[tuple[str | None, str | None]]]
+CommitCallback = Callable[
+    [str, bool, dict[str, str | None]],
+    Awaitable[tuple[str | None, str | None]],
+]
 
 
 class WorkspaceRepoChangesetService:
@@ -477,8 +480,18 @@ class WorkspaceRepoChangesetService:
         await self.db.flush()
         await self.db.commit()
         try:
+            expected_file_hashes = {
+                item["path"]: (
+                    item.get("after_hash")
+                    if item.get("operation") == "write"
+                    else None
+                )
+                for item in row.mutations
+            }
             commit_sha, push_error = await self.commit_callback(
-                request.commit_message, request.push
+                request.commit_message,
+                request.push,
+                expected_file_hashes,
             )
         except Exception as exc:
             await self.db.rollback()

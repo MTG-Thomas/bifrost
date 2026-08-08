@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -350,9 +351,9 @@ async def test_activation_persists_failure_when_compensation_also_fails(monkeypa
 async def test_activation_closes_with_commit_without_push_by_default(monkeypatch):
     calls = []
 
-    async def commit(message, push):
+    async def commit(message, push, expected_file_hashes):
         assert svc.db.commits == 2  # activation, then durable Git-pending marker
-        calls.append((message, push))
+        calls.append((message, push, expected_file_hashes))
         return "a" * 40, None
 
     svc = WorkspaceRepoChangesetService(
@@ -391,12 +392,14 @@ async def test_activation_closes_with_commit_without_push_by_default(monkeypatch
     )
     assert closed.status == "committed"
     assert closed.commit_sha == "a" * 40
-    assert calls == [("agent change", False)]
+    assert calls == [
+        ("agent change", False, {"features/a.txt": hashlib.sha256(b"A").hexdigest()})
+    ]
 
 
 @pytest.mark.asyncio
 async def test_git_commit_failure_preserves_activation_with_recovery_evidence(monkeypatch):
-    async def commit(_message, _push):
+    async def commit(_message, _push, _expected_file_hashes):
         raise RuntimeError("git commit failed")
 
     svc = WorkspaceRepoChangesetService(
@@ -448,8 +451,8 @@ async def test_git_commit_failure_preserves_activation_with_recovery_evidence(mo
 async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatch):
     callback_calls = []
 
-    async def failing_commit(message, push):
-        callback_calls.append((message, push))
+    async def failing_commit(message, push, expected_file_hashes):
+        callback_calls.append((message, push, expected_file_hashes))
         raise RuntimeError("credentials unavailable")
 
     svc = WorkspaceRepoChangesetService(
@@ -494,8 +497,8 @@ async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatc
     assert failed.status == "activated"
     assert CountingStorage.writes == 1
 
-    async def successful_commit(message, push):
-        callback_calls.append((message, push))
+    async def successful_commit(message, push, expected_file_hashes):
+        callback_calls.append((message, push, expected_file_hashes))
         return "b" * 40, None
 
     svc.commit_callback = successful_commit
@@ -508,9 +511,10 @@ async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatc
     assert closed.commit_sha == "b" * 40
     assert closed.failure_detail is None
     assert CountingStorage.writes == 1
+    expected_file_hashes = {"features/a.txt": hashlib.sha256(b"A").hexdigest()}
     assert callback_calls == [
-        ("release source", True),
-        ("release source", True),
+        ("release source", True, expected_file_hashes),
+        ("release source", True, expected_file_hashes),
     ]
 
 
@@ -562,7 +566,7 @@ async def test_recoverable_git_closures_are_scope_bounded():
 
 @pytest.mark.asyncio
 async def test_activation_records_committed_unpushed_without_rolling_back(monkeypatch):
-    async def commit(_message, _push):
+    async def commit(_message, _push, _expected_file_hashes):
         return "a" * 40, "remote rejected push"
 
     svc = WorkspaceRepoChangesetService(

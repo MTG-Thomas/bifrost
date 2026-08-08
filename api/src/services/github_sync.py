@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 from git import Repo as GitRepo
+from git.exc import GitCommandError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -892,7 +893,13 @@ class GitHubSyncService:
             logger.error(f"Commit failed: {e}", exc_info=True)
             return CommitResult(success=False, error=str(e))
 
-    async def commit_workspace_changes(self, message: str, *, push: bool = False) -> tuple[str | None, str | None]:
+    async def commit_workspace_changes(
+        self,
+        message: str,
+        *,
+        push: bool = False,
+        expected_file_hashes: dict[str, str | None] | None = None,
+    ) -> tuple[str | None, str | None]:
         """Commit the current authoritative S3 workspace, optionally pushing it.
 
         Unlike ``desktop_commit`` this uses ``checkout()`` so direct workspace
@@ -901,13 +908,27 @@ class GitHubSyncService:
         """
         async with self.repo_manager.checkout() as work_dir:
             repo = self._open_or_init(work_dir)
+            self._prepare_expected_workspace_files(
+                work_dir,
+                repo,
+                expected_file_hashes or {},
+            )
             result = await self._do_commit(work_dir, repo, message)
             if not result.success:
                 raise RuntimeError(result.error or "Git commit failed")
+            self._verify_expected_workspace_tree(repo, expected_file_hashes or {})
             commit_sha = result.commit_sha
             if push:
                 reconciliation_error = self._reconcile_remote_before_workspace_push(
                     work_dir, repo
+                )
+                self._verify_expected_workspace_files(
+                    work_dir,
+                    expected_file_hashes or {},
+                )
+                self._verify_expected_workspace_tree(
+                    repo,
+                    expected_file_hashes or {},
                 )
                 if reconciliation_error:
                     return commit_sha, reconciliation_error
@@ -916,6 +937,89 @@ class GitHubSyncService:
                     return commit_sha, pushed.error or "Git push failed"
                 commit_sha = pushed.commit_sha or commit_sha
             return commit_sha, None
+
+    @staticmethod
+    def _verify_expected_workspace_files(
+        work_dir: Path,
+        expected_file_hashes: dict[str, str | None],
+    ) -> None:
+        """Fail when the materialized workspace differs from activated content."""
+        mismatches: list[str] = []
+        for path, expected_hash in expected_file_hashes.items():
+            file_path = GitRepoManager._safe_local_path(work_dir, path)
+            if expected_hash is None:
+                if file_path.exists():
+                    mismatches.append(f"{path}: expected deletion")
+                continue
+            if not file_path.is_file():
+                mismatches.append(f"{path}: missing")
+                continue
+            actual_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            if actual_hash != expected_hash:
+                mismatches.append(
+                    f"{path}: expected {expected_hash}, found {actual_hash}"
+                )
+        if mismatches:
+            raise RuntimeError(
+                "Workspace Git checkout does not match activated changeset: "
+                + "; ".join(mismatches)
+            )
+
+    @classmethod
+    def _prepare_expected_workspace_files(
+        cls,
+        work_dir: Path,
+        repo: GitRepo,
+        expected_file_hashes: dict[str, str | None],
+    ) -> None:
+        """Validate activated files and make tracked paths visible to Git staging."""
+        cls._verify_expected_workspace_files(work_dir, expected_file_hashes)
+        for path in expected_file_hashes:
+            try:
+                repo.git.ls_files("--error-unmatch", "--", path)
+            except GitCommandError:
+                continue
+            repo.git.update_index(
+                "--no-assume-unchanged",
+                "--no-skip-worktree",
+                "--",
+                path,
+            )
+
+    @staticmethod
+    def _verify_expected_workspace_tree(
+        repo: GitRepo,
+        expected_file_hashes: dict[str, str | None],
+    ) -> None:
+        """Verify the commit tree contains each activated write or deletion."""
+        if not expected_file_hashes:
+            return
+        if not repo.head.is_valid():
+            raise RuntimeError("Workspace Git closure did not create a valid HEAD")
+
+        mismatches: list[str] = []
+        for path, expected_hash in expected_file_hashes.items():
+            try:
+                blob = repo.head.commit.tree / path
+            except KeyError:
+                blob = None
+            if expected_hash is None:
+                if blob is not None:
+                    mismatches.append(f"{path}: expected deletion")
+                continue
+            if blob is None or blob.type != "blob":
+                mismatches.append(f"{path}: missing from commit tree")
+                continue
+            actual_hash = hashlib.sha256(blob.data_stream.read()).hexdigest()
+            if actual_hash != expected_hash:
+                mismatches.append(
+                    f"{path}: expected {expected_hash}, committed {actual_hash}"
+                )
+        if mismatches:
+            raise RuntimeError(
+                "Workspace Git commit does not match activated changeset: "
+                + "; ".join(mismatches)
+            )
 
     async def desktop_sync(self, job_id: str | None = None, confirm_deletes: bool = False) -> "SyncResult":
         """Combined pull + push. The ONLY place entity import + S3 sync-up happen.

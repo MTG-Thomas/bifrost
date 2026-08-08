@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -6,6 +7,14 @@ import pytest
 from git import Repo as GitRepo
 
 from src.services.github_sync import GitHubSyncService
+
+
+def _init_repo(path):
+    repo = GitRepo.init(path)
+    repo.config_writer().set_value("user", "name", "Test").set_value(
+        "user", "email", "test@example.com"
+    ).release()
+    return repo
 
 
 @pytest.mark.asyncio
@@ -36,6 +45,76 @@ async def test_workspace_repo_commit_closure_syncs_storage_and_does_not_push_by_
     assert events == ["sync-down", "sync-up"]
     service._do_commit.assert_awaited_once_with(tmp_path, repo, "agent change")
     service._do_push.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_repo_commit_closure_stages_assume_unchanged_activated_file(
+    tmp_path,
+):
+    repo = _init_repo(tmp_path)
+    tracked = tmp_path / "features" / "activated.py"
+    tracked.parent.mkdir()
+    tracked.write_bytes(b"old\n")
+    repo.index.add(["features/activated.py"])
+    repo.index.commit("initial")
+    repo.git.update_index("--assume-unchanged", "features/activated.py")
+    activated = b"new activated content\n"
+    tracked.write_bytes(activated)
+
+    @asynccontextmanager
+    async def checkout():
+        yield tmp_path
+
+    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service._open_or_init = Mock(return_value=repo)
+    service._regenerate_manifest_to_dir = AsyncMock()
+    service._run_preflight = AsyncMock(return_value=SimpleNamespace(valid=True))
+
+    sha, push_error = await service.commit_workspace_changes(
+        "activated source",
+        expected_file_hashes={
+            "features/activated.py": hashlib.sha256(activated).hexdigest()
+        },
+    )
+
+    assert push_error is None
+    assert sha == repo.head.commit.hexsha
+    blob = repo.head.commit.tree / "features/activated.py"
+    assert blob.data_stream.read() == activated
+
+
+@pytest.mark.asyncio
+async def test_workspace_repo_commit_closure_rejects_stale_materialized_file_without_sync_up(
+    tmp_path,
+):
+    repo = _init_repo(tmp_path)
+    tracked = tmp_path / "features" / "activated.py"
+    tracked.parent.mkdir()
+    tracked.write_bytes(b"stale\n")
+    repo.index.add(["features/activated.py"])
+    repo.index.commit("initial")
+    events = []
+
+    @asynccontextmanager
+    async def checkout():
+        events.append("sync-down")
+        yield tmp_path
+        events.append("sync-up")
+
+    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service._open_or_init = Mock(return_value=repo)
+
+    with pytest.raises(RuntimeError, match="does not match activated changeset"):
+        await service.commit_workspace_changes(
+            "activated source",
+            expected_file_hashes={
+                "features/activated.py": hashlib.sha256(b"activated\n").hexdigest()
+            },
+        )
+
+    assert events == ["sync-down"]
 
 
 @pytest.mark.asyncio
