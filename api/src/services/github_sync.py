@@ -735,7 +735,10 @@ class GitHubSyncService:
         later. The configured production branch may advance during that gap, so
         pushing the preserved local commit directly would be non-fast-forward.
         Fetch and merge the remote history without replaying workspace
-        activation or importing remote files into the live workspace.
+        activation or importing remote files into the live workspace. Older
+        workspace repositories and their configured production branches may
+        have been initialized independently, so the merge must also support
+        unrelated root histories while retaining normal conflict protection.
         """
         remote_ref = f"origin/{self.branch}"
         try:
@@ -755,7 +758,7 @@ class GitHubSyncService:
             return None
 
         try:
-            repo.git.merge("--no-edit", remote_ref)
+            repo.git.merge("--no-edit", "--allow-unrelated-histories", remote_ref)
         except Exception as exc:
             try:
                 if (work_dir / ".git" / "MERGE_HEAD").exists():

@@ -149,7 +149,9 @@ async def test_workspace_repo_commit_closure_pushes_when_remote_branch_is_missin
     service._do_push.assert_called_once_with(tmp_path, repo)
 
 
-def test_workspace_repo_remote_reconciliation_merges_advanced_branch(tmp_path):
+def test_workspace_repo_remote_reconciliation_merges_advanced_unrelated_branch(
+    tmp_path,
+):
     service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
     service.branch = "production-live"
     repo = Mock()
@@ -160,7 +162,9 @@ def test_workspace_repo_remote_reconciliation_merges_advanced_branch(tmp_path):
     assert error is None
     repo.remotes.origin.fetch.assert_called_once_with("production-live")
     repo.git.rev_list.assert_called_once_with("--count", "HEAD..origin/production-live")
-    repo.git.merge.assert_called_once_with("--no-edit", "origin/production-live")
+    repo.git.merge.assert_called_once_with(
+        "--no-edit", "--allow-unrelated-histories", "origin/production-live"
+    )
 
 
 def test_workspace_repo_remote_reconciliation_aborts_conflicted_merge(tmp_path):
