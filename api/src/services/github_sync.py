@@ -737,8 +737,9 @@ class GitHubSyncService:
         Fetch and merge the remote history without replaying workspace
         activation or importing remote files into the live workspace. Older
         workspace repositories and their configured production branches may
-        have been initialized independently, so the merge must also support
-        unrelated root histories while retaining normal conflict protection.
+        have been initialized independently. In that case, link the histories
+        with an ``ours`` merge so the already-activated workspace tree remains
+        authoritative and remote-only files are not imported.
         """
         remote_ref = f"origin/{self.branch}"
         try:
@@ -758,7 +759,16 @@ class GitHubSyncService:
             return None
 
         try:
-            repo.git.merge("--no-edit", "--allow-unrelated-histories", remote_ref)
+            common_ancestors = repo.merge_base("HEAD", remote_ref)
+        except Exception as exc:
+            return f"Failed to inspect workspace and remote Git history: {exc}"
+
+        merge_args = ["--no-edit"]
+        if not common_ancestors:
+            merge_args.extend(["--allow-unrelated-histories", "--strategy=ours"])
+
+        try:
+            repo.git.merge(*merge_args, remote_ref)
         except Exception as exc:
             try:
                 if (work_dir / ".git" / "MERGE_HEAD").exists():

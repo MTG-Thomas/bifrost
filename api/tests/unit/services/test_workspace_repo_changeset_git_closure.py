@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from git import Repo as GitRepo
 
 from src.services.github_sync import GitHubSyncService
 
@@ -149,22 +150,80 @@ async def test_workspace_repo_commit_closure_pushes_when_remote_branch_is_missin
     service._do_push.assert_called_once_with(tmp_path, repo)
 
 
-def test_workspace_repo_remote_reconciliation_merges_advanced_unrelated_branch(
-    tmp_path,
-):
+def test_workspace_repo_remote_reconciliation_merges_advanced_related_branch(tmp_path):
     service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
     service.branch = "production-live"
     repo = Mock()
     repo.git.rev_list.return_value = "2"
+    repo.merge_base.return_value = [Mock()]
 
     error = service._reconcile_remote_before_workspace_push(tmp_path, repo)
 
     assert error is None
     repo.remotes.origin.fetch.assert_called_once_with("production-live")
     repo.git.rev_list.assert_called_once_with("--count", "HEAD..origin/production-live")
+    repo.merge_base.assert_called_once_with("HEAD", "origin/production-live")
+    repo.git.merge.assert_called_once_with("--no-edit", "origin/production-live")
+
+
+def test_workspace_repo_remote_reconciliation_links_unrelated_histories_with_local_tree(
+    tmp_path,
+):
+    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service.branch = "production-live"
+    repo = Mock()
+    repo.git.rev_list.return_value = "2"
+    repo.merge_base.return_value = []
+
+    error = service._reconcile_remote_before_workspace_push(tmp_path, repo)
+
+    assert error is None
     repo.git.merge.assert_called_once_with(
-        "--no-edit", "--allow-unrelated-histories", "origin/production-live"
+        "--no-edit",
+        "--allow-unrelated-histories",
+        "--strategy=ours",
+        "origin/production-live",
     )
+
+
+def test_workspace_repo_remote_reconciliation_preserves_real_local_tree_for_unrelated_histories(
+    tmp_path,
+):
+    remote_dir = tmp_path / "remote.git"
+    GitRepo.init(remote_dir, bare=True)
+
+    remote_seed_dir = tmp_path / "remote-seed"
+    remote_seed = GitRepo.init(remote_seed_dir)
+    remote_seed.config_writer().set_value("user", "name", "Test").set_value(
+        "user", "email", "test@example.com"
+    ).release()
+    (remote_seed_dir / "remote-only.txt").write_text("remote\n")
+    remote_seed.index.add(["remote-only.txt"])
+    remote_seed.index.commit("remote root")
+    remote_seed.git.branch("-M", "production-live")
+    remote_seed.create_remote("origin", str(remote_dir)).push(
+        "production-live:production-live"
+    )
+
+    work_dir = tmp_path / "workspace"
+    repo = GitRepo.init(work_dir)
+    repo.config_writer().set_value("user", "name", "Test").set_value(
+        "user", "email", "test@example.com"
+    ).release()
+    (work_dir / "workspace-only.txt").write_text("workspace\n")
+    repo.index.add(["workspace-only.txt"])
+    repo.index.commit("workspace root")
+    repo.create_remote("origin", str(remote_dir))
+
+    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service.branch = "production-live"
+
+    error = service._reconcile_remote_before_workspace_push(work_dir, repo)
+
+    assert error is None
+    assert len(repo.head.commit.parents) == 2
+    assert (work_dir / "workspace-only.txt").read_text() == "workspace\n"
+    assert not (work_dir / "remote-only.txt").exists()
 
 
 def test_workspace_repo_remote_reconciliation_aborts_conflicted_merge(tmp_path):
