@@ -46,8 +46,16 @@ async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangeset
             config.branch,
         )
 
-        async def commit(message: str, push: bool) -> tuple[str | None, str | None]:
-            return await git.commit_workspace_changes(message, push=push)
+        async def commit(
+            message: str,
+            push: bool,
+            expected_file_hashes: dict[str, str | None] | None = None,
+        ) -> tuple[str | None, str | None]:
+            return await git.commit_workspace_changes(
+                message,
+                push=push,
+                expected_file_hashes=expected_file_hashes or {},
+            )
 
         callback = commit
     return WorkspaceRepoChangesetService(db, org_id, commit_callback=callback)
