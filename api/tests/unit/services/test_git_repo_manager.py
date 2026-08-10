@@ -280,6 +280,42 @@ class TestAzureBlobSync:
         aws.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_sync_down_preserves_identical_readonly_git_object(
+        self, azure_manager, tmp_path
+    ):
+        git_object = tmp_path / ".git" / "objects" / "00" / "readonly"
+        git_object.parent.mkdir(parents=True)
+        git_object.write_bytes(b"existing-object")
+        git_object.chmod(0o444)
+        storage = MagicMock()
+        storage.list = AsyncMock(return_value=[".git/objects/00/readonly"])
+        storage.read = AsyncMock(return_value=b"existing-object")
+
+        with patch("src.services.repo_storage.RepoStorage", return_value=storage):
+            await azure_manager.sync_down(tmp_path)
+
+        assert git_object.read_bytes() == b"existing-object"
+        assert git_object.stat().st_mode & 0o777 == 0o444
+
+    @pytest.mark.asyncio
+    async def test_sync_down_atomically_replaces_changed_readonly_git_object(
+        self, azure_manager, tmp_path
+    ):
+        git_object = tmp_path / ".git" / "objects" / "00" / "readonly"
+        git_object.parent.mkdir(parents=True)
+        git_object.write_bytes(b"stale-object")
+        git_object.chmod(0o444)
+        storage = MagicMock()
+        storage.list = AsyncMock(return_value=[".git/objects/00/readonly"])
+        storage.read = AsyncMock(return_value=b"remote-object")
+
+        with patch("src.services.repo_storage.RepoStorage", return_value=storage):
+            await azure_manager.sync_down(tmp_path)
+
+        assert git_object.read_bytes() == b"remote-object"
+        assert not list(git_object.parent.glob(".readonly.*.tmp"))
+
+    @pytest.mark.asyncio
     async def test_sync_up_writes_changes_and_deletes_removed_objects(
         self, azure_manager, tmp_path
     ):

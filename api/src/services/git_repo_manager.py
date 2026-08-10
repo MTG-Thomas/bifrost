@@ -19,9 +19,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Awaitable, Iterable
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
+from uuid import uuid4
 
 import redis.asyncio as redis
 
@@ -168,9 +169,14 @@ class GitRepoManager:
             destination = self._safe_local_path(target, path)
             async with semaphore:
                 content = await storage.read(path)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(destination.write_bytes, content)
-            downloaded_hashes[path] = hashlib.sha256(content).hexdigest()
+            content_hash = hashlib.sha256(content).hexdigest()
+            if destination.is_file():
+                current = await asyncio.to_thread(destination.read_bytes)
+                if hashlib.sha256(current).hexdigest() == content_hash:
+                    downloaded_hashes[path] = content_hash
+                    return
+            await asyncio.to_thread(self._replace_local_file, destination, content)
+            downloaded_hashes[path] = content_hash
 
         await self._run_transfers(
             download(path) for path in paths if not path.endswith("/")
@@ -243,6 +249,17 @@ class GitRepoManager:
         ):
             raise ValueError(f"Unsafe repository object path: {relative_path!r}")
         return destination
+
+    @staticmethod
+    def _replace_local_file(destination: Path, content: bytes) -> None:
+        """Atomically replace a local object without writing through its mode bits."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(content)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     async def has_git_dir(self) -> bool:
         """Check if .git/HEAD exists in S3 _repo/ (quick existence check)."""
