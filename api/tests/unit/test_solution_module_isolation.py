@@ -19,7 +19,9 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 
-def _fake_solution_module(name: str, rel_path: str, content_hash: str):
+def _fake_solution_module(
+    name: str, rel_path: str, content_hash: str, generation: str = "generation-1"
+):
     """A module object as VirtualModuleLoader ACTUALLY creates it: __file__ is the
     BARE relative path (e.g. 'modules/foo.py'), NOT a _solutions/{id}/-rooted one.
     (An earlier version of this fixture used a fictional _solutions/-rooted
@@ -31,6 +33,7 @@ def _fake_solution_module(name: str, rel_path: str, content_hash: str):
     m = types.ModuleType(name)
     m.__file__ = rel_path
     m.__content_hash__ = content_hash  # type: ignore[attr-defined]  # dynamic attr the loader sets
+    m.__workspace_generation__ = generation  # type: ignore[attr-defined]
     # A minimal loader instance of the right type (only isinstance is checked).
     m.__loader__ = VirtualModuleLoader.__new__(VirtualModuleLoader)
     return m
@@ -58,6 +61,9 @@ def test_switching_solution_evicts_other_solutions_module(_clean_sys_modules, mo
     # file path → clear to be safe" branch fires. THIS is the real isolation
     # mechanism (not the removed _solutions/-prefix block). Stub an empty index.
     monkeypatch.setattr(mcs, "get_module_index_sync", lambda: [])
+    monkeypatch.setattr(
+        mcs, "wait_for_workspace_generation_sync", lambda: "generation-1"
+    )
 
     # Now Solution B is the active execution.
     mcs.set_solution_context(sid_b, global_repo_access=False)
@@ -84,6 +90,9 @@ def test_same_solution_keeps_its_module(_clean_sys_modules, monkeypatch):
     # survives, so the next import is a no-op.
     monkeypatch.setattr(mcs, "get_module_index_sync", lambda: ["modules/foo.py"])
     monkeypatch.setattr(mcs, "get_module_sync", lambda _p: {"hash": "hashA"})
+    monkeypatch.setattr(
+        mcs, "wait_for_workspace_generation_sync", lambda: "generation-1"
+    )
 
     mcs.set_solution_context(sid, global_repo_access=False)
     try:
@@ -115,6 +124,12 @@ async def test_execute_async_sets_solution_context_before_clearing_modules(monke
 
     def _fake_clear():
         calls.append(("clear_modules", None))
+        return sw.WorkspaceModuleRefresh(
+            generation="generation-1",
+            cleared=0,
+            kept=0,
+            generation_mismatch=False,
+        )
 
     def _fake_clear_ctx():
         calls.append(("clear_context", None))

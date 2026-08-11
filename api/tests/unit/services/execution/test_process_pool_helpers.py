@@ -350,18 +350,44 @@ async def test_handle_command_dispatches_recycle_actions_and_ignores_unknown():
     pool = ProcessPoolManager()
     process_commands: list[dict[str, object]] = []
     all_commands: list[dict[str, object]] = []
+    generation_commands: list[dict[str, object]] = []
     pool._handle_recycle_process_command = AsyncMock(
         side_effect=lambda command: process_commands.append(command)
     )
     pool._handle_recycle_all_command = AsyncMock(
         side_effect=lambda command: all_commands.append(command)
     )
+    pool._handle_workspace_generation_changed_command = AsyncMock(
+        side_effect=lambda command: generation_commands.append(command)
+    )
 
     recycle_process = {"action": "recycle_process", "pid": 123}
     recycle_all = {"action": "recycle_all", "reason": "operator"}
+    generation_changed = {
+        "action": "workspace_generation_changed",
+        "generation": "generation-2",
+    }
     await pool._handle_command(recycle_process)
     await pool._handle_command(recycle_all)
+    await pool._handle_command(generation_changed)
     await pool._handle_command({"action": "unknown"})
 
     assert process_commands == [recycle_process]
     assert all_commands == [recycle_all]
+    assert generation_commands == [generation_changed]
+
+
+@pytest.mark.asyncio
+async def test_workspace_generation_change_drains_and_restarts_template():
+    pool = ProcessPoolManager()
+    pool.drain_and_restart_template = AsyncMock()
+
+    await pool._handle_workspace_generation_changed_command(
+        {
+            "action": "workspace_generation_changed",
+            "generation": "generation-2",
+            "reason": "workspace_changeset_activated",
+        }
+    )
+
+    pool.drain_and_restart_template.assert_awaited_once_with()

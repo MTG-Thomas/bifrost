@@ -23,14 +23,21 @@ import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import redis
 
-from src.core.module_cache import MODULE_INDEX_KEY, MODULE_KEY_PREFIX, CachedModule
+from src.core.module_cache import (
+    MODULE_INDEX_KEY,
+    MODULE_KEY_PREFIX,
+    WORKSPACE_GENERATION_KEY,
+    WORKSPACE_UPDATING_PREFIX,
+    CachedModule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +59,7 @@ SOLUTIONS_ROOT = "_solutions"
 # thread-local correctly scopes the root to exactly one execution with no
 # cross-execution bleed. No active context == unchanged _repo/ behavior.
 _solution_ctx = threading.local()
+_workspace_generation_ctx = threading.local()
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,21 @@ def clear_solution_context() -> None:
 def get_solution_context() -> SolutionContext | None:
     """Return the active solution context for this thread, or None."""
     return getattr(_solution_ctx, "value", None)
+
+
+def set_workspace_generation_context(generation: str | None) -> None:
+    """Pin lazy imports to the generation selected at execution start."""
+    _workspace_generation_ctx.value = generation
+
+
+def clear_workspace_generation_context() -> None:
+    """Remove the current execution's lazy-import generation pin."""
+    _workspace_generation_ctx.value = None
+
+
+def get_workspace_generation_context() -> str | None:
+    """Return the current execution's generation pin, if any."""
+    return getattr(_workspace_generation_ctx, "value", None)
 
 
 def _candidate_storage_paths(path: str) -> list[str]:
@@ -161,6 +184,84 @@ def _get_sync_redis() -> Any:
         os.environ.get("BIFROST_REDIS_URL", "redis://localhost:6379/0"),
         decode_responses=True,
     )
+
+
+class WorkspaceGenerationChangedError(RuntimeError):
+    """Raised when source activation races an execution's load boundary."""
+
+
+class WorkspaceSourceUpdatingError(RuntimeError):
+    """Raised while a source transaction has closed the execution load gate."""
+
+
+def get_workspace_generation_sync() -> str:
+    """Return the shared workspace generation, initializing a cold Redis key."""
+    try:
+        client = _get_sync_redis()
+        value = client.get(WORKSPACE_GENERATION_KEY)
+        if value:
+            generation = value if isinstance(value, str) else value.decode()
+            if generation.startswith(WORKSPACE_UPDATING_PREFIX):
+                raise WorkspaceSourceUpdatingError(
+                    "workspace source is being updated; execution load is deferred"
+                )
+            return generation
+
+        candidate = uuid4().hex
+        if client.set(WORKSPACE_GENERATION_KEY, candidate, nx=True):
+            return candidate
+
+        value = client.get(WORKSPACE_GENERATION_KEY)
+        if not value:
+            raise RuntimeError(
+                "workspace generation is unavailable after initialization"
+            )
+        generation = value if isinstance(value, str) else value.decode()
+        if generation.startswith(WORKSPACE_UPDATING_PREFIX):
+            raise WorkspaceSourceUpdatingError(
+                "workspace source is being updated; execution load is deferred"
+            )
+        return generation
+    except redis.RedisError as exc:
+        raise RuntimeError("workspace generation is unavailable") from exc
+
+
+def wait_for_workspace_generation_sync(
+    *, timeout_seconds: float = 30.0, poll_seconds: float = 0.05
+) -> str:
+    """Wait briefly for an in-progress source transaction to become stable."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            return get_workspace_generation_sync()
+        except WorkspaceSourceUpdatingError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(poll_seconds)
+
+
+def assert_workspace_generation(expected: str | None) -> str:
+    """Fail closed when source changed after an execution began loading."""
+    current = get_workspace_generation_sync()
+    if not expected or current != expected:
+        raise WorkspaceGenerationChangedError(
+            "workspace source generation changed while the execution was loading; "
+            "the stale import closure was not executed"
+        )
+    return current
+
+
+def workspace_generation_for_import() -> str:
+    """Return a safe generation stamp for a workspace import.
+
+    Executions pin a generation before loading their entry workflow. Every lazy
+    import revalidates that pin, preventing a workflow that began on one source
+    revision from importing a helper activated later in the same run.
+    """
+    expected = get_workspace_generation_context()
+    if expected:
+        return assert_workspace_generation(expected)
+    return get_workspace_generation_sync()
 
 
 def _get_engine_credentials() -> tuple[str, str] | None:

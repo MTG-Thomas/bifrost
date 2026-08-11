@@ -137,7 +137,16 @@ async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypa
             ("solution", (solution_id, global_repo_access))
         ),
     )
-    monkeypatch.setattr(simple_worker, "_clear_workspace_modules", lambda: calls.append(("clear", None)))
+    def clear_modules():
+        calls.append(("clear", None))
+        return simple_worker.WorkspaceModuleRefresh(
+            generation="generation-1",
+            cleared=2,
+            kept=3,
+            generation_mismatch=True,
+        )
+
+    monkeypatch.setattr(simple_worker, "_clear_workspace_modules", clear_modules)
     monkeypatch.setattr(simple_worker, "_get_pss_bytes", lambda: next(pss_values))
 
     async def fake_run_execution(_execution_id, _context):
@@ -166,6 +175,9 @@ async def test_execute_async_success_shapes_engine_result_and_pss_delta(monkeypa
     assert result["status"] == "Success"
     assert result["result"] == {"ok": True}
     assert result["metrics"]["peak_memory_bytes"] == 1500
+    assert result["metrics"]["workspace_modules_cleared"] == 2
+    assert result["metrics"]["workspace_generation_mismatch"] is True
+    assert result["execution_context"]["workspace_generation"] == "generation-1"
     assert result["cached"] is True
     assert result["worker_id"] == "worker-1"
     assert calls == [("solution", ("solution-1", True)), ("clear", None)]
@@ -177,7 +189,16 @@ async def test_execute_async_engine_exception_shapes_failure(monkeypatch):
         return {}
 
     monkeypatch.setattr(simple_worker, "_read_context_from_redis", read_context)
-    monkeypatch.setattr(simple_worker, "_clear_workspace_modules", lambda: None)
+    monkeypatch.setattr(
+        simple_worker,
+        "_clear_workspace_modules",
+        lambda: simple_worker.WorkspaceModuleRefresh(
+            generation="generation-1",
+            cleared=0,
+            kept=0,
+            generation_mismatch=False,
+        ),
+    )
     monkeypatch.setattr(simple_worker, "_get_pss_bytes", lambda: 0)
 
     async def fake_run_execution(_execution_id, _context):
@@ -212,3 +233,44 @@ def test_capture_resource_metrics_converts_linux_ru_maxrss(monkeypatch):
         "cpu_system_seconds": 0.5,
         "cpu_total_seconds": 1.7346,
     }
+
+
+def test_clear_workspace_modules_purges_entire_closure_on_generation_change(
+    monkeypatch,
+):
+    from src.core import module_cache_sync
+    from src.services.execution.virtual_import import VirtualModuleLoader
+
+    module_name = "workspace_generation_probe"
+    module = types.ModuleType(module_name)
+    module.__file__ = f"{module_name}.py"
+    module.__content_hash__ = "same-hash"
+    module.__workspace_generation__ = "generation-1"
+    module.__loader__ = VirtualModuleLoader.__new__(VirtualModuleLoader)
+    sys.modules[module_name] = module
+    monkeypatch.setattr(
+        module_cache_sync,
+        "wait_for_workspace_generation_sync",
+        lambda: "generation-2",
+    )
+    monkeypatch.setattr(
+        module_cache_sync, "get_module_index_sync", lambda: [f"{module_name}.py"]
+    )
+    monkeypatch.setattr(
+        module_cache_sync,
+        "get_module_sync",
+        lambda _path: {"hash": "same-hash"},
+    )
+
+    try:
+        refresh = simple_worker._clear_workspace_modules()
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert refresh == simple_worker.WorkspaceModuleRefresh(
+        generation="generation-2",
+        cleared=1,
+        kept=0,
+        generation_mismatch=True,
+    )
+    assert module_name not in sys.modules

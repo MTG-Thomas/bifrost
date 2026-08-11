@@ -5,8 +5,10 @@ Pure functions for loading workflows, data providers, and forms at runtime.
 Note: Metadata discovery (for DB sync) is handled by FileStorageService at write time.
 This module is only for runtime loading of Python code for execution.
 
-Since all workflow/data provider executions run in fresh subprocess workers,
-we don't need any module cache clearing - sys.modules starts empty.
+Workflow/data-provider executions run in one-shot forked children, but those
+children inherit the long-lived template's ``sys.modules`` state. The worker
+load boundary therefore validates the shared workspace generation and clears
+the complete workspace import closure whenever that generation changes.
 """
 
 import importlib.util
@@ -159,9 +161,9 @@ def import_module(file_path: Path) -> ModuleType:
     """
     Import a Python module from a file path.
 
-    Since workflow executions run in fresh subprocess workers, sys.modules
-    starts empty - no cache clearing needed. Python's import machinery
-    handles .pyc files correctly (regenerates if stale).
+    The one-shot child may inherit modules from its long-lived fork template.
+    ``simple_worker`` validates and clears that inherited workspace closure
+    before this loader runs; Python then handles filesystem bytecode freshness.
 
     Args:
         file_path: Path to the Python file to import
@@ -218,6 +220,7 @@ def exec_from_db(
     code: str,
     path: str,
     function_name: str,
+    workspace_generation: str | None = None,
 ) -> ModuleType:
     """
     Execute workflow code from database and return the module.
@@ -261,6 +264,7 @@ def exec_from_db(
     module.__loader__ = None  # type: ignore[assignment]
     module.__package__ = package_name
     module.__spec__ = None
+    module.__workspace_generation__ = workspace_generation
 
     # Build execution namespace
     # The namespace includes __builtins__ and module-level attributes
@@ -272,6 +276,7 @@ def exec_from_db(
         "__doc__": None,
         "__loader__": None,
         "__spec__": None,
+        "__workspace_generation__": workspace_generation,
     }
 
     # Compile with filename for meaningful stack traces
@@ -307,6 +312,7 @@ def load_workflow_from_db(
     code: str,
     path: str,
     function_name: str,
+    workspace_generation: str | None = None,
 ) -> tuple[Callable[..., Any] | None, WorkflowMetadata | None, str | None]:
     """
     Load a workflow by executing code from the database.
@@ -325,7 +331,12 @@ def load_workflow_from_db(
         - On failure: (None, None, error_message)
     """
     try:
-        module = exec_from_db(code=code, path=path, function_name=function_name)
+        module = exec_from_db(
+            code=code,
+            path=path,
+            function_name=function_name,
+            workspace_generation=workspace_generation,
+        )
     except (SyntaxError, ImportError) as e:
         logger.error(f"Failed to execute workflow from DB: {e}")
         user_friendly_error = (

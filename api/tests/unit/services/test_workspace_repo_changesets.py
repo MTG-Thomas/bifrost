@@ -1,5 +1,6 @@
 import base64
 import hashlib
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -203,6 +204,19 @@ async def test_changesets_are_hidden_from_other_organizations():
 async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     monkeypatch,
 ):
+    barriers = []
+
+    @asynccontextmanager
+    async def source_update(**kwargs):
+        barriers.append(("enter", kwargs))
+        try:
+            yield
+        finally:
+            barriers.append(("exit", kwargs))
+
+    monkeypatch.setattr(
+        "src.core.module_cache.workspace_source_update", source_update
+    )
     svc = service({"features/a.py": b"a", "features/b.py": b"b"})
     row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     await svc.stage(
@@ -236,6 +250,24 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     activated = await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
     assert activated.status == "activated"
     assert svc.repo.files == {"features/a.py": b"A", "features/b.py": b"B"}
+    assert barriers == [
+        (
+            "enter",
+            {
+                "reason": "workspace_changeset_activated",
+                "changed_paths": ["features/a.py"],
+                "broadcast": True,
+            },
+        ),
+        (
+            "exit",
+            {
+                "reason": "workspace_changeset_activated",
+                "changed_paths": ["features/a.py"],
+                "broadcast": True,
+            },
+        ),
+    ]
 
     second = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     await svc.stage(

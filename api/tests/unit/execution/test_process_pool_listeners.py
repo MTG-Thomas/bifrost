@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.services.execution.process_pool import ProcessPoolManager
+from src.core.module_cache import WORKSPACE_GENERATION_CHANNEL
 
 
 class _FakePubSub:
@@ -34,11 +35,11 @@ class _FakePubSub:
         self.unsubscribed_channels: list[str] = []
         self.closed = False
 
-    async def subscribe(self, channel: str) -> None:
-        self.subscribed_channels.append(channel)
+    async def subscribe(self, *channels: str) -> None:
+        self.subscribed_channels.extend(channels)
 
-    async def unsubscribe(self, channel: str) -> None:
-        self.unsubscribed_channels.append(channel)
+    async def unsubscribe(self, *channels: str) -> None:
+        self.unsubscribed_channels.extend(channels)
 
     async def aclose(self) -> None:
         self.closed = True
@@ -144,6 +145,7 @@ async def test_command_listener_reconnects_after_connection_drop() -> None:
     assert fake_redis.pubsub_call_count == 2
     assert handled == [{"action": "recycle_all"}]
     assert dropped_pubsub.subscribed_channels == [
-        f"bifrost:pool:{pool.worker_id}:commands"
+        f"bifrost:pool:{pool.worker_id}:commands",
+        WORKSPACE_GENERATION_CHANNEL,
     ]
     assert dropped_pubsub.closed is True

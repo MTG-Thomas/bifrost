@@ -347,72 +347,82 @@ class WorkspaceRepoChangesetService:
             for item in row.mutations
         }
         storage = FileStorageService(self.db)
-        try:
-            for item in row.mutations:
-                if item["operation"] == "delete":
-                    await storage.delete_file(item["path"])
-                else:
-                    result = await storage.write_file(
-                        item["path"],
-                        base64.b64decode(item["content_base64"]),
-                        updated_by=updated_by,
-                        force_deactivation=bool(item.get("force_deactivation")),
-                    )
-                    if result.pending_deactivations:
-                        raise ChangesetInvalid(
-                            f"deactivation preflight changed for {item['path']}"
-                        )
-            activated_revision, _ = await self._snapshot(row.scope)
-            row.activated_revision = activated_revision
-            row.status = "activated"
-            await self.db.flush()
-            # Activation is the authoritative workspace transition. Make it
-            # durable before crossing the independent Git boundary.
-            await self.db.commit()
-        except Exception as exc:
-            await self.db.rollback()
-            # Compensate through the normal facade so S3, index, workflow metadata,
-            # module cache, app previews, and activity observers converge on the
-            # restored state rather than leaving a direct-storage-only rollback.
-            rollback_errors: list[str] = []
-            for path, content in originals.items():
-                try:
-                    if content is None:
-                        await storage.delete_file(path)
+        python_paths = [
+            item["path"] for item in row.mutations if item["path"].endswith(".py")
+        ]
+        from src.core.module_cache import workspace_source_update
+
+        async with workspace_source_update(
+            reason="workspace_changeset_activated",
+            changed_paths=python_paths,
+            broadcast=True,
+        ):
+            try:
+                for item in row.mutations:
+                    if item["operation"] == "delete":
+                        await storage.delete_file(item["path"])
                     else:
-                        restored = await storage.write_file(
-                            path,
-                            content,
-                            updated_by="changeset-rollback",
-                            force_deactivation=True,
+                        result = await storage.write_file(
+                            item["path"],
+                            base64.b64decode(item["content_base64"]),
+                            updated_by=updated_by,
+                            force_deactivation=bool(item.get("force_deactivation")),
                         )
-                        if restored.pending_deactivations:
-                            raise RuntimeError(
-                                f"deactivation preflight blocked restore of {path}"
+                        if result.pending_deactivations:
+                            raise ChangesetInvalid(
+                                f"deactivation preflight changed for {item['path']}"
                             )
-                except Exception as rollback_exc:
-                    rollback_errors.append(f"{path}: {rollback_exc}")
-            row.status = "recovery_required" if rollback_errors else "failed"
-            row.error = str(exc)
-            row.failure_detail = {
-                "phase": "activation",
-                "message": str(exc),
-                "rollback": {
-                    "state": "failed" if rollback_errors else "completed",
-                    "errors": rollback_errors,
-                },
-            }
-            if rollback_errors:
-                row.error = (
-                    f"{row.error}; rollback failed: {'; '.join(rollback_errors)}"
-                )
-            await self.db.flush()
-            # Failure state and the compensating writes are part of the durable
-            # audit record even though the HTTP request returns an error.
-            await self.db.commit()
-            if rollback_errors:
-                raise RuntimeError(row.error) from exc
-            raise
+                activated_revision, _ = await self._snapshot(row.scope)
+                row.activated_revision = activated_revision
+                row.status = "activated"
+                await self.db.flush()
+                # Activation is the authoritative workspace transition. Make it
+                # durable before crossing the independent Git boundary.
+                await self.db.commit()
+            except Exception as exc:
+                await self.db.rollback()
+                # Compensate through the normal facade so S3, index, workflow metadata,
+                # module cache, app previews, and activity observers converge on the
+                # restored state rather than leaving a direct-storage-only rollback.
+                rollback_errors: list[str] = []
+                for path, content in originals.items():
+                    try:
+                        if content is None:
+                            await storage.delete_file(path)
+                        else:
+                            restored = await storage.write_file(
+                                path,
+                                content,
+                                updated_by="changeset-rollback",
+                                force_deactivation=True,
+                            )
+                            if restored.pending_deactivations:
+                                raise RuntimeError(
+                                    f"deactivation preflight blocked restore of {path}"
+                                )
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"{path}: {rollback_exc}")
+                row.status = "recovery_required" if rollback_errors else "failed"
+                row.error = str(exc)
+                row.failure_detail = {
+                    "phase": "activation",
+                    "message": str(exc),
+                    "rollback": {
+                        "state": "failed" if rollback_errors else "completed",
+                        "errors": rollback_errors,
+                    },
+                }
+                if rollback_errors:
+                    row.error = (
+                        f"{row.error}; rollback failed: {'; '.join(rollback_errors)}"
+                    )
+                await self.db.flush()
+                # Failure state and the compensating writes are part of the durable
+                # audit record even though the HTTP request returns an error.
+                await self.db.commit()
+                if rollback_errors:
+                    raise RuntimeError(row.error) from exc
+                raise
 
         return await self._complete_git_closure(changeset_id, request)
 

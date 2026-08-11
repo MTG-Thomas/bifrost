@@ -36,6 +36,7 @@ from src.core.module_cache_sync import (
     get_module_index_sync,
     get_module_sync,
     solution_has_submodules,
+    workspace_generation_for_import,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ class NamespacePackageLoader(Loader):
         both "modules" and "modules.extensions" become namespace packages.
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, workspace_generation: str = ""):
         """
         Initialize with the directory path.
 
@@ -188,6 +189,7 @@ class NamespacePackageLoader(Loader):
             path: Directory path (e.g., "modules" or "modules/extensions")
         """
         self.path = path
+        self.workspace_generation = workspace_generation
 
     def create_module(self, spec: ModuleSpec) -> ModuleType | None:
         """Return None to use default module creation semantics."""
@@ -203,6 +205,7 @@ class NamespacePackageLoader(Loader):
         module.__path__ = [self.path]
         module.__file__ = None  # Namespace packages have no file
         module.__loader__ = self
+        module.__workspace_generation__ = self.workspace_generation
 
 
 class VirtualModuleLoader(Loader):
@@ -213,7 +216,14 @@ class VirtualModuleLoader(Loader):
     setting __file__ to the relative path for meaningful tracebacks.
     """
 
-    def __init__(self, path: str, content: str, is_package: bool = False, content_hash: str = ""):
+    def __init__(
+        self,
+        path: str,
+        content: str,
+        is_package: bool = False,
+        content_hash: str = "",
+        workspace_generation: str = "",
+    ):
         """
         Initialize loader with module content.
 
@@ -227,6 +237,7 @@ class VirtualModuleLoader(Loader):
         self.content = content
         self.is_package = is_package
         self.content_hash = content_hash
+        self.workspace_generation = workspace_generation
 
     def create_module(self, spec: ModuleSpec) -> ModuleType | None:
         """Return None to use default module creation semantics."""
@@ -239,6 +250,7 @@ class VirtualModuleLoader(Loader):
         module.__file__ = self.path
         module.__loader__ = self
         module.__content_hash__ = self.content_hash
+        module.__workspace_generation__ = self.workspace_generation
 
         if self.is_package:
             # Packages need __path__ for submodule imports
@@ -338,7 +350,13 @@ class VirtualModuleFinder(MetaPathFinder):
                 continue
 
             # Create loader and spec
-            loader = VirtualModuleLoader(file_path, cached["content"], is_package, cached.get("hash", ""))
+            loader = VirtualModuleLoader(
+                file_path,
+                cached["content"],
+                is_package,
+                cached.get("hash", ""),
+                workspace_generation_for_import(),
+            )
             spec = ModuleSpec(
                 fullname,
                 loader,
@@ -370,7 +388,9 @@ class VirtualModuleFinder(MetaPathFinder):
 
         if has_submodules:
             # Create a namespace package spec (empty module with __path__)
-            loader = NamespacePackageLoader(base_path)
+            loader = NamespacePackageLoader(
+                base_path, workspace_generation_for_import()
+            )
             spec = ModuleSpec(
                 fullname,
                 loader,

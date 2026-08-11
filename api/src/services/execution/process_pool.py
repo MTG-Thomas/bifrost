@@ -53,6 +53,7 @@ from src.models.contracts.notifications import NotificationCategory, Notificatio
 from src.services.execution.simple_worker import install_requirements, RequirementsInstallResult
 from src.services.notification_service import get_notification_service
 from src.services.execution.template_process import TemplateProcess
+from src.core.module_cache import WORKSPACE_GENERATION_CHANNEL
 
 logger = logging.getLogger(__name__)
 
@@ -978,14 +979,15 @@ class ProcessPoolManager:
         on the next iteration rather than looping on a dead one.
         """
         channel = f"bifrost:pool:{self.worker_id}:commands"
-        logger.info(f"Command listener loop started on channel {channel}")
+        channels = [channel, WORKSPACE_GENERATION_CHANNEL]
+        logger.info(f"Command listener loop started on channels {channels}")
 
         while not self._shutdown:
             pubsub = None
             try:
                 r = await self._get_redis()
                 pubsub = r.pubsub()
-                await pubsub.subscribe(channel)
+                await pubsub.subscribe(*channels)
 
                 while not self._shutdown:
                     message = await pubsub.get_message(
@@ -1001,7 +1003,7 @@ class ProcessPoolManager:
             finally:
                 if pubsub is not None:
                     try:
-                        await pubsub.unsubscribe(channel)
+                        await pubsub.unsubscribe(*channels)
                         await pubsub.aclose()
                     except Exception as e:
                         # Already-closed pubsub or Redis disconnect — best-effort cleanup
@@ -1023,6 +1025,8 @@ class ProcessPoolManager:
             await self._handle_recycle_process_command(command)
         elif action == "recycle_all":
             await self._handle_recycle_all_command(command)
+        elif action == "workspace_generation_changed":
+            await self._handle_workspace_generation_changed_command(command)
         else:
             logger.warning(f"Unknown command action: {action}")
 
@@ -1044,6 +1048,19 @@ class ProcessPoolManager:
             f"— delegating to drain+restart"
         )
         await self._recycle_via_drain(reason=reason)
+
+    async def _handle_workspace_generation_changed_command(
+        self, command: dict[str, Any]
+    ) -> None:
+        """Drain and restart the template after committed workspace source changes."""
+        generation = command.get("generation", "unknown")
+        reason = command.get("reason", "workspace source activation")
+        logger.info(
+            "Workspace generation %s activated (%s); recycling template",
+            generation,
+            reason,
+        )
+        await self.drain_and_restart_template()
 
     async def _handle_recycle_all_command(self, command: dict[str, Any]) -> None:
         """

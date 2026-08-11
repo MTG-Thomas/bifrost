@@ -12,8 +12,11 @@ Key patterns:
 import hashlib
 import json
 import logging
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Awaitable, TypedDict, cast
+from typing import AsyncIterator, Awaitable, TypedDict, cast
+from uuid import uuid4
 
 from src.core.log_safety import log_safe
 from src.core.redis_client import get_redis_client
@@ -23,7 +26,15 @@ logger = logging.getLogger(__name__)
 
 MODULE_KEY_PREFIX = "bifrost:module:"
 MODULE_INDEX_KEY = "bifrost:module:index"
+WORKSPACE_GENERATION_KEY = "bifrost:workspace:generation"
+WORKSPACE_GENERATION_CHANNEL = "bifrost:workspace:generation:events"
+WORKSPACE_UPDATING_PREFIX = "updating:"
+WORKSPACE_UPDATE_LOCK_KEY = "bifrost:workspace:generation:update-lock"
+WORKSPACE_UPDATE_LOCK_SECONDS = 300
 SOLUTIONS_ROOT = "_solutions"
+_workspace_update_depth: ContextVar[int] = ContextVar(
+    "workspace_update_depth", default=0
+)
 
 
 class CachedModule(TypedDict):
@@ -32,6 +43,145 @@ class CachedModule(TypedDict):
     content: str
     path: str
     hash: str
+
+
+async def get_workspace_generation() -> str:
+    """Return the current workspace generation, creating one when Redis is cold.
+
+    A random token is used instead of a counter so a Redis restart cannot
+    accidentally recreate a generation value inherited by a long-lived worker
+    template. ``SET NX`` makes concurrent cold starts converge on one token.
+    """
+    redis = get_redis_client()
+    redis_conn = await redis._get_redis()
+    value = await redis_conn.get(WORKSPACE_GENERATION_KEY)
+    if value:
+        return value if isinstance(value, str) else value.decode()
+
+    candidate = uuid4().hex
+    created = await redis_conn.set(WORKSPACE_GENERATION_KEY, candidate, nx=True)
+    if created:
+        return candidate
+
+    value = await redis_conn.get(WORKSPACE_GENERATION_KEY)
+    if not value:
+        raise RuntimeError("workspace generation is unavailable after initialization")
+    return value if isinstance(value, str) else value.decode()
+
+
+async def rotate_workspace_generation(
+    *,
+    reason: str,
+    changed_paths: list[str],
+    broadcast: bool = False,
+) -> str:
+    """Replace the workspace generation after Python source becomes active.
+
+    Redis is the worker module-cache authority. Updating the generation after
+    source/cache writes gives every execution a cheap coherence check. Release
+    activation also broadcasts the new generation so worker templates recycle
+    promptly; the per-execution check remains authoritative if pub/sub is lost.
+    """
+    redis = get_redis_client()
+    redis_conn = await redis._get_redis()
+    generation = uuid4().hex
+    await redis_conn.set(WORKSPACE_GENERATION_KEY, generation)
+
+    if broadcast:
+        event = {
+            "action": "workspace_generation_changed",
+            "generation": generation,
+            "reason": reason,
+            "changed_paths": sorted(set(changed_paths)),
+        }
+        try:
+            await redis_conn.publish(WORKSPACE_GENERATION_CHANNEL, json.dumps(event))
+        except Exception as exc:  # noqa: BLE001 - execution-side check is authoritative
+            logger.warning(
+                "Workspace generation %s activated but fleet broadcast failed: %s",
+                generation,
+                exc,
+            )
+
+    logger.info(
+        "Workspace generation rotated to %s (%s, %s Python path(s))",
+        generation,
+        reason,
+        len(set(changed_paths)),
+    )
+    return generation
+
+
+async def mark_workspace_generation_updating(
+    *, reason: str, changed_paths: list[str]
+) -> str:
+    """Close the execution load gate before a Python source mutation begins."""
+    redis = get_redis_client()
+    redis_conn = await redis._get_redis()
+    generation = f"{WORKSPACE_UPDATING_PREFIX}{uuid4().hex}"
+    await redis_conn.set(WORKSPACE_GENERATION_KEY, generation)
+    logger.info(
+        "Workspace generation marked updating (%s, %s Python path(s))",
+        reason,
+        len(set(changed_paths)),
+    )
+    return generation
+
+
+@asynccontextmanager
+async def workspace_source_update(
+    *, reason: str, changed_paths: list[str], broadcast: bool = False
+) -> AsyncIterator[None]:
+    """Bracket a Python mutation with an execution-safe generation barrier.
+
+    Nested file operations share the outer barrier so a transactional multi-file
+    activation exposes no intermediate ready generation.  The exit rotation also
+    runs after compensation on failure, allowing executions to resume only once
+    storage/cache state is stable again.
+    """
+    python_paths = sorted({path for path in changed_paths if path.endswith(".py")})
+    if not python_paths:
+        yield
+        return
+
+    depth = _workspace_update_depth.get()
+    token = _workspace_update_depth.set(depth + 1)
+    lock = None
+    marked_updating = False
+    try:
+        if depth == 0:
+            redis_conn = await get_redis_client()._get_redis()
+            lock = redis_conn.lock(
+                WORKSPACE_UPDATE_LOCK_KEY,
+                timeout=WORKSPACE_UPDATE_LOCK_SECONDS,
+                blocking_timeout=WORKSPACE_UPDATE_LOCK_SECONDS,
+            )
+            if not await lock.acquire():
+                raise RuntimeError(
+                    "another workspace Python source update is still in progress"
+                )
+            await mark_workspace_generation_updating(
+                reason=reason, changed_paths=python_paths
+            )
+            marked_updating = True
+        yield
+    finally:
+        try:
+            if depth == 0 and marked_updating:
+                await rotate_workspace_generation(
+                    reason=reason,
+                    changed_paths=python_paths,
+                    broadcast=broadcast,
+                )
+        finally:
+            try:
+                if lock is not None:
+                    try:
+                        await lock.release()
+                    except Exception as exc:  # noqa: BLE001 - lock may have expired
+                        logger.warning("Workspace update lock release failed: %s", exc)
+            finally:
+                _workspace_update_depth.reset(token)
 
 
 async def _read_module_from_storage(path: str) -> bytes:

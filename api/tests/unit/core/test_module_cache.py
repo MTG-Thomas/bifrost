@@ -273,6 +273,84 @@ class TestModuleCacheAsync:
 
             assert count == 0
 
+    async def test_workspace_generation_cold_start_converges(self, mock_redis_client):
+        mock_client, mock_redis = mock_redis_client
+        mock_redis.get.side_effect = [None, b"winner-generation"]
+        mock_redis.set.return_value = False
+
+        with patch("src.core.module_cache.get_redis_client", return_value=mock_client):
+            from src.core.module_cache import get_workspace_generation
+
+            assert await get_workspace_generation() == "winner-generation"
+
+        mock_redis.set.assert_awaited_once()
+        assert mock_redis.set.await_args.kwargs == {"nx": True}
+
+    async def test_rotate_workspace_generation_broadcasts_sorted_paths(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.uuid4") as new_uuid,
+        ):
+            from src.core.module_cache import rotate_workspace_generation
+
+            new_uuid.return_value.hex = "generation-2"
+            generation = await rotate_workspace_generation(
+                reason="activation",
+                changed_paths=["z.py", "a.py", "z.py"],
+                broadcast=True,
+            )
+
+        assert generation == "generation-2"
+        mock_redis.set.assert_awaited_once_with(
+            "bifrost:workspace:generation", "generation-2"
+        )
+        payload = json.loads(mock_redis.publish.await_args.args[1])
+        assert payload == {
+            "action": "workspace_generation_changed",
+            "generation": "generation-2",
+            "reason": "activation",
+            "changed_paths": ["a.py", "z.py"],
+        }
+
+    async def test_workspace_source_update_uses_one_barrier_for_nested_writes(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.acquire.return_value = True
+        mock_redis.lock = MagicMock(return_value=lock)
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(),
+            ) as mark,
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            async with workspace_source_update(
+                reason="outer", changed_paths=["a.py", "notes.md"], broadcast=True
+            ):
+                async with workspace_source_update(
+                    reason="inner", changed_paths=["b.py"]
+                ):
+                    pass
+
+        mark.assert_awaited_once_with(reason="outer", changed_paths=["a.py"])
+        rotate.assert_awaited_once_with(
+            reason="outer", changed_paths=["a.py"], broadcast=True
+        )
+        lock.acquire.assert_awaited_once()
+        lock.release.assert_awaited_once()
+
 
 class TestModuleCacheSync:
     """Tests for synchronous module cache functions."""
@@ -371,6 +449,79 @@ class TestModuleCacheSync:
 
         # Should not raise
         reset_sync_redis()
+
+    def test_workspace_generation_rejects_update_barrier(self, mock_sync_redis):
+        mock_sync_redis.get.return_value = b"updating:transaction-1"
+
+        with patch(
+            "src.core.module_cache_sync._get_sync_redis",
+            return_value=mock_sync_redis,
+        ):
+            from src.core.module_cache_sync import (
+                WorkspaceSourceUpdatingError,
+                get_workspace_generation_sync,
+            )
+
+            with pytest.raises(WorkspaceSourceUpdatingError, match="being updated"):
+                get_workspace_generation_sync()
+
+    def test_wait_for_workspace_generation_retries_until_ready(self):
+        from src.core.module_cache_sync import (
+            WorkspaceSourceUpdatingError,
+            wait_for_workspace_generation_sync,
+        )
+
+        with (
+            patch(
+                "src.core.module_cache_sync.get_workspace_generation_sync",
+                side_effect=[
+                    WorkspaceSourceUpdatingError("updating"),
+                    "generation-2",
+                ],
+            ) as get_generation,
+            patch("src.core.module_cache_sync.time.sleep") as sleep,
+        ):
+            assert (
+                wait_for_workspace_generation_sync(
+                    timeout_seconds=1, poll_seconds=0.01
+                )
+                == "generation-2"
+            )
+
+        assert get_generation.call_count == 2
+        sleep.assert_called_once_with(0.01)
+
+    def test_assert_workspace_generation_fails_closed_on_change(self):
+        with patch(
+            "src.core.module_cache_sync.get_workspace_generation_sync",
+            return_value="generation-2",
+        ):
+            from src.core.module_cache_sync import (
+                WorkspaceGenerationChangedError,
+                assert_workspace_generation,
+            )
+
+            with pytest.raises(WorkspaceGenerationChangedError, match="stale import"):
+                assert_workspace_generation("generation-1")
+
+    def test_lazy_import_generation_pin_is_revalidated(self):
+        from src.core.module_cache_sync import (
+            clear_workspace_generation_context,
+            set_workspace_generation_context,
+            workspace_generation_for_import,
+        )
+
+        set_workspace_generation_context("generation-1")
+        try:
+            with patch(
+                "src.core.module_cache_sync.assert_workspace_generation",
+                return_value="generation-1",
+            ) as validate:
+                assert workspace_generation_for_import() == "generation-1"
+        finally:
+            clear_workspace_generation_context()
+
+        validate.assert_called_once_with("generation-1")
 
 
 class TestCachedModuleTypedDict:

@@ -366,6 +366,14 @@ class TestNamespacePackageLoader:
 
         assert module.__loader__ is loader
 
+    def test_exec_module_stamps_workspace_generation(self):
+        loader = NamespacePackageLoader("modules", "generation-1")
+        module = ModuleType("modules")
+
+        loader.exec_module(module)
+
+        assert module.__workspace_generation__ == "generation-1"
+
 
 class TestVirtualModuleLoader:
     """Tests for VirtualModuleLoader class."""
@@ -390,6 +398,16 @@ class TestVirtualModuleLoader:
 
         assert module.__file__ == "shared/test.py"
         assert module.__loader__ is loader
+
+    def test_exec_module_stamps_workspace_generation(self):
+        loader = VirtualModuleLoader(
+            "shared/test.py", "x = 1", workspace_generation="generation-1"
+        )
+        module = ModuleType("shared.test")
+
+        loader.exec_module(module)
+
+        assert module.__workspace_generation__ == "generation-1"
 
     def test_exec_module_sets_path_for_package(self):
         """Test exec_module sets __path__ for packages."""

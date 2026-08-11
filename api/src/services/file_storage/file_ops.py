@@ -133,6 +133,33 @@ class FileOperationsService:
         workflows_to_deactivate: list[str] | None = None,
         skip_dirty_flag: bool = False,
     ) -> WriteResult:
+        """Write a file behind the Python workspace generation barrier."""
+        from src.core.module_cache import workspace_source_update
+
+        async with workspace_source_update(
+            reason="python_file_write",
+            changed_paths=[path],
+        ):
+            return await self._write_file_impl(
+                path=path,
+                content=content,
+                updated_by=updated_by,
+                force_deactivation=force_deactivation,
+                replacements=replacements,
+                workflows_to_deactivate=workflows_to_deactivate,
+                skip_dirty_flag=skip_dirty_flag,
+            )
+
+    async def _write_file_impl(
+        self,
+        path: str,
+        content: bytes,
+        updated_by: str = "system",
+        force_deactivation: bool = False,
+        replacements: dict[str, str] | None = None,
+        workflows_to_deactivate: list[str] | None = None,
+        skip_dirty_flag: bool = False,
+    ) -> WriteResult:
         """
         Write file content to storage and update index.
 
@@ -358,6 +385,16 @@ class FileOperationsService:
         await self.db.flush()
 
     async def delete_file(self, path: str) -> None:
+        """Delete a file behind the Python workspace generation barrier."""
+        from src.core.module_cache import workspace_source_update
+
+        async with workspace_source_update(
+            reason="python_file_delete",
+            changed_paths=[path],
+        ):
+            await self._delete_file_impl(path)
+
+    async def _delete_file_impl(self, path: str) -> None:
         """
         Delete a file from storage.
 
@@ -639,6 +676,16 @@ class FileOperationsService:
             logger.warning(f"Failed to publish app file update: {pub_err}")
 
     async def move_file(self, old_path: str, new_path: str) -> None:
+        """Move a file behind the Python workspace generation barrier."""
+        from src.core.module_cache import workspace_source_update
+
+        async with workspace_source_update(
+            reason="python_file_move",
+            changed_paths=[old_path, new_path],
+        ):
+            await self._move_file_impl(old_path, new_path)
+
+    async def _move_file_impl(self, old_path: str, new_path: str) -> None:
         """
         Move/rename a file, preserving platform entity associations.
 

@@ -62,6 +62,16 @@ class RequirementsInstallResult:
         return not self.failed
 
 
+@dataclass(frozen=True)
+class WorkspaceModuleRefresh:
+    """Evidence from the execution-start workspace coherence check."""
+
+    generation: str
+    cleared: int
+    kept: int
+    generation_mismatch: bool
+
+
 def _parse_requirement_lines(content: str) -> list[str]:
     """Return real package specs (non-comment, non-blank, non-option lines)."""
     packages, _options = _parse_requirements(content)
@@ -180,7 +190,7 @@ def install_requirements() -> RequirementsInstallResult:
     return result
 
 
-def _clear_workspace_modules() -> None:
+def _clear_workspace_modules() -> WorkspaceModuleRefresh:
     """
     Clear workspace modules from sys.modules only if their content changed.
 
@@ -192,7 +202,13 @@ def _clear_workspace_modules() -> None:
     This avoids re-exec'ing large unchanged modules on every execution.
     """
     from src.services.execution.virtual_import import VirtualModuleLoader, NamespacePackageLoader
-    from src.core.module_cache_sync import get_module_index_sync, get_module_sync
+    from src.core.module_cache_sync import (
+        get_module_index_sync,
+        get_module_sync,
+        wait_for_workspace_generation_sync,
+    )
+
+    current_generation = wait_for_workspace_generation_sync()
 
     # Build set of known workspace module names from the Redis module index.
     module_index = get_module_index_sync()
@@ -232,8 +248,14 @@ def _clear_workspace_modules() -> None:
     # Check each module's hash — only clear if content changed
     modules_to_clear: list[str] = []
     modules_kept = 0
+    generation_mismatch = False
 
     for name, module in workspace_modules:
+        if getattr(module, "__workspace_generation__", None) != current_generation:
+            modules_to_clear.append(name)
+            generation_mismatch = True
+            continue
+
         cached_hash = getattr(module, '__content_hash__', None)
 
         if not cached_hash:
@@ -297,6 +319,13 @@ def _clear_workspace_modules() -> None:
             f"Workspace modules: cleared={len(modules_to_clear)} kept={modules_kept}"
             + (f" (cleared: {modules_to_clear})" if modules_to_clear else "")
         )
+
+    return WorkspaceModuleRefresh(
+        generation=current_generation,
+        cleared=len(set(modules_to_clear)),
+        kept=modules_kept,
+        generation_mismatch=generation_mismatch,
+    )
 
 
 def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
@@ -390,11 +419,13 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
                 global_repo_access=bool(context.get("solution_global_repo_access", False)),
             )
     try:
-        _clear_workspace_modules()
+        workspace_refresh = _clear_workspace_modules()
     finally:
         # Credential backend imports must run without Solution namespace probing;
         # otherwise their own API credential lookup can recursively import them.
         clear_solution_context()
+
+    context["workspace_generation"] = workspace_refresh.generation
 
     # 2. Run the execution using existing worker logic
     # This reuses the shared _run_execution() from worker.py
@@ -415,6 +446,13 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
 
         # Capture resource metrics (use worker's metrics if available, else local)
         metrics = result.get("metrics") or _capture_resource_metrics()
+        metrics["workspace_modules_cleared"] = workspace_refresh.cleared
+        metrics["workspace_generation_mismatch"] = (
+            workspace_refresh.generation_mismatch
+        )
+
+        execution_context = dict(result.get("execution_context") or {})
+        execution_context["workspace_generation"] = workspace_refresh.generation
 
         # Overwrite peak_memory_bytes with PSS delta — the memory uniquely
         # attributable to this execution, excluding shared parent pages.
@@ -437,7 +475,7 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
             "metrics": metrics,
             "cached": result.get("cached", False),
             "cache_expires_at": result.get("cache_expires_at"),
-            "execution_context": result.get("execution_context"),
+            "execution_context": execution_context,
             "worker_id": worker_id,
         }
 
