@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
+from anyio import open_file
+
 from src.config import Settings, get_settings
 from src.services.file_storage.s3_client import S3StorageClient
 
@@ -28,8 +30,8 @@ class SolutionDeployJobStorage:
 
     async def write_path(self, path: Path) -> tuple[str, int]:
         async def chunks() -> AsyncIterator[bytes]:
-            with path.open("rb") as source:
-                while chunk := source.read(CHUNK_SIZE):
+            async with await open_file(path, "rb") as source:
+                while chunk := await source.read(CHUNK_SIZE):
                     yield chunk
 
         return await self._storage.put_object_from_chunks(
@@ -47,11 +49,11 @@ class SolutionDeployJobStorage:
     async def copy_to_path(self, path: Path, *, expected_sha256: str) -> int:
         digest = hashlib.sha256()
         size = 0
-        with path.open("wb") as destination:
+        async with await open_file(path, "wb") as destination:
             async for chunk in self._storage.iter_object_chunks(
                 self.key, chunk_size=CHUNK_SIZE
             ):
-                destination.write(chunk)
+                await destination.write(chunk)
                 digest.update(chunk)
                 size += len(chunk)
         if digest.hexdigest() != expected_sha256:

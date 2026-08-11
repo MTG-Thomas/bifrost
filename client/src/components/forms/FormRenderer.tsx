@@ -64,7 +64,7 @@ function createSubmissionNonce(): string {
 			byte.toString(16).padStart(2, "0"),
 		).join("");
 	}
-	return `form-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+	throw new Error("Secure random number generation is unavailable");
 }
 
 /**

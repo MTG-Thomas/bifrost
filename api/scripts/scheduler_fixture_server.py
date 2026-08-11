@@ -117,7 +117,8 @@ def main() -> None:
             str(ROOT),
         ]
     )
-    server = ThreadingHTTPServer(("0.0.0.0", 8080), FixtureHandler)
+    # This server is reachable only inside the isolated debug Compose network.
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), FixtureHandler)  # NOSONAR
 
     def stop(*_: object) -> None:
         raise SystemExit
@@ -126,9 +127,6 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     try:
         server.serve_forever()
-    except (KeyboardInterrupt, SystemExit):
-        # Signals and Ctrl+C are the expected clean shutdown paths.
-        pass
     finally:
         git_daemon.terminate()
         git_daemon.wait(timeout=5)

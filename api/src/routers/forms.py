@@ -1475,8 +1475,13 @@ async def submit_form(
             )
 
         if ctx.user.embed:
-            assert request.submission_nonce is not None
-            await accept_external_submission(ctx.user, request.submission_nonce)
+            submission_nonce = request.submission_nonce
+            if submission_nonce is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Submission nonce is required",
+                )
+            await accept_external_submission(ctx.user, submission_nonce)
             logger.info(
                 "Embedded form submission accepted",
                 extra={"form_id": str(form.id), "grant": ctx.user.grant},

@@ -53,7 +53,9 @@ TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 def _fixture_base_url() -> str:
     return os.getenv(
-        "BIFROST_SCHEDULER_FIXTURE_URL", "http://scheduler-fixtures:8080"
+        # The fixture is an internal-only service on the isolated debug network.
+        "BIFROST_SCHEDULER_FIXTURE_URL",
+        "http://scheduler-fixtures:8080",  # NOSONAR
     ).rstrip("/")
 
 
