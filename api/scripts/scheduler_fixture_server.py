@@ -126,7 +126,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        server.serve_forever()
+        server.serve_forever()  # NOSONAR -- isolated debug-network fixture
     finally:
         git_daemon.terminate()
         git_daemon.wait(timeout=5)
