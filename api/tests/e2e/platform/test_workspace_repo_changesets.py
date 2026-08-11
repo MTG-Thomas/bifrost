@@ -1,19 +1,16 @@
 """HTTP contract coverage for authoritative workspace _repo changesets."""
 
 import base64
-from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from git import Repo as GitRepo
 from sqlalchemy import delete, select
 
-from src.models.contracts.github import PreflightResult
 from src.models.orm.config import SystemConfig
 from src.models.orm.users import User
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 from src.services.github_config import save_github_config
-from src.services.github_sync import GitHubSyncService
 from src.services.repo_storage import RepoStorage
 
 
@@ -154,7 +151,7 @@ async def test_workspace_repo_git_closure_retry_is_org_scoped_and_state_guarded(
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
-    e2e_client, platform_admin, db_session, tmp_path, monkeypatch
+    e2e_client, platform_admin, db_session, tmp_path
 ):
     admin = (
         await db_session.execute(
@@ -163,14 +160,15 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
     ).scalar_one()
     assert admin.organization_id is not None
     storage = RepoStorage()
-    pollution_path = f"workflows/preexisting-invalid-{uuid4().hex}.py"
-    pollution_content = b"def intentionally_invalid(:\n"
-    await storage.write(pollution_path, pollution_content)
     original_files = {
         path: await storage.read(path) for path in await storage.list()
     }
+    # Keep the suite's workspace sources in place so the real Git preflight can
+    # validate manifest references. Replace only repository metadata, then put
+    # the exact prior storage state back in the cleanup block below.
     for path in original_files:
-        await storage.delete(path)
+        if path.startswith(".git/"):
+            await storage.delete(path)
     await save_github_config(
         db_session,
         admin.organization_id,
@@ -205,11 +203,6 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
     )
     db_session.add(row)
     await db_session.commit()
-    monkeypatch.setattr(
-        GitHubSyncService,
-        "_run_preflight",
-        AsyncMock(return_value=PreflightResult(valid=True, issues=[])),
-    )
     try:
         retried = e2e_client.post(
             f"/api/workspace-repo-changesets/{row.id}/retry-git-closure",
@@ -237,5 +230,3 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
             await storage.delete(path)
         for path, content in original_files.items():
             await storage.write(path, content)
-        assert await storage.read(pollution_path) == pollution_content
-        await storage.delete(pollution_path)
