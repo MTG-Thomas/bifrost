@@ -272,6 +272,16 @@ async def test_writer_returns_candidate_sha_when_signature_verification_fails():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/access_tokens"):
             return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path.endswith("/contents/workflows/example.py"):
+            return httpx.Response(404, json={"message": "Not Found"})
+        if request.url.path.endswith("/contents/workflows/deleted.py"):
+            return httpx.Response(
+                200,
+                json={
+                    "type": "file",
+                    "content": base64.b64encode(b"print('deleted')\n").decode(),
+                },
+            )
         payload = graphql_payload(request)
         if "query BranchHead" in payload["query"]:
             return head_response()
