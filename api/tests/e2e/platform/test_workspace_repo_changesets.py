@@ -108,21 +108,21 @@ async def {function_name}() -> dict:
     return {{"revision": revision()}}
 '''
 
-    helper_created = e2e_client.put(
-        "/api/files/editor/content",
-        headers=headers,
-        json={"path": helper_path, "content": helper_v1, "encoding": "utf-8"},
-    )
-    assert helper_created.status_code in {200, 201}, helper_created.text
-    registered = write_and_register(
-        e2e_client,
-        headers,
-        workflow_path,
-        workflow_source,
-        function_name,
-    )
-
     try:
+        helper_created = e2e_client.put(
+            "/api/files/editor/content",
+            headers=headers,
+            json={"path": helper_path, "content": helper_v1, "encoding": "utf-8"},
+        )
+        assert helper_created.status_code in {200, 201}, helper_created.text
+        registered = write_and_register(
+            e2e_client,
+            headers,
+            workflow_path,
+            workflow_source,
+            function_name,
+        )
+
         first = execute_workflow_sync(
             e2e_client, headers, registered["id"], max_wait=30.0
         )

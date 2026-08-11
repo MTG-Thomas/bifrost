@@ -31,6 +31,7 @@ WORKSPACE_GENERATION_CHANNEL = "bifrost:workspace:generation:events"
 WORKSPACE_UPDATING_PREFIX = "updating:"
 WORKSPACE_UPDATE_LOCK_KEY = "bifrost:workspace:generation:update-lock"
 WORKSPACE_UPDATE_LOCK_SECONDS = 300
+WORKSPACE_UPDATE_LOCK_WAIT_SECONDS = 10
 SOLUTIONS_ROOT = "_solutions"
 _workspace_update_depth: ContextVar[int] = ContextVar(
     "workspace_update_depth", default=0
@@ -119,7 +120,11 @@ async def mark_workspace_generation_updating(
     redis = get_redis_client()
     redis_conn = await redis._get_redis()
     generation = f"{WORKSPACE_UPDATING_PREFIX}{uuid4().hex}"
-    await redis_conn.set(WORKSPACE_GENERATION_KEY, generation)
+    await redis_conn.set(
+        WORKSPACE_GENERATION_KEY,
+        generation,
+        ex=WORKSPACE_UPDATE_LOCK_SECONDS,
+    )
     logger.info(
         "Workspace generation marked updating (%s, %s Python path(s))",
         reason,
@@ -154,7 +159,7 @@ async def workspace_source_update(
             lock = redis_conn.lock(
                 WORKSPACE_UPDATE_LOCK_KEY,
                 timeout=WORKSPACE_UPDATE_LOCK_SECONDS,
-                blocking_timeout=WORKSPACE_UPDATE_LOCK_SECONDS,
+                blocking_timeout=WORKSPACE_UPDATE_LOCK_WAIT_SECONDS,
             )
             if not await lock.acquire():
                 raise RuntimeError(

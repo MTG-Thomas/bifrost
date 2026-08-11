@@ -12,6 +12,9 @@ from src.services.file_storage.file_ops import compute_git_blob_sha
 @pytest.fixture(autouse=True)
 def _isolate_workspace_source_barrier(monkeypatch):
     """Keep pure file-operation unit tests independent of the shared Redis lock."""
+    # file_ops imports workspace_source_update inside each method body, so
+    # patching the source module works. If that import moves to module scope,
+    # this fixture must patch src.services.file_storage.file_ops instead.
 
     @asynccontextmanager
     async def source_update(**_kwargs):

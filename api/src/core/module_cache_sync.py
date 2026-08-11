@@ -35,6 +35,7 @@ from src.core.module_cache import (
     MODULE_INDEX_KEY,
     MODULE_KEY_PREFIX,
     WORKSPACE_GENERATION_KEY,
+    WORKSPACE_UPDATE_LOCK_SECONDS,
     WORKSPACE_UPDATING_PREFIX,
     CachedModule,
 )
@@ -190,8 +191,22 @@ class WorkspaceGenerationChangedError(RuntimeError):
     """Raised when source activation races an execution's load boundary."""
 
 
+class WorkspaceGenerationMissingError(RuntimeError):
+    """Raised when an execution reaches workspace loading without a source pin."""
+
+
 class WorkspaceSourceUpdatingError(RuntimeError):
     """Raised while a source transaction has closed the execution load gate."""
+
+
+def _decode_ready_generation(value: str | bytes) -> str:
+    """Decode a Redis generation value and reject an in-progress barrier."""
+    generation = value if isinstance(value, str) else value.decode()
+    if generation.startswith(WORKSPACE_UPDATING_PREFIX):
+        raise WorkspaceSourceUpdatingError(
+            "workspace source is being updated; execution load is deferred"
+        )
+    return generation
 
 
 def get_workspace_generation_sync() -> str:
@@ -200,12 +215,7 @@ def get_workspace_generation_sync() -> str:
         client = _get_sync_redis()
         value = client.get(WORKSPACE_GENERATION_KEY)
         if value:
-            generation = value if isinstance(value, str) else value.decode()
-            if generation.startswith(WORKSPACE_UPDATING_PREFIX):
-                raise WorkspaceSourceUpdatingError(
-                    "workspace source is being updated; execution load is deferred"
-                )
-            return generation
+            return _decode_ready_generation(value)
 
         candidate = uuid4().hex
         if client.set(WORKSPACE_GENERATION_KEY, candidate, nx=True):
@@ -216,20 +226,15 @@ def get_workspace_generation_sync() -> str:
             raise RuntimeError(
                 "workspace generation is unavailable after initialization"
             )
-        generation = value if isinstance(value, str) else value.decode()
-        if generation.startswith(WORKSPACE_UPDATING_PREFIX):
-            raise WorkspaceSourceUpdatingError(
-                "workspace source is being updated; execution load is deferred"
-            )
-        return generation
+        return _decode_ready_generation(value)
     except redis.RedisError as exc:
         raise RuntimeError("workspace generation is unavailable") from exc
 
 
 def wait_for_workspace_generation_sync(
-    *, timeout_seconds: float = 30.0, poll_seconds: float = 0.05
+    *, timeout_seconds: float = WORKSPACE_UPDATE_LOCK_SECONDS, poll_seconds: float = 0.05
 ) -> str:
-    """Wait briefly for an in-progress source transaction to become stable."""
+    """Wait for an in-progress source transaction to become stable."""
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
@@ -242,8 +247,12 @@ def wait_for_workspace_generation_sync(
 
 def assert_workspace_generation(expected: str | None) -> str:
     """Fail closed when source changed after an execution began loading."""
+    if not expected:
+        raise WorkspaceGenerationMissingError(
+            "workspace source generation was not pinned before execution loading"
+        )
     current = get_workspace_generation_sync()
-    if not expected or current != expected:
+    if current != expected:
         raise WorkspaceGenerationChangedError(
             "workspace source generation changed while the execution was loading; "
             "the stale import closure was not executed"

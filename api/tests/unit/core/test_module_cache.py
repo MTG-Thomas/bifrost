@@ -316,6 +316,32 @@ class TestModuleCacheAsync:
             "changed_paths": ["a.py", "z.py"],
         }
 
+    async def test_updating_generation_expires_with_the_writer_lock(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch("src.core.module_cache.uuid4") as new_uuid,
+        ):
+            from src.core.module_cache import (
+                WORKSPACE_UPDATE_LOCK_SECONDS,
+                mark_workspace_generation_updating,
+            )
+
+            new_uuid.return_value.hex = "transaction-1"
+            generation = await mark_workspace_generation_updating(
+                reason="write", changed_paths=["a.py"]
+            )
+
+        assert generation == "updating:transaction-1"
+        mock_redis.set.assert_awaited_once_with(
+            "bifrost:workspace:generation",
+            "updating:transaction-1",
+            ex=WORKSPACE_UPDATE_LOCK_SECONDS,
+        )
+
     async def test_workspace_source_update_uses_one_barrier_for_nested_writes(
         self, mock_redis_client
     ):
@@ -349,6 +375,67 @@ class TestModuleCacheAsync:
             reason="outer", changed_paths=["a.py"], broadcast=True
         )
         lock.acquire.assert_awaited_once()
+        lock.release.assert_awaited_once()
+
+    async def test_workspace_source_update_rotates_after_body_failure(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.acquire.return_value = True
+        mock_redis.lock = MagicMock(return_value=lock)
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            with pytest.raises(RuntimeError, match="write failed"):
+                async with workspace_source_update(
+                    reason="write", changed_paths=["a.py"]
+                ):
+                    raise RuntimeError("write failed")
+
+        rotate.assert_awaited_once_with(
+            reason="write", changed_paths=["a.py"], broadcast=False
+        )
+        lock.release.assert_awaited_once()
+
+    async def test_workspace_source_update_rejects_lock_contention(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.acquire.return_value = False
+        mock_redis.lock = MagicMock(return_value=lock)
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(),
+            ) as mark,
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            with pytest.raises(RuntimeError, match="still in progress"):
+                async with workspace_source_update(
+                    reason="write", changed_paths=["a.py"]
+                ):
+                    pass
+
+        mark.assert_not_awaited()
+        rotate.assert_not_awaited()
         lock.release.assert_awaited_once()
 
 
@@ -503,6 +590,15 @@ class TestModuleCacheSync:
 
             with pytest.raises(WorkspaceGenerationChangedError, match="stale import"):
                 assert_workspace_generation("generation-1")
+
+    def test_assert_workspace_generation_rejects_missing_pin(self):
+        from src.core.module_cache_sync import (
+            WorkspaceGenerationMissingError,
+            assert_workspace_generation,
+        )
+
+        with pytest.raises(WorkspaceGenerationMissingError, match="not pinned"):
+            assert_workspace_generation(None)
 
     def test_lazy_import_generation_pin_is_revalidated(self):
         from src.core.module_cache_sync import (
