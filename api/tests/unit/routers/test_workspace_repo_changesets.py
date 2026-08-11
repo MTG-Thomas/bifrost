@@ -3,45 +3,67 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-
+from pydantic import SecretStr
 from src.routers import workspace_repo_changesets
 
 
 @pytest.mark.asyncio
-async def test_service_uses_authenticated_github_remote(monkeypatch):
+async def test_service_uses_github_app_writer_without_saved_token(monkeypatch):
     organization_id = uuid4()
     config = SimpleNamespace(
         repo_url="https://github.com/example/repo",
-        token="token:/@ value",
+        token=None,
         branch="production-live",
     )
     get_config = AsyncMock(return_value=config)
-    commit_workspace_changes = AsyncMock(return_value=("a" * 40, None))
+    settings = SimpleNamespace(
+        github_app_commit_writer_configured=True,
+        github_app_id=123,
+        github_app_installation_id=456,
+        github_app_private_key=SecretStr("private-key"),
+    )
     constructor_args = []
+    writer = Mock()
 
-    class GitService:
-        def __init__(self, db, repo_url, branch):
-            constructor_args.append((db, repo_url, branch))
-            self.commit_workspace_changes = commit_workspace_changes
+    def build_writer(**kwargs):
+        constructor_args.append(kwargs)
+        return writer
 
     monkeypatch.setattr("src.services.github_config.get_github_config", get_config)
-    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", GitService)
+    monkeypatch.setattr("src.config.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "src.services.platform_commit_writer.GitHubAppCommitWriter", build_writer
+    )
     db = Mock()
 
     service = await workspace_repo_changesets._service(db, organization_id)
-    assert service.commit_callback is not None
-    result = await service.commit_callback("release source", True)
 
+    assert service.commit_writer is writer
     assert constructor_args == [
-        (
-            db,
-            "https://x-access-token:token%3A%2F%40%20value@github.com/example/repo.git",
-            "production-live",
-        )
+        {
+            "repo_url": "https://github.com/example/repo",
+            "branch": "production-live",
+            "app_id": 123,
+            "installation_id": 456,
+            "private_key": "private-key",
+        }
     ]
-    assert result == ("a" * 40, None)
-    commit_workspace_changes.assert_awaited_once_with(
-        "release source",
-        push=True,
-        expected_file_hashes={},
+
+
+@pytest.mark.asyncio
+async def test_service_does_not_fall_back_to_saved_personal_token(monkeypatch):
+    organization_id = uuid4()
+    config = SimpleNamespace(
+        repo_url="https://github.com/example/repo",
+        token="saved-personal-token",
+        branch="production-live",
     )
+    settings = SimpleNamespace(github_app_commit_writer_configured=False)
+    monkeypatch.setattr(
+        "src.services.github_config.get_github_config", AsyncMock(return_value=config)
+    )
+    monkeypatch.setattr("src.config.get_settings", lambda: settings)
+
+    service = await workspace_repo_changesets._service(Mock(), organization_id)
+
+    assert service.commit_writer is None

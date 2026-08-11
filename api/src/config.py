@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, computed_field
+from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -348,6 +348,34 @@ class Settings(BaseSettings):
         default="http://localhost:8000",
         description="Public URL for the Bifrost platform (used for MCP OAuth, workflow URLs, etc.)",
     )
+
+    # ==========================================================================
+    # GitHub App (verified platform-authored workspace history)
+    # ==========================================================================
+    github_app_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="GitHub App ID used for verified platform commits",
+    )
+    github_app_installation_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Repository-scoped GitHub App installation ID",
+    )
+    github_app_private_key: SecretStr | None = Field(
+        default=None,
+        min_length=1,
+        description="PEM private key for minting short-lived GitHub App tokens",
+    )
+
+    @computed_field
+    @property
+    def github_app_commit_writer_configured(self) -> bool:
+        return bool(
+            self.github_app_id
+            and self.github_app_installation_id
+            and self.github_app_private_key
+        )
 
     # ==========================================================================
     # Anthropic API (for Claude Agent SDK)

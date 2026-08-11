@@ -112,3 +112,8 @@ class WorkspaceRepoValidationResponse(BaseModel):
 class WorkspaceRepoActivateRequest(BaseModel):
     commit_message: str | None = Field(default=None, max_length=500)
     push: bool = False
+    plan_id: str | None = Field(default=None, max_length=255)
+    protected_main_source_sha: str | None = Field(
+        default=None,
+        pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
+    )
