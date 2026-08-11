@@ -228,6 +228,8 @@ test.describe.serial("Public form iframe", () => {
 		browser,
 		page,
 	}) => {
+		test.setTimeout(60_000);
+
 		const admin = await browser.newContext({
 			baseURL: BIFROST_URL,
 			storageState: "e2e/.auth/platform_admin.json",

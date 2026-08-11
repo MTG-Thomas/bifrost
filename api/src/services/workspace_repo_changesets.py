@@ -13,15 +13,15 @@ import difflib
 import hashlib
 from dataclasses import asdict
 from pathlib import PurePosixPath
-from typing import Awaitable, Callable, cast
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.contracts.workspace_repo_changesets import (
-    WorkspaceRepoActivateRequest,
     ChangesetStatus,
+    WorkspaceRepoActivateRequest,
     WorkspaceRepoChangesetBegin,
     WorkspaceRepoChangesetDiffResponse,
     WorkspaceRepoChangesetResponse,
@@ -32,10 +32,19 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoValidationResponse,
 )
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
-from src.repositories.workspace_repo_changesets import WorkspaceRepoChangesetRepository
+from src.repositories.workspace_repo_changesets import (
+    RETRYABLE_GIT_FAILURE_STATES,
+    WorkspaceRepoChangesetRepository,
+)
 from src.services.file_storage import FileStorageService
 from src.services.file_storage.ast_parser import ASTMetadataParser
 from src.services.file_storage.deactivation import DeactivationProtectionService
+from src.services.platform_commit_writer import (
+    PlatformCommitError,
+    PlatformCommitFile,
+    PlatformCommitRequest,
+    PlatformCommitWriter,
+)
 from src.services.repo_storage import RepoStorage
 
 
@@ -61,12 +70,6 @@ def require_organization_id(organization_id: UUID | None) -> UUID:
     return organization_id
 
 
-CommitCallback = Callable[
-    [str, bool, dict[str, str | None]],
-    Awaitable[tuple[str | None, str | None]],
-]
-
-
 class WorkspaceRepoChangesetService:
     ACTIVE = {"open", "staged", "validated"}
     ABORTABLE = ACTIVE | {"conflicted"}
@@ -80,13 +83,13 @@ class WorkspaceRepoChangesetService:
         db: AsyncSession,
         organization_id: UUID,
         repo: RepoStorage | None = None,
-        commit_callback: CommitCallback | None = None,
+        commit_writer: PlatformCommitWriter | None = None,
     ):
         self.db = db
         self.organization_id = organization_id
         self.repo = repo or RepoStorage()
         self.rows = WorkspaceRepoChangesetRepository(db)
-        self.commit_callback = commit_callback
+        self.commit_writer = commit_writer
 
     @staticmethod
     def normalize_scope(scope: str) -> str:
@@ -310,6 +313,8 @@ class WorkspaceRepoChangesetService:
     async def activate(
         self, changeset_id: UUID, request: WorkspaceRepoActivateRequest, updated_by: str
     ) -> WorkspaceRepoChangesetResponse:
+        if request.commit_message and not request.push:
+            raise ChangesetInvalid("verified platform Git closure requires push=true")
         # PostgreSQL transaction-scoped serialization shared by all API replicas.
         await self.db.execute(
             text(
@@ -424,12 +429,15 @@ class WorkspaceRepoChangesetService:
                     raise RuntimeError(row.error) from exc
                 raise
 
-        return await self._complete_git_closure(changeset_id, request)
+        return await self._complete_git_closure(
+            changeset_id, request, operator=updated_by
+        )
 
     async def retry_git_closure(
         self,
         changeset_id: UUID,
         request: WorkspaceRepoActivateRequest,
+        operator: str,
     ) -> WorkspaceRepoChangesetResponse:
         """Retry only failed Git closure after workspace activation succeeded."""
         await self.db.execute(
@@ -440,17 +448,36 @@ class WorkspaceRepoChangesetService:
         row = await self._required(changeset_id, for_update=True)
         failure = row.failure_detail if isinstance(row.failure_detail, dict) else {}
         retry_key = (row.status, str(failure.get("phase") or ""))
-        if retry_key not in self.RETRYABLE_GIT_FAILURES or failure.get("state") != "failed":
+        if (
+            retry_key not in self.RETRYABLE_GIT_FAILURES
+            or failure.get("state") not in RETRYABLE_GIT_FAILURE_STATES
+        ):
             raise ChangesetInvalid(
                 f"changeset in {row.status!r} state does not have a retryable Git closure failure"
             )
-        if not request.commit_message:
-            raise ChangesetInvalid("retrying Git closure requires commit_message")
-        if row.status == "committed_unpushed" and not request.push:
+        prior_provenance = (
+            failure.get("provenance")
+            if isinstance(failure.get("provenance"), dict)
+            else {}
+        )
+        original_message = prior_provenance.get("commit_message")
+        if not original_message and not request.commit_message:
             raise ChangesetInvalid(
-                "retrying an unpushed changeset requires push=true"
+                "retrying legacy Git closure requires the original commit_message"
             )
-        return await self._complete_git_closure(changeset_id, request)
+        if (
+            original_message
+            and request.commit_message
+            and request.commit_message != original_message
+        ):
+            raise ChangesetInvalid(
+                "retry commit_message must match the original Git closure provenance"
+            )
+        if not request.push:
+            raise ChangesetInvalid("verified platform Git closure requires push=true")
+        return await self._complete_git_closure(
+            changeset_id, request, operator=operator
+        )
 
     async def recoverable_git_closures(
         self, *, scope: str | None = None
@@ -465,16 +492,38 @@ class WorkspaceRepoChangesetService:
         self,
         changeset_id: UUID,
         request: WorkspaceRepoActivateRequest,
+        *,
+        operator: str,
     ) -> WorkspaceRepoChangesetResponse:
         row = await self._required(changeset_id, for_update=True)
-        if not request.commit_message:
+        prior_failure = (
+            row.failure_detail if isinstance(row.failure_detail, dict) else {}
+        )
+        prior_provenance = (
+            prior_failure.get("provenance")
+            if isinstance(prior_failure.get("provenance"), dict)
+            else {}
+        )
+        commit_message = prior_provenance.get("commit_message") or request.commit_message
+        if not commit_message:
             return self._response(row)
-        if self.commit_callback is None:
-            row.error = "platform Git commit closure is not configured"
+        provenance = {
+            "operator": str(prior_provenance.get("operator") or operator),
+            "changeset_id": str(row.id),
+            "commit_message": str(commit_message),
+            "plan_id": prior_provenance.get("plan_id") or request.plan_id,
+            "protected_main_source_sha": prior_provenance.get(
+                "protected_main_source_sha"
+            )
+            or request.protected_main_source_sha,
+        }
+        if self.commit_writer is None:
+            row.error = "verified GitHub App commit writer is not configured"
             row.failure_detail = {
                 "phase": "git_closure",
                 "state": "not_configured",
                 "activation_preserved": True,
+                "provenance": provenance,
             }
             await self.db.flush()
             await self.db.commit()
@@ -482,26 +531,49 @@ class WorkspaceRepoChangesetService:
 
         # Leave a durable pending marker before Git. If persisting the outcome
         # later fails, the active workspace is still explicit and reconcilable.
+        candidate_commit_sha = prior_failure.get("commit_sha")
         row.failure_detail = {
             "phase": "git_closure",
             "state": "pending",
             "activation_preserved": True,
+            "provenance": provenance,
         }
+        if candidate_commit_sha:
+            row.failure_detail["commit_sha"] = str(candidate_commit_sha)
         await self.db.flush()
         await self.db.commit()
         try:
-            expected_file_hashes = {
-                item["path"]: (
-                    item.get("after_hash")
-                    if item.get("operation") == "write"
-                    else None
+            files = tuple(
+                PlatformCommitFile(
+                    path=item["path"],
+                    content_base64=(
+                        item.get("content_base64")
+                        if item.get("operation") == "write"
+                        else None
+                    ),
+                    expected_before_sha256=item.get("before_hash"),
+                    expected_sha256=(
+                        item.get("after_hash")
+                        if item.get("operation") == "write"
+                        else None
+                    ),
                 )
                 for item in row.mutations
-            }
-            commit_sha, push_error = await self.commit_callback(
-                request.commit_message,
-                request.push,
-                expected_file_hashes,
+            )
+            result = await self.commit_writer.write(
+                PlatformCommitRequest(
+                    commit_message=provenance["commit_message"],
+                    operator=provenance["operator"],
+                    changeset_id=row.id,
+                    files=files,
+                    plan_id=provenance.get("plan_id"),
+                    protected_main_source_sha=provenance.get(
+                        "protected_main_source_sha"
+                    ),
+                    candidate_commit_sha=(
+                        str(candidate_commit_sha) if candidate_commit_sha else None
+                    ),
+                )
             )
         except Exception as exc:
             await self.db.rollback()
@@ -512,26 +584,23 @@ class WorkspaceRepoChangesetService:
                 "state": "failed",
                 "message": str(exc),
                 "activation_preserved": True,
+                "provenance": provenance,
             }
+            commit_sha = (
+                exc.commit_sha if isinstance(exc, PlatformCommitError) else None
+            )
+            if commit_sha:
+                row.commit_sha = commit_sha
+                row.failure_detail["commit_sha"] = commit_sha
             await self.db.flush()
             await self.db.commit()
             return self._response(row)
 
         row = await self._required(changeset_id, for_update=True)
-        row.commit_sha = commit_sha
-        row.status = "committed_unpushed" if push_error else "committed"
-        row.error = push_error
-        row.failure_detail = (
-            {
-                "phase": "git_push",
-                "state": "failed",
-                "message": push_error,
-                "activation_preserved": True,
-                "commit_sha": commit_sha,
-            }
-            if push_error
-            else None
-        )
+        row.commit_sha = result.commit_sha
+        row.status = "committed"
+        row.error = None
+        row.failure_detail = None
         await self.db.flush()
         await self.db.commit()
         return self._response(row)

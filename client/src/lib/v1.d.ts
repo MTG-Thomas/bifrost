@@ -14558,6 +14558,7 @@ export interface components {
              *             - IN: {"category": {"in": ["a", "b"]}}
              *             - NULL: {"deleted_at": {"is_null": true}}
              *             - Has field: {"field": {"has_key": true}}
+             *
              */
             where?: {
                 [key: string]: unknown;
@@ -26627,6 +26628,10 @@ export interface components {
              * @default false
              */
             push: boolean;
+            /** Plan Id */
+            plan_id?: string | null;
+            /** Protected Main Source Sha */
+            protected_main_source_sha?: string | null;
         };
         /** WorkspaceRepoChangesetBegin */
         WorkspaceRepoChangesetBegin: {

@@ -31,34 +31,29 @@ router = APIRouter(
 
 async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangesetService:
     org_id = require_organization_id(org_id)
-    from src.services.github_config import (
-        build_authenticated_github_url,
-        get_github_config,
-    )
-    from src.services.github_sync import GitHubSyncService
+    from src.config import get_settings
+    from src.services.github_config import get_github_config
+    from src.services.platform_commit_writer import GitHubAppCommitWriter
 
     config = await get_github_config(db, org_id)
-    callback = None
-    if config and config.repo_url and config.token:
-        git = GitHubSyncService(
-            db,
-            build_authenticated_github_url(config.repo_url, config.token),
-            config.branch,
-        )
-
-        async def commit(
-            message: str,
-            push: bool,
-            expected_file_hashes: dict[str, str | None] | None = None,
-        ) -> tuple[str | None, str | None]:
-            return await git.commit_workspace_changes(
-                message,
-                push=push,
-                expected_file_hashes=expected_file_hashes or {},
+    settings = get_settings()
+    writer = None
+    if config and config.repo_url and settings.github_app_commit_writer_configured:
+        app_id = settings.github_app_id
+        installation_id = settings.github_app_installation_id
+        private_key = settings.github_app_private_key
+        if app_id is None or installation_id is None or private_key is None:
+            raise RuntimeError(
+                "GitHub App commit writer configuration is incomplete"
             )
-
-        callback = commit
-    return WorkspaceRepoChangesetService(db, org_id, commit_callback=callback)
+        writer = GitHubAppCommitWriter(
+            repo_url=config.repo_url,
+            branch=config.branch,
+            app_id=app_id,
+            installation_id=installation_id,
+            private_key=private_key.get_secret_value(),
+        )
+    return WorkspaceRepoChangesetService(db, org_id, commit_writer=writer)
 
 
 def _translate(exc: Exception) -> HTTPException:
@@ -211,7 +206,7 @@ async def retry_workspace_repo_git_closure(
 ):
     try:
         return await (await _service(db, ctx.org_id)).retry_git_closure(
-            changeset_id, request
+            changeset_id, request, user.email
         )
     except Exception as exc:
         raise _translate(exc) from exc

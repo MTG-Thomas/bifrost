@@ -4,14 +4,11 @@ import base64
 from uuid import UUID, uuid4
 
 import pytest
-from git import Repo as GitRepo
 from sqlalchemy import delete, select
-
-from src.models.orm.config import SystemConfig
 from src.models.orm.users import User
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
-from src.services.github_config import save_github_config
 from src.services.repo_storage import RepoStorage
+
 from tests.e2e.conftest import execute_workflow_sync, write_and_register
 
 
@@ -180,9 +177,7 @@ async def {function_name}() -> dict:
         assert second_generation
         assert second_generation != first_generation
     finally:
-        e2e_client.delete(
-            f"/api/files/editor?path={workflow_path}", headers=headers
-        )
+        e2e_client.delete(f"/api/files/editor?path={workflow_path}", headers=headers)
         e2e_client.delete(f"/api/files/editor?path={helper_path}", headers=headers)
 
 
@@ -202,9 +197,7 @@ async def test_workspace_repo_git_closure_retry_is_org_scoped_and_state_guarded(
     e2e_client, platform_admin, org1, db_session
 ):
     admin = (
-        await db_session.execute(
-            select(User).where(User.id == platform_admin.user_id)
-        )
+        await db_session.execute(select(User).where(User.id == platform_admin.user_id))
     ).scalar_one()
     assert admin.organization_id is not None
     cross_org = WorkspaceRepoChangeset(
@@ -250,46 +243,58 @@ async def test_workspace_repo_git_closure_retry_is_org_scoped_and_state_guarded(
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
-    e2e_client, platform_admin, db_session, tmp_path
+async def test_recoverable_git_closures_include_durable_retry_states(
+    e2e_client, platform_admin, db_session
 ):
     admin = (
-        await db_session.execute(
-            select(User).where(User.id == platform_admin.user_id)
-        )
+        await db_session.execute(select(User).where(User.id == platform_admin.user_id))
     ).scalar_one()
     assert admin.organization_id is not None
-    storage = RepoStorage()
-    original_files = {
-        path: await storage.read(path) for path in await storage.list()
-    }
-    # Keep the suite's workspace sources in place so the real Git preflight can
-    # validate manifest references. Replace only repository metadata, then put
-    # the exact prior storage state back in the cleanup block below.
-    for path in original_files:
-        if path.startswith(".git/"):
-            await storage.delete(path)
-    await save_github_config(
-        db_session,
-        admin.organization_id,
-        "e2e-placeholder-token",
-        "https://github.com/example/repo",
-        "main",
-        "e2e",
-    )
-    repo = GitRepo.init(tmp_path)
-    with repo.config_writer() as config:
-        config.set_value("user", "name", "Bifrost E2E")
-        config.set_value("user", "email", "e2e@example.test")
-    seed = tmp_path / "README.md"
-    seed.write_text("e2e git closure seed\n")
-    repo.git.add(A=True)
-    repo.index.commit("seed e2e repository")
-    for repo_path in tmp_path.rglob("*"):
-        if repo_path.is_file():
-            relative = repo_path.relative_to(tmp_path).as_posix()
-            await storage.write(relative, repo_path.read_bytes())
-    assert await storage.exists(".git/HEAD")
+    scope = f"test_changesets_{uuid4().hex}"
+    rows = [
+        WorkspaceRepoChangeset(
+            organization_id=admin.organization_id,
+            scope=scope,
+            base_revision="0" * 64,
+            base_files={},
+            mutations=[],
+            status="activated",
+            created_by=admin.id,
+            failure_detail={"phase": "git_closure", "state": state},
+        )
+        for state in ("failed", "not_configured", "pending")
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        response = e2e_client.get(
+            "/api/workspace-repo-changesets/recoverable-git-closures",
+            headers=platform_admin.headers,
+            params={"scope": scope},
+        )
+
+        assert response.status_code == 200, response.text
+        assert {item["id"] for item in response.json()} == {
+            str(row.id) for row in rows
+        }
+    finally:
+        await db_session.execute(
+            delete(WorkspaceRepoChangeset).where(
+                WorkspaceRepoChangeset.id.in_([row.id for row in rows])
+            )
+        )
+        await db_session.commit()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_workspace_repo_git_closure_retry_requires_remote_push_without_reactivation(
+    e2e_client, platform_admin, db_session
+):
+    admin = (
+        await db_session.execute(select(User).where(User.id == platform_admin.user_id))
+    ).scalar_one()
+    assert admin.organization_id is not None
     row = WorkspaceRepoChangeset(
         organization_id=admin.organization_id,
         scope=f"test_changesets_{uuid4().hex}",
@@ -310,23 +315,20 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
             json={"commit_message": "e2e retry", "push": False},
         )
 
-        assert retried.status_code == 200, retried.text
-        assert retried.json()["status"] == "committed", retried.text
-        assert retried.json()["activated_revision"] == "a" * 64
-        assert retried.json()["failure_detail"] is None
+        assert retried.status_code == 422, retried.text
+        shown = e2e_client.get(
+            f"/api/workspace-repo-changesets/{row.id}",
+            headers=platform_admin.headers,
+        )
+        assert shown.status_code == 200, shown.text
+        assert shown.json()["status"] == "activated"
+        assert shown.json()["activated_revision"] == "a" * 64
+        assert shown.json()["failure_detail"] == {
+            "phase": "git_closure",
+            "state": "failed",
+        }
     finally:
         await db_session.execute(
             delete(WorkspaceRepoChangeset).where(WorkspaceRepoChangeset.id == row.id)
         )
-        await db_session.execute(
-            delete(SystemConfig).where(
-                SystemConfig.organization_id == admin.organization_id,
-                SystemConfig.category == "github",
-                SystemConfig.key == "integration",
-            )
-        )
         await db_session.commit()
-        for path in await storage.list():
-            await storage.delete(path)
-        for path, content in original_files.items():
-            await storage.write(path, content)

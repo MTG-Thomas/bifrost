@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 
+RETRYABLE_GIT_FAILURE_STATES = ("failed", "not_configured", "pending")
+
 
 class WorkspaceRepoChangesetRepository:
     def __init__(self, db: AsyncSession):
@@ -50,7 +52,7 @@ class WorkspaceRepoChangesetRepository:
             select(WorkspaceRepoChangeset)
             .where(
                 WorkspaceRepoChangeset.organization_id == organization_id,
-                failure_state == "failed",
+                failure_state.in_(RETRYABLE_GIT_FAILURE_STATES),
                 or_(
                     and_(
                         WorkspaceRepoChangeset.status == "activated",
