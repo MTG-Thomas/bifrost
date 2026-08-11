@@ -169,10 +169,10 @@ async def _renew_workspace_update_lease(
                 raise
             except Exception as exc:  # noqa: BLE001 - loss must fail closed
                 lease_lost.set()
-                logger.error("Workspace update lease renewal failed: %s", exc)
+                logger.exception("Workspace update lease renewal failed: %s", exc)
                 return
     except asyncio.CancelledError:
-        return
+        raise
 
 
 async def _workspace_update_lease_is_current(
@@ -185,8 +185,57 @@ async def _workspace_update_lease_is_current(
         current = _decode_redis_text(await redis_conn.get(WORKSPACE_GENERATION_KEY))
         return current == updating_generation
     except Exception as exc:  # noqa: BLE001 - ownership uncertainty fails closed
-        logger.error("Workspace update lease ownership check failed: %s", exc)
+        logger.exception("Workspace update lease ownership check failed: %s", exc)
         return False
+
+
+async def _finish_workspace_source_update(
+    *,
+    depth: int,
+    lock,
+    redis_conn,
+    updating_generation: str | None,
+    renewal_task: asyncio.Task[None] | None,
+    lease_lost: asyncio.Event,
+    reason: str,
+    python_paths: list[str],
+    broadcast: bool,
+) -> bool:
+    """Stop renewal and rotate only for the still-current writer.
+
+    Returns ``True`` when a top-level writer lost its lease and the ready
+    generation was deliberately not published.
+    """
+    if renewal_task is not None:
+        renewal_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await renewal_task
+    if (
+        depth != 0
+        or updating_generation is None
+        or lock is None
+        or redis_conn is None
+    ):
+        return False
+
+    owns_current_lease = (
+        not lease_lost.is_set()
+        and await _workspace_update_lease_is_current(
+            lock=lock,
+            redis_conn=redis_conn,
+            updating_generation=updating_generation,
+        )
+    )
+    if not owns_current_lease:
+        logger.error("Workspace update lease was lost; generation rotation suppressed")
+        return True
+
+    await rotate_workspace_generation(
+        reason=reason,
+        changed_paths=python_paths,
+        broadcast=broadcast,
+    )
+    return False
 
 
 @asynccontextmanager
@@ -243,35 +292,17 @@ async def workspace_source_update(
         body_succeeded = True
     finally:
         try:
-            if renewal_task is not None:
-                renewal_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await renewal_task
-            if (
-                depth == 0
-                and updating_generation is not None
-                and lock is not None
-                and redis_conn is not None
-            ):
-                owns_current_lease = (
-                    not lease_lost.is_set()
-                    and await _workspace_update_lease_is_current(
-                        lock=lock,
-                        redis_conn=redis_conn,
-                        updating_generation=updating_generation,
-                    )
-                )
-                if owns_current_lease:
-                    await rotate_workspace_generation(
-                        reason=reason,
-                        changed_paths=python_paths,
-                        broadcast=broadcast,
-                    )
-                else:
-                    lost_before_rotation = True
-                    logger.error(
-                        "Workspace update lease was lost; generation rotation suppressed"
-                    )
+            lost_before_rotation = await _finish_workspace_source_update(
+                depth=depth,
+                lock=lock,
+                redis_conn=redis_conn,
+                updating_generation=updating_generation,
+                renewal_task=renewal_task,
+                lease_lost=lease_lost,
+                reason=reason,
+                python_paths=python_paths,
+                broadcast=broadcast,
+            )
         finally:
             try:
                 if lock is not None and lock_acquired:

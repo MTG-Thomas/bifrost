@@ -44,6 +44,86 @@ def compute_git_blob_sha(content: bytes) -> str:
     return hashlib.sha1(header + content).hexdigest()
 
 
+async def _scan_for_sdk_issues(diagnostics_service, path: str, final_content: bytes) -> None:
+    if not path.endswith(".py"):
+        return
+    try:
+        await diagnostics_service.scan_for_sdk_issues(path, final_content)
+    except Exception as exc:
+        logger.warning(
+            "Failed to scan for SDK issues in %s: %s",
+            log_safe(path),
+            log_safe(exc),
+        )
+
+
+async def _update_diagnostic_notification(
+    diagnostics_service, path: str, diagnostics
+) -> None:
+    has_errors = diagnostics and any(
+        diagnostic.severity == "error" for diagnostic in diagnostics
+    )
+    try:
+        if has_errors:
+            await diagnostics_service.create_diagnostic_notification(path, diagnostics)
+        else:
+            await diagnostics_service.clear_diagnostic_notification(path)
+    except Exception as exc:
+        action = "create" if has_errors else "clear"
+        logger.warning(
+            "Failed to %s diagnostic notification for %s: %s",
+            action,
+            log_safe(path),
+            log_safe(exc),
+        )
+
+
+async def _refresh_app_preview(
+    service, path: str, content_str: str, updated_by: str
+) -> None:
+    app = await service._find_app_by_path(path)
+    if app:
+        await service._rebuild_app_bundle(app, path, content_str, updated_by)
+    elif path.startswith("apps/"):
+        logger.info(
+            "No Application matched path %r - preview refresh skipped. "
+            "Check Application.repo_path.",
+            log_safe(path),
+        )
+
+
+async def _mark_repo_dirty_unless_skipped(skip_dirty_flag: bool) -> None:
+    if skip_dirty_flag:
+        return
+    from src.core.repo_dirty import mark_repo_dirty
+
+    try:
+        await mark_repo_dirty()
+    except Exception as exc:
+        logger.warning("Failed to mark repo dirty: %s", log_safe(exc))
+
+
+async def _publish_file_push(path: str, updated_by: str) -> None:
+    try:
+        from src.core.pubsub import publish_file_activity
+        from src.core.request_context import get_request_session_id, get_request_user
+
+        req_user = get_request_user()
+        await publish_file_activity(
+            user_id=req_user.user_id if req_user else updated_by,
+            user_name=req_user.user_name if req_user else updated_by,
+            activity_type="file_push",
+            paths=[path],
+            session_id=get_request_session_id(),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to publish file_push for %s: %s",
+            log_safe(path),
+            log_safe(exc),
+        )
+
+
 class FileOperationsService:
     """Service for individual file operations (read, write, delete, move)."""
 
@@ -276,75 +356,11 @@ class FileOperationsService:
                 available_replacements=available_replacements,
             )
 
-        # Scan Python files for missing SDK references
-        if path.endswith(".py"):
-            try:
-                await self._diagnostics.scan_for_sdk_issues(path, final_content)
-            except Exception as e:
-                logger.warning(
-                    "Failed to scan for SDK issues in %s: %s",
-                    log_safe(path),
-                    log_safe(e),
-                )
-
-        # Create or clear system notification based on diagnostic errors
-        has_errors = diagnostics and any(d.severity == "error" for d in diagnostics)
-        if has_errors:
-            try:
-                await self._diagnostics.create_diagnostic_notification(path, diagnostics)
-            except Exception as e:
-                logger.warning(
-                    "Failed to create diagnostic notification for %s: %s",
-                    log_safe(path),
-                    log_safe(e),
-                )
-        else:
-            try:
-                await self._diagnostics.clear_diagnostic_notification(path)
-            except Exception as e:
-                logger.warning(
-                    "Failed to clear diagnostic notification for %s: %s",
-                    log_safe(path),
-                    log_safe(e),
-                )
-
-        # App files: rebuild bundle + fire pubsub for real-time preview
-        app = await self._find_app_by_path(path)
-        if not app and path.startswith("apps/"):
-            logger.info(
-                "No Application matched path %r - preview refresh skipped. "
-                "Check Application.repo_path.",
-                log_safe(path),
-            )
-        if app:
-            await self._rebuild_app_bundle(app, path, content_str, updated_by)
-
-        # Mark repo as having uncommitted changes (skip for CLI pushes)
-        if not skip_dirty_flag:
-            from src.core.repo_dirty import mark_repo_dirty
-            try:
-                await mark_repo_dirty()
-            except Exception as e:
-                logger.warning(f"Failed to mark repo dirty: {e}")
-
-        # Broadcast file_push event for watch mode sync
-        try:
-            from src.core.pubsub import publish_file_activity
-            from src.core.request_context import get_request_user, get_request_session_id
-            req_user = get_request_user()
-            await publish_file_activity(
-                user_id=req_user.user_id if req_user else updated_by,
-                user_name=req_user.user_name if req_user else updated_by,
-                activity_type="file_push",
-                paths=[path],
-                session_id=get_request_session_id(),
-            )
-        except Exception as e:
-            logger.warning(
-                "Failed to publish file_push for %s: %s",
-                log_safe(path),
-                log_safe(e),
-            )
+        await _scan_for_sdk_issues(self._diagnostics, path, final_content)
+        await _update_diagnostic_notification(self._diagnostics, path, diagnostics)
+        await _refresh_app_preview(self, path, content_str, updated_by)
+        await _mark_repo_dirty_unless_skipped(skip_dirty_flag)
+        await _publish_file_push(path, updated_by)
 
         logger.info("File written: %s (%s bytes) by %s", log_safe(path), size_bytes, log_safe(updated_by))
         return WriteResult(

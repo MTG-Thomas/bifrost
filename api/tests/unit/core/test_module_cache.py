@@ -518,12 +518,13 @@ class TestModuleCacheAsync:
                 _renew_workspace_update_lease,
             )
 
-            await _renew_workspace_update_lease(
-                lock=lock,
-                redis_conn=mock_redis,
-                updating_generation="updating:writer",
-                lease_lost=lease_lost,
-            )
+            with pytest.raises(asyncio.CancelledError):
+                await _renew_workspace_update_lease(
+                    lock=lock,
+                    redis_conn=mock_redis,
+                    updating_generation="updating:writer",
+                    lease_lost=lease_lost,
+                )
 
         assert not lease_lost.is_set()
         lock.reacquire.assert_awaited_once()
