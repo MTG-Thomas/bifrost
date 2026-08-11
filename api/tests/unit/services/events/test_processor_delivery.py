@@ -273,6 +273,29 @@ async def test_process_webhook_rejects_missing_and_unknown_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_process_delivery_returns_the_exact_persisted_event_id():
+    session = AsyncMock()
+    session.add = MagicMock()
+    processor = p.EventProcessor(session)
+    processor._subscription_repo.get_active_for_event = AsyncMock(return_value=[])
+    processor._broadcast_event_update = AsyncMock()
+    event_source = SimpleNamespace(id=uuid.uuid4())
+    webhook_source = SimpleNamespace()
+    incoming = Deliver(data={"id": 1}, event_type="ticket.created")
+    request = WebhookRequest("POST", "/webhooks/source", {}, {}, b"{}")
+
+    result = await processor._process_delivery(
+        webhook_source=webhook_source,
+        event_source=event_source,
+        deliver=incoming,
+        request=request,
+    )
+
+    persisted_event = session.add.call_args.args[0]
+    assert result.event_id == persisted_event.id
+
+
+@pytest.mark.asyncio
 async def test_emit_topic_noops_without_active_source_and_skips_invalid_subscriptions():
     source_id = uuid.uuid4()
     event_source_id = uuid.uuid4()
