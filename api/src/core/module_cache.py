@@ -9,10 +9,11 @@ Key patterns:
 - bifrost:module:index - SET of all module paths
 """
 
+import asyncio
 import hashlib
 import json
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, TypedDict, cast
@@ -32,6 +33,7 @@ WORKSPACE_UPDATING_PREFIX = "updating:"
 WORKSPACE_UPDATE_LOCK_KEY = "bifrost:workspace:generation:update-lock"
 WORKSPACE_UPDATE_LOCK_SECONDS = 300
 WORKSPACE_UPDATE_LOCK_WAIT_SECONDS = 10
+WORKSPACE_UPDATE_LOCK_RENEW_SECONDS = WORKSPACE_UPDATE_LOCK_SECONDS / 3
 SOLUTIONS_ROOT = "_solutions"
 _workspace_update_depth: ContextVar[int] = ContextVar(
     "workspace_update_depth", default=0
@@ -133,6 +135,60 @@ async def mark_workspace_generation_updating(
     return generation
 
 
+def _decode_redis_text(value: object) -> str | None:
+    if isinstance(value, bytes):
+        return value.decode()
+    return value if isinstance(value, str) else None
+
+
+async def _renew_workspace_update_lease(
+    *, lock, redis_conn, updating_generation: str, lease_lost: asyncio.Event
+) -> None:
+    """Keep both the writer lease and execution barrier alive.
+
+    ``reacquire`` is token-fenced by redis-py: it fails once the lease expires
+    or another writer owns the lock.  The generation marker is renewed only
+    while that same writer still owns the lease.
+    """
+    try:
+        while True:
+            await asyncio.sleep(WORKSPACE_UPDATE_LOCK_RENEW_SECONDS)
+            try:
+                if not await lock.reacquire():
+                    lease_lost.set()
+                    return
+                current = _decode_redis_text(
+                    await redis_conn.get(WORKSPACE_GENERATION_KEY)
+                )
+                if current != updating_generation or not await redis_conn.expire(
+                    WORKSPACE_GENERATION_KEY, WORKSPACE_UPDATE_LOCK_SECONDS
+                ):
+                    lease_lost.set()
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - loss must fail closed
+                lease_lost.set()
+                logger.error("Workspace update lease renewal failed: %s", exc)
+                return
+    except asyncio.CancelledError:
+        return
+
+
+async def _workspace_update_lease_is_current(
+    *, lock, redis_conn, updating_generation: str
+) -> bool:
+    """Fence the final generation rotation to the current writer token."""
+    try:
+        if not await lock.reacquire():
+            return False
+        current = _decode_redis_text(await redis_conn.get(WORKSPACE_GENERATION_KEY))
+        return current == updating_generation
+    except Exception as exc:  # noqa: BLE001 - ownership uncertainty fails closed
+        logger.error("Workspace update lease ownership check failed: %s", exc)
+        return False
+
+
 @asynccontextmanager
 async def workspace_source_update(
     *, reason: str, changed_paths: list[str], broadcast: bool = False
@@ -153,7 +209,12 @@ async def workspace_source_update(
     token = _workspace_update_depth.set(depth + 1)
     lock = None
     lock_acquired = False
-    marked_updating = False
+    redis_conn = None
+    updating_generation: str | None = None
+    renewal_task: asyncio.Task[None] | None = None
+    lease_lost = asyncio.Event()
+    body_succeeded = False
+    lost_before_rotation = False
     try:
         if depth == 0:
             redis_conn = await get_redis_client()._get_redis()
@@ -167,19 +228,50 @@ async def workspace_source_update(
                     "another workspace Python source update is still in progress"
                 )
             lock_acquired = True
-            await mark_workspace_generation_updating(
+            updating_generation = await mark_workspace_generation_updating(
                 reason=reason, changed_paths=python_paths
             )
-            marked_updating = True
+            renewal_task = asyncio.create_task(
+                _renew_workspace_update_lease(
+                    lock=lock,
+                    redis_conn=redis_conn,
+                    updating_generation=updating_generation,
+                    lease_lost=lease_lost,
+                )
+            )
         yield
+        body_succeeded = True
     finally:
         try:
-            if depth == 0 and marked_updating:
-                await rotate_workspace_generation(
-                    reason=reason,
-                    changed_paths=python_paths,
-                    broadcast=broadcast,
+            if renewal_task is not None:
+                renewal_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await renewal_task
+            if (
+                depth == 0
+                and updating_generation is not None
+                and lock is not None
+                and redis_conn is not None
+            ):
+                owns_current_lease = (
+                    not lease_lost.is_set()
+                    and await _workspace_update_lease_is_current(
+                        lock=lock,
+                        redis_conn=redis_conn,
+                        updating_generation=updating_generation,
+                    )
                 )
+                if owns_current_lease:
+                    await rotate_workspace_generation(
+                        reason=reason,
+                        changed_paths=python_paths,
+                        broadcast=broadcast,
+                    )
+                else:
+                    lost_before_rotation = True
+                    logger.error(
+                        "Workspace update lease was lost; generation rotation suppressed"
+                    )
         finally:
             try:
                 if lock is not None and lock_acquired:
@@ -189,6 +281,10 @@ async def workspace_source_update(
                         logger.warning("Workspace update lock release failed: %s", exc)
             finally:
                 _workspace_update_depth.reset(token)
+        if lost_before_rotation and body_succeeded:
+            raise RuntimeError(
+                "workspace source update lease was lost before generation rotation"
+            )
 
 
 async def _read_module_from_storage(path: str) -> bytes:

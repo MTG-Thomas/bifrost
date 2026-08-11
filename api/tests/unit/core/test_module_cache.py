@@ -4,6 +4,7 @@ Unit tests for Redis module cache.
 Tests both async (module_cache.py) and sync (module_cache_sync.py) cache operations.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -348,13 +349,16 @@ class TestModuleCacheAsync:
         mock_client, mock_redis = mock_redis_client
         lock = AsyncMock()
         lock.acquire.return_value = True
+        lock.reacquire.return_value = True
         mock_redis.lock = MagicMock(return_value=lock)
+        mock_redis.get.return_value = "updating:outer"
+        mock_redis.expire.return_value = True
 
         with (
             patch("src.core.module_cache.get_redis_client", return_value=mock_client),
             patch(
                 "src.core.module_cache.mark_workspace_generation_updating",
-                new=AsyncMock(),
+                new=AsyncMock(return_value="updating:outer"),
             ) as mark,
             patch(
                 "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
@@ -383,13 +387,16 @@ class TestModuleCacheAsync:
         mock_client, mock_redis = mock_redis_client
         lock = AsyncMock()
         lock.acquire.return_value = True
+        lock.reacquire.return_value = True
         mock_redis.lock = MagicMock(return_value=lock)
+        mock_redis.get.return_value = "updating:write"
+        mock_redis.expire.return_value = True
 
         with (
             patch("src.core.module_cache.get_redis_client", return_value=mock_client),
             patch(
                 "src.core.module_cache.mark_workspace_generation_updating",
-                new=AsyncMock(),
+                new=AsyncMock(return_value="updating:write"),
             ),
             patch(
                 "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
@@ -437,6 +444,92 @@ class TestModuleCacheAsync:
         mark.assert_not_awaited()
         rotate.assert_not_awaited()
         lock.release.assert_not_awaited()
+
+    async def test_workspace_source_update_suppresses_expired_writer_rotation(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        first_lock = AsyncMock()
+        first_lock.acquire.return_value = True
+        first_lock.reacquire.return_value = False
+        second_lock = AsyncMock()
+        second_lock.acquire.return_value = True
+        second_lock.reacquire.return_value = True
+        mock_redis.lock = MagicMock(side_effect=[first_lock, second_lock])
+        mock_redis.get.return_value = "updating:second"
+        mock_redis.expire.return_value = True
+
+        start_second = asyncio.Event()
+        second_finished = asyncio.Event()
+
+        async def second_writer() -> None:
+            await start_second.wait()
+            async with workspace_source_update(
+                reason="second", changed_paths=["b.py"]
+            ):
+                pass
+            second_finished.set()
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache.mark_workspace_generation_updating",
+                new=AsyncMock(side_effect=["updating:first", "updating:second"]),
+            ) as mark,
+            patch(
+                "src.core.module_cache.rotate_workspace_generation", new=AsyncMock()
+            ) as rotate,
+        ):
+            from src.core.module_cache import workspace_source_update
+
+            # Create the competing task before entering the first context so it
+            # receives an independent contextvar depth, like another replica.
+            second_task = asyncio.create_task(second_writer())
+            with pytest.raises(RuntimeError, match="lease was lost"):
+                async with workspace_source_update(
+                    reason="first", changed_paths=["a.py"]
+                ):
+                    start_second.set()
+                    await second_finished.wait()
+            await second_task
+
+        assert mark.await_count == 2
+        rotate.assert_awaited_once_with(
+            reason="second", changed_paths=["b.py"], broadcast=False
+        )
+
+    async def test_workspace_update_renewal_keeps_lock_and_barrier_alive(
+        self, mock_redis_client
+    ):
+        _mock_client, mock_redis = mock_redis_client
+        lock = AsyncMock()
+        lock.reacquire.return_value = True
+        mock_redis.get.return_value = b"updating:writer"
+        mock_redis.expire.return_value = True
+        lease_lost = asyncio.Event()
+
+        with patch(
+            "src.core.module_cache.asyncio.sleep",
+            new=AsyncMock(side_effect=[None, asyncio.CancelledError()]),
+        ):
+            from src.core.module_cache import (
+                WORKSPACE_GENERATION_KEY,
+                WORKSPACE_UPDATE_LOCK_SECONDS,
+                _renew_workspace_update_lease,
+            )
+
+            await _renew_workspace_update_lease(
+                lock=lock,
+                redis_conn=mock_redis,
+                updating_generation="updating:writer",
+                lease_lost=lease_lost,
+            )
+
+        assert not lease_lost.is_set()
+        lock.reacquire.assert_awaited_once()
+        mock_redis.expire.assert_awaited_once_with(
+            WORKSPACE_GENERATION_KEY, WORKSPACE_UPDATE_LOCK_SECONDS
+        )
 
 
 class TestModuleCacheSync:
