@@ -258,8 +258,8 @@ def test_clear_workspace_modules_purges_entire_closure_on_generation_change(
     )
     monkeypatch.setattr(
         module_cache_sync,
-        "get_module_sync",
-        lambda _path: {"hash": "same-hash"},
+        "get_modules_sync",
+        lambda paths: {path: {"hash": "same-hash"} for path in paths},
     )
 
     try:

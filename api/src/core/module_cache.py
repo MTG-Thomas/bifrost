@@ -152,6 +152,7 @@ async def workspace_source_update(
     depth = _workspace_update_depth.get()
     token = _workspace_update_depth.set(depth + 1)
     lock = None
+    lock_acquired = False
     marked_updating = False
     try:
         if depth == 0:
@@ -165,6 +166,7 @@ async def workspace_source_update(
                 raise RuntimeError(
                     "another workspace Python source update is still in progress"
                 )
+            lock_acquired = True
             await mark_workspace_generation_updating(
                 reason=reason, changed_paths=python_paths
             )
@@ -180,7 +182,7 @@ async def workspace_source_update(
                 )
         finally:
             try:
-                if lock is not None:
+                if lock is not None and lock_acquired:
                     try:
                         await lock.release()
                     except Exception as exc:  # noqa: BLE001 - lock may have expired

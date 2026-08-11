@@ -498,8 +498,8 @@ async def worker_main(execution_id: str):
         if not context_data.get("workspace_generation"):
             from src.core.module_cache_sync import wait_for_workspace_generation_sync
 
-            context_data["workspace_generation"] = (
-                wait_for_workspace_generation_sync()
+            context_data["workspace_generation"] = await asyncio.to_thread(
+                wait_for_workspace_generation_sync
             )
 
         # Run the execution

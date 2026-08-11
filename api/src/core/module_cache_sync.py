@@ -671,6 +671,39 @@ def get_module_sync(path: str) -> CachedModule | None:
         return None
 
 
+def get_modules_sync(paths: list[str]) -> dict[str, CachedModule | None]:
+    """Fetch several modules with one Redis read, preserving cold-cache fallbacks."""
+    ordered_paths = list(dict.fromkeys(paths))
+    if not ordered_paths:
+        return {}
+
+    try:
+        client = _get_sync_redis()
+        candidates = [
+            (path, storage_path)
+            for path in ordered_paths
+            for storage_path in _candidate_storage_paths(path)
+        ]
+        values = client.mget(
+            [f"{MODULE_KEY_PREFIX}{storage_path}" for _path, storage_path in candidates]
+        )
+        resolved: dict[str, CachedModule | None] = {}
+        for (path, _storage_path), data in zip(candidates, values, strict=True):
+            if path in resolved or not data:
+                continue
+            module = json.loads(data)
+            _verify_deployment_module_hash(path, module)
+            resolved[path] = module
+
+        for path in ordered_paths:
+            if path not in resolved:
+                resolved[path] = get_module_sync(path)
+        return resolved
+    except redis.RedisError as exc:
+        logger.warning("Redis error fetching module batch: %s", exc)
+        return {path: get_module_sync(path) for path in ordered_paths}
+
+
 def _verify_deployment_module_hash(path: str, module: CachedModule) -> None:
     ctx = get_solution_context()
     if ctx is None or not ctx.runtime_storage_prefix:

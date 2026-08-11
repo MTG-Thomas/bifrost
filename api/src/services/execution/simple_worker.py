@@ -215,7 +215,7 @@ def _loaded_workspace_modules(
     """Classify the currently loaded modules owned by workspace source."""
     return [
         (name, module)
-        for name, module in sys.modules.items()
+        for name, module in list(sys.modules.items())
         if module is not None
         and (
             isinstance(
@@ -233,6 +233,7 @@ def _workspace_module_assessment(
     *,
     current_generation: str,
     name_to_path: dict[str, str],
+    cached_modules: dict[str, Any],
     namespace_loader: type,
 ) -> tuple[bool, bool]:
     """Return whether one loaded module is stale and whether its pin mismatched."""
@@ -250,10 +251,27 @@ def _workspace_module_assessment(
     if not file_path:
         return True, False
 
-    from src.core.module_cache_sync import get_module_sync
-
-    cached = get_module_sync(file_path)
+    cached = cached_modules.get(file_path)
     return not cached or cached.get("hash") != cached_hash, False
+
+
+def _workspace_cached_modules(
+    workspace_modules: list[tuple[str, Any]],
+    *,
+    current_generation: str,
+    name_to_path: dict[str, str],
+) -> dict[str, Any]:
+    """Batch-fetch hashes needed to validate loaded workspace modules."""
+    paths = [
+        name_to_path[name]
+        for name, module in workspace_modules
+        if getattr(module, "__workspace_generation__", None) == current_generation
+        and getattr(module, "__content_hash__", None)
+        and name in name_to_path
+    ]
+    from src.core.module_cache_sync import get_modules_sync
+
+    return get_modules_sync(paths)
 
 
 def _full_workspace_eviction_closure(
@@ -267,13 +285,16 @@ def _full_workspace_eviction_closure(
         [name for name, _module in workspace_modules] if stale_names else []
     )
     cleared_set = set(modules_to_clear)
+    loaded_names = list(sys.modules)
     for name, module in workspace_modules:
         if not isinstance(getattr(module, "__loader__", None), namespace_loader):
+            continue
+        if name in cleared_set:
             continue
         prefix = name + "."
         has_surviving_child = any(
             loaded.startswith(prefix) and loaded not in cleared_set
-            for loaded in sys.modules
+            for loaded in loaded_names
         )
         if not has_surviving_child:
             cleared_set.add(name)
@@ -301,6 +322,11 @@ def _clear_workspace_modules() -> WorkspaceModuleRefresh:
         virtual_loader=VirtualModuleLoader,
         namespace_loader=NamespacePackageLoader,
     )
+    cached_modules = _workspace_cached_modules(
+        workspace_modules,
+        current_generation=current_generation,
+        name_to_path=name_to_path,
+    )
 
     stale_names: list[str] = []
     modules_kept = 0
@@ -311,6 +337,7 @@ def _clear_workspace_modules() -> WorkspaceModuleRefresh:
             module,
             current_generation=current_generation,
             name_to_path=name_to_path,
+            cached_modules=cached_modules,
             namespace_loader=NamespacePackageLoader,
         )
         generation_mismatch = generation_mismatch or mismatched

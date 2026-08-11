@@ -89,7 +89,11 @@ def test_same_solution_keeps_its_module(_clean_sys_modules, monkeypatch):
     # the perf path: a module the index knows and whose content is unchanged
     # survives, so the next import is a no-op.
     monkeypatch.setattr(mcs, "get_module_index_sync", lambda: ["modules/foo.py"])
-    monkeypatch.setattr(mcs, "get_module_sync", lambda _p: {"hash": "hashA"})
+    monkeypatch.setattr(
+        mcs,
+        "get_modules_sync",
+        lambda paths: {path: {"hash": "hashA"} for path in paths},
+    )
     monkeypatch.setattr(
         mcs, "wait_for_workspace_generation_sync", lambda: "generation-1"
     )

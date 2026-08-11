@@ -401,7 +401,7 @@ class TestModuleCacheAsync:
                 async with workspace_source_update(
                     reason="write", changed_paths=["a.py"]
                 ):
-                    raise RuntimeError("write failed")
+                    await AsyncMock(side_effect=RuntimeError("write failed"))()
 
         rotate.assert_awaited_once_with(
             reason="write", changed_paths=["a.py"], broadcast=False
@@ -436,7 +436,7 @@ class TestModuleCacheAsync:
 
         mark.assert_not_awaited()
         rotate.assert_not_awaited()
-        lock.release.assert_awaited_once()
+        lock.release.assert_not_awaited()
 
 
 class TestModuleCacheSync:
