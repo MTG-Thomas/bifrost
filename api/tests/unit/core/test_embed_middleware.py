@@ -1,119 +1,145 @@
-"""Unit tests for embed token route scoping."""
+"""Unit tests for the deny-by-default typed embed HTTP policy."""
 
 from datetime import timedelta
-from uuid import uuid4
 
-import pytest
-from starlette.requests import Request
-from starlette.responses import Response
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from src.core.embed_middleware import EmbedScopeMiddleware
-from src.core.security import create_access_token
+from src.core.embed_middleware import EmbedScopeMiddleware, embed_request_allowed
+from src.core.security import create_embed_access_token
 
 
-def _embed_token(**claims: str) -> str:
-    token_claims = {
-        "sub": str(uuid4()),
-        "jti": str(uuid4()),
-        "email": "embed@internal.gobifrost.com",
-        "is_superuser": False,
+FORM_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+OTHER_FORM_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def _form_claims(grant: str = "public") -> dict[str, object]:
+    return {
         "embed": True,
-        "roles": ["EmbedUser"],
-        **claims,
+        "embed_kind": "form",
+        "form_id": FORM_ID,
+        "grant": grant,
     }
-    return create_access_token(token_claims, expires_delta=timedelta(hours=1))
 
 
-def _request(method: str, path: str, token: str, *, token_source: str = "bearer") -> Request:
-    headers = []
-    if token_source == "bearer":
-        headers.append((b"authorization", f"Bearer {token}".encode()))
-    elif token_source == "cookie":
-        headers.append((b"cookie", f"embed_token={token}".encode()))
+def _app_claims() -> dict[str, object]:
+    return {"embed": True, "embed_kind": "app", "app_id": "app-slug"}
 
-    return Request(
-        {
-            "type": "http",
-            "method": method,
-            "path": path,
-            "headers": headers,
-            "query_string": b"",
-            "server": ("testserver", 80),
-            "scheme": "http",
-            "client": ("testclient", 50000),
-        }
+
+def test_form_session_can_only_use_its_runtime_surface():
+    claims = _form_claims()
+    assert embed_request_allowed("GET", f"/api/forms/{FORM_ID}/runtime", claims)
+    assert embed_request_allowed("POST", f"/api/forms/{FORM_ID}/startup", claims)
+    assert embed_request_allowed("POST", f"/api/forms/{FORM_ID}/upload", claims)
+    assert embed_request_allowed("POST", f"/api/forms/{FORM_ID}/submissions", claims)
+    assert embed_request_allowed(
+        "POST", f"/api/forms/{FORM_ID}/captcha/challenge", claims
+    )
+    assert embed_request_allowed(
+        "POST", f"/api/forms/{FORM_ID}/fields/customer/options", claims
     )
 
 
-async def _allowed_response(_: Request) -> Response:
-    return Response(status_code=204)
+def test_form_session_is_bound_to_one_form_and_denies_management_surfaces():
+    claims = _form_claims()
+    denied = (
+        ("GET", f"/api/forms/{FORM_ID}"),
+        ("GET", f"/api/forms/{OTHER_FORM_ID}/runtime"),
+        ("POST", "/api/workflows/execute"),
+        ("POST", f"/api/forms/{FORM_ID}/execute"),
+        ("GET", "/api/executions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        ("GET", "/api/forms"),
+        ("PUT", f"/api/forms/{FORM_ID}"),
+        ("GET", f"/api/forms/{FORM_ID}/embed-secrets"),
+    )
+    for method, path in denied:
+        assert not embed_request_allowed(method, path, claims), (method, path)
 
 
-async def _dispatch(
-    method: str,
-    path: str,
-    token: str,
-    *,
-    token_source: str = "bearer",
-) -> Response:
-    middleware = EmbedScopeMiddleware(app=None)
-    return await middleware.dispatch(
-        _request(method, path, token, token_source=token_source), _allowed_response
+def test_only_hmac_form_sessions_can_read_execution_details():
+    path = "/api/executions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    assert embed_request_allowed("GET", path, _form_claims("hmac"))
+    assert not embed_request_allowed("GET", f"{path}/result", _form_claims("hmac"))
+    assert not embed_request_allowed("POST", path, _form_claims("hmac"))
+    assert not embed_request_allowed("GET", path, _form_claims("public"))
+    assert not embed_request_allowed(
+        "POST",
+        f"/api/forms/{FORM_ID}/captcha/challenge",
+        _form_claims("hmac"),
     )
 
 
-@pytest.mark.asyncio
-async def test_embed_token_cannot_mutate_allowlisted_app_route():
-    token = _embed_token(app_id=str(uuid4()))
-
-    response = await _dispatch("PATCH", "/api/applications/some-app", token)
-
-    assert response.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_form_embed_token_read_reaches_router_for_404_normalization():
-    form_id = str(uuid4())
-    other_form_id = str(uuid4())
-    token = _embed_token(form_id=form_id)
-
-    response = await _dispatch("GET", f"/api/forms/{other_form_id}", token)
-
-    assert response.status_code == 204
-
-
-@pytest.mark.asyncio
-async def test_app_embed_token_render_reaches_router_for_404_normalization():
-    app_id = str(uuid4())
-    other_app_id = str(uuid4())
-    token = _embed_token(app_id=app_id)
-
-    response = await _dispatch("GET", f"/api/applications/{other_app_id}/render", token)
-
-    assert response.status_code == 204
-
-
-@pytest.mark.asyncio
-async def test_embed_token_can_access_its_scoped_form_route():
-    form_id = str(uuid4())
-    token = _embed_token(form_id=form_id)
-
-    response = await _dispatch("GET", f"/api/forms/{form_id}", token)
-
-    assert response.status_code == 204
-
-
-@pytest.mark.asyncio
-async def test_cookie_embed_token_read_reaches_router_for_404_normalization():
-    form_id = str(uuid4())
-    other_form_id = str(uuid4())
-    token = _embed_token(form_id=form_id)
-
-    response = await _dispatch(
-        "GET",
-        f"/api/forms/{other_form_id}",
-        token,
-        token_source="cookie",
+def test_untyped_embed_claims_are_denied():
+    assert not embed_request_allowed(
+        "GET", f"/api/forms/{FORM_ID}/runtime", {"embed": True}
     )
 
-    assert response.status_code == 204
+
+def test_app_embed_retains_legacy_app_and_execution_surfaces():
+    claims = _app_claims()
+    assert embed_request_allowed("GET", "/api/applications/app-slug", claims)
+    assert embed_request_allowed("POST", "/api/workflows/execute", claims)
+    assert embed_request_allowed(
+        "GET", "/api/executions/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", claims
+    )
+
+
+def _form_token() -> str:
+    return create_embed_access_token(
+        embed_kind="form",
+        grant="hmac",
+        resource_id=FORM_ID,
+        org_id=None,
+        verified_context={},
+        expires_delta=timedelta(minutes=5),
+    )
+
+
+def test_form_policy_is_identical_for_bearer_and_embed_cookies():
+    app = FastAPI()
+    app.add_middleware(EmbedScopeMiddleware)
+
+    @app.post("/api/workflows/execute")
+    async def generic_execute():
+        return {"unexpected": True}
+
+    token = _form_token()
+    with TestClient(app) as client:
+        bearer = client.post(
+            "/api/workflows/execute",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        access_cookie = client.post(
+            "/api/workflows/execute",
+            cookies={"access_token": token},
+        )
+        embed_cookie = client.post(
+            "/api/workflows/execute",
+            cookies={"embed_token": token},
+        )
+
+    assert bearer.status_code == 403
+    assert access_cookie.status_code == 403
+    assert embed_cookie.status_code == 403
+
+
+def test_form_session_rejects_oversized_body_before_router_invocation():
+    app = FastAPI()
+    app.add_middleware(EmbedScopeMiddleware)
+    invoked = False
+
+    @app.post(f"/api/forms/{FORM_ID}/submissions")
+    async def submit():
+        nonlocal invoked
+        invoked = True
+        return {"unexpected": True}
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/forms/{FORM_ID}/submissions",
+            content=b"x" * (512 * 1024 + 1),
+            headers={"Authorization": f"Bearer {_form_token()}"},
+        )
+
+    assert response.status_code == 413
+    assert invoked is False

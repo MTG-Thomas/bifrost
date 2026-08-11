@@ -324,6 +324,7 @@ async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
     monkeypatch.setattr(files, "_install_org_id", lambda *_args, **_kwargs: _async_value(ORG_A))
     monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
     monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr("src.core.pubsub.publish_file_change", fake_publish_file_change)
 
     await files.write_file(
@@ -368,6 +369,7 @@ async def test_write_file_local_binary_decodes_without_cloud_metadata(monkeypatc
     monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
 
     await files.write_file(
         files.FileWriteRequest(
@@ -442,6 +444,7 @@ async def test_delete_file_cloud_removes_metadata_flushes_and_publishes(monkeypa
     monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr(files, "_install_org_id", lambda *_args, **_kwargs: _async_value(ORG_A))
     monkeypatch.setattr(files, "get_backend", lambda mode, db_arg: FakeBackend())
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr("src.services.file_policy_service.FilePolicyService", FakePolicyService)
     monkeypatch.setattr("src.core.pubsub.publish_file_change", fake_publish_file_change)
 
@@ -486,6 +489,7 @@ async def test_delete_file_maps_backend_missing_to_404(monkeypatch):
     monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
     monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
 
     with pytest.raises(HTTPException) as exc_info:
         await files.delete_file(
@@ -1003,6 +1007,7 @@ async def test_put_file_content_editor_writes_text_and_returns_modified_content(
             )
 
     monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
 
     response = await files.put_file_content_editor(
         files.FileContentRequest(path="workflows/a.py", content="print('hi')"),
@@ -1035,6 +1040,7 @@ async def test_put_file_content_editor_rejects_stale_or_missing_expected_etag(mo
             raise AssertionError("stale writes should not continue")
 
     monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
 
     with pytest.raises(HTTPException) as changed:
         await files.put_file_content_editor(
@@ -1112,6 +1118,7 @@ async def test_put_file_content_editor_returns_pending_deactivation_conflict(mon
             )
 
     monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
 
     with pytest.raises(HTTPException) as exc_info:
         await files.put_file_content_editor(

@@ -102,14 +102,14 @@ export function WorkersTab() {
 	}, [pools]);
 
 	return (
-		<div className="max-w-[900px] mx-auto space-y-6">
+		<div className="max-w-[1100px] mx-auto space-y-6">
 			{/* Connection Status Banner */}
 			{!isConnected && (
 				<Alert className="border-amber-500/50 text-amber-700 dark:text-amber-400 [&>svg]:text-amber-600">
 					<WifiOff className="h-4 w-4" />
 					<AlertDescription>
-						Connecting to real-time worker updates... Data may not
-						be current.
+						Connecting to real-time worker updates... Data may not be
+						current.
 					</AlertDescription>
 				</Alert>
 			)}

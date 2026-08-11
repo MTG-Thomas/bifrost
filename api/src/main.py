@@ -6,7 +6,7 @@ Main entry point for the FastAPI application.
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
@@ -21,7 +21,7 @@ from src.core.telemetry import configure_opentelemetry
 from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
-from src.core.database import close_db, init_db
+from src.core.database import close_db, get_session_factory, init_db
 from src.core.pubsub import manager as pubsub_manager
 from src.routers.health import close_health_check_clients
 from src.routers import (
@@ -50,6 +50,7 @@ from src.routers import (
     github_router,
     jobs_router,
     platform_jobs_router,
+    scheduler_diagnostics_router,
     oauth_connections_router,
     endpoints_router,
     cli_router,
@@ -149,22 +150,6 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.default_user_email and settings.default_user_password:
         await create_default_user()
 
-    from src.core.database import get_session_factory
-    from src.routers.solutions import reconcile_orphaned_deploy_jobs
-
-    try:
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            count = await reconcile_orphaned_deploy_jobs(db)
-            if count:
-                await db.commit()
-                logger.warning(
-                    "Marked %d orphaned solution deploy job(s) as failed after API startup",
-                    count,
-                )
-    except Exception as e:
-        logger.warning(f"Solution deploy job reconciliation failed: {e}")
-
     # Seed built-in policy rules (idempotent; must exist before any file prefix
     # with {"$ref": "admin_bypass"} is created).
     try:
@@ -178,21 +163,6 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"Built-in policy rule seeding failed: {e}")
 
-    # Reconcile file_index with S3 _repo/ in background
-    from src.services.file_index_reconciler import reconcile_file_index
-
-    async def _run_reconciler():
-        try:
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                stats = await reconcile_file_index(db)
-                await db.commit()
-                logger.info(f"File index reconciliation complete: {stats}")
-        except Exception as e:
-            logger.warning(f"File index reconciliation failed: {e}")
-
-    _reconciler_task = asyncio.create_task(_run_reconciler())
-
     logger.info(f"Bifrost API started in {settings.environment} mode")
 
     try:
@@ -200,11 +170,6 @@ async def app_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         # Shutdown
         logger.info("Shutting down Bifrost API...")
-
-        if not _reconciler_task.done():
-            _reconciler_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await _reconciler_task
 
         await pubsub_manager.close()
         await close_health_check_clients()
@@ -588,6 +553,7 @@ def create_app() -> FastAPI:
     app.include_router(github_router)
     app.include_router(jobs_router)
     app.include_router(platform_jobs_router)
+    app.include_router(scheduler_diagnostics_router)
     app.include_router(oauth_connections_router)
     app.include_router(endpoints_router)
     app.include_router(cli_router)

@@ -435,7 +435,7 @@ async def test_git_fetch_requires_complete_configuration() -> None:
 async def test_git_commit_publishes_requested_job_id_and_message() -> None:
     with (
         patch.object(github, "get_github_config", AsyncMock(return_value=_config())),
-        patch.object(github, "publish_git_operation", AsyncMock()) as publish,
+        patch.object(github, "publish_git_operation", AsyncMock(return_value="job-1")) as publish,
     ):
         result = await github.git_commit(
             CommitRequest(message="ship it", job_id="job-1"),
@@ -459,7 +459,7 @@ async def test_git_commit_publishes_requested_job_id_and_message() -> None:
 async def test_git_sync_publishes_confirm_deletes_flag() -> None:
     with (
         patch.object(github, "get_github_config", AsyncMock(return_value=_config())),
-        patch.object(github, "publish_git_operation", AsyncMock()) as publish,
+        patch.object(github, "publish_git_operation", AsyncMock(return_value="job-sync")) as publish,
     ):
         result = await github.git_sync(
             _ctx(),
@@ -512,7 +512,11 @@ async def test_git_operation_endpoints_publish_expected_payloads() -> None:
     for endpoint, request_args, expected in cases:
         with (
             patch.object(github, "get_github_config", AsyncMock(return_value=_config())),
-            patch.object(github, "publish_git_operation", AsyncMock()) as publish,
+            patch.object(
+                github,
+                "publish_git_operation",
+                AsyncMock(return_value=request_args[0].job_id),
+            ) as publish,
         ):
             if endpoint in {github.git_abort_merge, github.git_changes}:
                 result = await endpoint(_ctx(), _user(), AsyncMock(), *request_args)

@@ -184,6 +184,7 @@
 | POST | `/api/files/search` |
 | POST | `/api/files/signed-url` |
 | POST | `/api/files/signed-urls` |
+| POST | `/api/files/stat` |
 | POST | `/api/files/structure` |
 | POST | `/api/files/watch` |
 | GET | `/api/files/watchers` |
@@ -193,12 +194,20 @@
 | DELETE | `/api/forms/{form_id}` |
 | GET | `/api/forms/{form_id}` |
 | PATCH | `/api/forms/{form_id}` |
+| POST | `/api/forms/{form_id}/captcha/challenge` |
 | GET | `/api/forms/{form_id}/embed-secrets` |
 | POST | `/api/forms/{form_id}/embed-secrets` |
 | DELETE | `/api/forms/{form_id}/embed-secrets/{secret_id}` |
 | PATCH | `/api/forms/{form_id}/embed-secrets/{secret_id}` |
-| POST | `/api/forms/{form_id}/execute` |
+| POST | `/api/forms/{form_id}/fields/{field_name}/options` |
+| DELETE | `/api/forms/{form_id}/publication` |
+| GET | `/api/forms/{form_id}/publication` |
+| PUT | `/api/forms/{form_id}/publication` |
+| GET | `/api/forms/{form_id}/publication-review` |
+| POST | `/api/forms/{form_id}/publication/rotate-key` |
+| GET | `/api/forms/{form_id}/runtime` |
 | POST | `/api/forms/{form_id}/startup` |
+| POST | `/api/forms/{form_id}/submissions` |
 | POST | `/api/forms/{form_id}/upload` |
 | POST | `/api/github/abort-merge` |
 | GET | `/api/github/branches` |
@@ -325,6 +334,8 @@
 | GET | `/api/platform-jobs/{job_id}` |
 | POST | `/api/platform-jobs/{job_id}/cancel` |
 | GET | `/api/platform/queue` |
+| GET | `/api/platform/scheduler` |
+| GET | `/api/platform/scheduler/tasks/{task_id}/runs` |
 | GET | `/api/platform/stuck-history` |
 | GET | `/api/platform/workers` |
 | GET | `/api/platform/workers/metrics` |
@@ -417,6 +428,7 @@
 | PUT | `/api/settings/ai/pricing/{pricing_id}` |
 | GET | `/api/settings/oauth` |
 | PUT | `/api/settings/oauth/google` |
+| PUT | `/api/settings/oauth/login-preference` |
 | PUT | `/api/settings/oauth/microsoft` |
 | PUT | `/api/settings/oauth/oidc` |
 | DELETE | `/api/settings/oauth/{provider}` |
@@ -559,6 +571,7 @@
 | POST | `/auth/setup/passkey/verify` |
 | GET | `/auth/status` |
 | GET | `/embed/apps/{slug}` |
+| GET | `/embed/forms/public/{public_key}` |
 | GET | `/embed/forms/{form_id}` |
 | GET | `/health` |
 | GET | `/health/detailed` |

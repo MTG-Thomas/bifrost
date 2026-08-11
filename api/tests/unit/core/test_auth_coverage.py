@@ -73,7 +73,7 @@ async def test_optional_user_prefers_authorization_header_over_cookie(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_optional_user_accepts_embed_cookie_with_embed_type(monkeypatch):
+async def test_optional_user_accepts_embed_cookie_as_typed_access_token(monkeypatch):
     calls = []
 
     def decode_token(token, *, expected_type):
@@ -93,7 +93,7 @@ async def test_optional_user_accepts_embed_cookie_with_embed_type(monkeypatch):
     assert user.organization_id is None
     assert user.app_id == "app-1"
     assert user.form_id == "form-1"
-    assert calls == [("embed-token", "embed")]
+    assert calls == [("embed-token", "access")]
 
 
 @pytest.mark.asyncio

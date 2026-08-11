@@ -7,8 +7,8 @@ Three login modes:
   * Browser device-code (explicit --device-code) — legacy browser fallback
     using the same persistent credential storage.
   * Password-grant (when --email and --password are passed) — tokens are
-    written to the credential backend and only the URL is written to the
-    CWD .env. Refuses MFA-enabled instances.
+    stored by URL in the credential backend and mirrored into the CWD .env
+    for isolated unattended sessions. Refuses MFA-enabled instances.
 """
 
 import asyncio
@@ -18,6 +18,25 @@ import urllib.request
 import pytest
 
 from bifrost import cli
+from bifrost import credentials as creds_mod
+
+
+@pytest.fixture
+def isolated_credentials(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        creds_mod,
+        "get_credentials_path",
+        lambda: tmp_path / "credentials.json",
+    )
+    monkeypatch.setattr(
+        creds_mod,
+        "get_config_path",
+        lambda: tmp_path / "config.json",
+    )
+    monkeypatch.setattr(creds_mod, "_select_persistent_backend", creds_mod.JsonBackend)
+    creds_mod._reset_persistent_backend_for_tests()
+    yield
+    creds_mod._reset_persistent_backend_for_tests()
 
 
 def _stub_post(json_payload: dict, status_code: int = 200):
@@ -78,6 +97,7 @@ class TestPasswordLoginSuccess:
         capsys,
         monkeypatch,
         tmp_path,
+        isolated_credentials,
     ):
         stub = _stub_post(
             {
@@ -105,6 +125,10 @@ class TestPasswordLoginSuccess:
         assert "BIFROST_API_URL=http://localhost:38421" in env_text
         assert "BIFROST_ACCESS_TOKEN=at_value" in env_text
         assert "BIFROST_REFRESH_TOKEN=rt_value" in env_text
+        stored = creds_mod.get_credentials("http://localhost:38421")
+        assert stored is not None
+        assert stored["access_token"] == "at_value"
+        assert stored["refresh_token"] == "rt_value"
 
         captured = capsys.readouterr()
         assert "BIFROST_ACCESS_TOKEN=" not in captured.out
@@ -112,40 +136,52 @@ class TestPasswordLoginSuccess:
         assert "MFA" in captured.err
         assert "ephemeral" in captured.err.lower()
 
-    def test_does_not_write_to_keychain(self, capsys, monkeypatch, tmp_path):
-        """Password-grant must not touch the persistent (keychain/JSON) store."""
-        from bifrost import credentials as creds_mod
-
-        stub = _stub_post(
-            {
-                "access_token": "at",
-                "refresh_token": "rt",
-                "expires_in": 1800,
-            }
-        )
+    def test_null_expiry_uses_default(
+        self, monkeypatch, tmp_path, isolated_credentials,
+    ):
+        stub = _stub_post({
+            "access_token": "at_value",
+            "refresh_token": "rt_value",
+            "expires_in": None,
+        })
         monkeypatch.setattr("httpx.AsyncClient", stub)
-        monkeypatch.setattr(
-            "bifrost.credentials.get_credentials_path",
-            lambda: tmp_path / "credentials.json",
-        )
-        creds_mod._reset_persistent_backend_for_tests()
-        monkeypatch.setattr(creds_mod, "_select_persistent_backend", creds_mod.JsonBackend)
-        creds_mod._reset_persistent_backend_for_tests()
         monkeypatch.chdir(tmp_path)
 
-        cli.handle_login(
-            [
-                "--email",
-                "dev@gobifrost.com",
-                "--password",
-                "password",
-                "--url",
-                "http://localhost:38421",
-            ]
-        )
+        rc = cli.handle_login([
+            "--email", "dev@gobifrost.com",
+            "--password", "password",
+            "--url", "http://localhost:38421",
+        ])
 
-        assert not (tmp_path / "credentials.json").exists()
-        assert (tmp_path / ".env").exists()
+        assert rc == 0
+        assert creds_mod.get_credentials("http://localhost:38421") is not None
+
+    def test_does_not_change_saved_default(
+        self, capsys, monkeypatch, tmp_path, isolated_credentials,
+    ):
+        stub = _stub_post({
+            "access_token": "at",
+            "refresh_token": "rt",
+            "expires_in": 1800,
+        })
+        monkeypatch.setattr("httpx.AsyncClient", stub)
+        creds_mod.save_credentials(
+            "https://prod.example.com",
+            "prod-at",
+            "prod-rt",
+            "2099-01-01T00:00:00+00:00",
+        )
+        creds_mod.set_default_connection("https://prod.example.com")
+        monkeypatch.chdir(tmp_path)
+
+        cli.handle_login([
+            "--email", "dev@gobifrost.com",
+            "--password", "password",
+            "--url", "http://localhost:38421",
+        ])
+
+        assert creds_mod.get_default_connection() == "https://prod.example.com"
+        assert creds_mod.get_credentials("http://localhost:38421") is not None
 
 
 class TestPasswordLoginMfaRefusal:

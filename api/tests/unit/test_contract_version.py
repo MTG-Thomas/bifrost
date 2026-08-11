@@ -188,7 +188,25 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Application publish now returns 202 + a standardized platform job instead
     # of ApplicationPublic, and the CLI polls PlatformJobPublic for durable
     # progress/result/error (2026-07-28). CONTRACT_VERSION bumped to 8.
-    "fa30c2a79e86fe1a737e2f730f0afb391d028959b549f0de1a027b026295fda9"
+    #
+    # Forms gained optional confirmation_markdown (2026-08-04). ADDITIVE: old
+    # clients omit it and continue receiving the prior default confirmation.
+    #
+    # RoleCreate/RoleUpdate gained additive scopes fields (2026-07-30).
+    # Old CLIs omit them and retain empty-scope custom-role behavior.
+    # Forms also gained optional confirmation_markdown (2026-08-04). All are
+    # additive; fingerprint refreshed after merging the contract surfaces.
+    #
+    # CLI/SDK file write and delete requests gained optional guarded-mutation
+    # fields (2026-08-08). ADDITIVE: old clients omit them and retain the prior
+    # unconditional behavior; new clients can reject stale writes and deletes.
+    #
+    # PlatformJobStatus gained `waiting` for durable parent jobs (2026-08-07).
+    # CONTRACT_VERSION bumped to 9 because an older CLI cannot parse the new
+    # enum value while polling PlatformJobPublic.
+    # Fingerprint refreshed against the combined MTG fork and upstream v9
+    # contract surfaces; the additional fork fields were already shipped.
+    "477e2c7aeb535c61799bebb238f59e8d95402838f54a8e016be3f57bbaa511a7"
 )
 
 

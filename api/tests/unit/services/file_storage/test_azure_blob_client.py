@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.services.file_storage import azure_blob_client as azure_blob_client_module
 from src.services.file_storage.azure_blob_client import AzureBlobStorageClient
 
 
@@ -405,7 +406,7 @@ async def test_copy_object_polls_until_success(monkeypatch) -> None:
     async def sleep(seconds: float) -> None:
         sleeps.append(seconds)
 
-    monkeypatch.setattr("src.services.file_storage.azure_blob_client.asyncio.sleep", sleep)
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", sleep)
 
     class FakeDestBlob:
         def __init__(self):
@@ -445,7 +446,7 @@ async def test_copy_object_polls_until_success(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_copy_object_returns_immediately_when_start_reports_success(monkeypatch) -> None:
     sleep = AsyncMock()
-    monkeypatch.setattr("src.services.file_storage.azure_blob_client.asyncio.sleep", sleep)
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", sleep)
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):
@@ -476,10 +477,7 @@ async def test_copy_object_returns_immediately_when_start_reports_success(monkey
 
 @pytest.mark.asyncio
 async def test_copy_object_raises_on_failed_copy(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "src.services.file_storage.azure_blob_client.asyncio.sleep",
-        AsyncMock(),
-    )
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", AsyncMock())
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):
@@ -506,10 +504,7 @@ async def test_copy_object_raises_on_failed_copy(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_copy_object_raises_on_aborted_copy(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "src.services.file_storage.azure_blob_client.asyncio.sleep",
-        AsyncMock(),
-    )
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", AsyncMock())
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):
@@ -603,7 +598,7 @@ async def test_delete_object_ignores_missing_blob(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_copy_object_times_out_when_copy_never_finishes(monkeypatch) -> None:
     sleep = AsyncMock()
-    monkeypatch.setattr("src.services.file_storage.azure_blob_client.asyncio.sleep", sleep)
+    monkeypatch.setattr(azure_blob_client_module.asyncio, "sleep", sleep)
 
     class FakeDestBlob:
         async def start_copy_from_url(self, source_url):
