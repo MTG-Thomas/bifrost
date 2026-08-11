@@ -1,16 +1,19 @@
 """HTTP contract coverage for authoritative workspace _repo changesets."""
 
 import base64
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from git import Repo as GitRepo
 from sqlalchemy import delete, select
 
+from src.models.contracts.github import PreflightResult
 from src.models.orm.config import SystemConfig
 from src.models.orm.users import User
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 from src.services.github_config import save_github_config
+from src.services.github_sync import GitHubSyncService
 from src.services.repo_storage import RepoStorage
 
 
@@ -151,7 +154,7 @@ async def test_workspace_repo_git_closure_retry_is_org_scoped_and_state_guarded(
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
-    e2e_client, platform_admin, db_session, tmp_path
+    e2e_client, platform_admin, db_session, tmp_path, monkeypatch
 ):
     admin = (
         await db_session.execute(
@@ -202,6 +205,11 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
     )
     db_session.add(row)
     await db_session.commit()
+    monkeypatch.setattr(
+        GitHubSyncService,
+        "_run_preflight",
+        AsyncMock(return_value=PreflightResult(valid=True, issues=[])),
+    )
     try:
         retried = e2e_client.post(
             f"/api/workspace-repo-changesets/{row.id}/retry-git-closure",
