@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -534,28 +535,68 @@ class GitHubSyncService:
             merging=merging,
         )
 
-    async def _do_commit(self, work_dir: Path, repo: GitRepo, message: str) -> "CommitResult":
-        """Core commit logic. Stages, runs preflight, commits."""
+    async def _do_commit(
+        self,
+        work_dir: Path,
+        repo: GitRepo,
+        message: str,
+        *,
+        stage_paths: Iterable[str] | None = None,
+    ) -> "CommitResult":
+        """Core commit logic. Stages, runs preflight, commits.
+
+        ``stage_paths`` keeps transactional workspace closure scoped to the
+        activated mutations. The generated manifest remains part of that
+        snapshot, while unrelated authoritative workspace drift stays
+        unstaged for its own reviewed changeset.
+        """
         from src.models.contracts.github import CommitResult
 
         # Regenerate manifest from DB so the commit captures current platform state
         await self._regenerate_manifest_to_dir(self.db, work_dir)
-        repo.git.add(A=True)
-
-        # Check if there are changes to commit
-        if repo.head.is_valid() and not repo.index.diff("HEAD") and not repo.untracked_files:
-            return CommitResult(success=True, files_committed=0)
+        if stage_paths is None:
+            repo.git.add(A=True)
+            if repo.head.is_valid():
+                staged_changes = list(repo.index.diff("HEAD"))
+                if not staged_changes and not repo.untracked_files:
+                    return CommitResult(success=True, files_committed=0)
+                file_count = len(staged_changes) + len(repo.untracked_files)
+            else:
+                entries = getattr(repo.index, "entries", None)
+                file_count = (
+                    len(entries)
+                    if entries is not None
+                    else len(list(repo.index.diff(None))) + len(repo.untracked_files)
+                )
+                if not file_count:
+                    return CommitResult(success=True, files_committed=0)
+        else:
+            scoped_paths = set(stage_paths)
+            if (work_dir / ".bifrost").exists() or repo.git.ls_files(
+                "--", ".bifrost"
+            ):
+                scoped_paths.add(".bifrost")
+            scoped_paths = sorted(scoped_paths)
+            repo.git.add("-A", "--", *scoped_paths)
+            if repo.head.is_valid():
+                staged_changes = list(repo.index.diff("HEAD"))
+                if not staged_changes:
+                    return CommitResult(success=True, files_committed=0)
+                file_count = len(staged_changes)
+            else:
+                entries = getattr(repo.index, "entries", None)
+                file_count = (
+                    len(entries)
+                    if entries is not None
+                    else len(list(repo.index.diff(None)))
+                )
+                if not file_count:
+                    return CommitResult(success=True, files_committed=0)
 
         # Run preflight
         pf = await self._run_preflight(work_dir)
         if not pf.valid:
             return CommitResult(success=False, error="Preflight validation failed", preflight=pf)
-
-        # Count files
-        if repo.head.is_valid():
-            file_count = len(repo.index.diff("HEAD")) + len(repo.untracked_files)
-        else:
-            file_count = len(repo.untracked_files) + len(list(repo.index.diff(None)))
 
         # Commit
         commit = repo.index.commit(message)
@@ -908,15 +949,24 @@ class GitHubSyncService:
         """
         async with self.repo_manager.checkout() as work_dir:
             repo = self._open_or_init(work_dir)
+            expected_file_hashes = expected_file_hashes or {}
             self._prepare_expected_workspace_files(
                 work_dir,
                 repo,
-                expected_file_hashes or {},
+                expected_file_hashes,
             )
-            result = await self._do_commit(work_dir, repo, message)
+            if expected_file_hashes:
+                result = await self._do_commit(
+                    work_dir,
+                    repo,
+                    message,
+                    stage_paths=expected_file_hashes,
+                )
+            else:
+                result = await self._do_commit(work_dir, repo, message)
             if not result.success:
                 raise RuntimeError(result.error or "Git commit failed")
-            self._verify_expected_workspace_tree(repo, expected_file_hashes or {})
+            self._verify_expected_workspace_tree(repo, expected_file_hashes)
             commit_sha = result.commit_sha
             if push:
                 reconciliation_error = self._reconcile_remote_before_workspace_push(

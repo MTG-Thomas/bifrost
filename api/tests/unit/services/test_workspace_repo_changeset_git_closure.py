@@ -85,6 +85,65 @@ async def test_workspace_repo_commit_closure_stages_assume_unchanged_activated_f
 
 
 @pytest.mark.asyncio
+async def test_workspace_repo_commit_closure_does_not_stage_unrelated_workspace_drift(
+    tmp_path,
+):
+    repo = _init_repo(tmp_path)
+    features = tmp_path / "features"
+    features.mkdir()
+    activated = features / "activated.py"
+    deleted = features / "deleted.py"
+    unrelated = features / "unrelated.py"
+    activated.write_bytes(b"old activated\n")
+    deleted.write_bytes(b"delete me\n")
+    unrelated.write_bytes(b"reviewed unrelated\n")
+    repo.index.add(
+        [
+            "features/activated.py",
+            "features/deleted.py",
+            "features/unrelated.py",
+        ]
+    )
+    repo.index.commit("initial")
+
+    activated_content = b"new activated content\n"
+    activated.write_bytes(activated_content)
+    deleted.unlink()
+    unrelated.write_bytes(b"unreviewed workspace drift\n")
+
+    @asynccontextmanager
+    async def checkout():
+        yield tmp_path
+
+    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service._open_or_init = Mock(return_value=repo)
+    service._regenerate_manifest_to_dir = AsyncMock()
+    service._run_preflight = AsyncMock(return_value=SimpleNamespace(valid=True))
+
+    sha, push_error = await service.commit_workspace_changes(
+        "activated source",
+        expected_file_hashes={
+            "features/activated.py": hashlib.sha256(activated_content).hexdigest(),
+            "features/deleted.py": None,
+        },
+    )
+
+    assert push_error is None
+    assert sha == repo.head.commit.hexsha
+    changed_paths = {
+        change.a_path or change.b_path
+        for change in repo.head.commit.diff(repo.head.commit.parents[0])
+    }
+    assert changed_paths == {"features/activated.py", "features/deleted.py"}
+    assert (repo.head.commit.tree / "features/activated.py").data_stream.read() == activated_content
+    with pytest.raises(KeyError):
+        repo.head.commit.tree / "features/deleted.py"
+    assert (repo.head.commit.tree / "features/unrelated.py").data_stream.read() == b"reviewed unrelated\n"
+    assert unrelated.read_bytes() == b"unreviewed workspace drift\n"
+
+
+@pytest.mark.asyncio
 async def test_workspace_repo_commit_closure_rejects_stale_materialized_file_without_sync_up(
     tmp_path,
 ):
