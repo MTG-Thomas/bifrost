@@ -243,6 +243,51 @@ async def test_workspace_repo_git_closure_retry_is_org_scoped_and_state_guarded(
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
+async def test_recoverable_git_closures_include_durable_retry_states(
+    e2e_client, platform_admin, db_session
+):
+    admin = (
+        await db_session.execute(select(User).where(User.id == platform_admin.user_id))
+    ).scalar_one()
+    assert admin.organization_id is not None
+    scope = f"test_changesets_{uuid4().hex}"
+    rows = [
+        WorkspaceRepoChangeset(
+            organization_id=admin.organization_id,
+            scope=scope,
+            base_revision="0" * 64,
+            base_files={},
+            mutations=[],
+            status="activated",
+            created_by=admin.id,
+            failure_detail={"phase": "git_closure", "state": state},
+        )
+        for state in ("failed", "not_configured", "pending")
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        response = e2e_client.get(
+            "/api/workspace-repo-changesets/recoverable-git-closures",
+            headers=platform_admin.headers,
+            params={"scope": scope},
+        )
+
+        assert response.status_code == 200, response.text
+        assert {item["id"] for item in response.json()} == {
+            str(row.id) for row in rows
+        }
+    finally:
+        await db_session.execute(
+            delete(WorkspaceRepoChangeset).where(
+                WorkspaceRepoChangeset.id.in_([row.id for row in rows])
+            )
+        )
+        await db_session.commit()
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
 async def test_workspace_repo_git_closure_retry_requires_remote_push_without_reactivation(
     e2e_client, platform_admin, db_session
 ):

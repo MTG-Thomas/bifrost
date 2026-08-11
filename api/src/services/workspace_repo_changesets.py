@@ -32,7 +32,10 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoValidationResponse,
 )
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
-from src.repositories.workspace_repo_changesets import WorkspaceRepoChangesetRepository
+from src.repositories.workspace_repo_changesets import (
+    RETRYABLE_GIT_FAILURE_STATES,
+    WorkspaceRepoChangesetRepository,
+)
 from src.services.file_storage import FileStorageService
 from src.services.file_storage.ast_parser import ASTMetadataParser
 from src.services.file_storage.deactivation import DeactivationProtectionService
@@ -74,7 +77,6 @@ class WorkspaceRepoChangesetService:
         ("activated", "git_closure"),
         ("committed_unpushed", "git_push"),
     }
-    RETRYABLE_GIT_FAILURE_STATES = {"failed", "not_configured"}
 
     def __init__(
         self,
@@ -448,7 +450,7 @@ class WorkspaceRepoChangesetService:
         retry_key = (row.status, str(failure.get("phase") or ""))
         if (
             retry_key not in self.RETRYABLE_GIT_FAILURES
-            or failure.get("state") not in self.RETRYABLE_GIT_FAILURE_STATES
+            or failure.get("state") not in RETRYABLE_GIT_FAILURE_STATES
         ):
             raise ChangesetInvalid(
                 f"changeset in {row.status!r} state does not have a retryable Git closure failure"

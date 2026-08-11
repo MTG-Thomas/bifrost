@@ -90,7 +90,8 @@ Content-Type: application/json
 
 The saved operator and commit provenance are reused and workspace activation
 is not replayed. Legacy failure records without saved provenance require the
-original `commit_message`; a different message is rejected.
+original `commit_message`; a different message is rejected. The same retry
+endpoint recovers a durable `pending` record left by an API process stop.
 
 ## Operator verification
 

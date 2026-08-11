@@ -11,6 +11,7 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoChangesetBegin,
     WorkspaceRepoFileMutationRequest,
 )
+from src.repositories.workspace_repo_changesets import RETRYABLE_GIT_FAILURE_STATES
 from src.services.platform_commit_writer import (
     PlatformCommitError,
     PlatformCommitResult,
@@ -78,7 +79,7 @@ class MemoryRows:
             and (scope is None or row.scope == scope)
             and row.failure_detail
             and row.failure_detail.get("state")
-            in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURE_STATES
+            in RETRYABLE_GIT_FAILURE_STATES
             and (row.status, row.failure_detail.get("phase"))
             in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
         ]
@@ -596,6 +597,32 @@ async def test_retry_git_closure_rejects_non_retryable_state():
             WorkspaceRepoActivateRequest(commit_message="release source", push=True),
             "tester",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_state", RETRYABLE_GIT_FAILURE_STATES)
+async def test_retry_git_closure_accepts_each_durable_failure_state(failure_state):
+    svc = service({"features/a.txt": b"a"})
+    svc.commit_writer = RecordingWriter()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    stored = svc.rows.items[row.id]
+    stored.status = "activated"
+    stored.failure_detail = {
+        "phase": "git_closure",
+        "state": failure_state,
+        "provenance": {
+            "operator": "tester",
+            "commit_message": "release source",
+        },
+    }
+
+    result = await svc.retry_git_closure(
+        row.id,
+        WorkspaceRepoActivateRequest(push=True),
+        "retrying-operator",
+    )
+
+    assert result.status == "committed"
 
 
 @pytest.mark.asyncio
