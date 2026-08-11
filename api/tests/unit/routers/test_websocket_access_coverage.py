@@ -418,7 +418,7 @@ async def test_can_access_execution_checks_owner_for_existing_rows():
 
 @pytest.mark.asyncio
 async def test_can_access_execution_checks_embed_session_redis_key():
-    user = _user(embed=True, jti="embed-session")
+    user = _user(embed=True, embed_kind="app", jti="embed-session")
     redis = SimpleNamespace(exists=AsyncMock(return_value=1))
 
     @asynccontextmanager

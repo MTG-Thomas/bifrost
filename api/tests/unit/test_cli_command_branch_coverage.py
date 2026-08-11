@@ -136,6 +136,10 @@ def test_handle_auth_help_list_first_stored_and_unknown(monkeypatch, capsys):
         "list_credentials",
         lambda: ["https://first.example.test", "https://second.example.test"],
     )
+    monkeypatch.setattr(cli.credentials, "get_default_connection", lambda: None)
+    monkeypatch.setattr(
+        cli.credentials, "resolve_current_connection", lambda: (None, None)
+    )
     assert cli.handle_auth(["ls"]) == 0
     out = capsys.readouterr().out
     assert "https://first.example.test" in out

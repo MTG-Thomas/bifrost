@@ -140,6 +140,7 @@ async def test_generate_upload_url_validates_field_constraints_and_returns_metad
         fields=[
             SimpleNamespace(
                 name="attachment",
+                type="file",
                 allowed_types=[".pdf"],
                 max_size_mb=1,
             )
@@ -161,12 +162,14 @@ async def test_generate_upload_url_validates_field_constraints_and_returns_metad
     storage.presigned_upload_headers.return_value = {"Content-Type": "application/pdf"}
 
     with (
-        patch.object(forms, "_check_form_access", AsyncMock(return_value=True)),
+        patch.object(forms, "_authorize_form_runtime", AsyncMock()),
+        patch.object(forms, "_limit_embed_action", AsyncMock()),
         patch.object(forms, "uuid4", return_value=uuid4()),
         patch("src.services.file_storage.FileStorageService", return_value=storage),
     ):
         response = await forms.generate_upload_url(
             form_id,
+            SimpleNamespace(),
             FileUploadRequest(
                 file_name="../Quarterly Report.pdf",
                 content_type="application/pdf",
@@ -195,6 +198,7 @@ async def test_generate_upload_url_rejects_disallowed_type_and_oversize():
         fields=[
             SimpleNamespace(
                 name="attachment",
+                type="file",
                 allowed_types=[".pdf"],
                 max_size_mb=1,
             )
@@ -212,10 +216,14 @@ async def test_generate_upload_url_rejects_disallowed_type_and_oversize():
         ),
     )
 
-    with patch.object(forms, "_check_form_access", AsyncMock(return_value=True)):
+    with (
+        patch.object(forms, "_authorize_form_runtime", AsyncMock()),
+        patch.object(forms, "_limit_embed_action", AsyncMock()),
+    ):
         with pytest.raises(HTTPException) as exc:
             await forms.generate_upload_url(
                 form_id,
+                SimpleNamespace(),
                 FileUploadRequest(
                     file_name="bad.exe",
                     content_type="application/x-msdownload",
@@ -229,10 +237,14 @@ async def test_generate_upload_url_rejects_disallowed_type_and_oversize():
     assert exc.value.status_code == 400
     assert "not allowed" in exc.value.detail
 
-    with patch.object(forms, "_check_form_access", AsyncMock(return_value=True)):
+    with (
+        patch.object(forms, "_authorize_form_runtime", AsyncMock()),
+        patch.object(forms, "_limit_embed_action", AsyncMock()),
+    ):
         with pytest.raises(HTTPException) as exc:
             await forms.generate_upload_url(
                 form_id,
+                SimpleNamespace(),
                 FileUploadRequest(
                     file_name="big.pdf",
                     content_type="application/pdf",

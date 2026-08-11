@@ -10,6 +10,7 @@ def _form_payload(**overrides):
         "id": "form-1",
         "name": "Onboarding",
         "description": "Collect onboarding inputs",
+        "confirmation_markdown": "## Submitted",
         "workflow_id": "workflow-1",
         "launch_workflow_id": "workflow-2",
         "default_launch_params": {"priority": "normal"},

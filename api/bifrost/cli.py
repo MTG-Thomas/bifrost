@@ -984,9 +984,11 @@ Entity mutation commands (see 'bifrost <entity> --help'):
 
 Workspace/file targets:
   _repo source files:
-    bifrost push|pull|sync|watch [path]          # local directory <-> global _repo
-    bifrost files list [path]                    # direct API access to global _repo files
-    bifrost files write <path> --content ...     # one direct API write, no local tree sync
+    bifrost files list [path]                    # list instance _repo files
+    bifrost files search <query>                 # search instance _repo text
+    bifrost files read <path>                    # read one source file
+    bifrost files stat <path> --json             # capture its version before editing
+    bifrost files write <path> --from-file ...   # guarded direct write
 
   Solution source files:
     bifrost solution create --slug <slug>
@@ -998,15 +1000,11 @@ Workspace/file targets:
     bifrost files list --solution <id-or-slug>   # installed app/workflow file data
     bifrost files read <path> --solution <id-or-slug>
 
-Push vs files write:
-  bifrost push [path] walks a local file or directory, applies sync ignore rules,
-  compares server state, and uploads source files to global _repo. Use it when
-  local disk is the source of truth. A pushed file lands at the same relative
-  path under _repo, based on the directory where you run the command. To place a
-  file at _repo/workflows/foo.py, run from the workspace root and push
-  workflows/foo.py. `bifrost files write` writes exactly one path through the
-  Files API. Use it for one-off writes, scripts, arbitrary local-to-remote path
-  copies with --from-file, or Solution runtime file data with --solution.
+Direct files vs bulk local sync:
+  Use `bifrost files` as the default _repo authoring surface. It reads and
+  writes explicit remote paths and supports version-guarded changes. The
+  push/pull/sync/watch commands are optional bulk local-directory workflows;
+  inspect their help only when the user intentionally chooses that model.
 
 Examples:
   bifrost run workflow.py -w greet
@@ -1018,14 +1016,9 @@ Examples:
   bifrost git commit -m "sync clients"
   bifrost git push
   bifrost git resolve workflows/billing.py=keep_remote
-  bifrost sync
-  bifrost sync apps/my-app --mirror
-  bifrost push apps/my-app
-  bifrost push apps/my-app --mirror
-  bifrost pull
-  bifrost pull apps/my-app
-  bifrost watch
-  bifrost watch apps/my-app
+  bifrost files stat workflows/greet.py --json
+  bifrost files read workflows/greet.py
+  bifrost files write workflows/greet.py --from-file /tmp/greet.py --expected-version <version>
   bifrost solution create --slug my-solution
   bifrost solution bind --solution <id-or-slug>
   bifrost solution scaffold-app dashboard
@@ -1264,8 +1257,19 @@ Examples:
         assert password is not None
         rc, data = asyncio.run(password_login_flow(api_url, email, password))
         if rc == 0 and data is not None:
-            # Persist URL + tokens to CWD's .env so subsequent commands from
-            # this isolated scratch directory reuse the unattended session.
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=data.get("expires_in") or 1800
+            )
+            credentials.save_credentials(
+                api_url=api_url,
+                access_token=data["access_token"],
+                refresh_token=data["refresh_token"],
+                expires_at=expires_at.isoformat(),
+            )
+
+            # Persist URL + tokens to CWD's .env as well so isolated scratch
+            # directories can carry unattended sessions without changing a
+            # user's active global CLI target.
             try:
                 _write_env_url(api_url)
                 _upsert_env_vars(

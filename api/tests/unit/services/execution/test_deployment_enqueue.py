@@ -1,31 +1,11 @@
 from contextlib import asynccontextmanager
-import sys
 from types import SimpleNamespace
-from types import ModuleType
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
-sys.modules.setdefault(
-    "opentelemetry",
-    SimpleNamespace(trace=SimpleNamespace(get_tracer=lambda _name: SimpleNamespace())),
-)
-rabbitmq = ModuleType("src.jobs.rabbitmq")
-
-
-async def _unused_publish(*_args, **_kwargs):
-    return None
-
-
-rabbitmq.publish_message = _unused_publish
-sys.modules.setdefault("src.jobs.rabbitmq", rabbitmq)
-sys.modules.setdefault(
-    "opentelemetry.trace",
-    SimpleNamespace(get_tracer=lambda _name: SimpleNamespace()),
-)
-
-from src.services.execution.async_executor import enqueue_workflow_execution  # noqa: E402
+from src.services.execution.async_executor import enqueue_workflow_execution
 
 
 @pytest.mark.asyncio
@@ -68,6 +48,8 @@ async def test_queue_failure_leaves_committed_durable_deployment_pin(monkeypatch
         name="User",
         email="user@example.com",
         startup=None,
+        form_inputs={},
+        embed=None,
         is_platform_admin=False,
     )
 

@@ -302,6 +302,12 @@ async def test_set_provider_configs_write_expected_keys() -> None:
 @pytest.mark.asyncio
 async def test_delete_provider_config_selects_provider_keys() -> None:
     service = OAuthConfigService(db=AsyncMock())
+    service.get_login_preference = AsyncMock(
+        return_value=SimpleNamespace(
+            auto_redirect_to_sso=False,
+            default_sso_provider=None,
+        )
+    )
     deleted = []
 
     async def delete_keys(keys):

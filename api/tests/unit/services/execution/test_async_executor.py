@@ -49,6 +49,8 @@ async def test_publish_pending_writes_redis_then_publishes():
             user_email="n@e",
             form_id=None,
             startup=None,
+            form_inputs={"field": "value"},
+            embed={"ticket_id": "1001"},
             api_key_id=None,
             sync=False,
             is_platform_admin=False,
@@ -60,6 +62,12 @@ async def test_publish_pending_writes_redis_then_publishes():
     redis.set_pending_execution.assert_awaited_once()
     assert redis.set_pending_execution.await_args.kwargs["is_provider_org"] is False
     assert redis.set_pending_execution.await_args.kwargs["is_external"] is True
+    assert redis.set_pending_execution.await_args.kwargs["form_inputs"] == {
+        "field": "value"
+    }
+    assert redis.set_pending_execution.await_args.kwargs["embed"] == {
+        "ticket_id": "1001"
+    }
     q.assert_awaited_once_with("e1")
     pub.assert_awaited_once()
     queue_name, message = pub.await_args.args
@@ -87,6 +95,8 @@ async def test_publish_pending_emits_enqueue_span(monkeypatch):
             user_email="n@e",
             form_id=None,
             startup=None,
+            form_inputs={},
+            embed={},
             api_key_id=None,
             sync=True,
             is_platform_admin=False,
@@ -127,6 +137,8 @@ async def test_publish_pending_marks_enqueue_span_failed(monkeypatch):
                 user_email="n@e",
                 form_id=None,
                 startup=None,
+                form_inputs={},
+                embed={},
                 api_key_id=None,
                 sync=False,
                 is_platform_admin=False,
@@ -156,6 +168,8 @@ async def test_publish_pending_includes_file_path_when_present():
             user_email="",
             form_id=None,
             startup=None,
+            form_inputs={},
+            embed={},
             api_key_id=None,
             sync=True,
             is_platform_admin=False,

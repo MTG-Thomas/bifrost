@@ -495,6 +495,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
         form_id = pending.get("form_id")
         api_key_id = pending.get("api_key_id")  # Workflow ID whose API key triggered this
         startup = pending.get("startup")  # Launch workflow results
+        form_inputs = pending.get("form_inputs", {})
+        embed = pending.get("embed", {})
         event_data = pending.get("event")  # EventContext dict if event-triggered
 
         # Determine if this is a code or workflow execution
@@ -800,6 +802,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "is_provider_org": pending.get("is_provider_org", False),
                 "is_external": pending.get("is_external", False),
                 "startup": startup,  # Launch workflow results (available via context.startup)
+                "form_inputs": form_inputs,
+                "embed": embed,
                 "roi": {
                     "time_saved": roi_time_saved,
                     "value": roi_value,

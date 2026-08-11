@@ -17,13 +17,26 @@ vi.mock("@/services/auth", async () => {
 		);
 	return {
 		...actual,
+		getAuthStatus: vi.fn(async () => ({
+			needs_setup: false,
+			password_login_enabled: true,
+			mfa_required_for_password: false,
+			oauth_providers: [
+				{
+					name: "microsoft",
+					display_name: "Microsoft",
+					icon: "microsoft",
+				},
+			],
+			auto_redirect_to_sso: false,
+			default_sso_provider: null,
+		})),
 		getOAuthProviders: vi.fn(async () => [
 			{ name: "microsoft", display_name: "Microsoft", icon: "microsoft" },
 		]),
 		initOAuth,
 	};
 });
-
 vi.mock("@/services/passkeys", () => ({
 	supportsPasskeys: () => false,
 }));

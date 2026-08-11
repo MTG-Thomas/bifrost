@@ -88,7 +88,7 @@ def test_get_mcp_asgi_app_leaves_cache_empty_after_factory_failure(
 
 
 @pytest.mark.asyncio
-async def test_app_lifespan_runs_startup_reconciliation_and_shutdown(
+async def test_app_lifespan_seeds_policy_rules_and_shuts_down(
     monkeypatch,
     caplog,
 ):
@@ -97,24 +97,9 @@ async def test_app_lifespan_runs_startup_reconciliation_and_shutdown(
         default_user_password="secret",
         environment="unit",
     )
-    deploy_db = SimpleNamespace(commit=AsyncMock())
     policy_db = SimpleNamespace(commit=AsyncMock())
-    reconcile_db = SimpleNamespace(commit=AsyncMock())
-    session_factory = _SessionFactory(
-        [
-            _AsyncContext(deploy_db),
-            _AsyncContext(policy_db),
-            _AsyncContext(reconcile_db),
-        ]
-    )
+    session_factory = _SessionFactory([_AsyncContext(policy_db)])
     policy_service = SimpleNamespace(seed_builtin_admin_bypass=AsyncMock())
-    created_tasks = []
-    create_task = main.asyncio.create_task
-
-    def capture_task(coro):
-        task = create_task(coro)
-        created_tasks.append(task)
-        return task
 
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(main, "configure_opentelemetry", Mock())
@@ -125,42 +110,29 @@ async def test_app_lifespan_runs_startup_reconciliation_and_shutdown(
     )
     monkeypatch.setattr(main, "register_dynamic_workflow_endpoints", AsyncMock())
     monkeypatch.setattr(main, "create_default_user", AsyncMock())
-    monkeypatch.setattr("src.core.database.get_session_factory", lambda: session_factory)
-    monkeypatch.setattr(
-        "src.routers.solutions.reconcile_orphaned_deploy_jobs",
-        AsyncMock(return_value=2),
-    )
+    monkeypatch.setattr(main, "get_session_factory", lambda: session_factory)
     monkeypatch.setattr(
         "src.services.policy_rule_service.PolicyRuleService",
         lambda db: policy_service,
     )
-    monkeypatch.setattr(
-        "src.services.file_index_reconciler.reconcile_file_index",
-        AsyncMock(return_value={"added": 1}),
-    )
-    monkeypatch.setattr(main.asyncio, "create_task", capture_task)
     monkeypatch.setattr(main.pubsub_manager, "close", AsyncMock())
     monkeypatch.setattr(main, "close_health_check_clients", AsyncMock())
     monkeypatch.setattr(main, "close_db", AsyncMock())
 
     with caplog.at_level("INFO", logger="src.main"):
         async with main.app_lifespan(SimpleNamespace()):
-            assert len(created_tasks) == 1
-            await created_tasks[0]
+            pass
 
     main.configure_opentelemetry.assert_called_once_with("bifrost-api")
     main.init_db.assert_awaited_once_with()
     main.register_dynamic_workflow_endpoints.assert_awaited_once()
     main.create_default_user.assert_awaited_once_with()
-    deploy_db.commit.assert_awaited_once_with()
     policy_service.seed_builtin_admin_bypass.assert_awaited_once_with()
     policy_db.commit.assert_awaited_once_with()
-    reconcile_db.commit.assert_awaited_once_with()
     main.pubsub_manager.close.assert_awaited_once_with()
     main.close_health_check_clients.assert_awaited_once_with()
     main.close_db.assert_awaited_once_with()
-    assert "Marked 2 orphaned solution deploy job(s) as failed" in caplog.text
-    assert "File index reconciliation complete: {'added': 1}" in caplog.text
+    assert "Built-in policy rules seeded" in caplog.text
     assert "Bifrost API shutdown complete" in caplog.text
 
 
@@ -171,14 +143,6 @@ async def test_app_lifespan_logs_optional_startup_failures(monkeypatch, caplog):
         default_user_password="",
         environment="unit",
     )
-    created_tasks = []
-    create_task = main.asyncio.create_task
-
-    def capture_task(coro):
-        task = create_task(coro)
-        created_tasks.append(task)
-        return task
-
     def failing_session_factory():
         raise RuntimeError("session factory offline")
 
@@ -190,20 +154,16 @@ async def test_app_lifespan_logs_optional_startup_failures(monkeypatch, caplog):
         Mock(),
     )
     monkeypatch.setattr(main, "register_dynamic_workflow_endpoints", AsyncMock())
-    monkeypatch.setattr("src.core.database.get_session_factory", failing_session_factory)
-    monkeypatch.setattr(main.asyncio, "create_task", capture_task)
+    monkeypatch.setattr(main, "get_session_factory", failing_session_factory)
     monkeypatch.setattr(main.pubsub_manager, "close", AsyncMock())
     monkeypatch.setattr(main, "close_health_check_clients", AsyncMock())
     monkeypatch.setattr(main, "close_db", AsyncMock())
 
     with caplog.at_level("WARNING", logger="src.main"):
         async with main.app_lifespan(SimpleNamespace()):
-            assert len(created_tasks) == 1
-            await created_tasks[0]
+            pass
 
-    assert "Solution deploy job reconciliation failed: session factory offline" in caplog.text
     assert "Built-in policy rule seeding failed: session factory offline" in caplog.text
-    assert "File index reconciliation failed: session factory offline" in caplog.text
     main.close_db.assert_awaited_once_with()
 
 

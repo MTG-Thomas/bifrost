@@ -10,12 +10,14 @@ import uuid
 from uuid import UUID
 
 import pytest
+from sqlalchemy import delete
 
 from src.models.orm.agents import Agent
 from src.models.orm.applications import Application
 from src.models.orm.custom_claims import CustomClaim
 from src.models.orm.file_metadata import FileMetadata
 from src.models.orm.forms import Form
+from src.models.orm.solutions import Solution
 from src.models.orm.tables import Table
 from src.models.orm.workflows import Workflow
 
@@ -76,18 +78,27 @@ async def test_solution_list_includes_entity_counts(e2e_client, platform_admin, 
     )
     await db_session.commit()
 
-    listed = e2e_client.get("/api/solutions", headers=platform_admin.headers)
-    assert listed.status_code == 200, listed.text
-    solution = next(
-        item for item in listed.json()["solutions"] if item["id"] == str(solution_id)
-    )
+    try:
+        listed = e2e_client.get("/api/solutions", headers=platform_admin.headers)
+        assert listed.status_code == 200, listed.text
+        solution = next(
+            item
+            for item in listed.json()["solutions"]
+            if item["id"] == str(solution_id)
+        )
 
-    assert solution["entity_counts"] == {
-        "workflows": 1,
-        "apps": 1,
-        "forms": 1,
-        "agents": 1,
-        "tables": 1,
-        "claims": 1,
-        "files": 1,
-    }
+        assert solution["entity_counts"] == {
+            "workflows": 1,
+            "apps": 1,
+            "forms": 1,
+            "agents": 1,
+            "tables": 1,
+            "claims": 1,
+            "files": 1,
+        }
+    finally:
+        # The global solution and all counted entities are test-owned. Leaving
+        # them behind makes later manifest validation see a dangling global
+        # claim after other solution fixtures mutate shared state.
+        await db_session.execute(delete(Solution).where(Solution.id == solution_id))
+        await db_session.commit()

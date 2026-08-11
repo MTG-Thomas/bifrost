@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -27,23 +26,8 @@ class FakeApscheduler:
     def shutdown(self, *, wait: bool) -> None:
         self.shutdown_calls.append(wait)
 
-
-class FakeListener:
-    instances: list["FakeListener"] = []
-
-    def __init__(self, *, redis_url, channels, on_message) -> None:
-        self.redis_url = redis_url
-        self.channels = channels
-        self.on_message = on_message
-        self.started = 0
-        self.stopped = 0
-        self.__class__.instances.append(self)
-
-    async def start(self) -> None:
-        self.started += 1
-
-    async def stop(self) -> None:
-        self.stopped += 1
+    def get_job(self, _task_id: str):
+        return None
 
 
 @pytest.fixture
@@ -63,26 +47,32 @@ def scheduler(monkeypatch: pytest.MonkeyPatch, settings: SimpleNamespace):
 
 
 @pytest.mark.asyncio
-async def test_start_initializes_services_and_waits_for_shutdown(
+async def test_start_initializes_control_loops_and_waits_for_shutdown(
     monkeypatch: pytest.MonkeyPatch,
     scheduler,
 ) -> None:
     init_db = AsyncMock()
     monkeypatch.setattr(scheduler_main, "init_db", init_db)
+    monkeypatch.setattr(scheduler_main, "close_db", AsyncMock())
+    monkeypatch.setattr(scheduler_main, "remove_scheduler_replica", AsyncMock())
+    leadership_gate = scheduler_main.asyncio.Event()
 
-    async def start_scheduler() -> None:
-        return None
+    async def leadership_loop() -> None:
+        await leadership_gate.wait()
 
-    async def start_listener() -> None:
+    async def diagnostics_loop() -> None:
         scheduler._shutdown_event.set()
 
-    scheduler._start_scheduler = start_scheduler  # type: ignore[method-assign]
-    scheduler._start_pubsub_listener = start_listener  # type: ignore[method-assign]
+    scheduler._job_slots = 0
+    scheduler._leadership_loop = leadership_loop  # type: ignore[method-assign]
+    scheduler._diagnostics_heartbeat_loop = diagnostics_loop  # type: ignore[method-assign]
+    monkeypatch.setattr(scheduler_main, "heartbeat_loop", AsyncMock())
 
     await scheduler.start()
 
     init_db.assert_awaited_once()
     assert scheduler.running is True
+    await scheduler.stop()
 
 
 @pytest.mark.asyncio
@@ -92,6 +82,8 @@ async def test_start_scheduler_adds_core_jobs_and_starts_scheduler(
 ) -> None:
     FakeApscheduler.instances = []
     monkeypatch.setattr(scheduler_main, "AsyncIOScheduler", FakeApscheduler)
+    publish_states = AsyncMock()
+    monkeypatch.setattr(scheduler_main, "publish_task_states", publish_states)
 
     await scheduler._start_scheduler()
 
@@ -108,47 +100,6 @@ async def test_start_scheduler_adds_core_jobs_and_starts_scheduler(
     assert promoter["trigger"].interval.total_seconds() == 7
 
 
-@pytest.mark.asyncio
-async def test_start_pubsub_listener_uses_expected_channels(
-    monkeypatch: pytest.MonkeyPatch,
-    scheduler,
-) -> None:
-    FakeListener.instances = []
-    monkeypatch.setattr(scheduler_main, "ResilientPubSubListener", FakeListener)
-
-    await scheduler._start_pubsub_listener()
-
-    listener = FakeListener.instances[0]
-    assert listener.redis_url == "redis://example/0"
-    assert listener.channels == [
-        "bifrost:scheduler:git-op",
-        "bifrost:scheduler:reimport",
-        "bifrost:scheduler:embedding-reindex",
-    ]
-    assert listener.on_message == scheduler._handle_pubsub_message
-    assert listener.started == 1
-    assert scheduler._pubsub_listener is listener
-
-
-@pytest.mark.asyncio
-async def test_handle_pubsub_message_dispatches_known_channels(scheduler) -> None:
-    scheduler._handle_git_operation = AsyncMock()  # type: ignore[method-assign]
-    scheduler._handle_reimport = AsyncMock()  # type: ignore[method-assign]
-    scheduler._handle_embedding_reindex = AsyncMock()  # type: ignore[method-assign]
-
-    await scheduler._handle_pubsub_message("bifrost:scheduler:git-op", {"jobId": "git"})
-    await scheduler._handle_pubsub_message("bifrost:scheduler:reimport", {"job_id": "reimport"})
-    await scheduler._handle_pubsub_message(
-        "bifrost:scheduler:embedding-reindex",
-        {"notification_id": "note"},
-    )
-    await scheduler._handle_pubsub_message("unknown", {})
-
-    scheduler._handle_git_operation.assert_awaited_once_with({"jobId": "git"})
-    scheduler._handle_reimport.assert_awaited_once_with({"job_id": "reimport"})
-    scheduler._handle_embedding_reindex.assert_awaited_once_with({"notification_id": "note"})
-
-
 def test_build_clone_url_from_config_handles_github_and_owner_repo(scheduler) -> None:
     assert scheduler._build_clone_url_from_config(
         SimpleNamespace(
@@ -159,88 +110,6 @@ def test_build_clone_url_from_config_handles_github_and_owner_repo(scheduler) ->
     assert scheduler._build_clone_url_from_config(
         SimpleNamespace(repo_url="MTG-Thomas/bifrost", token="token")
     ) == "https://x-access-token:token@github.com/MTG-Thomas/bifrost.git"
-
-
-@pytest.mark.asyncio
-async def test_handle_embedding_reindex_requires_notification_id(scheduler) -> None:
-    await scheduler._handle_embedding_reindex({})
-
-
-@pytest.mark.asyncio
-async def test_handle_reimport_stores_success_and_failure_results(
-    monkeypatch: pytest.MonkeyPatch,
-    scheduler,
-) -> None:
-    redis = AsyncMock()
-
-    class FakeSyncService:
-        def __init__(self, **_kwargs) -> None:
-            return None
-
-        async def reimport_from_repo(self) -> int:
-            return 7
-
-    class FakeDbContext:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-    monkeypatch.setattr(scheduler_main, "get_db_context", lambda: FakeDbContext())
-    monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: redis)
-    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", FakeSyncService)
-
-    await scheduler._handle_reimport({"job_id": "job-1"})
-
-    redis.setex.assert_awaited_once()
-    assert redis.setex.await_args.args[:2] == ("bifrost:job:job-1", 300)
-    payload = json.loads(redis.setex.await_args.args[2])
-    assert payload["status"] == "success"
-    assert payload["entities_imported"] == 7
-
-    class FailingSyncService(FakeSyncService):
-        async def reimport_from_repo(self) -> int:
-            raise RuntimeError("repo unavailable")
-
-    redis.setex.reset_mock()
-    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", FailingSyncService)
-
-    await scheduler._handle_reimport({"job_id": "job-2"})
-
-    payload = json.loads(redis.setex.await_args.args[2])
-    assert payload == {"status": "failed", "error": "repo unavailable"}
-
-
-@pytest.mark.asyncio
-async def test_handle_reimport_tolerates_redis_result_storage_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    scheduler,
-) -> None:
-    redis = AsyncMock()
-    redis.setex.side_effect = RuntimeError("redis down")
-
-    class FakeSyncService:
-        def __init__(self, **_kwargs) -> None:
-            return None
-
-        async def reimport_from_repo(self) -> int:
-            return 1
-
-    class FakeDbContext:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-    monkeypatch.setattr(scheduler_main, "get_db_context", lambda: FakeDbContext())
-    monkeypatch.setattr("src.core.redis_client.get_redis_client", lambda: redis)
-    monkeypatch.setattr("src.services.github_sync.GitHubSyncService", FakeSyncService)
-
-    await scheduler._handle_reimport({"job_id": "job-redis"})
-
-    redis.setex.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -351,23 +220,18 @@ async def test_handle_git_operation_status_unknown_and_exception_paths(
 
 
 @pytest.mark.asyncio
-async def test_stop_stops_listener_scheduler_and_db(
+async def test_stop_stops_scheduler_and_db(
     monkeypatch: pytest.MonkeyPatch,
     scheduler,
 ) -> None:
     close_db = AsyncMock()
     monkeypatch.setattr(scheduler_main, "close_db", close_db)
-    listener = FakeListener(redis_url="redis://example/0", channels=[], on_message=AsyncMock())
-    apscheduler = FakeApscheduler()
+    monkeypatch.setattr(scheduler_main, "remove_scheduler_replica", AsyncMock())
     scheduler.running = True
-    scheduler._pubsub_listener = listener
-    scheduler._scheduler = apscheduler
 
     await scheduler.stop()
 
     assert scheduler.running is False
-    assert listener.stopped == 1
-    assert apscheduler.shutdown_calls == [False]
     close_db.assert_awaited_once()
     assert scheduler._shutdown_event.is_set()
 

@@ -159,6 +159,16 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
         )
     ).scalar_one()
     assert admin.organization_id is not None
+    storage = RepoStorage()
+    original_files = {
+        path: await storage.read(path) for path in await storage.list()
+    }
+    # Keep the suite's workspace sources in place so the real Git preflight can
+    # validate manifest references. Replace only repository metadata, then put
+    # the exact prior storage state back in the cleanup block below.
+    for path in original_files:
+        if path.startswith(".git/"):
+            await storage.delete(path)
     await save_github_config(
         db_session,
         admin.organization_id,
@@ -173,9 +183,8 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
         config.set_value("user", "email", "e2e@example.test")
     seed = tmp_path / "README.md"
     seed.write_text("e2e git closure seed\n")
-    repo.index.add([seed.name])
+    repo.git.add(A=True)
     repo.index.commit("seed e2e repository")
-    storage = RepoStorage()
     for repo_path in tmp_path.rglob("*"):
         if repo_path.is_file():
             relative = repo_path.relative_to(tmp_path).as_posix()
@@ -217,3 +226,7 @@ async def test_workspace_repo_git_closure_retry_succeeds_without_reactivation(
             )
         )
         await db_session.commit()
+        for path in await storage.list():
+            await storage.delete(path)
+        for path, content in original_files.items():
+            await storage.write(path, content)
