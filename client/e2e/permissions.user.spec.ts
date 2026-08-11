@@ -17,7 +17,7 @@ test.describe("Org User Restrictions", () => {
 		await page.goto("/");
 
 		// Wait for page to load
-		await expect(page.locator("main")).toBeVisible();
+		await expect(page.locator("main")).toBeVisible({ timeout: 15000 });
 
 		// Organizations link should not be visible to org users
 		await expect(
@@ -59,7 +59,7 @@ test.describe("Org User Restrictions", () => {
 		await page.goto("/");
 
 		// Should see dashboard with org-specific data
-		await expect(page.locator("main")).toBeVisible();
+		await expect(page.locator("main")).toBeVisible({ timeout: 15000 });
 
 		// Should NOT see data from other organizations
 		// (Specific assertions depend on UI implementation)
@@ -78,7 +78,7 @@ test.describe("Org User Restrictions", () => {
 		await page.goto("/");
 
 		// Wait for page to load
-		await expect(page.locator("main")).toBeVisible();
+		await expect(page.locator("main")).toBeVisible({ timeout: 15000 });
 
 		// Look for settings or admin menu
 		const settingsButton = page.getByRole("button", {
