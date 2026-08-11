@@ -162,8 +162,20 @@ class GitRepoManager:
 
         storage = RepoStorage(self._settings)
         paths = await storage.list()
+        remote_files = {path for path in paths if not path.endswith("/")}
+        for path in remote_files:
+            self._safe_local_path(target, path)
         semaphore = asyncio.Semaphore(OBJECT_STORAGE_CONCURRENCY)
         downloaded_hashes: dict[str, str] = {}
+
+        local_files = {
+            path.relative_to(target).as_posix(): path
+            for path in target.rglob("*")
+            if path.is_file() or path.is_symlink()
+        }
+
+        async def delete_stale_local(path: Path) -> None:
+            await asyncio.to_thread(path.unlink)
 
         async def download(path: str) -> None:
             destination = self._safe_local_path(target, path)
@@ -179,8 +191,11 @@ class GitRepoManager:
             downloaded_hashes[path] = content_hash
 
         await self._run_transfers(
-            download(path) for path in paths if not path.endswith("/")
+            delete_stale_local(path)
+            for relative_path, path in local_files.items()
+            if relative_path not in remote_files
         )
+        await self._run_transfers(download(path) for path in remote_files)
         self._downloaded_hashes = downloaded_hashes
         logger.info(
             "sync_down: object storage -> %s (%d files)", target, len(downloaded_hashes)
