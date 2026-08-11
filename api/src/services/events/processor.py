@@ -458,6 +458,7 @@ class EventProcessor:
             return Deliver(
                 data=deliver.data,
                 event_type=deliver.event_type,
+                event_id=event.id,
             )
 
         # Create deliveries and queue executions
@@ -506,6 +507,7 @@ class EventProcessor:
         return Deliver(
             data=deliver.data,
             event_type=deliver.event_type,
+            event_id=event.id,
         )
 
     async def _broadcast_event_update(
