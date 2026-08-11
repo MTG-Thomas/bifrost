@@ -25,12 +25,14 @@ def test_exec_from_db_sets_module_dunders_and_exports_function() -> None:
         "VALUE = 41\n\ndef run():\n    return VALUE + 1\n",
         "features/tickets/workflows/run_ticket.py",
         "run",
+        workspace_generation="generation-1",
     )
 
     try:
         assert module.__name__ == "features.tickets.workflows.run_ticket"
         assert module.__file__ == "features/tickets/workflows/run_ticket.py"
         assert module.__package__ == "features.tickets.workflows"
+        assert module.__workspace_generation__ == "generation-1"
         assert module.run() == 42
         assert sys.modules["features.tickets.workflows.run_ticket"] is module
     finally:

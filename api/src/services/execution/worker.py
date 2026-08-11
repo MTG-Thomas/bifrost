@@ -118,6 +118,35 @@ def _queue_wait_ms(created_at: str | None, now: datetime | None = None) -> int |
     return max(0, int((observed_at - enqueued_at).total_seconds() * 1000))
 
 
+def _load_workspace_workflow(
+    *,
+    file_path: str,
+    function_name: str,
+    workspace_generation: str | None,
+) -> tuple[Any, Any, str | None, str | None]:
+    """Load one entry workflow only while its pinned generation remains current."""
+    from src.core.module_cache_sync import (
+        assert_workspace_generation,
+        get_module_sync,
+    )
+    from src.services.execution.module_loader import load_workflow_from_db
+
+    assert_workspace_generation(workspace_generation)
+    cached = get_module_sync(file_path)
+    if not cached:
+        return None, None, None, None
+
+    loaded_code = cached["content"]
+    workflow_func, metadata, load_error = load_workflow_from_db(
+        code=loaded_code,
+        path=file_path,
+        function_name=function_name,
+        workspace_generation=workspace_generation,
+    )
+    assert_workspace_generation(workspace_generation)
+    return workflow_func, metadata, load_error, loaded_code
+
+
 def _setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
     def handle_sigterm(signum, frame):
@@ -186,7 +215,14 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     # loads. With no solution_id this is a no-op (plain _repo/ behavior). The
     # finally below always clears it so a forked worker reused for the next
     # execution never inherits a stale root. See module_cache_sync.
-    from src.core.module_cache_sync import clear_solution_context, set_solution_context
+    from src.core.module_cache_sync import (
+        clear_solution_context,
+        clear_workspace_generation_context,
+        set_solution_context,
+        set_workspace_generation_context,
+    )
+
+    set_workspace_generation_context(context_data.get("workspace_generation"))
 
     _exec_solution_id = context_data.get("solution_id")
     if _exec_solution_id:
@@ -244,8 +280,6 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         is_script = bool(context_data.get("code"))
 
         if not is_script:
-            from src.services.execution.module_loader import load_workflow_from_db
-
             name = context_data["name"]
             function_name = context_data.get("function_name")
             file_path = context_data.get("file_path")
@@ -256,16 +290,19 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
             # Consumer provides metadata only; worker is self-sufficient for code loading.
             if function_name and file_path:
                 try:
-                    from src.core.module_cache_sync import get_module_sync
-
-                    cached = get_module_sync(file_path)
-                    if cached:
-                        loaded_code = cached["content"]
-                        workflow_func, metadata, load_error = load_workflow_from_db(
-                            code=loaded_code,
-                            path=file_path,
-                            function_name=function_name,
-                        )
+                    (
+                        workflow_func,
+                        metadata,
+                        load_error,
+                        loaded_code,
+                    ) = _load_workspace_workflow(
+                        file_path=file_path,
+                        function_name=function_name,
+                        workspace_generation=context_data.get(
+                            "workspace_generation"
+                        ),
+                    )
+                    if loaded_code:
                         logger.info(
                             f"Loaded workflow '{name}' from cache (path={file_path})"
                         )
@@ -297,6 +334,10 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
                     raise RuntimeError(
                         f"deployment source integrity mismatch for {file_path}"
                     )
+
+            from src.core.module_cache_sync import assert_workspace_generation
+
+            assert_workspace_generation(context_data.get("workspace_generation"))
 
             if workflow_func is None:
                 metrics = _capture_metrics(start_rss, start_utime, start_stime)
@@ -411,6 +452,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         # Always clear the solution import root — a forked worker is reused for
         # later executions and must not inherit this one's root.
         clear_solution_context()
+        clear_workspace_generation_context()
 
 
 async def worker_main(execution_id: str):
@@ -452,6 +494,13 @@ async def worker_main(execution_id: str):
                 "metrics": None,
             })
             return
+
+        if not context_data.get("workspace_generation"):
+            from src.core.module_cache_sync import wait_for_workspace_generation_sync
+
+            context_data["workspace_generation"] = await asyncio.to_thread(
+                wait_for_workspace_generation_sync
+            )
 
         # Run the execution
         result = await _run_execution(execution_id, context_data)

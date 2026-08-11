@@ -12,6 +12,7 @@ from src.models.orm.users import User
 from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 from src.services.github_config import save_github_config
 from src.services.repo_storage import RepoStorage
+from tests.e2e.conftest import execute_workflow_sync, write_and_register
 
 
 @pytest.mark.e2e
@@ -84,6 +85,105 @@ def test_workspace_repo_changeset_stages_validates_and_activates_atomically(
         import asyncio
 
         asyncio.run(RepoStorage().delete(path))
+
+
+@pytest.mark.e2e
+def test_python_activation_invalidates_worker_import_generation_immediately(
+    e2e_client, platform_admin
+):
+    """A dependent workflow must see one coherent revision after activation."""
+    suffix = uuid4().hex
+    scope = f"test_generation_{suffix}"
+    helper_path = f"{scope}/helper.py"
+    workflow_path = f"{scope}/workflow.py"
+    function_name = f"generation_probe_{suffix}"
+    headers = platform_admin.headers
+    helper_v1 = 'def revision():\n    return "revision-a"\n'
+    helper_v2 = 'def revision():\n    return "revision-b"\n'
+    workflow_source = f'''from bifrost import workflow
+from {scope}.helper import revision
+
+@workflow(name="{function_name}", execution_mode="async")
+async def {function_name}() -> dict:
+    return {{"revision": revision()}}
+'''
+
+    try:
+        helper_created = e2e_client.put(
+            "/api/files/editor/content",
+            headers=headers,
+            json={"path": helper_path, "content": helper_v1, "encoding": "utf-8"},
+        )
+        assert helper_created.status_code in {200, 201}, helper_created.text
+        registered = write_and_register(
+            e2e_client,
+            headers,
+            workflow_path,
+            workflow_source,
+            function_name,
+        )
+
+        first = execute_workflow_sync(
+            e2e_client, headers, registered["id"], max_wait=30.0
+        )
+        assert first["status"] == "Success", first
+        assert first["result"] == {"revision": "revision-a"}
+        first_generation = (first.get("execution_context") or {}).get(
+            "workspace_generation"
+        )
+        assert first_generation
+
+        state = e2e_client.get(
+            "/api/workspace-repo-changesets/state",
+            headers=headers,
+            params={"scope": scope},
+        )
+        assert state.status_code == 200, state.text
+        started = e2e_client.post(
+            "/api/workspace-repo-changesets",
+            headers=headers,
+            json={"scope": scope, "base_revision": state.json()["revision"]},
+        )
+        assert started.status_code == 201, started.text
+        changeset_id = started.json()["id"]
+        staged = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/files",
+            headers=headers,
+            json={
+                "path": helper_path,
+                "operation": "write",
+                "content_base64": base64.b64encode(helper_v2.encode()).decode(),
+            },
+        )
+        assert staged.status_code == 200, staged.text
+        validated = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/validate",
+            headers=headers,
+        )
+        assert validated.status_code == 200, validated.text
+        assert validated.json()["valid"] is True, validated.text
+        activated = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/activate",
+            headers=headers,
+            json={},
+        )
+        assert activated.status_code == 200, activated.text
+
+        second = execute_workflow_sync(
+            e2e_client, headers, registered["id"], max_wait=30.0
+        )
+        assert second["status"] == "Success", second
+        assert second["result"] == {"revision": "revision-b"}
+        second_generation = (second.get("execution_context") or {}).get(
+            "workspace_generation"
+        )
+        assert second_generation
+        assert second_generation != first_generation
+    finally:
+        e2e_client.delete(
+            f"/api/files/editor?path={workflow_path}", headers=headers
+        )
+        e2e_client.delete(f"/api/files/editor?path={helper_path}", headers=headers)
 
 
 @pytest.mark.e2e

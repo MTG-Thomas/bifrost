@@ -62,6 +62,16 @@ class RequirementsInstallResult:
         return not self.failed
 
 
+@dataclass(frozen=True)
+class WorkspaceModuleRefresh:
+    """Evidence from the execution-start workspace coherence check."""
+
+    generation: str
+    cleared: int
+    kept: int
+    generation_mismatch: bool
+
+
 def _parse_requirement_lines(content: str) -> list[str]:
     """Return real package specs (non-comment, non-blank, non-option lines)."""
     packages, _options = _parse_requirements(content)
@@ -180,24 +190,11 @@ def install_requirements() -> RequirementsInstallResult:
     return result
 
 
-def _clear_workspace_modules() -> None:
-    """
-    Clear workspace modules from sys.modules only if their content changed.
-
-    Called before each execution. For each workspace module already loaded,
-    checks the content hash against Redis. If unchanged, the module stays
-    in sys.modules and the next `import` is a no-op. If changed (or if the
-    hash check fails), the module is evicted so it gets re-fetched.
-
-    This avoids re-exec'ing large unchanged modules on every execution.
-    """
-    from src.services.execution.virtual_import import VirtualModuleLoader, NamespacePackageLoader
-    from src.core.module_cache_sync import get_module_index_sync, get_module_sync
-
-    # Build set of known workspace module names from the Redis module index.
-    module_index = get_module_index_sync()
+def _workspace_module_maps(
+    module_index: set[str],
+) -> tuple[set[str], dict[str, str]]:
+    """Map cached workspace paths to import names and namespace prefixes."""
     workspace_names: set[str] = set()
-    # Also build a map from module name -> file path for hash checking
     name_to_path: dict[str, str] = {}
     for path in module_index:
         mod_name = path.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
@@ -205,98 +202,175 @@ def _clear_workspace_modules() -> None:
         for i in range(1, len(parts) + 1):
             prefix = ".".join(parts[:i])
             workspace_names.add(prefix)
-        # Map the full module name to its file path
         name_to_path[mod_name] = path
+    return workspace_names, name_to_path
 
-    # Find workspace modules currently loaded
-    workspace_modules = [
-        (name, module) for name, module in sys.modules.items()
-        if module is not None and (
-            (hasattr(module, '__loader__') and isinstance(
-                module.__loader__, (VirtualModuleLoader, NamespacePackageLoader)
-            ))
+
+def _loaded_workspace_modules(
+    workspace_names: set[str],
+    *,
+    virtual_loader: type,
+    namespace_loader: type,
+) -> list[tuple[str, Any]]:
+    """Classify the currently loaded modules owned by workspace source."""
+    return [
+        (name, module)
+        for name, module in list(sys.modules.items())
+        if module is not None
+        and (
+            isinstance(
+                getattr(module, "__loader__", None),
+                (virtual_loader, namespace_loader),
+            )
             or name in workspace_names
         )
     ]
 
-    # Cross-solution isolation note: a VirtualModuleLoader module records its
-    # __file__ as the BARE relative path (modules/foo.py), NOT a _solutions/{id}/-
-    # rooted path — so two installs' same-named modules both cache under the bare
-    # name. The eviction below handles this via the hash check: a solution
-    # module's name maps (through the _repo/-keyed index) to either no path or a
-    # DIFFERENT (_repo/) content hash than the one it loaded with, so it is
-    # cleared and the next import re-resolves within the now-active solution
-    # context. (An earlier _solutions/-prefix force-evict block was dead code —
-    # the prefix never matched — and was removed; this is the real mechanism.)
 
-    # Check each module's hash — only clear if content changed
-    modules_to_clear: list[str] = []
-    modules_kept = 0
+def _workspace_module_assessment(
+    name: str,
+    module: Any,
+    *,
+    current_generation: str,
+    name_to_path: dict[str, str],
+    cached_modules: dict[str, Any],
+    namespace_loader: type,
+) -> tuple[bool, bool]:
+    """Return whether one loaded module is stale and whether its pin mismatched."""
+    if getattr(module, "__workspace_generation__", None) != current_generation:
+        return True, True
 
-    for name, module in workspace_modules:
-        cached_hash = getattr(module, '__content_hash__', None)
+    cached_hash = getattr(module, "__content_hash__", None)
+    if not cached_hash:
+        return (
+            not isinstance(getattr(module, "__loader__", None), namespace_loader),
+            False,
+        )
 
-        if not cached_hash:
-            # No hash stored — could be a namespace package or exec_from_db module.
-            # Namespace packages are kept if any child modules are kept (decided later).
-            # For now, check if this is a namespace package (has __path__ but no __file__).
-            if isinstance(getattr(module, '__loader__', None), NamespacePackageLoader):
-                # Defer — we'll keep it if any children survive
-                continue
-            # exec_from_db module with no hash — always clear
-            modules_to_clear.append(name)
-            continue
+    file_path = name_to_path.get(name)
+    if not file_path:
+        return True, False
 
-        # Look up current hash in Redis
-        file_path = name_to_path.get(name)
-        if not file_path:
-            # Can't map to a file path — clear to be safe
-            modules_to_clear.append(name)
-            continue
+    cached = cached_modules.get(file_path)
+    return not cached or cached.get("hash") != cached_hash, False
 
-        cached = get_module_sync(file_path)
-        if not cached:
-            # Module removed from cache — clear
-            modules_to_clear.append(name)
-            continue
 
-        if cached.get("hash") != cached_hash:
-            # Content changed — clear
-            modules_to_clear.append(name)
-        else:
-            # Unchanged — keep it
-            modules_kept += 1
+def _workspace_cached_modules(
+    workspace_modules: list[tuple[str, Any]],
+    *,
+    current_generation: str,
+    name_to_path: dict[str, str],
+) -> dict[str, Any]:
+    """Batch-fetch hashes needed to validate loaded workspace modules."""
+    paths = [
+        name_to_path[name]
+        for name, module in workspace_modules
+        if getattr(module, "__workspace_generation__", None) == current_generation
+        and getattr(module, "__content_hash__", None)
+        and name in name_to_path
+    ]
+    from src.core.module_cache_sync import get_modules_sync
 
-    # If ANY workspace module changed, clear ALL workspace modules.
-    # Reason: kept modules may hold stale references to cleared modules
-    # via `from X import Y` bindings captured at import time.
-    if modules_to_clear:
-        modules_to_clear = [name for name, _ in workspace_modules]
-        modules_kept = 0
+    return get_modules_sync(paths)
 
-    # Clear namespace packages only if ALL their children were cleared
+
+def _full_workspace_eviction_closure(
+    workspace_modules: list[tuple[str, Any]],
+    stale_names: list[str],
+    *,
+    namespace_loader: type,
+) -> list[str]:
+    """Expand any stale module to the complete loaded workspace import closure."""
+    modules_to_clear = (
+        [name for name, _module in workspace_modules] if stale_names else []
+    )
     cleared_set = set(modules_to_clear)
+    loaded_names = list(sys.modules)
     for name, module in workspace_modules:
-        if not isinstance(getattr(module, '__loader__', None), NamespacePackageLoader):
+        if not isinstance(getattr(module, "__loader__", None), namespace_loader):
             continue
-        # Check if any child module survived (not in cleared_set and still in sys.modules)
+        if name in cleared_set:
+            continue
         prefix = name + "."
         has_surviving_child = any(
-            n.startswith(prefix) and n not in cleared_set
-            for n in sys.modules
+            loaded.startswith(prefix) and loaded not in cleared_set
+            for loaded in loaded_names
         )
         if not has_surviving_child:
+            cleared_set.add(name)
             modules_to_clear.append(name)
+    return modules_to_clear
+
+
+def _clear_workspace_modules() -> WorkspaceModuleRefresh:
+    """Validate the workspace generation and evict any stale import closure."""
+    from src.core.module_cache_sync import (
+        get_module_index_sync,
+        wait_for_workspace_generation_sync,
+    )
+    from src.services.execution.virtual_import import (
+        NamespacePackageLoader,
+        VirtualModuleLoader,
+    )
+
+    current_generation = wait_for_workspace_generation_sync()
+    workspace_names, name_to_path = _workspace_module_maps(
+        get_module_index_sync()
+    )
+    workspace_modules = _loaded_workspace_modules(
+        workspace_names,
+        virtual_loader=VirtualModuleLoader,
+        namespace_loader=NamespacePackageLoader,
+    )
+    cached_modules = _workspace_cached_modules(
+        workspace_modules,
+        current_generation=current_generation,
+        name_to_path=name_to_path,
+    )
+
+    stale_names: list[str] = []
+    modules_kept = 0
+    generation_mismatch = False
+    for name, module in workspace_modules:
+        stale, mismatched = _workspace_module_assessment(
+            name,
+            module,
+            current_generation=current_generation,
+            name_to_path=name_to_path,
+            cached_modules=cached_modules,
+            namespace_loader=NamespacePackageLoader,
+        )
+        generation_mismatch = generation_mismatch or mismatched
+        if stale:
+            stale_names.append(name)
+        elif not isinstance(
+            getattr(module, "__loader__", None), NamespacePackageLoader
+        ):
+            modules_kept += 1
+
+    modules_to_clear = _full_workspace_eviction_closure(
+        workspace_modules,
+        stale_names,
+        namespace_loader=NamespacePackageLoader,
+    )
+    if stale_names:
+        modules_kept = 0
 
     for name in modules_to_clear:
-        if name in sys.modules:
-            del sys.modules[name]
+        sys.modules.pop(name, None)
 
     if modules_to_clear or modules_kept:
         logger.debug(
             f"Workspace modules: cleared={len(modules_to_clear)} kept={modules_kept}"
             + (f" (cleared: {modules_to_clear})" if modules_to_clear else "")
         )
+
+    return WorkspaceModuleRefresh(
+        generation=current_generation,
+        cleared=len(set(modules_to_clear)),
+        kept=modules_kept,
+        generation_mismatch=generation_mismatch,
+    )
 
 
 def _execute_sync(execution_id: str, worker_id: str) -> dict[str, Any]:
@@ -390,11 +464,13 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
                 global_repo_access=bool(context.get("solution_global_repo_access", False)),
             )
     try:
-        _clear_workspace_modules()
+        workspace_refresh = _clear_workspace_modules()
     finally:
         # Credential backend imports must run without Solution namespace probing;
         # otherwise their own API credential lookup can recursively import them.
         clear_solution_context()
+
+    context["workspace_generation"] = workspace_refresh.generation
 
     # 2. Run the execution using existing worker logic
     # This reuses the shared _run_execution() from worker.py
@@ -415,6 +491,13 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
 
         # Capture resource metrics (use worker's metrics if available, else local)
         metrics = result.get("metrics") or _capture_resource_metrics()
+        metrics["workspace_modules_cleared"] = workspace_refresh.cleared
+        metrics["workspace_generation_mismatch"] = (
+            workspace_refresh.generation_mismatch
+        )
+
+        execution_context = dict(result.get("execution_context") or {})
+        execution_context["workspace_generation"] = workspace_refresh.generation
 
         # Overwrite peak_memory_bytes with PSS delta — the memory uniquely
         # attributable to this execution, excluding shared parent pages.
@@ -437,7 +520,7 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
             "metrics": metrics,
             "cached": result.get("cached", False),
             "cache_expires_at": result.get("cache_expires_at"),
-            "execution_context": result.get("execution_context"),
+            "execution_context": execution_context,
             "worker_id": worker_id,
         }
 
