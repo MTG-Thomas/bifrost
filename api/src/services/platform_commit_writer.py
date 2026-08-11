@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import time
 import urllib.parse
@@ -76,7 +75,8 @@ class PlatformCommitResult:
 
 
 class PlatformCommitWriter(Protocol):
-    async def write(self, request: PlatformCommitRequest) -> PlatformCommitResult: ...
+    async def write(self, request: PlatformCommitRequest) -> PlatformCommitResult:
+        raise NotImplementedError
 
 
 def parse_github_repository(repo_url: str) -> tuple[str, str]:
@@ -153,7 +153,11 @@ class GitHubAppCommitWriter:
             (
                 item["oid"]
                 for item in head["history"]
-                if marker in str(item.get("message") or "").splitlines()
+                if marker
+                in {
+                    line.strip()
+                    for line in str(item.get("message") or "").splitlines()
+                }
             ),
             None,
         )
@@ -192,7 +196,9 @@ class GitHubAppCommitWriter:
                 },
             }
         }
-        data = await self._graphql(client, token, self._CREATE_COMMIT, variables)
+        data = await self._graphql(
+            client, token, self._CREATE_COMMIT_MUTATION, variables
+        )
         created = data.get("createCommitOnBranch") or {}
         commit = created.get("commit") or {}
         commit_sha = commit.get("oid")
@@ -231,7 +237,7 @@ class GitHubAppCommitWriter:
         data = await self._graphql(
             client,
             token,
-            self._BRANCH_HEAD,
+            self._BRANCH_HEAD_QUERY,
             {
                 "owner": self.owner,
                 "name": self.repository,
@@ -260,7 +266,7 @@ class GitHubAppCommitWriter:
         data = await self._graphql(
             client,
             token,
-            self._COMMIT_READBACK,
+            self._COMMIT_READBACK_QUERY,
             {
                 "owner": self.owner,
                 "name": self.repository,
@@ -276,6 +282,30 @@ class GitHubAppCommitWriter:
                 "GitHub commit readback did not match the created commit",
                 commit_sha=commit_sha,
             )
+        self._verify_ref_target(ref_target, commit_sha, require_head=require_head)
+        tree_sha = (commit.get("tree") or {}).get("oid")
+        if not tree_sha:
+            raise PlatformCommitError(
+                "GitHub commit tree readback was incomplete", commit_sha=commit_sha
+            )
+        signature_state = self._verified_signature_state(commit, commit_sha)
+        await self._verify_files(
+            client,
+            token,
+            tuple((item.path, item.expected_sha256) for item in request.files),
+            commit_sha,
+            phase="committed tree",
+        )
+        return PlatformCommitResult(
+            commit_sha=commit_sha,
+            tree_sha=str(tree_sha),
+            signature_state=signature_state,
+        )
+
+    @staticmethod
+    def _verify_ref_target(
+        ref_target: dict, commit_sha: str, *, require_head: bool
+    ) -> None:
         reachable = {
             item.get("oid")
             for item in ((ref_target.get("history") or {}).get("nodes") or [])
@@ -290,11 +320,9 @@ class GitHubAppCommitWriter:
                 "previous changeset commit is no longer reachable from the configured branch",
                 commit_sha=commit_sha,
             )
-        tree_sha = (commit.get("tree") or {}).get("oid")
-        if not tree_sha:
-            raise PlatformCommitError(
-                "GitHub commit tree readback was incomplete", commit_sha=commit_sha
-            )
+
+    @staticmethod
+    def _verified_signature_state(commit: dict, commit_sha: str) -> str:
         signature = commit.get("signature") or {}
         if not (
             signature.get("isValid") is True
@@ -306,18 +334,7 @@ class GitHubAppCommitWriter:
                 f"GitHub commit signature is not verified: {state}",
                 commit_sha=commit_sha,
             )
-        await self._verify_files(
-            client,
-            token,
-            tuple((item.path, item.expected_sha256) for item in request.files),
-            commit_sha,
-            phase="committed tree",
-        )
-        return PlatformCommitResult(
-            commit_sha=commit_sha,
-            tree_sha=str(tree_sha),
-            signature_state=str(signature["state"]),
-        )
+        return str(signature["state"])
 
     async def _verify_files(
         self,
@@ -332,7 +349,9 @@ class GitHubAppCommitWriter:
             encoded_path = urllib.parse.quote(path, safe="/")
             response = await client.get(
                 f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
-                headers=self._headers(token),
+                headers=self._headers(
+                    token, accept="application/vnd.github.raw+json"
+                ),
                 params={"ref": ref},
             )
             commit_sha = ref if phase == "committed tree" else None
@@ -343,25 +362,13 @@ class GitHubAppCommitWriter:
                     f"GitHub {phase} expected {path} to be absent",
                     commit_sha=commit_sha,
                 )
-            payload = self._response_json(
-                response,
-                f"read back {phase} file {path}",
-                commit_sha=commit_sha,
-            )
-            content = payload.get("content")
-            if payload.get("type") != "file" or not isinstance(content, str):
+            if response.is_error:
                 raise PlatformCommitError(
-                    f"GitHub {phase} readback for {path} was not a file",
+                    f"GitHub could not read back {phase} file {path}: "
+                    f"HTTP {response.status_code}",
                     commit_sha=commit_sha,
                 )
-            try:
-                raw = base64.b64decode(content, validate=False)
-            except ValueError as exc:
-                raise PlatformCommitError(
-                    f"GitHub returned invalid base64 for {path}",
-                    commit_sha=commit_sha,
-                ) from exc
-            actual = hashlib.sha256(raw).hexdigest()
+            actual = hashlib.sha256(response.content).hexdigest()
             if actual != expected_sha256:
                 raise PlatformCommitError(
                     f"GitHub {phase} hash mismatch for {path}",
@@ -395,9 +402,11 @@ class GitHubAppCommitWriter:
         return data
 
     @staticmethod
-    def _headers(token: str) -> dict[str, str]:
+    def _headers(
+        token: str, *, accept: str = "application/vnd.github+json"
+    ) -> dict[str, str]:
         return {
-            "Accept": "application/vnd.github+json",
+            "Accept": accept,
             "Authorization": f"Bearer {token}",
             "X-GitHub-Api-Version": _GITHUB_API_VERSION,
         }
@@ -428,7 +437,7 @@ class GitHubAppCommitWriter:
             )
         return payload
 
-    _BRANCH_HEAD = """
+    _BRANCH_HEAD_QUERY = """
     query BranchHead($owner: String!, $name: String!, $ref: String!) {
       repository(owner: $owner, name: $name) {
         ref(qualifiedName: $ref) {
@@ -444,7 +453,7 @@ class GitHubAppCommitWriter:
     }
     """
 
-    _CREATE_COMMIT = """
+    _CREATE_COMMIT_MUTATION = """
     mutation CreatePlatformCommit($input: CreateCommitOnBranchInput!) {
       createCommitOnBranch(input: $input) {
         commit { oid }
@@ -453,7 +462,7 @@ class GitHubAppCommitWriter:
     }
     """
 
-    _COMMIT_READBACK = """
+    _COMMIT_READBACK_QUERY = """
     query CommitReadback(
       $owner: String!, $name: String!, $ref: String!, $oid: String!
     ) {

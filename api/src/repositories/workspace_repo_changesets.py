@@ -50,7 +50,7 @@ class WorkspaceRepoChangesetRepository:
             select(WorkspaceRepoChangeset)
             .where(
                 WorkspaceRepoChangeset.organization_id == organization_id,
-                failure_state == "failed",
+                failure_state.in_(("failed", "not_configured")),
                 or_(
                     and_(
                         WorkspaceRepoChangeset.status == "activated",

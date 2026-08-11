@@ -29,6 +29,7 @@ async def test_service_uses_github_app_writer_without_saved_token(monkeypatch):
         constructor_args.append(kwargs)
         return writer
 
+    # _service imports dependencies lazily so test settings remain patchable.
     monkeypatch.setattr("src.services.github_config.get_github_config", get_config)
     monkeypatch.setattr("src.config.get_settings", lambda: settings)
     monkeypatch.setattr(
@@ -59,6 +60,7 @@ async def test_service_does_not_fall_back_to_saved_personal_token(monkeypatch):
         branch="production-live",
     )
     settings = SimpleNamespace(github_app_commit_writer_configured=False)
+    # _service imports dependencies lazily so test settings remain patchable.
     monkeypatch.setattr(
         "src.services.github_config.get_github_config", AsyncMock(return_value=config)
     )

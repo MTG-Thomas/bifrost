@@ -74,6 +74,7 @@ class WorkspaceRepoChangesetService:
         ("activated", "git_closure"),
         ("committed_unpushed", "git_push"),
     }
+    RETRYABLE_GIT_FAILURE_STATES = {"failed", "not_configured"}
 
     def __init__(
         self,
@@ -447,13 +448,29 @@ class WorkspaceRepoChangesetService:
         retry_key = (row.status, str(failure.get("phase") or ""))
         if (
             retry_key not in self.RETRYABLE_GIT_FAILURES
-            or failure.get("state") != "failed"
+            or failure.get("state") not in self.RETRYABLE_GIT_FAILURE_STATES
         ):
             raise ChangesetInvalid(
                 f"changeset in {row.status!r} state does not have a retryable Git closure failure"
             )
-        if not request.commit_message:
-            raise ChangesetInvalid("retrying Git closure requires commit_message")
+        prior_provenance = (
+            failure.get("provenance")
+            if isinstance(failure.get("provenance"), dict)
+            else {}
+        )
+        original_message = prior_provenance.get("commit_message")
+        if not original_message and not request.commit_message:
+            raise ChangesetInvalid(
+                "retrying legacy Git closure requires the original commit_message"
+            )
+        if (
+            original_message
+            and request.commit_message
+            and request.commit_message != original_message
+        ):
+            raise ChangesetInvalid(
+                "retry commit_message must match the original Git closure provenance"
+            )
         if not request.push:
             raise ChangesetInvalid("verified platform Git closure requires push=true")
         return await self._complete_git_closure(
@@ -477,21 +494,6 @@ class WorkspaceRepoChangesetService:
         operator: str,
     ) -> WorkspaceRepoChangesetResponse:
         row = await self._required(changeset_id, for_update=True)
-        if not request.commit_message:
-            return self._response(row)
-        if self.commit_writer is None:
-            row.error = "verified GitHub App commit writer is not configured"
-            row.failure_detail = {
-                "phase": "git_closure",
-                "state": "not_configured",
-                "activation_preserved": True,
-            }
-            await self.db.flush()
-            await self.db.commit()
-            return self._response(row)
-
-        # Leave a durable pending marker before Git. If persisting the outcome
-        # later fails, the active workspace is still explicit and reconcilable.
         prior_failure = (
             row.failure_detail if isinstance(row.failure_detail, dict) else {}
         )
@@ -500,18 +502,33 @@ class WorkspaceRepoChangesetService:
             if isinstance(prior_failure.get("provenance"), dict)
             else {}
         )
+        commit_message = prior_provenance.get("commit_message") or request.commit_message
+        if not commit_message:
+            return self._response(row)
         provenance = {
             "operator": str(prior_provenance.get("operator") or operator),
             "changeset_id": str(row.id),
-            "commit_message": str(
-                prior_provenance.get("commit_message") or request.commit_message
-            ),
+            "commit_message": str(commit_message),
             "plan_id": prior_provenance.get("plan_id") or request.plan_id,
             "protected_main_source_sha": prior_provenance.get(
                 "protected_main_source_sha"
             )
             or request.protected_main_source_sha,
         }
+        if self.commit_writer is None:
+            row.error = "verified GitHub App commit writer is not configured"
+            row.failure_detail = {
+                "phase": "git_closure",
+                "state": "not_configured",
+                "activation_preserved": True,
+                "provenance": provenance,
+            }
+            await self.db.flush()
+            await self.db.commit()
+            return self._response(row)
+
+        # Leave a durable pending marker before Git. If persisting the outcome
+        # later fails, the active workspace is still explicit and reconcilable.
         candidate_commit_sha = prior_failure.get("commit_sha")
         row.failure_detail = {
             "phase": "git_closure",

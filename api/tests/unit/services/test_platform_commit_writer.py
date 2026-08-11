@@ -17,6 +17,7 @@ from src.services.platform_commit_writer import (
 )
 
 
+@pytest.fixture(scope="session")
 def private_key_pem() -> str:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     return key.private_bytes(
@@ -104,7 +105,9 @@ def readback_response(commit_sha: str, *, signature_state="VALID") -> httpx.Resp
 
 
 @pytest.mark.asyncio
-async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree():
+async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree(
+    private_key_pem,
+):
     created_sha = "b" * 40
     seen = []
 
@@ -167,25 +170,15 @@ async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree()
             if "query CommitReadback" in query:
                 return readback_response(created_sha)
         if request.url.path.endswith("/contents/workflows/example.py"):
+            assert request.headers["Accept"] == "application/vnd.github.raw+json"
             if request.url.params["ref"] == "a" * 40:
                 return httpx.Response(404, json={"message": "Not Found"})
             assert request.url.params["ref"] == created_sha
-            return httpx.Response(
-                200,
-                json={
-                    "type": "file",
-                    "content": base64.b64encode(b"print('verified')\n").decode(),
-                },
-            )
+            return httpx.Response(200, content=b"print('verified')\n")
         if request.url.path.endswith("/contents/workflows/deleted.py"):
+            assert request.headers["Accept"] == "application/vnd.github.raw+json"
             if request.url.params["ref"] == "a" * 40:
-                return httpx.Response(
-                    200,
-                    json={
-                        "type": "file",
-                        "content": base64.b64encode(b"print('deleted')\n").decode(),
-                    },
-                )
+                return httpx.Response(200, content=b"print('deleted')\n")
             return httpx.Response(404, json={"message": "Not Found"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
@@ -195,7 +188,7 @@ async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree()
             branch="production-live",
             app_id=123,
             installation_id=456,
-            private_key=private_key_pem(),
+            private_key=private_key_pem,
             client=client,
         )
         result = await writer.write(commit_request())
@@ -207,7 +200,9 @@ async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree()
 
 
 @pytest.mark.asyncio
-async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mutation():
+async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mutation(
+    private_key_pem,
+):
     changeset_id = uuid4()
     existing_sha = "c" * 40
     mutation_calls = 0
@@ -226,7 +221,7 @@ async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mut
                             "oid": existing_sha,
                             "message": (
                                 "Publish production source\n\n"
-                                f"Workspace-Changeset-ID: {changeset_id}"
+                                f"Workspace-Changeset-ID: {changeset_id} \r\n"
                             ),
                         }
                     ],
@@ -239,13 +234,7 @@ async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mut
                 payload["data"]["repository"]["ref"]["target"]["oid"] = "e" * 40
                 return httpx.Response(200, json=payload)
         if request.url.path.endswith("/contents/workflows/example.py"):
-            return httpx.Response(
-                200,
-                json={
-                    "type": "file",
-                    "content": base64.b64encode(b"print('verified')\n").decode(),
-                },
-            )
+            return httpx.Response(200, content=b"print('verified')\n")
         if request.url.path.endswith("/contents/workflows/deleted.py"):
             return httpx.Response(404, json={"message": "Not Found"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -256,7 +245,7 @@ async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mut
             branch="refs/heads/production-live",
             app_id=123,
             installation_id=456,
-            private_key=private_key_pem(),
+            private_key=private_key_pem,
             client=client,
         )
         result = await writer.write(commit_request(changeset_id=changeset_id))
@@ -266,7 +255,9 @@ async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mut
 
 
 @pytest.mark.asyncio
-async def test_writer_returns_candidate_sha_when_signature_verification_fails():
+async def test_writer_returns_candidate_sha_when_signature_verification_fails(
+    private_key_pem,
+):
     created_sha = "b" * 40
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -275,13 +266,7 @@ async def test_writer_returns_candidate_sha_when_signature_verification_fails():
         if request.url.path.endswith("/contents/workflows/example.py"):
             return httpx.Response(404, json={"message": "Not Found"})
         if request.url.path.endswith("/contents/workflows/deleted.py"):
-            return httpx.Response(
-                200,
-                json={
-                    "type": "file",
-                    "content": base64.b64encode(b"print('deleted')\n").decode(),
-                },
-            )
+            return httpx.Response(200, content=b"print('deleted')\n")
         payload = graphql_payload(request)
         if "query BranchHead" in payload["query"]:
             return head_response()
@@ -305,7 +290,7 @@ async def test_writer_returns_candidate_sha_when_signature_verification_fails():
             branch="production-live",
             app_id=123,
             installation_id=456,
-            private_key=private_key_pem(),
+            private_key=private_key_pem,
             client=client,
         )
         with pytest.raises(PlatformCommitError, match="not verified") as exc:
@@ -315,7 +300,9 @@ async def test_writer_returns_candidate_sha_when_signature_verification_fails():
 
 
 @pytest.mark.asyncio
-async def test_writer_rejects_remote_path_drift_before_creating_commit():
+async def test_writer_rejects_remote_path_drift_before_creating_commit(
+    private_key_pem,
+):
     mutation_calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -329,13 +316,7 @@ async def test_writer_rejects_remote_path_drift_before_creating_commit():
             if "mutation CreatePlatformCommit" in payload["query"]:
                 mutation_calls += 1
         if request.url.path.endswith("/contents/workflows/example.py"):
-            return httpx.Response(
-                200,
-                json={
-                    "type": "file",
-                    "content": base64.b64encode(b"remote drift\n").decode(),
-                },
-            )
+            return httpx.Response(200, content=b"remote drift\n")
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -344,7 +325,7 @@ async def test_writer_rejects_remote_path_drift_before_creating_commit():
             branch="production-live",
             app_id=123,
             installation_id=456,
-            private_key=private_key_pem(),
+            private_key=private_key_pem,
             client=client,
         )
         with pytest.raises(PlatformCommitError, match="expected .* to be absent"):

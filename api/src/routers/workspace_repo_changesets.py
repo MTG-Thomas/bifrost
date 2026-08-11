@@ -39,15 +39,18 @@ async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangeset
     settings = get_settings()
     writer = None
     if config and config.repo_url and settings.github_app_commit_writer_configured:
+        app_id = settings.github_app_id
+        installation_id = settings.github_app_installation_id
         private_key = settings.github_app_private_key
-        assert private_key is not None
-        assert settings.github_app_id is not None
-        assert settings.github_app_installation_id is not None
+        if app_id is None or installation_id is None or private_key is None:
+            raise RuntimeError(
+                "GitHub App commit writer configuration is incomplete"
+            )
         writer = GitHubAppCommitWriter(
             repo_url=config.repo_url,
             branch=config.branch,
-            app_id=settings.github_app_id,
-            installation_id=settings.github_app_installation_id,
+            app_id=app_id,
+            installation_id=installation_id,
             private_key=private_key.get_secret_value(),
         )
     return WorkspaceRepoChangesetService(db, org_id, commit_writer=writer)

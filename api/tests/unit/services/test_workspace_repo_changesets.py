@@ -77,7 +77,8 @@ class MemoryRows:
             if row.organization_id == organization_id
             and (scope is None or row.scope == scope)
             and row.failure_detail
-            and row.failure_detail.get("state") == "failed"
+            and row.failure_detail.get("state")
+            in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURE_STATES
             and (row.status, row.failure_detail.get("phase"))
             in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
         ]
@@ -515,13 +516,14 @@ async def test_git_commit_failure_preserves_activation_with_recovery_evidence(
 
 
 @pytest.mark.asyncio
-async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatch):
-    writer = RecordingWriter(error=RuntimeError("credentials unavailable"))
+async def test_retry_git_closure_after_writer_configuration_skips_activation(
+    monkeypatch,
+):
     svc = WorkspaceRepoChangesetService(
         FakeDB(),
         uuid4(),
         repo=MemoryRepo({"features/a.txt": b"a"}),
-        commit_writer=writer,
+        commit_writer=None,
     )
     svc.rows = MemoryRows()
     row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
@@ -557,6 +559,8 @@ async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatc
         "tester",
     )
     assert failed.status == "activated"
+    assert failed.failure_detail["state"] == "not_configured"
+    assert failed.failure_detail["provenance"]["commit_message"] == "release source"
     assert CountingStorage.writes == 1
 
     retry_writer = RecordingWriter(
@@ -569,7 +573,7 @@ async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatc
     svc.commit_writer = retry_writer
     closed = await svc.retry_git_closure(
         row.id,
-        WorkspaceRepoActivateRequest(commit_message="release source", push=True),
+        WorkspaceRepoActivateRequest(push=True),
         "retrying-operator",
     )
 
@@ -577,7 +581,6 @@ async def test_retry_git_closure_does_not_replay_workspace_activation(monkeypatc
     assert closed.commit_sha == "b" * 40
     assert closed.failure_detail is None
     assert CountingStorage.writes == 1
-    assert len(writer.requests) == 1
     assert len(retry_writer.requests) == 1
     assert retry_writer.requests[0].operator == "tester"
 
@@ -620,10 +623,15 @@ async def test_recoverable_git_closures_are_scope_bounded():
     second = await svc.begin(
         WorkspaceRepoChangesetBegin(scope="features/b.txt"), uuid4()
     )
-    for row in (first, second):
-        stored = svc.rows.items[row.id]
-        stored.status = "activated"
-        stored.failure_detail = {"phase": "git_closure", "state": "failed"}
+    first_stored = svc.rows.items[first.id]
+    first_stored.status = "activated"
+    first_stored.failure_detail = {
+        "phase": "git_closure",
+        "state": "not_configured",
+    }
+    second_stored = svc.rows.items[second.id]
+    second_stored.status = "activated"
+    second_stored.failure_detail = {"phase": "git_closure", "state": "failed"}
 
     result = await svc.recoverable_git_closures(scope="features/a.txt")
 
@@ -681,9 +689,15 @@ async def test_verification_failure_persists_candidate_sha_for_retry(monkeypatch
 
     retry_writer = RecordingWriter()
     svc.commit_writer = retry_writer
+    with pytest.raises(ChangesetInvalid, match="must match the original"):
+        await svc.retry_git_closure(
+            row.id,
+            WorkspaceRepoActivateRequest(commit_message="different", push=True),
+            "retrying-operator",
+        )
     closed = await svc.retry_git_closure(
         row.id,
-        WorkspaceRepoActivateRequest(commit_message="ignored on retry", push=True),
+        WorkspaceRepoActivateRequest(push=True),
         "retrying-operator",
     )
     assert closed.status == "committed"

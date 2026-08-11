@@ -77,6 +77,21 @@ the activated workspace is not rolled back. The candidate commit SHA and
 original provenance remain in the retry record. A retry verifies that commit
 instead of replaying workspace activation or blindly creating a duplicate.
 
+If activation records Git closure as `not_configured`, configure all three App
+values, restart the API process, then retry the existing changeset without a
+new commit message:
+
+```http
+POST /api/workspace-repo-changesets/CHANGESET_ID/retry-git-closure
+Content-Type: application/json
+
+{"push": true}
+```
+
+The saved operator and commit provenance are reused and workspace activation
+is not replayed. Legacy failure records without saved provenance require the
+original `commit_message`; a different message is rejected.
+
 ## Operator verification
 
 After deployment and an operator-approved canary changeset, read the returned
