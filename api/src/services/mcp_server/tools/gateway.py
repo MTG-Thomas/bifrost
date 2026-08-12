@@ -7,7 +7,11 @@ from fastmcp.tools import ToolResult
 from src.services.mcp_server.generators.fastmcp_generator import (
     register_tool_with_context,
 )
-from src.services.mcp_server.tool_result import error_result, success_result
+from src.services.mcp_server.tool_result import (
+    direct_result,
+    error_result,
+    success_result,
+)
 from src.services.mcp_server.tools._http_bridge import call_rest
 
 GATEWAY_INSTRUCTIONS = """Bifrost hosts live agents that connect to specialized systems and workflows.
@@ -103,10 +107,7 @@ async def bifrost_execute_tool(
     )
     if status_code != 200 or not isinstance(data, dict):
         return _rest_error("Tool execution", status_code, data)
-    return success_result(
-        f"Executed '{data['tool_name']}' through '{data['agent_name']}'.",
-        data,
-    )
+    return direct_result(data["result"])
 
 
 TOOLS = [
@@ -133,7 +134,7 @@ TOOLS = [
         "Execute Bifrost Tool",
         "Execute a tool reference through its selected agent after inspecting its "
         "live schema. Arguments are strictly validated and authorization is "
-        "rechecked on every call.",
+        "rechecked on every call. Returns the selected tool's result directly.",
     ),
 ]
 
