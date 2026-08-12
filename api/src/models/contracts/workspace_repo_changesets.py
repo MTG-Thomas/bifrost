@@ -104,6 +104,7 @@ class WorkspaceRepoChangesetDiffResponse(BaseModel):
 
 class WorkspaceRepoValidationResponse(BaseModel):
     valid: bool
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     diagnostics: list[dict] = Field(default_factory=list)
     pending_deactivations: list[dict] = Field(default_factory=list)
     registration_actions: list[dict] = Field(default_factory=list)
@@ -114,6 +115,11 @@ class WorkspaceRepoActivateRequest(BaseModel):
     commit_message: str | None = Field(default=None, max_length=500)
     push: bool = False
     plan_id: str | None = Field(default=None, max_length=255)
+    candidate_id: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        description="Exact immutable candidate returned by the latest validation.",
+    )
     protected_main_source_sha: str | None = Field(
         default=None,
         pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",

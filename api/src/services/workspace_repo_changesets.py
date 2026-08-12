@@ -11,6 +11,7 @@ import ast
 import base64
 import difflib
 import hashlib
+import json
 import logging
 from dataclasses import asdict
 from pathlib import PurePosixPath
@@ -55,6 +56,8 @@ from src.services.workflow_registration import (
 )
 
 logger = logging.getLogger(__name__)
+
+CANDIDATE_SCHEMA = "bifrost.workspace-candidate/v1"
 
 
 class ChangesetConflict(Exception):
@@ -326,8 +329,14 @@ class WorkspaceRepoChangesetService:
         diagnostics.extend(registry_diagnostics)
         valid = not diagnostics and not pending and bool(row.mutations)
         current_revision, _ = await self._snapshot(row.scope)
+        candidate_id = self._candidate_id(
+            row,
+            validated_revision=current_revision,
+            registration_actions=registration_actions,
+        )
         result = WorkspaceRepoValidationResponse(
             valid=valid,
+            candidate_id=candidate_id,
             diagnostics=diagnostics,
             pending_deactivations=pending,
             registration_actions=registration_actions,
@@ -357,6 +366,14 @@ class WorkspaceRepoChangesetService:
         ):
             raise ChangesetInvalid(
                 "changeset must pass validation immediately before activation"
+            )
+        candidate_id = str(row.validation.get("candidate_id") or "")
+        # Changesets validated before this contract was introduced may still be
+        # in flight during a rolling upgrade. New validations always carry a
+        # candidate and therefore always require an exact activation match.
+        if candidate_id and request.candidate_id != candidate_id:
+            raise ChangesetInvalid(
+                "activation candidate_id must exactly match the latest validation"
             )
         current_revision, current_files = await self._snapshot(row.scope)
         conflicting = [
@@ -417,8 +434,40 @@ class WorkspaceRepoChangesetService:
                             raise ChangesetInvalid(
                                 f"deactivation preflight changed for {item['path']}"
                             )
-                activated_revision, _ = await self._snapshot(row.scope)
+                activated_revision, activated_files = await self._snapshot(row.scope)
+                file_evidence: list[dict] = []
+                for item in sorted(row.mutations, key=lambda value: value["path"]):
+                    observed_hash = activated_files.get(item["path"])
+                    expected_hash = (
+                        item.get("after_hash")
+                        if item["operation"] == "write"
+                        else None
+                    )
+                    if observed_hash != expected_hash:
+                        raise ChangesetInvalid(
+                            f"activation readback mismatch for {item['path']}"
+                        )
+                    file_evidence.append(
+                        {
+                            "path": item["path"],
+                            "operation": item["operation"],
+                            "sha256": observed_hash,
+                        }
+                    )
                 row.activated_revision = activated_revision
+                current_validation: dict[str, object] = dict(row.validation or {})
+                row.validation = {
+                    **current_validation,
+                    "activation_evidence": {
+                        "schema": CANDIDATE_SCHEMA,
+                        "candidate_id": candidate_id,
+                        "activated_revision": activated_revision,
+                        "files": file_evidence,
+                        "registration_actions": current_validation.get(
+                            "registration_actions", []
+                        ),
+                    },
+                }
                 row.status = "activated"
                 await self.db.flush()
                 # Activation is the authoritative workspace transition. Make it
@@ -672,6 +721,37 @@ class WorkspaceRepoChangesetService:
         if row is None:
             raise KeyError(changeset_id)
         return row
+
+    @staticmethod
+    def _candidate_id(
+        row: WorkspaceRepoChangeset,
+        *,
+        validated_revision: str,
+        registration_actions: list[dict],
+    ) -> str:
+        """Hash the exact source CAS and registry intent approved for activation."""
+        payload = {
+            "schema": CANDIDATE_SCHEMA,
+            "changeset_id": str(row.id),
+            "scope": row.scope,
+            "base_revision": row.base_revision,
+            "validated_revision": validated_revision,
+            "mutations": [
+                {
+                    "path": item["path"],
+                    "operation": item["operation"],
+                    "before_hash": item.get("before_hash"),
+                    "after_hash": item.get("after_hash"),
+                    "force_deactivation": bool(item.get("force_deactivation")),
+                }
+                for item in sorted(row.mutations, key=lambda value: value["path"])
+            ],
+            "registration_actions": registration_actions,
+        }
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
     def _ensure_active(self, row: WorkspaceRepoChangeset) -> None:
         if row.status not in self.ACTIVE:

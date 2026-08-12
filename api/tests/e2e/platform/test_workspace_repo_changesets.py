@@ -69,7 +69,7 @@ def test_workspace_repo_changeset_stages_validates_and_activates_atomically(
         activated = e2e_client.post(
             f"/api/workspace-repo-changesets/{changeset_id}/activate",
             headers=headers,
-            json={},
+            json={"candidate_id": validated.json()["candidate_id"]},
         )
         assert activated.status_code == 200, activated.text
         assert activated.json()["status"] == "activated"
@@ -142,7 +142,7 @@ async def {function_name}() -> dict:
         activated = e2e_client.post(
             f"/api/workspace-repo-changesets/{changeset_id}/activate",
             headers=headers,
-            json={},
+            json={"candidate_id": validated.json()["candidate_id"]},
         )
         assert activated.status_code == 200, activated.text
         workflow_id = activated.json()["validation"]["registration_actions"][0][
@@ -254,7 +254,7 @@ async def {function_name}() -> dict:
         activated = e2e_client.post(
             f"/api/workspace-repo-changesets/{changeset_id}/activate",
             headers=headers,
-            json={},
+            json={"candidate_id": validated.json()["candidate_id"]},
         )
         assert activated.status_code == 200, activated.text
 

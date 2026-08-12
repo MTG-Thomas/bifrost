@@ -249,7 +249,8 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
         ),
     )
     stored = svc.rows.items[row.id]
-    stored.validation = {"valid": True}
+    candidate_id = "sha256:" + "c" * 64
+    stored.validation = {"valid": True, "candidate_id": candidate_id}
     stored.status = "validated"
     svc.repo.files["features/b.py"] = b"B"  # unrelated concurrent edit
 
@@ -267,9 +268,30 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     monkeypatch.setattr(
         "src.services.workspace_repo_changesets.FileStorageService", Storage
     )
-    activated = await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
+    with pytest.raises(ChangesetInvalid, match="candidate_id"):
+        await svc.activate(
+            row.id,
+            WorkspaceRepoActivateRequest(candidate_id="sha256:" + "d" * 64),
+            "tester",
+        )
+    activated = await svc.activate(
+        row.id, WorkspaceRepoActivateRequest(candidate_id=candidate_id), "tester"
+    )
     assert activated.status == "activated"
     assert svc.repo.files == {"features/a.py": b"A", "features/b.py": b"B"}
+    assert activated.validation["activation_evidence"] == {
+        "schema": "bifrost.workspace-candidate/v1",
+        "candidate_id": candidate_id,
+        "activated_revision": activated.activated_revision,
+        "files": [
+            {
+                "path": "features/a.py",
+                "operation": "write",
+                "sha256": hashlib.sha256(b"A").hexdigest(),
+            }
+        ],
+        "registration_actions": [],
+    }
     assert barriers == [
         (
             "enter",

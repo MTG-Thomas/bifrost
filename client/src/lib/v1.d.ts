@@ -26630,6 +26630,11 @@ export interface components {
             push: boolean;
             /** Plan Id */
             plan_id?: string | null;
+            /**
+             * Candidate Id
+             * @description Exact immutable candidate returned by the latest validation.
+             */
+            candidate_id?: string | null;
             /** Protected Main Source Sha */
             protected_main_source_sha?: string | null;
         };
@@ -26794,6 +26799,8 @@ export interface components {
         WorkspaceRepoValidationResponse: {
             /** Valid */
             valid: boolean;
+            /** Candidate Id */
+            candidate_id: string;
             /** Diagnostics */
             diagnostics?: {
                 [key: string]: unknown;
