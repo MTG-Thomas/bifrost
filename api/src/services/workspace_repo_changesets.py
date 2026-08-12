@@ -11,6 +11,7 @@ import ast
 import base64
 import difflib
 import hashlib
+import logging
 from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import cast
@@ -46,6 +47,14 @@ from src.services.platform_commit_writer import (
     PlatformCommitWriter,
 )
 from src.services.repo_storage import RepoStorage
+from src.services.workflow_registration import (
+    WorkspaceRegistrationCandidate,
+    WorkflowRegistrationConflict,
+    apply_workspace_registration_plan,
+    plan_workspace_registrations,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ChangesetConflict(Exception):
@@ -250,6 +259,7 @@ class WorkspaceRepoChangesetService:
         self._ensure_active(row)
         diagnostics: list[dict] = []
         pending: list[dict] = []
+        registration_candidates: list[WorkspaceRegistrationCandidate] = []
         deactivation = DeactivationProtectionService(self.db)
         parser = ASTMetadataParser()
         for item in row.mutations:
@@ -290,6 +300,19 @@ class WorkspaceRepoChangesetService:
                                 kind,
                                 kwargs.get("name") or node.name,
                             )
+                            registration_candidates.append(
+                                WorkspaceRegistrationCandidate(
+                                    path=path,
+                                    function_name=node.name,
+                                    workflow_type=(
+                                        "data_provider"
+                                        if kind == "data_provider"
+                                        else "tool" if kind == "tool" else "workflow"
+                                    ),
+                                    name=kwargs.get("name") or node.name,
+                                    requested_id=kwargs.get("id"),
+                                )
+                            )
             if not item.get("force_deactivation"):
                 found, _ = await deactivation.detect_pending_deactivations(
                     path=path,
@@ -297,12 +320,17 @@ class WorkspaceRepoChangesetService:
                     new_decorator_info=decorator_info,
                 )
                 pending.extend({**asdict(value), "path": path} for value in found)
+        registration_actions, registry_diagnostics = await plan_workspace_registrations(
+            self.db, self.organization_id, registration_candidates
+        )
+        diagnostics.extend(registry_diagnostics)
         valid = not diagnostics and not pending and bool(row.mutations)
         current_revision, _ = await self._snapshot(row.scope)
         result = WorkspaceRepoValidationResponse(
             valid=valid,
             diagnostics=diagnostics,
             pending_deactivations=pending,
+            registration_actions=registration_actions,
             validated_revision=current_revision,
         )
         row.validation = result.model_dump(mode="json")
@@ -363,6 +391,18 @@ class WorkspaceRepoChangesetService:
             broadcast=True,
         ):
             try:
+                try:
+                    applied_registrations = await apply_workspace_registration_plan(
+                        self.db,
+                        self.organization_id,
+                        list(row.validation.get("registration_actions") or []),
+                    )
+                    row.validation = {
+                        **row.validation,
+                        "registration_actions": applied_registrations,
+                    }
+                except WorkflowRegistrationConflict as exc:
+                    raise ChangesetInvalid(str(exc)) from exc
                 for item in row.mutations:
                     if item["operation"] == "delete":
                         await storage.delete_file(item["path"])
@@ -428,6 +468,14 @@ class WorkspaceRepoChangesetService:
                 if rollback_errors:
                     raise RuntimeError(row.error) from exc
                 raise
+
+        if row.validation.get("registration_actions"):
+            try:
+                from src.services.mcp_server.server import refresh_workflow_tools
+
+                await refresh_workflow_tools()
+            except Exception as exc:
+                logger.warning("Failed to refresh MCP workflow tools: %s", exc)
 
         return await self._complete_git_closure(
             changeset_id, request, operator=updated_by

@@ -18,12 +18,12 @@ load-bearing workflow path.
 from __future__ import annotations
 
 import asyncio
+import ast
 import dataclasses
 import io
 import json
 import os
 import pathlib
-import re
 import secrets
 import shutil
 import subprocess
@@ -1005,28 +1005,420 @@ def _collect_workflows(workspace: pathlib.Path) -> list[dict]:
     return entries
 
 
-_WORKFLOW_DECORATOR_RE = re.compile(r"^\s*@workflow\b", re.MULTILINE)
+@dataclasses.dataclass(frozen=True)
+class SolutionDiagnostic:
+    """One actionable, machine-readable Solution compiler finding."""
+
+    code: str
+    severity: str
+    message: str
+    path: str | None = None
+    function_name: str | None = None
+    ref: str | None = None
+    remediation: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
 
 
-def _unregistered_workflow_files(
-    python_files: dict[str, str], workflows: list[dict]
-) -> list[str]:
-    """Bundled .py files whose @workflow function count exceeds their
-    .bifrost/workflows.yaml entry count — the surplus functions deploy as
-    source with no Workflow row, so their refs 404 on the install while
-    working fine under `solution start`. Count-based (not name-parsed): a
-    decorator hit in source is cheap to detect; extracting decorated function
-    names from source is not worth the false positives for a warning.
+@dataclasses.dataclass(frozen=True)
+class SolutionPlan:
+    """Local, side-effect-free compilation result shared by plan and deploy."""
+
+    root: str
+    valid: bool
+    diagnostics: tuple[SolutionDiagnostic, ...]
+    counts: dict[str, int]
+    entities: dict[str, list[str]]
+    schema_version: int = 1
+    mode: str = "solution"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "mode": self.mode,
+            "root": self.root,
+            "valid": self.valid,
+            "diagnostics": [finding.to_dict() for finding in self.diagnostics],
+            "counts": dict(self.counts),
+            "entities": {key: list(value) for key, value in self.entities.items()},
+        }
+
+
+def _decorator_name(decorator: ast.expr) -> str | None:
+    target: ast.expr = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return None
+
+
+def _decorated_executable(
+    source: str, path: str, function_name: str
+) -> tuple[str, str] | None:
+    """Return ``(type, declared name)`` for one top-level executable function."""
+    try:
+        tree = ast.parse(source, filename=path)
+    except SyntaxError as exc:
+        raise click.ClickException(f"Cannot parse {path}: {exc}") from exc
+    executable_decorators = {"workflow", "tool", "data_provider"}
+    alias_types = {name: name for name in executable_decorators}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.module != "bifrost":
+            continue
+        for imported in node.names:
+            if imported.name in executable_decorators:
+                alias_types[imported.asname or imported.name] = imported.name
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != function_name:
+            continue
+        for decorator in node.decorator_list:
+            decorator_name = _decorator_name(decorator)
+            if decorator_name not in alias_types:
+                continue
+            declared_name = function_name
+            if isinstance(decorator, ast.Call):
+                for keyword in decorator.keywords:
+                    if (
+                        keyword.arg == "name"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ):
+                        declared_name = keyword.value.value
+            return alias_types[decorator_name], declared_name
+    return None
+
+
+def _decorated_workflow_functions(
+    path: str, source: str
+) -> tuple[list[str], SolutionDiagnostic | None]:
+    """Return top-level Bifrost executable functions without importing user code."""
+    try:
+        tree = ast.parse(source, filename=path)
+    except SyntaxError as exc:
+        # Only turn syntax errors into this compiler's concern when the file
+        # appears to declare a workflow. Helper modules remain the server-side
+        # Python compiler's responsibility, keeping this preflight narrowly
+        # focused on source/manifest registration coherence.
+        if not any(
+            marker in source
+            for marker in ("@workflow", "@tool", "@data_provider")
+        ):
+            return [], None
+        location = f"line {exc.lineno}" if exc.lineno else "unknown line"
+        return [], SolutionDiagnostic(
+            code="solution.workflow_source_invalid",
+            severity="error",
+            message=f"Cannot inspect workflow declarations in {path}: {exc.msg} ({location}).",
+            path=path,
+            remediation="Fix the Python syntax error before planning or deploying the Solution.",
+        )
+
+    names: list[str] = []
+    executable_decorators = {"workflow", "tool", "data_provider"}
+    aliases = set(executable_decorators)
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.module != "bifrost":
+            continue
+        for imported in node.names:
+            if imported.name in executable_decorators:
+                aliases.add(imported.asname or imported.name)
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(
+            _decorator_name(decorator) in aliases
+            for decorator in node.decorator_list
+        ):
+            names.append(node.name)
+    return sorted(names), None
+
+
+def _add_solution_workflow_manifest_row(
+    workspace: pathlib.Path,
+    ref: str,
+    *,
+    display_name: str | None = None,
+) -> tuple[str, dict[str, Any], bool]:
+    """Index one local executable in the Solution manifest.
+
+    Returns ``(manifest_id, row, created)``. This is local-only: deploy remains
+    the sole writer of the live Solution entity.
     """
-    entries_per_path: dict[str, int] = {}
-    for w in workflows:
-        path = str(w.get("path"))
-        entries_per_path[path] = entries_per_path.get(path, 0) + 1
-    return sorted(
-        rel
-        for rel, src in python_files.items()
-        if len(_WORKFLOW_DECORATOR_RE.findall(src)) > entries_per_path.get(rel, 0)
+    if "::" not in ref:
+        raise click.ClickException(
+            "Workflow reference must use portable path::function syntax"
+        )
+    raw_path, function_name = ref.rsplit("::", 1)
+    relative = pathlib.PurePosixPath(raw_path)
+    if (
+        not raw_path
+        or not function_name
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or relative.suffix != ".py"
+    ):
+        raise click.ClickException(
+            "Workflow reference must be a workspace-relative .py path::function"
+        )
+
+    root = os.path.realpath(workspace)
+    source_real = os.path.realpath(os.path.join(root, *relative.parts))
+    if not source_real.startswith(root + os.sep):
+        raise click.ClickException(f"Workflow path {raw_path!r} escapes the workspace")
+    source_path = pathlib.Path(source_real)
+    if not source_path.is_file():
+        raise click.ClickException(f"Workflow source does not exist: {raw_path}")
+    executable = _decorated_executable(
+        source_path.read_text(encoding="utf-8"), raw_path, function_name
     )
+    if executable is None:
+        raise click.ClickException(
+            f"No top-level @workflow, @tool, or @data_provider function "
+            f"named {function_name!r} exists in {raw_path}"
+        )
+    executable_type, declared_name = executable
+
+    manifest = _bifrost_manifest(workspace, "workflows.yaml")
+    if manifest is None:
+        raise click.ClickException("Cannot resolve the Solution workflow manifest")
+    data: dict[str, Any] = {}
+    if manifest.is_file():
+        loaded = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        if not isinstance(loaded, dict):
+            raise click.ClickException(".bifrost/workflows.yaml must be a mapping")
+        data = loaded
+    workflows = data.setdefault("workflows", {})
+    if not isinstance(workflows, dict):
+        raise click.ClickException(
+            ".bifrost/workflows.yaml field 'workflows' must be a mapping"
+        )
+    for manifest_id, body in workflows.items():
+        if not isinstance(body, dict):
+            continue
+        if body.get("path") == raw_path and body.get("function_name") == function_name:
+            return str(manifest_id), body, False
+
+    manifest_id = str(uuid5(UUID(int=0), f"bifrost-solution:{ref}"))
+    row = {
+        "id": manifest_id,
+        "name": display_name or declared_name,
+        "path": raw_path,
+        "function_name": function_name,
+    }
+    if executable_type != "workflow":
+        row["type"] = executable_type
+    workflows[manifest_id] = row
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    temporary = manifest.with_suffix(".yaml.tmp")
+    temporary.write_text(
+        yaml.safe_dump(data, sort_keys=False), encoding="utf-8"
+    )
+    os.replace(temporary, manifest)
+    return manifest_id, row, True
+
+
+def compile_solution_plan(
+    workspace: pathlib.Path,
+    *,
+    python_files: dict[str, str] | None = None,
+    workflows: list[dict] | None = None,
+) -> SolutionPlan:
+    """Compile local Solution source and manifests into a fail-closed plan.
+
+    This function is deliberately side-effect free: it performs no imports,
+    network requests, or writes. A decorated workflow is deployable only when
+    ``.bifrost/workflows.yaml`` contains its exact ``path::function_name`` row.
+    """
+    workspace = workspace.resolve()
+    source_files = (
+        _collect_python_files(workspace) if python_files is None else python_files
+    )
+    manifest_workflows = (
+        _collect_workflows(workspace) if workflows is None else workflows
+    )
+
+    decorated_refs: list[str] = []
+    diagnostics: list[SolutionDiagnostic] = []
+    for path, source in sorted(source_files.items()):
+        function_names, parse_diagnostic = _decorated_workflow_functions(path, source)
+        if parse_diagnostic is not None:
+            diagnostics.append(parse_diagnostic)
+        decorated_refs.extend(f"{path}::{name}" for name in function_names)
+
+    registered_refs = sorted(
+        f"{workflow.get('path')}::{workflow.get('function_name')}"
+        for workflow in manifest_workflows
+        if workflow.get("path") and workflow.get("function_name")
+    )
+    registered_ref_set = set(registered_refs)
+    for ref in sorted(set(decorated_refs) - registered_ref_set):
+        path, function_name = ref.rsplit("::", 1)
+        diagnostics.append(
+            SolutionDiagnostic(
+                code="solution.workflow_manifest_row_missing",
+                severity="error",
+                message=(
+                    f"{ref} is decorated with @workflow but has no matching "
+                    ".bifrost/workflows.yaml row; deploying it would leave the "
+                    "workflow unregistered and live references would return 404."
+                ),
+                path=path,
+                function_name=function_name,
+                ref=ref,
+                remediation=(
+                    "Add a workflows.yaml entry with this exact path and "
+                    f"function_name: {function_name}."
+                ),
+            )
+        )
+
+    for ref in sorted(registered_ref_set - set(decorated_refs)):
+        path, function_name = ref.rsplit("::", 1)
+        diagnostics.append(
+            SolutionDiagnostic(
+                code="solution.workflow_source_missing_or_undecorated",
+                severity="error",
+                message=(
+                    f"{ref} is indexed in .bifrost/workflows.yaml, but the "
+                    "Solution source does not contain a matching decorated "
+                    "executable; deploying it would create a registry row that "
+                    "cannot execute."
+                ),
+                path=path,
+                function_name=function_name,
+                ref=ref,
+                remediation=(
+                    "Restore the source function with @workflow, @tool, or "
+                    "@data_provider, or remove the stale manifest row."
+                ),
+            )
+        )
+
+    diagnostics.sort(
+        key=lambda finding: (
+            finding.path or "",
+            finding.function_name or "",
+            finding.code,
+        )
+    )
+    return SolutionPlan(
+        root=str(workspace),
+        valid=not any(finding.severity == "error" for finding in diagnostics),
+        diagnostics=tuple(diagnostics),
+        counts={
+            "python_files": len(source_files),
+            "workflow_manifest_rows": len(manifest_workflows),
+            "decorated_workflows": len(decorated_refs),
+            "errors": sum(finding.severity == "error" for finding in diagnostics),
+        },
+        entities={
+            "decorated_workflows": sorted(decorated_refs),
+            "registered_workflows": registered_refs,
+        },
+    )
+
+
+def _format_solution_plan_errors(plan: SolutionPlan) -> str:
+    lines = []
+    for finding in plan.diagnostics:
+        if finding.severity != "error":
+            continue
+        subject = f" ({finding.ref})" if finding.ref else ""
+        lines.append(f"  - [{finding.code}]{subject} {finding.message}")
+        if finding.remediation:
+            lines.append(f"    Fix: {finding.remediation}")
+    return "\n".join(lines)
+
+
+@solution_group.command(
+    name="plan",
+    help="Validate a Solution workspace without changing local or remote state.",
+)
+@click.argument("path", type=click.Path(exists=True, file_okay=False), default=".")
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    default=False,
+    help="Emit the stable machine-readable plan document.",
+)
+def plan_cmd(path: str, json_output: bool) -> None:
+    """Compile source and manifests, then report whether deploy may proceed."""
+    workspace = _workspace_from_path_arg(path)
+    if not is_solution_workspace(workspace):
+        raise click.ClickException(
+            f"No {DESCRIPTOR_FILENAME} in {workspace} — not a Solution workspace. "
+            "Run `bifrost solution init` first."
+        )
+
+    plan = compile_solution_plan(workspace)
+    if json_output:
+        click.echo(json.dumps(plan.to_dict(), indent=2, sort_keys=True))
+    else:
+        status = "valid" if plan.valid else "invalid"
+        click.echo(f"Solution plan: {status}")
+        click.echo(f"Root: {plan.root}")
+        click.echo(
+            "Entities: "
+            f"{plan.counts['decorated_workflows']} decorated workflow(s), "
+            f"{plan.counts['workflow_manifest_rows']} manifest row(s), "
+            f"{plan.counts['python_files']} Python file(s)."
+        )
+        if plan.valid:
+            click.echo("No blocking diagnostics.")
+        else:
+            click.echo("Blocking diagnostics:")
+            click.echo(_format_solution_plan_errors(plan))
+    if not plan.valid:
+        raise SystemExit(1)
+
+
+@solution_group.command(
+    name="add-workflow",
+    help="Index a local path::function in the Solution manifest without deploying.",
+)
+@click.argument("ref")
+@click.option(
+    "--path",
+    "workspace_path",
+    type=click.Path(exists=True, file_okay=False),
+    default=".",
+    help="Solution workspace root (defaults to the nearest descriptor).",
+)
+@click.option("--name", "display_name", default=None, help="Override the manifest display name.")
+@click.option("--json", "json_output", is_flag=True, default=False)
+def add_workflow_cmd(
+    ref: str,
+    workspace_path: str,
+    display_name: str | None,
+    json_output: bool,
+) -> None:
+    """Create the local manifest identity required for a Solution executable."""
+    workspace = _workspace_from_path_arg(workspace_path)
+    if not is_solution_workspace(workspace):
+        raise click.ClickException(
+            f"No {DESCRIPTOR_FILENAME} in {workspace} — not a Solution workspace."
+        )
+    manifest_id, row, created = _add_solution_workflow_manifest_row(
+        workspace, ref, display_name=display_name
+    )
+    result = {
+        "mode": "solution",
+        "action": "created" if created else "preserved",
+        "id": manifest_id,
+        **row,
+    }
+    if json_output:
+        click.echo(json.dumps(result, indent=2, sort_keys=True))
+    elif created:
+        click.echo(f"Indexed {ref} in .bifrost/workflows.yaml ({manifest_id}).")
+        click.echo("Run `bifrost solution plan` to validate the complete Solution.")
+    else:
+        click.echo(f"Already indexed: {ref} ({manifest_id}).")
 
 
 def _collect_tables(workspace: pathlib.Path) -> list[dict]:
@@ -2069,13 +2461,15 @@ def deploy_cmd(
         f"{len(apps)} app(s), {len(forms)} form(s), {len(agents)} agent(s)."
     )
 
-    for rel in _unregistered_workflow_files(python_files, workflows):
-        click.echo(
-            f"  warning: {rel} defines more @workflow function(s) than "
-            ".bifrost/workflows.yaml registers for it — it deploys as source only "
-            "and its refs will 404 on the install. Add a workflows.yaml entry to "
-            "register it.",
-            err=True,
+    plan = compile_solution_plan(
+        workspace,
+        python_files=python_files,
+        workflows=workflows,
+    )
+    if not plan.valid:
+        raise click.ClickException(
+            "Solution preflight failed; no files were uploaded:\n"
+            f"{_format_solution_plan_errors(plan)}"
         )
 
     async def _run() -> int:
@@ -3628,4 +4022,11 @@ def handle_deploy(args: list[str]) -> int:
         return int(exc.code) if isinstance(exc.code, int) else 1
 
 
-__all__ = ["solution_group", "handle_solution", "handle_deploy"]
+__all__ = [
+    "SolutionDiagnostic",
+    "SolutionPlan",
+    "compile_solution_plan",
+    "solution_group",
+    "handle_solution",
+    "handle_deploy",
+]

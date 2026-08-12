@@ -26802,6 +26802,10 @@ export interface components {
             pending_deactivations?: {
                 [key: string]: unknown;
             }[];
+            /** Registration Actions */
+            registration_actions?: {
+                [key: string]: unknown;
+            }[];
             /** Validated Revision */
             validated_revision: string;
         };

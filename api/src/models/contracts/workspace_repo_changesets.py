@@ -106,6 +106,7 @@ class WorkspaceRepoValidationResponse(BaseModel):
     valid: bool
     diagnostics: list[dict] = Field(default_factory=list)
     pending_deactivations: list[dict] = Field(default_factory=list)
+    registration_actions: list[dict] = Field(default_factory=list)
     validated_revision: str
 
 

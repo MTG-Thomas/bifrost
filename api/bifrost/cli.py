@@ -951,7 +951,7 @@ Commands:
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
-  solution    Manage Solution installs (create, bind, scaffold-app, start, deploy, install)
+  solution    Manage Solutions (create, add-workflow, plan, start, deploy, install)
   deploy      Deploy the current Solution workspace (alias for 'solution deploy')
   watch       Watch for file changes and auto-push
   api         Generic authenticated API request
@@ -1022,6 +1022,8 @@ Examples:
   bifrost solution create --slug my-solution
   bifrost solution bind --solution <id-or-slug>
   bifrost solution scaffold-app dashboard
+  bifrost solution add-workflow functions/tasks.py::create_task
+  bifrost solution plan
   bifrost solution start                 # local dev: app + local workflows, one origin
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate

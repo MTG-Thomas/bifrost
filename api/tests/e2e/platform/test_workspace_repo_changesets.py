@@ -85,6 +85,98 @@ def test_workspace_repo_changeset_stages_validates_and_activates_atomically(
 
 
 @pytest.mark.e2e
+def test_workspace_repo_changeset_registers_new_decorated_functions_atomically(
+    e2e_client, platform_admin
+):
+    suffix = uuid4().hex
+    scope = f"test_changeset_registration_{suffix}"
+    path = f"{scope}/workflow.py"
+    function_name = f"planned_workflow_{suffix}"
+    headers = platform_admin.headers
+    workflow_id = None
+    source = f'''from bifrost import workflow
+
+@workflow(name="Planned workflow {suffix}")
+async def {function_name}() -> dict:
+    return {{"registered": True}}
+'''
+    try:
+        started = e2e_client.post(
+            "/api/workspace-repo-changesets",
+            headers=headers,
+            json={"scope": scope},
+        )
+        assert started.status_code == 201, started.text
+        changeset_id = started.json()["id"]
+
+        staged = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/files",
+            headers=headers,
+            json={
+                "path": path,
+                "operation": "write",
+                "content_base64": base64.b64encode(source.encode()).decode(),
+            },
+        )
+        assert staged.status_code == 200, staged.text
+
+        validated = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/validate",
+            headers=headers,
+        )
+        assert validated.status_code == 200, validated.text
+        assert validated.json()["valid"] is True, validated.text
+        registration_actions = validated.json()["registration_actions"]
+        assert len(registration_actions) == 1
+        assert registration_actions[0] | {"organization_id": None} == {
+            "action": "create",
+            "path": path,
+            "function_name": function_name,
+            "type": "workflow",
+            "name": f"Planned workflow {suffix}",
+            "requested_id": None,
+            "organization_id": None,
+        }
+        assert registration_actions[0]["organization_id"]
+
+        activated = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/activate",
+            headers=headers,
+            json={},
+        )
+        assert activated.status_code == 200, activated.text
+        workflow_id = activated.json()["validation"]["registration_actions"][0][
+            "workflow_id"
+        ]
+
+        listing = e2e_client.get("/api/workflows", headers=headers)
+        assert listing.status_code == 200, listing.text
+        registered = next(
+            (
+                item
+                for item in listing.json()
+                if item.get("source_file_path") == path
+                and item.get("function_name") == function_name
+            ),
+            None,
+        )
+        assert registered is not None, listing.json()
+        assert registered["id"] == workflow_id
+        assert registered["name"] == f"Planned workflow {suffix}"
+    finally:
+        if workflow_id:
+            e2e_client.request(
+                "DELETE",
+                f"/api/workflows/{workflow_id}",
+                headers=headers,
+                json={"force_deactivation": True},
+            )
+        import asyncio
+
+        asyncio.run(RepoStorage().delete(path))
+
+
+@pytest.mark.e2e
 def test_python_activation_invalidates_worker_import_generation_immediately(
     e2e_client, platform_admin
 ):
