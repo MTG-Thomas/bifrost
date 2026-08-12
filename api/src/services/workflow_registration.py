@@ -1,14 +1,181 @@
-"""Identity policy and atomic persistence for explicit workflow registration."""
+"""Identity policy and atomic persistence for workflow registration."""
 
 from __future__ import annotations
 
-from uuid import UUID
+from dataclasses import dataclass
+from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models import Workflow as WorkflowORM
+
+
+@dataclass(frozen=True)
+class WorkspaceRegistrationCandidate:
+    """A decorated Workspace function considered during changeset validation."""
+
+    path: str
+    function_name: str
+    workflow_type: str
+    name: str
+    requested_id: str | None = None
+
+
+async def _find_workspace_workflow(
+    db: AsyncSession,
+    organization_id: UUID,
+    path: str,
+    function_name: str,
+) -> WorkflowORM | None:
+    """Find a caller-visible global or organization-scoped Workspace row."""
+    result = await db.execute(
+        select(WorkflowORM).where(
+            WorkflowORM.path == path,
+            WorkflowORM.function_name == function_name,
+            WorkflowORM.solution_id.is_(None),
+            or_(
+                WorkflowORM.organization_id == organization_id,
+                WorkflowORM.organization_id.is_(None),
+            ),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _planned_action(existing: WorkflowORM | None) -> str:
+    """Describe the registry mutation implied by the current row state."""
+    if existing is None:
+        return "create"
+    return "preserve" if existing.is_active else "reactivate"
+
+
+def _planned_organization_id(
+    existing: WorkflowORM | None, organization_id: UUID
+) -> str | None:
+    """Preserve global ownership; otherwise bind a new row to the caller."""
+    if existing is not None and existing.organization_id is None:
+        return None
+    return str(existing.organization_id if existing is not None else organization_id)
+
+
+async def plan_workspace_registrations(
+    db: AsyncSession,
+    organization_id: UUID,
+    candidates: list[WorkspaceRegistrationCandidate],
+) -> tuple[list[dict], list[dict]]:
+    """Return deterministic registry actions and identity diagnostics.
+
+    Workspace source is only executable when the decorated function has a registry
+    row.  Planning that row alongside the source mutation prevents a successful file
+    release from silently producing a 404 at execution time.
+    """
+    actions: list[dict] = []
+    diagnostics: list[dict] = []
+    for candidate in sorted(candidates, key=lambda item: (item.path, item.function_name)):
+        existing = await _find_workspace_workflow(
+            db, organization_id, candidate.path, candidate.function_name
+        )
+        try:
+            requested_id = await resolve_workflow_registration_id(
+                db, candidate.requested_id, existing
+            )
+        except (WorkflowRegistrationIdInvalid, WorkflowRegistrationConflict) as exc:
+            diagnostics.append(
+                {
+                    "path": candidate.path,
+                    "function_name": candidate.function_name,
+                    "severity": "error",
+                    "source": "registry_identity",
+                    "message": str(exc),
+                }
+            )
+            continue
+
+        actions.append(
+            {
+                "action": _planned_action(existing),
+                "path": candidate.path,
+                "function_name": candidate.function_name,
+                "type": candidate.workflow_type,
+                "name": candidate.name,
+                "requested_id": str(requested_id) if requested_id else None,
+                "organization_id": _planned_organization_id(
+                    existing, organization_id
+                ),
+            }
+        )
+    return actions, diagnostics
+
+
+async def apply_workspace_registration_plan(
+    db: AsyncSession,
+    organization_id: UUID,
+    actions: list[dict],
+) -> list[dict]:
+    """Create missing Workspace rows in the caller's activation transaction.
+
+    Existing rows are deliberately left for ``WorkflowIndexer`` to enrich and
+    reactivate after the corresponding source file is written.
+    """
+    applied: list[dict] = []
+    for action in actions:
+        existing = await _find_workspace_workflow(
+            db, organization_id, action["path"], action["function_name"]
+        )
+        _assert_registration_plan_current(action, existing)
+        try:
+            requested_id = await resolve_workflow_registration_id(
+                db, action.get("requested_id"), existing
+            )
+        except (WorkflowRegistrationIdInvalid, WorkflowRegistrationConflict) as exc:
+            raise WorkflowRegistrationConflict(
+                f"registration plan became stale for {action['path']}::"
+                f"{action['function_name']}: {exc}"
+            ) from exc
+        if existing is not None:
+            applied.append({**action, "workflow_id": str(existing.id)})
+            continue
+
+        workflow_id = requested_id or uuid4()
+        workflow = WorkflowORM(
+            id=workflow_id,
+            name=action.get("name") or action["function_name"],
+            function_name=action["function_name"],
+            path=action["path"],
+            type=action["type"],
+            is_active=True,
+            organization_id=organization_id,
+            access_level="role_based",
+        )
+        await add_workflow_registration(db, workflow, requested_id)
+        applied.append({**action, "workflow_id": str(workflow_id)})
+    return applied
+
+
+def _assert_registration_plan_current(
+    action: dict, existing: WorkflowORM | None
+) -> None:
+    """Reject activation when registry state changed after preview."""
+    expected_action = action.get("action")
+    ref = f"{action['path']}::{action['function_name']}"
+    if expected_action == "create" and existing is not None:
+        raise WorkflowRegistrationConflict(
+            f"registration plan became stale for {ref}: expected a new registry row"
+        )
+    if expected_action in {"preserve", "reactivate"} and existing is None:
+        raise WorkflowRegistrationConflict(
+            f"registration plan became stale for {ref}: expected registry row is missing"
+        )
+    active_state_changed = existing is not None and (
+        (expected_action == "preserve" and not existing.is_active)
+        or (expected_action == "reactivate" and existing.is_active)
+    )
+    if active_state_changed:
+        raise WorkflowRegistrationConflict(
+            f"registration plan became stale for {ref}: active state changed"
+        )
 
 
 class WorkflowRegistrationIdInvalid(ValueError):

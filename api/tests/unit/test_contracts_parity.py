@@ -35,6 +35,7 @@ from src.models.contracts import events as server_events  # noqa: E402
 from src.models.contracts import forms as server_forms  # noqa: E402
 from src.models.contracts import integrations as server_integrations  # noqa: E402
 from src.models.contracts import organizations as server_organizations  # noqa: E402
+from src.models.contracts import solutions as server_solutions  # noqa: E402
 from src.models.contracts import tables as server_tables  # noqa: E402
 from src.models.contracts import users as server_users  # noqa: E402
 from src.models.contracts import policy_rule as server_policy_rule  # noqa: E402
@@ -45,6 +46,10 @@ from src.models.contracts import workflows as server_workflows  # noqa: E402
 DTO_PAIRS: list[tuple[type, type]] = [
     (cli_contracts.OrganizationCreate, server_organizations.OrganizationCreate),
     (cli_contracts.OrganizationUpdate, server_organizations.OrganizationUpdate),
+    (
+        cli_contracts.SolutionCandidateDeployEnqueued,
+        server_solutions.SolutionCandidateDeployEnqueued,
+    ),
     (cli_contracts.RoleCreate, server_users.RoleCreate),
     (cli_contracts.RoleUpdate, server_users.RoleUpdate),
     (cli_contracts.WorkflowUpdateRequest, server_workflows.WorkflowUpdateRequest),

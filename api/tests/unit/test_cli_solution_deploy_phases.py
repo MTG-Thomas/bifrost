@@ -17,6 +17,7 @@ zero files.
 from __future__ import annotations
 
 import pathlib
+import hashlib
 from unittest import mock
 
 import yaml
@@ -37,9 +38,18 @@ def _resp(payload, status=200):
 
 
 def _client(captured: dict | None = None):
+    candidate: dict[str, str | None] = {"id": None}
+
     async def get(path, **_kwargs):  # type: ignore[no-untyped-def]
         if "/deploy-jobs/" in path:
-            return _resp({"status": "succeeded", "error": None, "install_id": INSTALL_ID})
+            return _resp(
+                {
+                    "status": "succeeded",
+                    "error": None,
+                    "install_id": INSTALL_ID,
+                    "result": {"candidate_id": candidate["id"]},
+                }
+            )
         return _resp({}, status=404)
 
     async def post(path, json=None, **kwargs):  # type: ignore[no-untyped-def]  # noqa: ARG001
@@ -49,7 +59,12 @@ def _client(captured: dict | None = None):
             # Nothing resolvable in _repo/ -> nothing to vendor.
             return _resp({"content": None}, status=404)
         if path.endswith("/deploy"):
-            return _resp({"deploy_job_id": "job-1"}, status=202)
+            zip_bytes = kwargs["files"]["file"][1]
+            candidate["id"] = f"sha256:{hashlib.sha256(zip_bytes).hexdigest()}"
+            return _resp(
+                {"deploy_job_id": "job-1", "candidate_id": candidate["id"]},
+                status=202,
+            )
         return _resp({}, status=404)
 
     c = mock.AsyncMock()
@@ -84,12 +99,16 @@ def _scaffold(tmp_path: pathlib.Path) -> pathlib.Path:
     return ws
 
 
-def _invoke(ws: pathlib.Path, captured: dict | None = None):
+def _invoke(
+    ws: pathlib.Path, captured: dict | None = None, *extra_args: str
+):
     with mock.patch(
         "bifrost.client.BifrostClient.get_instance", return_value=_client(captured)
     ):
         return CliRunner().invoke(
-            solution_group, ["deploy", str(ws)], catch_exceptions=False
+            solution_group,
+            ["deploy", str(ws), *extra_args],
+            catch_exceptions=False,
         )
 
 
@@ -102,6 +121,7 @@ def test_deploy_prints_each_phase(tmp_path) -> None:
     assert "found" in out and "python file(s)" in out
     assert "Vendoring shared dependencies..." in out
     assert "Bundle:" in out
+    assert "Deploy candidate: sha256:" in out
     assert "Uploading workspace zip..." in out
     assert "Deploying install" in out
 
@@ -111,6 +131,55 @@ def test_deploy_reports_when_nothing_to_vendor(tmp_path) -> None:
     assert result.exit_code == 0, result.output
     # The vendoring announcement always resolves to a result line, even at zero.
     assert "no shared dependencies to vendor." in result.output
+
+
+def test_deploy_preview_builds_candidate_without_upload(tmp_path) -> None:
+    captured: dict = {}
+    result = _invoke(_scaffold(tmp_path), captured, "--preview")
+    assert result.exit_code == 0, result.output
+    assert "Deploy candidate: sha256:" in result.output
+    assert "Preview complete; no files were uploaded." in result.output
+    assert not any(
+        path.endswith("/deploy") for path, _kwargs in captured.get("posts", [])
+    )
+
+
+def test_deploy_rejects_changed_reviewed_candidate_before_upload(tmp_path) -> None:
+    captured: dict = {}
+    result = _invoke(
+        _scaffold(tmp_path),
+        captured,
+        "--candidate-id",
+        "sha256:" + "0" * 64,
+    )
+    assert result.exit_code == 1, result.output
+    assert "does not match the reviewed candidate" in result.output
+    assert not any(
+        path.endswith("/deploy") for path, _kwargs in captured.get("posts", [])
+    )
+
+
+def test_deploy_reports_accepted_job_when_response_loses_candidate(tmp_path) -> None:
+    client = _client()
+    regular_post = client.post
+
+    async def post(path, **kwargs):  # type: ignore[no-untyped-def]
+        if path.endswith("/deploy"):
+            return _resp({"deploy_job_id": "job-needs-inspection"}, status=202)
+        return await regular_post(path, **kwargs)
+
+    client.post = post
+    with mock.patch(
+        "bifrost.client.BifrostClient.get_instance", return_value=client
+    ):
+        result = CliRunner().invoke(
+            solution_group,
+            ["deploy", str(_scaffold(tmp_path))],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 1, result.output
+    assert "Job job-needs-inspection was already accepted" in result.output
 
 
 def test_deploy_uploads_workspace_zip_not_json_bundle(tmp_path) -> None:
@@ -128,6 +197,9 @@ def test_deploy_uploads_workspace_zip_not_json_bundle(tmp_path) -> None:
     upload = call["files"]["file"]
     assert upload[0].endswith(".zip")
     assert upload[2] == "application/zip"
+    assert call["params"]["candidate_id"] == (
+        "sha256:" + hashlib.sha256(upload[1]).hexdigest()
+    )
 
     import io
     import zipfile

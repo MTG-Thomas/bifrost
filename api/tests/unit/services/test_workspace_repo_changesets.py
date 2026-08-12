@@ -120,6 +120,15 @@ class RecordingWriter:
         return self.result
 
 
+def activation_request(row, **kwargs):
+    """Bind a unit-test activation to the exact candidate under review."""
+    candidate_id = row.validation.get("candidate_id")
+    if not candidate_id:
+        candidate_id = "sha256:" + "c" * 64
+        row.validation["candidate_id"] = candidate_id
+    return WorkspaceRepoActivateRequest(candidate_id=candidate_id, **kwargs)
+
+
 def service(files=None, organization_id=None):
     value = WorkspaceRepoChangesetService(
         FakeDB(), organization_id or uuid4(), repo=MemoryRepo(files)
@@ -249,7 +258,8 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
         ),
     )
     stored = svc.rows.items[row.id]
-    stored.validation = {"valid": True}
+    candidate_id = "sha256:" + "c" * 64
+    stored.validation = {"valid": True, "candidate_id": candidate_id}
     stored.status = "validated"
     svc.repo.files["features/b.py"] = b"B"  # unrelated concurrent edit
 
@@ -267,9 +277,29 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     monkeypatch.setattr(
         "src.services.workspace_repo_changesets.FileStorageService", Storage
     )
-    activated = await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
+    mismatched_request = WorkspaceRepoActivateRequest(
+        candidate_id="sha256:" + "d" * 64
+    )
+    with pytest.raises(ChangesetInvalid, match="candidate_id"):
+        await svc.activate(row.id, mismatched_request, "tester")
+    activated = await svc.activate(
+        row.id, WorkspaceRepoActivateRequest(candidate_id=candidate_id), "tester"
+    )
     assert activated.status == "activated"
     assert svc.repo.files == {"features/a.py": b"A", "features/b.py": b"B"}
+    assert activated.validation["activation_evidence"] == {
+        "schema": "bifrost.workspace-candidate/v1",
+        "candidate_id": candidate_id,
+        "activated_revision": activated.activated_revision,
+        "files": [
+            {
+                "path": "features/a.py",
+                "operation": "write",
+                "sha256": hashlib.sha256(b"A").hexdigest(),
+            }
+        ],
+        "registration_actions": [],
+    }
     assert barriers == [
         (
             "enter",
@@ -299,7 +329,7 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     current.status = "validated"
     svc.repo.files["features/a.py"] = b"someone else"
     with pytest.raises(ChangesetConflict) as exc:
-        await svc.activate(second.id, WorkspaceRepoActivateRequest(), "tester")
+        await svc.activate(second.id, activation_request(current), "tester")
     assert exc.value.detail["conflicting_paths"] == ["features/a.py"]
 
     aborted = await svc.abort(second.id)
@@ -343,7 +373,7 @@ async def test_activation_compensates_storage_on_partial_failure(monkeypatch):
         "src.services.workspace_repo_changesets.FileStorageService", FailingStorage
     )
     with pytest.raises(RuntimeError, match="storage failed"):
-        await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
+        await svc.activate(row.id, activation_request(stored), "tester")
     assert svc.repo.files == {"features/a.txt": b"a", "features/b.txt": b"b"}
     assert stored.status == "failed"
 
@@ -391,7 +421,7 @@ async def test_activation_persists_failure_when_compensation_also_fails(monkeypa
         BrokenRollbackStorage,
     )
     with pytest.raises(RuntimeError, match="rollback failed"):
-        await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
+        await svc.activate(row.id, activation_request(stored), "tester")
     assert stored.status == "recovery_required"
     assert "activation failed" in stored.error
     assert "rollback failed" in stored.error
@@ -435,7 +465,8 @@ async def test_activation_closes_with_verified_writer_and_provenance(monkeypatch
     )
     closed = await svc.activate(
         row.id,
-        WorkspaceRepoActivateRequest(
+        activation_request(
+            stored,
             commit_message="agent change\noperator context",
             push=True,
             plan_id="plan-42",
@@ -497,7 +528,7 @@ async def test_git_commit_failure_preserves_activation_with_recovery_evidence(
     )
     result = await svc.activate(
         row.id,
-        WorkspaceRepoActivateRequest(commit_message="agent change", push=True),
+        activation_request(stored, commit_message="agent change", push=True),
         "tester",
     )
 
@@ -556,7 +587,7 @@ async def test_retry_git_closure_after_writer_configuration_skips_activation(
     )
     failed = await svc.activate(
         row.id,
-        WorkspaceRepoActivateRequest(commit_message="release source", push=True),
+        activation_request(stored, commit_message="release source", push=True),
         "tester",
     )
     assert failed.status == "activated"
@@ -706,7 +737,7 @@ async def test_verification_failure_persists_candidate_sha_for_retry(monkeypatch
     )
     failed = await svc.activate(
         row.id,
-        WorkspaceRepoActivateRequest(commit_message="agent change", push=True),
+        activation_request(stored, commit_message="agent change", push=True),
         "tester",
     )
     assert failed.status == "activated"

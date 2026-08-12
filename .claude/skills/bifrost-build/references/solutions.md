@@ -65,7 +65,14 @@ bifrost solution scaffold-app operations
 
 The command creates source and its app manifest entry. Read `apps-v2.md`, `app-quality.md`, and `web-sdk-v2.md` before implementation.
 
-Place workflow code under `functions/`. Every callable that should become a workflow entity also needs a `.bifrost/workflows.yaml` entry:
+Place workflow code under `functions/`. Every callable that should become a workflow entity also needs a `.bifrost/workflows.yaml` entry. Let the CLI mint and preserve that local identity:
+
+```bash
+bifrost solution add-workflow functions/items.py::list_items
+bifrost solution plan
+```
+
+The resulting source entry is equivalent to:
 
 ```yaml
 workflows:
@@ -76,7 +83,7 @@ workflows:
     function_name: list_items
 ```
 
-Deploy creates/updates the row. Do not run `bifrost workflows register` for Solution-owned code. Use portable refs such as `functions/items.py::list_items` from apps, forms, and agents.
+`solution add-workflow` is local-only and idempotent; deploy creates or updates the live row. Do not run `bifrost workflows register` for Solution-owned code. Use portable refs such as `functions/items.py::list_items` from apps, forms, and agents. `solution deploy` runs the same plan first and refuses to upload when any decorated executable lacks an exact manifest row.
 
 For logos, the Solution catalog logo and app header logo are independent. `bifrost.solution.yaml` uses a Solution-root-relative path; the app manifest uses a path relative to that app's source directory. Set and verify both when both surfaces should be branded.
 
@@ -125,7 +132,14 @@ bifrost solution deploy
 bifrost solution deploy --solution <install-id>
 ```
 
-Deploy is a full replacement of managed definitions and requires an existing install. It preserves environment data according to each resource's contract, but removed managed entities are reconciled as deletions. Review the diff, captured/pulled state, policies, and production impact first.
+Deploy is a full replacement of managed definitions and requires an existing install. It preserves environment data according to each resource's contract, but removed managed entities are reconciled as deletions. Every deploy prints a `sha256:` candidate for the exact deterministic ZIP, the server verifies that candidate before enqueueing, and the CLI verifies the activated job result. For a separate review/apply boundary:
+
+```bash
+bifrost solution deploy --preview
+bifrost solution deploy --candidate-id <reviewed-sha256-candidate>
+```
+
+Preview performs the same vendoring and local app build but uploads nothing. A changed local, vendored, or built byte changes the candidate and blocks the second command. Review the diff, captured/pulled state, policies, and production impact first.
 
 For a sealed Solution (`global_repo_access: false`), deploy vendors imported instance `_repo` Python modules into the bundle. Runtime is self-contained, but the selected instance remains a build-time source. If the Solution should own and version a module, move it into local `modules/`; local source is bundled directly and is not vendored. With shared fallback enabled, deploy skips vendoring and resolves eligible `_repo` modules at runtime.
 

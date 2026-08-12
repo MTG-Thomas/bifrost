@@ -911,6 +911,28 @@ async def test_poll_deploy_job_reports_success_failure_and_read_errors(capsys):
     ]
     assert "Still deploying" in capsys.readouterr().out
 
+    mismatched = Client(
+        [
+            Response(
+                200,
+                {
+                    "status": "succeeded",
+                    "result": {"candidate_id": "sha256:" + "b" * 64},
+                },
+            )
+        ]
+    )
+    assert (
+        await _poll_deploy_job(
+            mismatched,
+            "job-mismatch",
+            interval=0,
+            expected_candidate_id="sha256:" + "a" * 64,
+        )
+        == 1
+    )
+    assert "verification failed" in capsys.readouterr().err
+
     failed = Client([Response(200, {"status": "failed", "error": "bundle older than installed"})])
     assert await _poll_deploy_job(failed, "job-2", interval=0) == 1
     assert "Re-run with --force" in capsys.readouterr().err

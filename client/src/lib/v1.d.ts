@@ -23583,6 +23583,19 @@ export interface components {
             email: string;
         };
         /**
+         * SolutionCandidateDeployEnqueued
+         * @description Deploy enqueue response bound to the exact uploaded Solution bundle.
+         */
+        SolutionCandidateDeployEnqueued: {
+            /**
+             * Deploy Job Id
+             * Format: uuid
+             */
+            deploy_job_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+        };
+        /**
          * SolutionCaptureCandidates
          * @description Loose same-scope entities that can be adopted into an install.
          */
@@ -26630,6 +26643,11 @@ export interface components {
             push: boolean;
             /** Plan Id */
             plan_id?: string | null;
+            /**
+             * Candidate Id
+             * @description Exact immutable candidate returned by the latest validation.
+             */
+            candidate_id?: string | null;
             /** Protected Main Source Sha */
             protected_main_source_sha?: string | null;
         };
@@ -26794,12 +26812,18 @@ export interface components {
         WorkspaceRepoValidationResponse: {
             /** Valid */
             valid: boolean;
+            /** Candidate Id */
+            candidate_id: string;
             /** Diagnostics */
             diagnostics?: {
                 [key: string]: unknown;
             }[];
             /** Pending Deactivations */
             pending_deactivations?: {
+                [key: string]: unknown;
+            }[];
+            /** Registration Actions */
+            registration_actions?: {
                 [key: string]: unknown;
             }[];
             /** Validated Revision */
@@ -41435,6 +41459,7 @@ export interface operations {
         parameters: {
             query?: {
                 force?: boolean;
+                candidate_id?: string | null;
             };
             header?: never;
             path: {
@@ -41454,7 +41479,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SolutionDeployEnqueued"];
+                    "application/json": components["schemas"]["SolutionCandidateDeployEnqueued"];
                 };
             };
             /** @description Validation Error */

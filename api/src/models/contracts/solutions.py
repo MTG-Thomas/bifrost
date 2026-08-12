@@ -452,6 +452,12 @@ class SolutionDeployEnqueued(BaseModel):
     deploy_job_id: UUID
 
 
+class SolutionCandidateDeployEnqueued(SolutionDeployEnqueued):
+    """Deploy enqueue response bound to the exact uploaded Solution bundle."""
+
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class SolutionDeployJobStatus(BaseModel):
     """Current state of an async deploy job."""
 

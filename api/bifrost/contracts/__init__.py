@@ -51,6 +51,7 @@ from bifrost.contracts.integrations import (
     IntegrationUpdate,
 )
 from bifrost.contracts.organizations import OrganizationCreate, OrganizationUpdate
+from bifrost.contracts.solutions import SolutionCandidateDeployEnqueued
 from bifrost.contracts.tables import TableCreate, TableUpdate
 from bifrost.contracts.users import RoleCreate, RoleUpdate
 from bifrost.contracts.workflows import WorkflowUpdateRequest
@@ -65,6 +66,8 @@ __all__ = [
     # Organizations
     "OrganizationCreate",
     "OrganizationUpdate",
+    # Solutions
+    "SolutionCandidateDeployEnqueued",
     # Roles / users
     "RoleCreate",
     "RoleUpdate",

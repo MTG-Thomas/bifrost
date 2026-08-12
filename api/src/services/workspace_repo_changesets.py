@@ -11,6 +11,8 @@ import ast
 import base64
 import difflib
 import hashlib
+import json
+import logging
 from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import cast
@@ -46,6 +48,16 @@ from src.services.platform_commit_writer import (
     PlatformCommitWriter,
 )
 from src.services.repo_storage import RepoStorage
+from src.services.workflow_registration import (
+    WorkspaceRegistrationCandidate,
+    WorkflowRegistrationConflict,
+    apply_workspace_registration_plan,
+    plan_workspace_registrations,
+)
+
+logger = logging.getLogger(__name__)
+
+CANDIDATE_SCHEMA = "bifrost.workspace-candidate/v1"
 
 
 class ChangesetConflict(Exception):
@@ -250,6 +262,7 @@ class WorkspaceRepoChangesetService:
         self._ensure_active(row)
         diagnostics: list[dict] = []
         pending: list[dict] = []
+        registration_candidates: list[WorkspaceRegistrationCandidate] = []
         deactivation = DeactivationProtectionService(self.db)
         parser = ASTMetadataParser()
         for item in row.mutations:
@@ -290,6 +303,21 @@ class WorkspaceRepoChangesetService:
                                 kind,
                                 kwargs.get("name") or node.name,
                             )
+                            if kind == "data_provider":
+                                workflow_type = "data_provider"
+                            elif kind == "tool":
+                                workflow_type = "tool"
+                            else:
+                                workflow_type = "workflow"
+                            registration_candidates.append(
+                                WorkspaceRegistrationCandidate(
+                                    path=path,
+                                    function_name=node.name,
+                                    workflow_type=workflow_type,
+                                    name=kwargs.get("name") or node.name,
+                                    requested_id=kwargs.get("id"),
+                                )
+                            )
             if not item.get("force_deactivation"):
                 found, _ = await deactivation.detect_pending_deactivations(
                     path=path,
@@ -297,12 +325,23 @@ class WorkspaceRepoChangesetService:
                     new_decorator_info=decorator_info,
                 )
                 pending.extend({**asdict(value), "path": path} for value in found)
+        registration_actions, registry_diagnostics = await plan_workspace_registrations(
+            self.db, self.organization_id, registration_candidates
+        )
+        diagnostics.extend(registry_diagnostics)
         valid = not diagnostics and not pending and bool(row.mutations)
         current_revision, _ = await self._snapshot(row.scope)
+        candidate_id = self._candidate_id(
+            row,
+            validated_revision=current_revision,
+            registration_actions=registration_actions,
+        )
         result = WorkspaceRepoValidationResponse(
             valid=valid,
+            candidate_id=candidate_id,
             diagnostics=diagnostics,
             pending_deactivations=pending,
+            registration_actions=registration_actions,
             validated_revision=current_revision,
         )
         row.validation = result.model_dump(mode="json")
@@ -329,6 +368,11 @@ class WorkspaceRepoChangesetService:
         ):
             raise ChangesetInvalid(
                 "changeset must pass validation immediately before activation"
+            )
+        candidate_id = str(row.validation.get("candidate_id") or "")
+        if not candidate_id or request.candidate_id != candidate_id:
+            raise ChangesetInvalid(
+                "activation candidate_id must exactly match the latest validation"
             )
         current_revision, current_files = await self._snapshot(row.scope)
         conflicting = [
@@ -363,6 +407,18 @@ class WorkspaceRepoChangesetService:
             broadcast=True,
         ):
             try:
+                try:
+                    applied_registrations = await apply_workspace_registration_plan(
+                        self.db,
+                        self.organization_id,
+                        list(row.validation.get("registration_actions") or []),
+                    )
+                    row.validation = {
+                        **row.validation,
+                        "registration_actions": applied_registrations,
+                    }
+                except WorkflowRegistrationConflict as exc:
+                    raise ChangesetInvalid(str(exc)) from exc
                 for item in row.mutations:
                     if item["operation"] == "delete":
                         await storage.delete_file(item["path"])
@@ -377,8 +433,40 @@ class WorkspaceRepoChangesetService:
                             raise ChangesetInvalid(
                                 f"deactivation preflight changed for {item['path']}"
                             )
-                activated_revision, _ = await self._snapshot(row.scope)
+                activated_revision, activated_files = await self._snapshot(row.scope)
+                file_evidence: list[dict] = []
+                for item in sorted(row.mutations, key=lambda value: value["path"]):
+                    observed_hash = activated_files.get(item["path"])
+                    expected_hash = (
+                        item.get("after_hash")
+                        if item["operation"] == "write"
+                        else None
+                    )
+                    if observed_hash != expected_hash:
+                        raise ChangesetInvalid(
+                            f"activation readback mismatch for {item['path']}"
+                        )
+                    file_evidence.append(
+                        {
+                            "path": item["path"],
+                            "operation": item["operation"],
+                            "sha256": observed_hash,
+                        }
+                    )
                 row.activated_revision = activated_revision
+                current_validation: dict[str, object] = dict(row.validation or {})
+                row.validation = {
+                    **current_validation,
+                    "activation_evidence": {
+                        "schema": CANDIDATE_SCHEMA,
+                        "candidate_id": candidate_id,
+                        "activated_revision": activated_revision,
+                        "files": file_evidence,
+                        "registration_actions": current_validation.get(
+                            "registration_actions", []
+                        ),
+                    },
+                }
                 row.status = "activated"
                 await self.db.flush()
                 # Activation is the authoritative workspace transition. Make it
@@ -428,6 +516,14 @@ class WorkspaceRepoChangesetService:
                 if rollback_errors:
                     raise RuntimeError(row.error) from exc
                 raise
+
+        if row.validation.get("registration_actions"):
+            try:
+                from src.services.mcp_server.server import refresh_workflow_tools
+
+                await refresh_workflow_tools()
+            except Exception as exc:
+                logger.warning("Failed to refresh MCP workflow tools: %s", exc)
 
         return await self._complete_git_closure(
             changeset_id, request, operator=updated_by
@@ -624,6 +720,37 @@ class WorkspaceRepoChangesetService:
         if row is None:
             raise KeyError(changeset_id)
         return row
+
+    @staticmethod
+    def _candidate_id(
+        row: WorkspaceRepoChangeset,
+        *,
+        validated_revision: str,
+        registration_actions: list[dict],
+    ) -> str:
+        """Hash the exact source CAS and registry intent approved for activation."""
+        payload = {
+            "schema": CANDIDATE_SCHEMA,
+            "changeset_id": str(row.id),
+            "scope": row.scope,
+            "base_revision": row.base_revision,
+            "validated_revision": validated_revision,
+            "mutations": [
+                {
+                    "path": item["path"],
+                    "operation": item["operation"],
+                    "before_hash": item.get("before_hash"),
+                    "after_hash": item.get("after_hash"),
+                    "force_deactivation": bool(item.get("force_deactivation")),
+                }
+                for item in sorted(row.mutations, key=lambda value: value["path"])
+            ],
+            "registration_actions": registration_actions,
+        }
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
     def _ensure_active(self, row: WorkspaceRepoChangeset) -> None:
         if row.status not in self.ACTIVE:

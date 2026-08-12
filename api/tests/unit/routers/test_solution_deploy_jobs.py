@@ -12,7 +12,16 @@ from src.models.orm.solutions import Solution
 from src.routers.solutions import (
     _enqueue_solution_deploy_job,
     _run_deploy_job,
+    _solution_candidate_id,
 )
+
+
+def test_solution_candidate_id_hashes_exact_staged_bytes(tmp_path):
+    path = tmp_path / "candidate.zip"
+    path.write_bytes(b"exact deploy bytes")
+    assert _solution_candidate_id(path) == (
+        "sha256:e308919039cd35ee393feae0740fd24b356d6279fff339e18411316b7eb846e1"
+    )
 
 
 @pytest.mark.asyncio
@@ -53,6 +62,36 @@ async def test_deploy_job_is_staged_as_encrypted_central_job(
     assert central.encrypted_payload is not None
     assert "not-plaintext" not in central.encrypted_payload
     assert central.resource_lock_key == f"solution:{sol.id}"
+
+
+@pytest.mark.asyncio
+async def test_deploy_job_rejects_candidate_changed_during_staging(
+    db_session, tmp_path, monkeypatch
+):
+    path = tmp_path / "deploy.zip"
+    path.write_bytes(b"candidate")
+    delete = AsyncMock()
+    monkeypatch.setattr(
+        "src.routers.solutions.SolutionDeployJobStorage.write_path",
+        AsyncMock(return_value=("b" * 64, len(b"candidate"))),
+    )
+    monkeypatch.setattr(
+        "src.routers.solutions.SolutionDeployJobStorage.delete", delete
+    )
+
+    with pytest.raises(ValueError, match="candidate hash changed"):
+        await _enqueue_solution_deploy_job(
+            db_session,
+            kind="deploy",
+            install_id=None,
+            organization_id=None,
+            options={"candidate_id": "sha256:" + "a" * 64},
+            requested_by_user_id=uuid4(),
+            requested_by_email="admin@example.com",
+            requested_by_name="Admin",
+            input_path=path,
+        )
+    delete.assert_awaited_once()
 
 
 @pytest.mark.asyncio
