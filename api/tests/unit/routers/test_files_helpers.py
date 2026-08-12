@@ -1185,15 +1185,63 @@ async def test_delete_file_editor_queues_recursive_folder_deletion(monkeypatch):
         enqueue,
     )
 
+    db = SimpleNamespace()
     response = await files.delete_file_editor(
         _ctx(is_superuser=True),
-        SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test", name=None),
+        path="folder",
+        db=db,
+    )
+
+    assert response.status_code == 202
+    assert response.headers["location"] == f"/api/platform-jobs/{job_id}"
+    enqueue.assert_awaited_once_with(
+        db,
+        "folder",
+        organization_id=ORG_A,
+        requested_by_user_id=USER_ID,
+        requested_by_email="admin@example.test",
+        requested_by_name="admin@example.test",
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_file_editor_queues_path_that_becomes_recursive(monkeypatch):
+    job_id = uuid4()
+    enqueue = AsyncMock(
+        return_value=(
+            SimpleNamespace(id=job_id, status="queued", notification_id=None),
+            False,
+        )
+    )
+
+    class FakeRepo:
+        def __init__(self):
+            self.calls = 0
+
+        async def list(self, prefix):
+            self.calls += 1
+            return [] if self.calls == 1 else ["folder/a.txt"]
+
+    gate = AsyncMock()
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", gate
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_path_deletion.enqueue_workspace_path_deletion",
+        enqueue,
+    )
+
+    response = await files.delete_file_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test", name=None),
         path="folder",
         db=SimpleNamespace(),
     )
 
     assert response.status_code == 202
-    assert response.headers["location"] == f"/api/platform-jobs/{job_id}"
+    gate.assert_awaited_once()
     enqueue.assert_awaited_once()
 
 

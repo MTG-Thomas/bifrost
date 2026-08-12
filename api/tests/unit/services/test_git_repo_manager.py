@@ -560,10 +560,11 @@ class TestCheckout:
         ):
             mock_lock.return_value.__aenter__ = AsyncMock()
             mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+            fail = AsyncMock(side_effect=RuntimeError("commit failed"))
 
             with pytest.raises(RuntimeError, match="commit failed"):
                 async with manager.isolated_checkout():
-                    raise RuntimeError("commit failed")
+                    await fail()
 
         mock_down.assert_awaited_once()
         mock_up.assert_not_awaited()

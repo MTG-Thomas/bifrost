@@ -15,6 +15,7 @@ from src.core.workspace_writer import (
     checkpoint_workspace_writer_lease,
     lock_workspace_writer_gate,
 )
+from src.models.orm.platform_jobs import PlatformJob
 from src.services.file_storage import FileStorageService
 from src.services.repo_storage import RepoStorage
 
@@ -45,27 +46,23 @@ async def delete_workspace_path_recursively(
     for attempt in range(5):
         await checkpoint_workspace_writer_lease(db)
         children = sorted(set(await repo_storage.list(prefix)))
-        total = len(children)
-        for index, child_path in enumerate(children, start=1):
+        remaining = len(children)
+        for child_path in children:
             await checkpoint_workspace_writer_lease(db)
-            try:
-                if child_path.endswith("/"):
-                    await repo_storage.delete(child_path)
-                else:
-                    await file_storage.delete_file(child_path, skip_dirty_flag=True)
-                    await db.commit()
-            except FileNotFoundError:
-                # A retried durable drain treats already-deleted children as success.
-                pass
-            deleted += 1
+            if await _delete_workspace_child(
+                db, repo_storage, file_storage, child_path
+            ):
+                deleted += 1
+            remaining -= 1
             if report_progress is not None:
-                await report_progress(index, total)
+                await report_progress(deleted, deleted + remaining)
 
         for marker in (normalized, prefix):
             await checkpoint_workspace_writer_lease(db)
             try:
                 await repo_storage.delete(marker)
             except FileNotFoundError:
+                # Retried drains may have removed folder markers already.
                 pass
 
         await checkpoint_workspace_writer_lease(db)
@@ -77,6 +74,25 @@ async def delete_workspace_path_recursively(
     raise RuntimeError(f"workspace path deletion did not drain prefix {prefix!r}")
 
 
+async def _delete_workspace_child(
+    db: AsyncSession,
+    repo_storage: RepoStorage,
+    file_storage: FileStorageService,
+    child_path: str,
+) -> bool:
+    """Delete one child, returning whether this attempt performed the deletion."""
+    try:
+        if child_path.endswith("/"):
+            await repo_storage.delete(child_path)
+        else:
+            await file_storage.delete_file(child_path, skip_dirty_flag=True)
+            await db.commit()
+    except FileNotFoundError:
+        # A retried durable drain treats an already-deleted child as converged.
+        return False
+    return True
+
+
 async def enqueue_workspace_path_deletion(
     db: AsyncSession,
     path: str,
@@ -85,7 +101,7 @@ async def enqueue_workspace_path_deletion(
     requested_by_user_id: UUID,
     requested_by_email: str,
     requested_by_name: str,
-):
+) -> tuple[PlatformJob, bool]:
     """Enqueue one recursive deletion behind the global workspace writer."""
     from src.jobs.platform.workspace_path_deletion import (
         WORKSPACE_PATH_DELETION_DEFINITION,
@@ -117,7 +133,8 @@ async def enqueue_workspace_path_deletion(
     )
     if job.notification_id is None:
         try:
-            await ensure_platform_job_notification(db, job)
+            async with db.begin_nested():
+                await ensure_platform_job_notification(db, job)
         except Exception:
             logger.warning(
                 "Workspace deletion queued without a progress notification",

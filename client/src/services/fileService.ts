@@ -12,6 +12,8 @@ export type FileContentRequest = components["schemas"]["FileContentRequest"];
 export type FileContentResponse = components["schemas"]["FileContentResponse"];
 export type FileConflictResponse =
 	components["schemas"]["FileConflictResponse"];
+type PlatformJobAccepted = components["schemas"]["PlatformJobAccepted"];
+type PlatformJobPublic = components["schemas"]["PlatformJobPublic"];
 
 // Deactivation protection types
 export type PendingDeactivation = components["schemas"]["PendingDeactivation"];
@@ -24,6 +26,25 @@ export class FileConflictError extends Error {
 	constructor(public conflictData: FileConflictResponse) {
 		super(conflictData.message);
 		this.name = "FileConflictError";
+	}
+}
+
+const PLATFORM_JOB_POLL_INTERVAL_MS = 500;
+
+async function waitForPlatformJob(jobId: string): Promise<void> {
+	for (;;) {
+		const response = await authFetch(`/api/platform-jobs/${jobId}`);
+		if (!response.ok) {
+			throw new Error(`Failed to read delete job: ${response.statusText}`);
+		}
+		const job = (await response.json()) as PlatformJobPublic;
+		if (job.status === "succeeded") return;
+		if (job.status === "failed" || job.status === "cancelled") {
+			throw new Error(job.error?.message ?? `Delete job ${job.status}`);
+		}
+		await new Promise((resolve) =>
+			setTimeout(resolve, PLATFORM_JOB_POLL_INTERVAL_MS),
+		);
 	}
 }
 
@@ -164,6 +185,10 @@ export const fileService = {
 
 		if (!response.ok) {
 			throw new Error(`Failed to delete: ${response.statusText}`);
+		}
+		if (response.status === 202) {
+			const accepted = (await response.json()) as PlatformJobAccepted;
+			await waitForPlatformJob(accepted.job_id);
 		}
 	},
 

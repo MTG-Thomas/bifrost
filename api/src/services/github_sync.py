@@ -78,7 +78,7 @@ _convergence_inflight: dict[
     asyncio.Task[WorkspaceAuthoritativeConvergenceResponse],
 ] = {}
 _AUTHENTICATED_REMOTE_RE = re.compile(
-    r"(?P<scheme>https?://)[^\s/@]+(?::[^\s/@]*)?@",
+    r"(?P<scheme>https?://)[^\s/@]*@",
     flags=re.IGNORECASE,
 )
 

@@ -54,6 +54,12 @@ async def run_workspace_path_deletion(
                 )
     except PlatformJobCancelled:
         raise
+    except ValueError as exc:
+        raise PlatformJobFailure(
+            "workspace_path_deletion_invalid_path",
+            str(exc),
+            retryable=False,
+        ) from exc
     except Exception as exc:
         raise PlatformJobFailure(
             "workspace_path_deletion_failed",

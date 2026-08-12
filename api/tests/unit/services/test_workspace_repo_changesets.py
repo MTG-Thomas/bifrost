@@ -630,6 +630,53 @@ async def test_git_commit_failure_preserves_activation_with_recovery_evidence(
 
 
 @pytest.mark.asyncio
+async def test_lease_loss_after_external_commit_does_not_persist_stale_failure(
+    monkeypatch,
+):
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({"features/a.txt": b"A"}),
+        commit_writer=RecordingWriter(),
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    stored = svc.rows.items[row.id]
+    snapshot = build_snapshot(
+        {"features/a.txt": hashlib.sha256(b"A").hexdigest()}
+    )
+    original_failure = {
+        "phase": "git_closure",
+        "state": "failed",
+        "provenance": {
+            "operator": "tester",
+            "commit_message": "release source",
+        },
+    }
+    stored.status = "activated"
+    stored.failure_detail = original_failure
+    stored.authoritative_revision = snapshot.revision
+    stored.authoritative_files = snapshot.file_hashes
+    stored.authoritative_base_files = snapshot.file_hashes
+    checkpoint = AsyncMock(side_effect=WorkspaceWriterLeaseLost("lease replaced"))
+    monkeypatch.setattr(
+        "src.core.workspace_writer.checkpoint_workspace_writer_lease", checkpoint
+    )
+
+    with pytest.raises(WorkspaceWriterLeaseLost, match="lease replaced"):
+        await svc.retry_git_closure(
+            row.id,
+            WorkspaceRepoActivateRequest(push=True),
+            "retrying-operator",
+        )
+
+    assert stored.status == "activated"
+    assert stored.failure_detail["state"] == "pending"
+    assert stored.failure_detail["provenance"]["commit_message"] == "release source"
+    assert "lease replaced" not in str(stored.failure_detail)
+
+
+@pytest.mark.asyncio
 async def test_retry_git_closure_after_writer_configuration_skips_activation(
     monkeypatch,
 ):

@@ -1,6 +1,5 @@
 """Thin HTTP surface for transactional workspace _repo changesets."""
 
-from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -18,8 +17,6 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoStateResponse,
     WorkspaceRepoOperationalStatusResponse,
     WorkspaceDirtyStatus,
-    WorkspaceWriterStatus,
-    WorkspaceAuthoritativeConvergenceResponse,
     WorkspaceRepoValidationResponse,
 )
 from src.models.contracts.platform_jobs import PlatformJobAccepted
@@ -40,87 +37,6 @@ router = APIRouter(
 async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangesetService:
     org_id = require_organization_id(org_id)
     return await build_workspace_repo_changeset_service(db, org_id)
-
-
-async def _active_workspace_writer_status(
-    db: DbSession,
-) -> WorkspaceWriterStatus | None:
-    from sqlalchemy import case, select
-
-    from src.core.workspace_writer import WORKSPACE_WRITER_RESOURCE_LOCK
-    from src.models.orm.platform_jobs import PlatformJob
-
-    # ``_repo`` and its writer lease are global platform resources, so this
-    # operational view intentionally reports the global holder across orgs.
-    writer = (
-        await db.execute(
-            select(PlatformJob)
-            .where(
-                PlatformJob.resource_lock_key == WORKSPACE_WRITER_RESOURCE_LOCK,
-                PlatformJob.status.in_(
-                    ("queued", "running", "waiting", "cancel_requested")
-                ),
-            )
-            # A queued/waiting contender can coexist with the running lease
-            # holder. Surface the lease-bearing owner first so an abandoned
-            # writer remains observable and recoverable.
-            .order_by(
-                case(
-                    (PlatformJob.lease_token.is_not(None), 0),
-                    else_=1,
-                ),
-                PlatformJob.created_at.asc(),
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if writer is None:
-        return None
-    changeset_id = None
-    if writer.resource_id:
-        try:
-            changeset_id = UUID(writer.resource_id)
-        except ValueError:
-            # Other global writer job types use non-UUID resource identifiers.
-            changeset_id = None
-    return WorkspaceWriterStatus(
-        job_id=writer.id,
-        changeset_id=changeset_id,
-        status=writer.status,
-        phase=writer.phase,
-        lease_owner=writer.lease_owner,
-        lease_expires_at=writer.lease_expires_at,
-        lease_expired=(
-            writer.lease_expires_at is not None
-            and writer.lease_expires_at <= datetime.now(timezone.utc)
-        ),
-        started_at=writer.started_at,
-    )
-
-
-async def _authoritative_convergence_status(
-    db: DbSession, organization_id: UUID | None
-) -> WorkspaceAuthoritativeConvergenceResponse:
-    from src.services.github_config import (
-        build_authenticated_github_url,
-        get_github_config,
-    )
-    from src.services.github_sync import GitHubSyncService
-
-    config = await get_github_config(db, organization_id)
-    result = WorkspaceAuthoritativeConvergenceResponse(
-        configured=False,
-        branch=config.branch if config and config.repo_url else None,
-    )
-    if not (config and config.repo_url and config.token):
-        return result
-    # Close the configuration read transaction before checkout and remote I/O.
-    await db.commit()
-    return await GitHubSyncService(
-        db,
-        build_authenticated_github_url(config.repo_url, config.token),
-        config.branch,
-    ).authoritative_convergence()
 
 
 async def _enqueue_writer(
@@ -236,16 +152,17 @@ async def workspace_repo_operational_status(
     db: DbSession,
     user: CurrentSuperuser,
 ):
-    from src.core.repo_dirty import get_repo_dirty_state
+    from src.services.workspace_operational_status import (
+        get_workspace_operational_snapshot,
+    )
 
     try:
         service = await _service(db, ctx.org_id)
         active = await service.list_active()
         recoverable = await service.recoverable_git_closures()
         ledger = await service.closure_ledger()
-        dirty = await get_repo_dirty_state()
-        writer_status = await _active_workspace_writer_status(db)
-        convergence = await _authoritative_convergence_status(db, ctx.org_id)
+        operational = await get_workspace_operational_snapshot(db, ctx.org_id)
+        dirty = operational.dirty
         return WorkspaceRepoOperationalStatusResponse(
             dirty=WorkspaceDirtyStatus(
                 dirty=dirty is not None,
@@ -255,11 +172,11 @@ async def workspace_repo_operational_status(
                 writer=dirty.writer if dirty else None,
                 legacy=dirty.legacy if dirty else False,
             ),
-            active_writer=writer_status,
+            active_writer=operational.writer,
             active_changesets=active,
             recoverable_closures=recoverable,
             closure_ledger=ledger,
-            convergence=convergence,
+            convergence=operational.convergence,
         )
     except Exception as exc:
         raise _translate(exc) from exc

@@ -8,7 +8,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { test, expect } from "@playwright/test";
 
@@ -86,60 +87,42 @@ test.describe("Form Creation", () => {
 });
 
 test.describe("Form Details", () => {
-	test("should show form details when clicked", async ({ page }) => {
-		await page.goto("/forms");
-
-		await expect(
-			page.getByRole("heading", { name: /forms/i }).first(),
-		).toBeVisible({
-			timeout: 10000,
-		});
-
-		// Find a form row/card
-		const formItem = page
-			.locator(
-				"table tbody tr, [data-testid='form-card'], [data-testid='form-row']",
-			)
-			.first();
-
-		if (await formItem.isVisible().catch(() => false)) {
-			await formItem.click();
-
-			// Check for detail content
-			const hasDetails =
-				page.url().includes("/forms/") ||
-				(await page
-					.getByText(/fields|schema|settings/i)
-					.isVisible()
-					.catch(() => false));
-
-			expect(hasDetails).toBe(true);
-		}
-	});
-
 	test("should show form fields configuration", async ({ page }) => {
-		await page.goto("/forms");
-
-		await expect(
-			page.getByRole("heading", { name: /forms/i }).first(),
-		).toBeVisible({
-			timeout: 10000,
+		const credentials = JSON.parse(
+			readFileSync(
+				resolve(dirname(fileURLToPath(import.meta.url)), ".auth/credentials.json"),
+				"utf8",
+			),
+		) as { platform_admin: { accessToken: string } };
+		const headers = {
+			Authorization: `Bearer ${credentials.platform_admin.accessToken}`,
+		};
+		const fieldLabel = `Playwright Field ${Date.now()}`;
+		const created = await page.request.post("/api/forms", {
+			headers,
+			data: {
+				name: `Fields form ${Date.now()}`,
+				description: "Playwright fields fixture",
+				form_schema: {
+					fields: [{ name: "playwright_field", type: "text", label: fieldLabel }],
+				},
+				access_level: "authenticated",
+			},
 		});
+		expect(created.ok()).toBe(true);
+		const form = (await created.json()) as { id: string };
 
-		// Find a form to view
-		const formItem = page
-			.locator(
-				"table tbody tr, [data-testid='form-card'], [data-testid='form-row']",
-			)
-			.first();
-
-		if (await formItem.isVisible().catch(() => false)) {
-			await formItem.click();
-
-			// Look for fields section
-			await expect(
-				page.getByText(/fields|inputs|parameters/i),
-			).toBeVisible({ timeout: 5000 });
+		try {
+			await page.goto(`/forms/${form.id}/edit`);
+			await expect(page.getByText("Field Palette")).toBeVisible({
+				timeout: 10000,
+			});
+			await expect(page.getByText(fieldLabel)).toBeVisible();
+		} finally {
+			const deleted = await page.request.delete(`/api/forms/${form.id}`, {
+				headers,
+			});
+			expect(deleted.ok()).toBe(true);
 		}
 	});
 });
@@ -148,7 +131,10 @@ test.describe("Form Editing", () => {
 	test("should show edit button for forms", async ({ page }) => {
 		const name = `Editable form ${Date.now()}`;
 		const credentials = JSON.parse(
-			readFileSync(resolve("e2e/.auth/credentials.json"), "utf8"),
+			readFileSync(
+				resolve(dirname(fileURLToPath(import.meta.url)), ".auth/credentials.json"),
+				"utf8",
+			),
 		) as { platform_admin: { accessToken: string } };
 		const headers = {
 			Authorization: `Bearer ${credentials.platform_admin.accessToken}`,

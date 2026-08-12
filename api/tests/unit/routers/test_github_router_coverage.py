@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import pytest
@@ -113,41 +113,45 @@ async def test_github_status_reports_unconfigured_token_only_configured_and_erro
 
 @pytest.mark.asyncio
 async def test_repo_status_combines_git_config_and_dirty_marker() -> None:
-    writer_result = Mock()
-    writer_result.scalar_one_or_none.return_value = None
-    count_result = Mock()
-    count_result.scalar_one.return_value = 0
-    db = SimpleNamespace(
-        execute=AsyncMock(side_effect=[writer_result, count_result, count_result]),
-        commit=AsyncMock(),
-    )
+    db = SimpleNamespace()
     dirty = RepoDirtyState(
         "a" * 32,
         "2026-07-05T12:00:00Z",
         "2026-07-05T12:01:00Z",
         "editor@example.com",
     )
-    git = Mock()
-    git.authoritative_convergence = AsyncMock(
-        return_value=WorkspaceAuthoritativeConvergenceResponse(
+    from src.services.workspace_operational_status import WorkspaceOperationalSnapshot
+
+    operational = WorkspaceOperationalSnapshot(
+        dirty=dirty,
+        writer=None,
+        convergence=WorkspaceAuthoritativeConvergenceResponse(
             configured=True,
             branch="main",
             generated_checkout_clean=True,
             authoritative_converged=False,
             mismatch_count=1,
             mismatch_paths=["features/drift.py"],
-        )
+        ),
+        active_changeset_count=4,
+        recoverable_closure_count=2,
     )
     with (
-        patch.object(github, "get_github_config", AsyncMock(return_value=_config())),
-        patch("src.core.repo_dirty.get_repo_dirty_state", AsyncMock(return_value=dirty)),
-        patch("src.services.github_sync.GitHubSyncService", return_value=git),
+        patch(
+            "src.services.workspace_operational_status.get_workspace_operational_snapshot",
+            AsyncMock(return_value=operational),
+        ) as snapshot,
     ):
         result = await github.get_repo_status(_ctx(), _user(), db)
 
     assert result.git_configured is True
     assert result.dirty is True
     assert result.dirty_since == "2026-07-05T12:00:00Z"
+    assert result.active_writer_job_id is None
+    assert result.active_writer_phase is None
+    assert result.active_changesets == 4
+    assert result.recoverable_closures == 2
+    snapshot.assert_awaited_once_with(db, _ctx().org_id)
     assert result.dirty_generation == "a" * 32
     assert result.generated_checkout_clean is True
     assert result.authoritative_converged is False

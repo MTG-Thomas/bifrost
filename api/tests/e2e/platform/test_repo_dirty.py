@@ -131,6 +131,7 @@ async def test_operational_status_exposes_expired_workspace_writer_lease(
         title="Queued writer visibility test",
         status="queued",
         phase="Queued",
+        available_at=now + timedelta(hours=1),
     )
     job = PlatformJob(
         job_type="workspace.repo-closure",

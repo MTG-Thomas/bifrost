@@ -2257,7 +2257,7 @@ async def _enqueue_recursive_workspace_deletion(
         organization_id=ctx.org_id,
         requested_by_user_id=user.user_id,
         requested_by_email=user.email,
-        requested_by_name=getattr(user, "name", None) or user.email,
+        requested_by_name=user.name or user.email,
     )
     accepted = PlatformJobAccepted(
         job_id=job.id,

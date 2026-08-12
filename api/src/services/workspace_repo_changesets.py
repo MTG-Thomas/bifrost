@@ -200,6 +200,22 @@ class WorkspaceRepoChangesetService:
     async def get(self, changeset_id: UUID) -> WorkspaceRepoChangesetResponse:
         return self._response(await self._required(changeset_id))
 
+    async def prepare_writer_enqueue(
+        self,
+        changeset_id: UUID,
+        request: WorkspaceRepoActivateRequest,
+        operation: Literal["activate", "retry"],
+    ) -> WorkspaceRepoChangesetResponse:
+        """Lock and validate one changeset through enqueue and job assignment."""
+        row = await self._required(changeset_id, for_update=True)
+        if operation == "activate" and row.status not in {"validated", "activating"}:
+            raise ChangesetInvalid(
+                "changeset must pass validation immediately before activation"
+            )
+        if operation == "retry":
+            self._ensure_retryable_git_closure(row, request)
+        return self._response(row)
+
     async def assign_writer_job(self, changeset_id: UUID, job_id: UUID) -> None:
         row = await self._required(changeset_id, for_update=True)
         row.writer_job_id = job_id
@@ -743,6 +759,11 @@ class WorkspaceRepoChangesetService:
             row.failure_detail["commit_sha"] = str(candidate_commit_sha)
         await self.db.flush()
         await self.db.commit()
+        from src.core.workspace_writer import (
+            WorkspaceWriterLeaseLost,
+            checkpoint_workspace_writer_lease,
+        )
+
         try:
             from src.services.workspace_convergence import snapshot_repo_storage
 
@@ -795,9 +816,10 @@ class WorkspaceRepoChangesetService:
                     ),
                 )
             )
-            from src.core.workspace_writer import checkpoint_workspace_writer_lease
-
             await checkpoint_workspace_writer_lease(self.db)
+        except WorkspaceWriterLeaseLost:
+            await self.db.rollback()
+            raise
         except Exception as exc:
             await self.db.rollback()
             row = await self._required(changeset_id, for_update=True)
@@ -1044,14 +1066,8 @@ async def enqueue_workspace_repo_writer(
     )
 
     service = await build_workspace_repo_changeset_service(db, organization_id)
-    changeset = await service.get(changeset_id)
-    if operation == "activate" and changeset.status not in {"validated", "activating"}:
-        raise ChangesetInvalid(
-            "changeset must pass validation immediately before activation"
-        )
-    if operation == "retry":
-        await service.check_retryable_git_closure(changeset_id, request)
     await lock_workspace_writer_gate(db)
+    await service.prepare_writer_enqueue(changeset_id, request, operation)
     job, reused = await enqueue_platform_job(
         db,
         WORKSPACE_REPO_CLOSURE_DEFINITION,

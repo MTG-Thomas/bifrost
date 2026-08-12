@@ -209,61 +209,16 @@ async def get_repo_status(
     db: DbSession,
 ) -> RepoStatusResponse:
     """Return the supported exact-path release and reconciliation gate."""
-    from sqlalchemy import select
+    from src.services.workspace_operational_status import (
+        get_workspace_operational_snapshot,
+    )
 
-    from src.core.repo_dirty import get_repo_dirty_state
-    from src.core.workspace_writer import WORKSPACE_WRITER_RESOURCE_LOCK
-    from src.models.contracts.workspace_repo_changesets import (
-        WorkspaceAuthoritativeConvergenceResponse,
-    )
-    from src.models.orm.platform_jobs import PlatformJob
-    from src.repositories.workspace_repo_changesets import (
-        WorkspaceRepoChangesetRepository,
-    )
-    from src.services.github_config import build_authenticated_github_url
-    from src.services.github_sync import GitHubSyncService
-
-    config = await get_github_config(db, ctx.org_id)
-    dirty_state = await get_repo_dirty_state()
-    configured = bool(config and config.repo_url and config.token)
-    convergence = WorkspaceAuthoritativeConvergenceResponse(
-        configured=configured,
-        branch=config.branch if config and config.repo_url else None,
-    )
-    if configured and config is not None and config.repo_url and config.token:
-        # Do not retain the configuration read transaction while the remote
-        # fetch/readback status check performs network I/O.
-        await db.commit()
-        convergence = await GitHubSyncService(
-            db,
-            build_authenticated_github_url(config.repo_url, config.token),
-            config.branch,
-        ).authoritative_convergence()
-    active_writer = (
-        await db.execute(
-            # ``_repo`` and its writer lease are global platform resources, so
-            # operational status intentionally reports the global holder.
-            select(PlatformJob)
-            .where(
-                PlatformJob.resource_lock_key == WORKSPACE_WRITER_RESOURCE_LOCK,
-                PlatformJob.status.in_(
-                    ("queued", "running", "waiting", "cancel_requested")
-                ),
-            )
-            .order_by(PlatformJob.created_at.asc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    active_changesets = 0
-    recoverable = 0
-    if ctx.org_id is not None:
-        rows = WorkspaceRepoChangesetRepository(db)
-        active_changesets = await rows.count_by_statuses(
-            ctx.org_id, ("open", "staged", "validated", "activating")
-        )
-        recoverable = await rows.count_retryable_git_failures(ctx.org_id)
+    operational = await get_workspace_operational_snapshot(db, ctx.org_id)
+    dirty_state = operational.dirty
+    convergence = operational.convergence
+    active_writer = operational.writer
     return RepoStatusResponse(
-        git_configured=configured,
+        git_configured=convergence.configured,
         dirty=dirty_state is not None,
         dirty_since=dirty_state.dirty_since if dirty_state else None,
         dirty_generation=dirty_state.generation if dirty_state else None,
@@ -277,10 +232,10 @@ async def get_repo_status(
         remote_sha=convergence.remote_sha,
         mismatch_count=convergence.mismatch_count,
         mismatch_paths=convergence.mismatch_paths,
-        active_writer_job_id=str(active_writer.id) if active_writer else None,
+        active_writer_job_id=str(active_writer.job_id) if active_writer else None,
         active_writer_phase=active_writer.phase if active_writer else None,
-        active_changesets=active_changesets,
-        recoverable_closures=recoverable,
+        active_changesets=operational.active_changeset_count,
+        recoverable_closures=operational.recoverable_closure_count,
         error=convergence.error,
     )
 
