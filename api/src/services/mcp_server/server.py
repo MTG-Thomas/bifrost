@@ -15,16 +15,19 @@ Usage:
     app = fastmcp_server.http_app()
 """
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 from uuid import UUID
 
 from fastmcp.tools import ToolResult
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+    from src.services.tool_registry import RegisteredTool
 
 from src.services.mcp_server.agent_scope import (
     get_scoped_agent_id as _get_agent_id_from_scope,
@@ -71,6 +74,7 @@ BIFROST_WEBSITE_URL = "https://docs.gobifrost.com"
 # The reverse mapping lets agent-scoped access resolve a workflow UUID to its
 # current FastMCP tool name. Its values also track names during refresh.
 _WORKFLOW_ID_TO_TOOL_NAME: dict[str, str] = {}
+_WORKFLOW_CATALOG_DIGEST = hashlib.sha256(b"[]").hexdigest()
 
 # Stored references for refresh_workflow_tools()
 _fastmcp_instance: "FastMCP | None" = None
@@ -99,13 +103,9 @@ def _normalize_tool_name(name: str) -> str:
     return name
 
 
-def _generate_short_suffix(length: int = 3) -> str:
-    """Generate a short random alphanumeric suffix for duplicate tool names."""
-    import secrets
-    import string
-
-    chars = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(chars) for _ in range(length))
+def _workflow_identity_suffix(workflow_id: UUID | str) -> str:
+    """Return a collision-free, replica-stable suffix for one workflow."""
+    return UUID(str(workflow_id)).hex
 
 
 def get_registered_tool_name(workflow_id: str) -> str | None:
@@ -603,24 +603,97 @@ if HAS_FASTMCP:
     _WorkflowTool = WorkflowTool
 
 
-def _map_type_to_json_schema(param_type: str) -> str:
-    """Map workflow parameter type to JSON Schema type."""
-    type_map = {
-        "string": "string",
-        "str": "string",
-        "int": "integer",
-        "integer": "integer",
-        "float": "number",
-        "number": "number",
-        "bool": "boolean",
-        "boolean": "boolean",
-        "json": "object",
-        "dict": "object",
-        "object": "object",
-        "list": "array",
-        "array": "array",
-    }
-    return type_map.get(param_type.lower(), "string")
+@dataclass(frozen=True)
+class _WorkflowCatalogEntry:
+    """One deterministic workflow-tool definition ready for registration."""
+
+    workflow_id: str
+    workflow_name: str
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+
+    def externally_visible_definition(self) -> dict[str, Any]:
+        """Return exactly the fields this registration adds to ``tools/list``."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "inputSchema": self.input_schema,
+        }
+
+
+def _normalized_workflow_catalog(
+    entries: Sequence[_WorkflowCatalogEntry],
+) -> bytes:
+    """Serialize complete externally visible definitions canonically."""
+    payload = [entry.externally_visible_definition() for entry in entries]
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _workflow_catalog_digest(entries: Sequence[_WorkflowCatalogEntry]) -> str:
+    """Digest complete, canonically ordered externally visible definitions."""
+    return hashlib.sha256(_normalized_workflow_catalog(entries)).hexdigest()
+
+
+def _build_workflow_catalog(
+    tools: Sequence["RegisteredTool"],
+    native_tool_names: set[str] | frozenset[str],
+) -> list[_WorkflowCatalogEntry]:
+    """Normalize workflow tools into a replica-stable exposed catalog.
+
+    The double-underscore delimiter cannot be produced by
+    :func:`_normalize_tool_name`, which collapses repeated underscores. This
+    makes the full UUID suffix unambiguous and collision-free for every group
+    whose candidate name collides after normalization and native-tool handling.
+    """
+    from src.services.tool_registry import workflow_parameters_to_json_schema
+
+    candidates: dict[str, list[RegisteredTool]] = {}
+    for tool in sorted(
+        tools,
+        key=lambda item: (_normalize_tool_name(item.name), str(item.id)),
+    ):
+        normalized = _normalize_tool_name(tool.name)
+        candidate = normalized or "workflow"
+        while candidate in native_tool_names:
+            candidate = f"{candidate}_workflow"
+        candidates.setdefault(candidate, []).append(tool)
+
+    entries: list[_WorkflowCatalogEntry] = []
+    for candidate in sorted(candidates):
+        candidate_tools = sorted(candidates[candidate], key=lambda item: str(item.id))
+        needs_identity = len(candidate_tools) > 1 or not _normalize_tool_name(
+            candidate_tools[0].name
+        )
+        for tool in candidate_tools:
+            workflow_id = str(tool.id)
+            exposed_name = candidate
+            if needs_identity:
+                exposed_name = f"{candidate}__{_workflow_identity_suffix(workflow_id)}"
+            while exposed_name in native_tool_names:
+                exposed_name = f"{exposed_name}_workflow"
+            workflow_name = tool.name
+            entries.append(
+                _WorkflowCatalogEntry(
+                    workflow_id=workflow_id,
+                    workflow_name=workflow_name,
+                    name=exposed_name,
+                    description=(
+                        tool.description
+                        or f"Execute the {workflow_name} workflow"
+                    ),
+                    input_schema=workflow_parameters_to_json_schema(
+                        tool.parameters_schema
+                    ),
+                )
+            )
+
+    return sorted(entries, key=lambda entry: (entry.name, entry.workflow_id))
 
 
 async def _execute_workflow_tool_impl(
@@ -693,13 +766,14 @@ async def _register_workflow_tools(mcp: "FastMCP") -> int:
     passing the parameters_schema directly as JSON Schema. This bypasses
     FastMCP's function signature inspection.
 
-    Tool names are normalized from workflow names (e.g., "Review Tickets" -> "review_tickets").
-    Duplicate names get a short random suffix (e.g., "review_tickets_x7k").
+    Tool names are normalized from workflow names (e.g., "Review Tickets" ->
+    "review_tickets"). Duplicate normalized names receive a deterministic full
+    workflow-ID suffix so every replica exposes the same catalog.
 
     Returns:
         Number of workflow tools registered
     """
-    global _WORKFLOW_ID_TO_TOOL_NAME, _fastmcp_instance
+    global _WORKFLOW_CATALOG_DIGEST, _WORKFLOW_ID_TO_TOOL_NAME, _fastmcp_instance
 
     # Store the live server so refresh_workflow_tools() can re-register tools.
     _fastmcp_instance = mcp
@@ -716,17 +790,11 @@ async def _register_workflow_tools(mcp: "FastMCP") -> int:
             registry = ToolRegistry(db)
             tools = await registry.get_all_tools()
 
-            # Clear previous mappings (in case of re-registration)
-            _WORKFLOW_ID_TO_TOOL_NAME = {}
-
             # Group workflows by normalized name to detect duplicates
             name_groups: dict[str, list] = {}
             for tool in tools:
                 normalized = _normalize_tool_name(tool.name)
-                # Handle edge case: empty normalized name falls back to workflow ID
-                if not normalized:
-                    normalized = str(tool.id)
-                name_groups.setdefault(normalized, []).append(tool)
+                name_groups.setdefault(normalized or "workflow", []).append(tool)
 
             # Detect duplicates and notify admins
             duplicates = {name: wfs for name, wfs in name_groups.items() if len(wfs) > 1}
@@ -742,75 +810,42 @@ async def _register_workflow_tools(mcp: "FastMCP") -> int:
                 tool_id for m in TOOL_MODULES for tool_id, _, _ in m.TOOLS
             } | set(GATEWAY_TOOL_NAMES)
 
-            # Assign unique tool names and register
+            catalog = _build_workflow_catalog(tools, native_tool_names)
+
+            # Register the canonically ordered catalog.
             count = 0
-            for base_name, workflows in name_groups.items():
-                for i, tool in enumerate(workflows):
-                    workflow_id = str(tool.id)
-                    workflow_name = tool.name
-                    description = tool.description or f"Execute the {workflow_name} workflow"
-
-                    # Avoid collision with native tools by adding "_workflow" suffix
-                    # For duplicates among workflows, add random suffix
-                    if base_name in native_tool_names:
-                        # Collides with native tool - add "_workflow" suffix
-                        if i == 0:
-                            tool_name = f"{base_name}_workflow"
-                        else:
-                            tool_name = f"{base_name}_workflow_{_generate_short_suffix()}"
-                    elif i == 0:
-                        tool_name = base_name
-                    else:
-                        tool_name = f"{base_name}_{_generate_short_suffix()}"
-
-                    # Store the registered name for agent-scoped lookups.
-                    _WORKFLOW_ID_TO_TOOL_NAME[workflow_id] = tool_name
-
-                    # Build JSON Schema from parameters_schema
-                    properties: dict[str, Any] = {}
-                    required: list[str] = []
-                    for param in tool.parameters_schema:
-                        param_name = param.get("name")
-                        if not param_name:
-                            continue
-
-                        param_type = param.get("type", "string")
-                        json_type = _map_type_to_json_schema(param_type)
-
-                        properties[param_name] = {
-                            "type": json_type,
-                            "description": param.get("label") or param.get("description") or param_name,
-                        }
-
-                        if param.get("required", False):
-                            required.append(param_name)
-
-                    # Create WorkflowTool with human-readable name
-                    # Context is retrieved dynamically from authenticated token at runtime
+            registered_entries: list[_WorkflowCatalogEntry] = []
+            for entry in catalog:
+                try:
                     workflow_tool = _WorkflowTool(
-                        name=tool_name,  # Human-readable name instead of UUID
-                        description=description,
-                        workflow_id=workflow_id,
-                        workflow_name=workflow_name,
-                        parameters={
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                        },
+                        name=entry.name,
+                        description=entry.description,
+                        workflow_id=entry.workflow_id,
+                        workflow_name=entry.workflow_name,
+                        parameters=entry.input_schema,
+                    )
+                    mcp.add_tool(workflow_tool)
+                    count += 1
+                    registered_entries.append(entry)
+                    logger.debug(
+                        f"Registered workflow tool: {entry.name} "
+                        f"(workflow: {entry.workflow_name}, id: {entry.workflow_id})"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to register workflow tool {entry.workflow_name}: {e}"
                     )
 
-                    # Add to FastMCP server
-                    try:
-                        mcp.add_tool(workflow_tool)
-                        count += 1
-                        logger.debug(
-                            f"Registered workflow tool: {tool_name} "
-                            f"(workflow: {workflow_name}, id: {workflow_id})"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to register workflow tool {workflow_name}: {e}")
-
-            logger.info(f"Registered {count} workflow tools with FastMCP")
+            _WORKFLOW_ID_TO_TOOL_NAME = {
+                entry.workflow_id: entry.name for entry in registered_entries
+            }
+            _WORKFLOW_CATALOG_DIGEST = _workflow_catalog_digest(
+                registered_entries
+            )
+            logger.info(
+                f"Registered {count} workflow tools with FastMCP "
+                f"(catalog digest: {_WORKFLOW_CATALOG_DIGEST})"
+            )
             return count
 
     except Exception as e:
@@ -828,6 +863,7 @@ async def refresh_workflow_tools() -> int:
         return 0
 
     old_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
+    old_catalog_digest = _WORKFLOW_CATALOG_DIGEST
     count = await _register_workflow_tools(_fastmcp_instance)
     new_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
 
@@ -841,10 +877,11 @@ async def refresh_workflow_tools() -> int:
 
     added = new_tool_names - old_tool_names
     removed = old_tool_names - new_tool_names
-    if added or removed:
+    if added or removed or old_catalog_digest != _WORKFLOW_CATALOG_DIGEST:
         logger.info(
             f"MCP workflow tools refreshed: {count} total, "
-            f"+{len(added)} added, -{len(removed)} removed"
+            f"+{len(added)} added, -{len(removed)} removed, "
+            f"catalog digest: {_WORKFLOW_CATALOG_DIGEST}"
         )
 
     return count

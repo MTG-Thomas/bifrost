@@ -81,48 +81,175 @@ class TestNormalizeToolName:
         assert _normalize_tool_name("v2_api") == "v2_api"
 
 
-class TestGenerateShortSuffix:
-    """Tests for _generate_short_suffix()."""
+class TestWorkflowIdentitySuffix:
+    """Tests for deterministic workflow identity suffixes."""
 
-    def test_default_length(self):
-        """Should generate 3-character suffix by default."""
-        from src.services.mcp_server.server import _generate_short_suffix
+    def test_uses_complete_uuid_without_replica_local_randomness(self):
+        from src.services.mcp_server.server import _workflow_identity_suffix
 
-        suffix = _generate_short_suffix()
-        assert len(suffix) == 3
+        workflow_id = UUID("11111111-2222-3333-4444-555555555555")
 
-    def test_custom_length(self):
-        """Should generate suffix with custom length."""
-        from src.services.mcp_server.server import _generate_short_suffix
+        assert _workflow_identity_suffix(workflow_id) == workflow_id.hex
+        assert _workflow_identity_suffix(str(workflow_id)) == workflow_id.hex
 
-        suffix = _generate_short_suffix(5)
-        assert len(suffix) == 5
 
-        suffix = _generate_short_suffix(1)
-        assert len(suffix) == 1
+def _workflow_tool(
+    workflow_id: str,
+    *,
+    name: str,
+    description: str = "A workflow tool",
+    parameters_schema=None,
+):
+    from src.services.tool_registry import RegisteredTool
 
-    def test_alphanumeric_only(self):
-        """Should only contain lowercase letters and digits."""
-        from src.services.mcp_server.server import _generate_short_suffix
+    return RegisteredTool(
+        id=UUID(workflow_id),
+        name=name,
+        description=description,
+        category="General",
+        parameters_schema=parameters_schema or [],
+        file_path="workflows/tool.py",
+        function_name="run",
+    )
 
-        for _ in range(100):  # Test multiple times for randomness
-            suffix = _generate_short_suffix()
-            assert suffix.isalnum()
-            assert suffix.islower() or suffix.isdigit()
 
-    def test_zero_length(self):
-        """Should allow zero-length suffixes for callers that disable disambiguation."""
-        from src.services.mcp_server.server import _generate_short_suffix
+class TestWorkflowCatalog:
+    """Tests for replica-stable workflow catalog construction."""
 
-        assert _generate_short_suffix(0) == ""
+    def test_catalog_is_stable_across_database_row_order(self):
+        from src.services.mcp_server.server import (
+            _build_workflow_catalog,
+            _normalized_workflow_catalog,
+            _workflow_catalog_digest,
+        )
 
-    def test_randomness(self):
-        """Should generate different suffixes each time."""
-        from src.services.mcp_server.server import _generate_short_suffix
+        first = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Review Tickets",
+            parameters_schema=[
+                {
+                    "name": "priority",
+                    "type": "string",
+                    "options": [{"label": "High", "value": "high"}],
+                    "default_value": "high",
+                }
+            ],
+        )
+        second = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="review-tickets",
+        )
 
-        suffixes = {_generate_short_suffix() for _ in range(50)}
-        # With 36^3 = 46656 possible combinations, 50 samples should be mostly unique
-        assert len(suffixes) > 40
+        catalog_a = _build_workflow_catalog([second, first], frozenset())
+        catalog_b = _build_workflow_catalog([first, second], frozenset())
+
+        definitions_a = [entry.externally_visible_definition() for entry in catalog_a]
+        definitions_b = [entry.externally_visible_definition() for entry in catalog_b]
+        assert definitions_a == definitions_b
+        assert _normalized_workflow_catalog(
+            catalog_a
+        ) == _normalized_workflow_catalog(catalog_b)
+        assert _workflow_catalog_digest(catalog_a) == _workflow_catalog_digest(
+            catalog_b
+        )
+        assert [entry.name for entry in catalog_a] == [
+            f"review_tickets__{first.id.hex}",
+            f"review_tickets__{second.id.hex}",
+        ]
+
+    def test_native_and_workflow_name_collisions_are_stable_and_unique(self):
+        from src.services.mcp_server.server import _build_workflow_catalog
+
+        native_collision = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Execute Workflow",
+        )
+        normalized_collision = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="Execute Workflow Workflow",
+        )
+        empty_name = _workflow_tool(
+            "33333333-3333-3333-3333-333333333333",
+            name="!!!",
+        )
+
+        catalog = _build_workflow_catalog(
+            [empty_name, normalized_collision, native_collision],
+            {"execute_workflow"},
+        )
+        names_by_id = {entry.workflow_id: entry.name for entry in catalog}
+
+        assert len(set(names_by_id.values())) == 3
+        assert names_by_id[str(native_collision.id)] == (
+            f"execute_workflow_workflow__{native_collision.id.hex}"
+        )
+        assert names_by_id[str(normalized_collision.id)] == (
+            f"execute_workflow_workflow__{normalized_collision.id.hex}"
+        )
+        assert names_by_id[str(empty_name.id)] == f"workflow__{empty_name.id.hex}"
+
+    def test_digest_covers_description_and_complete_nested_input_schema(self):
+        from src.services.mcp_server.server import (
+            _build_workflow_catalog,
+            _workflow_catalog_digest,
+        )
+
+        workflow_id = "11111111-1111-1111-1111-111111111111"
+        schema = {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string", "enum": ["open", "closed"]}
+                        },
+                    },
+                }
+            },
+        }
+        baseline = _build_workflow_catalog(
+            [
+                _workflow_tool(
+                    workflow_id,
+                    name="Search Tickets",
+                    description="Search current tickets",
+                    parameters_schema=schema,
+                )
+            ],
+            frozenset(),
+        )
+        changed_description = _build_workflow_catalog(
+            [
+                _workflow_tool(
+                    workflow_id,
+                    name="Search Tickets",
+                    description="Search archived tickets",
+                    parameters_schema=schema,
+                )
+            ],
+            frozenset(),
+        )
+        changed_schema = _build_workflow_catalog(
+            [
+                _workflow_tool(
+                    workflow_id,
+                    name="Search Tickets",
+                    description="Search current tickets",
+                    parameters_schema={
+                        **schema,
+                        "required": ["filters"],
+                    },
+                )
+            ],
+            frozenset(),
+        )
+
+        baseline_digest = _workflow_catalog_digest(baseline)
+        assert baseline[0].input_schema == schema
+        assert baseline_digest != _workflow_catalog_digest(changed_description)
+        assert baseline_digest != _workflow_catalog_digest(changed_schema)
 
 
 class TestToolNameMappings:

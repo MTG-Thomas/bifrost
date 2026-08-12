@@ -15,12 +15,13 @@ import pytest
 
 
 from src.services.tool_registry import (
-    _normalize_tool_name,
-    ToolDefinition,
     RegisteredTool,
+    ToolDefinition,
     ToolRegistry,
+    _normalize_tool_name,
     format_tools_for_openai,
     format_tools_for_anthropic,
+    workflow_parameters_to_json_schema,
 )
 
 
@@ -427,6 +428,84 @@ class TestToToolDefinition:
         result = self.registry._to_tool_definition(tool)
 
         assert result.parameters["properties"]["ticket_id"]["description"] == "ticket_id"
+
+    def test_complete_json_schema_is_preserved_without_flattening(self):
+        schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["open", "closed"],
+                            }
+                        },
+                        "required": ["status"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["filters"],
+            "additionalProperties": False,
+        }
+        tool = _make_registered_tool(parameters_schema=schema)
+
+        result = self.registry._to_tool_definition(tool)
+
+        assert result.parameters == schema
+        assert result.parameters is not schema
+        result.parameters["properties"]["filters"]["minItems"] = 2
+        assert schema["properties"]["filters"]["minItems"] == 1
+
+
+class TestWorkflowParametersToJsonSchema:
+    def test_list_schema_preserves_options_defaults_and_container_shapes(self):
+        result = workflow_parameters_to_json_schema(
+            [
+                {
+                    "name": "status",
+                    "type": "string",
+                    "description": "Ticket status",
+                    "options": [
+                        {"label": "Open", "value": "open"},
+                        {"label": "Closed", "value": "closed"},
+                    ],
+                    "default_value": "open",
+                    "required": True,
+                },
+                {"name": "tags", "type": "list"},
+                {"name": "metadata", "type": "dict"},
+            ]
+        )
+
+        assert result == {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Ticket status",
+                    "enum": ["open", "closed"],
+                    "default": "open",
+                },
+                "tags": {
+                    "type": "array",
+                    "description": "tags",
+                    "items": {"type": "string"},
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "metadata",
+                    "additionalProperties": True,
+                },
+            },
+            "additionalProperties": False,
+            "required": ["status"],
+        }
 
 
 # ── format_tools_for_openai ───────────────────────────────────────────
