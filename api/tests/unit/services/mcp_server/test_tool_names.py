@@ -5,7 +5,11 @@ Tests the functions that convert workflow names to MCP-compatible tool names,
 handle duplicate detection, and manage tool name <-> workflow ID mappings.
 """
 
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
+
+import pytest
 
 
 class TestNormalizeToolName:
@@ -143,6 +147,31 @@ class TestToolNameMappings:
         finally:
             server._WORKFLOW_ID_TO_TOOL_NAME.clear()
             server._WORKFLOW_ID_TO_TOOL_NAME.update(original_id_to_name)
+
+    @pytest.mark.asyncio
+    async def test_refresh_removes_stale_tool_through_local_provider(self, monkeypatch):
+        """Workflow refresh uses FastMCP's public provider API."""
+        from src.services.mcp_server import server
+
+        remove_tool = MagicMock()
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=remove_tool),
+        )
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(
+            server,
+            "_WORKFLOW_ID_TO_TOOL_NAME",
+            {"stale-id": "stale_tool"},
+        )
+
+        async def register_workflow_tools(_mcp):
+            server._WORKFLOW_ID_TO_TOOL_NAME = {"current-id": "current_tool"}
+            return 1
+
+        monkeypatch.setattr(server, "_register_workflow_tools", register_workflow_tools)
+
+        assert await server.refresh_workflow_tools() == 1
+        remove_tool.assert_called_once_with("stale_tool")
 
 
 class TestMCPContext:

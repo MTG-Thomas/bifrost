@@ -172,8 +172,8 @@ async def test_sync_catalog_upserts_reenables_and_marks_removed(
     monkeypatch.setattr(catalog_sync, "_resolve_service_token_for_sync", resolve)
 
     tools = [
-        SimpleNamespace(name="restored", inputSchema={"type": "object"}),
-        SimpleNamespace(name="created", inputSchema=_SchemaModel()),
+        SimpleNamespace(name="restored", input_schema={"type": "object"}),
+        SimpleNamespace(name="created", input_schema=_SchemaModel()),
     ]
     monkeypatch.setattr(
         catalog_sync.mcp_client_session,

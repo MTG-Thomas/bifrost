@@ -834,7 +834,7 @@ async def refresh_workflow_tools() -> int:
     # Remove tools that no longer exist from FastMCP
     for stale_name in old_tool_names - new_tool_names:
         try:
-            _fastmcp_instance._tool_manager.remove_tool(stale_name)
+            _fastmcp_instance.local_provider.remove_tool(stale_name)
             logger.debug(f"Removed stale MCP tool: {stale_name}")
         except Exception:
             pass  # Tool already gone

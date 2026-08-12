@@ -18,6 +18,8 @@ from uuid import uuid4
 
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
+from fastmcp import FastMCP
+from fastmcp.server.auth import AuthProvider
 
 from src.core.security import create_access_token
 from src.services.mcp_server.auth import (
@@ -92,8 +94,10 @@ class TestBifrostAuthProviderInit:
     def test_uses_provided_base_url(self):
         """Should use the provided base URL."""
         provider = BifrostAuthProvider(base_url="https://custom.example.com")
+        assert isinstance(provider, AuthProvider)
         assert provider.base_url == "https://custom.example.com"
         assert provider.issuer == "https://custom.example.com"
+        assert provider.challenge_scopes == ["mcp:access"]
 
     def test_strips_trailing_slash(self):
         """Should strip trailing slash from base URL."""
@@ -109,6 +113,15 @@ class TestBifrostAuthProviderInit:
 
         provider = BifrostAuthProvider()
         assert provider.base_url == "https://settings.example.com"
+
+    def test_constructs_fastmcp_http_app(self, auth_provider):
+        """The custom provider satisfies FastMCP 4's supported auth contract."""
+        mcp = FastMCP("auth-contract-test", auth=auth_provider)
+
+        app = mcp.http_app(json_response=True, stateless_http=True)
+
+        assert app.state.fastmcp_server is mcp
+        assert any(getattr(route, "path", None) == "/mcp" for route in app.routes)
 
 
 class TestGetRoutes:

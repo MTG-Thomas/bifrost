@@ -31,8 +31,8 @@ def test_looks_like_auth_error_checks_exception_chain() -> None:
 def test_normalize_call_tool_result_preserves_structured_content() -> None:
     result = SimpleNamespace(
         content=[TextBlock("hello"), object()],
-        structuredContent={"answer": 42},
-        isError=False,
+        structured_content={"answer": 42},
+        is_error=False,
     )
 
     assert dispatch._normalize_call_tool_result(result) == {
@@ -128,8 +128,8 @@ async def test_invoke_resolves_token_calls_remote_and_adds_resolution_path(
         assert arguments == {"id": 123}
         return SimpleNamespace(
             content=[TextBlock("ok")],
-            structuredContent={"ok": True},
-            isError=False,
+            structured_content={"ok": True},
+            is_error=False,
         )
 
     monkeypatch.setattr(dispatch, "_load_tool", enabled_tool)

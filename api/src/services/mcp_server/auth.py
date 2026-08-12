@@ -19,7 +19,7 @@ import logging
 import secrets
 from typing import Any
 
-from fastmcp.server.auth.auth import AccessToken
+from fastmcp.server.auth import AccessToken, AuthProvider
 from mcp.server.auth.middleware.auth_context import AuthContextMiddleware
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
 from starlette.middleware import Middleware as StarletteMiddleware
@@ -70,7 +70,7 @@ def _mcp_state_key(state: str) -> str:
     return f"bifrost:mcp:state:{state}"
 
 
-class BifrostAuthProvider:
+class BifrostAuthProvider(AuthProvider):
     """
     OAuth 2.1 auth provider for MCP using Bifrost's auth system.
 
@@ -89,13 +89,21 @@ class BifrostAuthProvider:
             base_url: Public URL of the MCP server (e.g., ngrok URL).
                       Falls back to settings.mcp_base_url config.
         """
-        if base_url:
-            self.base_url = base_url.rstrip("/")
-        else:
+        if not base_url:
             from src.config import get_settings
-            self.base_url = get_settings().public_url.rstrip("/")
+
+            base_url = get_settings().public_url
+
+        normalized_base_url = base_url.rstrip("/")
+        super().__init__(
+            base_url=normalized_base_url,
+            required_scopes=["mcp:access"],
+        )
+
+        # Keep the public URL as a normalized string because the custom OAuth
+        # routes below concatenate paths onto it directly.
+        self.base_url = normalized_base_url
         self.issuer = self.base_url
-        self.required_scopes: list[str] = ["mcp:access"]
 
     def _get_resource_url(self, path: str | None = None) -> str | None:
         """Get the actual resource URL being protected.
