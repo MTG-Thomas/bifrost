@@ -1,0 +1,8 @@
+# Temporary advisory baseline for the dependency-independent foundation of
+# issue #528. The current FastMCP dependency mismatch prevents /mcp from
+# mounting; once mounted, the official runner still cannot supply the bearer
+# token required by Bifrost. This whole-scenario entry records that prerequisite
+# failure without bypassing auth or dispatch. Once #524 provides the modern
+# endpoint/lifecycle adapter, replace it with check-level baselines.
+server:
+  - server-initialize

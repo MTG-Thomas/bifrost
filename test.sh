@@ -24,6 +24,9 @@
 #   ./test.sh client e2e --screenshots  Capture a screenshot for every test (UX review).
 #   ./test.sh client e2e e2e/auth.unauth.spec.ts   Pass through to playwright.
 #
+# MCP protocol conformance (advisory):
+#   ./test.sh mcp conformance             Run the exact-pinned official runner.
+#
 # CI escape hatch:
 #   ./test.sh ci                        Full isolated run: up, all tests, down.
 #
@@ -374,6 +377,39 @@ cmd_client() {
     esac
 }
 
+cmd_mcp() {
+    local sub="${1:-}"
+    shift || true
+    case "$sub" in
+        conformance) mcp_conformance "$@" ;;
+        *)
+            echo "Usage: ./test.sh mcp conformance" >&2
+            exit 2
+            ;;
+    esac
+}
+
+mcp_conformance() {
+    require_stack_up
+
+    local results_dir="$LOG_DIR/mcp-conformance"
+    mkdir -p "$results_dir"
+    chmod 777 "$results_dir" 2>/dev/null || true
+
+    # This image is deliberately separate from the API image: the official
+    # JavaScript runner must not alter Bifrost's Python MCP dependency graph.
+    docker compose -f "$COMPOSE_FILE" --profile test build mcp-conformance
+    docker compose -f "$COMPOSE_FILE" --profile test run --rm mcp-conformance \
+        server \
+        --url http://api:8000/mcp \
+        --scenario server-initialize \
+        --spec-version 2025-11-25 \
+        --expected-failures /opt/mcp-conformance/expected-failures.yml \
+        --output-dir /results \
+        --verbose \
+        "$@"
+}
+
 client_unit() {
     echo "Running vitest on host..."
     (cd client && npm test "$@")
@@ -473,6 +509,7 @@ case "$1" in
     all) shift; cmd_all "$@" ;;
     quality) shift; cmd_quality "$@" ;;
     client) shift; cmd_client "$@" ;;
+    mcp) shift; cmd_mcp "$@" ;;
     ci) cmd_ci ;;
     -h|--help|help)
         sed -n '2,35p' "$0"
