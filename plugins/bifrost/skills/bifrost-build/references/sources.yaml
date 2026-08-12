@@ -96,7 +96,7 @@ references:
       - api/src/models/contracts/solutions.py
       - api/src/services/solution_files.py
       - api/src/services/solutions/*.py
-    verified_at_sha: e73cf66461cccff5b0f78d698c98cecb958daafd
+    verified_at_sha: 1334773cadacd9b5da1b44d7df70394fc11365c2
 
   - file: references/tables.md
     source_globs:

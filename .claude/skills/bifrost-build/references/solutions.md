@@ -132,7 +132,14 @@ bifrost solution deploy
 bifrost solution deploy --solution <install-id>
 ```
 
-Deploy is a full replacement of managed definitions and requires an existing install. It preserves environment data according to each resource's contract, but removed managed entities are reconciled as deletions. Review the diff, captured/pulled state, policies, and production impact first.
+Deploy is a full replacement of managed definitions and requires an existing install. It preserves environment data according to each resource's contract, but removed managed entities are reconciled as deletions. Every deploy prints a `sha256:` candidate for the exact deterministic ZIP, the server verifies that candidate before enqueueing, and the CLI verifies the activated job result. For a separate review/apply boundary:
+
+```bash
+bifrost solution deploy --preview
+bifrost solution deploy --candidate-id <reviewed-sha256-candidate>
+```
+
+Preview performs the same vendoring and local app build but uploads nothing. A changed local, vendored, or built byte changes the candidate and blocks the second command. Review the diff, captured/pulled state, policies, and production impact first.
 
 For a sealed Solution (`global_repo_access: false`), deploy vendors imported instance `_repo` Python modules into the bundle. Runtime is self-contained, but the selected instance remains a build-time source. If the Solution should own and version a module, move it into local `modules/`; local source is bundled directly and is not vendored. With shared fallback enabled, deploy skips vendoring and resolves eligible `_repo` modules at runtime.
 

@@ -1869,10 +1869,14 @@ Usage: solution deploy [OPTIONS] [PATH]
   Deploy the current Solution workspace (full replace, non-interactive).
 
 Options:
-  --solution TEXT  Install id or unique slug.
-  --force          Apply even if the bundle version is older than the
-                   installed version (downgrade).
-  --help           Show this message and exit.
+  --solution TEXT      Install id or unique slug.
+  --force              Apply even if the bundle version is older than the
+                       installed version (downgrade).
+  --preview            Build and print the exact deploy candidate without
+                       uploading it.
+  --candidate-id TEXT  Require the built bundle to match a previously reviewed
+                       sha256 candidate.
+  --help               Show this message and exit.
 ```
 
 ### `solution export`
