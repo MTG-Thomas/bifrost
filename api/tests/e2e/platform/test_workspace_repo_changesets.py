@@ -1,6 +1,7 @@
 """HTTP contract coverage for authoritative workspace _repo changesets."""
 
 import base64
+import hashlib
 from uuid import UUID, uuid4
 
 import pytest
@@ -169,6 +170,114 @@ async def {function_name}() -> dict:
         )
         assert execution["status"] == "Success", execution
         assert execution["result"] == {"registered": True}
+    finally:
+        if workflow_id:
+            e2e_client.request(
+                "DELETE",
+                f"/api/workflows/{workflow_id}",
+                headers=headers,
+                json={"force_deactivation": True},
+            )
+        import asyncio
+
+        asyncio.run(RepoStorage().delete(path))
+
+
+@pytest.mark.e2e
+def test_workspace_repo_changeset_registers_exact_live_source_without_rewrite(
+    e2e_client, platform_admin
+):
+    suffix = uuid4().hex
+    scope = f"test_registration_only_{suffix}"
+    path = f"{scope}/workflow.py"
+    function_name = f"registration_only_{suffix}"
+    headers = platform_admin.headers
+    workflow_id = None
+    source = f'''from bifrost import workflow
+
+@workflow(name="Registration only {suffix}")
+async def {function_name}() -> dict:
+    return {{"registered": True}}
+'''
+    source_hash = hashlib.sha256(source.encode()).hexdigest()
+    try:
+        written = e2e_client.put(
+            "/api/files/editor/content",
+            headers=headers,
+            json={"path": path, "content": source, "encoding": "utf-8"},
+        )
+        assert written.status_code in {200, 201}, written.text
+        listing = e2e_client.get("/api/workflows", headers=headers)
+        assert listing.status_code == 200, listing.text
+        assert not any(
+            item.get("source_file_path") == path
+            and item.get("function_name") == function_name
+            for item in listing.json()
+        )
+
+        started = e2e_client.post(
+            "/api/workspace-repo-changesets",
+            headers=headers,
+            json={"scope": scope},
+        )
+        assert started.status_code == 201, started.text
+        changeset_id = started.json()["id"]
+        staged = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/files",
+            headers=headers,
+            json={
+                "path": path,
+                "operation": "verify",
+                "expected_hash": source_hash,
+            },
+        )
+        assert staged.status_code == 200, staged.text
+        assert staged.json()["mutations"] == [
+            {
+                "path": path,
+                "operation": "verify",
+                "content_base64": None,
+                "before_hash": source_hash,
+                "after_hash": source_hash,
+                "force_deactivation": False,
+            }
+        ]
+
+        validated = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/validate",
+            headers=headers,
+        )
+        assert validated.status_code == 200, validated.text
+        assert validated.json()["valid"] is True, validated.text
+        assert validated.json()["registration_actions"][0]["action"] == "create"
+
+        activated = e2e_client.post(
+            f"/api/workspace-repo-changesets/{changeset_id}/activate",
+            headers=headers,
+            json={"candidate_id": validated.json()["candidate_id"]},
+        )
+        assert activated.status_code == 200, activated.text
+        assert activated.json()["status"] == "activated"
+        assert activated.json()["commit_sha"] is None
+        evidence = activated.json()["validation"]["activation_evidence"]
+        assert evidence["files"] == [
+            {"path": path, "operation": "verify", "sha256": source_hash}
+        ]
+        workflow_id = activated.json()["validation"]["registration_actions"][0][
+            "workflow_id"
+        ]
+
+        readback = e2e_client.post(
+            "/api/files/read", headers=headers, json={"path": path}
+        )
+        assert readback.status_code == 200, readback.text
+        assert readback.json()["content"] == source
+        listing = e2e_client.get("/api/workflows", headers=headers)
+        registered = next(
+            item for item in listing.json() if item.get("id") == workflow_id
+        )
+        assert registered["source_file_path"] == path
+        assert registered["function_name"] == function_name
     finally:
         if workflow_id:
             e2e_client.request(

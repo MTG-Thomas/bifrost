@@ -78,8 +78,7 @@ class MemoryRows:
             if row.organization_id == organization_id
             and (scope is None or row.scope == scope)
             and row.failure_detail
-            and row.failure_detail.get("state")
-            in RETRYABLE_GIT_FAILURE_STATES
+            and row.failure_detail.get("state") in RETRYABLE_GIT_FAILURE_STATES
             and (row.status, row.failure_detail.get("phase"))
             in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
         ]
@@ -140,6 +139,112 @@ def service(files=None, organization_id=None):
 def test_repo_changesets_require_an_organization_scope():
     with pytest.raises(OrganizationScopeRequired, match="organization-scoped"):
         require_organization_id(None)
+
+
+def test_verify_requires_an_exact_existing_hash_without_content():
+    with pytest.raises(ValueError, match="expected_hash"):
+        WorkspaceRepoFileMutationRequest(
+            path="features/existing.py",
+            operation="verify",
+        )
+    content_base64 = base64.b64encode(b"unchanged").decode()
+    with pytest.raises(ValueError, match="content_base64"):
+        WorkspaceRepoFileMutationRequest(
+            path="features/existing.py",
+            operation="verify",
+            expected_hash="a" * 64,
+            content_base64=content_base64,
+        )
+
+
+def test_candidate_id_is_deterministic_across_equivalent_changesets():
+    mutation = {
+        "path": "features/existing.py",
+        "operation": "verify",
+        "before_hash": "a" * 64,
+        "after_hash": "a" * 64,
+        "force_deactivation": False,
+    }
+    first = SimpleNamespace(
+        id=uuid4(),
+        scope="features",
+        base_revision="b" * 64,
+        mutations=[mutation],
+    )
+    second = SimpleNamespace(
+        id=uuid4(),
+        scope="features",
+        base_revision="b" * 64,
+        mutations=[mutation],
+    )
+    actions = [
+        {
+            "action": "create",
+            "path": "features/existing.py",
+            "function_name": "existing",
+            "type": "workflow",
+            "name": "Existing",
+            "requested_id": None,
+            "organization_id": str(uuid4()),
+        },
+        {
+            "action": "preserve",
+            "path": "features/second.py",
+            "function_name": "second",
+            "type": "tool",
+            "name": "Second",
+            "requested_id": None,
+            "organization_id": str(uuid4()),
+        },
+    ]
+
+    assert WorkspaceRepoChangesetService._candidate_id(
+        first,
+        validated_revision="c" * 64,
+        registration_actions=actions,
+    ) == WorkspaceRepoChangesetService._candidate_id(
+        second,
+        validated_revision="c" * 64,
+        registration_actions=list(reversed(actions)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_rechecks_non_python_verify_hash():
+    path = "features/existing.txt"
+    original_hash = hashlib.sha256(b"unchanged").hexdigest()
+    svc = service({path: b"unchanged"})
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="verify",
+            expected_hash=original_hash,
+        ),
+    )
+    svc.repo.files[path] = b"changed"
+
+    with pytest.raises(ChangesetConflict) as exc:
+        await svc.validate(row.id)
+    assert exc.value.detail["reason"] == "file_revision_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_validate_empty_changeset_explains_no_op():
+    svc = service({"features/existing.py": b"pass\n"})
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+
+    result = await svc.validate(row.id)
+
+    assert result.valid is False
+    assert result.diagnostics == [
+        {
+            "severity": "error",
+            "source": "no_op",
+            "message": "changeset contains no source or registry mutation to activate",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -277,9 +382,7 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     monkeypatch.setattr(
         "src.services.workspace_repo_changesets.FileStorageService", Storage
     )
-    mismatched_request = WorkspaceRepoActivateRequest(
-        candidate_id="sha256:" + "d" * 64
-    )
+    mismatched_request = WorkspaceRepoActivateRequest(candidate_id="sha256:" + "d" * 64)
     with pytest.raises(ChangesetInvalid, match="candidate_id"):
         await svc.activate(row.id, mismatched_request, "tester")
     activated = await svc.activate(
@@ -288,7 +391,7 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     assert activated.status == "activated"
     assert svc.repo.files == {"features/a.py": b"A", "features/b.py": b"B"}
     assert activated.validation["activation_evidence"] == {
-        "schema": "bifrost.workspace-candidate/v1",
+        "schema": "bifrost.workspace-candidate/v2",
         "candidate_id": candidate_id,
         "activated_revision": activated.activated_revision,
         "files": [
