@@ -65,6 +65,7 @@ from bifrost.solution_descriptor import (
 _SAMPLE_WORKFLOW_PATH = "functions/hello.py"
 _SAMPLE_WORKFLOW_REF = f"{_SAMPLE_WORKFLOW_PATH}::main"
 _SOLUTIONS_API_PATH = "/api/solutions"
+_BIFROST_DIR = ".bifrost"
 _WORKFLOWS_MANIFEST = "workflows.yaml"
 _SAMPLE_WORKFLOW_SOURCE = '''\
 from bifrost import workflow
@@ -369,7 +370,7 @@ def _scaffold_app(slug: str, path: str | None, api_url: str | None) -> pathlib.P
         # a Workflow ROW for it — without this, deploy bundles the source but the
         # app's `functions/hello.py::main` ref 404s on a deployed install (the
         # source has no row to resolve). Keyed by a fresh UUID (workflow identity).
-        wf_manifest = root / ".bifrost" / _WORKFLOWS_MANIFEST
+        wf_manifest = root / _BIFROST_DIR / _WORKFLOWS_MANIFEST
         wf_manifest.parent.mkdir(parents=True, exist_ok=True)
         wf_data = yaml.safe_load(wf_manifest.read_text()) if wf_manifest.is_file() else None
         wf_data = wf_data or {"workflows": {}}
@@ -382,7 +383,7 @@ def _scaffold_app(slug: str, path: str | None, api_url: str | None) -> pathlib.P
         }
         wf_manifest.write_text(yaml.safe_dump(wf_data, sort_keys=False))
 
-    manifest = root / ".bifrost" / "apps.yaml"
+    manifest = root / _BIFROST_DIR / "apps.yaml"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     data = yaml.safe_load(manifest.read_text()) if manifest.is_file() else None
     data = data or {"apps": {}}
@@ -887,7 +888,15 @@ export function cn(...inputs: ClassValue[]) {
 # `solution start` discovers and how the platform resolves path::fn (root-relative,
 # folder-indifferent). App source dirs are excluded separately (apps are bundled
 # by _collect_apps; their .py must not double-collect as workflow source).
-_PY_SKIP_DIRS = {"node_modules", "dist", ".venv", "venv", "__pycache__", ".git", ".bifrost"}
+_PY_SKIP_DIRS = {
+    "node_modules",
+    "dist",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".git",
+    _BIFROST_DIR,
+}
 
 
 def _bifrost_manifest(workspace: pathlib.Path, name: str) -> pathlib.Path | None:
@@ -901,7 +910,7 @@ def _bifrost_manifest(workspace: pathlib.Path, name: str) -> pathlib.Path | None
     must sit in the same function as the file read to be effective.
     """
     root = os.path.realpath(workspace)
-    target = os.path.realpath(os.path.join(root, ".bifrost", name))
+    target = os.path.realpath(os.path.join(root, _BIFROST_DIR, name))
     if not target.startswith(root + os.sep):
         return None
     return pathlib.Path(target)
@@ -911,7 +920,7 @@ def _app_source_dirs(workspace: pathlib.Path) -> set[str]:
     """Relative (POSIX) app source dirs from .bifrost/apps.yaml, to exclude from
     the Python-source sweep (apps are bundled by _collect_apps)."""
     root = os.path.realpath(workspace)
-    manifest = os.path.realpath(os.path.join(root, ".bifrost", "apps.yaml"))
+    manifest = os.path.realpath(os.path.join(root, _BIFROST_DIR, "apps.yaml"))
     if not manifest.startswith(root + os.sep):
         return set()
     manifest_path = pathlib.Path(manifest)
