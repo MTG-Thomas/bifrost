@@ -303,15 +303,17 @@ class WorkspaceRepoChangesetService:
                                 kind,
                                 kwargs.get("name") or node.name,
                             )
+                            if kind == "data_provider":
+                                workflow_type = "data_provider"
+                            elif kind == "tool":
+                                workflow_type = "tool"
+                            else:
+                                workflow_type = "workflow"
                             registration_candidates.append(
                                 WorkspaceRegistrationCandidate(
                                     path=path,
                                     function_name=node.name,
-                                    workflow_type=(
-                                        "data_provider"
-                                        if kind == "data_provider"
-                                        else "tool" if kind == "tool" else "workflow"
-                                    ),
+                                    workflow_type=workflow_type,
                                     name=kwargs.get("name") or node.name,
                                     requested_id=kwargs.get("id"),
                                 )
@@ -368,10 +370,7 @@ class WorkspaceRepoChangesetService:
                 "changeset must pass validation immediately before activation"
             )
         candidate_id = str(row.validation.get("candidate_id") or "")
-        # Changesets validated before this contract was introduced may still be
-        # in flight during a rolling upgrade. New validations always carry a
-        # candidate and therefore always require an exact activation match.
-        if candidate_id and request.candidate_id != candidate_id:
+        if not candidate_id or request.candidate_id != candidate_id:
             raise ChangesetInvalid(
                 "activation candidate_id must exactly match the latest validation"
             )

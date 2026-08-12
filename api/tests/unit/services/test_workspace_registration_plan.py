@@ -92,6 +92,35 @@ async def test_plan_turns_portable_id_ownership_conflict_into_diagnostic():
     assert "already used" in diagnostics[0]["message"]
 
 
+@pytest.mark.asyncio
+async def test_plan_reactivates_an_inactive_existing_row():
+    organization_id = uuid4()
+    existing = SimpleNamespace(
+        id=uuid4(),
+        is_active=False,
+        organization_id=organization_id,
+        path="features/dormant.py",
+        function_name="dormant",
+    )
+    db = SimpleNamespace(execute=AsyncMock(return_value=_result(existing)))
+
+    actions, diagnostics = await plan_workspace_registrations(
+        db,
+        organization_id,
+        [
+            WorkspaceRegistrationCandidate(
+                path=existing.path,
+                function_name=existing.function_name,
+                workflow_type="workflow",
+                name="Dormant",
+            )
+        ],
+    )
+
+    assert diagnostics == []
+    assert actions[0]["action"] == "reactivate"
+
+
 class _RegistrationDB:
     def __init__(self):
         self.added = []
@@ -160,6 +189,41 @@ async def test_apply_rejects_registry_state_that_changed_after_plan():
                     "function_name": existing.function_name,
                     "type": "workflow",
                     "name": "New workflow",
+                    "requested_id": None,
+                }
+            ],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("planned_action", "current_active"),
+    [("preserve", False), ("reactivate", True)],
+)
+async def test_apply_rejects_changed_active_state(
+    planned_action, current_active
+):
+    organization_id = uuid4()
+    existing = SimpleNamespace(
+        id=uuid4(),
+        is_active=current_active,
+        organization_id=organization_id,
+        path="features/stateful.py",
+        function_name="stateful",
+    )
+    db = SimpleNamespace(execute=AsyncMock(return_value=_result(existing)))
+
+    with pytest.raises(WorkflowRegistrationConflict, match="active state changed"):
+        await apply_workspace_registration_plan(
+            db,
+            organization_id,
+            [
+                {
+                    "action": planned_action,
+                    "path": existing.path,
+                    "function_name": existing.function_name,
+                    "type": "workflow",
+                    "name": "Stateful",
                     "requested_id": None,
                 }
             ],

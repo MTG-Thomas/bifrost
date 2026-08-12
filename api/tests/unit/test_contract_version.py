@@ -66,6 +66,7 @@ from src.models.contracts.organizations import (  # noqa: E402
     OrganizationUpdate,
 )
 from src.models.contracts.solutions import (  # noqa: E402
+    SolutionCandidateDeployEnqueued,
     SolutionDeployEnqueued,
     SolutionDeployJobStatus,
 )
@@ -116,6 +117,7 @@ _COMMAND_DTOS: list[type] = [
     EventSubscriptionCreate,
     EventSubscriptionUpdate,
     SolutionDeployEnqueued,
+    SolutionCandidateDeployEnqueued,
     SolutionDeployJobStatus,
     PolicyRuleCreate,
     PolicyRuleUpdate,
@@ -206,7 +208,11 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # enum value while polling PlatformJobPublic.
     # Fingerprint refreshed against the combined MTG fork and upstream v9
     # contract surfaces; the additional fork fields were already shipped.
-    "477e2c7aeb535c61799bebb238f59e8d95402838f54a8e016be3f57bbaa511a7"
+    #
+    # Solution deploy enqueue now requires candidate_id (2026-08-12), binding
+    # an accepted asynchronous job to the exact reviewed bundle. CONTRACT_VERSION
+    # bumped to 10 because a stale CLI cannot verify that invariant.
+    "442b426ffffe716ea112403b96c5bea094169e5ce7f320cfd756954c0c51b588"
 )
 
 

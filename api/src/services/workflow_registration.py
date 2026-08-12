@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,43 @@ class WorkspaceRegistrationCandidate:
     requested_id: str | None = None
 
 
+async def _find_workspace_workflow(
+    db: AsyncSession,
+    organization_id: UUID,
+    path: str,
+    function_name: str,
+) -> WorkflowORM | None:
+    """Find a caller-visible global or organization-scoped Workspace row."""
+    result = await db.execute(
+        select(WorkflowORM).where(
+            WorkflowORM.path == path,
+            WorkflowORM.function_name == function_name,
+            WorkflowORM.solution_id.is_(None),
+            or_(
+                WorkflowORM.organization_id == organization_id,
+                WorkflowORM.organization_id.is_(None),
+            ),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _planned_action(existing: WorkflowORM | None) -> str:
+    """Describe the registry mutation implied by the current row state."""
+    if existing is None:
+        return "create"
+    return "preserve" if existing.is_active else "reactivate"
+
+
+def _planned_organization_id(
+    existing: WorkflowORM | None, organization_id: UUID
+) -> str | None:
+    """Preserve global ownership; otherwise bind a new row to the caller."""
+    if existing is not None and existing.organization_id is None:
+        return None
+    return str(existing.organization_id if existing is not None else organization_id)
+
+
 async def plan_workspace_registrations(
     db: AsyncSession,
     organization_id: UUID,
@@ -37,14 +74,9 @@ async def plan_workspace_registrations(
     actions: list[dict] = []
     diagnostics: list[dict] = []
     for candidate in sorted(candidates, key=lambda item: (item.path, item.function_name)):
-        result = await db.execute(
-            select(WorkflowORM).where(
-                WorkflowORM.path == candidate.path,
-                WorkflowORM.function_name == candidate.function_name,
-                WorkflowORM.solution_id.is_(None),
-            )
+        existing = await _find_workspace_workflow(
+            db, organization_id, candidate.path, candidate.function_name
         )
-        existing = result.scalar_one_or_none()
         try:
             requested_id = await resolve_workflow_registration_id(
                 db, candidate.requested_id, existing
@@ -61,25 +93,17 @@ async def plan_workspace_registrations(
             )
             continue
 
-        if existing is not None and existing.is_active:
-            action = "preserve"
-        elif existing is not None:
-            action = "reactivate"
-        else:
-            action = "create"
         actions.append(
             {
-                "action": action,
+                "action": _planned_action(existing),
                 "path": candidate.path,
                 "function_name": candidate.function_name,
                 "type": candidate.workflow_type,
                 "name": candidate.name,
                 "requested_id": str(requested_id) if requested_id else None,
-                "organization_id": str(
-                    existing.organization_id if existing is not None else organization_id
-                )
-                if (existing is None or existing.organization_id is not None)
-                else None,
+                "organization_id": _planned_organization_id(
+                    existing, organization_id
+                ),
             }
         )
     return actions, diagnostics
@@ -97,38 +121,10 @@ async def apply_workspace_registration_plan(
     """
     applied: list[dict] = []
     for action in actions:
-        result = await db.execute(
-            select(WorkflowORM).where(
-                WorkflowORM.path == action["path"],
-                WorkflowORM.function_name == action["function_name"],
-                WorkflowORM.solution_id.is_(None),
-            )
+        existing = await _find_workspace_workflow(
+            db, organization_id, action["path"], action["function_name"]
         )
-        existing = result.scalar_one_or_none()
-        expected_action = action.get("action")
-        if expected_action == "create" and existing is not None:
-            raise WorkflowRegistrationConflict(
-                f"registration plan became stale for {action['path']}::"
-                f"{action['function_name']}: expected a new registry row"
-            )
-        if expected_action in {"preserve", "reactivate"} and existing is None:
-            raise WorkflowRegistrationConflict(
-                f"registration plan became stale for {action['path']}::"
-                f"{action['function_name']}: expected registry row is missing"
-            )
-        if (
-            expected_action == "preserve"
-            and existing is not None
-            and not existing.is_active
-        ) or (
-            expected_action == "reactivate"
-            and existing is not None
-            and existing.is_active
-        ):
-            raise WorkflowRegistrationConflict(
-                f"registration plan became stale for {action['path']}::"
-                f"{action['function_name']}: active state changed"
-            )
+        _assert_registration_plan_current(action, existing)
         try:
             requested_id = await resolve_workflow_registration_id(
                 db, action.get("requested_id"), existing
@@ -156,6 +152,30 @@ async def apply_workspace_registration_plan(
         await add_workflow_registration(db, workflow, requested_id)
         applied.append({**action, "workflow_id": str(workflow_id)})
     return applied
+
+
+def _assert_registration_plan_current(
+    action: dict, existing: WorkflowORM | None
+) -> None:
+    """Reject activation when registry state changed after preview."""
+    expected_action = action.get("action")
+    ref = f"{action['path']}::{action['function_name']}"
+    if expected_action == "create" and existing is not None:
+        raise WorkflowRegistrationConflict(
+            f"registration plan became stale for {ref}: expected a new registry row"
+        )
+    if expected_action in {"preserve", "reactivate"} and existing is None:
+        raise WorkflowRegistrationConflict(
+            f"registration plan became stale for {ref}: expected registry row is missing"
+        )
+    active_state_changed = existing is not None and (
+        (expected_action == "preserve" and not existing.is_active)
+        or (expected_action == "reactivate" and existing.is_active)
+    )
+    if active_state_changed:
+        raise WorkflowRegistrationConflict(
+            f"registration plan became stale for {ref}: active state changed"
+        )
 
 
 class WorkflowRegistrationIdInvalid(ValueError):

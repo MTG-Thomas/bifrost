@@ -30,7 +30,9 @@ or cosmetic changes do NOT bump it. The tripwire in
 #     standardized PlatformJobPublic contract (2026-07-28)
 # v9: PlatformJobStatus gained the waiting state used by durable parent jobs;
 #     stale CLIs cannot parse that enum value and must upgrade (2026-08-07)
-CONTRACT_VERSION: int = 9
+# v10: Solution deploy enqueue responses require candidate_id so the CLI can
+#      prove the accepted job is bound to the exact reviewed bundle (2026-08-12)
+CONTRACT_VERSION: int = 10
 
 
 def get_contract_version() -> int:

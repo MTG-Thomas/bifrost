@@ -234,3 +234,32 @@ def test_compile_solution_plan_understands_aliased_bifrost_decorator(tmp_path):
     )
 
     assert plan.valid is True
+
+
+def test_compile_solution_plan_reports_decorated_source_syntax_error(tmp_path):
+    from bifrost.commands.solution import compile_solution_plan
+
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files={
+            "functions/broken.py": "from bifrost import workflow\n@workflow\ndef broken(:\n"
+        },
+        workflows=[],
+    )
+
+    assert plan.valid is False
+    assert [item.code for item in plan.diagnostics] == [
+        "solution.workflow_source_invalid"
+    ]
+
+
+def test_compile_solution_plan_ignores_unrelated_helper_syntax_error(tmp_path):
+    from bifrost.commands.solution import compile_solution_plan
+
+    plan = compile_solution_plan(
+        tmp_path,
+        python_files={"helpers/broken.py": "def broken(:\n"},
+        workflows=[],
+    )
+
+    assert plan.diagnostics == ()

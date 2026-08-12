@@ -154,6 +154,15 @@ def _solution_candidate_id(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+class SolutionCandidateMismatch(ValueError):
+    """The staged deploy bytes no longer match the reviewed candidate."""
+
+    def __init__(self, expected_candidate_id: str, actual_candidate_id: str) -> None:
+        super().__init__("staged Solution candidate hash changed during enqueue")
+        self.expected_candidate_id = expected_candidate_id
+        self.actual_candidate_id = actual_candidate_id
+
+
 async def _enqueue_solution_deploy_job(
     db: AsyncSession,
     *,
@@ -183,7 +192,9 @@ async def _enqueue_solution_deploy_job(
         and expected_candidate_id != f"sha256:{digest}"
     ):
         await storage.delete()
-        raise ValueError("staged Solution candidate hash changed during enqueue")
+        raise SolutionCandidateMismatch(
+            expected_candidate_id, f"sha256:{digest}"
+        )
 
     projection = SolutionDeployJob(
         id=job_id,
@@ -1600,7 +1611,6 @@ async def _run_install_job(
 
 @router.post(
     "/{solution_id}/deploy",
-    response_model=SolutionCandidateDeployEnqueued,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Enqueue a deploy to an install (async, full replace, admin only)",
 )
@@ -1699,6 +1709,15 @@ async def deploy_solution(
             requested_by_name=user.name or user.email or "Unknown",
             input_path=zip_path,
         )
+    except SolutionCandidateMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "solution_candidate_mismatch",
+                "expected_candidate_id": exc.expected_candidate_id,
+                "actual_candidate_id": exc.actual_candidate_id,
+            },
+        ) from exc
     finally:
         _cleanup_file(zip_path)
     return SolutionCandidateDeployEnqueued(

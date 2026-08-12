@@ -163,6 +163,12 @@ async def {function_name}() -> dict:
         assert registered is not None, listing.json()
         assert registered["id"] == workflow_id
         assert registered["name"] == f"Planned workflow {suffix}"
+
+        execution = execute_workflow_sync(
+            e2e_client, headers, registered["id"], max_wait=30.0
+        )
+        assert execution["status"] == "Success", execution
+        assert execution["result"] == {"registered": True}
     finally:
         if workflow_id:
             e2e_client.request(

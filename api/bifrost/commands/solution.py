@@ -65,6 +65,7 @@ from bifrost.solution_descriptor import (
 _SAMPLE_WORKFLOW_PATH = "functions/hello.py"
 _SAMPLE_WORKFLOW_REF = f"{_SAMPLE_WORKFLOW_PATH}::main"
 _SOLUTIONS_API_PATH = "/api/solutions"
+_WORKFLOWS_MANIFEST = "workflows.yaml"
 _SAMPLE_WORKFLOW_SOURCE = '''\
 from bifrost import workflow
 
@@ -368,7 +369,7 @@ def _scaffold_app(slug: str, path: str | None, api_url: str | None) -> pathlib.P
         # a Workflow ROW for it — without this, deploy bundles the source but the
         # app's `functions/hello.py::main` ref 404s on a deployed install (the
         # source has no row to resolve). Keyed by a fresh UUID (workflow identity).
-        wf_manifest = root / ".bifrost" / "workflows.yaml"
+        wf_manifest = root / ".bifrost" / _WORKFLOWS_MANIFEST
         wf_manifest.parent.mkdir(parents=True, exist_ok=True)
         wf_data = yaml.safe_load(wf_manifest.read_text()) if wf_manifest.is_file() else None
         wf_data = wf_data or {"workflows": {}}
@@ -959,7 +960,7 @@ def _collect_python_files(workspace: pathlib.Path) -> dict[str, str]:
 
 def _collect_workflows(workspace: pathlib.Path) -> list[dict]:
     """Read workflow entries from .bifrost/workflows.yaml (the descriptor indexes it)."""
-    wf_file = _bifrost_manifest(workspace, "workflows.yaml")
+    wf_file = _bifrost_manifest(workspace, _WORKFLOWS_MANIFEST)
     if wf_file is None or not wf_file.is_file():
         return []
     data = yaml.safe_load(wf_file.read_text()) or {}
@@ -1055,6 +1056,31 @@ def _decorator_name(decorator: ast.expr) -> str | None:
     return None
 
 
+def _executable_alias_types(tree: ast.Module) -> dict[str, str]:
+    executable_decorators = {"workflow", "tool", "data_provider"}
+    aliases = {name: name for name in executable_decorators}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "bifrost":
+            for imported in node.names:
+                if imported.name in executable_decorators:
+                    aliases[imported.asname or imported.name] = imported.name
+    return aliases
+
+
+def _declared_executable_name(decorator: ast.expr, fallback: str) -> str:
+    if not isinstance(decorator, ast.Call):
+        return fallback
+    for keyword in decorator.keywords:
+        value = keyword.value
+        if (
+            keyword.arg == "name"
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            return value.value
+    return fallback
+
+
 def _decorated_executable(
     source: str, path: str, function_name: str
 ) -> tuple[str, str] | None:
@@ -1063,33 +1089,19 @@ def _decorated_executable(
         tree = ast.parse(source, filename=path)
     except SyntaxError as exc:
         raise click.ClickException(f"Cannot parse {path}: {exc}") from exc
-    executable_decorators = {"workflow", "tool", "data_provider"}
-    alias_types = {name: name for name in executable_decorators}
+    alias_types = _executable_alias_types(tree)
     for node in tree.body:
-        if not isinstance(node, ast.ImportFrom) or node.module != "bifrost":
-            continue
-        for imported in node.names:
-            if imported.name in executable_decorators:
-                alias_types[imported.asname or imported.name] = imported.name
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.name != function_name:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or (
+            node.name != function_name
+        ):
             continue
         for decorator in node.decorator_list:
             decorator_name = _decorator_name(decorator)
-            if decorator_name not in alias_types:
-                continue
-            declared_name = function_name
-            if isinstance(decorator, ast.Call):
-                for keyword in decorator.keywords:
-                    if (
-                        keyword.arg == "name"
-                        and isinstance(keyword.value, ast.Constant)
-                        and isinstance(keyword.value.value, str)
-                    ):
-                        declared_name = keyword.value.value
-            return alias_types[decorator_name], declared_name
+            if decorator_name in alias_types:
+                return (
+                    alias_types[decorator_name],
+                    _declared_executable_name(decorator, function_name),
+                )
     return None
 
 
@@ -1119,14 +1131,7 @@ def _decorated_workflow_functions(
         )
 
     names: list[str] = []
-    executable_decorators = {"workflow", "tool", "data_provider"}
-    aliases = set(executable_decorators)
-    for node in tree.body:
-        if not isinstance(node, ast.ImportFrom) or node.module != "bifrost":
-            continue
-        for imported in node.names:
-            if imported.name in executable_decorators:
-                aliases.add(imported.asname or imported.name)
+    aliases = _executable_alias_types(tree)
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -1136,6 +1141,58 @@ def _decorated_workflow_functions(
         ):
             names.append(node.name)
     return sorted(names), None
+
+
+def _parse_solution_workflow_ref(ref: str) -> tuple[str, str, pathlib.PurePosixPath]:
+    if "::" not in ref:
+        raise click.ClickException(
+            "Workflow reference must use portable path::function syntax"
+        )
+    raw_path, function_name = ref.rsplit("::", 1)
+    relative = pathlib.PurePosixPath(raw_path)
+    invalid = (
+        not raw_path
+        or not function_name
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or relative.suffix != ".py"
+    )
+    if invalid:
+        raise click.ClickException(
+            "Workflow reference must be a workspace-relative .py path::function"
+        )
+    return raw_path, function_name, relative
+
+
+def _load_solution_workflow_manifest(
+    workspace: pathlib.Path,
+) -> tuple[pathlib.Path, dict[str, Any], dict[str, Any]]:
+    manifest = _bifrost_manifest(workspace, _WORKFLOWS_MANIFEST)
+    if manifest is None:
+        raise click.ClickException("Cannot resolve the Solution workflow manifest")
+    data: dict[str, Any] = {}
+    if manifest.is_file():
+        loaded = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        if not isinstance(loaded, dict):
+            raise click.ClickException(".bifrost/workflows.yaml must be a mapping")
+        data = loaded
+    workflows = data.setdefault("workflows", {})
+    if not isinstance(workflows, dict):
+        raise click.ClickException(
+            ".bifrost/workflows.yaml field 'workflows' must be a mapping"
+        )
+    return manifest, data, workflows
+
+
+def _existing_solution_workflow(
+    workflows: dict[str, Any], raw_path: str, function_name: str
+) -> tuple[str, dict[str, Any]] | None:
+    for manifest_id, body in workflows.items():
+        if isinstance(body, dict) and body.get("path") == raw_path and (
+            body.get("function_name") == function_name
+        ):
+            return str(manifest_id), body
+    return None
 
 
 def _add_solution_workflow_manifest_row(
@@ -1149,22 +1206,7 @@ def _add_solution_workflow_manifest_row(
     Returns ``(manifest_id, row, created)``. This is local-only: deploy remains
     the sole writer of the live Solution entity.
     """
-    if "::" not in ref:
-        raise click.ClickException(
-            "Workflow reference must use portable path::function syntax"
-        )
-    raw_path, function_name = ref.rsplit("::", 1)
-    relative = pathlib.PurePosixPath(raw_path)
-    if (
-        not raw_path
-        or not function_name
-        or relative.is_absolute()
-        or ".." in relative.parts
-        or relative.suffix != ".py"
-    ):
-        raise click.ClickException(
-            "Workflow reference must be a workspace-relative .py path::function"
-        )
+    raw_path, function_name, relative = _parse_solution_workflow_ref(ref)
 
     root = os.path.realpath(workspace)
     source_real = os.path.realpath(os.path.join(root, *relative.parts))
@@ -1183,25 +1225,11 @@ def _add_solution_workflow_manifest_row(
         )
     executable_type, declared_name = executable
 
-    manifest = _bifrost_manifest(workspace, "workflows.yaml")
-    if manifest is None:
-        raise click.ClickException("Cannot resolve the Solution workflow manifest")
-    data: dict[str, Any] = {}
-    if manifest.is_file():
-        loaded = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
-        if not isinstance(loaded, dict):
-            raise click.ClickException(".bifrost/workflows.yaml must be a mapping")
-        data = loaded
-    workflows = data.setdefault("workflows", {})
-    if not isinstance(workflows, dict):
-        raise click.ClickException(
-            ".bifrost/workflows.yaml field 'workflows' must be a mapping"
-        )
-    for manifest_id, body in workflows.items():
-        if not isinstance(body, dict):
-            continue
-        if body.get("path") == raw_path and body.get("function_name") == function_name:
-            return str(manifest_id), body, False
+    manifest, data, workflows = _load_solution_workflow_manifest(workspace)
+    existing = _existing_solution_workflow(workflows, raw_path, function_name)
+    if existing is not None:
+        manifest_id, body = existing
+        return manifest_id, body, False
 
     manifest_id = str(uuid5(UUID(int=0), f"bifrost-solution:{ref}"))
     row = {
@@ -2602,10 +2630,12 @@ def deploy_cmd(
             # come back on the POST itself, before any job is created.
             click.echo(f"Deploy failed: {deploy.status_code} {deploy.text}", err=True)
             return 1
-        job_id = deploy.json()["deploy_job_id"]
-        if deploy.json().get("candidate_id") != built_candidate_id:
+        accepted = deploy.json()
+        job_id = accepted["deploy_job_id"]
+        if accepted.get("candidate_id") != built_candidate_id:
             click.echo(
-                "Deploy failed: server did not preserve the uploaded candidate id",
+                "Deploy failed: server did not preserve the uploaded candidate id. "
+                f"Job {job_id} was already accepted; inspect it before retrying.",
                 err=True,
             )
             return 1

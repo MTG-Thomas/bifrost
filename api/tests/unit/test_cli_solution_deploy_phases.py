@@ -159,6 +159,29 @@ def test_deploy_rejects_changed_reviewed_candidate_before_upload(tmp_path) -> No
     )
 
 
+def test_deploy_reports_accepted_job_when_response_loses_candidate(tmp_path) -> None:
+    client = _client()
+    regular_post = client.post
+
+    async def post(path, **kwargs):  # type: ignore[no-untyped-def]
+        if path.endswith("/deploy"):
+            return _resp({"deploy_job_id": "job-needs-inspection"}, status=202)
+        return await regular_post(path, **kwargs)
+
+    client.post = post
+    with mock.patch(
+        "bifrost.client.BifrostClient.get_instance", return_value=client
+    ):
+        result = CliRunner().invoke(
+            solution_group,
+            ["deploy", str(_scaffold(tmp_path))],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 1, result.output
+    assert "Job job-needs-inspection was already accepted" in result.output
+
+
 def test_deploy_uploads_workspace_zip_not_json_bundle(tmp_path) -> None:
     captured: dict = {}
     result = _invoke(_scaffold(tmp_path), captured)
