@@ -1766,6 +1766,7 @@ Options:
   --help  Show this message and exit.
 
 Commands:
+  add-workflow  Index a local path::function in the Solution manifest...
   bind          Bind this local Solution workspace to an existing install.
   capture       Adopt loose _repo/ entities into an install (migration).
   create        Create and bind a new Solution workspace.
@@ -1774,11 +1775,27 @@ Commands:
   init          Alias for `solution create`: scaffold, create remote...
   install       Install a Solution from a workspace zip (drag-and-drop...
   migrate-app   Migrate a v1 inline app dir to a scaffolded standalone_v2...
+  plan          Validate a Solution workspace without changing local or...
   pull          Pull captured entities into the local .bifrost/ manifest...
   scaffold-app  Scaffold a standalone_v2 React app (package.json, vite,...
   sdk           Manage the app's vendored Bifrost SDK.
   start         Run the app's dev server + local workflows on one stable...
   swap-slugs    Atomically exchange two apps' slugs (v1→v2 migration...
+```
+
+### `solution add-workflow`
+
+```
+Usage: solution add-workflow [OPTIONS] REF
+
+  Index a local path::function in the Solution manifest without deploying.
+
+Options:
+  --path DIRECTORY  Solution workspace root (defaults to the nearest
+                    descriptor).
+  --name TEXT       Override the manifest display name.
+  --json
+  --help            Show this message and exit.
 ```
 
 ### `solution bind`
@@ -1943,6 +1960,18 @@ Options:
   --title TEXT    App display title (default: the v2 slug).
   --api-url TEXT  Instance URL the app resolves `bifrost` from.
   --help          Show this message and exit.
+```
+
+### `solution plan`
+
+```
+Usage: solution plan [OPTIONS] [PATH]
+
+  Validate a Solution workspace without changing local or remote state.
+
+Options:
+  --json  Emit the stable machine-readable plan document.
+  --help  Show this message and exit.
 ```
 
 ### `solution pull`

@@ -65,7 +65,14 @@ bifrost solution scaffold-app operations
 
 The command creates source and its app manifest entry. Read `apps-v2.md`, `app-quality.md`, and `web-sdk-v2.md` before implementation.
 
-Place workflow code under `functions/`. Every callable that should become a workflow entity also needs a `.bifrost/workflows.yaml` entry:
+Place workflow code under `functions/`. Every callable that should become a workflow entity also needs a `.bifrost/workflows.yaml` entry. Let the CLI mint and preserve that local identity:
+
+```bash
+bifrost solution add-workflow functions/items.py::list_items
+bifrost solution plan
+```
+
+The resulting source entry is equivalent to:
 
 ```yaml
 workflows:
@@ -76,7 +83,7 @@ workflows:
     function_name: list_items
 ```
 
-Deploy creates/updates the row. Do not run `bifrost workflows register` for Solution-owned code. Use portable refs such as `functions/items.py::list_items` from apps, forms, and agents.
+`solution add-workflow` is local-only and idempotent; deploy creates or updates the live row. Do not run `bifrost workflows register` for Solution-owned code. Use portable refs such as `functions/items.py::list_items` from apps, forms, and agents. `solution deploy` runs the same plan first and refuses to upload when any decorated executable lacks an exact manifest row.
 
 For logos, the Solution catalog logo and app header logo are independent. `bifrost.solution.yaml` uses a Solution-root-relative path; the app manifest uses a path relative to that app's source directory. Set and verify both when both surfaces should be branded.
 
