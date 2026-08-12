@@ -168,6 +168,46 @@ async def test_apply_assigns_identity_inside_callers_transaction():
 
 
 @pytest.mark.asyncio
+async def test_apply_reactivates_existing_row_without_rewriting_source():
+    organization_id = uuid4()
+    existing = SimpleNamespace(
+        id=uuid4(),
+        is_active=False,
+        organization_id=organization_id,
+        path="features/dormant.py",
+        function_name="dormant",
+        name="Old name",
+        type="workflow",
+    )
+    db = SimpleNamespace(
+        execute=AsyncMock(return_value=_result(existing)),
+        flush=AsyncMock(),
+    )
+
+    applied = await apply_workspace_registration_plan(
+        db,
+        organization_id,
+        [
+            {
+                "action": "reactivate",
+                "path": existing.path,
+                "function_name": existing.function_name,
+                "type": "tool",
+                "name": "Dormant tool",
+                "requested_id": None,
+                "organization_id": str(organization_id),
+            }
+        ],
+    )
+
+    assert existing.is_active is True
+    assert existing.name == "Dormant tool"
+    assert existing.type == "tool"
+    assert applied[0]["workflow_id"] == str(existing.id)
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_apply_rejects_registry_state_that_changed_after_plan():
     existing = SimpleNamespace(
         id=uuid4(),

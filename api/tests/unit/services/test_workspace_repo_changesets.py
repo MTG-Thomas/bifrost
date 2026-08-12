@@ -142,6 +142,64 @@ def test_repo_changesets_require_an_organization_scope():
         require_organization_id(None)
 
 
+def test_verify_requires_an_exact_existing_hash_without_content():
+    with pytest.raises(ValueError, match="expected_hash"):
+        WorkspaceRepoFileMutationRequest(
+            path="features/existing.py",
+            operation="verify",
+        )
+    with pytest.raises(ValueError, match="content_base64"):
+        WorkspaceRepoFileMutationRequest(
+            path="features/existing.py",
+            operation="verify",
+            expected_hash="a" * 64,
+            content_base64=base64.b64encode(b"unchanged").decode(),
+        )
+
+
+def test_candidate_id_is_deterministic_across_equivalent_changesets():
+    mutation = {
+        "path": "features/existing.py",
+        "operation": "verify",
+        "before_hash": "a" * 64,
+        "after_hash": "a" * 64,
+        "force_deactivation": False,
+    }
+    first = SimpleNamespace(
+        id=uuid4(),
+        scope="features",
+        base_revision="b" * 64,
+        mutations=[mutation],
+    )
+    second = SimpleNamespace(
+        id=uuid4(),
+        scope="features",
+        base_revision="b" * 64,
+        mutations=[mutation],
+    )
+    actions = [
+        {
+            "action": "create",
+            "path": "features/existing.py",
+            "function_name": "existing",
+            "type": "workflow",
+            "name": "Existing",
+            "requested_id": None,
+            "organization_id": str(uuid4()),
+        }
+    ]
+
+    assert WorkspaceRepoChangesetService._candidate_id(
+        first,
+        validated_revision="c" * 64,
+        registration_actions=actions,
+    ) == WorkspaceRepoChangesetService._candidate_id(
+        second,
+        validated_revision="c" * 64,
+        registration_actions=actions,
+    )
+
+
 @pytest.mark.asyncio
 async def test_begin_uses_canonical_revision_and_rejects_stale_revision():
     svc = service(
@@ -288,7 +346,7 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     assert activated.status == "activated"
     assert svc.repo.files == {"features/a.py": b"A", "features/b.py": b"B"}
     assert activated.validation["activation_evidence"] == {
-        "schema": "bifrost.workspace-candidate/v1",
+            "schema": "bifrost.workspace-candidate/v2",
         "candidate_id": candidate_id,
         "activated_revision": activated.activated_revision,
         "files": [

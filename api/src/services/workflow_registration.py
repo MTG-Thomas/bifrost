@@ -116,8 +116,9 @@ async def apply_workspace_registration_plan(
 ) -> list[dict]:
     """Create missing Workspace rows in the caller's activation transaction.
 
-    Existing rows are deliberately left for ``WorkflowIndexer`` to enrich and
-    reactivate after the corresponding source file is written.
+    Existing inactive rows are reactivated here so exact-byte registration-only
+    activation does not depend on a source rewrite. A subsequent source write may
+    still let ``WorkflowIndexer`` enrich the row from the activated file.
     """
     applied: list[dict] = []
     for action in actions:
@@ -135,6 +136,11 @@ async def apply_workspace_registration_plan(
                 f"{action['function_name']}: {exc}"
             ) from exc
         if existing is not None:
+            if action.get("action") == "reactivate":
+                existing.is_active = True
+                existing.name = action.get("name") or action["function_name"]
+                existing.type = action["type"]
+                await db.flush()
             applied.append({**action, "workflow_id": str(existing.id)})
             continue
 

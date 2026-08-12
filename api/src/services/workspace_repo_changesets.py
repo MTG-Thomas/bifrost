@@ -57,7 +57,7 @@ from src.services.workflow_registration import (
 
 logger = logging.getLogger(__name__)
 
-CANDIDATE_SCHEMA = "bifrost.workspace-candidate/v1"
+CANDIDATE_SCHEMA = "bifrost.workspace-candidate/v2"
 
 
 class ChangesetConflict(Exception):
@@ -209,6 +209,12 @@ class WorkspaceRepoChangesetService:
                 raise ChangesetInvalid("content_base64 is not valid base64") from exc
             content = request.content_base64
             after_hash = hashlib.sha256(raw).hexdigest()
+        elif request.operation == "verify":
+            if before_hash is None:
+                raise ChangesetInvalid(
+                    f"verify requires an existing workspace file: {path}"
+                )
+            after_hash = before_hash
         mutation = {
             "path": path,
             "operation": request.operation,
@@ -240,11 +246,12 @@ class WorkspaceRepoChangesetService:
                     expected_hash=item.get("before_hash"),
                     current_hash=current_hash,
                 )
-            after = (
-                base64.b64decode(item["content_base64"])
-                if item["operation"] == "write"
-                else None
-            )
+            if item["operation"] == "write":
+                after = base64.b64decode(item["content_base64"])
+            elif item["operation"] == "verify":
+                after = before
+            else:
+                after = None
             unified = self._unified_diff(item["path"], before, after)
             result.append(
                 WorkspaceRepoFileDiff(
@@ -271,8 +278,22 @@ class WorkspaceRepoChangesetService:
                 continue
             names: set[str] = set()
             decorator_info: dict[str, tuple[str, str]] = {}
+            raw: bytes | None = None
             if item["operation"] == "write":
                 raw = base64.b64decode(item["content_base64"])
+            elif item["operation"] == "verify":
+                raw = await self._read_optional(path)
+                current_hash = (
+                    hashlib.sha256(raw).hexdigest() if raw is not None else None
+                )
+                if current_hash != item.get("before_hash"):
+                    raise ChangesetConflict(
+                        "file_revision_mismatch",
+                        path=path,
+                        expected_hash=item.get("before_hash"),
+                        current_hash=current_hash,
+                    )
+            if raw is not None:
                 try:
                     tree = ast.parse(raw.decode("utf-8"), filename=path)
                 except (SyntaxError, UnicodeDecodeError) as exc:
@@ -329,7 +350,34 @@ class WorkspaceRepoChangesetService:
             self.db, self.organization_id, registration_candidates
         )
         diagnostics.extend(registry_diagnostics)
-        valid = not diagnostics and not pending and bool(row.mutations)
+        has_source_mutations = any(
+            item["operation"] != "verify" for item in row.mutations
+        )
+        has_registration_mutations = any(
+            item.get("action") in {"create", "reactivate"}
+            for item in registration_actions
+        )
+        if (
+            row.mutations
+            and not has_source_mutations
+            and not has_registration_mutations
+        ):
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "source": "no_op",
+                    "message": (
+                        "exact-byte verification found no source or registry "
+                        "mutation to activate"
+                    ),
+                }
+            )
+        valid = (
+            not diagnostics
+            and not pending
+            and bool(row.mutations)
+            and (has_source_mutations or has_registration_mutations)
+        )
         current_revision, _ = await self._snapshot(row.scope)
         candidate_id = self._candidate_id(
             row,
@@ -361,6 +409,13 @@ class WorkspaceRepoChangesetService:
             )
         )
         row = await self._required(changeset_id, for_update=True)
+        has_source_mutations = any(
+            item["operation"] != "verify" for item in row.mutations
+        )
+        if not has_source_mutations and (request.commit_message or request.push):
+            raise ChangesetInvalid(
+                "registration-only activation cannot request a Git source commit"
+            )
         if (
             row.status != "validated"
             or not row.validation
@@ -394,10 +449,13 @@ class WorkspaceRepoChangesetService:
         originals = {
             item["path"]: await self._read_optional(item["path"])
             for item in row.mutations
+            if item["operation"] != "verify"
         }
         storage = FileStorageService(self.db)
         python_paths = [
-            item["path"] for item in row.mutations if item["path"].endswith(".py")
+            item["path"]
+            for item in row.mutations
+            if item["operation"] != "verify" and item["path"].endswith(".py")
         ]
         from src.core.module_cache import workspace_source_update
 
@@ -422,7 +480,7 @@ class WorkspaceRepoChangesetService:
                 for item in row.mutations:
                     if item["operation"] == "delete":
                         await storage.delete_file(item["path"])
-                    else:
+                    elif item["operation"] == "write":
                         result = await storage.write_file(
                             item["path"],
                             base64.b64decode(item["content_base64"]),
@@ -439,7 +497,7 @@ class WorkspaceRepoChangesetService:
                     observed_hash = activated_files.get(item["path"])
                     expected_hash = (
                         item.get("after_hash")
-                        if item["operation"] == "write"
+                        if item["operation"] in {"write", "verify"}
                         else None
                     )
                     if observed_hash != expected_hash:
@@ -655,6 +713,7 @@ class WorkspaceRepoChangesetService:
                     ),
                 )
                 for item in row.mutations
+                if item.get("operation") != "verify"
             )
             result = await self.commit_writer.write(
                 PlatformCommitRequest(
@@ -731,7 +790,6 @@ class WorkspaceRepoChangesetService:
         """Hash the exact source CAS and registry intent approved for activation."""
         payload = {
             "schema": CANDIDATE_SCHEMA,
-            "changeset_id": str(row.id),
             "scope": row.scope,
             "base_revision": row.base_revision,
             "validated_revision": validated_revision,

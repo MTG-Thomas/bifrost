@@ -49,7 +49,7 @@ class WorkspaceRepoFileMutationRequest(BaseModel):
         max_length=1000,
         description="File path relative to _repo and contained by the changeset scope.",
     )
-    operation: Literal["write", "delete"]
+    operation: Literal["write", "delete", "verify"]
     content_base64: str | None = None
     expected_hash: str | None = Field(default=None, min_length=64, max_length=64)
     force_deactivation: bool = False
@@ -58,14 +58,18 @@ class WorkspaceRepoFileMutationRequest(BaseModel):
     def require_content_for_write(self):
         if self.operation == "write" and self.content_base64 is None:
             raise ValueError("content_base64 is required for write operations")
-        if self.operation == "delete" and self.content_base64 is not None:
-            raise ValueError("content_base64 is not allowed for delete operations")
+        if self.operation != "write" and self.content_base64 is not None:
+            raise ValueError(
+                "content_base64 is only allowed for write operations"
+            )
+        if self.operation == "verify" and self.expected_hash is None:
+            raise ValueError("expected_hash is required for verify operations")
         return self
 
 
 class WorkspaceRepoMutation(BaseModel):
     path: str
-    operation: Literal["write", "delete"]
+    operation: Literal["write", "delete", "verify"]
     content_base64: str | None = None
     before_hash: str | None = None
     after_hash: str | None = None
@@ -91,7 +95,7 @@ class WorkspaceRepoChangesetResponse(BaseModel):
 
 class WorkspaceRepoFileDiff(BaseModel):
     path: str
-    operation: Literal["write", "delete"]
+    operation: Literal["write", "delete", "verify"]
     before_hash: str | None = None
     after_hash: str | None = None
     unified_diff: str | None = None
