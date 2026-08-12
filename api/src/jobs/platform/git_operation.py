@@ -23,6 +23,7 @@ async def run_git_operation(
     context: PlatformJobContext,
     payload: GitOperationPayload,
 ) -> dict:
+    from src.core.workspace_writer import workspace_writer_identity
     from src.scheduler.main import Scheduler
 
     await context.report(f"Running {payload.operation.replace('_', ' ')}", percent=5)
@@ -32,11 +33,16 @@ async def run_git_operation(
         "orgId": str(payload.organization_id) if payload.organization_id else "",
         **payload.options,
     }
-    if not await Scheduler()._handle_git_operation(data):
-        raise PlatformJobFailure(
-            "git_operation_failed",
-            f"{payload.operation.replace('_', ' ').title()} failed.",
-        )
+    with workspace_writer_identity(
+        context.job_id,
+        context.lease_token,
+        label=f"git:{payload.operation}",
+    ):
+        if not await Scheduler()._handle_git_operation(data):
+            raise PlatformJobFailure(
+                "git_operation_failed",
+                f"{payload.operation.replace('_', ' ').title()} failed.",
+            )
     await context.report("Git operation complete", percent=100)
     return {"operation": payload.operation}
 

@@ -495,6 +495,7 @@ class ApplicationRepository(OrgScopedRepository[Application]):
             str(app_id),
             application.repo_prefix,
             "preview",
+            self.session,
             dependencies=application.dependencies or {},
         )
         if not bundle_result.success:

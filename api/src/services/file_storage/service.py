@@ -159,9 +159,9 @@ class FileStorageService:
             skip_dirty_flag=skip_dirty_flag,
         )
 
-    async def delete_file(self, path: str) -> None:
+    async def delete_file(self, path: str, *, skip_dirty_flag: bool = False) -> None:
         """Delete a file from storage."""
-        await self._file_ops.delete_file(path)
+        await self._file_ops.delete_file(path, skip_dirty_flag=skip_dirty_flag)
 
     async def move_file(self, old_path: str, new_path: str) -> None:
         """Move/rename a file."""

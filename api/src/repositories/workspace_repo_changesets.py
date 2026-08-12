@@ -60,7 +60,7 @@ class WorkspaceRepoChangesetRepository:
                     ),
                     and_(
                         WorkspaceRepoChangeset.status == "committed_unpushed",
-                        failure_phase == "git_push",
+                        failure_phase.in_(("git_push", "remote_verification")),
                     ),
                 ),
             )
@@ -68,4 +68,25 @@ class WorkspaceRepoChangesetRepository:
         )
         if scope is not None:
             stmt = stmt.where(WorkspaceRepoChangeset.scope == scope)
+        return list((await self.db.execute(stmt)).scalars().all())
+
+    async def list_by_statuses(
+        self,
+        organization_id: UUID,
+        statuses: tuple[str, ...],
+        *,
+        limit: int = 200,
+    ) -> list[WorkspaceRepoChangeset]:
+        stmt = (
+            select(WorkspaceRepoChangeset)
+            .where(
+                WorkspaceRepoChangeset.organization_id == organization_id,
+                WorkspaceRepoChangeset.status.in_(statuses),
+            )
+            .order_by(
+                WorkspaceRepoChangeset.created_at.asc(),
+                WorkspaceRepoChangeset.id.asc(),
+            )
+            .limit(limit)
+        )
         return list((await self.db.execute(stmt)).scalars().all())

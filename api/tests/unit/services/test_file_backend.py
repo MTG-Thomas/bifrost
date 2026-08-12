@@ -47,7 +47,7 @@ class TestS3BackendPathHandling:
         await backend.write("workflows/test.py", b"content", "workspace", "user")
 
         backend.storage.write_file.assert_called_once_with(
-            "workflows/test.py", b"content", "user"
+            "workflows/test.py", b"content", "user", skip_dirty_flag=True
         )
 
     @pytest.mark.asyncio
@@ -68,7 +68,9 @@ class TestS3BackendPathHandling:
 
         await backend.delete("workflows/test.py", "workspace")
 
-        backend.storage.delete_file.assert_called_once_with("workflows/test.py")
+        backend.storage.delete_file.assert_called_once_with(
+            "workflows/test.py", skip_dirty_flag=True
+        )
 
     @pytest.mark.asyncio
     async def test_delete_rejects_workspace_parent_traversal(self):

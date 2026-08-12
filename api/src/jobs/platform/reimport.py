@@ -19,16 +19,22 @@ async def run_workspace_reimport(
     context: PlatformJobContext,
     payload: WorkspaceReimportPayload,
 ) -> dict:
+    from src.core.workspace_writer import workspace_writer_identity
     from src.services.github_sync import GitHubSyncService
 
     await context.report("Reimporting workspace entities", percent=5)
-    async with get_db_context() as db:
-        service = GitHubSyncService(
-            db=db,
-            repo_url="unused://reimport-only",
-            settings=get_settings(),
-        )
-        count = await service.reimport_from_repo()
+    with workspace_writer_identity(
+        context.job_id,
+        context.lease_token,
+        label="workspace-reimport",
+    ):
+        async with get_db_context() as db:
+            service = GitHubSyncService(
+                db=db,
+                repo_url="unused://reimport-only",
+                settings=get_settings(),
+            )
+            count = await service.reimport_from_repo()
     await context.report("Workspace reimport complete", percent=100)
     await context.log(
         "info",

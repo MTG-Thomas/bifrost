@@ -3,7 +3,8 @@
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, text
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +31,30 @@ class WorkspaceRepoChangeset(Base):
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    writer_job_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    dirty_generation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    authoritative_revision: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    authoritative_files: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    authoritative_base_files: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    activation_backup: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    remote_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    commit_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    push_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    closure_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closure_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

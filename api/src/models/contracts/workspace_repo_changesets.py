@@ -85,8 +85,67 @@ class WorkspaceRepoChangesetResponse(BaseModel):
     commit_sha: str | None = None
     error: str | None = None
     failure_detail: dict | None = None
+    created_by: UUID
+    writer_job_id: UUID | None = None
+    dirty_generation: str | None = None
+    authoritative_revision: str | None = None
+    remote_sha: str | None = None
+    commit_message: str | None = None
+    push_requested: bool = False
+    closure_started_at: datetime | None = None
+    closure_completed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class WorkspaceRepoChangesetListResponse(BaseModel):
+    changesets: list[WorkspaceRepoChangesetResponse]
+
+
+class WorkspaceWriterStatus(BaseModel):
+    job_id: UUID
+    changeset_id: UUID | None = None
+    status: str
+    phase: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    lease_expired: bool = False
+    started_at: datetime | None = None
+
+
+class WorkspaceDirtyStatus(BaseModel):
+    dirty: bool
+    generation: str | None = None
+    dirty_since: str | None = None
+    updated_at: str | None = None
+    writer: str | None = None
+    legacy: bool = False
+
+
+class WorkspaceAuthoritativeConvergenceResponse(BaseModel):
+    configured: bool
+    branch: str | None = None
+    generated_checkout_clean: bool | None = None
+    authoritative_converged: bool | None = None
+    authoritative_revision: str | None = None
+    authoritative_root_revisions: dict[str, str] = Field(default_factory=dict)
+    remote_sha: str | None = None
+    mismatch_count: int = 0
+    mismatch_paths: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class WorkspaceRepoOperationalStatusResponse(BaseModel):
+    dirty: WorkspaceDirtyStatus
+    active_writer: WorkspaceWriterStatus | None = None
+    active_changesets: list[WorkspaceRepoChangesetResponse] = Field(
+        default_factory=list
+    )
+    recoverable_closures: list[WorkspaceRepoChangesetResponse] = Field(
+        default_factory=list
+    )
+    closure_ledger: list[WorkspaceRepoChangesetResponse] = Field(default_factory=list)
+    convergence: WorkspaceAuthoritativeConvergenceResponse
 
 
 class WorkspaceRepoFileDiff(BaseModel):

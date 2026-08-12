@@ -197,23 +197,93 @@ async def get_github_status(
 @router.get(
     "/repo-status",
     response_model=RepoStatusResponse,
-    summary="Fast repo status for CLI push pre-check",
-    description="Check if platform has uncommitted changes and if git is configured",
+    summary="Authoritative workspace release gate",
+    description=(
+        "Distinguish generated-checkout status from authoritative object-storage "
+        "convergence with the configured remote branch."
+    ),
 )
 async def get_repo_status(
     ctx: Context,
     user: CurrentSuperuser,
     db: DbSession,
 ) -> RepoStatusResponse:
-    """Fast repo status check used by CLI push to gate on dirty state."""
-    from src.core.repo_dirty import get_repo_dirty_since
+    """Return the supported exact-path release and reconciliation gate."""
+    from sqlalchemy import select
+
+    from src.core.repo_dirty import get_repo_dirty_state
+    from src.core.workspace_writer import WORKSPACE_WRITER_RESOURCE_LOCK
+    from src.models.contracts.workspace_repo_changesets import (
+        WorkspaceAuthoritativeConvergenceResponse,
+    )
+    from src.models.orm.platform_jobs import PlatformJob
+    from src.repositories.workspace_repo_changesets import (
+        WorkspaceRepoChangesetRepository,
+    )
+    from src.services.github_config import build_authenticated_github_url
+    from src.services.github_sync import GitHubSyncService
 
     config = await get_github_config(db, ctx.org_id)
-    dirty_since = await get_repo_dirty_since()
+    dirty_state = await get_repo_dirty_state()
+    configured = bool(config and config.repo_url and config.token)
+    convergence = WorkspaceAuthoritativeConvergenceResponse(
+        configured=configured,
+        branch=config.branch if config and config.repo_url else None,
+    )
+    if configured and config is not None and config.repo_url and config.token:
+        # Do not retain the configuration read transaction while the remote
+        # fetch/readback status check performs network I/O.
+        await db.commit()
+        convergence = await GitHubSyncService(
+            db,
+            build_authenticated_github_url(config.repo_url, config.token),
+            config.branch,
+        ).authoritative_convergence()
+    active_writer = (
+        await db.execute(
+            select(PlatformJob)
+            .where(
+                PlatformJob.resource_lock_key == WORKSPACE_WRITER_RESOURCE_LOCK,
+                PlatformJob.status.in_(
+                    ("queued", "running", "waiting", "cancel_requested")
+                ),
+            )
+            .order_by(PlatformJob.created_at.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    active_changesets = 0
+    recoverable = 0
+    if ctx.org_id is not None:
+        rows = WorkspaceRepoChangesetRepository(db)
+        active_changesets = len(
+            await rows.list_by_statuses(
+                ctx.org_id, ("open", "staged", "validated", "activating")
+            )
+        )
+        recoverable = len(
+            await rows.list_retryable_git_failures(ctx.org_id)
+        )
     return RepoStatusResponse(
-        git_configured=config is not None and bool(config.repo_url),
-        dirty=dirty_since is not None,
-        dirty_since=dirty_since,
+        git_configured=configured,
+        dirty=dirty_state is not None,
+        dirty_since=dirty_state.dirty_since if dirty_state else None,
+        dirty_generation=dirty_state.generation if dirty_state else None,
+        dirty_updated_at=dirty_state.updated_at if dirty_state else None,
+        dirty_writer=dirty_state.writer if dirty_state else None,
+        dirty_legacy=dirty_state.legacy if dirty_state else False,
+        generated_checkout_clean=convergence.generated_checkout_clean,
+        authoritative_converged=convergence.authoritative_converged,
+        authoritative_revision=convergence.authoritative_revision,
+        authoritative_root_revisions=convergence.authoritative_root_revisions,
+        remote_sha=convergence.remote_sha,
+        mismatch_count=convergence.mismatch_count,
+        mismatch_paths=convergence.mismatch_paths,
+        active_writer_job_id=str(active_writer.id) if active_writer else None,
+        active_writer_phase=active_writer.phase if active_writer else None,
+        active_changesets=active_changesets,
+        recoverable_closures=recoverable,
+        error=convergence.error,
     )
 
 
@@ -857,5 +927,3 @@ async def git_discard(
         paths=request.paths,
     )
     return GitJobResponse(job_id=job_id)
-
-

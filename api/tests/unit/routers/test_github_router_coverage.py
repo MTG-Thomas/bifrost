@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
 
 import pytest
@@ -18,6 +18,10 @@ from src.models import (
 )
 from src.routers import github
 from src.services.github_api import GitHubAPIError
+from src.core.repo_dirty import RepoDirtyState
+from src.models.contracts.workspace_repo_changesets import (
+    WorkspaceAuthoritativeConvergenceResponse,
+)
 
 
 def _ctx() -> SimpleNamespace:
@@ -109,15 +113,43 @@ async def test_github_status_reports_unconfigured_token_only_configured_and_erro
 
 @pytest.mark.asyncio
 async def test_repo_status_combines_git_config_and_dirty_marker() -> None:
+    db_result = Mock()
+    db_result.scalar_one_or_none.return_value = None
+    db_result.scalars.return_value.all.return_value = []
+    db = SimpleNamespace(
+        execute=AsyncMock(return_value=db_result), commit=AsyncMock()
+    )
+    dirty = RepoDirtyState(
+        "a" * 32,
+        "2026-07-05T12:00:00Z",
+        "2026-07-05T12:01:00Z",
+        "editor@example.com",
+    )
+    git = Mock()
+    git.authoritative_convergence = AsyncMock(
+        return_value=WorkspaceAuthoritativeConvergenceResponse(
+            configured=True,
+            branch="main",
+            generated_checkout_clean=True,
+            authoritative_converged=False,
+            mismatch_count=1,
+            mismatch_paths=["features/drift.py"],
+        )
+    )
     with (
         patch.object(github, "get_github_config", AsyncMock(return_value=_config())),
-        patch("src.core.repo_dirty.get_repo_dirty_since", AsyncMock(return_value="2026-07-05T12:00:00Z")),
+        patch("src.core.repo_dirty.get_repo_dirty_state", AsyncMock(return_value=dirty)),
+        patch("src.services.github_sync.GitHubSyncService", return_value=git),
     ):
-        result = await github.get_repo_status(_ctx(), _user(), AsyncMock())
+        result = await github.get_repo_status(_ctx(), _user(), db)
 
     assert result.git_configured is True
     assert result.dirty is True
     assert result.dirty_since == "2026-07-05T12:00:00Z"
+    assert result.dirty_generation == "a" * 32
+    assert result.generated_checkout_clean is True
+    assert result.authoritative_converged is False
+    assert result.mismatch_paths == ["features/drift.py"]
 
 
 @pytest.mark.asyncio

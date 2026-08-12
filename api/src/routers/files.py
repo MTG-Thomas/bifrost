@@ -2262,6 +2262,11 @@ async def delete_file_editor(
     from src.services.repo_storage import RepoStorage
 
     try:
+        from src.core.repo_dirty import mark_repo_dirty
+        from src.core.workspace_writer import assert_workspace_writer_access
+
+        await assert_workspace_writer_access(db)
+        await mark_repo_dirty(writer=user.email)
         storage = FileStorageService(db)
         repo = RepoStorage()
 

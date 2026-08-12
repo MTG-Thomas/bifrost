@@ -7,6 +7,14 @@ from src.services import file_index_reconciler
 from src.services.file_index_reconciler import reconcile_file_index
 
 
+@pytest.fixture(autouse=True)
+def isolate_workspace_writer(monkeypatch):
+    monkeypatch.setattr(
+        file_index_reconciler, "assert_workspace_writer_access", AsyncMock()
+    )
+    monkeypatch.setattr(file_index_reconciler, "mark_repo_dirty", AsyncMock())
+
+
 class _RowsResult:
     def __init__(self, rows):
         self._rows = rows
@@ -60,6 +68,7 @@ async def test_reconcile_adds_text_files_missing_from_index(
 async def test_reconcile_reverse_syncs_db_rows_missing_from_repo(db_session) -> None:
     repo = SimpleNamespace(
         list=AsyncMock(return_value=[]),
+        exists=AsyncMock(return_value=False),
         write=AsyncMock(return_value="hash"),
     )
     db_session.execute.side_effect = [
@@ -72,13 +81,14 @@ async def test_reconcile_reverse_syncs_db_rows_missing_from_repo(db_session) -> 
     assert stats["reverse_synced"] == 1
     assert stats["removed"] == 0
     repo.write.assert_awaited_once_with("workflows/a.py", b"print('hello')")
-    db_session.commit.assert_awaited_once()
+    assert db_session.commit.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_reconcile_removes_orphaned_row_without_content(db_session) -> None:
     repo = SimpleNamespace(
         list=AsyncMock(return_value=[]),
+        exists=AsyncMock(return_value=False),
         write=AsyncMock(),
     )
     db_session.execute.side_effect = [
@@ -103,6 +113,7 @@ async def test_reconcile_continues_when_read_or_reverse_sync_fails(
     repo = SimpleNamespace(
         list=AsyncMock(return_value=["new.py"]),
         read=AsyncMock(side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")),
+        exists=AsyncMock(return_value=False),
         write=AsyncMock(side_effect=RuntimeError("storage offline")),
     )
     db_session.execute.side_effect = [
@@ -123,3 +134,24 @@ async def test_reconcile_continues_when_read_or_reverse_sync_fails(
     repo.read.assert_awaited_once_with("new.py")
     repo.write.assert_awaited_once_with("old.py", b"old content")
     db_session.commit.assert_awaited_once()
+    db_session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_overwrite_file_created_after_scan(db_session) -> None:
+    repo = SimpleNamespace(
+        list=AsyncMock(return_value=[]),
+        exists=AsyncMock(return_value=True),
+        write=AsyncMock(),
+    )
+    db_session.execute.side_effect = [
+        _RowsResult([("workflows/a.py",)]),
+        _ScalarResult("print('old')"),
+    ]
+
+    stats = await reconcile_file_index(db_session, repo)
+
+    assert stats["reverse_synced"] == 0
+    repo.exists.assert_awaited_once_with("workflows/a.py")
+    repo.write.assert_not_awaited()
+    assert db_session.commit.await_count == 2

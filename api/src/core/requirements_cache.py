@@ -30,6 +30,8 @@ import logging
 import os
 from typing import Any, TypedDict
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
@@ -227,7 +229,7 @@ async def warm_requirements_cache() -> bool:
         return False
 
 
-async def save_requirements(content: str) -> None:
+async def save_requirements(db: AsyncSession, content: str) -> None:
     """
     Save requirements.txt to object storage and update Redis cache.
 
@@ -235,10 +237,14 @@ async def save_requirements(content: str) -> None:
         content: Full requirements.txt content
     """
     from src.services.repo_storage import RepoStorage
+    from src.core.repo_dirty import mark_repo_dirty
+    from src.core.workspace_writer import assert_workspace_writer_access
 
     content_hash = hashlib.sha256(content.encode()).hexdigest()
 
     # Write to object storage (source of truth)
+    await assert_workspace_writer_access(db)
+    await mark_repo_dirty(writer="package-requirements")
     repo = RepoStorage()
     await repo.write("requirements.txt", content.encode())
 

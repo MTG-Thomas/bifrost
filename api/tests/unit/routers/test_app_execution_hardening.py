@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -243,6 +244,7 @@ async def test_preview_stale_manifest_can_rebuild(monkeypatch: pytest.MonkeyPatc
         app_id_arg: str,
         repo_prefix: str,
         mode: str,
+        db,
         *,
         dependencies: dict[str, str],
     ):
@@ -273,7 +275,7 @@ async def test_preview_stale_manifest_can_rebuild(monkeypatch: pytest.MonkeyPatc
     manifest = await app_code_files.get_bundle_manifest(
         app_id,
         mode=FileMode.draft,
-        ctx=SimpleNamespace(),
+        ctx=SimpleNamespace(db=AsyncMock()),
         _user=_user(is_platform_admin=False),
     )
 

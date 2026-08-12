@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, status
@@ -14,7 +14,7 @@ def _user() -> SimpleNamespace:
 
 
 def _ctx() -> SimpleNamespace:
-    return SimpleNamespace(org_id="org-1")
+    return SimpleNamespace(org_id="org-1", db=AsyncMock())
 
 
 def _db() -> AsyncMock:
@@ -344,7 +344,7 @@ async def test_install_package_warms_cache_on_miss_then_broadcasts_recycle() -> 
     assert result.status == "success"
     warm.assert_awaited_once()
     append.assert_called_once_with("fastapi==1\n", "httpx", "0.28.0")
-    save.assert_awaited_once_with("fastapi==1\nhttpx==0.28.0\n")
+    save.assert_awaited_once_with(ANY, "fastapi==1\nhttpx==0.28.0\n")
     assert publish.await_args.kwargs["message"]["package"] == "httpx"
 
 

@@ -75,7 +75,7 @@ async def test_diagnostics_sanitizes_file_path(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_file_ops_sanitizes_deleted_path(monkeypatch, caplog):
-    from src.core import pubsub
+    from src.core import pubsub, repo_dirty, workspace_writer
     from src.services.file_storage import file_ops
 
     service = file_ops.FileOperationsService(
@@ -95,6 +95,10 @@ async def test_file_ops_sanitizes_deleted_path(monkeypatch, caplog):
     monkeypatch.setattr(service, "_handle_app_file_cleanup", AsyncMock())
     monkeypatch.setattr(service, "_invalidate_module_cache_if_python", AsyncMock())
     monkeypatch.setattr(pubsub, "publish_file_activity", AsyncMock())
+    monkeypatch.setattr(
+        workspace_writer, "assert_workspace_writer_access", AsyncMock()
+    )
+    monkeypatch.setattr(repo_dirty, "mark_repo_dirty", AsyncMock())
 
     path = "workflows/example.py\nFORGED\x1b[31m"
     with caplog.at_level(logging.INFO, logger=file_ops.__name__):

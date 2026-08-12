@@ -27,7 +27,11 @@ def private_key_pem() -> str:
     ).decode()
 
 
-def commit_request(*, changeset_id=None) -> PlatformCommitRequest:
+def commit_request(
+    *, changeset_id=None, verify_authoritative_snapshot=False
+) -> PlatformCommitRequest:
+    before = hashlib.sha256(b"print('deleted')\n").hexdigest()
+    after = hashlib.sha256(b"print('verified')\n").hexdigest()
     return PlatformCommitRequest(
         commit_message="Publish production source\nPreserve this context.",
         operator="operator@example.com",
@@ -39,16 +43,24 @@ def commit_request(*, changeset_id=None) -> PlatformCommitRequest:
                 path="workflows/example.py",
                 content_base64=base64.b64encode(b"print('verified')\n").decode(),
                 expected_before_sha256=None,
-                expected_sha256=hashlib.sha256(b"print('verified')\n").hexdigest(),
+                expected_sha256=after,
             ),
             PlatformCommitFile(
                 path="workflows/deleted.py",
                 content_base64=None,
-                expected_before_sha256=hashlib.sha256(
-                    b"print('deleted')\n"
-                ).hexdigest(),
+                expected_before_sha256=before,
                 expected_sha256=None,
             ),
+        ),
+        expected_parent_files=(
+            {"workflows/deleted.py": before}
+            if verify_authoritative_snapshot
+            else None
+        ),
+        expected_committed_files=(
+            {"workflows/example.py": after}
+            if verify_authoritative_snapshot
+            else None
         ),
     )
 
@@ -180,6 +192,26 @@ async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree(
             if request.url.params["ref"] == "a" * 40:
                 return httpx.Response(200, content=b"print('deleted')\n")
             return httpx.Response(404, json={"message": "Not Found"})
+        if request.url.path.endswith("/git/trees/" + "1" * 40):
+            return httpx.Response(
+                200,
+                json={
+                    "truncated": False,
+                    "tree": [
+                        {"path": "workflows/deleted.py", "type": "blob"}
+                    ],
+                },
+            )
+        if request.url.path.endswith("/git/trees/" + "2" * 40):
+            return httpx.Response(
+                200,
+                json={
+                    "truncated": False,
+                    "tree": [
+                        {"path": "workflows/example.py", "type": "blob"}
+                    ],
+                },
+            )
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -191,7 +223,9 @@ async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree(
             private_key=private_key_pem,
             client=client,
         )
-        result = await writer.write(commit_request())
+        result = await writer.write(
+            commit_request(verify_authoritative_snapshot=True)
+        )
 
     assert result.commit_sha == created_sha
     assert result.tree_sha == "2" * 40
@@ -330,6 +364,52 @@ async def test_writer_rejects_remote_path_drift_before_creating_commit(
         )
         with pytest.raises(PlatformCommitError, match="expected .* to be absent"):
             await writer.write(commit_request())
+
+    assert mutation_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_unrelated_remote_path_before_exact_commit(
+    private_key_pem,
+):
+    mutation_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal mutation_calls
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            payload = graphql_payload(request)
+            if "query BranchHead" in payload["query"]:
+                return head_response()
+            if "mutation CreatePlatformCommit" in payload["query"]:
+                mutation_calls += 1
+        if request.url.path.endswith("/git/trees/" + "1" * 40):
+            return httpx.Response(
+                200,
+                json={
+                    "truncated": False,
+                    "tree": [
+                        {"path": "workflows/deleted.py", "type": "blob"},
+                        {"path": "features/unreviewed.py", "type": "blob"},
+                    ],
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        with pytest.raises(PlatformCommitError, match="path set"):
+            await writer.write(
+                commit_request(verify_authoritative_snapshot=True)
+            )
 
     assert mutation_calls == 0
 

@@ -48,6 +48,7 @@ def create_form_captcha_challenge(
     session_id: str,
     session_expires_at: int | None,
     now: datetime | None = None,
+    counter: int | None = None,
 ) -> dict[str, Any]:
     """Create a short-lived challenge signed for one form session."""
 
@@ -61,6 +62,7 @@ def create_form_captcha_challenge(
     challenge = altcha.create_challenge(
         algorithm=FORM_CAPTCHA_ALGORITHM,
         cost=FORM_CAPTCHA_COST,
+        counter=counter,
         expires_at=expires_at,
         data={
             "challenge_id": secrets.token_urlsafe(24),

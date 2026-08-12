@@ -92,15 +92,18 @@ async def _refresh_app_preview(
         )
 
 
-async def _mark_repo_dirty_unless_skipped(skip_dirty_flag: bool) -> None:
+async def _mark_repo_dirty_unless_skipped(
+    skip_dirty_flag: bool, *, writer: str
+) -> None:
     if skip_dirty_flag:
         return
     from src.core.repo_dirty import mark_repo_dirty
 
     try:
-        await mark_repo_dirty()
-    except Exception as exc:
-        logger.warning("Failed to mark repo dirty: %s", log_safe(exc))
+        await mark_repo_dirty(writer=writer)
+    except Exception:
+        logger.exception("Failed to advance repository dirty generation")
+        raise
 
 
 async def _publish_file_push(path: str, updated_by: str) -> None:
@@ -266,6 +269,17 @@ class FileOperationsService:
         if is_excluded_path(path):
             raise ValueError(f"Path is excluded from workspace: {path}")
 
+        from src.core.workspace_writer import (
+            assert_workspace_writer_access,
+            current_workspace_writer_label,
+        )
+
+        await assert_workspace_writer_access(self.db)
+        await _mark_repo_dirty_unless_skipped(
+            skip_dirty_flag,
+            writer=current_workspace_writer_label(updated_by) or updated_by,
+        )
+
         content_hash = self._compute_hash(content)
         content_type = self._guess_content_type(path)
         size_bytes = len(content)
@@ -359,7 +373,6 @@ class FileOperationsService:
         await _scan_for_sdk_issues(self._diagnostics, path, final_content)
         await _update_diagnostic_notification(self._diagnostics, path, diagnostics)
         await _refresh_app_preview(self, path, content_str, updated_by)
-        await _mark_repo_dirty_unless_skipped(skip_dirty_flag)
         await _publish_file_push(path, updated_by)
 
         logger.info("File written: %s (%s bytes) by %s", log_safe(path), size_bytes, log_safe(updated_by))
@@ -400,7 +413,7 @@ class FileOperationsService:
         await self.db.execute(stmt)
         await self.db.flush()
 
-    async def delete_file(self, path: str) -> None:
+    async def delete_file(self, path: str, *, skip_dirty_flag: bool = False) -> None:
         """Delete a file behind the Python workspace generation barrier."""
         from src.core.module_cache import workspace_source_update
 
@@ -408,14 +421,28 @@ class FileOperationsService:
             reason="python_file_delete",
             changed_paths=[path],
         ):
-            await self._delete_file_impl(path)
+            await self._delete_file_impl(path, skip_dirty_flag=skip_dirty_flag)
 
-    async def _delete_file_impl(self, path: str) -> None:
+    async def _delete_file_impl(
+        self, path: str, *, skip_dirty_flag: bool = False
+    ) -> None:
         """
         Delete a file from storage.
 
         Pattern: S3 first (source of truth), then conditional side effects.
         """
+        from src.core.workspace_writer import (
+            assert_workspace_writer_access,
+            current_workspace_writer_label,
+        )
+        from src.core.repo_dirty import mark_repo_dirty
+
+        await assert_workspace_writer_access(self.db)
+        if not skip_dirty_flag:
+            await mark_repo_dirty(
+                writer=current_workspace_writer_label("file-delete") or "file-delete"
+            )
+
         # === S3: Source of truth (must succeed) ===
         await self._delete_from_s3(path)
 
@@ -550,6 +577,7 @@ class FileOperationsService:
                 app_id=app_id,
                 repo_prefix=app_prefix,
                 mode="preview",
+                db=self.db,
                 dependencies=app.dependencies or {},
             )
         except Exception as e:
@@ -713,6 +741,13 @@ class FileOperationsService:
             FileNotFoundError: If old_path doesn't exist
             FileExistsError: If new_path already exists
         """
+        from src.core.repo_dirty import mark_repo_dirty
+        from src.core.workspace_writer import (
+            assert_workspace_writer_access,
+            current_workspace_writer_label,
+        )
+
+        await assert_workspace_writer_access(self.db)
         now = datetime.now(timezone.utc)
 
         # Check old path exists in file_index
@@ -727,6 +762,10 @@ class FileOperationsService:
         fi_result2 = await self.db.execute(fi_stmt2)
         if fi_result2.scalar_one_or_none():
             raise FileExistsError(f"File already exists: {new_path}")
+
+        await mark_repo_dirty(
+            writer=current_workspace_writer_label("file-move") or "file-move"
+        )
 
         # Update entity table paths for Python files. Scope to _repo/ rows
         # (solution_id IS NULL): renaming a WORKSPACE file must never rewrite the

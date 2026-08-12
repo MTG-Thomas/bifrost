@@ -518,7 +518,9 @@
 | GET | `/api/workflows/{workflow_id}/roles` |
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
+| GET | `/api/workspace-repo-changesets` |
 | POST | `/api/workspace-repo-changesets` |
+| GET | `/api/workspace-repo-changesets/operational-status` |
 | GET | `/api/workspace-repo-changesets/recoverable-git-closures` |
 | GET | `/api/workspace-repo-changesets/state` |
 | GET | `/api/workspace-repo-changesets/{changeset_id}` |

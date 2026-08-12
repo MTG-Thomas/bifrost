@@ -176,7 +176,12 @@ class S3Backend(FileBackend):
         """Write file to S3."""
         if location == "workspace":
             resolve_s3_key(location, scope, path)
-            await self.storage.write_file(path, content, updated_by)
+            await self.storage.write_file(
+                path,
+                content,
+                updated_by,
+                skip_dirty_flag=True,
+            )
             return
         s3_path = resolve_s3_key(location, scope, path)
         await self.storage.write_raw_to_s3(s3_path, content)
@@ -185,7 +190,7 @@ class S3Backend(FileBackend):
         """Delete file from S3."""
         if location == "workspace":
             resolve_s3_key(location, scope, path)
-            await self.storage.delete_file(path)
+            await self.storage.delete_file(path, skip_dirty_flag=True)
             return
         s3_path = resolve_s3_key(location, scope, path)
         await self.storage.delete_raw_from_s3(s3_path)

@@ -182,13 +182,18 @@ async def reimport_from_repo(
         WorkspaceReimportPayload,
     )
     from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
+    from src.core.workspace_writer import (
+        WORKSPACE_WRITER_RESOURCE_LOCK,
+        lock_workspace_writer_gate,
+    )
 
+    await lock_workspace_writer_gate(ctx.db)
     job, _ = await enqueue_platform_job(
         ctx.db,
         WORKSPACE_REIMPORT_DEFINITION,
         WorkspaceReimportPayload(),
         dedupe_key="workspace",
-        resource_lock_key="workspace",
+        resource_lock_key=WORKSPACE_WRITER_RESOURCE_LOCK,
         priority=500,
         organization_id=None,
         requested_by_user_id=user.user_id,

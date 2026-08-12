@@ -759,6 +759,7 @@ async def create_form_captcha(
             form_id=str(form.id),
             session_id=ctx.user.jti,
             session_expires_at=ctx.user.token_exp,
+            counter=1 if get_settings().is_testing else None,
         )
     except FormCaptchaError as exc:
         raise HTTPException(

@@ -65,8 +65,17 @@ class FolderOperationsService:
         updated_by: str = "system",
     ) -> None:
         """Create a folder by writing a .gitkeep placeholder in S3."""
+        from src.core.repo_dirty import mark_repo_dirty
+        from src.core.workspace_writer import (
+            assert_workspace_writer_access,
+            current_workspace_writer_label,
+        )
         from src.services.repo_storage import RepoStorage
 
+        await assert_workspace_writer_access(self.db)
+        await mark_repo_dirty(
+            writer=current_workspace_writer_label(updated_by) or updated_by
+        )
         clean_path = path.strip("/")
         gitkeep_path = f"{clean_path}/.gitkeep"
         repo = RepoStorage()

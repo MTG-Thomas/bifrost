@@ -5,6 +5,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -1187,10 +1188,14 @@ async def test_delete_file_editor_deletes_folder_children_and_markers(monkeypatc
 
     monkeypatch.setattr(files, "FileStorageService", FakeStorage)
     monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", AsyncMock()
+    )
+    monkeypatch.setattr("src.core.repo_dirty.mark_repo_dirty", AsyncMock())
 
     await files.delete_file_editor(
         _ctx(is_superuser=True),
-        SimpleNamespace(user_id=USER_ID),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
         path="folder",
         db=SimpleNamespace(),
     )
@@ -1219,10 +1224,14 @@ async def test_delete_file_editor_deletes_single_file_and_maps_missing(monkeypat
 
     monkeypatch.setattr(files, "FileStorageService", FakeStorage)
     monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", AsyncMock()
+    )
+    monkeypatch.setattr("src.core.repo_dirty.mark_repo_dirty", AsyncMock())
 
     await files.delete_file_editor(
         _ctx(is_superuser=True),
-        SimpleNamespace(user_id=USER_ID),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
         path="file.txt",
         db=SimpleNamespace(),
     )
@@ -1231,7 +1240,7 @@ async def test_delete_file_editor_deletes_single_file_and_maps_missing(monkeypat
     with pytest.raises(HTTPException) as exc_info:
         await files.delete_file_editor(
             _ctx(is_superuser=True),
-            SimpleNamespace(user_id=USER_ID),
+            SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
             path="missing.txt",
             db=SimpleNamespace(),
         )

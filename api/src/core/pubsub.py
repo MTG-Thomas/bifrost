@@ -619,6 +619,10 @@ async def publish_git_operation(
         GitOperationPayload,
     )
     from src.services.platform_jobs import enqueue_platform_job, publish_platform_job_update
+    from src.core.workspace_writer import (
+        WORKSPACE_WRITER_RESOURCE_LOCK,
+        lock_workspace_writer_gate,
+    )
 
     try:
         resolved_job_id = UUID(job_id)
@@ -626,6 +630,7 @@ async def publish_git_operation(
         resolved_job_id = uuid4()
     organization_id = UUID(org_id) if org_id else None
     async with get_db_context() as db:
+        await lock_workspace_writer_gate(db)
         job, _ = await enqueue_platform_job(
             db,
             GIT_OPERATION_DEFINITION,
@@ -635,7 +640,7 @@ async def publish_git_operation(
                 options=kwargs,
             ),
             dedupe_key=str(resolved_job_id),
-            resource_lock_key="workspace",
+            resource_lock_key=WORKSPACE_WRITER_RESOURCE_LOCK,
             priority=500,
             organization_id=organization_id,
             requested_by_user_id=user_id,

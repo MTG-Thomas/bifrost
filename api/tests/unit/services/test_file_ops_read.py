@@ -23,6 +23,10 @@ def _isolate_workspace_source_barrier(monkeypatch):
     monkeypatch.setattr(
         "src.core.module_cache.workspace_source_update", source_update
     )
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", AsyncMock()
+    )
+    monkeypatch.setattr("src.core.repo_dirty.mark_repo_dirty", AsyncMock())
 
 
 class _AsyncClientContext:
@@ -344,7 +348,7 @@ class TestDeleteFilePureBranches:
     async def test_delete_file_continues_when_side_effect_fails(self):
         from src.services.file_storage.file_ops import FileOperationsService
 
-        service = _service()
+        service = _service(db=MagicMock())
         service._delete_from_s3 = AsyncMock()
         service._remove_from_search_index = AsyncMock(side_effect=RuntimeError("index down"))
         service._handle_app_file_cleanup = AsyncMock()
@@ -392,7 +396,7 @@ class TestDeleteFilePureBranches:
     async def test_invalidate_module_cache_for_detected_module_without_py_suffix(self):
         from src.services.file_storage.file_ops import FileOperationsService
 
-        service = _service()
+        service = _service(db=MagicMock())
         service._invalidate_module_cache_if_python = (
             FileOperationsService._invalidate_module_cache_if_python.__get__(service)
         )
@@ -578,7 +582,7 @@ class TestDeleteFilePureBranches:
         from src.services.file_storage.file_ops import FileOperationsService
 
         app = SimpleNamespace(id="app-1", repo_prefix="apps/helpdesk/", dependencies={"react": "^18"})
-        service = _service()
+        service = _service(db=MagicMock())
         service._report_bundle_result = AsyncMock()
         service._rebuild_app_bundle = FileOperationsService._rebuild_app_bundle.__get__(service)
 

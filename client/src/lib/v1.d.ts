@@ -3354,10 +3354,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Workspace Repo Changesets */
+        get: operations["list_workspace_repo_changesets_api_workspace_repo_changesets_get"];
         put?: never;
         /** Begin Workspace Repo Changeset */
         post: operations["begin_workspace_repo_changeset_api_workspace_repo_changesets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-repo-changesets/operational-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Workspace Repo Operational Status */
+        get: operations["workspace_repo_operational_status_api_workspace_repo_changesets_operational_status_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3852,8 +3870,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Fast repo status for CLI push pre-check
-         * @description Check if platform has uncommitted changes and if git is configured
+         * Authoritative workspace release gate
+         * @description Distinguish generated-checkout status from authoritative object-storage convergence with the configured remote branch.
          */
         get: operations["get_repo_status_api_github_repo_status_get"];
         put?: never;
@@ -14558,7 +14576,6 @@ export interface components {
              *             - IN: {"category": {"in": ["a", "b"]}}
              *             - NULL: {"deleted_at": {"is_null": true}}
              *             - Has field: {"field": {"has_key": true}}
-             *
              */
             where?: {
                 [key: string]: unknown;
@@ -17580,6 +17597,22 @@ export interface components {
              * @description Error message if sync failed
              */
             error?: string | null;
+            /**
+             * Status Scope
+             * @description This status describes only the generated Git checkout.
+             * @default generated_checkout
+             */
+            status_scope: string;
+            /**
+             * Authoritative Converged
+             * @description Use authoritative_status_url for Azure/S3 convergence proof.
+             */
+            authoritative_converged?: boolean | null;
+            /**
+             * Authoritative Status Url
+             * @default /api/github/repo-status
+             */
+            authoritative_status_url: string;
         };
         /**
          * GoogleOAuthConfigRequest
@@ -22151,7 +22184,7 @@ export interface components {
         };
         /**
          * RepoStatusResponse
-         * @description Fast repo status check for CLI push pre-check.
+         * @description Authoritative release gate and dirty-state status.
          */
         RepoStatusResponse: {
             /**
@@ -22169,6 +22202,57 @@ export interface components {
              * @description ISO timestamp when repo became dirty
              */
             dirty_since?: string | null;
+            /** Dirty Generation */
+            dirty_generation?: string | null;
+            /** Dirty Updated At */
+            dirty_updated_at?: string | null;
+            /** Dirty Writer */
+            dirty_writer?: string | null;
+            /**
+             * Dirty Legacy
+             * @default false
+             */
+            dirty_legacy: boolean;
+            /** Generated Checkout Clean */
+            generated_checkout_clean?: boolean | null;
+            /** Authoritative Converged */
+            authoritative_converged?: boolean | null;
+            /** Authoritative Revision */
+            authoritative_revision?: string | null;
+            /** Authoritative Root Revisions */
+            authoritative_root_revisions?: {
+                [key: string]: string;
+            };
+            /** Remote Sha */
+            remote_sha?: string | null;
+            /**
+             * Mismatch Count
+             * @default 0
+             */
+            mismatch_count: number;
+            /** Mismatch Paths */
+            mismatch_paths?: string[];
+            /** Active Writer Job Id */
+            active_writer_job_id?: string | null;
+            /** Active Writer Phase */
+            active_writer_phase?: string | null;
+            /**
+             * Active Changesets
+             * @default 0
+             */
+            active_changesets: number;
+            /**
+             * Recoverable Closures
+             * @default 0
+             */
+            recoverable_closures: number;
+            /**
+             * Operational Status Url
+             * @default /api/workspace-repo-changesets/operational-status
+             */
+            operational_status_url: string;
+            /** Error */
+            error?: string | null;
         };
         /**
          * ResolveRequest
@@ -26619,6 +26703,52 @@ export interface components {
             /** @description Workflow metadata if valid */
             metadata?: components["schemas"]["WorkflowMetadata"] | null;
         };
+        /** WorkspaceAuthoritativeConvergenceResponse */
+        WorkspaceAuthoritativeConvergenceResponse: {
+            /** Configured */
+            configured: boolean;
+            /** Branch */
+            branch?: string | null;
+            /** Generated Checkout Clean */
+            generated_checkout_clean?: boolean | null;
+            /** Authoritative Converged */
+            authoritative_converged?: boolean | null;
+            /** Authoritative Revision */
+            authoritative_revision?: string | null;
+            /** Authoritative Root Revisions */
+            authoritative_root_revisions?: {
+                [key: string]: string;
+            };
+            /** Remote Sha */
+            remote_sha?: string | null;
+            /**
+             * Mismatch Count
+             * @default 0
+             */
+            mismatch_count: number;
+            /** Mismatch Paths */
+            mismatch_paths?: string[];
+            /** Error */
+            error?: string | null;
+        };
+        /** WorkspaceDirtyStatus */
+        WorkspaceDirtyStatus: {
+            /** Dirty */
+            dirty: boolean;
+            /** Generation */
+            generation?: string | null;
+            /** Dirty Since */
+            dirty_since?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Writer */
+            writer?: string | null;
+            /**
+             * Legacy
+             * @default false
+             */
+            legacy: boolean;
+        };
         /** WorkspaceRepoActivateRequest */
         WorkspaceRepoActivateRequest: {
             /** Commit Message */
@@ -26657,6 +26787,11 @@ export interface components {
             /** Files */
             files: components["schemas"]["WorkspaceRepoFileDiff"][];
         };
+        /** WorkspaceRepoChangesetListResponse */
+        WorkspaceRepoChangesetListResponse: {
+            /** Changesets */
+            changesets: components["schemas"]["WorkspaceRepoChangesetResponse"][];
+        };
         /** WorkspaceRepoChangesetResponse */
         WorkspaceRepoChangesetResponse: {
             /**
@@ -26693,6 +26828,30 @@ export interface components {
             failure_detail?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Created By
+             * Format: uuid
+             */
+            created_by: string;
+            /** Writer Job Id */
+            writer_job_id?: string | null;
+            /** Dirty Generation */
+            dirty_generation?: string | null;
+            /** Authoritative Revision */
+            authoritative_revision?: string | null;
+            /** Remote Sha */
+            remote_sha?: string | null;
+            /** Commit Message */
+            commit_message?: string | null;
+            /**
+             * Push Requested
+             * @default false
+             */
+            push_requested: boolean;
+            /** Closure Started At */
+            closure_started_at?: string | null;
+            /** Closure Completed At */
+            closure_completed_at?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -26763,6 +26922,18 @@ export interface components {
              */
             force_deactivation: boolean;
         };
+        /** WorkspaceRepoOperationalStatusResponse */
+        WorkspaceRepoOperationalStatusResponse: {
+            dirty: components["schemas"]["WorkspaceDirtyStatus"];
+            active_writer?: components["schemas"]["WorkspaceWriterStatus"] | null;
+            /** Active Changesets */
+            active_changesets?: components["schemas"]["WorkspaceRepoChangesetResponse"][];
+            /** Recoverable Closures */
+            recoverable_closures?: components["schemas"]["WorkspaceRepoChangesetResponse"][];
+            /** Closure Ledger */
+            closure_ledger?: components["schemas"]["WorkspaceRepoChangesetResponse"][];
+            convergence: components["schemas"]["WorkspaceAuthoritativeConvergenceResponse"];
+        };
         /** WorkspaceRepoStateResponse */
         WorkspaceRepoStateResponse: {
             /**
@@ -26804,6 +26975,31 @@ export interface components {
             }[];
             /** Validated Revision */
             validated_revision: string;
+        };
+        /** WorkspaceWriterStatus */
+        WorkspaceWriterStatus: {
+            /**
+             * Job Id
+             * Format: uuid
+             */
+            job_id: string;
+            /** Changeset Id */
+            changeset_id?: string | null;
+            /** Status */
+            status: string;
+            /** Phase */
+            phase?: string | null;
+            /** Lease Owner */
+            lease_owner?: string | null;
+            /** Lease Expires At */
+            lease_expires_at?: string | null;
+            /**
+             * Lease Expired
+             * @default false
+             */
+            lease_expired: boolean;
+            /** Started At */
+            started_at?: string | null;
         };
         /**
          * OAuthProviderInfo
@@ -32619,6 +32815,26 @@ export interface operations {
             };
         };
     };
+    list_workspace_repo_changesets_api_workspace_repo_changesets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRepoChangesetListResponse"];
+                };
+            };
+        };
+    };
     begin_workspace_repo_changeset_api_workspace_repo_changesets_post: {
         parameters: {
             query?: never;
@@ -32648,6 +32864,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workspace_repo_operational_status_api_workspace_repo_changesets_operational_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRepoOperationalStatusResponse"];
                 };
             };
         };
@@ -32827,12 +33063,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkspaceRepoChangesetResponse"];
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
                 };
             };
             /** @description Validation Error */
@@ -32862,12 +33098,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkspaceRepoChangesetResponse"];
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
                 };
             };
             /** @description Validation Error */

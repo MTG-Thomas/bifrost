@@ -733,6 +733,7 @@ async def get_bundle_manifest(
         try:
             result, migrated = await build_with_migrate(
                 app_id_str, repo_prefix, storage_mode,
+                ctx.db,
                 dependencies=app.dependencies or {},
             )
             if not migrated:

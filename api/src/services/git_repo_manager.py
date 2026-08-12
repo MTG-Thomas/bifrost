@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import tempfile
 from collections.abc import AsyncIterator, Awaitable, Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
@@ -94,6 +95,38 @@ class GitRepoManager:
             # No sync_up — caller promises not to modify persistent state
 
     @asynccontextmanager
+    async def snapshot_checkout(self) -> AsyncIterator[Path]:
+        """Materialize object storage in an isolated read-only checkout.
+
+        Authoritative convergence checks must not overwrite the persistent
+        generated checkout whose cleanliness they report.
+        """
+        async with self._acquire_lock():
+            with tempfile.TemporaryDirectory(
+                prefix="bifrost-authoritative-status-"
+            ) as temp_dir:
+                snapshot_dir = Path(temp_dir)
+                await self.sync_down(snapshot_dir)
+                yield snapshot_dir
+
+    @asynccontextmanager
+    async def isolated_checkout(self) -> AsyncIterator[Path]:
+        """Run a mutating Git operation from a fresh authoritative checkout.
+
+        Release closure must not inherit same-sized stale Git metadata from the
+        persistent generated checkout. Successful operations are synced back;
+        exceptions leave authoritative object storage untouched.
+        """
+        async with self._acquire_lock():
+            with tempfile.TemporaryDirectory(
+                prefix="bifrost-authoritative-writer-"
+            ) as temp_dir:
+                checkout_dir = Path(temp_dir)
+                await self.sync_down(checkout_dir)
+                yield checkout_dir
+                await self.sync_up(checkout_dir)
+
+    @asynccontextmanager
     async def lock(self) -> AsyncIterator[Path]:
         """
         Acquire the Redis lock and yield the persistent working dir WITHOUT
@@ -141,7 +174,10 @@ class GitRepoManager:
             return
 
         s3_uri = self._s3_uri()
-        cmd = self._build_sync_cmd(source=s3_uri, dest=str(target))
+        # Object storage is authoritative. A persistent checkout can contain
+        # generated or otherwise stale files from an earlier operation, so a
+        # download must mirror deletions as well as additions and updates.
+        cmd = self._build_sync_cmd(source=s3_uri, dest=str(target), delete=True)
         logger.info(f"sync_down: {s3_uri} -> {target}")
         await self._run_aws_cli(cmd)
 

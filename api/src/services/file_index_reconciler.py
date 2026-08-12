@@ -15,6 +15,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.repo_dirty import mark_repo_dirty
+from src.core.workspace_writer import (
+    WorkspaceWriterBusy,
+    WorkspaceWriterLeaseLost,
+    assert_workspace_writer_access,
+    current_workspace_writer_label,
+)
 from src.models.orm.file_index import FileIndex
 from src.services.file_index_service import _is_text_file
 from src.services.repo_storage import RepoStorage
@@ -61,17 +68,36 @@ async def reconcile_file_index(
         except Exception as e:
             logger.warning(f"Failed to index {path}: {e}")
 
+    # Close the index-maintenance transaction before taking the authoritative
+    # writer gate. Reverse-syncs below are individually serialized so a scan
+    # never owns the workspace while it is only reading object storage.
+    await db.commit()
+
     # Files in DB but not in S3 -> reverse-sync (write DB content to S3)
     # This handles the case where the pre-migration backfill populated
     # file_index but S3 was unavailable at the time.
     to_reverse_sync = db_paths - s3_paths
     for path in to_reverse_sync:
         try:
+            # Direct writes and durable closure activation take the same
+            # advisory gate. Recheck existence while holding it so a stale
+            # scan cannot overwrite a file another writer just created.
+            await assert_workspace_writer_access(db)
+            if await repo.exists(path):
+                await db.commit()
+                continue
+
             fi_result = await db.execute(
                 select(FileIndex.content).where(FileIndex.path == path)
             )
             content_str = fi_result.scalar_one_or_none()
             if content_str is not None:
+                await mark_repo_dirty(
+                    writer=current_workspace_writer_label(
+                        "file-index-reconciliation"
+                    )
+                    or "file-index-reconciliation"
+                )
                 await repo.write(path, content_str.encode("utf-8"))
                 stats["reverse_synced"] += 1
             else:
@@ -80,10 +106,12 @@ async def reconcile_file_index(
                     delete(FileIndex).where(FileIndex.path == path)
                 )
                 stats["removed"] += 1
+            await db.commit()
         except Exception as e:
+            await db.rollback()
+            if isinstance(e, (WorkspaceWriterBusy, WorkspaceWriterLeaseLost)):
+                raise
             logger.warning(f"Failed to reverse-sync {path}: {e}")
-
-    await db.commit()
 
     logger.info(
         f"Reconciliation complete: {stats['added']} added, "
