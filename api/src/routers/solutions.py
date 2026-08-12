@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -143,6 +144,15 @@ async def _spool_upload_to_temp(file: UploadFile, *, prefix: str) -> Path:
     return path
 
 
+def _solution_candidate_id(path: Path) -> str:
+    """Hash an exact staged Solution bundle without loading it into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(UPLOAD_CHUNK_SIZE):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
 async def _enqueue_solution_deploy_job(
     db: AsyncSession,
     *,
@@ -166,6 +176,13 @@ async def _enqueue_solution_deploy_job(
     else:
         assert input_bytes is not None
         digest, _ = await storage.write_bytes(input_bytes)
+    expected_candidate_id = options.get("candidate_id")
+    if (
+        expected_candidate_id is not None
+        and expected_candidate_id != f"sha256:{digest}"
+    ):
+        await storage.delete()
+        raise ValueError("staged Solution candidate hash changed during enqueue")
 
     projection = SolutionDeployJob(
         id=job_id,
@@ -1335,6 +1352,7 @@ async def _run_deploy_job(
     zip_path: Path,
     *,
     force: bool,
+    candidate_id: str = "",
 ) -> None:
     """Execute the deploy under a fresh session (background task).
 
@@ -1397,6 +1415,7 @@ async def _run_deploy_job(
                 await result.finalize_s3()
                 deploy_result = {
                     "solution_id": str(solution_id),
+                    "candidate_id": candidate_id,
                     "workflows_upserted": result.workflows_upserted,
                     "workflows_deleted": result.workflows_deleted,
                     "tables_upserted": result.tables_upserted,
@@ -1590,6 +1609,7 @@ async def deploy_solution(
     ctx: Context,
     user: CurrentSuperuser,
     force: bool = False,
+    candidate_id: str | None = None,
 ) -> SolutionDeployEnqueued:
     solution = await ctx.db.get(SolutionORM, solution_id)
     if solution is None:
@@ -1606,6 +1626,17 @@ async def deploy_solution(
     from src.services.solutions.zip_install import preview_zip_path
 
     zip_path = await _spool_upload_to_temp(file, prefix="bifrost-solution-deploy-")
+    actual_candidate_id = _solution_candidate_id(zip_path)
+    if candidate_id is not None and candidate_id != actual_candidate_id:
+        _cleanup_file(zip_path)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "solution_candidate_mismatch",
+                "expected_candidate_id": candidate_id,
+                "actual_candidate_id": actual_candidate_id,
+            },
+        )
     try:
         preview = preview_zip_path(zip_path)
     except (ValueError, zipfile.BadZipFile) as exc:
@@ -1661,7 +1692,7 @@ async def deploy_solution(
             kind="deploy",
             install_id=solution_id,
             organization_id=solution.organization_id,
-            options={"force": force},
+            options={"force": force, "candidate_id": actual_candidate_id},
             requested_by_user_id=user.user_id,
             requested_by_email=user.email,
             requested_by_name=user.name or user.email or "Unknown",
@@ -1669,7 +1700,9 @@ async def deploy_solution(
         )
     finally:
         _cleanup_file(zip_path)
-    return SolutionDeployEnqueued(deploy_job_id=job.id)
+    return SolutionDeployEnqueued(
+        deploy_job_id=job.id, candidate_id=actual_candidate_id
+    )
 
 
 @router.get(

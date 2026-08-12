@@ -23941,6 +23941,8 @@ export interface components {
              * Format: uuid
              */
             deploy_job_id: string;
+            /** Candidate Id */
+            candidate_id: string;
         };
         /**
          * SolutionDeployJobStatus
@@ -41446,6 +41448,7 @@ export interface operations {
         parameters: {
             query?: {
                 force?: boolean;
+                candidate_id?: string | null;
             };
             header?: never;
             path: {

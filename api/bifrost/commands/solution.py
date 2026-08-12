@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import dataclasses
+import hashlib
 import io
 import json
 import os
@@ -2241,6 +2242,7 @@ async def _poll_deploy_job(
     interval: float = 3.0,
     action: str = "Deploy",
     timeout_seconds: float = DEPLOY_JOB_TIMEOUT_SECONDS,
+    expected_candidate_id: str | None = None,
 ) -> int:
     """Poll a deploy/install job until terminal, printing a heartbeat each tick.
 
@@ -2268,6 +2270,16 @@ async def _poll_deploy_job(
         status = body.get("status")
         if status == "succeeded":
             result = body.get("result") or {}
+            if (
+                expected_candidate_id is not None
+                and result.get("candidate_id") != expected_candidate_id
+            ):
+                click.echo(
+                    f"{action} verification failed: activated candidate does not "
+                    "match the uploaded candidate.",
+                    err=True,
+                )
+                return 1
             sid = result.get("solution_id")
             if sid:
                 slug = result.get("slug")
@@ -2439,8 +2451,23 @@ def _vendor_repo_reader(client, failures: dict[str, str]):
 @click.option("--solution", "solution_ref", default=None, help="Install id or unique slug.")
 @click.option("--force", is_flag=True, default=False,
               help="Apply even if the bundle version is older than the installed version (downgrade).")
+@click.option(
+    "--preview",
+    is_flag=True,
+    default=False,
+    help="Build and print the exact deploy candidate without uploading it.",
+)
+@click.option(
+    "--candidate-id",
+    default=None,
+    help="Require the built bundle to match a previously reviewed sha256 candidate.",
+)
 def deploy_cmd(
-    path: str, solution_ref: str | None, force: bool
+    path: str,
+    solution_ref: str | None,
+    force: bool,
+    preview: bool,
+    candidate_id: str | None,
 ) -> None:
     workspace = _workspace_from_path_arg(path)
     if not is_solution_workspace(workspace):
@@ -2541,6 +2568,15 @@ def deploy_cmd(
             workspace,
             extra_text_files=extra_text_files,
         )
+        built_candidate_id = f"sha256:{hashlib.sha256(zip_bytes).hexdigest()}"
+        click.echo(f"Deploy candidate: {built_candidate_id}")
+        if candidate_id is not None and candidate_id != built_candidate_id:
+            raise click.ClickException(
+                "Built Solution bundle does not match the reviewed candidate id"
+            )
+        if preview:
+            click.echo("Preview complete; no files were uploaded.")
+            return 0
 
         click.echo("Uploading workspace zip...")
         # Deploy is async server-side; the POST returns a job id quickly. We give
@@ -2555,7 +2591,10 @@ def deploy_cmd(
                     "application/zip",
                 )
             },
-            params={"force": "true" if force else "false"},
+            params={
+                "force": "true" if force else "false",
+                "candidate_id": built_candidate_id,
+            },
             timeout=600,
         )
         if deploy.status_code != 202:
@@ -2564,8 +2603,16 @@ def deploy_cmd(
             click.echo(f"Deploy failed: {deploy.status_code} {deploy.text}", err=True)
             return 1
         job_id = deploy.json()["deploy_job_id"]
+        if deploy.json().get("candidate_id") != built_candidate_id:
+            click.echo(
+                "Deploy failed: server did not preserve the uploaded candidate id",
+                err=True,
+            )
+            return 1
         click.echo(f"Deploying install {target_id} (job {job_id})...")
-        return await _poll_deploy_job(client, job_id)
+        return await _poll_deploy_job(
+            client, job_id, expected_candidate_id=built_candidate_id
+        )
 
     rc = asyncio.run(_run())
     if rc:

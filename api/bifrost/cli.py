@@ -1024,6 +1024,8 @@ Examples:
   bifrost solution scaffold-app dashboard
   bifrost solution add-workflow functions/tasks.py::create_task
   bifrost solution plan
+  bifrost solution deploy --preview       # build exact candidate; upload nothing
+  bifrost solution deploy --candidate-id <sha256:candidate>
   bifrost solution start                 # local dev: app + local workflows, one origin
   bifrost api GET /api/workflows
   bifrost api POST /api/applications/my-app/validate

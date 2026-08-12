@@ -57,6 +57,7 @@ async def run_solution_deploy(
                     payload.install_id,
                     zip_path,
                     force=bool(payload.options.get("force", False)),
+                    candidate_id=str(payload.options.get("candidate_id") or ""),
                 )
             else:
                 raw_org_id = payload.options.get("organization_id")

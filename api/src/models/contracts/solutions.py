@@ -450,6 +450,7 @@ class SolutionDeployEnqueued(BaseModel):
     the caller polls ``GET /deploy-jobs/{deploy_job_id}`` for the result."""
 
     deploy_job_id: UUID
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class SolutionDeployJobStatus(BaseModel):
