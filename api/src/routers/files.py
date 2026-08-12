@@ -8,7 +8,6 @@ File operations with two storage modes:
 Auth: CurrentSuperuser (platform admins and workflow engine)
 """
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -18,7 +17,8 @@ from typing import Literal, TypeVar, cast
 from urllib.parse import unquote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,7 @@ from src.models.contracts.files import (
 )
 from src.models.contracts.policies import FileAction
 from src.models.contracts.policies import FilePolicies
+from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.core.database import get_db
 from src.models import (
     AffectedEntity,
@@ -2242,9 +2243,40 @@ async def create_folder_editor(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+async def _enqueue_recursive_workspace_deletion(
+    ctx: Context,
+    user: CurrentSuperuser,
+    path: str,
+    db: AsyncSession,
+) -> Response:
+    from src.services.workspace_path_deletion import enqueue_workspace_path_deletion
+
+    job, reused = await enqueue_workspace_path_deletion(
+        db,
+        path,
+        organization_id=ctx.org_id,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=getattr(user, "name", None) or user.email,
+    )
+    accepted = PlatformJobAccepted(
+        job_id=job.id,
+        status=job.status,
+        reused=reused,
+        notification_id=job.notification_id,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content=accepted.model_dump(mode="json"),
+        headers={"Location": f"/api/platform-jobs/{job.id}"},
+    )
+
+
 @router.delete(
     "/editor",
+    response_model=None,
     status_code=status.HTTP_204_NO_CONTENT,
+    responses={status.HTTP_202_ACCEPTED: {"model": PlatformJobAccepted}},
     summary="Delete file or folder (editor)",
 )
 async def delete_file_editor(
@@ -2252,7 +2284,7 @@ async def delete_file_editor(
     user: CurrentSuperuser,
     path: str = Query(..., description="File or folder path"),
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> Response:
     """
     Delete a file or folder recursively.
 
@@ -2264,36 +2296,41 @@ async def delete_file_editor(
     try:
         from src.core.repo_dirty import mark_repo_dirty
         from src.core.workspace_writer import assert_workspace_writer_access
+        from src.services.workspace_path_deletion import (
+            normalize_workspace_delete_path,
+        )
 
-        await assert_workspace_writer_access(db)
-        await mark_repo_dirty(writer=user.email)
+        normalized = normalize_workspace_delete_path(path)
         storage = FileStorageService(db)
         repo = RepoStorage()
 
-        # Check if this is a folder by listing S3 for children
-        folder_prefix = path.rstrip("/") + "/"
+        # Classify without holding the request transaction lock. Recursive
+        # drains run durably under the shared platform writer lease.
+        folder_prefix = normalized + "/"
         children = await repo.list(folder_prefix)
-
         if children:
-            # Folder delete: drain the prefix. Some S3-compatible stores can
-            # report folder markers briefly after child deletion.
-            for attempt in range(5):
-                for child_path in sorted(set(children)):
-                    if child_path.endswith("/"):
-                        await repo.delete(child_path)
-                    else:
-                        await storage.delete_file(child_path)
-                await repo.delete(path.rstrip("/"))
-                await repo.delete(folder_prefix)
+            return await _enqueue_recursive_workspace_deletion(
+                ctx,
+                user,
+                normalized,
+                db,
+            )
 
-                children = await repo.list(folder_prefix)
-                if not children:
-                    break
-                if attempt < 4:
-                    await asyncio.sleep(0.1)
-        else:
-            # Single file delete
-            await storage.delete_file(path)
+        # Recheck once under the short direct-writer gate so a path that became
+        # recursive during classification is queued instead of drained inline.
+        await assert_workspace_writer_access(db)
+        children = await repo.list(folder_prefix)
+        if children:
+            return await _enqueue_recursive_workspace_deletion(
+                ctx,
+                user,
+                normalized,
+                db,
+            )
+
+        await mark_repo_dirty(writer=user.email)
+        await storage.delete_file(normalized, skip_dirty_flag=True)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

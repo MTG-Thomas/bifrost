@@ -113,11 +113,13 @@ async def test_github_status_reports_unconfigured_token_only_configured_and_erro
 
 @pytest.mark.asyncio
 async def test_repo_status_combines_git_config_and_dirty_marker() -> None:
-    db_result = Mock()
-    db_result.scalar_one_or_none.return_value = None
-    db_result.scalars.return_value.all.return_value = []
+    writer_result = Mock()
+    writer_result.scalar_one_or_none.return_value = None
+    count_result = Mock()
+    count_result.scalar_one.return_value = 0
     db = SimpleNamespace(
-        execute=AsyncMock(return_value=db_result), commit=AsyncMock()
+        execute=AsyncMock(side_effect=[writer_result, count_result, count_result]),
+        commit=AsyncMock(),
     )
     dirty = RepoDirtyState(
         "a" * 32,

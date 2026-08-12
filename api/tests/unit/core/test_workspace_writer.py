@@ -22,7 +22,7 @@ class FakeDB:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["queued", "waiting"])
+@pytest.mark.parametrize("status", ["queued", "waiting", "cancel_requested"])
 async def test_direct_writer_is_rejected_while_durable_writer_is_active(status):
     job = SimpleNamespace(id=uuid4(), status=status, phase=status.title())
     with pytest.raises(WorkspaceWriterBusy, match=str(job.id)):

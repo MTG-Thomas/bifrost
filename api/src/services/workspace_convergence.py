@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,7 +60,14 @@ def build_snapshot(file_hashes: dict[str, str]) -> WorkspaceSnapshot:
 async def snapshot_repo_storage(repo: RepoStorage | None = None) -> WorkspaceSnapshot:
     storage = repo or RepoStorage()
     paths = sorted(path for path in await storage.list() if _is_authored_path(path))
-    file_hashes = {path: _content_hash(await storage.read(path)) for path in paths}
+    semaphore = asyncio.Semaphore(16)
+
+    async def hash_path(path: str) -> tuple[str, str]:
+        async with semaphore:
+            content = await storage.read(path)
+        return path, _content_hash(content)
+
+    file_hashes = dict(await asyncio.gather(*(hash_path(path) for path in paths)))
     return build_snapshot(file_hashes)
 
 

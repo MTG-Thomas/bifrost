@@ -32593,6 +32593,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
             /** @description Successful Response */
             204: {
                 headers: {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 import urllib.parse
@@ -371,19 +372,22 @@ class GitHubAppCommitWriter:
         *,
         phase: str,
     ) -> None:
-        for path, expected_sha256 in files:
+        semaphore = asyncio.Semaphore(16)
+
+        async def verify_file(path: str, expected_sha256: str | None) -> None:
             encoded_path = urllib.parse.quote(path, safe="/")
-            response = await client.get(
-                f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
-                headers=self._headers(
-                    token, accept="application/vnd.github.raw+json"
-                ),
-                params={"ref": ref},
-            )
+            async with semaphore:
+                response = await client.get(
+                    f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
+                    headers=self._headers(
+                        token, accept="application/vnd.github.raw+json"
+                    ),
+                    params={"ref": ref},
+                )
             commit_sha = ref if phase == "committed tree" else None
             if expected_sha256 is None:
                 if response.status_code == 404:
-                    continue
+                    return
                 raise PlatformCommitError(
                     f"GitHub {phase} expected {path} to be absent",
                     commit_sha=commit_sha,
@@ -403,6 +407,10 @@ class GitHubAppCommitWriter:
                     commit_sha=commit_sha,
                 )
 
+        await asyncio.gather(
+            *(verify_file(path, expected_sha256) for path, expected_sha256 in files)
+        )
+
     async def _verify_snapshot(
         self,
         client: httpx.AsyncClient,
@@ -415,8 +423,6 @@ class GitHubAppCommitWriter:
         commit_sha: str | None = None,
     ) -> None:
         """Prove that every authored remote path matches one authoritative snapshot."""
-        if expected_files is None:
-            return
         response = await client.get(
             f"{_REST_URL}/repos/{self.owner}/{self.repository}/git/trees/{tree_ref}",
             headers=self._headers(token),

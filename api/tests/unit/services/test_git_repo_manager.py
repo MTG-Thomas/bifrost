@@ -552,7 +552,9 @@ class TestCheckout:
     @pytest.mark.asyncio
     async def test_isolated_checkout_does_not_sync_failed_git_state(self, manager):
         with (
-            patch.object(manager, "sync_down", new_callable=AsyncMock),
+            patch.object(
+                manager, "sync_down", new_callable=AsyncMock
+            ) as mock_down,
             patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up,
             patch.object(manager, "_acquire_lock") as mock_lock,
         ):
@@ -563,6 +565,7 @@ class TestCheckout:
                 async with manager.isolated_checkout():
                     raise RuntimeError("commit failed")
 
+        mock_down.assert_awaited_once()
         mock_up.assert_not_awaited()
 
     @pytest.mark.asyncio

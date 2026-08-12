@@ -117,6 +117,21 @@ async def test_operational_status_exposes_expired_workspace_writer_lease(
     e2e_client, platform_admin, db_session
 ):
     now = datetime.now(timezone.utc)
+    queued = PlatformJob(
+        job_type="workspace.delete-path",
+        payload_version=1,
+        payload={"path": "queued-behind-abandoned-writer"},
+        resource_lock_key=WORKSPACE_WRITER_RESOURCE_LOCK,
+        organization_id=None,
+        requested_by_user_id=str(platform_admin.user_id),
+        requested_by_email=platform_admin.email,
+        requested_by_name=platform_admin.email,
+        resource_type="workspace_path",
+        resource_id="queued-behind-abandoned-writer",
+        title="Queued writer visibility test",
+        status="queued",
+        phase="Queued",
+    )
     job = PlatformJob(
         job_type="workspace.repo-closure",
         payload_version=1,
@@ -136,7 +151,7 @@ async def test_operational_status_exposes_expired_workspace_writer_lease(
         lease_expires_at=now - timedelta(minutes=1),
         heartbeat_at=now - timedelta(minutes=2),
     )
-    db_session.add(job)
+    db_session.add_all([queued, job])
     await db_session.commit()
     try:
         response = e2e_client.get(
@@ -149,5 +164,7 @@ async def test_operational_status_exposes_expired_workspace_writer_lease(
         assert writer["lease_owner"] == "lost-runner"
         assert writer["lease_expired"] is True
     finally:
-        await db_session.execute(delete(PlatformJob).where(PlatformJob.id == job.id))
+        await db_session.execute(
+            delete(PlatformJob).where(PlatformJob.id.in_((queued.id, job.id)))
+        )
         await db_session.commit()

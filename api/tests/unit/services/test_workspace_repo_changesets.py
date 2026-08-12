@@ -676,6 +676,8 @@ async def test_retry_git_closure_after_writer_configuration_skips_activation(
     assert failed.failure_detail["state"] == "not_configured"
     assert failed.failure_detail["provenance"]["commit_message"] == "release source"
     assert CountingStorage.writes == 1
+    recorded_writer_job_id = uuid4()
+    stored.writer_job_id = recorded_writer_job_id
 
     retry_writer = RecordingWriter(
         result=PlatformCommitResult(
@@ -694,6 +696,7 @@ async def test_retry_git_closure_after_writer_configuration_skips_activation(
     assert closed.status == "committed"
     assert closed.commit_sha == "b" * 40
     assert closed.failure_detail is None
+    assert closed.writer_job_id == recorded_writer_job_id
     assert CountingStorage.writes == 1
     assert len(retry_writer.requests) == 1
     assert retry_writer.requests[0].operator == "tester"

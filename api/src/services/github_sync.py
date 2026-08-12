@@ -14,7 +14,10 @@ Key principles:
 import asyncio
 import hashlib
 import logging
+import re
 import subprocess
+import time
+import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -28,6 +31,9 @@ from src.config import Settings, get_settings
 from src.models.contracts.github import (
     PreflightIssue,
     PreflightResult,
+)
+from src.models.contracts.workspace_repo_changesets import (
+    WorkspaceAuthoritativeConvergenceResponse,
 )
 from src.services.git_repo_manager import GitRepoManager
 from src.services.github_sync_entity_metadata import extract_entity_metadata
@@ -61,6 +67,25 @@ from src.services.manifest_import import (
 
 
 logger = logging.getLogger(__name__)
+
+_CONVERGENCE_CACHE_SECONDS = 5.0
+_convergence_cache: dict[
+    tuple[str, str, str, int | None],
+    tuple[float, WorkspaceAuthoritativeConvergenceResponse],
+] = {}
+_convergence_inflight: dict[
+    tuple[str, str, str, int | None],
+    asyncio.Task[WorkspaceAuthoritativeConvergenceResponse],
+] = {}
+_AUTHENTICATED_REMOTE_RE = re.compile(
+    r"(?P<scheme>https?://)[^\s/@]+(?::[^\s/@]*)?@",
+    flags=re.IGNORECASE,
+)
+
+
+def _redact_git_error(message: str) -> str:
+    """Remove HTTP userinfo that Git may echo in command failures."""
+    return _AUTHENTICATED_REMOTE_RE.sub(r"\g<scheme>***@", message)
 
 
 async def _run_ruff_check(
@@ -754,7 +779,10 @@ class GitHubSyncService:
                 or "couldn't find remote ref" in error_text
             ):
                 return None
-            return f"Failed to fetch remote branch before workspace push: {exc}"
+            return (
+                "Failed to fetch remote branch before workspace push: "
+                f"{_redact_git_error(str(exc))}"
+            )
 
         if commits_behind == 0:
             return None
@@ -762,7 +790,10 @@ class GitHubSyncService:
         try:
             common_ancestors = repo.merge_base("HEAD", remote_ref)
         except Exception as exc:
-            return f"Failed to inspect workspace and remote Git history: {exc}"
+            return (
+                "Failed to inspect workspace and remote Git history: "
+                f"{_redact_git_error(str(exc))}"
+            )
 
         merge_args = ["--no-edit"]
         if not common_ancestors:
@@ -776,10 +807,12 @@ class GitHubSyncService:
                     repo.git.merge("--abort")
             except Exception as abort_exc:
                 logger.error(
-                    "Failed to abort workspace Git closure merge: %s", abort_exc
+                    "Failed to abort workspace Git closure merge: %s",
+                    _redact_git_error(str(abort_exc)),
                 )
             return (
-                f"Failed to merge advanced remote branch before workspace push: {exc}"
+                "Failed to merge advanced remote branch before workspace push: "
+                f"{_redact_git_error(str(exc))}"
             )
         return None
 
@@ -986,7 +1019,11 @@ class GitHubSyncService:
                 if not pushed.success:
                     return WorkspaceGitClosureResult(
                         commit_sha=commit_sha,
-                        push_error=pushed.error or "Git push failed",
+                        push_error=(
+                            _redact_git_error(pushed.error)
+                            if pushed.error
+                            else "Git push failed"
+                        ),
                         authoritative_revision=intended.revision,
                         authoritative_files=intended.file_hashes,
                     )
@@ -998,7 +1035,10 @@ class GitHubSyncService:
                 except Exception as exc:
                     return WorkspaceGitClosureResult(
                         commit_sha=commit_sha,
-                        push_error=f"Remote branch readback failed: {exc}",
+                        push_error=(
+                            "Remote branch readback failed: "
+                            f"{_redact_git_error(str(exc))}"
+                        ),
                         authoritative_revision=intended.revision,
                         authoritative_files=intended.file_hashes,
                     )
@@ -1025,10 +1065,43 @@ class GitHubSyncService:
             )
 
     async def authoritative_convergence(self):
-        """Compare Azure/S3-backed authoritative bytes with the remote branch."""
-        from src.models.contracts.workspace_repo_changesets import (
-            WorkspaceAuthoritativeConvergenceResponse,
+        """Return a short-lived, dirty-generation-aware convergence result."""
+        from src.core.repo_dirty import get_repo_dirty_state
+
+        parsed = urllib.parse.urlsplit(self.repo_url)
+        dirty = await get_repo_dirty_state()
+        cache_key = (
+            parsed.hostname or "",
+            parsed.path.removesuffix(".git"),
+            self.branch,
+            dirty.generation if dirty else None,
         )
+        now = time.monotonic()
+        cached = _convergence_cache.get(cache_key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        task = _convergence_inflight.get(cache_key)
+        if task is None:
+            task = asyncio.create_task(self._authoritative_convergence_uncached())
+            _convergence_inflight[cache_key] = task
+
+            def discard(
+                completed: asyncio.Task[WorkspaceAuthoritativeConvergenceResponse],
+            ) -> None:
+                if _convergence_inflight.get(cache_key) is completed:
+                    _convergence_inflight.pop(cache_key, None)
+
+            task.add_done_callback(discard)
+        result = await asyncio.shield(task)
+        _convergence_cache.clear()
+        _convergence_cache[cache_key] = (
+            time.monotonic() + _CONVERGENCE_CACHE_SECONDS,
+            result,
+        )
+        return result
+
+    async def _authoritative_convergence_uncached(self):
+        """Compare Azure/S3-backed authoritative bytes with the remote branch."""
         from src.services.workspace_convergence import (
             mismatch_paths,
             snapshot_git_tree,
@@ -1063,7 +1136,10 @@ class GitHubSyncService:
                         authoritative_converged=False,
                         authoritative_revision=authoritative.revision,
                         authoritative_root_revisions=authoritative.root_revisions,
-                        error=f"Remote branch readback failed: {exc}",
+                        error=(
+                            "Remote branch readback failed: "
+                            f"{_redact_git_error(str(exc))}"
+                        ),
                     )
                 remote = snapshot_git_tree(remote_commit.tree)
                 mismatches = mismatch_paths(authoritative, remote)
@@ -1084,7 +1160,7 @@ class GitHubSyncService:
                 branch=self.branch,
                 generated_checkout_clean=generated_clean,
                 authoritative_converged=False,
-                error=str(exc),
+                error=_redact_git_error(str(exc)),
             )
 
     @staticmethod

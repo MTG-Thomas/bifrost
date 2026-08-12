@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
+from shared.models import WorkspaceWriterBusyResponse
 from src.config import get_settings
 from src.core.sentry import configure_sentry
 from src.core.telemetry import configure_opentelemetry
@@ -378,12 +379,11 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         return JSONResponse(
             status_code=409,
-            content={
-                "error": "workspace_writer_busy",
-                "message": str(exc),
-                "job_id": str(exc.job_id) if exc.job_id else None,
-                "phase": exc.phase,
-            },
+            content=WorkspaceWriterBusyResponse(
+                message=str(exc),
+                job_id=str(exc.job_id) if exc.job_id else None,
+                phase=exc.phase,
+            ).model_dump(),
         )
 
     @app.exception_handler(ValueError)

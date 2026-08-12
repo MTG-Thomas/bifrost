@@ -11,10 +11,11 @@ import ast
 import base64
 import difflib
 import hashlib
+import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID
 
 from sqlalchemy import text
@@ -47,6 +48,8 @@ from src.services.platform_commit_writer import (
     PlatformCommitWriter,
 )
 from src.services.repo_storage import RepoStorage
+
+logger = logging.getLogger(__name__)
 
 
 class ChangesetConflict(Exception):
@@ -397,7 +400,8 @@ class WorkspaceRepoChangesetService:
                 "activating changeset has no durable source backup"
             )
         row.status = "activating"
-        row.writer_job_id = writer_job_id
+        if writer_job_id is not None:
+            row.writer_job_id = writer_job_id
         row.commit_message = request.commit_message
         row.push_requested = request.push
         row.closure_started_at = row.closure_started_at or datetime.now(timezone.utc)
@@ -620,7 +624,8 @@ class WorkspaceRepoChangesetService:
         )
         row = await self._required(changeset_id, for_update=True)
         self._ensure_retryable_git_closure(row, request)
-        row.writer_job_id = writer_job_id
+        if writer_job_id is not None:
+            row.writer_job_id = writer_job_id
         return await self._complete_git_closure(
             changeset_id, request, operator=operator
         )
@@ -967,14 +972,14 @@ class WorkspaceRepoChangesetService:
             error=row.error,
             failure_detail=row.failure_detail,
             created_by=row.created_by,
-            writer_job_id=getattr(row, "writer_job_id", None),
-            dirty_generation=getattr(row, "dirty_generation", None),
-            authoritative_revision=getattr(row, "authoritative_revision", None),
-            remote_sha=getattr(row, "remote_sha", None),
-            commit_message=getattr(row, "commit_message", None),
-            push_requested=bool(getattr(row, "push_requested", False)),
-            closure_started_at=getattr(row, "closure_started_at", None),
-            closure_completed_at=getattr(row, "closure_completed_at", None),
+            writer_job_id=row.writer_job_id,
+            dirty_generation=row.dirty_generation,
+            authoritative_revision=row.authoritative_revision,
+            remote_sha=row.remote_sha,
+            commit_message=row.commit_message,
+            push_requested=bool(row.push_requested),
+            closure_started_at=row.closure_started_at,
+            closure_completed_at=row.closure_completed_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
@@ -1010,3 +1015,88 @@ async def build_workspace_repo_changeset_service(
         organization_id,
         commit_writer=writer,
     )
+
+
+async def enqueue_workspace_repo_writer(
+    db: AsyncSession,
+    organization_id: UUID,
+    changeset_id: UUID,
+    request: WorkspaceRepoActivateRequest,
+    operation: Literal["activate", "retry"],
+    *,
+    requested_by_user_id: UUID,
+    requested_by_email: str,
+    requested_by_name: str,
+):
+    """Validate and durably enqueue the global authoritative workspace writer."""
+    from src.core.workspace_writer import (
+        WORKSPACE_WRITER_RESOURCE_LOCK,
+        lock_workspace_writer_gate,
+    )
+    from src.jobs.platform.workspace_repo_closure import (
+        WORKSPACE_REPO_CLOSURE_DEFINITION,
+        WorkspaceRepoClosurePayload,
+    )
+    from src.services.platform_jobs import (
+        enqueue_platform_job,
+        ensure_platform_job_notification,
+        publish_platform_job_update,
+    )
+
+    service = await build_workspace_repo_changeset_service(db, organization_id)
+    changeset = await service.get(changeset_id)
+    if operation == "activate" and changeset.status not in {"validated", "activating"}:
+        raise ChangesetInvalid(
+            "changeset must pass validation immediately before activation"
+        )
+    if operation == "retry":
+        await service.check_retryable_git_closure(changeset_id, request)
+    await lock_workspace_writer_gate(db)
+    job, reused = await enqueue_platform_job(
+        db,
+        WORKSPACE_REPO_CLOSURE_DEFINITION,
+        WorkspaceRepoClosurePayload(
+            changeset_id=changeset_id,
+            organization_id=organization_id,
+            operation=operation,
+            commit_message=request.commit_message,
+            push=request.push,
+            updated_by=requested_by_email,
+            plan_id=request.plan_id,
+            protected_main_source_sha=request.protected_main_source_sha,
+        ),
+        dedupe_key=f"{operation}:{changeset_id}",
+        resource_lock_key=WORKSPACE_WRITER_RESOURCE_LOCK,
+        priority=1000,
+        organization_id=organization_id,
+        requested_by_user_id=requested_by_user_id,
+        requested_by_email=requested_by_email,
+        requested_by_name=requested_by_name,
+        resource_type="workspace_repo_changeset",
+        resource_id=str(changeset_id),
+        title=(
+            f"Activating workspace changeset {changeset_id}"
+            if operation == "activate"
+            else f"Retrying workspace closure {changeset_id}"
+        ),
+        action_url="/diagnostics",
+    )
+    if reused and job.requested_by_user_id != str(requested_by_user_id):
+        raise ChangesetConflict(
+            "workspace_writer_active",
+            message="This workspace changeset already has an active writer",
+        )
+    await service.assign_writer_job(changeset_id, job.id)
+    if job.notification_id is None:
+        try:
+            await ensure_platform_job_notification(db, job)
+        except Exception:
+            logger.warning(
+                "Workspace writer queued without a progress notification",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
+            )
+    await db.commit()
+    await db.refresh(job)
+    await publish_platform_job_update(job)
+    return job, reused

@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,8 +11,10 @@ from src.services.workspace_convergence import (
     build_snapshot,
     mismatch_paths,
     snapshot_git_tree,
+    snapshot_repo_storage,
     snapshot_worktree,
 )
+from src.services import github_sync
 from src.services.github_sync import GitHubSyncService
 
 
@@ -34,7 +37,8 @@ def test_snapshot_normalizes_text_newlines_and_preserves_binary_bytes(tmp_path):
     binary.write_bytes(b"\x00one\r\ntwo")
     repo = _commit(tmp_path)
 
-    # Git stores the configured text file as LF while binary bytes remain exact.
+    # Both snapshots normalize text CRLF to LF, so the worktree rewrite to LF
+    # must not register as a mismatch. Binary bytes are hashed exactly.
     text.write_bytes(b"one\ntwo\n")
     worktree = snapshot_worktree(tmp_path)
     committed = snapshot_git_tree(repo.head.commit.tree)
@@ -53,9 +57,62 @@ def test_snapshot_ignores_non_authored_tool_caches():
             "features/__pycache__/example.pyc": "bytecode-hash",
         }
     )
-
     assert snapshot.file_hashes == {"features/example.py": "source-hash"}
 
+
+@pytest.mark.asyncio
+async def test_repo_storage_snapshot_uses_bounded_concurrency() -> None:
+    class RecordingRepo:
+        def __init__(self) -> None:
+            self.active = 0
+            self.maximum = 0
+
+        async def list(self):
+            return [f"features/{index}.py" for index in range(32)]
+
+        async def read(self, path: str) -> bytes:
+            self.active += 1
+            self.maximum = max(self.maximum, self.active)
+            await asyncio.sleep(0.001)
+            self.active -= 1
+            return path.encode()
+
+    repo = RecordingRepo()
+    result = await snapshot_repo_storage(repo)  # type: ignore[arg-type]
+
+    assert len(result.file_hashes) == 32
+    assert 1 < repo.maximum <= 16
+
+
+@pytest.mark.asyncio
+async def test_authoritative_convergence_reuses_short_lived_generation_cache(
+    monkeypatch,
+) -> None:
+    github_sync._convergence_cache.clear()
+    service = GitHubSyncService(AsyncMock(), "https://token@github.com/acme/repo.git")
+    expected = SimpleNamespace(authoritative_converged=True)
+    uncached = AsyncMock(return_value=expected)
+    monkeypatch.setattr(service, "_authoritative_convergence_uncached", uncached)
+    monkeypatch.setattr(
+        "src.core.repo_dirty.get_repo_dirty_state",
+        AsyncMock(return_value=SimpleNamespace(generation="generation-one")),
+    )
+
+    assert await service.authoritative_convergence() is expected
+    assert await service.authoritative_convergence() is expected
+    uncached.assert_awaited_once()
+
+
+def test_git_error_redaction_removes_embedded_http_credentials() -> None:
+    message = (
+        "fatal: unable to access "
+        "'https://x-access-token:secret-value@github.com/acme/repo.git/'"
+    )
+
+    redacted = github_sync._redact_git_error(message)
+
+    assert "secret-value" not in redacted
+    assert "https://***@github.com/acme/repo.git/" in redacted
 
 @pytest.mark.asyncio
 async def test_status_distinguishes_clean_generated_checkout_from_authoritative_drift(

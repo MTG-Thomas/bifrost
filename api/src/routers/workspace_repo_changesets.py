@@ -1,7 +1,5 @@
 """Thin HTTP surface for transactional workspace _repo changesets."""
 
-import logging
-
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
@@ -25,16 +23,13 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoValidationResponse,
 )
 from src.models.contracts.platform_jobs import PlatformJobAccepted
-from src.jobs.platform.workspace_repo_closure import (
-    WORKSPACE_REPO_CLOSURE_DEFINITION,
-    WorkspaceRepoClosurePayload,
-)
 from src.services.workspace_repo_changesets import (
     ChangesetConflict,
     ChangesetInvalid,
     OrganizationScopeRequired,
     WorkspaceRepoChangesetService,
     build_workspace_repo_changeset_service,
+    enqueue_workspace_repo_writer,
     require_organization_id,
 )
 
@@ -42,12 +37,90 @@ router = APIRouter(
     prefix="/api/workspace-repo-changesets",
     tags=["Workspace _repo compatibility changesets"],
 )
-logger = logging.getLogger(__name__)
-
-
 async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangesetService:
     org_id = require_organization_id(org_id)
     return await build_workspace_repo_changeset_service(db, org_id)
+
+
+async def _active_workspace_writer_status(
+    db: DbSession,
+) -> WorkspaceWriterStatus | None:
+    from sqlalchemy import case, select
+
+    from src.core.workspace_writer import WORKSPACE_WRITER_RESOURCE_LOCK
+    from src.models.orm.platform_jobs import PlatformJob
+
+    # ``_repo`` and its writer lease are global platform resources, so this
+    # operational view intentionally reports the global holder across orgs.
+    writer = (
+        await db.execute(
+            select(PlatformJob)
+            .where(
+                PlatformJob.resource_lock_key == WORKSPACE_WRITER_RESOURCE_LOCK,
+                PlatformJob.status.in_(
+                    ("queued", "running", "waiting", "cancel_requested")
+                ),
+            )
+            # A queued/waiting contender can coexist with the running lease
+            # holder. Surface the lease-bearing owner first so an abandoned
+            # writer remains observable and recoverable.
+            .order_by(
+                case(
+                    (PlatformJob.lease_token.is_not(None), 0),
+                    else_=1,
+                ),
+                PlatformJob.created_at.asc(),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if writer is None:
+        return None
+    changeset_id = None
+    if writer.resource_id:
+        try:
+            changeset_id = UUID(writer.resource_id)
+        except ValueError:
+            # Other global writer job types use non-UUID resource identifiers.
+            changeset_id = None
+    return WorkspaceWriterStatus(
+        job_id=writer.id,
+        changeset_id=changeset_id,
+        status=writer.status,
+        phase=writer.phase,
+        lease_owner=writer.lease_owner,
+        lease_expires_at=writer.lease_expires_at,
+        lease_expired=(
+            writer.lease_expires_at is not None
+            and writer.lease_expires_at <= datetime.now(timezone.utc)
+        ),
+        started_at=writer.started_at,
+    )
+
+
+async def _authoritative_convergence_status(
+    db: DbSession, organization_id: UUID | None
+) -> WorkspaceAuthoritativeConvergenceResponse:
+    from src.services.github_config import (
+        build_authenticated_github_url,
+        get_github_config,
+    )
+    from src.services.github_sync import GitHubSyncService
+
+    config = await get_github_config(db, organization_id)
+    result = WorkspaceAuthoritativeConvergenceResponse(
+        configured=False,
+        branch=config.branch if config and config.repo_url else None,
+    )
+    if not (config and config.repo_url and config.token):
+        return result
+    # Close the configuration read transaction before checkout and remote I/O.
+    await db.commit()
+    return await GitHubSyncService(
+        db,
+        build_authenticated_github_url(config.repo_url, config.token),
+        config.branch,
+    ).authoritative_convergence()
 
 
 async def _enqueue_writer(
@@ -60,73 +133,17 @@ async def _enqueue_writer(
     user: CurrentSuperuser,
     response: Response,
 ) -> PlatformJobAccepted:
-    from src.core.workspace_writer import (
-        WORKSPACE_WRITER_RESOURCE_LOCK,
-        lock_workspace_writer_gate,
-    )
-    from src.services.platform_jobs import (
-        ensure_platform_job_notification,
-        enqueue_platform_job,
-        publish_platform_job_update,
-    )
-
     organization_id = require_organization_id(ctx.org_id)
-    service = await _service(db, organization_id)
-    changeset = await service.get(changeset_id)
-    if operation == "activate" and changeset.status not in {"validated", "activating"}:
-        raise ChangesetInvalid(
-            "changeset must pass validation immediately before activation"
-        )
-    if operation == "retry":
-        await service.check_retryable_git_closure(changeset_id, request)
-    await lock_workspace_writer_gate(db)
-    job, reused = await enqueue_platform_job(
+    job, reused = await enqueue_workspace_repo_writer(
         db,
-        WORKSPACE_REPO_CLOSURE_DEFINITION,
-        WorkspaceRepoClosurePayload(
-            changeset_id=changeset_id,
-            organization_id=organization_id,
-            operation=operation,
-            commit_message=request.commit_message,
-            push=request.push,
-            updated_by=user.email,
-            plan_id=request.plan_id,
-            protected_main_source_sha=request.protected_main_source_sha,
-        ),
-        dedupe_key=f"{operation}:{changeset_id}",
-        resource_lock_key=WORKSPACE_WRITER_RESOURCE_LOCK,
-        priority=1000,
-        organization_id=organization_id,
+        organization_id,
+        changeset_id,
+        request,
+        operation,
         requested_by_user_id=user.user_id,
         requested_by_email=user.email,
         requested_by_name=user.name or user.email,
-        resource_type="workspace_repo_changeset",
-        resource_id=str(changeset_id),
-        title=(
-            f"Activating workspace changeset {changeset_id}"
-            if operation == "activate"
-            else f"Retrying workspace closure {changeset_id}"
-        ),
-        action_url="/diagnostics",
     )
-    if reused and job.requested_by_user_id != str(user.user_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This workspace changeset already has an active writer",
-        )
-    await service.assign_writer_job(changeset_id, job.id)
-    if job.notification_id is None:
-        try:
-            await ensure_platform_job_notification(db, job)
-        except Exception:
-            logger.warning(
-                "Workspace writer queued without a progress notification",
-                extra={"platform_job_id": str(job.id)},
-                exc_info=True,
-            )
-    await db.commit()
-    await db.refresh(job)
-    await publish_platform_job_update(job)
     response.headers["Location"] = f"/api/platform-jobs/{job.id}"
     return PlatformJobAccepted(
         job_id=job.id,
@@ -219,16 +236,7 @@ async def workspace_repo_operational_status(
     db: DbSession,
     user: CurrentSuperuser,
 ):
-    from sqlalchemy import select
-
     from src.core.repo_dirty import get_repo_dirty_state
-    from src.core.workspace_writer import WORKSPACE_WRITER_RESOURCE_LOCK
-    from src.models.orm.platform_jobs import PlatformJob
-    from src.services.github_config import (
-        build_authenticated_github_url,
-        get_github_config,
-    )
-    from src.services.github_sync import GitHubSyncService
 
     try:
         service = await _service(db, ctx.org_id)
@@ -236,57 +244,8 @@ async def workspace_repo_operational_status(
         recoverable = await service.recoverable_git_closures()
         ledger = await service.closure_ledger()
         dirty = await get_repo_dirty_state()
-        writer = (
-            await db.execute(
-                select(PlatformJob)
-                .where(
-                    PlatformJob.resource_lock_key
-                    == WORKSPACE_WRITER_RESOURCE_LOCK,
-                    PlatformJob.status.in_(
-                        ("queued", "running", "waiting", "cancel_requested")
-                    ),
-                )
-                .order_by(PlatformJob.created_at.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        config = await get_github_config(db, ctx.org_id)
-        convergence = WorkspaceAuthoritativeConvergenceResponse(
-            configured=False,
-            branch=config.branch if config and config.repo_url else None,
-        )
-        changeset_id = None
-        if writer and writer.resource_id:
-            try:
-                changeset_id = UUID(writer.resource_id)
-            except ValueError:
-                pass
-        writer_status = (
-            WorkspaceWriterStatus(
-                job_id=writer.id,
-                changeset_id=changeset_id,
-                status=writer.status,
-                phase=writer.phase,
-                lease_owner=writer.lease_owner,
-                lease_expires_at=writer.lease_expires_at,
-                lease_expired=(
-                    writer.lease_expires_at is not None
-                    and writer.lease_expires_at <= datetime.now(timezone.utc)
-                ),
-                started_at=writer.started_at,
-            )
-            if writer
-            else None
-        )
-        if config and config.repo_url and config.token:
-            # The preceding rows are projected already; close the read
-            # transaction before the remote fetch/readback network boundary.
-            await db.commit()
-            convergence = await GitHubSyncService(
-                db,
-                build_authenticated_github_url(config.repo_url, config.token),
-                config.branch,
-            ).authoritative_convergence()
+        writer_status = await _active_workspace_writer_status(db)
+        convergence = await _authoritative_convergence_status(db, ctx.org_id)
         return WorkspaceRepoOperationalStatusResponse(
             dirty=WorkspaceDirtyStatus(
                 dirty=dirty is not None,

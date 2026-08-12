@@ -241,6 +241,8 @@ async def get_repo_status(
         ).authoritative_convergence()
     active_writer = (
         await db.execute(
+            # ``_repo`` and its writer lease are global platform resources, so
+            # operational status intentionally reports the global holder.
             select(PlatformJob)
             .where(
                 PlatformJob.resource_lock_key == WORKSPACE_WRITER_RESOURCE_LOCK,
@@ -256,14 +258,10 @@ async def get_repo_status(
     recoverable = 0
     if ctx.org_id is not None:
         rows = WorkspaceRepoChangesetRepository(db)
-        active_changesets = len(
-            await rows.list_by_statuses(
-                ctx.org_id, ("open", "staged", "validated", "activating")
-            )
+        active_changesets = await rows.count_by_statuses(
+            ctx.org_id, ("open", "staged", "validated", "activating")
         )
-        recoverable = len(
-            await rows.list_retryable_git_failures(ctx.org_id)
-        )
+        recoverable = await rows.count_retryable_git_failures(ctx.org_id)
     return RepoStatusResponse(
         git_configured=configured,
         dirty=dirty_state is not None,

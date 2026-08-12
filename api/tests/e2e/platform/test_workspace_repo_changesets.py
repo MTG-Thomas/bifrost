@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import time
+from datetime import datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -321,7 +322,9 @@ def test_multi_root_changesets_use_one_ordered_writer_ledger(
             for response in accepted
         ]
         assert [job["status"] for job in jobs] == ["succeeded", "succeeded"]
-        assert jobs[1]["started_at"] >= jobs[0]["completed_at"]
+        first_completed_at = datetime.fromisoformat(jobs[0]["completed_at"])
+        second_started_at = datetime.fromisoformat(jobs[1]["started_at"])
+        assert second_started_at >= first_completed_at
 
         status = e2e_client.get(
             "/api/workspace-repo-changesets/operational-status",

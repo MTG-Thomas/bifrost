@@ -18,6 +18,7 @@ Note: pytest_plugins moved to tests/conftest.py (root) as required by pytest.
 
 import os
 import re
+import time
 import uuid
 
 import pytest
@@ -153,6 +154,26 @@ class _E2EClient:
                 "file": ("deploy.zip", zip_bytes, "application/zip"),
             }
         return self._client.post(path, *args, **kwargs)
+
+    def delete(self, path: str, *args, **kwargs):
+        response = self._client.delete(path, *args, **kwargs)
+        if not path.startswith("/api/files/editor") or response.status_code != 202:
+            return response
+        job_id = response.json()["job_id"]
+        headers = kwargs.get("headers")
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            job = self._client.get(
+                f"/api/platform-jobs/{job_id}",
+                headers=headers,
+            )
+            assert job.status_code == 200, job.text
+            payload = job.json()
+            if payload["status"] in {"succeeded", "failed", "cancelled"}:
+                assert payload["status"] == "succeeded", payload
+                return response
+            time.sleep(0.1)
+        raise AssertionError(f"workspace deletion job {job_id} did not finish")
 
 
 @pytest.fixture(scope="session")

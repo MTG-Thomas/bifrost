@@ -7,6 +7,9 @@
  * Mirrors: api/tests/e2e/api/test_forms.py
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { test, expect } from "@playwright/test";
 
 test.describe("Form Listing", () => {
@@ -143,28 +146,41 @@ test.describe("Form Details", () => {
 
 test.describe("Form Editing", () => {
 	test("should show edit button for forms", async ({ page }) => {
-		await page.goto("/forms");
-
-		await expect(
-			page.getByRole("heading", { name: /forms/i }).first(),
-		).toBeVisible({
-			timeout: 10000,
+		const name = `Editable form ${Date.now()}`;
+		const credentials = JSON.parse(
+			readFileSync(resolve("e2e/.auth/credentials.json"), "utf8"),
+		) as { platform_admin: { accessToken: string } };
+		const headers = {
+			Authorization: `Bearer ${credentials.platform_admin.accessToken}`,
+		};
+		const created = await page.request.post("/api/forms", {
+			headers,
+			data: {
+				name,
+				description: "Playwright edit-menu fixture",
+				form_schema: { fields: [] },
+				access_level: "authenticated",
+			},
 		});
+		expect(created.ok()).toBe(true);
+		const form = (await created.json()) as { id: string };
 
-		// Look for edit buttons
-		const editButton = page
-			.getByRole("button", { name: /edit/i })
-			.or(page.locator("[data-testid='edit-form']"))
-			.first();
+		try {
+			await page.goto("/forms");
+			await expect(
+				page.getByRole("heading", { name: /forms/i }).first(),
+			).toBeVisible({ timeout: 10000 });
 
-		// Either we have edit buttons or no forms
-		const hasButton = await editButton.isVisible().catch(() => false);
-		const hasEmptyState = await page
-			.getByText(/no forms/i)
-			.isVisible()
-			.catch(() => false);
-
-		expect(hasButton || hasEmptyState).toBe(true);
+			await page.getByRole("button", { name: `${name} actions` }).click();
+			await expect(
+				page.getByRole("menuitem", { name: "Edit Form" }),
+			).toBeVisible();
+		} finally {
+			const deleted = await page.request.delete(`/api/forms/${form.id}`, {
+				headers,
+			});
+			expect(deleted.ok()).toBe(true);
+		}
 	});
 });
 
