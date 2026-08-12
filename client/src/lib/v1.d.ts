@@ -23583,6 +23583,19 @@ export interface components {
             email: string;
         };
         /**
+         * SolutionCandidateDeployEnqueued
+         * @description Deploy enqueue response bound to the exact uploaded Solution bundle.
+         */
+        SolutionCandidateDeployEnqueued: {
+            /**
+             * Deploy Job Id
+             * Format: uuid
+             */
+            deploy_job_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+        };
+        /**
          * SolutionCaptureCandidates
          * @description Loose same-scope entities that can be adopted into an install.
          */
@@ -23941,8 +23954,6 @@ export interface components {
              * Format: uuid
              */
             deploy_job_id: string;
-            /** Candidate Id */
-            candidate_id: string;
         };
         /**
          * SolutionDeployJobStatus
@@ -41468,7 +41479,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SolutionDeployEnqueued"];
+                    "application/json": components["schemas"]["SolutionCandidateDeployEnqueued"];
                 };
             };
             /** @description Validation Error */

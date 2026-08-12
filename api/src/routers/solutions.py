@@ -50,6 +50,7 @@ from src.models.contracts.solutions import (
     SolutionEntityCounts,
     SolutionDependencyPreview,
     SolutionDependencyPreviewRequest,
+    SolutionCandidateDeployEnqueued,
     SolutionDeployEnqueued,
     SolutionDeployJobStatus,
     SolutionEntities,
@@ -1599,7 +1600,7 @@ async def _run_install_job(
 
 @router.post(
     "/{solution_id}/deploy",
-    response_model=SolutionDeployEnqueued,
+    response_model=SolutionCandidateDeployEnqueued,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Enqueue a deploy to an install (async, full replace, admin only)",
 )
@@ -1610,7 +1611,7 @@ async def deploy_solution(
     user: CurrentSuperuser,
     force: bool = False,
     candidate_id: str | None = None,
-) -> SolutionDeployEnqueued:
+) -> SolutionCandidateDeployEnqueued:
     solution = await ctx.db.get(SolutionORM, solution_id)
     if solution is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solution not found")
@@ -1700,7 +1701,7 @@ async def deploy_solution(
         )
     finally:
         _cleanup_file(zip_path)
-    return SolutionDeployEnqueued(
+    return SolutionCandidateDeployEnqueued(
         deploy_job_id=job.id, candidate_id=actual_candidate_id
     )
 

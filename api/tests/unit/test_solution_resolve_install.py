@@ -183,9 +183,8 @@ class _DeployFakeClient:
     ):
         self.deploy_files: dict | None = None
         self.deploy_params: dict | None = None
-        self._deploy_resp = deploy_resp or _Resp(
-            202, body={"deploy_job_id": "job-1"}
-        )
+        self._deploy_resp = deploy_resp
+        self._candidate_id: str | None = None
         self._job_status = job_status
         self._job_error = job_error
 
@@ -205,7 +204,7 @@ class _DeployFakeClient:
                 body={
                     "status": self._job_status,
                     "error": self._job_error,
-                    "result": {},
+                    "result": {"candidate_id": self._candidate_id},
                 },
             )
         raise AssertionError(f"unexpected GET {path}")
@@ -214,7 +213,16 @@ class _DeployFakeClient:
         if path == "/api/solutions/inst-1/deploy":
             self.deploy_files = kwargs.get("files")
             self.deploy_params = kwargs.get("params")
-            return self._deploy_resp
+            if self._deploy_resp is not None:
+                return self._deploy_resp
+            self._candidate_id = self.deploy_params["candidate_id"]
+            return _Resp(
+                202,
+                body={
+                    "deploy_job_id": "job-1",
+                    "candidate_id": self._candidate_id,
+                },
+            )
         raise AssertionError(f"unexpected POST {path}")
 
 
@@ -253,7 +261,8 @@ def test_deploy_body_includes_descriptor_version(tmp_path, monkeypatch):
     result = runner.invoke(grp, ["deploy"])
     assert result.exit_code == 0, result.output
     assert _deploy_descriptor(fake)["version"] == "1.2.3"
-    assert fake.deploy_params == {"force": "false"}
+    assert fake.deploy_params is not None
+    assert fake.deploy_params["force"] == "false"
 
 
 def test_deploy_force_flag_sets_force_true(tmp_path, monkeypatch):
@@ -263,7 +272,8 @@ def test_deploy_force_flag_sets_force_true(tmp_path, monkeypatch):
     )
     result = runner.invoke(grp, ["deploy", "--force"])
     assert result.exit_code == 0, result.output
-    assert fake.deploy_params == {"force": "true"}
+    assert fake.deploy_params is not None
+    assert fake.deploy_params["force"] == "true"
 
 
 def test_deploy_no_descriptor_version_sends_null(tmp_path, monkeypatch):
