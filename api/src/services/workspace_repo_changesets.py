@@ -274,14 +274,8 @@ class WorkspaceRepoChangesetService:
         parser = ASTMetadataParser()
         for item in row.mutations:
             path = item["path"]
-            if not path.endswith(".py"):
-                continue
-            names: set[str] = set()
-            decorator_info: dict[str, tuple[str, str]] = {}
             raw: bytes | None = None
-            if item["operation"] == "write":
-                raw = base64.b64decode(item["content_base64"])
-            elif item["operation"] == "verify":
+            if item["operation"] == "verify":
                 raw = await self._read_optional(path)
                 current_hash = (
                     hashlib.sha256(raw).hexdigest() if raw is not None else None
@@ -293,6 +287,12 @@ class WorkspaceRepoChangesetService:
                         expected_hash=item.get("before_hash"),
                         current_hash=current_hash,
                     )
+            if not path.endswith(".py"):
+                continue
+            names: set[str] = set()
+            decorator_info: dict[str, tuple[str, str]] = {}
+            if item["operation"] == "write":
+                raw = base64.b64decode(item["content_base64"])
             if raw is not None:
                 try:
                     tree = ast.parse(raw.decode("utf-8"), filename=path)
@@ -357,18 +357,15 @@ class WorkspaceRepoChangesetService:
             item.get("action") in {"create", "reactivate"}
             for item in registration_actions
         )
-        if (
-            row.mutations
-            and not has_source_mutations
-            and not has_registration_mutations
-        ):
+        if not has_source_mutations and not has_registration_mutations:
             diagnostics.append(
                 {
                     "severity": "error",
                     "source": "no_op",
                     "message": (
-                        "exact-byte verification found no source or registry "
-                        "mutation to activate"
+                        "exact-byte verification found no source or registry mutation to activate"
+                        if row.mutations
+                        else "changeset contains no source or registry mutation to activate"
                     ),
                 }
             )
@@ -658,7 +655,9 @@ class WorkspaceRepoChangesetService:
             if isinstance(prior_failure.get("provenance"), dict)
             else {}
         )
-        commit_message = prior_provenance.get("commit_message") or request.commit_message
+        commit_message = (
+            prior_provenance.get("commit_message") or request.commit_message
+        )
         if not commit_message:
             return self._response(row)
         provenance = {
@@ -803,7 +802,15 @@ class WorkspaceRepoChangesetService:
                 }
                 for item in sorted(row.mutations, key=lambda value: value["path"])
             ],
-            "registration_actions": registration_actions,
+            "registration_actions": sorted(
+                registration_actions,
+                key=lambda item: (
+                    str(item.get("path") or ""),
+                    str(item.get("function_name") or ""),
+                    str(item.get("type") or ""),
+                    str(item.get("action") or ""),
+                ),
+            ),
         }
         canonical = json.dumps(
             payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False

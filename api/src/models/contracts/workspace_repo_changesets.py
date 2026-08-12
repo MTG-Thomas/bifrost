@@ -59,9 +59,7 @@ class WorkspaceRepoFileMutationRequest(BaseModel):
         if self.operation == "write" and self.content_base64 is None:
             raise ValueError("content_base64 is required for write operations")
         if self.operation != "write" and self.content_base64 is not None:
-            raise ValueError(
-                "content_base64 is only allowed for write operations"
-            )
+            raise ValueError("content_base64 is only allowed for write operations")
         if self.operation == "verify" and self.expected_hash is None:
             raise ValueError("expected_hash is required for verify operations")
         return self
