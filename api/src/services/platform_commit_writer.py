@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 import urllib.parse
@@ -44,6 +45,8 @@ class PlatformCommitRequest:
     operator: str
     changeset_id: UUID
     files: tuple[PlatformCommitFile, ...]
+    expected_parent_files: dict[str, str] | None = None
+    expected_committed_files: dict[str, str] | None = None
     plan_id: str | None = None
     protected_main_source_sha: str | None = None
     candidate_commit_sha: str | None = None
@@ -166,13 +169,26 @@ class GitHubAppCommitWriter:
                 client, token, request, candidate, require_head=False
             )
 
-        await self._verify_files(
-            client,
-            token,
-            tuple((item.path, item.expected_before_sha256) for item in request.files),
-            head["oid"],
-            phase="parent tree",
-        )
+        if request.expected_parent_files is None:
+            await self._verify_files(
+                client,
+                token,
+                tuple(
+                    (item.path, item.expected_before_sha256)
+                    for item in request.files
+                ),
+                head["oid"],
+                phase="parent tree",
+            )
+        else:
+            await self._verify_snapshot(
+                client,
+                token,
+                request.expected_parent_files,
+                tree_ref=head["tree_oid"],
+                content_ref=head["oid"],
+                phase="parent tree",
+            )
 
         additions = [
             {"path": item.path, "contents": item.content_base64}
@@ -289,13 +305,24 @@ class GitHubAppCommitWriter:
                 "GitHub commit tree readback was incomplete", commit_sha=commit_sha
             )
         signature_state = self._verified_signature_state(commit, commit_sha)
-        await self._verify_files(
-            client,
-            token,
-            tuple((item.path, item.expected_sha256) for item in request.files),
-            commit_sha,
-            phase="committed tree",
-        )
+        if request.expected_committed_files is None:
+            await self._verify_files(
+                client,
+                token,
+                tuple((item.path, item.expected_sha256) for item in request.files),
+                commit_sha,
+                phase="committed tree",
+            )
+        else:
+            await self._verify_snapshot(
+                client,
+                token,
+                request.expected_committed_files,
+                tree_ref=str(tree_sha),
+                content_ref=commit_sha,
+                phase="committed tree",
+                commit_sha=commit_sha,
+            )
         return PlatformCommitResult(
             commit_sha=commit_sha,
             tree_sha=str(tree_sha),
@@ -345,19 +372,22 @@ class GitHubAppCommitWriter:
         *,
         phase: str,
     ) -> None:
-        for path, expected_sha256 in files:
+        semaphore = asyncio.Semaphore(16)
+
+        async def verify_file(path: str, expected_sha256: str | None) -> None:
             encoded_path = urllib.parse.quote(path, safe="/")
-            response = await client.get(
-                f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
-                headers=self._headers(
-                    token, accept="application/vnd.github.raw+json"
-                ),
-                params={"ref": ref},
-            )
+            async with semaphore:
+                response = await client.get(
+                    f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
+                    headers=self._headers(
+                        token, accept="application/vnd.github.raw+json"
+                    ),
+                    params={"ref": ref},
+                )
             commit_sha = ref if phase == "committed tree" else None
             if expected_sha256 is None:
                 if response.status_code == 404:
-                    continue
+                    return
                 raise PlatformCommitError(
                     f"GitHub {phase} expected {path} to be absent",
                     commit_sha=commit_sha,
@@ -368,12 +398,70 @@ class GitHubAppCommitWriter:
                     f"HTTP {response.status_code}",
                     commit_sha=commit_sha,
                 )
-            actual = hashlib.sha256(response.content).hexdigest()
+            from shared.sync_content_hash import normalize_line_endings
+
+            actual = hashlib.sha256(normalize_line_endings(response.content)).hexdigest()
             if actual != expected_sha256:
                 raise PlatformCommitError(
                     f"GitHub {phase} hash mismatch for {path}",
                     commit_sha=commit_sha,
                 )
+
+        await asyncio.gather(
+            *(verify_file(path, expected_sha256) for path, expected_sha256 in files)
+        )
+
+    async def _verify_snapshot(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        expected_files: dict[str, str],
+        *,
+        tree_ref: str,
+        content_ref: str,
+        phase: str,
+        commit_sha: str | None = None,
+    ) -> None:
+        """Prove that every authored remote path matches one authoritative snapshot."""
+        response = await client.get(
+            f"{_REST_URL}/repos/{self.owner}/{self.repository}/git/trees/{tree_ref}",
+            headers=self._headers(token),
+            params={"recursive": "1"},
+        )
+        payload = self._response_json(
+            response, f"read back {phase} tree", commit_sha=commit_sha
+        )
+        if payload.get("truncated") is True:
+            raise PlatformCommitError(
+                f"GitHub {phase} tree readback was truncated",
+                commit_sha=commit_sha,
+            )
+        from src.services.editor.file_filter import is_excluded_path
+
+        actual_paths = {
+            str(item["path"])
+            for item in payload.get("tree") or []
+            if item.get("type") == "blob"
+            and item.get("path")
+            and not is_excluded_path(str(item["path"]))
+        }
+        expected_paths = set(expected_files)
+        if actual_paths != expected_paths:
+            mismatch = sorted(actual_paths ^ expected_paths)
+            preview = ", ".join(mismatch[:10])
+            suffix = " ..." if len(mismatch) > 10 else ""
+            raise PlatformCommitError(
+                f"GitHub {phase} path set does not match authoritative snapshot: "
+                f"{preview}{suffix}",
+                commit_sha=commit_sha,
+            )
+        await self._verify_files(
+            client,
+            token,
+            tuple(sorted(expected_files.items())),
+            content_ref,
+            phase=phase,
+        )
 
     async def _graphql(
         self,

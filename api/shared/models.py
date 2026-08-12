@@ -11,6 +11,15 @@ class VersionResponse(BaseModel):
     version: str
 
 
+class WorkspaceWriterBusyResponse(BaseModel):
+    """Conflict response while the durable workspace writer owns ``_repo``."""
+
+    error: str = "workspace_writer_busy"
+    message: str
+    job_id: str | None = None
+    phase: str | None = None
+
+
 class CodexGatewayResponsesRequest(RootModel[dict[str, Any]]):
     """OpenAI-compatible Responses API request payload."""
 

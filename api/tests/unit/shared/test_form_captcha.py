@@ -58,6 +58,29 @@ def test_solution_is_bound_to_exact_form_and_session():
             )
 
 
+def test_deterministic_challenge_preserves_signed_proof_contract():
+    challenge = create_form_captcha_challenge(
+        master_secret="a" * 32,
+        form_id="form-1",
+        session_id="session-1",
+        session_expires_at=None,
+        counter=1,
+    )
+    solution = altcha.solve_challenge(altcha.Challenge.from_dict(challenge))
+
+    assert solution is not None
+    assert solution.counter == 1
+    verified = verify_form_captcha_solution(
+        payload=altcha.Payload(
+            altcha.Challenge.from_dict(challenge), solution
+        ).to_base64(),
+        master_secret="a" * 32,
+        form_id="form-1",
+        session_id="session-1",
+    )
+    assert verified.challenge_id
+
+
 def test_solution_rejects_missing_tampered_and_wrong_secret():
     challenge = create_form_captcha_challenge(
         master_secret="a" * 32,

@@ -3,6 +3,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -23,6 +24,9 @@ from src.services.workspace_repo_changesets import (
     WorkspaceRepoChangesetService,
     require_organization_id,
 )
+from src.services.workspace_convergence import build_snapshot
+from src.core.repo_dirty import RepoDirtyState
+from src.core.workspace_writer import WorkspaceWriterLeaseLost
 
 
 class MemoryRepo:
@@ -84,6 +88,13 @@ class MemoryRows:
             in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
         ]
 
+    async def list_by_statuses(self, organization_id, statuses, *, limit=200):
+        return [
+            row
+            for row in self.items.values()
+            if row.organization_id == organization_id and row.status in statuses
+        ][:limit]
+
 
 class FakeDB:
     def __init__(self):
@@ -126,6 +137,22 @@ def service(files=None, organization_id=None):
     )
     value.rows = MemoryRows()
     return value
+
+
+@pytest.fixture(autouse=True)
+def generation_fenced_dirty_state(monkeypatch):
+    state = RepoDirtyState(
+        "1" * 32,
+        "2026-08-11T12:00:00+00:00",
+        "2026-08-11T12:00:00+00:00",
+        "changeset:test",
+    )
+    monkeypatch.setattr(
+        "src.core.repo_dirty.get_repo_dirty_state", AsyncMock(return_value=state)
+    )
+    monkeypatch.setattr(
+        "src.core.repo_dirty.reconcile_repo_dirty", AsyncMock(return_value=True)
+    )
 
 
 def test_repo_changesets_require_an_organization_scope():
@@ -307,6 +334,46 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
 
 
 @pytest.mark.asyncio
+async def test_abort_activation_snapshot_needs_no_backup_but_conflicted_resume_is_fenced(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", AsyncMock()
+    )
+    svc = service({"features/a.py": b"a"})
+    snapshot = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    snapshot_row = svc.rows.items[snapshot.id]
+    snapshot_row.status = "activating"
+    snapshot_row.failure_detail = {
+        "phase": "activation_snapshot",
+        "state": "pending",
+    }
+
+    aborted = await svc.abort(snapshot.id)
+    assert aborted.status == "aborted"
+    assert svc.repo.files["features/a.py"] == b"a"
+
+    conflicted = await svc.begin(
+        WorkspaceRepoChangesetBegin(scope="features"), uuid4()
+    )
+    conflicted_row = svc.rows.items[conflicted.id]
+    conflicted_row.status = "conflicted"
+    conflicted_row.activation_backup = {
+        "features/a.py": base64.b64encode(b"a").decode()
+    }
+    svc.repo.files["features/a.py"] = b"newer-authoritative-write"
+
+    with pytest.raises(ChangesetConflict) as exc_info:
+        await svc.abort(conflicted.id)
+    assert exc_info.value.detail == {
+        "reason": "abort_revision_mismatch",
+        "conflicting_paths": ["features/a.py"],
+    }
+    assert conflicted_row.status == "conflicted"
+    assert svc.repo.files["features/a.py"] == b"newer-authoritative-write"
+
+
+@pytest.mark.asyncio
 async def test_activation_compensates_storage_on_partial_failure(monkeypatch):
     svc = service({"features/a.txt": b"a", "features/b.txt": b"b"})
     row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
@@ -346,6 +413,51 @@ async def test_activation_compensates_storage_on_partial_failure(monkeypatch):
         await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
     assert svc.repo.files == {"features/a.txt": b"a", "features/b.txt": b"b"}
     assert stored.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_stale_activation_runner_leaves_backup_without_compensation(monkeypatch):
+    svc = service({"features/a.txt": b"a", "features/b.txt": b"b"})
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    for path, content in (("features/a.txt", b"A"), ("features/b.txt", b"B")):
+        await svc.stage(
+            row.id,
+            WorkspaceRepoFileMutationRequest(
+                path=path,
+                operation="write",
+                content_base64=base64.b64encode(content).decode(),
+            ),
+        )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class StaleStorage:
+        calls = 0
+
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, path, content, **_kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise WorkspaceWriterLeaseLost("lease replaced")
+            await svc.repo.write(path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", StaleStorage
+    )
+
+    with pytest.raises(WorkspaceWriterLeaseLost, match="lease replaced"):
+        await svc.activate(row.id, WorkspaceRepoActivateRequest(), "tester")
+
+    assert stored.status == "activating"
+    assert stored.activation_backup == {
+        "features/a.txt": base64.b64encode(b"a").decode(),
+        "features/b.txt": base64.b64encode(b"b").decode(),
+    }
+    assert svc.repo.files == {"features/a.txt": b"A", "features/b.txt": b"b"}
 
 
 @pytest.mark.asyncio
@@ -445,7 +557,7 @@ async def test_activation_closes_with_verified_writer_and_provenance(monkeypatch
     )
     assert closed.status == "committed"
     assert closed.commit_sha == "a" * 40
-    assert svc.db.commits == 3  # activation, pending marker, verified closure
+    assert svc.db.commits == 6
     assert len(writer.requests) == 1
     request = writer.requests[0]
     assert request.commit_message == "agent change\noperator context"
@@ -514,6 +626,54 @@ async def test_git_commit_failure_preserves_activation_with_recovery_evidence(
         "plan_id": None,
         "protected_main_source_sha": None,
     }
+    assert result.failure_detail["dirty_generation"] == "1" * 32
+
+
+@pytest.mark.asyncio
+async def test_lease_loss_after_external_commit_does_not_persist_stale_failure(
+    monkeypatch,
+):
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({"features/a.txt": b"A"}),
+        commit_writer=RecordingWriter(),
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    stored = svc.rows.items[row.id]
+    snapshot = build_snapshot(
+        {"features/a.txt": hashlib.sha256(b"A").hexdigest()}
+    )
+    original_failure = {
+        "phase": "git_closure",
+        "state": "failed",
+        "provenance": {
+            "operator": "tester",
+            "commit_message": "release source",
+        },
+    }
+    stored.status = "activated"
+    stored.failure_detail = original_failure
+    stored.authoritative_revision = snapshot.revision
+    stored.authoritative_files = snapshot.file_hashes
+    stored.authoritative_base_files = snapshot.file_hashes
+    checkpoint = AsyncMock(side_effect=WorkspaceWriterLeaseLost("lease replaced"))
+    monkeypatch.setattr(
+        "src.core.workspace_writer.checkpoint_workspace_writer_lease", checkpoint
+    )
+
+    with pytest.raises(WorkspaceWriterLeaseLost, match="lease replaced"):
+        await svc.retry_git_closure(
+            row.id,
+            WorkspaceRepoActivateRequest(push=True),
+            "retrying-operator",
+        )
+
+    assert stored.status == "activated"
+    assert stored.failure_detail["state"] == "pending"
+    assert stored.failure_detail["provenance"]["commit_message"] == "release source"
+    assert "lease replaced" not in str(stored.failure_detail)
 
 
 @pytest.mark.asyncio
@@ -563,6 +723,8 @@ async def test_retry_git_closure_after_writer_configuration_skips_activation(
     assert failed.failure_detail["state"] == "not_configured"
     assert failed.failure_detail["provenance"]["commit_message"] == "release source"
     assert CountingStorage.writes == 1
+    recorded_writer_job_id = uuid4()
+    stored.writer_job_id = recorded_writer_job_id
 
     retry_writer = RecordingWriter(
         result=PlatformCommitResult(
@@ -581,6 +743,7 @@ async def test_retry_git_closure_after_writer_configuration_skips_activation(
     assert closed.status == "committed"
     assert closed.commit_sha == "b" * 40
     assert closed.failure_detail is None
+    assert closed.writer_job_id == recorded_writer_job_id
     assert CountingStorage.writes == 1
     assert len(retry_writer.requests) == 1
     assert retry_writer.requests[0].operator == "tester"
@@ -615,6 +778,12 @@ async def test_retry_git_closure_accepts_each_durable_failure_state(failure_stat
             "commit_message": "release source",
         },
     }
+    snapshot = build_snapshot(
+        {"features/a.txt": hashlib.sha256(b"a").hexdigest()}
+    )
+    stored.authoritative_revision = snapshot.revision
+    stored.authoritative_files = snapshot.file_hashes
+    stored.authoritative_base_files = snapshot.file_hashes
 
     result = await svc.retry_git_closure(
         row.id,
@@ -709,7 +878,7 @@ async def test_verification_failure_persists_candidate_sha_for_retry(monkeypatch
         WorkspaceRepoActivateRequest(commit_message="agent change", push=True),
         "tester",
     )
-    assert failed.status == "activated"
+    assert failed.status == "committed_unpushed"
     assert failed.commit_sha == "c" * 40
     assert failed.failure_detail["commit_sha"] == "c" * 40
     assert svc.repo.files["features/a.txt"] == b"A"
@@ -759,3 +928,56 @@ async def test_commit_message_without_push_is_rejected_before_activation(monkeyp
 
     assert stored.status == "validated"
     assert svc.repo.files["features/a.txt"] == b"a"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reconciled", [True, False])
+async def test_successful_pushed_closure_reconciles_only_its_dirty_generation(
+    monkeypatch, reconciled
+):
+    reconcile = AsyncMock(return_value=reconciled)
+    monkeypatch.setattr("src.core.repo_dirty.reconcile_repo_dirty", reconcile)
+    writer = RecordingWriter()
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({"features/a.txt": b"a"}),
+        commit_writer=writer,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path="features/a.txt",
+            operation="write",
+            content_base64=base64.b64encode(b"A").decode(),
+        ),
+    )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class Storage:
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, path, content, **_kwargs):
+            await svc.repo.write(path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+    closed = await svc.activate(
+        row.id,
+        WorkspaceRepoActivateRequest(commit_message="release", push=True),
+        "tester",
+    )
+
+    reconcile.assert_awaited_once_with("1" * 32)
+    assert closed.status == "committed"
+    if reconciled:
+        assert closed.failure_detail is None
+    else:
+        assert closed.failure_detail["state"] == "preserved_newer_generation"

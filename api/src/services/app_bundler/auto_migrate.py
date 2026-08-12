@@ -17,6 +17,8 @@ import logging
 import pathlib
 import tempfile
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from bifrost.migrate_imports import (
     FileMigrationResult,
     load_lucide_icon_names,
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 async def auto_migrate_repo_prefix(
     app_id: str,
     repo_prefix: str,
+    db: AsyncSession,
 ) -> tuple[bool, list[FileMigrationResult]]:
     """
     Read every TSX/TS file under `_repo/<repo_prefix>`, run the import
@@ -86,10 +89,23 @@ async def auto_migrate_repo_prefix(
             )
             return False, results
 
+        from src.core.repo_dirty import mark_repo_dirty
+        from src.core.workspace_writer import (
+            assert_workspace_writer_access,
+            current_workspace_writer_label,
+        )
+
         summary_parts: list[str] = []
+        await assert_workspace_writer_access(db)
         for r in changed:
             rel_path = str(r.path.relative_to(app_dir))
             key_rel = repo_prefix + rel_path
+            await mark_repo_dirty(
+                writer=current_workspace_writer_label(
+                    f"app-auto-migrate:{app_id}"
+                )
+                or f"app-auto-migrate:{app_id}"
+            )
             await repo.write(key_rel, r.updated.encode("utf-8"))
             moves: list[str] = []
             if r.moved_icons:

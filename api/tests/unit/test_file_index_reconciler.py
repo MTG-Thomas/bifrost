@@ -3,6 +3,18 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 
+@pytest.fixture(autouse=True)
+def isolate_workspace_writer(monkeypatch):
+    monkeypatch.setattr(
+        "src.services.file_index_reconciler.assert_workspace_writer_access",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "src.services.file_index_reconciler.mark_repo_dirty",
+        AsyncMock(),
+    )
+
+
 @pytest.fixture
 def mock_db():
     return AsyncMock()
@@ -11,6 +23,7 @@ def mock_db():
 @pytest.fixture
 def mock_repo_storage():
     storage = AsyncMock()
+    storage.exists = AsyncMock(return_value=False)
     storage.write = AsyncMock(return_value="fakehash")
     return storage
 
@@ -51,11 +64,12 @@ async def test_reconciler_reverse_syncs_db_only_entries(mock_db, mock_repo_stora
     content_result = MagicMock()
     content_result.scalar_one_or_none.return_value = "print('db content')"
 
-    mock_db.execute = AsyncMock(side_effect=[
-        db_result,   # select FileIndex.path
-        db_result,   # select FileIndex.path (re-read in add loop - no files to add)
-        content_result,  # select FileIndex.content for reverse-sync
-    ])
+    mock_db.execute = AsyncMock(
+        side_effect=[
+            db_result,  # select FileIndex.path
+            content_result,  # select FileIndex.content for reverse-sync
+        ]
+    )
 
     stats = await reconcile_file_index(mock_db, mock_repo_storage)
 

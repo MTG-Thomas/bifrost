@@ -220,6 +220,7 @@ class TestSyncDown:
             assert cmd[0:3] == ["aws", "s3", "sync"]
             assert cmd[3] == "s3://bifrost-local/_repo/"
             assert cmd[4] == str(tmp_path)
+            assert "--delete" in cmd
 
     @pytest.mark.asyncio
     async def test_creates_target_dir(self, manager):
@@ -508,6 +509,64 @@ class TestCheckout:
                 assert yielded == work_dir
 
         mock_down.assert_awaited_once_with(work_dir)
+        mock_up.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_checkout_does_not_touch_persistent_work_dir(
+        self, manager
+    ):
+        with (
+            patch.object(manager, "sync_down", new_callable=AsyncMock) as mock_down,
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async with manager.snapshot_checkout() as yielded:
+                assert yielded != manager.work_dir
+                assert yielded.exists()
+                snapshot_path = yielded
+
+        mock_down.assert_awaited_once_with(snapshot_path)
+        assert not snapshot_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_isolated_checkout_syncs_success_from_fresh_directory(self, manager):
+        with (
+            patch.object(manager, "sync_down", new_callable=AsyncMock) as mock_down,
+            patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up,
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            async with manager.isolated_checkout() as yielded:
+                assert yielded != manager.work_dir
+                assert yielded.exists()
+                isolated_path = yielded
+
+        mock_down.assert_awaited_once_with(isolated_path)
+        mock_up.assert_awaited_once_with(isolated_path)
+        assert not isolated_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_isolated_checkout_does_not_sync_failed_git_state(self, manager):
+        with (
+            patch.object(
+                manager, "sync_down", new_callable=AsyncMock
+            ) as mock_down,
+            patch.object(manager, "sync_up", new_callable=AsyncMock) as mock_up,
+            patch.object(manager, "_acquire_lock") as mock_lock,
+        ):
+            mock_lock.return_value.__aenter__ = AsyncMock()
+            mock_lock.return_value.__aexit__ = AsyncMock(return_value=False)
+            fail = AsyncMock(side_effect=RuntimeError("commit failed"))
+
+            with pytest.raises(RuntimeError, match="commit failed"):
+                async with manager.isolated_checkout():
+                    await fail()
+
+        mock_down.assert_awaited_once()
         mock_up.assert_not_awaited()
 
     @pytest.mark.asyncio

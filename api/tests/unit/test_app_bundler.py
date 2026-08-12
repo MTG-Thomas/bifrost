@@ -280,7 +280,7 @@ async def test_build_with_migrate_runs_migration_before_bundle() -> None:
     call_order: list[str] = []
 
     async def fake_migrate(
-        app_id: str, repo_prefix: str
+        app_id: str, repo_prefix: str, db
     ) -> tuple[bool, list[object]]:
         call_order.append("migrate")
         return True, []
@@ -310,6 +310,7 @@ async def test_build_with_migrate_runs_migration_before_bundle() -> None:
             app_id="app-id",
             repo_prefix="apps/test/",
             mode="preview",
+            db=AsyncMock(),
             dependencies={},
         )
 
@@ -537,6 +538,7 @@ async def test_auto_migrate_returns_false_when_repo_prefix_has_no_source() -> No
         migrated, results = await auto_migrate.auto_migrate_repo_prefix(
             app_id="app-id",
             repo_prefix="apps/empty",
+            db=AsyncMock(),
         )
 
     assert migrated is False
@@ -593,10 +595,14 @@ async def test_auto_migrate_writes_back_only_changed_files() -> None:
 
     with patch.object(auto_migrate, "RepoStorage", return_value=fake_repo), \
          patch.object(auto_migrate, "load_lucide_icon_names", return_value={"Search"}), \
-         patch.object(auto_migrate, "migrate_app", side_effect=fake_migrate_app):
+         patch.object(auto_migrate, "migrate_app", side_effect=fake_migrate_app), \
+         patch("src.core.workspace_writer.assert_workspace_writer_access", new_callable=AsyncMock) as access, \
+         patch("src.core.repo_dirty.mark_repo_dirty", new_callable=AsyncMock) as dirty:
+        db = AsyncMock()
         migrated, results = await auto_migrate.auto_migrate_repo_prefix(
             app_id="app-id",
             repo_prefix="apps/demo",
+            db=db,
         )
 
     assert migrated is True
@@ -610,6 +616,8 @@ async def test_auto_migrate_writes_back_only_changed_files() -> None:
         "apps/demo/pages/index.tsx",
         b'import { Route } from "react-router-dom";\n',
     )
+    access.assert_awaited_once_with(db)
+    dirty.assert_awaited_once_with(writer="app-auto-migrate:app-id")
 
 
 async def test_auto_migrate_reports_unchanged_results_without_writes() -> None:
@@ -638,6 +646,7 @@ async def test_auto_migrate_reports_unchanged_results_without_writes() -> None:
         migrated, results = await auto_migrate.auto_migrate_repo_prefix(
             app_id="app-id",
             repo_prefix="apps/demo/",
+            db=AsyncMock(),
         )
 
     assert migrated is False

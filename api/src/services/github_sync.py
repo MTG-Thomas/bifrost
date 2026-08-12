@@ -14,7 +14,10 @@ Key principles:
 import asyncio
 import hashlib
 import logging
+import re
 import subprocess
+import time
+import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -28,6 +31,9 @@ from src.config import Settings, get_settings
 from src.models.contracts.github import (
     PreflightIssue,
     PreflightResult,
+)
+from src.models.contracts.workspace_repo_changesets import (
+    WorkspaceAuthoritativeConvergenceResponse,
 )
 from src.services.git_repo_manager import GitRepoManager
 from src.services.github_sync_entity_metadata import extract_entity_metadata
@@ -61,6 +67,25 @@ from src.services.manifest_import import (
 
 
 logger = logging.getLogger(__name__)
+
+_CONVERGENCE_CACHE_SECONDS = 5.0
+_convergence_cache: dict[
+    tuple[str, str, str, int | None],
+    tuple[float, WorkspaceAuthoritativeConvergenceResponse],
+] = {}
+_convergence_inflight: dict[
+    tuple[str, str, str, int | None],
+    asyncio.Task[WorkspaceAuthoritativeConvergenceResponse],
+] = {}
+_AUTHENTICATED_REMOTE_RE = re.compile(
+    r"(?P<scheme>https?://)[^\s/@]*@",
+    flags=re.IGNORECASE,
+)
+
+
+def _redact_git_error(message: str) -> str:
+    """Remove HTTP userinfo that Git may echo in command failures."""
+    return _AUTHENTICATED_REMOTE_RE.sub(r"\g<scheme>***@", message)
 
 
 async def _run_ruff_check(
@@ -754,7 +779,10 @@ class GitHubSyncService:
                 or "couldn't find remote ref" in error_text
             ):
                 return None
-            return f"Failed to fetch remote branch before workspace push: {exc}"
+            return (
+                "Failed to fetch remote branch before workspace push: "
+                f"{_redact_git_error(str(exc))}"
+            )
 
         if commits_behind == 0:
             return None
@@ -762,7 +790,10 @@ class GitHubSyncService:
         try:
             common_ancestors = repo.merge_base("HEAD", remote_ref)
         except Exception as exc:
-            return f"Failed to inspect workspace and remote Git history: {exc}"
+            return (
+                "Failed to inspect workspace and remote Git history: "
+                f"{_redact_git_error(str(exc))}"
+            )
 
         merge_args = ["--no-edit"]
         if not common_ancestors:
@@ -776,10 +807,12 @@ class GitHubSyncService:
                     repo.git.merge("--abort")
             except Exception as abort_exc:
                 logger.error(
-                    "Failed to abort workspace Git closure merge: %s", abort_exc
+                    "Failed to abort workspace Git closure merge: %s",
+                    _redact_git_error(str(abort_exc)),
                 )
             return (
-                f"Failed to merge advanced remote branch before workspace push: {exc}"
+                "Failed to merge advanced remote branch before workspace push: "
+                f"{_redact_git_error(str(exc))}"
             )
         return None
 
@@ -898,45 +931,237 @@ class GitHubSyncService:
         message: str,
         *,
         push: bool = False,
-        expected_file_hashes: dict[str, str | None] | None = None,
-    ) -> tuple[str | None, str | None]:
+        expected_file_hashes: dict[str, str],
+    ):
         """Commit the current authoritative S3 workspace, optionally pushing it.
 
-        Unlike ``desktop_commit`` this uses ``checkout()`` so direct workspace
-        file writes are synced down before staging and the resulting ``.git``
-        state is synced back to object storage on exit.
+        Unlike ``desktop_commit`` this uses a fresh isolated checkout so direct
+        workspace writes are materialized exactly before staging and stale
+        persistent Git metadata cannot influence the release. The resulting
+        ``.git`` state is synced back to object storage on success.
         """
-        async with self.repo_manager.checkout() as work_dir:
+        from src.core.workspace_writer import checkpoint_workspace_writer_lease
+
+        await checkpoint_workspace_writer_lease(self.db)
+        async with self.repo_manager.isolated_checkout() as work_dir:
             repo = self._open_or_init(work_dir)
+            from src.services.workspace_convergence import (
+                build_snapshot,
+                mismatch_paths,
+                snapshot_git_tree,
+                snapshot_worktree,
+            )
+            from src.services.workspace_repo_changesets import (
+                WorkspaceGitClosureResult,
+            )
+
+            expected = build_snapshot(expected_file_hashes)
+            materialized = snapshot_worktree(work_dir)
+            materialized_mismatches = mismatch_paths(expected, materialized)
+            if materialized_mismatches:
+                raise RuntimeError(
+                    "Workspace Git checkout does not match the authoritative snapshot: "
+                    + "; ".join(materialized_mismatches)
+                )
+            await checkpoint_workspace_writer_lease(self.db)
             self._prepare_expected_workspace_files(
                 work_dir,
                 repo,
-                expected_file_hashes or {},
+                expected_file_hashes,
             )
             result = await self._do_commit(work_dir, repo, message)
             if not result.success:
                 raise RuntimeError(result.error or "Git commit failed")
-            self._verify_expected_workspace_tree(repo, expected_file_hashes or {})
-            commit_sha = result.commit_sha
+            # Manifest generation performs read-only DB work. Close that
+            # transaction before fetch/push/readback, which can spend minutes
+            # on network I/O and is fenced independently by the platform lease.
+            await self.db.commit()
+            commit_sha = result.commit_sha or (
+                repo.head.commit.hexsha if repo.head.is_valid() else None
+            )
+            if not commit_sha:
+                raise RuntimeError("Workspace Git closure did not create a valid HEAD")
+            intended = snapshot_git_tree(repo.head.commit.tree)
+            remote_sha = None
+            remote_mismatches: list[str] = []
             if push:
                 reconciliation_error = self._reconcile_remote_before_workspace_push(
                     work_dir, repo
                 )
-                self._verify_expected_workspace_files(
-                    work_dir,
-                    expected_file_hashes or {},
-                )
-                self._verify_expected_workspace_tree(
-                    repo,
-                    expected_file_hashes or {},
-                )
                 if reconciliation_error:
-                    return commit_sha, reconciliation_error
+                    repo.git.reset("--hard", commit_sha)
+                    return WorkspaceGitClosureResult(
+                        commit_sha=commit_sha,
+                        push_error=reconciliation_error,
+                        authoritative_revision=intended.revision,
+                        authoritative_files=intended.file_hashes,
+                    )
+                reconciled = snapshot_git_tree(repo.head.commit.tree)
+                reconciliation_mismatches = mismatch_paths(intended, reconciled)
+                if reconciliation_mismatches:
+                    repo.git.reset("--hard", commit_sha)
+                    return WorkspaceGitClosureResult(
+                        commit_sha=commit_sha,
+                        push_error=(
+                            "Remote reconciliation changed the authoritative snapshot: "
+                            + "; ".join(reconciliation_mismatches)
+                        ),
+                        authoritative_revision=intended.revision,
+                        authoritative_files=intended.file_hashes,
+                        mismatch_paths=reconciliation_mismatches,
+                    )
+                # Reconciliation may create a same-tree merge commit. Record
+                # the actual local closure that will be pushed/persisted so a
+                # failed push can retry from an auditable exact HEAD.
+                commit_sha = repo.head.commit.hexsha
+                await checkpoint_workspace_writer_lease(self.db)
                 pushed = self._do_push(work_dir, repo)
                 if not pushed.success:
-                    return commit_sha, pushed.error or "Git push failed"
+                    return WorkspaceGitClosureResult(
+                        commit_sha=commit_sha,
+                        push_error=(
+                            _redact_git_error(pushed.error)
+                            if pushed.error
+                            else "Git push failed"
+                        ),
+                        authoritative_revision=intended.revision,
+                        authoritative_files=intended.file_hashes,
+                    )
                 commit_sha = pushed.commit_sha or commit_sha
-            return commit_sha, None
+                await checkpoint_workspace_writer_lease(self.db)
+                try:
+                    repo.remotes.origin.fetch(self.branch)
+                    remote_commit = repo.commit(f"origin/{self.branch}")
+                except Exception as exc:
+                    return WorkspaceGitClosureResult(
+                        commit_sha=commit_sha,
+                        push_error=(
+                            "Remote branch readback failed: "
+                            f"{_redact_git_error(str(exc))}"
+                        ),
+                        authoritative_revision=intended.revision,
+                        authoritative_files=intended.file_hashes,
+                    )
+                remote_sha = remote_commit.hexsha
+                remote_snapshot = snapshot_git_tree(remote_commit.tree)
+                remote_mismatches = mismatch_paths(intended, remote_snapshot)
+                if remote_mismatches or remote_sha != commit_sha:
+                    return WorkspaceGitClosureResult(
+                        commit_sha=commit_sha,
+                        push_error="Remote branch verification failed",
+                        remote_sha=remote_sha,
+                        authoritative_revision=intended.revision,
+                        authoritative_files=intended.file_hashes,
+                        mismatch_paths=remote_mismatches,
+                    )
+            await checkpoint_workspace_writer_lease(self.db)
+            return WorkspaceGitClosureResult(
+                commit_sha=commit_sha,
+                push_error=None,
+                remote_sha=remote_sha,
+                authoritative_revision=intended.revision,
+                authoritative_files=intended.file_hashes,
+                mismatch_paths=remote_mismatches,
+            )
+
+    async def authoritative_convergence(self):
+        """Return a short-lived, dirty-generation-aware convergence result."""
+        from src.core.repo_dirty import get_repo_dirty_state
+
+        parsed = urllib.parse.urlsplit(self.repo_url)
+        dirty = await get_repo_dirty_state()
+        cache_key = (
+            parsed.hostname or "",
+            parsed.path.removesuffix(".git"),
+            self.branch,
+            dirty.generation if dirty else None,
+        )
+        now = time.monotonic()
+        cached = _convergence_cache.get(cache_key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        task = _convergence_inflight.get(cache_key)
+        if task is None:
+            task = asyncio.create_task(self._authoritative_convergence_uncached())
+            _convergence_inflight[cache_key] = task
+
+            def discard(
+                completed: asyncio.Task[WorkspaceAuthoritativeConvergenceResponse],
+            ) -> None:
+                if _convergence_inflight.get(cache_key) is completed:
+                    _convergence_inflight.pop(cache_key, None)
+
+            task.add_done_callback(discard)
+        result = await asyncio.shield(task)
+        _convergence_cache.clear()
+        _convergence_cache[cache_key] = (
+            time.monotonic() + _CONVERGENCE_CACHE_SECONDS,
+            result,
+        )
+        return result
+
+    async def _authoritative_convergence_uncached(self):
+        """Compare Azure/S3-backed authoritative bytes with the remote branch."""
+        from src.services.workspace_convergence import (
+            mismatch_paths,
+            snapshot_git_tree,
+            snapshot_worktree,
+        )
+
+        generated_clean: bool | None = None
+        try:
+            async with self.repo_manager.lock() as generated_dir:
+                if (generated_dir / ".git").exists():
+                    generated_repo = GitRepo(str(generated_dir))
+                    generated_clean = not generated_repo.is_dirty(
+                        untracked_files=True
+                    )
+        except Exception:
+            logger.warning(
+                "Could not inspect generated Git checkout cleanliness",
+                exc_info=True,
+            )
+        try:
+            async with self.repo_manager.snapshot_checkout() as work_dir:
+                repo = self._open_or_init(work_dir)
+                authoritative = snapshot_worktree(work_dir)
+                try:
+                    repo.remotes.origin.fetch(self.branch)
+                    remote_commit = repo.commit(f"origin/{self.branch}")
+                except Exception as exc:
+                    return WorkspaceAuthoritativeConvergenceResponse(
+                        configured=True,
+                        branch=self.branch,
+                        generated_checkout_clean=generated_clean,
+                        authoritative_converged=False,
+                        authoritative_revision=authoritative.revision,
+                        authoritative_root_revisions=authoritative.root_revisions,
+                        error=(
+                            "Remote branch readback failed: "
+                            f"{_redact_git_error(str(exc))}"
+                        ),
+                    )
+                remote = snapshot_git_tree(remote_commit.tree)
+                mismatches = mismatch_paths(authoritative, remote)
+                return WorkspaceAuthoritativeConvergenceResponse(
+                    configured=True,
+                    branch=self.branch,
+                    generated_checkout_clean=generated_clean,
+                    authoritative_converged=not mismatches,
+                    authoritative_revision=authoritative.revision,
+                    authoritative_root_revisions=authoritative.root_revisions,
+                    remote_sha=remote_commit.hexsha,
+                    mismatch_count=len(mismatches),
+                    mismatch_paths=mismatches,
+                )
+        except Exception as exc:
+            return WorkspaceAuthoritativeConvergenceResponse(
+                configured=True,
+                branch=self.branch,
+                generated_checkout_clean=generated_clean,
+                authoritative_converged=False,
+                error=_redact_git_error(str(exc)),
+            )
 
     @staticmethod
     def _verify_expected_workspace_files(
@@ -954,7 +1179,11 @@ class GitHubSyncService:
             if not file_path.is_file():
                 mismatches.append(f"{path}: missing")
                 continue
-            actual_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            from shared.sync_content_hash import normalize_line_endings
+
+            actual_hash = hashlib.sha256(
+                normalize_line_endings(file_path.read_bytes())
+            ).hexdigest()
             if actual_hash != expected_hash:
                 mismatches.append(
                     f"{path}: expected {expected_hash}, found {actual_hash}"
@@ -985,52 +1214,6 @@ class GitHubSyncService:
                 "--",
                 path,
             )
-
-    @staticmethod
-    def _verify_expected_workspace_tree(
-        repo: GitRepo,
-        expected_file_hashes: dict[str, str | None],
-    ) -> None:
-        """Verify the commit tree contains each activated write or deletion."""
-        if not expected_file_hashes:
-            return
-        if not repo.head.is_valid():
-            raise RuntimeError("Workspace Git closure did not create a valid HEAD")
-
-        mismatches: list[str] = []
-        for path, expected_hash in expected_file_hashes.items():
-            mismatch = GitHubSyncService._expected_workspace_tree_mismatch(
-                repo,
-                path,
-                expected_hash,
-            )
-            if mismatch:
-                mismatches.append(mismatch)
-        if mismatches:
-            raise RuntimeError(
-                "Workspace Git commit does not match activated changeset: "
-                + "; ".join(mismatches)
-            )
-
-    @staticmethod
-    def _expected_workspace_tree_mismatch(
-        repo: GitRepo,
-        path: str,
-        expected_hash: str | None,
-    ) -> str | None:
-        """Return the path-specific commit-tree contract violation, if any."""
-        try:
-            blob = repo.head.commit.tree / path
-        except KeyError:
-            blob = None
-        if expected_hash is None:
-            return f"{path}: expected deletion" if blob is not None else None
-        if blob is None or blob.type != "blob":
-            return f"{path}: missing from commit tree"
-        actual_hash = hashlib.sha256(blob.data_stream.read()).hexdigest()
-        if actual_hash != expected_hash:
-            return f"{path}: expected {expected_hash}, committed {actual_hash}"
-        return None
 
     async def desktop_sync(self, job_id: str | None = None, confirm_deletes: bool = False) -> "SyncResult":
         """Combined pull + push. The ONLY place entity import + S3 sync-up happen.

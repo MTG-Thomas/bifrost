@@ -60,7 +60,7 @@ class WorkspaceRepoChangesetRepository:
                     ),
                     and_(
                         WorkspaceRepoChangeset.status == "committed_unpushed",
-                        failure_phase == "git_push",
+                        failure_phase.in_(("git_push", "remote_verification")),
                     ),
                 ),
             )
@@ -68,4 +68,61 @@ class WorkspaceRepoChangesetRepository:
         )
         if scope is not None:
             stmt = stmt.where(WorkspaceRepoChangeset.scope == scope)
+        return list((await self.db.execute(stmt)).scalars().all())
+
+    async def count_retryable_git_failures(self, organization_id: UUID) -> int:
+        failure_phase = WorkspaceRepoChangeset.failure_detail["phase"].astext
+        failure_state = WorkspaceRepoChangeset.failure_detail["state"].astext
+        stmt = (
+            select(func.count())
+            .select_from(WorkspaceRepoChangeset)
+            .where(
+                WorkspaceRepoChangeset.organization_id == organization_id,
+                failure_state.in_(RETRYABLE_GIT_FAILURE_STATES),
+                or_(
+                    and_(
+                        WorkspaceRepoChangeset.status == "activated",
+                        failure_phase == "git_closure",
+                    ),
+                    and_(
+                        WorkspaceRepoChangeset.status == "committed_unpushed",
+                        failure_phase.in_(("git_push", "remote_verification")),
+                    ),
+                ),
+            )
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def count_by_statuses(
+        self, organization_id: UUID, statuses: tuple[str, ...]
+    ) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(WorkspaceRepoChangeset)
+            .where(
+                WorkspaceRepoChangeset.organization_id == organization_id,
+                WorkspaceRepoChangeset.status.in_(statuses),
+            )
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def list_by_statuses(
+        self,
+        organization_id: UUID,
+        statuses: tuple[str, ...],
+        *,
+        limit: int = 200,
+    ) -> list[WorkspaceRepoChangeset]:
+        stmt = (
+            select(WorkspaceRepoChangeset)
+            .where(
+                WorkspaceRepoChangeset.organization_id == organization_id,
+                WorkspaceRepoChangeset.status.in_(statuses),
+            )
+            .order_by(
+                WorkspaceRepoChangeset.created_at.asc(),
+                WorkspaceRepoChangeset.id.asc(),
+            )
+            .limit(limit)
+        )
         return list((await self.db.execute(stmt)).scalars().all())

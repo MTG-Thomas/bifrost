@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
 import hashlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from git import Repo as GitRepo
 
+from src.core.workspace_writer import WorkspaceWriterLeaseLost
 from src.services.github_sync import GitHubSyncService
 
 
@@ -17,11 +18,22 @@ def _init_repo(path):
     return repo
 
 
+def _prepare_mock_repo(repo, *, head_sha="a" * 40, remote_sha=None):
+    repo.head.is_valid.return_value = True
+    repo.head.commit.hexsha = head_sha
+    repo.head.commit.tree.traverse.return_value = []
+    if remote_sha is not None:
+        remote_commit = Mock()
+        remote_commit.hexsha = remote_sha
+        remote_commit.tree.traverse.return_value = []
+        repo.commit.return_value = remote_commit
+
+
 @pytest.mark.asyncio
 async def test_workspace_repo_commit_closure_syncs_storage_and_does_not_push_by_default(
     tmp_path,
 ):
-    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
     events = []
 
     @asynccontextmanager
@@ -30,15 +42,18 @@ async def test_workspace_repo_commit_closure_syncs_storage_and_does_not_push_by_
         yield tmp_path
         events.append("sync-up")
 
-    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
     repo = Mock()
+    _prepare_mock_repo(repo)
     service._open_or_init = Mock(return_value=repo)
     service._do_commit = AsyncMock(
         return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
     )
     service._do_push = Mock()
 
-    sha, push_error = await service.commit_workspace_changes("agent change")
+    sha, push_error = await service.commit_workspace_changes(
+        "agent change", expected_file_hashes={}
+    )
 
     assert sha == "a" * 40
     assert push_error is None
@@ -65,8 +80,8 @@ async def test_workspace_repo_commit_closure_stages_assume_unchanged_activated_f
     async def checkout():
         yield tmp_path
 
-    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
-    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
     service._open_or_init = Mock(return_value=repo)
     service._regenerate_manifest_to_dir = AsyncMock()
     service._run_preflight = AsyncMock(return_value=SimpleNamespace(valid=True))
@@ -102,11 +117,11 @@ async def test_workspace_repo_commit_closure_rejects_stale_materialized_file_wit
         yield tmp_path
         events.append("sync-up")
 
-    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
-    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
     service._open_or_init = Mock(return_value=repo)
 
-    with pytest.raises(RuntimeError, match="does not match activated changeset"):
+    with pytest.raises(RuntimeError, match="does not match the authoritative snapshot"):
         await service.commit_workspace_changes(
             "activated source",
             expected_file_hashes={
@@ -119,14 +134,15 @@ async def test_workspace_repo_commit_closure_rejects_stale_materialized_file_wit
 
 @pytest.mark.asyncio
 async def test_workspace_repo_commit_closure_pushes_only_when_requested(tmp_path):
-    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
 
     @asynccontextmanager
     async def checkout():
         yield tmp_path
 
-    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
     repo = Mock()
+    _prepare_mock_repo(repo, remote_sha="b" * 40)
     service._open_or_init = Mock(return_value=repo)
     service._do_commit = AsyncMock(
         return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
@@ -136,7 +152,9 @@ async def test_workspace_repo_commit_closure_pushes_only_when_requested(tmp_path
     )
     service._reconcile_remote_before_workspace_push = Mock(return_value=None)
 
-    sha, push_error = await service.commit_workspace_changes("agent change", push=True)
+    sha, push_error = await service.commit_workspace_changes(
+        "agent change", push=True, expected_file_hashes={}
+    )
 
     assert sha == "b" * 40
     assert push_error is None
@@ -147,15 +165,54 @@ async def test_workspace_repo_commit_closure_pushes_only_when_requested(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_workspace_repo_commit_closure_fences_stale_lease_before_push(
+    tmp_path,
+):
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
+    events = []
+
+    @asynccontextmanager
+    async def checkout():
+        events.append("sync-down")
+        yield tmp_path
+        events.append("sync-up")
+
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
+    repo = Mock()
+    _prepare_mock_repo(repo)
+    service._open_or_init = Mock(return_value=repo)
+    service._do_commit = AsyncMock(
+        return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
+    )
+    service._do_push = Mock()
+    service._reconcile_remote_before_workspace_push = Mock(return_value=None)
+
+    with patch(
+        "src.core.workspace_writer.checkpoint_workspace_writer_lease",
+        new_callable=AsyncMock,
+        side_effect=[None, None, WorkspaceWriterLeaseLost("lease replaced")],
+    ) as checkpoint:
+        with pytest.raises(WorkspaceWriterLeaseLost, match="lease replaced"):
+            await service.commit_workspace_changes(
+                "agent change", push=True, expected_file_hashes={}
+            )
+
+    assert checkpoint.await_count == 3
+    service._do_push.assert_not_called()
+    assert events == ["sync-down"]
+
+
+@pytest.mark.asyncio
 async def test_workspace_repo_commit_closure_returns_commit_when_push_fails(tmp_path):
-    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
 
     @asynccontextmanager
     async def checkout():
         yield tmp_path
 
-    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
     repo = Mock()
+    _prepare_mock_repo(repo)
     service._open_or_init = Mock(return_value=repo)
     service._do_commit = AsyncMock(
         return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
@@ -165,7 +222,9 @@ async def test_workspace_repo_commit_closure_returns_commit_when_push_fails(tmp_
     )
     service._reconcile_remote_before_workspace_push = Mock(return_value=None)
 
-    sha, push_error = await service.commit_workspace_changes("agent change", push=True)
+    sha, push_error = await service.commit_workspace_changes(
+        "agent change", push=True, expected_file_hashes={}
+    )
 
     assert sha == "a" * 40
     assert push_error == "rejected"
@@ -175,14 +234,15 @@ async def test_workspace_repo_commit_closure_returns_commit_when_push_fails(tmp_
 async def test_workspace_repo_commit_closure_returns_remote_reconciliation_error(
     tmp_path,
 ):
-    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
 
     @asynccontextmanager
     async def checkout():
         yield tmp_path
 
-    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
     repo = Mock()
+    _prepare_mock_repo(repo)
     service._open_or_init = Mock(return_value=repo)
     service._do_commit = AsyncMock(
         return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
@@ -192,10 +252,51 @@ async def test_workspace_repo_commit_closure_returns_remote_reconciliation_error
     )
     service._do_push = Mock()
 
-    sha, push_error = await service.commit_workspace_changes("agent change", push=True)
+    sha, push_error = await service.commit_workspace_changes(
+        "agent change", push=True, expected_file_hashes={}
+    )
 
     assert sha == "a" * 40
     assert push_error == "remote merge failed"
+    repo.git.reset.assert_called_once_with("--hard", "a" * 40)
+    service._do_push.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_repo_commit_closure_does_not_persist_changed_merge_tree(
+    tmp_path,
+):
+    from src.services.workspace_convergence import build_snapshot
+
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
+
+    @asynccontextmanager
+    async def checkout():
+        yield tmp_path
+
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
+    repo = Mock()
+    _prepare_mock_repo(repo)
+    service._open_or_init = Mock(return_value=repo)
+    service._do_commit = AsyncMock(
+        return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
+    )
+    service._reconcile_remote_before_workspace_push = Mock(return_value=None)
+    service._do_push = Mock()
+    intended = build_snapshot({"features/a.py": "1" * 64})
+    merged = build_snapshot({"features/a.py": "2" * 64})
+
+    with patch(
+        "src.services.workspace_convergence.snapshot_git_tree",
+        side_effect=[intended, merged],
+    ):
+        result = await service.commit_workspace_changes(
+            "agent change", push=True, expected_file_hashes={}
+        )
+
+    assert result.push_error is not None
+    assert result.mismatch_paths == ["features/a.py"]
+    repo.git.reset.assert_called_once_with("--hard", "a" * 40)
     service._do_push.assert_not_called()
 
 
@@ -203,17 +304,19 @@ async def test_workspace_repo_commit_closure_returns_remote_reconciliation_error
 async def test_workspace_repo_commit_closure_pushes_when_remote_branch_is_missing(
     tmp_path,
 ):
-    service = GitHubSyncService(Mock(), "https://example.test/org/repo.git")
+    service = GitHubSyncService(AsyncMock(), "https://example.test/org/repo.git")
 
     @asynccontextmanager
     async def checkout():
         yield tmp_path
 
-    service.repo_manager = SimpleNamespace(checkout=checkout)
+    service.repo_manager = SimpleNamespace(isolated_checkout=checkout)
     repo = Mock()
-    repo.remotes.origin.fetch.side_effect = RuntimeError(
-        "couldn't find remote ref production-live"
-    )
+    _prepare_mock_repo(repo, remote_sha="b" * 40)
+    repo.remotes.origin.fetch.side_effect = [
+        RuntimeError("couldn't find remote ref production-live"),
+        None,
+    ]
     service._open_or_init = Mock(return_value=repo)
     service._do_commit = AsyncMock(
         return_value=SimpleNamespace(success=True, commit_sha="a" * 40, error=None)
@@ -222,7 +325,9 @@ async def test_workspace_repo_commit_closure_pushes_when_remote_branch_is_missin
         return_value=SimpleNamespace(success=True, commit_sha="b" * 40, error=None)
     )
 
-    sha, push_error = await service.commit_workspace_changes("agent change", push=True)
+    sha, push_error = await service.commit_workspace_changes(
+        "agent change", push=True, expected_file_hashes={}
+    )
 
     assert sha == "b" * 40
     assert push_error is None

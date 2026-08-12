@@ -423,8 +423,20 @@ class TestSaveRequirements:
                 return_value=mock_redis_client,
             ),
             patch("src.services.repo_storage.RepoStorage", return_value=mock_repo),
+            patch(
+                "src.core.workspace_writer.assert_workspace_writer_access",
+                new_callable=AsyncMock,
+            ) as assert_access,
+            patch(
+                "src.core.repo_dirty.mark_repo_dirty",
+                new_callable=AsyncMock,
+            ) as mark_dirty,
         ):
-            await save_requirements(content)
+            db = AsyncMock()
+            await save_requirements(db, content)
+
+            assert_access.assert_awaited_once_with(db)
+            mark_dirty.assert_awaited_once_with(writer="package-requirements")
 
             # Verify object storage write
             mock_repo.write.assert_called_once_with(
@@ -446,8 +458,16 @@ class TestSaveRequirements:
                 return_value=mock_redis_client,
             ),
             patch("src.services.repo_storage.RepoStorage", return_value=mock_repo),
+            patch(
+                "src.core.workspace_writer.assert_workspace_writer_access",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "src.core.repo_dirty.mark_repo_dirty",
+                new_callable=AsyncMock,
+            ),
         ):
-            await save_requirements(content)
+            await save_requirements(AsyncMock(), content)
 
             # Verify cache received correct hash
             call_args = mock_redis_client.setex.call_args

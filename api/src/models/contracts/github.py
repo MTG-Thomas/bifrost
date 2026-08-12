@@ -208,10 +208,27 @@ class CommitInfo(BaseModel):
 
 
 class RepoStatusResponse(BaseModel):
-    """Fast repo status check for CLI push pre-check."""
+    """Authoritative release gate and dirty-state status."""
     git_configured: bool = Field(..., description="Whether GitHub integration is configured")
     dirty: bool = Field(..., description="Whether platform has uncommitted changes")
     dirty_since: str | None = Field(default=None, description="ISO timestamp when repo became dirty")
+    dirty_generation: str | None = None
+    dirty_updated_at: str | None = None
+    dirty_writer: str | None = None
+    dirty_legacy: bool = False
+    generated_checkout_clean: bool | None = None
+    authoritative_converged: bool | None = None
+    authoritative_revision: str | None = None
+    authoritative_root_revisions: dict[str, str] = Field(default_factory=dict)
+    remote_sha: str | None = None
+    mismatch_count: int = 0
+    mismatch_paths: list[str] = Field(default_factory=list)
+    active_writer_job_id: str | None = None
+    active_writer_phase: str | None = None
+    active_changesets: int = 0
+    recoverable_closures: int = 0
+    operational_status_url: str = "/api/workspace-repo-changesets/operational-status"
+    error: str | None = None
 
 
 class GitRefreshStatusResponse(BaseModel):
@@ -239,6 +256,15 @@ class GitRefreshStatusResponse(BaseModel):
     # Metadata
     last_synced: str | None = Field(default=None, description="ISO timestamp of last successful sync")
     error: str | None = Field(default=None, description="Error message if sync failed")
+    status_scope: str = Field(
+        default="generated_checkout",
+        description="This status describes only the generated Git checkout.",
+    )
+    authoritative_converged: bool | None = Field(
+        default=None,
+        description="Use authoritative_status_url for Azure/S3 convergence proof.",
+    )
+    authoritative_status_url: str = "/api/github/repo-status"
 
     model_config = ConfigDict(from_attributes=True)
 

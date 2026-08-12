@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError, NoResultFound, OperationalError
 
+from shared.models import WorkspaceWriterBusyResponse
 from src.config import get_settings
 from src.core.sentry import configure_sentry
 from src.core.telemetry import configure_opentelemetry
@@ -22,6 +23,7 @@ from src.models.contracts.common import ErrorResponse
 from src.core.csrf import CSRFMiddleware
 from src.core.embed_middleware import EmbedScopeMiddleware
 from src.core.database import close_db, get_session_factory, init_db
+from src.core.workspace_writer import WorkspaceWriterBusy
 from src.core.pubsub import manager as pubsub_manager
 from src.routers.health import close_health_check_clients
 from src.routers import (
@@ -368,6 +370,19 @@ def create_app() -> FastAPI:
             content=ErrorResponse(
                 error="not_found",
                 message="Resource not found",
+            ).model_dump(),
+        )
+
+    @app.exception_handler(WorkspaceWriterBusy)
+    async def workspace_writer_busy_handler(
+        request: Request, exc: WorkspaceWriterBusy
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content=WorkspaceWriterBusyResponse(
+                message=str(exc),
+                job_id=str(exc.job_id) if exc.job_id else None,
+                phase=exc.phase,
             ).model_dump(),
         )
 

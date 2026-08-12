@@ -5,7 +5,8 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from uuid import UUID
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -1161,43 +1162,87 @@ async def test_create_folder_editor_returns_folder_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_delete_file_editor_deletes_folder_children_and_markers(monkeypatch):
-    storage_deletes = []
-    repo_deletes = []
-    list_calls = []
+async def test_delete_file_editor_queues_recursive_folder_deletion(monkeypatch):
+    job_id = uuid4()
+    enqueue = AsyncMock(
+        return_value=(
+            SimpleNamespace(
+                id=job_id,
+                status="queued",
+                notification_id=None,
+            ),
+            False,
+        )
+    )
 
-    class FakeStorage:
-        def __init__(self, db):
-            self.db = db
+    class FakeRepo:
+        async def list(self, prefix):
+            return ["folder/a.txt"]
 
-        async def delete_file(self, path):
-            storage_deletes.append(path)
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+    monkeypatch.setattr(
+        "src.services.workspace_path_deletion.enqueue_workspace_path_deletion",
+        enqueue,
+    )
+
+    db = SimpleNamespace()
+    response = await files.delete_file_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test", name=None),
+        path="folder",
+        db=db,
+    )
+
+    assert response.status_code == 202
+    assert response.headers["location"] == f"/api/platform-jobs/{job_id}"
+    enqueue.assert_awaited_once_with(
+        db,
+        "folder",
+        organization_id=ORG_A,
+        requested_by_user_id=USER_ID,
+        requested_by_email="admin@example.test",
+        requested_by_name="admin@example.test",
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_file_editor_queues_path_that_becomes_recursive(monkeypatch):
+    job_id = uuid4()
+    enqueue = AsyncMock(
+        return_value=(
+            SimpleNamespace(id=job_id, status="queued", notification_id=None),
+            False,
+        )
+    )
 
     class FakeRepo:
         def __init__(self):
             self.calls = 0
 
         async def list(self, prefix):
-            list_calls.append(prefix)
             self.calls += 1
-            return ["folder/a.txt", "folder/marker/"] if self.calls == 1 else []
+            return [] if self.calls == 1 else ["folder/a.txt"]
 
-        async def delete(self, path):
-            repo_deletes.append(path)
-
-    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    gate = AsyncMock()
     monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", gate
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_path_deletion.enqueue_workspace_path_deletion",
+        enqueue,
+    )
 
-    await files.delete_file_editor(
+    response = await files.delete_file_editor(
         _ctx(is_superuser=True),
-        SimpleNamespace(user_id=USER_ID),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test", name=None),
         path="folder",
         db=SimpleNamespace(),
     )
 
-    assert storage_deletes == ["folder/a.txt"]
-    assert repo_deletes == ["folder/marker/", "folder", "folder/"]
-    assert list_calls == ["folder/", "folder/"]
+    assert response.status_code == 202
+    gate.assert_awaited_once()
+    enqueue.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1208,7 +1253,7 @@ async def test_delete_file_editor_deletes_single_file_and_maps_missing(monkeypat
         def __init__(self, db):
             self.db = db
 
-        async def delete_file(self, path):
+        async def delete_file(self, path, *, skip_dirty_flag=False):
             deletes.append(path)
             if path == "missing.txt":
                 raise FileNotFoundError(path)
@@ -1219,19 +1264,24 @@ async def test_delete_file_editor_deletes_single_file_and_maps_missing(monkeypat
 
     monkeypatch.setattr(files, "FileStorageService", FakeStorage)
     monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", AsyncMock()
+    )
+    monkeypatch.setattr("src.core.repo_dirty.mark_repo_dirty", AsyncMock())
 
-    await files.delete_file_editor(
+    response = await files.delete_file_editor(
         _ctx(is_superuser=True),
-        SimpleNamespace(user_id=USER_ID),
+        SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
         path="file.txt",
         db=SimpleNamespace(),
     )
+    assert response.status_code == 204
     assert deletes == ["file.txt"]
 
     with pytest.raises(HTTPException) as exc_info:
         await files.delete_file_editor(
             _ctx(is_superuser=True),
-            SimpleNamespace(user_id=USER_ID),
+            SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
             path="missing.txt",
             db=SimpleNamespace(),
         )

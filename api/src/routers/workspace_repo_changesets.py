@@ -1,8 +1,9 @@
 """Thin HTTP surface for transactional workspace _repo changesets."""
 
+from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from src.core.auth import Context, CurrentSuperuser
 from src.core.db_deps import DbSession
@@ -11,15 +12,21 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoChangesetBegin,
     WorkspaceRepoChangesetDiffResponse,
     WorkspaceRepoChangesetResponse,
+    WorkspaceRepoChangesetListResponse,
     WorkspaceRepoFileMutationRequest,
     WorkspaceRepoStateResponse,
+    WorkspaceRepoOperationalStatusResponse,
+    WorkspaceDirtyStatus,
     WorkspaceRepoValidationResponse,
 )
+from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.services.workspace_repo_changesets import (
     ChangesetConflict,
     ChangesetInvalid,
     OrganizationScopeRequired,
     WorkspaceRepoChangesetService,
+    build_workspace_repo_changeset_service,
+    enqueue_workspace_repo_writer,
     require_organization_id,
 )
 
@@ -27,33 +34,39 @@ router = APIRouter(
     prefix="/api/workspace-repo-changesets",
     tags=["Workspace _repo compatibility changesets"],
 )
-
-
 async def _service(db: DbSession, org_id: UUID | None) -> WorkspaceRepoChangesetService:
     org_id = require_organization_id(org_id)
-    from src.config import get_settings
-    from src.services.github_config import get_github_config
-    from src.services.platform_commit_writer import GitHubAppCommitWriter
+    return await build_workspace_repo_changeset_service(db, org_id)
 
-    config = await get_github_config(db, org_id)
-    settings = get_settings()
-    writer = None
-    if config and config.repo_url and settings.github_app_commit_writer_configured:
-        app_id = settings.github_app_id
-        installation_id = settings.github_app_installation_id
-        private_key = settings.github_app_private_key
-        if app_id is None or installation_id is None or private_key is None:
-            raise RuntimeError(
-                "GitHub App commit writer configuration is incomplete"
-            )
-        writer = GitHubAppCommitWriter(
-            repo_url=config.repo_url,
-            branch=config.branch,
-            app_id=app_id,
-            installation_id=installation_id,
-            private_key=private_key.get_secret_value(),
-        )
-    return WorkspaceRepoChangesetService(db, org_id, commit_writer=writer)
+
+async def _enqueue_writer(
+    *,
+    changeset_id: UUID,
+    request: WorkspaceRepoActivateRequest,
+    operation: Literal["activate", "retry"],
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+    response: Response,
+) -> PlatformJobAccepted:
+    organization_id = require_organization_id(ctx.org_id)
+    job, reused = await enqueue_workspace_repo_writer(
+        db,
+        organization_id,
+        changeset_id,
+        request,
+        operation,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email,
+    )
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        status=job.status,
+        reused=reused,
+        notification_id=job.notification_id,
+    )
 
 
 def _translate(exc: Exception) -> HTTPException:
@@ -111,6 +124,60 @@ async def begin_workspace_repo_changeset(
 ):
     try:
         return await (await _service(db, ctx.org_id)).begin(request, user.user_id)
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
+@router.get("", response_model=WorkspaceRepoChangesetListResponse)
+async def list_workspace_repo_changesets(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    try:
+        service = await _service(db, ctx.org_id)
+        return WorkspaceRepoChangesetListResponse(
+            changesets=await service.list_active()
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
+@router.get(
+    "/operational-status",
+    response_model=WorkspaceRepoOperationalStatusResponse,
+)
+async def workspace_repo_operational_status(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    from src.services.workspace_operational_status import (
+        get_workspace_operational_snapshot,
+    )
+
+    try:
+        service = await _service(db, ctx.org_id)
+        active = await service.list_active()
+        recoverable = await service.recoverable_git_closures()
+        ledger = await service.closure_ledger()
+        operational = await get_workspace_operational_snapshot(db, ctx.org_id)
+        dirty = operational.dirty
+        return WorkspaceRepoOperationalStatusResponse(
+            dirty=WorkspaceDirtyStatus(
+                dirty=dirty is not None,
+                generation=dirty.generation if dirty else None,
+                dirty_since=dirty.dirty_since if dirty else None,
+                updated_at=dirty.updated_at if dirty else None,
+                writer=dirty.writer if dirty else None,
+                legacy=dirty.legacy if dirty else False,
+            ),
+            active_writer=operational.writer,
+            active_changesets=active,
+            recoverable_closures=recoverable,
+            closure_ledger=ledger,
+            convergence=operational.convergence,
+        )
     except Exception as exc:
         raise _translate(exc) from exc
 
@@ -177,17 +244,28 @@ async def validate_workspace_repo_changeset(
         raise _translate(exc) from exc
 
 
-@router.post("/{changeset_id}/activate", response_model=WorkspaceRepoChangesetResponse)
+@router.post(
+    "/{changeset_id}/activate",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def activate_workspace_repo_changeset(
     changeset_id: UUID,
     request: WorkspaceRepoActivateRequest,
     ctx: Context,
     db: DbSession,
     user: CurrentSuperuser,
+    response: Response,
 ):
     try:
-        return await (await _service(db, ctx.org_id)).activate(
-            changeset_id, request, user.email
+        return await _enqueue_writer(
+            changeset_id=changeset_id,
+            request=request,
+            operation="activate",
+            ctx=ctx,
+            db=db,
+            user=user,
+            response=response,
         )
     except Exception as exc:
         raise _translate(exc) from exc
@@ -195,7 +273,8 @@ async def activate_workspace_repo_changeset(
 
 @router.post(
     "/{changeset_id}/retry-git-closure",
-    response_model=WorkspaceRepoChangesetResponse,
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def retry_workspace_repo_git_closure(
     changeset_id: UUID,
@@ -203,10 +282,17 @@ async def retry_workspace_repo_git_closure(
     ctx: Context,
     db: DbSession,
     user: CurrentSuperuser,
+    response: Response,
 ):
     try:
-        return await (await _service(db, ctx.org_id)).retry_git_closure(
-            changeset_id, request, user.email
+        return await _enqueue_writer(
+            changeset_id=changeset_id,
+            request=request,
+            operation="retry",
+            ctx=ctx,
+            db=db,
+            user=user,
+            response=response,
         )
     except Exception as exc:
         raise _translate(exc) from exc

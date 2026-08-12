@@ -126,6 +126,8 @@ async def test_list_files_recursive_filters_excluded_folders_and_folder_markers(
 
 @pytest.mark.asyncio
 async def test_create_folder_writes_gitkeep_placeholder(monkeypatch):
+    from unittest.mock import AsyncMock
+
     writes = []
 
     class RepoStorage:
@@ -133,6 +135,10 @@ async def test_create_folder_writes_gitkeep_placeholder(monkeypatch):
             writes.append((path, content))
 
     monkeypatch.setattr("src.services.repo_storage.RepoStorage", RepoStorage)
+    monkeypatch.setattr(
+        "src.core.workspace_writer.assert_workspace_writer_access", AsyncMock()
+    )
+    monkeypatch.setattr("src.core.repo_dirty.mark_repo_dirty", AsyncMock())
     service = _service([])
 
     await service.create_folder("/nested/path/")

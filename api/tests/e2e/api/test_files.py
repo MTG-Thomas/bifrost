@@ -9,6 +9,19 @@ import pytest
 from tests.e2e.conftest import write_and_register
 
 
+def _delete_and_wait(e2e_client, headers, path: str):
+    response = e2e_client.delete(
+        f"/api/files/editor?path={path}",
+        headers=headers,
+    )
+    if response.status_code == 204:
+        return response
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+    assert response.headers["location"] == f"/api/platform-jobs/{job_id}"
+    return response
+
+
 @pytest.mark.e2e
 class TestFileOperations:
     """Test workspace file operations."""
@@ -80,10 +93,7 @@ class TestFileOperations:
         assert response.status_code in [201, 409], f"Create folder failed: {response.text}"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/files/editor?path=e2e_test_folder",
-            headers=platform_admin.headers,
-        )
+        _delete_and_wait(e2e_client, platform_admin.headers, "e2e_test_folder")
 
     def test_delete_file(self, e2e_client, platform_admin):
         """Platform admin can delete a file."""
@@ -179,9 +189,8 @@ class TestFileOperations:
         assert data["content"] == "File in subfolder"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/files/editor?path=e2e_test_subfolder",
-            headers=platform_admin.headers,
+        _delete_and_wait(
+            e2e_client, platform_admin.headers, "e2e_test_subfolder"
         )
 
     def test_list_folder_contents(self, e2e_client, platform_admin):
@@ -229,10 +238,15 @@ class TestFileOperations:
         assert any("file2.py" in path for path in file_paths), "file2.py not found in listing"
 
         # Cleanup
-        e2e_client.delete(
-            "/api/files/editor?path=e2e_folder_with_contents",
+        deleted = _delete_and_wait(
+            e2e_client, platform_admin.headers, "e2e_folder_with_contents"
+        )
+        assert deleted.status_code == 202
+        missing = e2e_client.get(
+            "/api/files/editor/content?path=e2e_folder_with_contents/file1.txt",
             headers=platform_admin.headers,
         )
+        assert missing.status_code == 404
 
     def test_rename_file(self, e2e_client, platform_admin):
         """Platform admin can rename a file."""
@@ -331,11 +345,12 @@ class TestFileOperations:
         assert "e2e_delete_folder" in paths
 
         # Delete the folder
-        response = e2e_client.delete(
-            "/api/files/editor?path=e2e_delete_folder",
-            headers=platform_admin.headers,
+        response = _delete_and_wait(
+            e2e_client,
+            platform_admin.headers,
+            "e2e_delete_folder",
         )
-        assert response.status_code == 204
+        assert response.status_code == 202
 
         # Verify folder is gone from listing
         response = e2e_client.get(
