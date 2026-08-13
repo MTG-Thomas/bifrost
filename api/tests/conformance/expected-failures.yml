@@ -1,0 +1,8 @@
+# Temporary advisory baseline for the dependency-independent foundation of
+# issue #528. The official runner cannot supply the bearer token required by
+# Bifrost, so the mounted /mcp endpoint returns a real 401 Bearer challenge.
+# This whole-scenario entry records that authentication prerequisite without
+# bypassing auth or dispatch. Once #524 provides the modern endpoint/lifecycle
+# adapter, replace it with check-level baselines.
+server:
+  - server-initialize
