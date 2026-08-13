@@ -1,10 +1,6 @@
-"""Runtime re-export of the downloadable Workspace effect contract.
+"""Platform exports for the canonical Workspace effect contract."""
 
-The standalone ``bifrost`` package is the canonical contract so source-loaded
-workflows and the platform runtime construct the same immutable value types.
-"""
-
-from bifrost.workspace_effects import (
+from _bifrost_workspace_effects import (
     WORKFLOW_EFFECT_KINDS,
     WorkflowBounds,
     WorkflowBoundsInput,
