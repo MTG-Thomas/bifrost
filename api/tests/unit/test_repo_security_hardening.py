@@ -40,6 +40,7 @@ def test_required_e2e_gate_includes_playwright_and_mcp_conformance() -> None:
 
     assert jobs["test-client-e2e"]["name"] == "Client E2E Tests"
     assert set(jobs["test-e2e-gate"]["needs"]) == {
+        "affected-test-plan",
         "test-e2e",
         "test-client-e2e",
         "mcp-conformance",
@@ -94,7 +95,9 @@ def test_release_assets_upload_before_immutable_release_publication() -> None:
     assert create_with["draft"] is True
     assert "${{ steps.source_tarball.outputs.tarball }}" in create_with["files"]
     assert "${{ steps.source_tarball.outputs.tarball }}.sha256" in create_with["files"]
-    assert "${{ steps.source_tarball.outputs.tarball }}.sigstore" in create_with["files"]
+    assert (
+        "${{ steps.source_tarball.outputs.tarball }}.sigstore" in create_with["files"]
+    )
     assert publish_index > create_index
     assert "--draft=false" in publish_run
     assert "args+=(--prerelease)" in publish_run

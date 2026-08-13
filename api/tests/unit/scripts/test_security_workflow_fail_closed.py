@@ -1,7 +1,16 @@
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / ".github/workflows/snyk.yml").is_file() and (
+            parent / ".snyk"
+        ).is_file():
+            return parent
+    raise RuntimeError("Could not locate repository security policy root")
+
+
+REPO_ROOT = _repo_root()
 
 
 def test_snyk_scan_failures_are_not_tolerated() -> None:
