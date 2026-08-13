@@ -519,6 +519,7 @@
 | GET | `/api/workflows/{workflow_id}/roles` |
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
+| POST | `/api/workspace-promotions/preview` |
 | POST | `/api/workspace-repo-changesets` |
 | POST | `/api/workspace-repo-changesets/git-convergence/apply` |
 | POST | `/api/workspace-repo-changesets/git-convergence/preview` |

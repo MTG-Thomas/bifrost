@@ -52,6 +52,10 @@ async def test_download_cli_stamps_version_and_excludes_platform_only_files(tmp_
     (package_dir / "cli.py").write_text("print('ok')\n", encoding="utf-8")
     (package_dir / "_internal.py").write_text("secret\n", encoding="utf-8")
     (package_dir / "README.md").write_text("ignored\n", encoding="utf-8")
+    (tmp_path / "_bifrost_workspace_effects.py").write_text(
+        "WORKFLOW_EFFECT_KINDS = frozenset()\n",
+        encoding="utf-8",
+    )
 
     fake_file = tmp_path / "src" / "routers" / "cli.py"
     with (
@@ -69,10 +73,12 @@ async def test_download_cli_stamps_version_and_excludes_platform_only_files(tmp_
         names = set(tar.getnames())
         pyproject = tar.extractfile("pyproject.toml").read().decode("utf-8")
         init_py = tar.extractfile("bifrost/__init__.py").read().decode("utf-8")
+        effect_contract = tar.extractfile("_bifrost_workspace_effects.py").read().decode("utf-8")
 
     assert "version = \"1.2.3.post4+gabc1234\"" in pyproject
     assert '__version__ = "v1.2.3-4-gabc1234"' in init_py
     assert "bifrost/cli.py" in names
+    assert "WORKFLOW_EFFECT_KINDS" in effect_contract
     assert "bifrost/_internal.py" not in names
     assert "bifrost/README.md" not in names
 

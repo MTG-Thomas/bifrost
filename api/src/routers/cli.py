@@ -2773,6 +2773,11 @@ async def download_cli() -> Response:
         pep440_version = _to_pep440(live_version)
 
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            # workspace_effects.py imports this neutral module so platform and
+            # installed SDK use identical value classes without an import cycle.
+            effect_contract_path = package_dir.parent / "_bifrost_workspace_effects.py"
+            tar.add(effect_contract_path, arcname="_bifrost_workspace_effects.py")
+
             # Add pyproject.toml at root level with PEP 440 version stamped
             # (setuptools validates project.version against PEP 440; git describe
             # output like "v0.6-219-gabc1234-dirty" must be coerced first)
