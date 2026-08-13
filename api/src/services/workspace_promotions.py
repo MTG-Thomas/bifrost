@@ -33,6 +33,7 @@ from src.models.contracts.workspace_promotions import (
 from src.models.orm.workspace_promotions import WorkspacePromotionArtifact
 from src.models.orm.workflows import Workflow
 from src.services.repo_storage import RepoStorage
+from src.services.audit import emit_audit
 from src.services.workflow_registration import (
     WorkspaceRegistrationCandidate,
     plan_workspace_registrations,
@@ -532,8 +533,27 @@ class WorkspacePromotionPreviewService:
                 expires_at=expires_at,
             )
             self.db.add(artifact)
-            await self.db.commit()
-            await self.db.refresh(artifact)
+            await self.db.flush()
+        await emit_audit(
+            self.db,
+            "workspace_promotion.preview",
+            resource_type="workspace_promotion_artifact",
+            resource_id=artifact.id,
+            details={
+                "candidate_id": candidate_id,
+                "snapshot_id": request.snapshot.snapshot_id,
+                "entry_path": request.entry.path,
+                "entry_function": request.entry.function,
+                "risk_class": risk,
+                "policy_version": PROMOTION_PREVIEW_POLICY,
+                "closure": [
+                    {"path": item.path, "sha256": item.sha256} for item in closure
+                ],
+            },
+            strict=True,
+        )
+        await self.db.commit()
+        await self.db.refresh(artifact)
         return WorkspacePromotionPreviewResponse(
             disposition="review_required",
             artifact_id=artifact.id,

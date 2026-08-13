@@ -68,6 +68,8 @@ The server:
 - writes source and manifest to create-only, content-addressed object keys;
 - stores immutable artifact metadata separately from future mutable release
   state;
+- commits a strict, source-free audit event with candidate, snapshot, entry,
+  risk, policy, and closure hashes;
 - always returns `preview_only=true` and `ready_to_activate=false`.
 
 The capability flag `BIFROST_WORKSPACE_RAPID_PROMOTION_PREVIEW_ENABLED` defaults
