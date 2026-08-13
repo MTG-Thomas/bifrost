@@ -15,6 +15,17 @@ async def test_fresh_database_does_not_install_withdrawn_builder_schema(
     ).scalar_one()
     assert revision == "20260813_operation_receipts"
 
+    catalog_revision = (
+        await db_session.execute(
+            text(
+                "SELECT revision FROM mcp_catalog_revisions "
+                "WHERE catalog = 'workflow_tools'"
+            )
+        )
+    ).scalar_one()
+    assert isinstance(catalog_revision, int)
+    assert catalog_revision >= 0
+
     builder_tables = (
         await db_session.execute(
             text(

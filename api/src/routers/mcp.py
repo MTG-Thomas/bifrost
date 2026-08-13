@@ -323,7 +323,6 @@ def get_mcp_asgi_app():
     from src.services.mcp_server.server import (
         BifrostMCPServer,
         MCPContext,
-        _register_workflow_tools,
     )
 
     # Create OAuth 2.1 auth provider for Bifrost
@@ -371,23 +370,26 @@ def get_mcp_asgi_app():
     # Store original lifespan before wrapping
     original_lifespan = getattr(mcp_app, 'lifespan', None)
 
-    # Create combined lifespan that registers workflow tools on startup
+    # Keep this replica's workflow catalog synchronized for its full lifespan.
     @asynccontextmanager
     async def combined_lifespan(app):
-        """Combined lifespan that registers workflow tools and runs FastMCP lifespan."""
-        # Register workflow tools on startup
-        try:
-            count = await _register_workflow_tools(fastmcp_server)
-            logger.info(f"Registered {count} workflow tools during MCP startup")
-        except Exception as e:
-            logger.warning(f"Failed to register workflow tools: {e}")
+        """Synchronize the workflow catalog around the FastMCP lifespan."""
+        from src.services.mcp_server.catalog_sync import (
+            start_workflow_catalog_sync,
+            stop_workflow_catalog_sync,
+        )
 
-        # Run original FastMCP lifespan if present
-        if original_lifespan:
-            async with original_lifespan(app):
+        count = await start_workflow_catalog_sync(fastmcp_server)
+        logger.info(f"Registered {count} workflow tools during MCP startup")
+
+        try:
+            if original_lifespan:
+                async with original_lifespan(app):
+                    yield
+            else:
                 yield
-        else:
-            yield
+        finally:
+            stop_workflow_catalog_sync()
 
     # Wrap with agent-scoping middleware to handle /mcp/{agent_id} paths
     from src.services.mcp_server.agent_scope import AgentScopeMCPMiddleware

@@ -170,6 +170,9 @@ class TestMCPAgentGateway:
         request.cls.prompt = prompt
         request.cls.function_name = function_name
         request.cls.workflow_id = workflow_id
+        request.cls.workflow_tool_name = (
+            f"{function_name}__{uuid.UUID(workflow_id).hex}"
+        )
 
         yield
 
@@ -213,10 +216,7 @@ class TestMCPAgentGateway:
             path=f"/mcp/{self.agent_id}",
         )["result"]["tools"]
         scoped_names = {tool["name"] for tool in scoped_tools}
-        assert any(
-            name == self.function_name or name.endswith(self.function_name)
-            for name in scoped_names
-        )
+        assert self.workflow_tool_name in scoped_names
         assert not (scoped_names & GATEWAY_TOOLS)
 
         scoped_initialize = _mcp_request(
@@ -231,15 +231,13 @@ class TestMCPAgentGateway:
         )
         assert scoped_initialize["result"]["protocolVersion"] == "2024-11-05"
 
-        workflow_name = next(
-            name
-            for name in scoped_names
-            if name == self.function_name or name.endswith(self.function_name)
-        )
         scoped_call = _mcp_request(
             self.token,
             "tools/call",
-            {"name": workflow_name, "arguments": {"message": "legacy"}},
+            {
+                "name": self.workflow_tool_name,
+                "arguments": {"message": "legacy"},
+            },
             path=f"/mcp/{self.agent_id}",
         )
         assert scoped_call["result"]["structuredContent"] == {"echo": "legacy"}
@@ -279,15 +277,14 @@ class TestMCPAgentGateway:
             modern=True,
         )["result"]["tools"]
         scoped_names = {tool["name"] for tool in scoped_tools}
-        workflow_name = next(
-            name
-            for name in scoped_names
-            if name == self.function_name or name.endswith(self.function_name)
-        )
+        assert self.workflow_tool_name in scoped_names
         scoped_call = _mcp_request(
             self.token,
             "tools/call",
-            {"name": workflow_name, "arguments": {"message": "modern"}},
+            {
+                "name": self.workflow_tool_name,
+                "arguments": {"message": "modern"},
+            },
             path=f"/mcp/{self.agent_id}",
             modern=True,
         )

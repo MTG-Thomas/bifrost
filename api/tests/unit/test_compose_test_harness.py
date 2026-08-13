@@ -51,6 +51,7 @@ def _find_repo_file(path: str) -> pathlib.Path:
     """Locate a repo-root file in-container or on host."""
     candidates = [
         pathlib.Path("/app") / path,
+        pathlib.Path("/repo") / path,
         pathlib.Path(__file__).resolve().parents[3] / path,
     ]
     if path.startswith("api/"):
@@ -130,6 +131,16 @@ def test_test_sh_advertises_dockerized_api_quality_lane():
     assert "./test.sh quality api" in script
     assert "cmd_quality" in script
     assert "sh /app/scripts/quality_api.sh" in script
+
+
+def test_test_harness_waits_for_both_api_replicas():
+    script = _find_repo_file("test.sh").read_text()
+    helpers = _find_repo_file("scripts/lib/test_helpers.sh").read_text()
+
+    assert "wait_for_api_service_ready()" in helpers
+    assert script.count(
+        'wait_for_api_service_ready "$COMPOSE_FILE" api-replica'
+    ) == 3
 
 
 def test_api_quality_script_runs_pyright_without_ci_venv_config():

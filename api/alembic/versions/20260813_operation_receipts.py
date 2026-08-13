@@ -1,7 +1,7 @@
 """add durable operation receipts
 
 Revision ID: 20260813_operation_receipts
-Revises: 20260812_mcp_oauth_binding
+Revises: 20260813_mcp_catalog_rev
 """
 
 from collections.abc import Sequence
@@ -11,7 +11,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260813_operation_receipts"
-down_revision: str = "20260812_mcp_oauth_binding"
+down_revision: str = "20260813_mcp_catalog_rev"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

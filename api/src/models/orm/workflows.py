@@ -66,7 +66,9 @@ class Workflow(Base):
     # File discovery metadata
     path: Mapped[str] = mapped_column(String(1000))  # Relative path from workspace root
     module_path: Mapped[str | None] = mapped_column(String(500), default=None)
-    parameters_schema: Mapped[list] = mapped_column(JSONB, default=[])
+    # New indexing writes a complete JSON Schema object. Legacy rows retain the
+    # original list of parameter metadata and are normalized at read time.
+    parameters_schema: Mapped[dict | list] = mapped_column(JSONB, default=[])
     tags: Mapped[list] = mapped_column(JSONB, default=[])
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     is_orphaned: Mapped[bool] = mapped_column(Boolean, default=False)

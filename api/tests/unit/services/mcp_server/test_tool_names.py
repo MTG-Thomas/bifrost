@@ -6,7 +6,7 @@ handle duplicate detection, and manage tool name <-> workflow ID mappings.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -81,48 +81,198 @@ class TestNormalizeToolName:
         assert _normalize_tool_name("v2_api") == "v2_api"
 
 
-class TestGenerateShortSuffix:
-    """Tests for _generate_short_suffix()."""
+class TestWorkflowIdentitySuffix:
+    """Tests for deterministic workflow identity suffixes."""
 
-    def test_default_length(self):
-        """Should generate 3-character suffix by default."""
-        from src.services.mcp_server.server import _generate_short_suffix
+    def test_uses_complete_uuid_without_replica_local_randomness(self):
+        from src.services.mcp_server.server import _workflow_identity_suffix
 
-        suffix = _generate_short_suffix()
-        assert len(suffix) == 3
+        workflow_id = UUID("11111111-2222-3333-4444-555555555555")
 
-    def test_custom_length(self):
-        """Should generate suffix with custom length."""
-        from src.services.mcp_server.server import _generate_short_suffix
+        assert _workflow_identity_suffix(workflow_id) == workflow_id.hex
+        assert _workflow_identity_suffix(str(workflow_id)) == workflow_id.hex
 
-        suffix = _generate_short_suffix(5)
-        assert len(suffix) == 5
 
-        suffix = _generate_short_suffix(1)
-        assert len(suffix) == 1
+def _workflow_tool(
+    workflow_id: str,
+    *,
+    name: str,
+    description: str = "A workflow tool",
+    parameters_schema=None,
+):
+    from src.services.tool_registry import RegisteredTool
 
-    def test_alphanumeric_only(self):
-        """Should only contain lowercase letters and digits."""
-        from src.services.mcp_server.server import _generate_short_suffix
+    return RegisteredTool(
+        id=UUID(workflow_id),
+        name=name,
+        description=description,
+        category="General",
+        parameters_schema=parameters_schema or [],
+        file_path="workflows/tool.py",
+        function_name="run",
+    )
 
-        for _ in range(100):  # Test multiple times for randomness
-            suffix = _generate_short_suffix()
-            assert suffix.isalnum()
-            assert suffix.islower() or suffix.isdigit()
 
-    def test_zero_length(self):
-        """Should allow zero-length suffixes for callers that disable disambiguation."""
-        from src.services.mcp_server.server import _generate_short_suffix
+class TestWorkflowCatalog:
+    """Tests for replica-stable workflow catalog construction."""
 
-        assert _generate_short_suffix(0) == ""
+    def test_catalog_is_stable_across_database_row_order(self):
+        from src.services.mcp_server.server import (
+            _build_workflow_catalog,
+            _normalized_workflow_catalog,
+            _workflow_catalog_digest,
+        )
 
-    def test_randomness(self):
-        """Should generate different suffixes each time."""
-        from src.services.mcp_server.server import _generate_short_suffix
+        first = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Review Tickets",
+            parameters_schema=[
+                {
+                    "name": "priority",
+                    "type": "string",
+                    "options": [{"label": "High", "value": "high"}],
+                    "default_value": "high",
+                }
+            ],
+        )
+        second = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="review-tickets",
+        )
 
-        suffixes = {_generate_short_suffix() for _ in range(50)}
-        # With 36^3 = 46656 possible combinations, 50 samples should be mostly unique
-        assert len(suffixes) > 40
+        catalog_a = _build_workflow_catalog([second, first], frozenset())
+        catalog_b = _build_workflow_catalog([first, second], frozenset())
+
+        definitions_a = [entry.externally_visible_definition() for entry in catalog_a]
+        definitions_b = [entry.externally_visible_definition() for entry in catalog_b]
+        assert definitions_a == definitions_b
+        assert _normalized_workflow_catalog(
+            catalog_a
+        ) == _normalized_workflow_catalog(catalog_b)
+        assert _workflow_catalog_digest(catalog_a) == _workflow_catalog_digest(
+            catalog_b
+        )
+        assert [entry.name for entry in catalog_a] == [
+            f"review_tickets__{first.id.hex}",
+            f"review_tickets__{second.id.hex}",
+        ]
+
+    def test_native_and_workflow_name_collisions_are_stable_and_unique(self):
+        from src.services.mcp_server.server import _build_workflow_catalog
+
+        native_collision = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Execute Workflow",
+        )
+        normalized_collision = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="Execute Workflow Workflow",
+        )
+        empty_name = _workflow_tool(
+            "33333333-3333-3333-3333-333333333333",
+            name="!!!",
+        )
+
+        catalog = _build_workflow_catalog(
+            [empty_name, normalized_collision, native_collision],
+            {"execute_workflow"},
+        )
+        names_by_id = {entry.workflow_id: entry.name for entry in catalog}
+
+        assert len(set(names_by_id.values())) == 3
+        assert names_by_id[str(native_collision.id)] == (
+            f"execute_workflow__{native_collision.id.hex}"
+        )
+        assert names_by_id[str(normalized_collision.id)] == (
+            f"execute_workflow_workflow__{normalized_collision.id.hex}"
+        )
+        assert names_by_id[str(empty_name.id)] == f"workflow__{empty_name.id.hex}"
+
+    def test_identity_does_not_change_when_hidden_collision_appears(self):
+        from src.services.mcp_server.server import _build_workflow_catalog
+
+        visible = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Private Sync",
+        )
+        hidden_other_tenant = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="private-sync",
+        )
+
+        before = _build_workflow_catalog([visible], frozenset())
+        after = _build_workflow_catalog(
+            [visible, hidden_other_tenant],
+            frozenset(),
+        )
+
+        assert before[0].name == f"private_sync__{visible.id.hex}"
+        assert next(
+            entry.name for entry in after if entry.workflow_id == str(visible.id)
+        ) == before[0].name
+
+    def test_digest_covers_description_and_complete_nested_input_schema(self):
+        from src.services.mcp_server.server import (
+            _build_workflow_catalog,
+            _workflow_catalog_digest,
+        )
+
+        workflow_id = "11111111-1111-1111-1111-111111111111"
+        schema = {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string", "enum": ["open", "closed"]}
+                        },
+                    },
+                }
+            },
+        }
+        baseline = _build_workflow_catalog(
+            [
+                _workflow_tool(
+                    workflow_id,
+                    name="Search Tickets",
+                    description="Search current tickets",
+                    parameters_schema=schema,
+                )
+            ],
+            frozenset(),
+        )
+        changed_description = _build_workflow_catalog(
+            [
+                _workflow_tool(
+                    workflow_id,
+                    name="Search Tickets",
+                    description="Search archived tickets",
+                    parameters_schema=schema,
+                )
+            ],
+            frozenset(),
+        )
+        changed_schema = _build_workflow_catalog(
+            [
+                _workflow_tool(
+                    workflow_id,
+                    name="Search Tickets",
+                    description="Search current tickets",
+                    parameters_schema={
+                        **schema,
+                        "required": ["filters"],
+                    },
+                )
+            ],
+            frozenset(),
+        )
+
+        baseline_digest = _workflow_catalog_digest(baseline)
+        assert baseline[0].input_schema == schema
+        assert baseline_digest != _workflow_catalog_digest(changed_description)
+        assert baseline_digest != _workflow_catalog_digest(changed_schema)
 
 
 class TestToolNameMappings:
@@ -148,30 +298,252 @@ class TestToolNameMappings:
             server._WORKFLOW_ID_TO_TOOL_NAME.clear()
             server._WORKFLOW_ID_TO_TOOL_NAME.update(original_id_to_name)
 
-    @pytest.mark.asyncio
-    async def test_refresh_removes_stale_tool_through_local_provider(self, monkeypatch):
-        """Workflow refresh uses FastMCP's public provider API."""
+    def test_complete_replacement_matches_fresh_provider_order(self, monkeypatch):
+        """Warm and fresh providers expose the same canonical order."""
         from src.services.mcp_server import server
 
-        remove_tool = MagicMock()
-        mcp = SimpleNamespace(
-            local_provider=SimpleNamespace(remove_tool=remove_tool),
+        class WorkflowTool:
+            def __init__(self, **kwargs):
+                self.name = kwargs["name"]
+
+        class Provider:
+            def __init__(self):
+                self.tools = {}
+
+            def remove_tool(self, name):
+                del self.tools[name]
+
+        class MCP:
+            def __init__(self):
+                self.local_provider = Provider()
+
+            def add_tool(self, tool):
+                self.local_provider.tools[tool.name] = tool
+
+        first = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Alpha",
         )
-        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        second = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="Zulu",
+        )
+        full_catalog = server._build_workflow_catalog(
+            [second, first],
+            frozenset(),
+        )
+        monkeypatch.setattr(server, "_WorkflowTool", WorkflowTool)
+
+        warm = MCP()
+        initial = server._build_workflow_catalog([second], frozenset())
+        monkeypatch.setattr(server, "_WORKFLOW_ID_TO_TOOL_NAME", {})
+        initial_entries = server._replace_workflow_catalog(warm, initial)
+        server._WORKFLOW_ID_TO_TOOL_NAME = {
+            entry.workflow_id: entry.name for entry in initial_entries
+        }
+        warm_entries = server._replace_workflow_catalog(warm, full_catalog)
+
+        fresh = MCP()
+        server._WORKFLOW_ID_TO_TOOL_NAME = {}
+        fresh_entries = server._replace_workflow_catalog(fresh, full_catalog)
+
+        assert [entry.name for entry in warm_entries] == [
+            entry.name for entry in fresh_entries
+        ]
+        assert list(warm.local_provider.tools) == list(fresh.local_provider.tools)
+
+    def test_partial_replacement_unwinds_every_prepared_identity(self, monkeypatch):
+        from src.services.mcp_server import server
+
+        class WorkflowTool:
+            def __init__(self, **kwargs):
+                self.name = kwargs["name"]
+
+        class Provider:
+            def __init__(self):
+                self.tools = {"old_tool": object()}
+
+            def remove_tool(self, name):
+                del self.tools[name]
+
+        class MCP:
+            def __init__(self):
+                self.local_provider = Provider()
+                self.add_count = 0
+
+            def add_tool(self, tool):
+                self.add_count += 1
+                self.local_provider.tools[tool.name] = tool
+                if self.add_count == 2:
+                    raise ValueError("invalid schema")
+
+        catalog = server._build_workflow_catalog(
+            [
+                _workflow_tool(
+                    "11111111-1111-1111-1111-111111111111",
+                    name="Alpha",
+                ),
+                _workflow_tool(
+                    "22222222-2222-2222-2222-222222222222",
+                    name="Zulu",
+                ),
+            ],
+            frozenset(),
+        )
+        monkeypatch.setattr(server, "_WorkflowTool", WorkflowTool)
         monkeypatch.setattr(
             server,
             "_WORKFLOW_ID_TO_TOOL_NAME",
-            {"stale-id": "stale_tool"},
+            {"old-id": "old_tool"},
+        )
+        mcp = MCP()
+
+        with pytest.raises(ValueError, match="invalid schema"):
+            server._replace_workflow_catalog(mcp, catalog)
+
+        assert mcp.local_provider.tools == {}
+
+    @pytest.mark.asyncio
+    async def test_refresh_retries_when_revision_moves_during_snapshot(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        revisions = AsyncMock(side_effect=[3, 4, 4, 4])
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 2)
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            revisions,
         )
 
-        async def register_workflow_tools(_mcp):
-            server._WORKFLOW_ID_TO_TOOL_NAME = {"current-id": "current_tool"}
-            return 1
+        assert await server.refresh_workflow_tools(target_revision=3) == 1
 
-        monkeypatch.setattr(server, "_register_workflow_tools", register_workflow_tools)
+        assert register.await_count == 2
+        assert server._WORKFLOW_CATALOG_REVISION == 4
 
-        assert await server.refresh_workflow_tools() == 1
-        remove_tool.assert_called_once_with("stale_tool")
+    @pytest.mark.asyncio
+    async def test_refresh_failure_does_not_advance_local_revision(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 2)
+        monkeypatch.setattr(
+            server,
+            "_register_workflow_tools",
+            AsyncMock(side_effect=RuntimeError("database unavailable")),
+        )
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            AsyncMock(return_value=3),
+        )
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await server.refresh_workflow_tools(target_revision=3)
+
+        assert server._WORKFLOW_CATALOG_REVISION == 2
+
+    @pytest.mark.asyncio
+    async def test_refresh_is_bounded_without_marking_a_racing_snapshot_current(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        revisions = AsyncMock(side_effect=[3, 4, 4, 5, 5, 6])
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 2)
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            revisions,
+        )
+
+        with pytest.raises(RuntimeError, match="kept changing"):
+            await server.refresh_workflow_tools(target_revision=3)
+
+        assert register.await_count == server._WORKFLOW_CATALOG_REFRESH_ATTEMPTS
+        assert server._WORKFLOW_CATALOG_REVISION == 2
+
+    @pytest.mark.asyncio
+    async def test_refresh_reconciles_when_shared_revision_moves_backwards(
+        self,
+        monkeypatch,
+    ):
+        """A restored or replaced Redis must not leave a replica stale."""
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 8)
+        monkeypatch.setattr(
+            server,
+            "_WORKFLOW_ID_TO_TOOL_NAME",
+            {"current-id": "current_tool"},
+        )
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            AsyncMock(return_value=1),
+        )
+
+        assert await server.refresh_workflow_tools(target_revision=1) == 1
+
+        register.assert_awaited_once_with(mcp)
+        assert server._WORKFLOW_CATALOG_REVISION == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_ignores_delayed_pubsub_revision(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 8)
+        monkeypatch.setattr(
+            server,
+            "_WORKFLOW_ID_TO_TOOL_NAME",
+            {"current-id": "current_tool"},
+        )
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            AsyncMock(return_value=8),
+        )
+
+        assert await server.refresh_workflow_tools(target_revision=3) == 1
+
+        register.assert_not_awaited()
+        assert server._WORKFLOW_CATALOG_REVISION == 8
 
 
 class TestMCPContext:

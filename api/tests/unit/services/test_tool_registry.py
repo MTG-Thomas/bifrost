@@ -15,12 +15,14 @@ import pytest
 
 
 from src.services.tool_registry import (
-    _normalize_tool_name,
-    ToolDefinition,
     RegisteredTool,
+    ToolDefinition,
     ToolRegistry,
+    _map_workflow_type_to_json_schema,
+    _normalize_tool_name,
     format_tools_for_openai,
     format_tools_for_anthropic,
+    workflow_parameters_to_json_schema,
 )
 
 
@@ -210,44 +212,40 @@ class TestToolDefinitionCategory:
 # ── ToolRegistry._map_type_to_json_schema ─────────────────────────────
 
 class TestMapTypeToJsonSchema:
-
-    def setup_method(self):
-        self.registry = _make_registry()
-
     def test_string(self):
-        assert self.registry._map_type_to_json_schema("string") == "string"
+        assert _map_workflow_type_to_json_schema("string") == "string"
 
     def test_str(self):
-        assert self.registry._map_type_to_json_schema("str") == "string"
+        assert _map_workflow_type_to_json_schema("str") == "string"
 
     def test_int(self):
-        assert self.registry._map_type_to_json_schema("int") == "integer"
+        assert _map_workflow_type_to_json_schema("int") == "integer"
 
     def test_integer(self):
-        assert self.registry._map_type_to_json_schema("integer") == "integer"
+        assert _map_workflow_type_to_json_schema("integer") == "integer"
 
     def test_float(self):
-        assert self.registry._map_type_to_json_schema("float") == "number"
+        assert _map_workflow_type_to_json_schema("float") == "number"
 
     def test_bool(self):
-        assert self.registry._map_type_to_json_schema("bool") == "boolean"
+        assert _map_workflow_type_to_json_schema("bool") == "boolean"
 
     def test_json(self):
-        assert self.registry._map_type_to_json_schema("json") == "object"
+        assert _map_workflow_type_to_json_schema("json") == "object"
 
     def test_dict(self):
-        assert self.registry._map_type_to_json_schema("dict") == "object"
+        assert _map_workflow_type_to_json_schema("dict") == "object"
 
     def test_list(self):
-        assert self.registry._map_type_to_json_schema("list") == "array"
+        assert _map_workflow_type_to_json_schema("list") == "array"
 
     def test_unknown_falls_back_to_string(self):
-        assert self.registry._map_type_to_json_schema("unknown_type") == "string"
+        assert _map_workflow_type_to_json_schema("unknown_type") == "string"
 
     def test_case_insensitive(self):
-        assert self.registry._map_type_to_json_schema("STRING") == "string"
-        assert self.registry._map_type_to_json_schema("Int") == "integer"
-        assert self.registry._map_type_to_json_schema("BOOL") == "boolean"
+        assert _map_workflow_type_to_json_schema("STRING") == "string"
+        assert _map_workflow_type_to_json_schema("Int") == "integer"
+        assert _map_workflow_type_to_json_schema("BOOL") == "boolean"
 
 
 # ── ToolRegistry._to_tool_definition ──────────────────────────────────
@@ -427,6 +425,84 @@ class TestToToolDefinition:
         result = self.registry._to_tool_definition(tool)
 
         assert result.parameters["properties"]["ticket_id"]["description"] == "ticket_id"
+
+    def test_complete_json_schema_is_preserved_without_flattening(self):
+        schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["open", "closed"],
+                            }
+                        },
+                        "required": ["status"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["filters"],
+            "additionalProperties": False,
+        }
+        tool = _make_registered_tool(parameters_schema=schema)
+
+        result = self.registry._to_tool_definition(tool)
+
+        assert result.parameters == schema
+        assert result.parameters is not schema
+        result.parameters["properties"]["filters"]["minItems"] = 2
+        assert schema["properties"]["filters"]["minItems"] == 1
+
+
+class TestWorkflowParametersToJsonSchema:
+    def test_list_schema_preserves_options_defaults_and_container_shapes(self):
+        result = workflow_parameters_to_json_schema(
+            [
+                {
+                    "name": "status",
+                    "type": "string",
+                    "description": "Ticket status",
+                    "options": [
+                        {"label": "Open", "value": "open"},
+                        {"label": "Closed", "value": "closed"},
+                    ],
+                    "default_value": "open",
+                    "required": True,
+                },
+                {"name": "tags", "type": "list"},
+                {"name": "metadata", "type": "dict"},
+            ]
+        )
+
+        assert result == {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Ticket status",
+                    "enum": ["open", "closed"],
+                    "default": "open",
+                },
+                "tags": {
+                    "type": "array",
+                    "description": "tags",
+                    "items": {"type": "string"},
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "metadata",
+                    "additionalProperties": True,
+                },
+            },
+            "additionalProperties": False,
+            "required": ["status"],
+        }
 
 
 # ── format_tools_for_openai ───────────────────────────────────────────
