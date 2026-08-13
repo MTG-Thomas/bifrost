@@ -859,6 +859,7 @@ Usage: files [OPTIONS] COMMAND [ARGS]...
     bifrost files list workflows/              # instance _repo files
     bifrost files write notes.txt --content hi --create-only
     bifrost files stat workflows/contact.py --json
+    bifrost files graph workflows/contact.py --direction both
     bifrost files read apps/desk/pages/App.tsx # instance _repo file
     bifrost files list --solution desk         # Solution runtime files
     bifrost files read notes/today.txt --solution desk
@@ -870,6 +871,7 @@ Options:
 Commands:
   delete    Delete a workspace file, optionally guarded by its current...
   exists    Check if a file exists.
+  graph     Trace a Workspace Python file's forward and reverse...
   list      List files in a directory (default: location root).
   policies  Manage file access policies.
   read      Read a workspace file and write its contents to stdout.
@@ -909,6 +911,26 @@ Options:
                    "_repo", "_tmp", and "_apps" are blocked.
   --json           Emit JSON instead of human-readable output.
   --help           Show this message and exit.
+```
+
+### `files graph`
+
+```
+Usage: files graph [OPTIONS] PATH
+
+  Trace a Workspace Python file's forward and reverse dependency graph.
+
+  Without a content option this inspects durable live bytes.  ``--content`` or
+  ``--from-file`` overlays proposed bytes without writing them.
+
+Options:
+  --content TEXT                  Proposed inline source.
+  --from-file FILE                Analyze proposed source from a local UTF-8
+                                  file.
+  --direction [forward|reverse|both]
+                                  [default: both]
+  --json                          Emit JSON instead of human-readable output.
+  --help                          Show this message and exit.
 ```
 
 ### `files list`
@@ -1091,6 +1113,9 @@ Options:
   --expected-version TEXT  Write only if the remote file still has this
                            version from `files stat`.
   --create-only            Create a new file; fail if the path already exists.
+  --check-impact           Preview the proposed Python dependency/reverse-
+                           dependency graph, then write only if the server
+                           recomputes the same blocker-free candidate.
   --json                   Emit JSON instead of human-readable output.
   --help                   Show this message and exit.
 ```
