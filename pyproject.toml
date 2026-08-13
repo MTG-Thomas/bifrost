@@ -49,7 +49,9 @@ dependencies = [
     # =========================================================================
     "pyjwt[crypto]>=2.13.0",  # JWT tokens; fixes improper-authentication advisory
     "pwdlib[bcrypt]",  # Modern password hashing
-    "cryptography>=50.0.0",  # Encryption utilities; fixes 2026 high-severity advisories
+    # webauthn -> pyOpenSSL 26.1 currently requires cryptography <48. Snyk's
+    # cryptography 50 advisories have time-bounded policy entries in .snyk.
+    "cryptography>=47.0.0",  # Encryption utilities
     "pyotp",  # TOTP/HOTP for MFA
     "webauthn>=2.7.1",  # WebAuthn/Passkeys support
     "altcha>=2.1.0",  # Self-hosted proof-of-work protection for public forms

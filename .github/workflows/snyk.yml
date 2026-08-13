@@ -16,6 +16,7 @@ on:
       - "api/Dockerfile"
       - "client/Dockerfile"
       - "k8s/**"
+      - ".snyk"
       - ".github/workflows/snyk.yml"
   schedule:
     - cron: "0 11 * * 1"
@@ -87,7 +88,7 @@ jobs:
 
       - name: Test Python dependencies
         if: env.SNYK_TOKEN != ''
-        run: npx --yes snyk@1.1304.3 test --file="${{ steps.python-requirements.outputs.requirements_file }}" --package-manager=pip --severity-threshold=high --skip-unresolved=true --command=./.venv/bin/python ${SNYK_ORG:+--org="$SNYK_ORG"}
+        run: npx --yes snyk@1.1304.3 test --file="${{ steps.python-requirements.outputs.requirements_file }}" --package-manager=pip --policy-path=.snyk --severity-threshold=high --skip-unresolved=true --command=./.venv/bin/python ${SNYK_ORG:+--org="$SNYK_ORG"}
 
       - name: Test client dependencies
         if: env.SNYK_TOKEN != ''
@@ -96,7 +97,7 @@ jobs:
       - name: Monitor default branch snapshots
         if: always() && env.SNYK_TOKEN != '' && github.event_name != 'pull_request'
         run: |
-          npx --yes snyk@1.1304.3 monitor --file="${{ steps.python-requirements.outputs.requirements_file }}" --package-manager=pip --project-name=bifrost-api --skip-unresolved=true --command=./.venv/bin/python ${SNYK_ORG:+--org="$SNYK_ORG"}
+          npx --yes snyk@1.1304.3 monitor --file="${{ steps.python-requirements.outputs.requirements_file }}" --package-manager=pip --policy-path=.snyk --project-name=bifrost-api --skip-unresolved=true --command=./.venv/bin/python ${SNYK_ORG:+--org="$SNYK_ORG"}
           npx --yes snyk@1.1304.3 monitor --file=client/package-lock.json --package-manager=npm --project-name=bifrost-client ${SNYK_ORG:+--org="$SNYK_ORG"}
 
   iac:

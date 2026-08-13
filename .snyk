@@ -1,0 +1,30 @@
+version: v1.25.0
+ignore:
+  SNYK-PYTHON-CRYPTOGRAPHY-17344551:
+    - "*":
+        reason: >-
+          webauthn 2.7.1 requires pyOpenSSL 26.1, which requires cryptography
+          below 48; no compatible release currently permits Snyk's fixed 50.0.0.
+        expires: 2026-09-13T00:00:00.000Z
+        created: 2026-08-13T00:00:00.000Z
+  SNYK-PYTHON-CRYPTOGRAPHY-18516620:
+    - "*":
+        reason: >-
+          webauthn 2.7.1 requires pyOpenSSL 26.1, which requires cryptography
+          below 48; no compatible release currently permits Snyk's fixed 50.0.0.
+        expires: 2026-09-13T00:00:00.000Z
+        created: 2026-08-13T00:00:00.000Z
+  SNYK-PYTHON-CRYPTOGRAPHY-18516621:
+    - "*":
+        reason: >-
+          webauthn 2.7.1 requires pyOpenSSL 26.1, which requires cryptography
+          below 48; no compatible release currently permits Snyk's fixed 50.0.0.
+        expires: 2026-09-13T00:00:00.000Z
+        created: 2026-08-13T00:00:00.000Z
+  SNYK-PYTHON-CRYPTOGRAPHY-18516622:
+    - "*":
+        reason: >-
+          webauthn 2.7.1 requires pyOpenSSL 26.1, which requires cryptography
+          below 48; no compatible release currently permits Snyk's fixed 50.0.0.
+        expires: 2026-09-13T00:00:00.000Z
+        created: 2026-08-13T00:00:00.000Z
