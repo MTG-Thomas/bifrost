@@ -15,6 +15,10 @@ from src.services.mcp_server.gateway import (
     MCPAgentGatewayService,
     ResolvedGatewayTool,
 )
+from src.services.operation_receipts import (
+    OperationReceiptClaim,
+    OperationReceiptDisposition,
+)
 from src.services.mcp_server.server import MCPContext
 
 
@@ -286,3 +290,249 @@ def test_operation_identity_is_stable_and_scoped_to_caller_agent_and_tool():
     assert initial == retry
     assert initial != other_operation
     assert initial != other_caller
+
+
+def _receipt_claim(
+    disposition: OperationReceiptDisposition,
+    *,
+    response: dict | None = None,
+    error: dict | None = None,
+) -> OperationReceiptClaim:
+    return OperationReceiptClaim(
+        receipt_id=uuid4(),
+        disposition=disposition,
+        owner_token=(
+            uuid4() if disposition == OperationReceiptDisposition.OWNER else None
+        ),
+        response=response,
+        error=error,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "task_requested", "dispatch_result"),
+    [
+        ("workflow", False, {"execution_id": "execution-1", "status": "Success"}),
+        ("workflow", True, {"execution_id": "execution-2", "status": "Pending"}),
+        ("delegation", False, {"status": "success", "answer": 42}),
+        ("delegation", True, {"run_id": "run-1", "status": "queued"}),
+        ("system", False, {"structured_content": {"created": True}}),
+        ("knowledge", False, {"matches": []}),
+        ("external_mcp", False, {"structured_content": {"created": True}}),
+    ],
+)
+async def test_operation_receipt_replays_every_gateway_source_once(
+    source,
+    task_requested: bool,
+    dispatch_result: dict,
+):
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    base_tool = _resolved_tool()
+    tool = ResolvedGatewayTool(
+        tool_ref=base_tool.tool_ref,
+        definition=base_tool.definition,
+        source=source,
+        source_identity=f"{source}:{base_tool.source_id}",
+        source_id=base_tool.source_id,
+        remote_tool_name="remote_lookup" if source == "external_mcp" else None,
+    )
+    snapshot = AgentToolSnapshot(agent=agent, tools=[tool])
+    owner = _receipt_claim(OperationReceiptDisposition.OWNER)
+    claim = AsyncMock(return_value=owner)
+    complete = AsyncMock()
+    dispatch = AsyncMock(return_value=dispatch_result)
+
+    with (
+        patch.object(
+            service,
+            "get_agent_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ),
+        patch.object(service, "_dispatch", new=dispatch),
+        patch(
+            "src.services.mcp_server.gateway.claim_operation_receipt",
+            new=claim,
+        ),
+        patch(
+            "src.services.mcp_server.gateway.complete_operation_receipt_success",
+            new=complete,
+        ),
+    ):
+        first = await service.execute_agent_tool(
+            str(agent.id),
+            tool.tool_ref,
+            {"ticket_id": 42},
+            operation_id="stable-operation",
+            task_requested=task_requested,
+        )
+        claim.return_value = _receipt_claim(
+            OperationReceiptDisposition.SUCCEEDED,
+            response=first,
+        )
+        second = await service.execute_agent_tool(
+            str(agent.id),
+            tool.tool_ref,
+            {"ticket_id": 42},
+            operation_id="stable-operation",
+            task_requested=task_requested,
+        )
+
+    assert second == first
+    dispatch.assert_awaited_once()
+    complete.assert_awaited_once()
+    assert claim.await_count == 2
+    assert (
+        claim.await_args_list[0].kwargs["request_fingerprint"]
+        == claim.await_args_list[1].kwargs["request_fingerprint"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_operation_receipt_replays_structured_gateway_error() -> None:
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    tool = _resolved_tool()
+    snapshot = AgentToolSnapshot(agent=agent, tools=[tool])
+    owner = _receipt_claim(OperationReceiptDisposition.OWNER)
+    claim = AsyncMock(return_value=owner)
+    complete_error = AsyncMock()
+
+    with (
+        patch.object(
+            service,
+            "get_agent_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ),
+        patch.object(
+            service,
+            "_dispatch",
+            new=AsyncMock(
+                side_effect=GatewayError(
+                    "NEEDS_REAUTH",
+                    "Reconnect the integration.",
+                    retryable=True,
+                    details={"reauth_url": "/connect"},
+                )
+            ),
+        ) as dispatch,
+        patch(
+            "src.services.mcp_server.gateway.claim_operation_receipt",
+            new=claim,
+        ),
+        patch(
+            "src.services.mcp_server.gateway.complete_operation_receipt_error",
+            new=complete_error,
+        ),
+    ):
+        with pytest.raises(GatewayError) as first_error:
+            await service.execute_agent_tool(
+                str(agent.id),
+                tool.tool_ref,
+                {"ticket_id": 42},
+                operation_id="failed-operation",
+            )
+        stored_error = complete_error.await_args.args[2]
+        claim.return_value = _receipt_claim(
+            OperationReceiptDisposition.FAILED,
+            error=stored_error,
+        )
+        with pytest.raises(GatewayError) as replayed_error:
+            await service.execute_agent_tool(
+                str(agent.id),
+                tool.tool_ref,
+                {"ticket_id": 42},
+                operation_id="failed-operation",
+            )
+
+    assert replayed_error.value.as_dict() == first_error.value.as_dict()
+    dispatch.assert_awaited_once()
+    complete_error.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("disposition", "expected_code"),
+    [
+        (OperationReceiptDisposition.MISMATCH, "OPERATION_ID_REUSED"),
+        (
+            OperationReceiptDisposition.STARTED,
+            "OPERATION_IN_PROGRESS_OR_UNKNOWN",
+        ),
+    ],
+)
+async def test_non_owner_receipts_reject_without_dispatch(
+    disposition: OperationReceiptDisposition,
+    expected_code: str,
+) -> None:
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    tool = _resolved_tool()
+    snapshot = AgentToolSnapshot(agent=agent, tools=[tool])
+    claim = _receipt_claim(disposition)
+
+    with (
+        patch.object(
+            service,
+            "get_agent_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ),
+        patch.object(service, "_dispatch", new_callable=AsyncMock) as dispatch,
+        patch(
+            "src.services.mcp_server.gateway.claim_operation_receipt",
+            new=AsyncMock(return_value=claim),
+        ),
+        patch(
+            "src.services.mcp_server.gateway.wait_for_operation_receipt",
+            new=AsyncMock(return_value=claim),
+        ),
+    ):
+        with pytest.raises(GatewayError) as exc_info:
+            await service.execute_agent_tool(
+                str(agent.id),
+                tool.tool_ref,
+                {"ticket_id": 42},
+                operation_id="contested-operation",
+            )
+
+    assert exc_info.value.code == expected_code
+    dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_system_rest_bridge_receives_scoped_operation_identity() -> None:
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    base_tool = _resolved_tool(name="list_workflows")
+    tool = ResolvedGatewayTool(
+        tool_ref=base_tool.tool_ref,
+        definition=base_tool.definition,
+        source="system",
+        source_identity="system:list_workflows",
+    )
+    seen_context = None
+
+    async def system_tool(context, **arguments):
+        nonlocal seen_context
+        seen_context = context
+        return MagicMock(content=[], structured_content={"ok": True})
+
+    with patch(
+        "src.services.mcp_server.server.get_system_tool_function",
+        return_value=system_tool,
+    ):
+        await service._dispatch_system_tool(
+            agent,
+            tool,
+            {"ticket_id": 42},
+            operation_id="raw-operation-id",
+        )
+
+    assert seen_context is not None
+    assert seen_context.operation_id == service._operation_execution_id(
+        agent,
+        tool,
+        "raw-operation-id",
+    )
+    assert seen_context.operation_id != "raw-operation-id"

@@ -100,6 +100,8 @@ def _raise_gateway_http_error(exc: Exception) -> NoReturn:
         "TOOL_SCHEMA_INVALID": status.HTTP_500_INTERNAL_SERVER_ERROR,
         "TOOL_EXECUTION_FAILED": status.HTTP_502_BAD_GATEWAY,
         "TASKS_UNSUPPORTED": status.HTTP_409_CONFLICT,
+        "OPERATION_ID_REUSED": status.HTTP_409_CONFLICT,
+        "OPERATION_IN_PROGRESS_OR_UNKNOWN": status.HTTP_409_CONFLICT,
     }.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR)
     raise HTTPException(status_code=status_code, detail=exc.as_dict()) from exc
 

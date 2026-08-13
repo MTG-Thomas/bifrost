@@ -273,3 +273,40 @@ async def test_invoke_auth_retry_service_path_wraps_retry_failure(
 
     with pytest.raises(ToolDispatchError, match="failed after retry"):
         await dispatch.invoke(connection, "lookup", {}, None, db)
+
+
+@pytest.mark.asyncio
+async def test_invoke_can_fail_closed_without_repeating_remote_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = SimpleNamespace(id=uuid4())
+    caller_user_id = uuid4()
+    db = SimpleNamespace()
+    remote_calls = 0
+
+    async def enabled_tool(connection_id, tool_name, db_arg):
+        return SimpleNamespace(enabled=True)
+
+    async def resolve_token(connection_arg, user_id_arg, db_arg):
+        return "token", ResolutionPath.USER_TOKEN
+
+    async def call_remote(connection_arg, token, tool_name, arguments):
+        nonlocal remote_calls
+        remote_calls += 1
+        raise RuntimeError("401 unauthorized")
+
+    monkeypatch.setattr(dispatch, "_load_tool", enabled_tool)
+    monkeypatch.setattr(dispatch, "resolve_token", resolve_token)
+    monkeypatch.setattr(dispatch, "_call_remote", call_remote)
+
+    with pytest.raises(NeedsReauthError):
+        await dispatch.invoke(
+            connection,
+            "lookup",
+            {},
+            caller_user_id,
+            db,
+            retry_auth_rejection=False,
+        )
+
+    assert remote_calls == 1

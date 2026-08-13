@@ -33,6 +33,15 @@ from src.services.mcp_client.errors import (
     ToolDispatchError,
 )
 from src.services.mcp_server.config_service import MCPConfig, MCPConfigService
+from src.services.operation_receipts import (
+    OperationReceiptClaim,
+    OperationReceiptDisposition,
+    canonical_request_fingerprint,
+    claim_operation_receipt,
+    complete_operation_receipt_error,
+    complete_operation_receipt_success,
+    wait_for_operation_receipt,
+)
 
 if TYPE_CHECKING:
     from src.services.mcp_server.server import MCPContext
@@ -41,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_TOOL_NAMESPACE = UUID("bcf3f4d7-b95e-53cc-9b7f-35e7081d0d84")
 GATEWAY_OPERATION_NAMESPACE = UUID("fdb6cc27-6fa9-53a3-a3e8-88d356822ba1")
+GATEWAY_OPERATION_RECEIPT_NAMESPACE = "mcp.gateway.execute.v1"
 MAX_AGENT_RESULTS = 20
 MCP_TASK_PLATFORM_JOB_TOOLS = frozenset({"publish_app"})
 
@@ -280,15 +290,123 @@ class MCPAgentGatewayService:
         operation_id: str,
         task_requested: bool = False,
     ) -> dict[str, Any]:
-        """Re-resolve, validate, and execute an agent-bound tool."""
+        """Re-resolve and execute one permanently idempotent tool operation."""
         snapshot = await self.get_agent_snapshot(agent_id)
         tool = self.find_tool(snapshot, tool_ref)
-        return await self.execute_tool(
-            snapshot,
+        scope_key = self._operation_execution_id(
+            snapshot.agent,
             tool,
-            arguments,
+            operation_id,
+        )
+        request_fingerprint = canonical_request_fingerprint(
+            {
+                "version": 1,
+                "agent_id": str(snapshot.agent.id),
+                "tool_ref": tool.tool_ref,
+                "arguments": arguments,
+                "task_requested": task_requested,
+            }
+        )
+        claim = await claim_operation_receipt(
+            namespace=GATEWAY_OPERATION_RECEIPT_NAMESPACE,
+            scope_key=scope_key,
             operation_id=operation_id,
-            task_requested=task_requested,
+            scope={
+                "caller_user_id": str(self.context.user_id),
+                "organization_id": str(self.context.org_id or "GLOBAL"),
+                "agent_id": str(snapshot.agent.id),
+                "tool_ref": tool.tool_ref,
+                "source": tool.source,
+            },
+            request_fingerprint=request_fingerprint,
+        )
+        if claim.disposition == OperationReceiptDisposition.STARTED:
+            claim = await wait_for_operation_receipt(
+                claim.receipt_id,
+                request_fingerprint=request_fingerprint,
+            )
+        replay = self._replay_operation_receipt(
+            claim,
+            snapshot=snapshot,
+            tool=tool,
+        )
+        if replay is not None:
+            return replay
+
+        if claim.owner_token is None:
+            raise RuntimeError("Operation receipt owner token is missing")
+        try:
+            result = await self.execute_tool(
+                snapshot,
+                tool,
+                arguments,
+                operation_id=operation_id,
+                task_requested=task_requested,
+            )
+        except GatewayError as exc:
+            await complete_operation_receipt_error(
+                claim.receipt_id,
+                claim.owner_token,
+                {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "retryable": exc.retryable,
+                    "details": exc.details,
+                },
+            )
+            raise
+        await complete_operation_receipt_success(
+            claim.receipt_id,
+            claim.owner_token,
+            result,
+        )
+        return result
+
+    @staticmethod
+    def _replay_operation_receipt(
+        claim: OperationReceiptClaim,
+        *,
+        snapshot: AgentToolSnapshot,
+        tool: ResolvedGatewayTool,
+    ) -> dict[str, Any] | None:
+        """Return or raise a non-owner receipt disposition."""
+        details = {
+            "agent_id": str(snapshot.agent.id),
+            "tool_ref": tool.tool_ref,
+            "tool_name": tool.definition.name,
+            "source": tool.source,
+        }
+        if claim.disposition == OperationReceiptDisposition.OWNER:
+            return None
+        if claim.disposition == OperationReceiptDisposition.SUCCEEDED:
+            if claim.response is None:
+                raise RuntimeError("Successful operation receipt has no response")
+            return claim.response
+        if claim.disposition == OperationReceiptDisposition.FAILED:
+            if claim.error is None:
+                raise RuntimeError("Failed operation receipt has no error")
+            stored_details = claim.error.get("details")
+            raise GatewayError(
+                str(claim.error.get("code") or "TOOL_EXECUTION_FAILED"),
+                str(claim.error.get("message") or "Tool execution failed."),
+                retryable=bool(claim.error.get("retryable", False)),
+                details=stored_details if isinstance(stored_details, dict) else details,
+            )
+        if claim.disposition == OperationReceiptDisposition.MISMATCH:
+            raise GatewayError(
+                "OPERATION_ID_REUSED",
+                "This operation_id was already used with different arguments or mode.",
+                details=details,
+            )
+        raise GatewayError(
+            "OPERATION_IN_PROGRESS_OR_UNKNOWN",
+            (
+                "This operation is still running or its outcome is unknown. "
+                "It will not be dispatched again; retry this operation_id to "
+                "read a terminal result if one becomes available."
+            ),
+            retryable=True,
+            details=details,
         )
 
     def _resolve_gateway_tools(
@@ -654,7 +772,11 @@ class MCPAgentGatewayService:
             is_external=self.context.is_external,
             user_email=self.context.user_email,
             user_name=self.context.user_name,
-            operation_id=operation_id,
+            operation_id=self._operation_execution_id(
+                agent,
+                tool,
+                operation_id,
+            ),
             accessible_namespaces=list(agent.knowledge_sources or []),
         )
         result = await func(context, **arguments)
@@ -877,6 +999,7 @@ class MCPAgentGatewayService:
                     arguments=arguments,
                     caller_user_id=UUID(str(self.context.user_id)),
                     db=db,
+                    retry_auth_rejection=False,
                 )
         except NeedsReauthError as exc:
             raise GatewayError(
