@@ -349,6 +349,29 @@ class Settings(BaseSettings):
         description="Public URL for the Bifrost platform (used for MCP OAuth, workflow URLs, etc.)",
     )
 
+    @computed_field
+    @property
+    def mcp_allowed_origins(self) -> list[str]:
+        """Explicit browser origins permitted to call the MCP transport."""
+        from urllib.parse import urlsplit
+
+        origins = {
+            origin for origin in self.cors_origins_list if origin != "*"
+        }
+        public = urlsplit(self.public_url)
+        if public.scheme and public.netloc:
+            origins.add(f"{public.scheme}://{public.netloc}")
+        return sorted(origins)
+
+    @computed_field
+    @property
+    def mcp_allowed_hosts(self) -> list[str]:
+        """Explicit Host header values permitted on the MCP transport."""
+        from urllib.parse import urlsplit
+
+        public = urlsplit(self.public_url)
+        return [public.netloc] if public.netloc else []
+
     # ==========================================================================
     # GitHub App (verified platform-authored workspace history)
     # ==========================================================================

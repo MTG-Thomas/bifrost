@@ -23,7 +23,7 @@ class TestMCPOAuthCallbackErrors:
         assert "mcp_oauth_error" in resp.text
         assert "text/html" in resp.headers.get("content-type", "")
 
-    def test_vendor_error_short_circuits(self, e2e_client):
+    def test_vendor_error_still_requires_valid_state(self, e2e_client):
         resp = e2e_client.get(
             "/api/mcp/oauth/callback",
             params={
@@ -34,7 +34,7 @@ class TestMCPOAuthCallbackErrors:
             },
         )
         assert resp.status_code == 400
-        assert "OAuth provider rejected the connection request." in resp.text
+        assert "invalid state" in resp.text
         assert "access_denied" not in resp.text
         assert "onerror=alert" not in resp.text
 
