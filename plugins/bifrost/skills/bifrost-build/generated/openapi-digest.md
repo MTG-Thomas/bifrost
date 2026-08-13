@@ -519,6 +519,8 @@
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
 | POST | `/api/workspace-repo-changesets` |
+| POST | `/api/workspace-repo-changesets/git-convergence/apply` |
+| POST | `/api/workspace-repo-changesets/git-convergence/preview` |
 | GET | `/api/workspace-repo-changesets/recoverable-git-closures` |
 | GET | `/api/workspace-repo-changesets/state` |
 | GET | `/api/workspace-repo-changesets/{changeset_id}` |
