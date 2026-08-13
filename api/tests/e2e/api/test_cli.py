@@ -628,6 +628,7 @@ class TestCLIDownload:
         assert "bifrost/workflows.py" in names
         assert "bifrost/executions.py" in names
         assert "bifrost/integrations.py" in names
+        assert "_bifrost_workspace_effects.py" in names
         # Runtime DATA files (not just .py) must ship too. The lucide snapshot is
         # what `bifrost migrate-imports` reads to classify icons; without it the
         # installed CLI silently can't migrate v1 icon imports to lucide-react.
