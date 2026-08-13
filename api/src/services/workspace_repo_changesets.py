@@ -71,7 +71,6 @@ class _GitConvergencePlan:
     response: WorkspaceRepoGitConvergenceResponse
     files: tuple[PlatformCommitFile, ...]
     rows: list[WorkspaceRepoChangeset]
-    candidate_commit_sha: str | None = None
 
 
 class ChangesetConflict(Exception):
@@ -715,7 +714,6 @@ class WorkspaceRepoChangesetService:
             "history_parent_sha": plan.response.history_head_sha,
             "commit_message": request.commit_message,
             "operator": effective_operator,
-            "existing_commit_sha": plan.candidate_commit_sha,
         }
         primary_evidence_id = sorted((row.id for row in plan.rows), key=str)[0]
         if not all(
@@ -752,10 +750,6 @@ class WorkspaceRepoChangesetService:
             plan_id=plan.response.candidate_id,
             protected_main_source_sha=plan.response.protected_main_source_sha,
             expected_head_sha=plan.response.history_head_sha,
-            enforce_expected_head_sha=(
-                plan.candidate_commit_sha is not None and not pending_retry
-            ),
-            candidate_commit_sha=plan.candidate_commit_sha,
             convergence_candidate_id=plan.response.candidate_id,
             reconciled_changeset_ids=tuple(
                 sorted((row.id for row in plan.rows), key=str)
@@ -923,11 +917,6 @@ class WorkspaceRepoChangesetService:
             response=response,
             files=tuple(files),
             rows=rows,
-            candidate_commit_sha=(
-                str(evidence[0].get("existing_commit_sha"))
-                if evidence[0].get("existing_commit_sha")
-                else None
-            ),
         )
 
     async def _build_git_convergence_plan(
@@ -1024,7 +1013,6 @@ class WorkspaceRepoChangesetService:
 
         path_results: list[WorkspaceRepoGitConvergencePath] = []
         files: list[PlatformCommitFile] = []
-        verification_files: list[PlatformCommitFile] = []
         source_by_path: dict[str, UUID | None] = {}
         desired_by_path: dict[str, str] = {}
         for path in paths:
@@ -1095,15 +1083,6 @@ class WorkspaceRepoChangesetService:
                         expected_sha256=desired_hash,
                     )
                 )
-            if raw is not None:
-                verification_files.append(
-                    PlatformCommitFile(
-                        path=path,
-                        content_base64=base64.b64encode(raw).decode(),
-                        expected_before_sha256=history_hash,
-                        expected_sha256=desired_hash,
-                    )
-                )
 
         changeset_results: list[WorkspaceRepoGitConvergenceChangeset] = []
         for row in sorted(rows, key=lambda value: str(value.id)):
@@ -1132,53 +1111,14 @@ class WorkspaceRepoChangesetService:
                 )
             )
 
-        candidate_commit_sha: str | None = None
         if not files:
-            candidate_shas = {
-                str(
-                    row.commit_sha
-                    or (
-                        row.failure_detail.get("commit_sha")
-                        if isinstance(row.failure_detail, dict)
-                        else ""
-                    )
-                    or ""
-                ).lower()
-                for row in rows
-            }
-            if (
-                "" in candidate_shas
-                or len(candidate_shas) != 1
-                or any(
-                    len(value) != 40
-                    or any(character not in "0123456789abcdef" for character in value)
-                    for value in candidate_shas
-                )
-            ):
-                diagnostics.append(
-                    {
-                        "severity": "error",
-                        "source": "existing_history",
-                        "message": (
-                            "already-present history reconciliation requires one common "
-                            "recorded commit SHA"
-                        ),
-                    }
-                )
-            else:
-                candidate_commit_sha = next(iter(candidate_shas))
-                files = verification_files
-                diagnostics.append(
-                    {
-                        "severity": "info",
-                        "source": "existing_history",
-                        "message": (
-                            "selected paths are already present in production-live history; "
-                            "apply will verify the recorded signed commit without writing"
-                        ),
-                        "commit_sha": candidate_commit_sha,
-                    }
-                )
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "source": "no_op",
+                    "message": "selected paths are already present in production-live history",
+                }
+            )
         payload = {
             "schema": GIT_CONVERGENCE_SCHEMA,
             "changeset_ids": [str(value) for value in sorted(request.changeset_ids, key=str)],
@@ -1196,7 +1136,6 @@ class WorkspaceRepoChangesetService:
                 "tree_sha": history.tree_sha,
                 "file_sha256": history.file_sha256,
             },
-            "existing_commit_sha": candidate_commit_sha,
             "desired_file_sha256": desired_by_path,
             "source_changeset_by_path": {
                 path: str(value) if value is not None else None
@@ -1227,7 +1166,6 @@ class WorkspaceRepoChangesetService:
             response=response,
             files=tuple(files),
             rows=rows,
-            candidate_commit_sha=candidate_commit_sha,
         )
 
     async def _complete_git_closure(
