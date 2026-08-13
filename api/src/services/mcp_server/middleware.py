@@ -11,7 +11,7 @@ the middleware preserves that agent's native tool surface.
 import logging
 
 from fastmcp.exceptions import ToolError
-from fastmcp.server.dependencies import get_access_token
+from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 from src.services.mcp_server.agent_scope import (
@@ -41,6 +41,29 @@ class ToolFilterMiddleware(Middleware):
     - on_list_tools: Returns only the gateway tools
     - on_call_tool: Rejects direct calls to hidden native tools
     """
+
+    async def on_request(self, context: MiddlewareContext, call_next):
+        """Log the negotiated protocol era without recording credentials."""
+        try:
+            protocol_version = get_http_request().headers.get(
+                "mcp-protocol-version"
+            )
+        except RuntimeError:
+            protocol_version = None
+        negotiation_path = (
+            "modern_direct"
+            if protocol_version == "2026-07-28"
+            else "legacy_handshake_era"
+        )
+        agent_id = _get_agent_id_from_scope()
+        logger.info(
+            "MCP request negotiated: method=%s protocol_version=%s path=%s scope=%s",
+            context.method,
+            protocol_version,
+            negotiation_path,
+            "agent" if agent_id is not None else "gateway",
+        )
+        return await call_next(context)
 
     async def on_list_tools(
         self, context: MiddlewareContext, call_next
