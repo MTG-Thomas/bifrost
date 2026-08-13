@@ -134,8 +134,6 @@ def test_test_sh_advertises_dockerized_api_quality_lane():
 
 def test_api_quality_script_runs_pyright_without_ci_venv_config():
     script = _find_repo_file("api/scripts/quality_api.sh").read_text()
-    assert 'config.pop("venvPath", None)' in script
-    assert 'config.pop("venv", None)' in script
-    assert 'Path("pyrightconfig.docker.json")' in script
+    assert "python /app/scripts/docker_pyright_config.py" in script
     assert "pyright --project pyrightconfig.docker.json --pythonpath /usr/local/bin/python" in script
     assert "ruff check ." in script
