@@ -23,6 +23,14 @@ import pytest
     [
         ("requirements.lock", "pytest==1\n", "pytest==2\n", True, False, False),
         (
+            "api/_bifrost_workspace_effects.py",
+            'WORKFLOW_EFFECT_KINDS = frozenset({"bifrost.read"})\n',
+            'WORKFLOW_EFFECT_KINDS = frozenset({"bifrost.read", "bifrost.write"})\n',
+            True,
+            False,
+            False,
+        ),
+        (
             "api/src/services/sdk_package/package-lock.json",
             '{"lockfileVersion": 3, "packages": {}}\n',
             '{"lockfileVersion": 3, "packages": {"node_modules/esbuild": {}}}\n',
