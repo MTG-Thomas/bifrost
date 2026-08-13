@@ -109,6 +109,8 @@ async def test_discovery_merges_both_documents(
     assert result["audience"] == "https://vendor.example.com/mcp"
     # Resource doc wins on the conflicting key
     assert result["scopes_supported"] == ["read.specific"]
+    assert result["authorization_server_metadata"] == authz_body
+    assert result["protected_resource_metadata"] == resource_body
 
 
 @pytest.mark.asyncio
@@ -246,7 +248,11 @@ async def test_discovery_skips_non_object_json(
     ):
         result = await discover_oauth_metadata(server_url)
 
-    assert result == {"audience": "x"}
+    assert result == {
+        "authorization_server_metadata": None,
+        "protected_resource_metadata": {"audience": "x"},
+        "audience": "x",
+    }
 
 
 @pytest.mark.asyncio
@@ -269,7 +275,11 @@ async def test_discovery_handles_5xx_as_unavailable(
     ):
         result = await discover_oauth_metadata(server_url)
 
-    assert result == {"audience": "x"}
+    assert result == {
+        "authorization_server_metadata": None,
+        "protected_resource_metadata": {"audience": "x"},
+        "audience": "x",
+    }
     # Verify the timeout was set as expected (5s per spec)
     _, kwargs = mock_client_class.call_args
     assert "timeout" in kwargs

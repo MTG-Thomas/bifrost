@@ -106,6 +106,8 @@ class OAuthToken(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     scopes: Mapped[list] = mapped_column(JSONB, default=[])
+    oauth_issuer: Mapped[str | None] = mapped_column(String(2048), default=None)
+    oauth_resource: Mapped[str | None] = mapped_column(String(2048), default=None)
     status: Mapped[str] = mapped_column(String(50), default="not_connected", server_default=text("'not_connected'"))
     status_message: Mapped[str | None] = mapped_column(Text, default=None)
     last_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

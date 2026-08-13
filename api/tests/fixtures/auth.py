@@ -28,6 +28,7 @@ def create_test_jwt(
     is_superuser: bool = False,
     organization_id: str | None = None,
     is_provider_org: bool = False,
+    mcp_resource: str | None = None,
 ) -> str:
     """
     Create test JWT token for authentication.
@@ -72,9 +73,15 @@ def create_test_jwt(
         "exp": now + timedelta(hours=2),
         "iat": now,
         "iss": TEST_JWT_ISSUER,
-        "aud": TEST_JWT_AUDIENCE,
+        "aud": mcp_resource or TEST_JWT_AUDIENCE,
         "type": "access",
     }
+    if mcp_resource is not None:
+        payload.update(
+            mcp=True,
+            scope="mcp:access",
+            resource=mcp_resource,
+        )
     return jwt.encode(payload, TEST_SECRET_KEY, algorithm=TEST_ALGORITHM)
 
 

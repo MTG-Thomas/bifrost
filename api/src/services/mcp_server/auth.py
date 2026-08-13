@@ -38,9 +38,12 @@ logger = logging.getLogger(__name__)
 # TTLs for MCP OAuth flow
 TTL_MCP_AUTH_CODE = 300  # 5 minutes for authorization code
 TTL_MCP_CLIENT = 86400 * 30  # 30 days for registered clients
+MCP_SCOPE = "mcp:access"
 
 
-async def _mcp_access_token_data(db: Any, user: Any) -> dict[str, Any]:
+async def _mcp_access_token_data(
+    db: Any, user: Any, *, resource: str
+) -> dict[str, Any]:
     return {
         "sub": str(user.id),
         "email": user.email,
@@ -51,7 +54,8 @@ async def _mcp_access_token_data(db: Any, user: Any) -> dict[str, Any]:
         "org_id": str(user.organization_id) if user.organization_id else None,
         "type": "access",
         "mcp": True,
-        "scope": "mcp:access",
+        "scope": MCP_SCOPE,
+        "resource": resource,
     }
 
 
@@ -104,6 +108,7 @@ class BifrostAuthProvider(AuthProvider):
         # routes below concatenate paths onto it directly.
         self.base_url = normalized_base_url
         self.issuer = self.base_url
+        self.resource = f"{self.base_url}/mcp"
 
     def _get_resource_url(self, path: str | None = None) -> str | None:
         """Get the actual resource URL being protected.
@@ -192,12 +197,14 @@ class BifrostAuthProvider(AuthProvider):
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
             "scopes_supported": ["mcp:access"],
+            "authorization_response_iss_parameter_supported": True,
+            "resource_indicators_supported": True,
         })
 
     async def _protected_resource_metadata(self, request: Request) -> JSONResponse:
         """RFC 9728: OAuth Protected Resource Metadata."""
         return JSONResponse({
-            "resource": f"{self.base_url}/mcp",
+            "resource": self.resource,
             "authorization_servers": [self.issuer],
             "scopes_supported": ["mcp:access"],
             "bearer_methods_supported": ["header"],
@@ -226,6 +233,7 @@ class BifrostAuthProvider(AuthProvider):
         code_challenge = request.query_params.get("code_challenge")
         code_challenge_method = request.query_params.get("code_challenge_method")
         scope = request.query_params.get("scope", "mcp:access")
+        resource = request.query_params.get("resource")
 
         # Validate required parameters
         if response_type != "code":
@@ -244,6 +252,24 @@ class BifrostAuthProvider(AuthProvider):
             return JSONResponse(
                 {"error": "invalid_request", "error_description": "Only S256 code_challenge_method is supported"},
                 status_code=400
+            )
+
+        if resource != self.resource:
+            return JSONResponse(
+                {
+                    "error": "invalid_target",
+                    "error_description": "resource must identify the MCP protected resource",
+                },
+                status_code=400,
+            )
+
+        if MCP_SCOPE not in scope.split():
+            return JSONResponse(
+                {
+                    "error": "invalid_scope",
+                    "error_description": "mcp:access scope is required",
+                },
+                status_code=400,
             )
 
         # Store OAuth state in Redis for callback
@@ -268,6 +294,7 @@ class BifrostAuthProvider(AuthProvider):
             "state": state,
             "code_challenge": code_challenge,
             "scope": scope,
+            "resource": resource,
         }
 
         # Generate internal state token to link login to OAuth flow
@@ -358,6 +385,7 @@ class BifrostAuthProvider(AuthProvider):
             "redirect_uri": oauth_data["redirect_uri"],
             "client_id": oauth_data["client_id"],
             "scope": oauth_data["scope"],
+            "resource": oauth_data["resource"],
         }
 
         await r.setex(
@@ -369,7 +397,12 @@ class BifrostAuthProvider(AuthProvider):
         # Redirect to client with authorization code
         redirect_uri = oauth_data["redirect_uri"]
         state = oauth_data["state"]
-        redirect_url = f"{redirect_uri}?code={auth_code}&state={state}"
+        from src.services.oauth_provider import append_query_params
+
+        redirect_url = append_query_params(
+            redirect_uri,
+            {"code": auth_code, "state": state, "iss": self.issuer},
+        )
 
         logger.info(f"MCP OAuth: Issuing auth code for user {payload.get('email')}")
 
@@ -414,11 +447,21 @@ class BifrostAuthProvider(AuthProvider):
             redirect_uri = form.get("redirect_uri")
             code_verifier = form.get("code_verifier")
             client_id = form.get("client_id")
+            resource = form.get("resource")
 
             if not all([code, redirect_uri, code_verifier]):
                 return JSONResponse(
                     {"error": "invalid_request", "error_description": "Missing required parameters"},
                     status_code=400
+                )
+
+            if resource != self.resource:
+                return JSONResponse(
+                    {
+                        "error": "invalid_target",
+                        "error_description": "resource must identify the MCP protected resource",
+                    },
+                    status_code=400,
                 )
 
             # Get auth code data from Redis
@@ -446,6 +489,11 @@ class BifrostAuthProvider(AuthProvider):
                 return JSONResponse(
                     {"error": "invalid_grant", "error_description": "client_id mismatch"},
                     status_code=400
+                )
+            if resource != auth_code_data.get("resource"):
+                return JSONResponse(
+                    {"error": "invalid_grant", "error_description": "resource mismatch"},
+                    status_code=400,
                 )
 
             # Validate PKCE code_verifier
@@ -478,9 +526,21 @@ class BifrostAuthProvider(AuthProvider):
                 # (EXT-1) is neutralized for bypass principals at this mint —
                 # without it every MCP-OAuth token defaulted to is_external=False
                 # (LEAK #1), re-opening the global tier to external users.
-                token_data = await _mcp_access_token_data(db, user)
-                access_token = create_access_token(data=token_data)
-                refresh_token, _jti = create_refresh_token(data={"sub": str(user.id), "mcp": True})
+                token_data = await _mcp_access_token_data(
+                    db, user, resource=self.resource
+                )
+                access_token = create_access_token(
+                    data=token_data, audience=self.resource
+                )
+                refresh_token, _jti = create_refresh_token(
+                    data={
+                        "sub": str(user.id),
+                        "mcp": True,
+                        "scope": MCP_SCOPE,
+                        "resource": self.resource,
+                    },
+                    audience=self.resource,
+                )
 
             logger.info(f"MCP OAuth: Token issued for user {auth_code_data['email']}")
 
@@ -494,6 +554,7 @@ class BifrostAuthProvider(AuthProvider):
 
         elif grant_type == "refresh_token":
             refresh_token = form.get("refresh_token")
+            resource = form.get("resource")
 
             if not refresh_token:
                 return JSONResponse(
@@ -504,11 +565,18 @@ class BifrostAuthProvider(AuthProvider):
             # Validate and rotate refresh token
             from src.core.security import decode_token
 
-            payload = decode_token(refresh_token, expected_type="refresh")
+            payload = decode_token(
+                refresh_token,
+                expected_type="refresh",
+                audience=self.resource,
+            )
             if (
                 payload is None
                 or not payload.get("sub")
                 or payload.get("mcp") is not True
+                or payload.get("scope") != MCP_SCOPE
+                or payload.get("resource") != self.resource
+                or resource != self.resource
             ):
                 return JSONResponse(
                     {"error": "invalid_grant", "error_description": "Invalid refresh token"},
@@ -528,9 +596,21 @@ class BifrostAuthProvider(AuthProvider):
                     )
 
                 # Create new tokens (carry the is_external claim — LEAK #1).
-                token_data = await _mcp_access_token_data(db, user)
-                access_token = create_access_token(data=token_data)
-                new_refresh_token, _jti = create_refresh_token(data={"sub": str(user.id), "mcp": True})
+                token_data = await _mcp_access_token_data(
+                    db, user, resource=self.resource
+                )
+                access_token = create_access_token(
+                    data=token_data, audience=self.resource
+                )
+                new_refresh_token, _jti = create_refresh_token(
+                    data={
+                        "sub": str(user.id),
+                        "mcp": True,
+                        "scope": MCP_SCOPE,
+                        "resource": self.resource,
+                    },
+                    audience=self.resource,
+                )
 
             return JSONResponse({
                 "access_token": access_token,
@@ -640,11 +720,21 @@ class BifrostAuthProvider(AuthProvider):
         """
         from src.core.security import decode_token
 
-        logger.info(f"MCP auth: verify_token called with token prefix: {token[:20]}...")
-
-        payload = decode_token(token, expected_type="access")
+        payload = decode_token(
+            token,
+            expected_type="access",
+            audience=self.resource,
+        )
         if payload is None:
             logger.info("MCP auth: decode_token returned None (invalid/expired JWT)")
+            return None
+
+        if (
+            payload.get("mcp") is not True
+            or payload.get("scope") != MCP_SCOPE
+            or payload.get("resource") != self.resource
+        ):
+            logger.info("MCP auth: token is not bound to the protected resource")
             return None
 
         logger.info(f"MCP auth: Token decoded for user {payload.get('email')}, checking access...")
@@ -727,7 +817,7 @@ def create_bifrost_auth_provider(base_url: str | None = None) -> BifrostAuthProv
     Create a Bifrost auth provider for MCP.
 
     Args:
-        base_url: Public URL of the MCP server. Falls back to MCP_BASE_URL env var.
+        base_url: Public URL of the MCP server. Falls back to platform settings.
 
     Returns:
         BifrostAuthProvider instance

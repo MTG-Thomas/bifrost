@@ -6,6 +6,8 @@ import uuid
 import pytest
 import requests
 
+from tests.fixtures.auth import create_test_jwt
+
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
 MCP_ACCEPT = "application/json, text/event-stream"
 GATEWAY_TOOLS = {
@@ -64,8 +66,12 @@ class TestMCPAgentGateway:
         suffix = uuid.uuid4().hex[:8]
         function_name = f"gateway_echo_{suffix}"
         path = f"workflows/{function_name}.py"
-        token = platform_admin.access_token
-        assert token is not None
+        token = create_test_jwt(
+            user_id=str(platform_admin.user_id),
+            email=platform_admin.email,
+            is_superuser=True,
+            mcp_resource=f"{TEST_API_URL}/mcp",
+        )
         headers = platform_admin.headers
 
         content = (

@@ -4,8 +4,8 @@ When an admin pastes a server URL in the "New MCP Server" form (mockup §3)
 and clicks "Discover OAuth metadata", the router calls
 ``discover_oauth_metadata`` which fetches the two RFC-defined ``/.well-known``
 endpoints from the server's host and merges them into a single dict. The
-result populates the form fields (authorization URL, token URL, audience,
-scopes) and the raw payload is stored verbatim on
+result preserves each discovery document under its own key while retaining
+the flattened fields consumed by the existing form. The payload is stored on
 ``MCPServer.discovery_metadata`` for diff-on-rediscovery later.
 
 Per the design: 5-second timeout, no retries, no global client. These are
@@ -89,11 +89,9 @@ async def discover_oauth_metadata(server_url: str) -> dict[str, Any] | None:
 
     Fetches both ``/.well-known/oauth-authorization-server`` and
     ``/.well-known/oauth-protected-resource`` from the server's host and
-    merges them into a single dict. The protected-resource document, when
-    present, is layered on top of the authorization-server document so its
-    fields (e.g. ``audience``, ``resource``, ``scopes_supported``) take
-    precedence on conflict — RFC 9728 treats the protected-resource
-    document as authoritative for resource-scoped fields.
+    preserves them separately. Flattened compatibility fields are also
+    returned for the form; the protected-resource document takes precedence
+    for resource-scoped fields.
 
     Args:
         server_url: The MCP server URL. Path/query are stripped before
@@ -101,9 +99,9 @@ async def discover_oauth_metadata(server_url: str) -> dict[str, Any] | None:
             documents live at the *host root*, not under the MCP path).
 
     Returns:
-        Merged metadata dict on success, or ``None`` when neither endpoint
-        is reachable / returns valid JSON. Callers fall back to manual
-        entry on ``None``.
+        Metadata dict on success, including separate authorization-server and
+        protected-resource documents, or ``None`` when neither endpoint is
+        reachable / returns valid JSON.
     """
     try:
         base = _well_known_base(server_url)
@@ -119,7 +117,10 @@ async def discover_oauth_metadata(server_url: str) -> dict[str, Any] | None:
     if authz_doc is None and resource_doc is None:
         return None
 
-    merged: dict[str, Any] = {}
+    merged: dict[str, Any] = {
+        "authorization_server_metadata": authz_doc,
+        "protected_resource_metadata": resource_doc,
+    }
     if authz_doc:
         merged.update(authz_doc)
     if resource_doc:

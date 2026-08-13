@@ -83,6 +83,7 @@ async def test_auth_code_grant_stamps_is_external():
         "redirect_uri": "http://cb",
         "client_id": "c",
         "scope": "mcp:access",
+        "resource": provider.resource,
     }
     redis = AsyncMock()
     redis.get = AsyncMock(return_value=json.dumps(auth_code_data))
@@ -94,6 +95,7 @@ async def test_auth_code_grant_stamps_is_external():
         "redirect_uri": "http://cb",
         "code_verifier": "verifier",
         "client_id": "c",
+        "resource": provider.resource,
     }
     request = MagicMock()
     request.form = AsyncMock(return_value=form)
@@ -123,6 +125,7 @@ async def test_auth_code_grant_stamps_is_external():
     assert captured["token_data"].get("is_external") is True
     assert captured["token_data"].get("mcp") is True
     assert captured["token_data"].get("scope") == "mcp:access"
+    assert captured["token_data"].get("resource") == provider.resource
 
 
 @pytest.mark.asyncio
@@ -132,14 +135,23 @@ async def test_refresh_grant_stamps_is_external():
 
     provider = BifrostAuthProvider(base_url="http://test")
 
-    form = {"grant_type": "refresh_token", "refresh_token": "rt"}
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": "rt",
+        "resource": provider.resource,
+    }
     request = MagicMock()
     request.form = AsyncMock(return_value=form)
 
     ctx = _patches(captured, user)
     with patch(
         "src.core.security.decode_token",
-        return_value={"sub": str(user.id), "mcp": True},
+        return_value={
+            "sub": str(user.id),
+            "mcp": True,
+            "scope": "mcp:access",
+            "resource": provider.resource,
+        },
     ):
         for p in ctx:
             p.start()
@@ -153,3 +165,4 @@ async def test_refresh_grant_stamps_is_external():
     assert captured["token_data"].get("is_external") is True
     assert captured["token_data"].get("mcp") is True
     assert captured["token_data"].get("scope") == "mcp:access"
+    assert captured["token_data"].get("resource") == provider.resource
