@@ -119,6 +119,7 @@ MAX_SELECTED_TESTS = 120
 IMPORT_FROM_RE = re.compile(r"\bfrom\s*['\"]([^'\"]+)['\"]")
 SIDE_EFFECT_IMPORT_RE = re.compile(r"\bimport\s*['\"]([^'\"]+)['\"]")
 DYNAMIC_IMPORT_RE = re.compile(r"\bimport\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
+DYNAMIC_IMPORT_CALL_RE = re.compile(r"\bimport\s*\(")
 ROUTE_PARAM_RE = re.compile(r"\{[^/]+\}")
 FULL_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 
@@ -415,12 +416,14 @@ def _python_node(path: str, index: Mapping[str, str]) -> PythonNode:
                 if isinstance(node.func, ast.Name)
                 else ""
             )
-            if (
-                call_name == "import_module"
-                and node.args
-                and (module := _literal_path(node.args[0]))
-            ):
-                imports.update(_resolve_python_module(module, (), index))
+            if call_name in {"import_module", "__import__"}:
+                if (
+                    not node.args
+                    or not isinstance(node.args[0], ast.Constant)
+                    or not isinstance(node.args[0].value, str)
+                ):
+                    raise PlanError(f"non-literal dynamic import in {path}")
+                imports.update(_resolve_python_module(node.args[0].value, (), index))
             if (
                 call_name
                 in {"get", "post", "put", "patch", "delete", "options", "head"}
@@ -626,6 +629,8 @@ def _client_imports(path: str, available: frozenset[str]) -> set[str]:
     specifiers = set(IMPORT_FROM_RE.findall(text))
     specifiers.update(SIDE_EFFECT_IMPORT_RE.findall(text))
     specifiers.update(DYNAMIC_IMPORT_RE.findall(text))
+    if DYNAMIC_IMPORT_CALL_RE.search(DYNAMIC_IMPORT_RE.sub("", text)):
+        raise PlanError(f"non-literal dynamic import in {path}")
     resolved: set[str] = set()
     for specifier in specifiers:
         resolved.update(_client_candidates(path, specifier, available))
@@ -906,26 +911,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base")
     parser.add_argument("--head")
     parser.add_argument("--force-comprehensive", action="store_true")
-    parser.add_argument("--github-output", type=Path)
-    parser.add_argument("--plan-output", type=Path)
-    parser.add_argument("--summary", type=Path)
     return parser.parse_args()
 
 
-def _validated_ci_output(
-    path: Path | None, env_name: str, *, directory: bool = False
-) -> Path | None:
-    if path is None:
-        return None
+def _runner_output(env_name: str) -> Path | None:
     configured = os.environ.get(env_name)
     if not configured:
-        raise SystemExit(f"{env_name} must be set when writing CI evidence")
-    resolved = path.resolve()
-    allowed = Path(configured).resolve()
-    if (directory and not resolved.is_relative_to(allowed)) or (
-        not directory and resolved != allowed
-    ):
-        raise SystemExit(f"refusing to write outside {env_name}")
+        return None
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    if not runner_temp:
+        raise SystemExit(f"RUNNER_TEMP must be set with {env_name}")
+    resolved = Path(configured).resolve()
+    if not resolved.is_relative_to(Path(runner_temp).resolve()):
+        raise SystemExit(f"refusing to write {env_name} outside RUNNER_TEMP")
     return resolved
 
 
@@ -941,13 +939,15 @@ def main() -> int:
         plan = plan_changes(git_changes(args.base, args.head))
     payload = json.dumps(plan.to_dict(), indent=2, sort_keys=True)
     print(payload)
-    github_output = _validated_ci_output(args.github_output, "GITHUB_OUTPUT")
-    plan_output = _validated_ci_output(args.plan_output, "RUNNER_TEMP", directory=True)
-    summary = _validated_ci_output(args.summary, "GITHUB_STEP_SUMMARY")
+    github_output = _runner_output("GITHUB_OUTPUT")
+    summary = _runner_output("GITHUB_STEP_SUMMARY")
+    runner_temp = os.environ.get("RUNNER_TEMP")
     if github_output:
         write_github_output(github_output, plan)
-    if plan_output:
-        plan_output.write_text(payload + "\n", encoding="utf-8")
+    if runner_temp:
+        (Path(runner_temp).resolve() / "affected-test-plan.json").write_text(
+            payload + "\n", encoding="utf-8"
+        )
     if summary:
         write_summary(summary, plan)
     return 0

@@ -187,12 +187,39 @@ def test_git_changes_rejects_argument_injection() -> None:
         affected.git_changes("--output=/tmp/escaped", "a" * 40)
 
 
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        (
+            "api/src/services/plugin.py",
+            "from importlib import import_module\nname = 'src.services.helper'\n"
+            "plugin = import_module(name)\n",
+        ),
+        (
+            "client/src/lib/plugin.ts",
+            "const name = './helper';\nexport const plugin = import(name);\n",
+        ),
+    ],
+)
+def test_nonliteral_dynamic_import_falls_back_to_comprehensive(
+    graph_repo: Path, path: str, text: str
+) -> None:
+    _write(graph_repo, path, text)
+
+    plan = affected.plan_changes([affected.GitChange("M", path)])
+
+    assert plan.scope == "comprehensive"
+    assert plan.reason == f"non-literal dynamic import in {path}"
+
+
 def test_ci_evidence_paths_must_match_runner_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     allowed = tmp_path / "github-output"
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("GITHUB_OUTPUT", str(allowed))
 
-    assert affected._validated_ci_output(allowed, "GITHUB_OUTPUT") == allowed.resolve()
-    with pytest.raises(SystemExit, match="refusing to write"):
-        affected._validated_ci_output(tmp_path / "escaped", "GITHUB_OUTPUT")
+    assert affected._runner_output("GITHUB_OUTPUT") == allowed.resolve()
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path.parent / "escaped"))
+    with pytest.raises(SystemExit, match="outside RUNNER_TEMP"):
+        affected._runner_output("GITHUB_OUTPUT")

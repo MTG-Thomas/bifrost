@@ -72,17 +72,11 @@ jobs:
           esac
           if [ -z "$base_sha" ] || [[ "$base_sha" =~ ^0+$ ]]; then
             python3 api/scripts/plan_affected_tests.py \
-              --force-comprehensive \
-              --github-output "$GITHUB_OUTPUT" \
-              --plan-output "$RUNNER_TEMP/affected-test-plan.json" \
-              --summary "$GITHUB_STEP_SUMMARY"
+              --force-comprehensive
           else
             python3 api/scripts/plan_affected_tests.py \
               --base "$base_sha" \
-              --head "$GITHUB_SHA" \
-              --github-output "$GITHUB_OUTPUT" \
-              --plan-output "$RUNNER_TEMP/affected-test-plan.json" \
-              --summary "$GITHUB_STEP_SUMMARY"
+              --head "$GITHUB_SHA"
           fi
 
       - name: Upload affected test plan
