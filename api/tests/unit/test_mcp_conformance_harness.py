@@ -37,18 +37,27 @@ def test_official_runner_and_lockfile_are_exact_pinned() -> None:
 def test_compose_and_test_runner_use_the_pinned_official_image() -> None:
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.test.yml").read_text())
     service = compose["services"]["mcp-conformance"]
+    adapter = compose["services"]["mcp-conformance-adapter"]
 
     assert service["image"] == f"bifrost-test-mcp-conformance:{RUNNER_VERSION}"
     assert service["build"] == {
         "context": "./api/tests/conformance",
         "dockerfile": "Dockerfile",
     }
+    assert service["depends_on"] == {
+        "mcp-conformance-adapter": {"condition": "service_healthy"}
+    }
+    assert adapter["image"] == "bifrost-test-api-dev:latest"
+    assert adapter["volumes"] == ["./api/tests:/app/tests:ro"]
+    assert "ports" not in adapter
+    assert adapter["depends_on"] == {"api": {"condition": "service_healthy"}}
+    assert adapter["security_opt"] == ["no-new-privileges:true"]
 
     test_script = (REPO_ROOT / "test.sh").read_text()
     assert "mcp) shift; cmd_mcp" in test_script
-    assert "--url http://api:8000/mcp" in test_script
-    assert "--scenario server-initialize" in test_script
-    assert "--spec-version 2025-11-25" in test_script
+    assert "--url http://mcp-conformance-adapter:8080/mcp" in test_script
+    assert "--spec-version 2026-07-28" in test_script
+    assert "--expected-failures" not in test_script
     assert "auth-probe-headers.txt" in test_script
     assert "protected-resource-metadata.json" in test_script
     assert "^HTTP/1.1 401 Unauthorized$" in test_script
@@ -59,28 +68,27 @@ def test_compose_and_test_runner_use_the_pinned_official_image() -> None:
     )[0]
     assert "chmod 777" not in conformance_function
     assert '--user "$(id -u):$(id -g)" mcp-conformance' in test_script
+    assert "summarize_results.py" in conformance_function
+    assert "conformance-junit.xml" in conformance_function
 
 
-def test_advisory_baseline_only_records_auth_blocked_initialize() -> None:
-    baseline = yaml.safe_load(
-        (CONFORMANCE_ROOT / "expected-failures.yml").read_text()
-    )
-
-    assert baseline == {"server": ["server-initialize"]}
-
-    baseline_text = (CONFORMANCE_ROOT / "expected-failures.yml").read_text()
+def test_blocking_and_advisory_scenarios_have_no_expected_failure_file() -> None:
+    assert not (CONFORMANCE_ROOT / "expected-failures.yml").exists()
     readme = (CONFORMANCE_ROOT / "README.md").read_text()
-    assert "401 Bearer challenge" in baseline_text
+    assert "without an\nexpected-failures file" in readme
+    assert "tools-list" in readme
+    assert "caching" in readme
+    assert "http-header-validation" in readme
+    assert "23/25 checks pass" in readme
     assert "401 Unauthorized" in readme
-    assert "cannot mount" not in readme
-    assert "challenge_scopes" not in readme
 
 
-def test_ci_job_is_advisory_and_retains_runner_artifacts() -> None:
+def test_ci_job_blocks_and_retains_runner_artifacts() -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
     job = workflow["jobs"]["mcp-conformance"]
 
-    assert job["continue-on-error"] is True
+    assert not job.get("continue-on-error", False)
+    assert job["name"] == "MCP Conformance"
     steps = {step["name"]: step for step in job["steps"]}
     assert steps["Checkout repository"]["with"]["persist-credentials"] is False
     step_names = list(steps)
@@ -88,11 +96,13 @@ def test_ci_job_is_advisory_and_retains_runner_artifacts() -> None:
         "Log in to GitHub Container Registry"
     )
     assert step_names.index("Remove registry credentials") < step_names.index(
-        "Run advisory MCP conformance"
+        "Run blocking MCP conformance"
     )
     assert "./test.sh mcp conformance" in steps[
-        "Run advisory MCP conformance"
+        "Run blocking MCP conformance"
     ]["run"]
     artifact = steps["Upload MCP conformance results"]
     assert artifact["if"] == "always()"
     assert artifact["with"]["path"] == "/tmp/bifrost-*/mcp-conformance/"
+    assert artifact["with"]["if-no-files-found"] == "error"
+    assert "mcp-conformance" in workflow["jobs"]["verify-release-manifest"]["needs"]

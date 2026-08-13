@@ -438,10 +438,36 @@ services:
     profiles:
       - test  # Only start when running tests
 
+  # Test-network-only transport adapter for the official runner, which has no
+  # CLI option for an Authorization header. It mints a resource-bound test JWT
+  # and transparently forwards to the real authenticated /mcp endpoint.
+  mcp-conformance-adapter:
+    image: bifrost-test-api-dev:latest
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ./api/tests:/app/tests:ro
+    command:
+      - uvicorn
+      - tests.conformance.auth_adapter:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    security_opt: ["no-new-privileges:true"]
+    profiles:
+      - test
+
   # Official MCP conformance CLI. Its npm dependency graph is isolated from
   # the application and exact-pinned by api/tests/conformance/package-lock.json.
-  # The runner reaches the real authenticated API surface over this Compose
-  # project's private network; no host ports or test-only MCP endpoint exist.
   mcp-conformance:
     image: bifrost-test-mcp-conformance:0.2.0-alpha.11
     build:
@@ -449,6 +475,9 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ${LOG_DIR:-/tmp/bifrost}/mcp-conformance:/results
+    depends_on:
+      mcp-conformance-adapter:
+        condition: service_healthy
     profiles:
       - test
 

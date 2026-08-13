@@ -287,15 +287,13 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # =============================================================================
-  # MCP Conformance - Advisory while the modern endpoint lifecycle from #524
-  # is not yet available. The exact-pinned official runner records checks from
-  # the real authenticated MCP surface; this job is intentionally not a
-  # dependency of a required aggregate gate.
+  # MCP Conformance - the exact-pinned official runner gates the stable subset
+  # applicable to Bifrost's authenticated four-tool modern gateway. Broader
+  # stateless checks remain visible in the uploaded advisory artifact.
   # =============================================================================
   mcp-conformance:
     runs-on: ubuntu-latest
-    name: MCP Conformance (advisory)
-    continue-on-error: true
+    name: MCP Conformance
     permissions:
       contents: read
       packages: read
@@ -364,7 +362,7 @@ jobs:
       - name: Remove registry credentials
         run: docker logout "$REGISTRY"
 
-      - name: Run advisory MCP conformance
+      - name: Run blocking MCP conformance
         env:
           BIFROST_SKIP_BUILD: "1"
         run: |
@@ -378,7 +376,7 @@ jobs:
         with:
           name: mcp-conformance-results
           path: /tmp/bifrost-*/mcp-conformance/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Tear down MCP conformance stack
@@ -958,7 +956,7 @@ jobs:
   # =============================================================================
   verify-release-manifest:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test-unit, test-e2e-gate, lint]
+    needs: [test-unit, test-e2e-gate, lint, mcp-conformance]
     runs-on: ubuntu-latest
     name: Verify Release Manifest
     permissions:
