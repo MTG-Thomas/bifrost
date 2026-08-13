@@ -24,8 +24,8 @@
 #   ./test.sh client e2e --screenshots  Capture a screenshot for every test (UX review).
 #   ./test.sh client e2e e2e/auth.unauth.spec.ts   Pass through to playwright.
 #
-# MCP protocol conformance (advisory):
-#   ./test.sh mcp conformance             Run the exact-pinned official runner.
+# MCP protocol conformance:
+#   ./test.sh mcp conformance             Run the blocking official subset.
 #
 # CI escape hatch:
 #   ./test.sh ci                        Full isolated run: up, all tests, down.
@@ -399,13 +399,18 @@ mcp_conformance() {
     require_stack_up
 
     local results_dir="$LOG_DIR/mcp-conformance"
+    local blocking_results="$results_dir/blocking"
+    local advisory_results="$results_dir/advisory"
     local auth_probe_file="$results_dir/auth-probe-headers.txt"
     local resource_metadata_file="$results_dir/protected-resource-metadata.json"
-    mkdir -p "$results_dir"
+    rm -rf "$blocking_results" "$advisory_results"
+    rm -f "$results_dir/conformance-junit.xml"
+    mkdir -p "$blocking_results" "$advisory_results"
 
-    # Keep the whole-scenario baseline honest: it is only valid while the
-    # official runner lacks a token/header option and the real mounted endpoint
-    # rejects its unauthenticated request with Bifrost's Bearer challenge.
+    # Preserve direct evidence that the real endpoint remains protected. The
+    # official runner reaches the same endpoint through the isolated adapter;
+    # the adapter only supplies credentials because the pinned CLI has no
+    # bearer/header option.
     docker compose -f "$COMPOSE_FILE" exec -T api curl \
         --silent \
         --show-error \
@@ -440,16 +445,73 @@ mcp_conformance() {
     # This image is deliberately separate from the API image: the official
     # JavaScript runner must not alter Bifrost's Python MCP dependency graph.
     docker compose -f "$COMPOSE_FILE" --profile test build mcp-conformance
-    docker compose -f "$COMPOSE_FILE" --profile test run --rm \
+
+    # Force a new adapter process for every command so its two-hour test JWT is
+    # freshly minted. The service has no host port and forwards to the real API.
+    docker compose -f "$COMPOSE_FILE" --profile test rm -sf \
+        mcp-conformance-adapter
+    docker compose -f "$COMPOSE_FILE" --profile test up -d --no-deps \
+        mcp-conformance-adapter
+    wait_for_service "$COMPOSE_FILE" mcp-conformance-adapter \
+        curl -f http://localhost:8080/health
+
+    local runner_status=0
+    local scenario
+    local -a blocking_scenarios=(
+        tools-list
+        caching
+        http-header-validation
+    )
+    for scenario in "${blocking_scenarios[@]}"; do
+        echo "Running blocking MCP conformance scenario: $scenario"
+        if ! docker compose -f "$COMPOSE_FILE" --profile test run --rm --no-deps \
+            --user "$(id -u):$(id -g)" mcp-conformance \
+            server \
+            --url http://mcp-conformance-adapter:8080/mcp \
+            --scenario "$scenario" \
+            --spec-version 2026-07-28 \
+            --output-dir /results/blocking \
+            --verbose \
+            "$@" \
+            2>&1 | tee "$results_dir/blocking-$scenario.log"; then
+            runner_status=1
+        fi
+    done
+
+    local verification_status=0
+    if ! python3 api/tests/conformance/summarize_results.py \
+        --results-dir "$blocking_results" \
+        --scenario tools-list \
+        --scenario caching \
+        --scenario http-header-validation \
+        --junit "$results_dir/conformance-junit.xml"; then
+        verification_status=1
+    fi
+
+    # The broad stateless scenario contains two reference-fixture probes that
+    # require a diagnostic tool outside Bifrost's intentional four-tool
+    # gateway. Keep all other checks visible without weakening the blocking
+    # scenarios with expected-failure entries.
+    local advisory_status=0
+    echo "Running advisory MCP conformance scenario: server-stateless"
+    if ! docker compose -f "$COMPOSE_FILE" --profile test run --rm --no-deps \
         --user "$(id -u):$(id -g)" mcp-conformance \
         server \
-        --url http://api:8000/mcp \
-        --scenario server-initialize \
-        --spec-version 2025-11-25 \
-        --expected-failures /opt/mcp-conformance/expected-failures.yml \
-        --output-dir /results \
+        --url http://mcp-conformance-adapter:8080/mcp \
+        --scenario server-stateless \
+        --spec-version 2026-07-28 \
+        --output-dir /results/advisory \
         --verbose \
-        "$@"
+        "$@" \
+        2>&1 | tee "$results_dir/advisory-server-stateless.log"; then
+        advisory_status=1
+    fi
+    printf '%s\n' "$advisory_status" > "$advisory_results/runner-exit-code.txt"
+
+    if [ "$runner_status" -ne 0 ] || [ "$verification_status" -ne 0 ]; then
+        echo "ERROR: blocking MCP conformance scenarios failed." >&2
+        return 1
+    fi
 }
 
 client_unit() {

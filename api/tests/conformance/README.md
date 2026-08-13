@@ -8,78 +8,91 @@ Bifrost's Python MCP SDK. Run it through the Docker test environment:
 ./test.sh mcp conformance
 ```
 
-The runner is intentionally advisory. Its JSON checks are written under the
-worktree-specific `/tmp/bifrost-*/mcp-conformance/` directory and uploaded by
-CI even when a check fails. The same artifact directory includes
-`auth-probe-headers.txt` and `protected-resource-metadata.json`, which capture
-the non-secret OAuth challenge and metadata from the baseline preflight.
+The blocking JSON checks, advisory checks, command logs, OAuth preflight, and
+`conformance-junit.xml` are written under the worktree-specific
+`/tmp/bifrost-*/mcp-conformance/` directory. CI uploads that directory even
+when the gate fails.
 
-## Current baseline
+## Authentication boundary
 
-The dependency-independent foundation runs `server-initialize` using the
-runner's published `2025-11-25` schema against the real
-`http://api:8000/mcp` endpoint. `expected-failures.yml` temporarily records
-the whole scenario because the official server runner does not expose an
-option for supplying the bearer token Bifrost requires. The FastMCP ASGI app
-is mounted at `/mcp`; the unauthenticated runner reaches that real surface and
-receives `401 Unauthorized` with an RFC 9728 protected-resource metadata
-challenge. That metadata must advertise `mcp:access`. The
-baseline does not bypass authentication or dispatch and is not evidence that
-initialization itself passes. An unexpected pass also fails the baseline check
-so the entry cannot silently become stale. Before invoking the official
-runner, `./test.sh` also requires this exact 401 Bearer challenge and checks the
-referenced metadata contract. A missing route, application-construction
-failure, or changed authentication contract therefore fails the command
-instead of being hidden by the scenario baseline.
+The exact-pinned `@modelcontextprotocol/conformance@0.2.0-alpha.11` server CLI
+has no option for a bearer token or request headers. The
+`mcp-conformance-adapter` Compose service closes only that transport gap:
 
-Existing Bifrost E2E tests remain the blocking authority for authentication,
-legacy initialization, gateway filtering, agent scoping, and dispatch.
-They currently exercise the server's supported `2024-11-05` initialization
-surface. Promoting the supported legacy revision to `2025-11-25` belongs with
-the dual-era endpoint work rather than this dependency-independent harness.
+- it runs solely on the isolated test network and exposes no host port;
+- it mints a fresh two-hour JWT through `tests.fixtures.auth.create_test_jwt`,
+  bound to the real `http://api:8000/mcp` resource, `mcp:access` scope, and MCP
+  audience;
+- it forwards the raw request line, body, MCP header lines, and raw response
+  bytes to/from the real `/mcp` application;
+- it replaces only `Authorization` and the canonical upstream `Host` while
+  filtering hop-by-hop transport headers; and
+- it neither reads nor rewrites MCP payloads and provides no authentication or
+  dispatch bypass.
 
-## Applicable after #524
+The real Bifrost ASGI boundary, not the adapter, parses RFC 9110 optional
+whitespace around MCP standard routing-header values before FastMCP validates
+them. The adapter regression test proves those header bytes reach the upstream
+socket unchanged.
 
-Once #524 lands the modern `2026-07-28` endpoint shape and an authenticated
-test adapter that still traverses Bifrost's real auth and dispatch layers, the
-first applicable official server scenarios are:
+Before invoking the adapter, `./test.sh` directly requires the protected
+endpoint to return `401 Unauthorized` with an RFC 9728 resource-metadata
+challenge and requires that metadata to advertise `mcp:access`. Those
+non-secret responses are retained as artifacts.
 
-- `server-stateless`
-- `tools-list`
-- `dns-rebinding-protection`
-- `caching`
-- the tool-call scenarios that can be backed by real Bifrost tools without
-  introducing conformance-only production behavior
+## Blocking subset
 
-Run those with check-level expected failures. Do not baseline an entire
-scenario after its prerequisites can execute.
+The gate runs these official `2026-07-28` server scenarios without an
+expected-failures file:
 
-The outbound client scenarios remain blocked until #524 supplies the modern
-lifecycle and controlled legacy fallback. Initial candidates are `tools_call`,
-`request-metadata`, `http-standard-headers`, `http-custom-headers`, and
-`http-invalid-tool-headers`.
+- `tools-list` — 3/3 checks pass and the official artifact records Bifrost's
+  exact four gateway tools;
+- `caching` — 7/7 exercised checks pass with private, non-negative caching
+  hints (the resource-read check skips because this gateway advertises no
+  resources); and
+- `http-header-validation` — 14/14 checks pass, including required method/name
+  headers, mismatch errors, case handling, and RFC 9110 optional whitespace.
 
-## Deliberate exclusions
+After the runner exits, `summarize_results.py` independently requires exactly
+one non-empty result directory for every blocking scenario and the exact
+reviewed check identity/status profile for this runner pin. It allows only the
+documented `resources/read` skip, rejects missing, extra, duplicated, or newly
+skipped checks, and requires the exact ordered four-tool gateway list. It
+always writes a JUnit report. A runner crash or changed artifact therefore
+cannot silently pass as zero or reduced tests.
 
-The full frozen requirement sets are not a merge gate. They assume canonical
-fixture tools and capabilities such as resources, prompts, completion,
-multiple content types, progress, SSE, MRTR, and optional extensions. Bifrost's
-small progressive gateway does not advertise all of those surfaces. A full
-requirements run may be retained for scheduled/release visibility, but it must
-not be reported as passing conformance unless every scored requirement passes.
+## Advisory coverage and deliberate exclusions
 
-The following stay in bespoke Bifrost tests rather than this runner:
+`server-stateless` is retained as a non-blocking artifact. On Bifrost's
+intentional four-tool gateway, 23/25 checks pass. The two remaining checks
+(`sep-2575-server-rejects-undeclared-capability` and
+`sep-2575-missing-capability-http-400`) require the reference-only
+`test_missing_capability` diagnostic tool. Adding that tool to production would
+violate the gateway contract, so the scenario is not hidden behind an expected
+failure and is not promoted as a whole.
 
-- missing, invalid, and role-scoped bearer-token behavior
-- the exact four-tool progressive gateway contract
-- organization and agent-scoped filtering
-- live registration, rename, revocation, and cross-replica consistency
-- catalog persistence, retry, result-size, and OAuth-token semantics
+The following official scenarios are not merge gates:
+
+- canonical tool-call and JSON-Schema scenarios require named reference tools;
+  notably, `tools-call-simple-text` treats Bifrost's legitimate `isError`
+  hidden-tool response as success and is therefore not meaningful evidence;
+- resources, prompts, completion, multiple content types, SSE, input-required,
+  and extension scenarios require capabilities this gateway does not advertise;
+- `http-custom-header-server-validation` requires an `x-mcp-header` reference
+  tool; and
+- `dns-rebinding-protection` cannot be tested through an adapter that must set
+  the canonical upstream `Host`. Bifrost's host/origin policy remains covered
+  directly by its MCP transport tests.
+
+The full frozen requirement set is consequently not reported as passing.
+Bespoke Bifrost E2E tests remain the authority for bearer-token behavior,
+gateway filtering, agent scope, live registration/revocation, dispatch, and
+replica-safe catalogs.
 
 ## Updating the runner
 
 Change the exact version in `package.json`, regenerate `package-lock.json` with
 `npm install --package-lock-only --ignore-scripts`, update the image tag in
-`docker-compose.test.yml`, and review the official scenario and frozen
-requirement diffs before committing. Never replace the exact version with a
-range or floating tag.
+`docker-compose.test.yml`, and review official scenario and frozen-requirement
+diffs before committing. Never replace the exact version with a range or
+floating tag.

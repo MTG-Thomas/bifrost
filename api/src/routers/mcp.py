@@ -329,8 +329,11 @@ def get_mcp_asgi_app():
             stop_workflow_catalog_sync()
 
     # Wrap with agent-scoping middleware to handle /mcp/{agent_id} paths
-    from src.services.mcp_server.agent_scope import AgentScopeMCPMiddleware
-    agent_scoped_app = AgentScopeMCPMiddleware(mcp_app)
+    from src.services.mcp_server.agent_scope import (
+        AgentScopeMCPMiddleware,
+        MCPHeaderOWSMiddleware,
+    )
+    agent_scoped_app = MCPHeaderOWSMiddleware(AgentScopeMCPMiddleware(mcp_app))
 
     # Wrap with CORS middleware to expose Mcp-Session-Id header
     # Required for browser-based clients like MCP Inspector to read session ID
