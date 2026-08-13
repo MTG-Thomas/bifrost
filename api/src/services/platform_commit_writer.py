@@ -16,6 +16,8 @@ _GITHUB_API_VERSION = "2022-11-28"
 _GRAPHQL_URL = "https://api.github.com/graphql"
 _REST_URL = "https://api.github.com"
 _CHANGESET_TRAILER = "Workspace-Changeset-ID"
+_CONVERGENCE_TRAILER = "Workspace-History-Convergence-Candidate"
+_RECONCILED_CHANGESET_TRAILER = "Workspace-Reconciled-Changeset-ID"
 
 
 class PlatformCommitError(RuntimeError):
@@ -47,6 +49,9 @@ class PlatformCommitRequest:
     plan_id: str | None = None
     protected_main_source_sha: str | None = None
     candidate_commit_sha: str | None = None
+    expected_head_sha: str | None = None
+    convergence_candidate_id: str | None = None
+    reconciled_changeset_ids: tuple[UUID, ...] = ()
 
     def github_message(self) -> tuple[str, str]:
         headline, separator, body = self.commit_message.partition("\n")
@@ -60,6 +65,14 @@ class PlatformCommitRequest:
             provenance.append(
                 f"Protected-Main-Source-SHA: {self.protected_main_source_sha}"
             )
+        if self.convergence_candidate_id:
+            provenance.append(
+                f"{_CONVERGENCE_TRAILER}: {self.convergence_candidate_id}"
+            )
+        provenance.extend(
+            f"{_RECONCILED_CHANGESET_TRAILER}: {changeset_id}"
+            for changeset_id in self.reconciled_changeset_ids
+        )
         sections = []
         if separator and body.strip():
             sections.append(body.strip())
@@ -74,7 +87,23 @@ class PlatformCommitResult:
     signature_state: str
 
 
+@dataclass(frozen=True)
+class PlatformCommitSnapshot:
+    commit_sha: str
+    tree_sha: str
+    file_sha256: dict[str, str | None]
+
+
 class PlatformCommitWriter(Protocol):
+    async def inspect(
+        self,
+        paths: tuple[str, ...],
+        *,
+        ref: str | None = None,
+        reachable_from: str | None = None,
+    ) -> PlatformCommitSnapshot:
+        raise NotImplementedError
+
     async def write(self, request: PlatformCommitRequest) -> PlatformCommitResult:
         raise NotImplementedError
 
@@ -139,6 +168,82 @@ class GitHubAppCommitWriter:
         async with httpx.AsyncClient(timeout=30.0) as client:
             return await self._write_with_client(client, request, headline, body)
 
+    async def inspect(
+        self,
+        paths: tuple[str, ...],
+        *,
+        ref: str | None = None,
+        reachable_from: str | None = None,
+    ) -> PlatformCommitSnapshot:
+        """Read one immutable Git tree without changing the configured branch."""
+        normalized_paths = tuple(sorted(set(paths)))
+        if not normalized_paths:
+            raise PlatformCommitError("platform commit inspection requires paths")
+        if self.client is not None:
+            return await self._inspect_with_client(
+                self.client,
+                normalized_paths,
+                ref=ref,
+                reachable_from=reachable_from,
+            )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await self._inspect_with_client(
+                client,
+                normalized_paths,
+                ref=ref,
+                reachable_from=reachable_from,
+            )
+
+    async def _inspect_with_client(
+        self,
+        client: httpx.AsyncClient,
+        paths: tuple[str, ...],
+        *,
+        ref: str | None,
+        reachable_from: str | None,
+    ) -> PlatformCommitSnapshot:
+        token = await self._installation_token(client)
+        if ref is None:
+            if reachable_from is not None:
+                raise PlatformCommitError(
+                    "reachability inspection requires an immutable source ref"
+                )
+            commit = await self._branch_head(client, token)
+        else:
+            commit = await self._commit_snapshot(client, token, ref)
+            if reachable_from is not None:
+                await self._verify_reachable_from(
+                    client, token, commit["oid"], reachable_from
+                )
+        hashes = await self._file_hashes(client, token, paths, commit["oid"])
+        return PlatformCommitSnapshot(
+            commit_sha=commit["oid"],
+            tree_sha=commit["tree_oid"],
+            file_sha256=hashes,
+        )
+
+    async def _verify_reachable_from(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        commit_sha: str,
+        branch: str,
+    ) -> None:
+        normalized_branch = branch.removeprefix("refs/heads/")
+        compare = await client.get(
+            f"{_REST_URL}/repos/{self.owner}/{self.repository}/compare/"
+            f"{urllib.parse.quote(commit_sha, safe='')}..."
+            f"{urllib.parse.quote(normalized_branch, safe='')}",
+            headers=self._headers(token),
+        )
+        payload = self._response_json(
+            compare, f"verify source commit reachability from {normalized_branch}"
+        )
+        if payload.get("status") not in {"identical", "ahead"}:
+            raise PlatformCommitError(
+                f"GitHub source commit is not reachable from {normalized_branch}"
+            )
+
     async def _write_with_client(
         self,
         client: httpx.AsyncClient,
@@ -148,7 +253,11 @@ class GitHubAppCommitWriter:
     ) -> PlatformCommitResult:
         token = await self._installation_token(client)
         head = await self._branch_head(client, token)
-        marker = f"{_CHANGESET_TRAILER}: {request.changeset_id}"
+        marker = (
+            f"{_CONVERGENCE_TRAILER}: {request.convergence_candidate_id}"
+            if request.convergence_candidate_id
+            else f"{_CHANGESET_TRAILER}: {request.changeset_id}"
+        )
         candidate = request.candidate_commit_sha or next(
             (
                 item["oid"]
@@ -164,6 +273,11 @@ class GitHubAppCommitWriter:
         if candidate is not None:
             return await self._verify_commit(
                 client, token, request, candidate, require_head=False
+            )
+
+        if request.expected_head_sha and head["oid"] != request.expected_head_sha:
+            raise PlatformCommitError(
+                "GitHub branch head changed after the reviewed preview"
             )
 
         await self._verify_files(
@@ -253,6 +367,55 @@ class GitHubAppCommitWriter:
             raise PlatformCommitError("GitHub branch did not resolve to a commit")
         history = (target.get("history") or {}).get("nodes") or []
         return {"oid": str(oid), "tree_oid": str(tree["oid"]), "history": history}
+
+    async def _commit_snapshot(
+        self, client: httpx.AsyncClient, token: str, ref: str
+    ) -> dict:
+        data = await self._graphql(
+            client,
+            token,
+            self._COMMIT_SNAPSHOT_QUERY,
+            {
+                "owner": self.owner,
+                "name": self.repository,
+                "expression": ref,
+            },
+        )
+        commit = (data.get("repository") or {}).get("object") or {}
+        oid = commit.get("oid")
+        tree = commit.get("tree") or {}
+        if not oid or not tree.get("oid"):
+            raise PlatformCommitError(
+                "GitHub source ref did not resolve to an immutable commit"
+            )
+        return {"oid": str(oid), "tree_oid": str(tree["oid"]), "history": []}
+
+    async def _file_hashes(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        paths: tuple[str, ...],
+        ref: str,
+    ) -> dict[str, str | None]:
+        result: dict[str, str | None] = {}
+        for path in paths:
+            encoded_path = urllib.parse.quote(path, safe="/")
+            response = await client.get(
+                f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
+                headers=self._headers(
+                    token, accept="application/vnd.github.raw+json"
+                ),
+                params={"ref": ref},
+            )
+            if response.status_code == 404:
+                result[path] = None
+                continue
+            if response.is_error:
+                raise PlatformCommitError(
+                    f"GitHub could not inspect file {path}: HTTP {response.status_code}"
+                )
+            result[path] = hashlib.sha256(response.content).hexdigest()
+        return result
 
     async def _verify_commit(
         self,
@@ -458,6 +621,21 @@ class GitHubAppCommitWriter:
       createCommitOnBranch(input: $input) {
         commit { oid }
         ref { name }
+      }
+    }
+    """
+
+    _COMMIT_SNAPSHOT_QUERY = """
+    query CommitSnapshot(
+      $owner: String!, $name: String!, $expression: String!
+    ) {
+      repository(owner: $owner, name: $name) {
+        object(expression: $expression) {
+          ... on Commit {
+            oid
+            tree { oid }
+          }
+        }
       }
     }
     """
