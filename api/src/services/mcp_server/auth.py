@@ -101,7 +101,7 @@ class BifrostAuthProvider(AuthProvider):
         normalized_base_url = base_url.rstrip("/")
         super().__init__(
             base_url=normalized_base_url,
-            required_scopes=["mcp:access"],
+            required_scopes=[MCP_SCOPE],
         )
 
         # Keep the public URL as a normalized string because the custom OAuth
@@ -196,7 +196,7 @@ class BifrostAuthProvider(AuthProvider):
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
-            "scopes_supported": ["mcp:access"],
+            "scopes_supported": [MCP_SCOPE],
             "authorization_response_iss_parameter_supported": True,
             "resource_indicators_supported": True,
         })
@@ -206,7 +206,7 @@ class BifrostAuthProvider(AuthProvider):
         return JSONResponse({
             "resource": self.resource,
             "authorization_servers": [self.issuer],
-            "scopes_supported": ["mcp:access"],
+            "scopes_supported": [MCP_SCOPE],
             "bearer_methods_supported": ["header"],
         })
 
@@ -232,7 +232,7 @@ class BifrostAuthProvider(AuthProvider):
         state = request.query_params.get("state")
         code_challenge = request.query_params.get("code_challenge")
         code_challenge_method = request.query_params.get("code_challenge_method")
-        scope = request.query_params.get("scope", "mcp:access")
+        scope = request.query_params.get("scope", MCP_SCOPE)
         resource = request.query_params.get("resource")
 
         # Validate required parameters
@@ -549,7 +549,7 @@ class BifrostAuthProvider(AuthProvider):
                 "token_type": "Bearer",
                 "expires_in": 1800,  # 30 minutes
                 "refresh_token": refresh_token,
-                "scope": auth_code_data.get("scope", "mcp:access"),
+                "scope": auth_code_data.get("scope", MCP_SCOPE),
             })
 
         elif grant_type == "refresh_token":
@@ -617,7 +617,7 @@ class BifrostAuthProvider(AuthProvider):
                 "token_type": "Bearer",
                 "expires_in": 1800,
                 "refresh_token": new_refresh_token,
-                "scope": "mcp:access",
+                "scope": MCP_SCOPE,
             })
 
         else:
@@ -752,7 +752,7 @@ class BifrostAuthProvider(AuthProvider):
         return AccessToken(
             token=token,  # FastMCP requires this field
             client_id=str(payload.get("sub")),
-            scopes=["mcp:access"],
+            scopes=[MCP_SCOPE],
             expires_at=payload.get("exp"),
             claims={
                 "user_id": payload.get("sub"),
