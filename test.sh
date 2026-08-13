@@ -110,14 +110,14 @@ dump_stack_startup_logs() {
     docker compose -f "$COMPOSE_FILE" ps -a >&2 || true
     echo "" >&2
     echo "Startup logs:" >&2
-    docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps init api worker scheduler pgbouncer postgres rabbitmq redis seaweedfs >&2 || true
+    docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps init api api-replica worker scheduler pgbouncer postgres rabbitmq redis seaweedfs >&2 || true
     export_logs "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE" || true
 }
 
 reset_state() {
     echo "Resetting state..."
 
-    docker compose -f "$COMPOSE_FILE" stop api worker scheduler pgbouncer 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" stop api api-replica worker scheduler pgbouncer 2>/dev/null || true
 
     docker compose -f "$COMPOSE_FILE" exec -T postgres psql -U bifrost -d postgres -c \
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'bifrost_test' AND pid <> pg_backend_pid();" \
@@ -139,7 +139,7 @@ reset_state() {
     docker compose -f "$COMPOSE_FILE" start pgbouncer > /dev/null
     wait_for_service "$COMPOSE_FILE" pgbouncer pg_isready -h localhost -p 5432 -U bifrost
     docker compose -f "$COMPOSE_FILE" --profile e2e start \
-        api worker scheduler scheduler-fixtures > /dev/null
+        api api-replica worker scheduler scheduler-fixtures > /dev/null
     wait_for_api_ready "$COMPOSE_FILE"
 
     echo "State reset complete."
@@ -257,7 +257,7 @@ stack_reset() {
     # won't re-attach its network endpoint cleanly, and its pool only proxies
     # bifrost_test anyway (nothing here connects to bifrost_test through it
     # while it's stopped).
-    docker compose -f "$COMPOSE_FILE" stop api worker scheduler 2>/dev/null || true
+    docker compose -f "$COMPOSE_FILE" stop api api-replica worker scheduler 2>/dev/null || true
     "$SCRIPT_DIR/scripts/stack_template_init.sh"
     reset_state
 }
@@ -319,7 +319,7 @@ cmd_coverage() {
     # E2E exercises API/worker/scheduler in sibling containers. Stop those
     # processes before materializing the report so coverage.py flushes their
     # parallel data files into the shared coverage volume.
-    docker compose -f "$COMPOSE_FILE" stop api worker scheduler >/dev/null 2>&1 || true
+    docker compose -f "$COMPOSE_FILE" stop api api-replica worker scheduler >/dev/null 2>&1 || true
 
     docker compose -f "$COMPOSE_FILE" --profile test run --rm test-runner \
         sh -lc "backup=/tmp/$(basename '$source').pre-combine

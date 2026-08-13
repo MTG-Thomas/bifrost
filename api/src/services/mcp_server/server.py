@@ -15,6 +15,7 @@ Usage:
     app = fastmcp_server.http_app()
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -75,6 +76,8 @@ BIFROST_WEBSITE_URL = "https://docs.gobifrost.com"
 # current FastMCP tool name. Its values also track names during refresh.
 _WORKFLOW_ID_TO_TOOL_NAME: dict[str, str] = {}
 _WORKFLOW_CATALOG_DIGEST = hashlib.sha256(b"[]").hexdigest()
+_WORKFLOW_CATALOG_REVISION = -1
+_WORKFLOW_CATALOG_REFRESH_LOCK = asyncio.Lock()
 
 # Stored references for refresh_workflow_tools()
 _fastmcp_instance: "FastMCP | None" = None
@@ -832,9 +835,10 @@ async def _register_workflow_tools(mcp: "FastMCP") -> int:
                         f"(workflow: {entry.workflow_name}, id: {entry.workflow_id})"
                     )
                 except Exception as e:
-                    logger.warning(
+                    logger.exception(
                         f"Failed to register workflow tool {entry.workflow_name}: {e}"
                     )
+                    raise
 
             _WORKFLOW_ID_TO_TOOL_NAME = {
                 entry.workflow_id: entry.name for entry in registered_entries
@@ -850,38 +854,72 @@ async def _register_workflow_tools(mcp: "FastMCP") -> int:
 
     except Exception as e:
         logger.exception(f"Error registering workflow tools: {e}")
-        return 0
+        raise
 
 
-async def refresh_workflow_tools() -> int:
-    """Re-register all workflow tools from DB. Removes stale tools.
+async def refresh_workflow_tools(
+    *,
+    mcp: "FastMCP | None" = None,
+    target_revision: int | None = None,
+    force: bool = False,
+) -> int:
+    """Reconcile this replica's provider with a stable shared revision.
 
-    Call this after workflow create/update/delete to keep MCP tool list current.
+    The Redis revision is read on both sides of each database snapshot. If it
+    changes while the catalog is being rebuilt, the query may have raced a
+    committed mutation, so reconciliation repeats before marking the replica
+    current. A missed pub/sub message is harmless because request middleware
+    supplies the durable shared revision as ``target_revision``.
     """
+    global _WORKFLOW_CATALOG_REVISION, _fastmcp_instance
+
+    if mcp is not None:
+        _fastmcp_instance = mcp
     if not _fastmcp_instance:
         logger.debug("MCP not initialized, skipping workflow tool refresh")
         return 0
 
-    old_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
-    old_catalog_digest = _WORKFLOW_CATALOG_DIGEST
-    count = await _register_workflow_tools(_fastmcp_instance)
-    new_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
+    async with _WORKFLOW_CATALOG_REFRESH_LOCK:
+        if (
+            not force
+            and target_revision is not None
+            and _WORKFLOW_CATALOG_REVISION >= target_revision
+        ):
+            return len(_WORKFLOW_ID_TO_TOOL_NAME)
 
-    # Remove tools that no longer exist from FastMCP
-    for stale_name in old_tool_names - new_tool_names:
-        try:
-            _fastmcp_instance.local_provider.remove_tool(stale_name)
-            logger.debug(f"Removed stale MCP tool: {stale_name}")
-        except Exception:
-            pass  # Tool already gone
-
-    added = new_tool_names - old_tool_names
-    removed = old_tool_names - new_tool_names
-    if added or removed or old_catalog_digest != _WORKFLOW_CATALOG_DIGEST:
-        logger.info(
-            f"MCP workflow tools refreshed: {count} total, "
-            f"+{len(added)} added, -{len(removed)} removed, "
-            f"catalog digest: {_WORKFLOW_CATALOG_DIGEST}"
+        from src.services.mcp_server.catalog_sync import (
+            get_workflow_catalog_revision,
         )
 
-    return count
+        while True:
+            revision_before = await get_workflow_catalog_revision()
+            old_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
+            old_catalog_digest = _WORKFLOW_CATALOG_DIGEST
+            count = await _register_workflow_tools(_fastmcp_instance)
+            new_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
+
+            for stale_name in old_tool_names - new_tool_names:
+                _fastmcp_instance.local_provider.remove_tool(stale_name)
+                logger.debug(f"Removed stale MCP tool: {stale_name}")
+
+            revision_after = await get_workflow_catalog_revision()
+            if revision_before != revision_after:
+                logger.info(
+                    "MCP workflow catalog revision moved during refresh "
+                    "(%s -> %s); reconciling again",
+                    revision_before,
+                    revision_after,
+                )
+                continue
+
+            _WORKFLOW_CATALOG_REVISION = revision_after
+            added = new_tool_names - old_tool_names
+            removed = old_tool_names - new_tool_names
+            if added or removed or old_catalog_digest != _WORKFLOW_CATALOG_DIGEST:
+                logger.info(
+                    f"MCP workflow tools refreshed: {count} total, "
+                    f"+{len(added)} added, -{len(removed)} removed, "
+                    f"revision: {_WORKFLOW_CATALOG_REVISION}, "
+                    f"catalog digest: {_WORKFLOW_CATALOG_DIGEST}"
+                )
+            return count

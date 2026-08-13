@@ -106,10 +106,27 @@ def test_after_flush_collects_manifest_relevant_changes_only() -> None:
 def test_after_rollback_clears_collected_changes() -> None:
     session = SessionStub(new=[WatchedThing("new-1")])
     entity_change_hook._after_flush(session, None)
+    setattr(session, entity_change_hook._CATALOG_PENDING_ATTR, True)
 
     entity_change_hook._after_rollback(session)
 
     assert getattr(session, entity_change_hook._PENDING_ATTR) == []
+    assert not getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+
+
+def test_bulk_workflow_dml_marks_catalog_for_post_commit_publish() -> None:
+    session = SessionStub()
+    state = SimpleNamespace(
+        is_insert=False,
+        is_update=True,
+        is_delete=False,
+        statement=SimpleNamespace(table=SimpleNamespace(name="workflows")),
+        session=session,
+    )
+
+    entity_change_hook._track_bulk_workflow_change(state)
+
+    assert getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
 
 
 def test_after_commit_deduplicates_changes_and_schedules_publish_tasks() -> None:
@@ -161,6 +178,62 @@ def test_after_commit_clears_pending_when_no_event_loop_exists() -> None:
         entity_change_hook._after_commit(session)
 
     assert getattr(session, entity_change_hook._PENDING_ATTR) == []
+
+
+def test_after_commit_schedules_one_catalog_revision_for_workflow_changes() -> None:
+    session = SessionStub()
+    setattr(
+        session,
+        entity_change_hook._PENDING_ATTR,
+        [
+            ("workflows", "workflow-1", "add"),
+            ("workflows", "workflow-2", "update"),
+        ],
+    )
+    scheduled = []
+    loop = SimpleNamespace(create_task=lambda task: scheduled.append(task))
+
+    with (
+        patch.object(entity_change_hook.asyncio, "get_running_loop", return_value=loop),
+        patch("src.core.request_context.get_request_user", return_value=None),
+        patch("src.core.request_context.get_request_session_id", return_value=None),
+        patch.object(entity_change_hook, "_publish_entity_change", AsyncMock()),
+        patch.object(
+            entity_change_hook,
+            "_publish_workflow_catalog_change",
+            AsyncMock(),
+        ) as publish_catalog,
+    ):
+        entity_change_hook._after_commit(session)
+
+    assert len(scheduled) == 3
+    assert publish_catalog.call_count == 1
+    for task in scheduled:
+        task.close()
+
+
+def test_after_commit_publishes_catalog_for_bulk_workflow_dml() -> None:
+    session = SessionStub()
+    setattr(session, entity_change_hook._CATALOG_PENDING_ATTR, True)
+    scheduled = []
+    loop = SimpleNamespace(create_task=lambda task: scheduled.append(task))
+
+    with (
+        patch.object(entity_change_hook.asyncio, "get_running_loop", return_value=loop),
+        patch("src.core.request_context.get_request_user", return_value=None),
+        patch("src.core.request_context.get_request_session_id", return_value=None),
+        patch.object(
+            entity_change_hook,
+            "_publish_workflow_catalog_change",
+            AsyncMock(),
+        ) as publish_catalog,
+    ):
+        entity_change_hook._after_commit(session)
+
+    assert not getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+    assert len(scheduled) == 1
+    assert publish_catalog.call_count == 1
+    scheduled[0].close()
 
 
 @pytest.mark.asyncio
@@ -491,6 +564,7 @@ def test_register_entity_change_hooks_registers_session_listeners() -> None:
 
     assert [call.args[1:] for call in listen.call_args_list] == [
         ("after_flush", entity_change_hook._after_flush),
+        ("do_orm_execute", entity_change_hook._track_bulk_workflow_change),
         ("after_commit", entity_change_hook._after_commit),
         ("after_rollback", entity_change_hook._after_rollback),
     ]

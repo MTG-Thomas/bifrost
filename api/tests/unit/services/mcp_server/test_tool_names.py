@@ -6,7 +6,7 @@ handle duplicate detection, and manage tool name <-> workflow ID mappings.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -285,10 +285,18 @@ class TestToolNameMappings:
             local_provider=SimpleNamespace(remove_tool=remove_tool),
         )
         monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 0)
         monkeypatch.setattr(
             server,
             "_WORKFLOW_ID_TO_TOOL_NAME",
             {"stale-id": "stale_tool"},
+        )
+        from src.services.mcp_server import catalog_sync
+
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            AsyncMock(return_value=1),
         )
 
         async def register_workflow_tools(_mcp):
@@ -297,8 +305,63 @@ class TestToolNameMappings:
 
         monkeypatch.setattr(server, "_register_workflow_tools", register_workflow_tools)
 
-        assert await server.refresh_workflow_tools() == 1
+        assert await server.refresh_workflow_tools(target_revision=1) == 1
         remove_tool.assert_called_once_with("stale_tool")
+        assert server._WORKFLOW_CATALOG_REVISION == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_retries_when_revision_moves_during_snapshot(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        revisions = AsyncMock(side_effect=[3, 4, 4, 4])
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 2)
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            revisions,
+        )
+
+        assert await server.refresh_workflow_tools(target_revision=3) == 1
+
+        assert register.await_count == 2
+        assert server._WORKFLOW_CATALOG_REVISION == 4
+
+    @pytest.mark.asyncio
+    async def test_refresh_failure_does_not_advance_local_revision(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 2)
+        monkeypatch.setattr(
+            server,
+            "_register_workflow_tools",
+            AsyncMock(side_effect=RuntimeError("database unavailable")),
+        )
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            AsyncMock(return_value=3),
+        )
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await server.refresh_workflow_tools(target_revision=3)
+
+        assert server._WORKFLOW_CATALOG_REVISION == 2
 
 
 class TestMCPContext:

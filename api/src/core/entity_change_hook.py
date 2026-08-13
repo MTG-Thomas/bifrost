@@ -64,6 +64,7 @@ def _register_models() -> None:
 
 # Attribute name used to stash pending changes on the session object
 _PENDING_ATTR = "_bifrost_entity_changes"
+_CATALOG_PENDING_ATTR = "_bifrost_workflow_catalog_changed"
 
 
 def _get_pending(session: Session) -> list[tuple[str, str, str]]:
@@ -112,10 +113,24 @@ def _after_flush(session: Session, flush_context: Any) -> None:
             pending.append((key[0], key[1], "delete"))
 
 
+def _track_bulk_workflow_change(orm_execute_state: Any) -> None:
+    """Mark Core/ORM bulk DML that bypasses ``after_flush`` identity sets."""
+    if not (
+        orm_execute_state.is_insert
+        or orm_execute_state.is_update
+        or orm_execute_state.is_delete
+    ):
+        return
+    table = getattr(orm_execute_state.statement, "table", None)
+    if getattr(table, "name", None) == "workflows":
+        setattr(orm_execute_state.session, _CATALOG_PENDING_ATTR, True)
+
+
 def _after_commit(session: Session) -> None:
     """SQLAlchemy after_commit event — schedule async broadcasts for pending changes."""
     pending: list[tuple[str, str, str]] = getattr(session, _PENDING_ATTR, [])
-    if not pending:
+    catalog_pending = bool(getattr(session, _CATALOG_PENDING_ATTR, False))
+    if not pending and not catalog_pending:
         return
 
     # Deduplicate: same (entity_type, entity_id) may appear multiple times,
@@ -126,6 +141,7 @@ def _after_commit(session: Session) -> None:
 
     # Clear pending
     setattr(session, _PENDING_ATTR, [])
+    setattr(session, _CATALOG_PENDING_ATTR, False)
 
     # Get user/session context
     from src.core.request_context import get_request_user, get_request_session_id
@@ -149,6 +165,26 @@ def _after_commit(session: Session) -> None:
             user_name=user_name,
             session_id=session_id,
         ))
+
+    if catalog_pending or any(
+        entity_type == "workflows" for entity_type, _ in seen
+    ):
+        # Advance one durable catalog revision per committed transaction, not
+        # per workflow row. Every API replica consumes the shared event, and a
+        # request-time revision check repairs a missed transient notification.
+        loop.create_task(_publish_workflow_catalog_change())
+
+
+async def _publish_workflow_catalog_change() -> None:
+    """Advance and broadcast the dynamic MCP workflow catalog revision."""
+    try:
+        from src.services.mcp_server.catalog_sync import (
+            publish_workflow_catalog_changed,
+        )
+
+        await publish_workflow_catalog_changed()
+    except Exception as exc:
+        logger.exception("Failed to publish MCP workflow catalog change: %s", exc)
 
 
 async def _serialize_entity(entity_type: str, entity_id: str) -> dict[str, Any] | None:
@@ -316,6 +352,7 @@ async def _publish_entity_change(
 def _after_rollback(session: Session) -> None:
     """Clear pending changes on rollback."""
     setattr(session, _PENDING_ATTR, [])
+    setattr(session, _CATALOG_PENDING_ATTR, False)
 
 
 def register_entity_change_hooks() -> None:
@@ -326,6 +363,7 @@ def register_entity_change_hooks() -> None:
     _register_models()
 
     event.listen(Session, "after_flush", _after_flush)
+    event.listen(Session, "do_orm_execute", _track_bulk_workflow_change)
     event.listen(Session, "after_commit", _after_commit)
     event.listen(Session, "after_rollback", _after_rollback)
 
