@@ -42,6 +42,7 @@ from src.routers import (
     branding_router,
     files_router,
     workspace_repo_changesets_router,
+    workspace_promotions_router,
     schedules_router,
     workflow_keys_router,
     audit_router,
@@ -545,6 +546,7 @@ def create_app() -> FastAPI:
     app.include_router(branding_router)
     app.include_router(files_router)
     app.include_router(workspace_repo_changesets_router)
+    app.include_router(workspace_promotions_router)
     app.include_router(schedules_router)
     app.include_router(workflow_keys_router)
     app.include_router(audit_router)

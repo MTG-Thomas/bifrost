@@ -889,6 +889,10 @@ def main(args: list[str] | None = None) -> int:
         if command == "run":
             return handle_run(args[1:])
 
+        if command == "promote":
+            from bifrost.commands.promote import handle_promote
+            return handle_promote(args[1:])
+
         if command == "git":
             return handle_git(args[1:])
 
@@ -948,6 +952,7 @@ Usage:
 Commands:
   sync        Bidirectional sync between local files and Bifrost platform
   run         Run a workflow directly (silent JSON output) or interactively via browser
+  promote     Compile an immutable Workspace promotion preview (activation disabled)
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
@@ -1008,6 +1013,7 @@ Direct files vs bulk local sync:
 
 Examples:
   bifrost run workflow.py -w greet
+  bifrost promote workflow.py -w greet --preview
   bifrost run workflow.py -w greet -p '{"name": "World"}'
   bifrost run workflow.py -w greet | jq .
   bifrost run workflow.py --interactive
@@ -1564,6 +1570,8 @@ def _run_direct(
     verbose: bool = False,
     organization_id: str | None = None,
     solution_root: "pathlib.Path | None" = None,
+    promotion_evidence: "pathlib.Path | None" = None,
+    workflow_file: str | None = None,
 ) -> int:
     """
     Run a workflow directly in standalone mode.
@@ -1668,12 +1676,37 @@ def _run_direct(
 
     workflow_fn = workflows[selected_workflow]
 
+    started_at = time.monotonic()
     try:
         result = asyncio.run(workflow_fn(**params))
         if verbose:
             print(f"Result: {json.dumps(result, indent=2, default=str)}")
         else:
             print(json.dumps(result, default=str))
+        if promotion_evidence is not None and workflow_file is not None:
+            from bifrost.promotion import build_promotion_bundle
+
+            root = pathlib.Path.cwd().resolve()
+            selected_path = pathlib.Path(workflow_file)
+            if selected_path.is_absolute():
+                selected_path = selected_path.resolve().relative_to(root)
+            bundle = build_promotion_bundle(root, selected_path.as_posix())
+            evidence = {
+                "succeeded": True,
+                "snapshot_id": bundle.snapshot_id,
+                "evidence_id": f"local:{uuid.uuid4()}",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "observed_effects": [],
+            }
+            temporary = promotion_evidence.with_suffix(
+                promotion_evidence.suffix + ".tmp"
+            )
+            temporary.write_text(
+                json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(promotion_evidence)
         return 0
     except Exception as e:
         print(f"Error executing workflow: {e}", file=sys.stderr)
@@ -1706,6 +1739,7 @@ def handle_run(args: list[str]) -> int:
     verbose = False
     inline_params: dict[str, Any] | None = None
     organization_id: str | None = None
+    promotion_evidence: pathlib.Path | None = None
 
     # Parse arguments
     i = 1
@@ -1741,6 +1775,12 @@ def handle_run(args: list[str]) -> int:
         elif args[i] in ("--no-browser", "-n"):
             no_browser = True
             i += 1
+        elif args[i] == "--promotion-evidence":
+            if i + 1 >= len(args):
+                print("Error: --promotion-evidence requires a file path", file=sys.stderr)
+                return 1
+            promotion_evidence = pathlib.Path(args[i + 1])
+            i += 2
         elif args[i] in ("--help", "-h"):
             print_run_help()
             return 0
@@ -1828,6 +1868,8 @@ def handle_run(args: list[str]) -> int:
             selected_workflow, workflows, params,
             verbose=verbose, organization_id=organization_id,
             solution_root=solution_root,
+            promotion_evidence=promotion_evidence,
+            workflow_file=workflow_file,
         )
 
     # Interactive mode (--interactive) — browser-based session
@@ -4537,6 +4579,7 @@ Options:
   --verbose, -v                Show status messages (e.g., "Running...", "Result:")
   --interactive, -i            Open browser-based session instead of direct execution
   --no-browser, -n             Don't auto-open browser (only with --interactive)
+  --promotion-evidence FILE    Write snapshot-bound local-run evidence after success
   --help, -h                   Show this help message
 
 Examples:
@@ -4544,6 +4587,7 @@ Examples:
   bifrost run workflow.py -w greet -p '{"name": "World"}'                  # With parameters
   bifrost run workflow.py -w greet -v                                      # Verbose output
   bifrost run workflow.py -w greet | jq .                                  # Pipe to jq
+  bifrost run workflow.py -w greet --promotion-evidence .promotion-run.json
   bifrost run workflow.py --interactive                                    # Browser-based session
 """.strip())
 

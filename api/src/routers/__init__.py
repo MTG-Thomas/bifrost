@@ -16,6 +16,7 @@ from src.routers.websocket import router as websocket_router
 from src.routers.branding import router as branding_router
 from src.routers.files import router as files_router
 from src.routers.workspace_repo_changesets import router as workspace_repo_changesets_router
+from src.routers.workspace_promotions import router as workspace_promotions_router
 from src.routers.schedules import router as schedules_router
 from src.routers.workflow_keys import router as workflow_keys_router
 from src.routers.audit import router as audit_router
@@ -94,6 +95,7 @@ __all__ = [
     "branding_router",
     "files_router",
     "workspace_repo_changesets_router",
+    "workspace_promotions_router",
     "schedules_router",
     "workflow_keys_router",
     "audit_router",

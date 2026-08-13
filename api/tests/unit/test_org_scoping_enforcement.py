@@ -246,6 +246,11 @@ IDENTITY_MODELS: set[str] = {
     # within an explicit organization scope. They are never resolved through
     # the org-to-global execution cascade.
     "WorkspaceRepoChangeset",
+    # Promotion artifacts/releases are immutable candidate and durable lifecycle
+    # records addressed by UUID/candidate inside an explicit org. They never
+    # participate in org-to-global execution resolution.
+    "WorkspacePromotionArtifact",
+    "WorkspacePromotionRelease",
     # Platform jobs are requester-owned durable operation records. They are
     # looked up by id with requester/admin authorization, never name-resolved
     # through the org-to-global execution cascade.

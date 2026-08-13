@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     execution_timeout_seconds: int = Field(
         default=300, description="Default execution timeout in seconds (5 minutes)"
     )
+    workspace_rapid_promotion_preview_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the preview-only immutable Workspace promotion API. "
+            "This flag does not enable activation."
+        ),
+    )
     deferred_execution_promoter_interval_seconds: int = Field(
         default=60,
         ge=1,
