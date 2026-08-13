@@ -13,7 +13,7 @@ async def test_fresh_database_does_not_install_withdrawn_builder_schema(
     revision = (
         await db_session.execute(text("SELECT version_num FROM alembic_version"))
     ).scalar_one()
-    assert revision == "20260813_operation_receipts"
+    assert revision == "20260813_workspace_promotions"
 
     catalog_revision = (
         await db_session.execute(
