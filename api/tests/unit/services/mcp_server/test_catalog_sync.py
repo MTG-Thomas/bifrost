@@ -87,6 +87,22 @@ async def test_listener_and_request_reconciliation_use_shared_revision(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("revision", ["7", -1, None, 7.0])
+async def test_invalid_catalog_revision_notification_is_ignored(
+    monkeypatch,
+    revision,
+) -> None:
+    from src.services.mcp_server import server
+
+    refresh = AsyncMock()
+    monkeypatch.setattr(server, "refresh_workflow_tools", refresh)
+
+    await catalog_sync._handle_workflow_catalog_changed({"revision": revision})
+
+    refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_start_and_stop_use_shared_pubsub_manager(monkeypatch) -> None:
     from src.services.mcp_server import server
 
@@ -114,6 +130,50 @@ async def test_start_and_stop_use_shared_pubsub_manager(monkeypatch) -> None:
         catalog_sync.WORKFLOW_CATALOG_CHANNEL,
         catalog_sync._handle_workflow_catalog_changed,
     )
+
+
+@pytest.mark.asyncio
+async def test_start_degrades_when_pubsub_is_unavailable_but_snapshot_succeeds(
+    monkeypatch,
+    caplog,
+) -> None:
+    from src.services.mcp_server import server
+
+    subscribe = AsyncMock(
+        side_effect=RuntimeError(catalog_sync.PUBSUB_UNAVAILABLE_MESSAGE)
+    )
+    refresh = AsyncMock(return_value=4)
+    mcp = object()
+    monkeypatch.setattr(catalog_sync.pubsub_manager, "subscribe_internal", subscribe)
+    monkeypatch.setattr(server, "refresh_workflow_tools", refresh)
+
+    with caplog.at_level("WARNING", logger=catalog_sync.__name__):
+        count = await catalog_sync.start_workflow_catalog_sync(mcp)
+
+    assert count == 4
+    refresh.assert_awaited_once_with(mcp=mcp, force=True)
+    assert "request-time database reconciliation remains active" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_keeps_database_snapshot_failure_fatal_without_pubsub(
+    monkeypatch,
+) -> None:
+    from src.services.mcp_server import server
+
+    monkeypatch.setattr(
+        catalog_sync.pubsub_manager,
+        "subscribe_internal",
+        AsyncMock(side_effect=RuntimeError(catalog_sync.PUBSUB_UNAVAILABLE_MESSAGE)),
+    )
+    monkeypatch.setattr(
+        server,
+        "refresh_workflow_tools",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await catalog_sync.start_workflow_catalog_sync(object())
 
 
 @pytest.mark.asyncio

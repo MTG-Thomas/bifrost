@@ -144,6 +144,7 @@ reset_state() {
     docker compose -f "$COMPOSE_FILE" --profile e2e start \
         api api-replica worker scheduler scheduler-fixtures > /dev/null
     wait_for_api_ready "$COMPOSE_FILE"
+    wait_for_api_service_ready "$COMPOSE_FILE" api-replica
 
     echo "State reset complete."
 }
@@ -176,11 +177,12 @@ stack_up() {
         # Idempotent: still confirm API is serving traffic before returning
         # success. A previous `stack up` may have exited before the API
         # finished booting; without this, the next test command would race.
-        if wait_for_api_ready "$COMPOSE_FILE"; then
+        if wait_for_api_ready "$COMPOSE_FILE" && \
+            wait_for_api_service_ready "$COMPOSE_FILE" api-replica; then
             echo "Stack already up."
             return 0
         fi
-        dump_stack_startup_logs "existing stack api readiness"
+        dump_stack_startup_logs "existing stack API readiness"
         exit 1
     fi
 
@@ -217,6 +219,10 @@ stack_up() {
     echo "Waiting for API to be serving traffic on /health/ready..."
     if ! wait_for_api_ready "$COMPOSE_FILE"; then
         dump_stack_startup_logs "api readiness"
+        exit 1
+    fi
+    if ! wait_for_api_service_ready "$COMPOSE_FILE" api-replica; then
+        dump_stack_startup_logs "api replica readiness"
         exit 1
     fi
 

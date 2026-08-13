@@ -274,6 +274,7 @@ def test_annotation_helpers_cover_attributes_and_non_literal_options() -> None:
         "enum": [None],
         "type": "null",
     }
+    assert indexer._annotation_to_json_schema(annotations[2].annotation) == {}
     assert indexer._annotation_to_json_schema(annotations[5].annotation) == {}
     assert indexer._annotation_to_json_schema(
         ast.Attribute(value=ast.Name(id="typing"), attr="Literal")
@@ -284,6 +285,18 @@ def test_annotation_helpers_cover_attributes_and_non_literal_options() -> None:
             slice=ast.Constant(value="x"),
         )
     ) == {"enum": ["x"], "type": "string"}
+    unresolved_function = ast.parse(
+        "def run(status: Literal[SOME_STATUS]):\n    pass\n"
+    ).body[0]
+    assert isinstance(unresolved_function, ast.FunctionDef)
+    unresolved_literal = unresolved_function.args.args[0].annotation
+    assert unresolved_literal is not None
+    assert indexer._annotation_to_json_schema(unresolved_literal) == {}
+    empty_optional = ast.Subscript(
+        value=ast.Name(id="Optional"),
+        slice=ast.Tuple(elts=[]),
+    )
+    assert indexer._annotation_to_json_schema(empty_optional) == {}
     assert indexer._is_optional_annotation(annotations[4].annotation) is True
 
 

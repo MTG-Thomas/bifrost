@@ -78,6 +78,7 @@ _WORKFLOW_ID_TO_TOOL_NAME: dict[str, str] = {}
 _WORKFLOW_CATALOG_DIGEST = hashlib.sha256(b"[]").hexdigest()
 _WORKFLOW_CATALOG_REVISION = -1
 _WORKFLOW_CATALOG_REFRESH_LOCK = asyncio.Lock()
+_WORKFLOW_CATALOG_REFRESH_ATTEMPTS = 3
 
 # Stored references for refresh_workflow_tools()
 _fastmcp_instance: "FastMCP | None" = None
@@ -657,10 +658,7 @@ def _build_workflow_catalog(
     from src.services.tool_registry import workflow_parameters_to_json_schema
 
     entries: list[_WorkflowCatalogEntry] = []
-    for tool in sorted(
-        tools,
-        key=lambda item: (_normalize_tool_name(item.name), str(item.id)),
-    ):
+    for tool in tools:
         normalized = _normalize_tool_name(tool.name)
         candidate = normalized or "workflow"
         workflow_id = str(tool.id)
@@ -773,13 +771,24 @@ def _replace_workflow_catalog(
             logger.debug("Workflow tool already absent: %s", old_name)
 
     registered_entries: list[_WorkflowCatalogEntry] = []
-    for entry, workflow_tool in prepared_tools:
-        mcp.add_tool(workflow_tool)
-        registered_entries.append(entry)
-        logger.debug(
-            f"Registered workflow tool: {entry.name} "
-            f"(workflow: {entry.workflow_name}, id: {entry.workflow_id})"
-        )
+    try:
+        for entry, workflow_tool in prepared_tools:
+            mcp.add_tool(workflow_tool)
+            registered_entries.append(entry)
+            logger.debug(
+                f"Registered workflow tool: {entry.name} "
+                f"(workflow: {entry.workflow_name}, id: {entry.workflow_id})"
+            )
+    except Exception:
+        # FastMCP may insert a tool before raising while normalizing its schema.
+        # Remove every prepared identity so the next refresh starts cleanly.
+        for entry, _ in prepared_tools:
+            try:
+                mcp.local_provider.remove_tool(entry.name)
+            except KeyError:
+                # The failing add may have rejected the tool before insertion.
+                pass
+        raise
     return registered_entries
 
 
@@ -902,7 +911,7 @@ async def refresh_workflow_tools(
             if shared_revision >= _WORKFLOW_CATALOG_REVISION:
                 return len(_WORKFLOW_ID_TO_TOOL_NAME)
 
-        while True:
+        for attempt in range(1, _WORKFLOW_CATALOG_REFRESH_ATTEMPTS + 1):
             revision_before = await get_workflow_catalog_revision()
             old_tool_names = set(_WORKFLOW_ID_TO_TOOL_NAME.values())
             old_catalog_digest = _WORKFLOW_CATALOG_DIGEST
@@ -911,6 +920,10 @@ async def refresh_workflow_tools(
 
             revision_after = await get_workflow_catalog_revision()
             if revision_before != revision_after:
+                if attempt == _WORKFLOW_CATALOG_REFRESH_ATTEMPTS:
+                    raise RuntimeError(
+                        "MCP workflow catalog kept changing during reconciliation"
+                    )
                 logger.info(
                     "MCP workflow catalog revision moved during refresh "
                     "(%s -> %s); reconciling again",
@@ -930,3 +943,5 @@ async def refresh_workflow_tools(
                     f"catalog digest: {_WORKFLOW_CATALOG_DIGEST}"
                 )
             return count
+
+        raise AssertionError("workflow catalog reconciliation loop exhausted")

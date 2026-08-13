@@ -146,14 +146,21 @@ def _before_flush_workflow_catalog_revision(
     flush_context: Any,
     instances: Any,
 ) -> None:
-    """Advance the catalog revision before ORM workflow changes are flushed."""
+    """Advance the catalog revision before ORM or cascading workflow changes."""
+    from src.models.orm.solutions import Solution
     from src.models.orm.workflows import Workflow
 
-    if any(
+    workflow_changed = any(
         isinstance(instance, Workflow)
         for collection in (session.new, session.dirty, session.deleted)
         for instance in collection
-    ):
+    )
+    solution_deleted = any(
+        isinstance(instance, Solution) for instance in session.deleted
+    )
+    if workflow_changed or solution_deleted:
+        # A Solution delete cascades to workflows in PostgreSQL, so those
+        # Workflow rows never enter the session's deleted identity set.
         _bump_workflow_catalog_revision(session)
 
 
@@ -166,7 +173,10 @@ def _track_bulk_workflow_change(orm_execute_state: Any) -> None:
     ):
         return
     table = getattr(orm_execute_state.statement, "table", None)
-    if getattr(table, "name", None) == "workflows":
+    table_name = getattr(table, "name", None)
+    if table_name == "workflows" or (
+        table_name == "solutions" and orm_execute_state.is_delete
+    ):
         _bump_workflow_catalog_revision(orm_execute_state.session)
 
 
@@ -212,9 +222,7 @@ def _after_commit(session: Session) -> None:
             session_id=session_id,
         ))
 
-    if catalog_revision is not None and (catalog_pending or any(
-        entity_type == "workflows" for entity_type, _ in seen
-    )):
+    if catalog_pending and catalog_revision is not None:
         # The revision was already committed atomically with the workflow
         # mutation. Redis is only a low-latency wake-up; request-time checks
         # repair a missed notification or publisher process loss.

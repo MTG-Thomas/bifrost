@@ -18,6 +18,7 @@ from src.services.tool_registry import (
     RegisteredTool,
     ToolDefinition,
     ToolRegistry,
+    _map_workflow_type_to_json_schema,
     _normalize_tool_name,
     format_tools_for_openai,
     format_tools_for_anthropic,
@@ -211,44 +212,40 @@ class TestToolDefinitionCategory:
 # ── ToolRegistry._map_type_to_json_schema ─────────────────────────────
 
 class TestMapTypeToJsonSchema:
-
-    def setup_method(self):
-        self.registry = _make_registry()
-
     def test_string(self):
-        assert self.registry._map_type_to_json_schema("string") == "string"
+        assert _map_workflow_type_to_json_schema("string") == "string"
 
     def test_str(self):
-        assert self.registry._map_type_to_json_schema("str") == "string"
+        assert _map_workflow_type_to_json_schema("str") == "string"
 
     def test_int(self):
-        assert self.registry._map_type_to_json_schema("int") == "integer"
+        assert _map_workflow_type_to_json_schema("int") == "integer"
 
     def test_integer(self):
-        assert self.registry._map_type_to_json_schema("integer") == "integer"
+        assert _map_workflow_type_to_json_schema("integer") == "integer"
 
     def test_float(self):
-        assert self.registry._map_type_to_json_schema("float") == "number"
+        assert _map_workflow_type_to_json_schema("float") == "number"
 
     def test_bool(self):
-        assert self.registry._map_type_to_json_schema("bool") == "boolean"
+        assert _map_workflow_type_to_json_schema("bool") == "boolean"
 
     def test_json(self):
-        assert self.registry._map_type_to_json_schema("json") == "object"
+        assert _map_workflow_type_to_json_schema("json") == "object"
 
     def test_dict(self):
-        assert self.registry._map_type_to_json_schema("dict") == "object"
+        assert _map_workflow_type_to_json_schema("dict") == "object"
 
     def test_list(self):
-        assert self.registry._map_type_to_json_schema("list") == "array"
+        assert _map_workflow_type_to_json_schema("list") == "array"
 
     def test_unknown_falls_back_to_string(self):
-        assert self.registry._map_type_to_json_schema("unknown_type") == "string"
+        assert _map_workflow_type_to_json_schema("unknown_type") == "string"
 
     def test_case_insensitive(self):
-        assert self.registry._map_type_to_json_schema("STRING") == "string"
-        assert self.registry._map_type_to_json_schema("Int") == "integer"
-        assert self.registry._map_type_to_json_schema("BOOL") == "boolean"
+        assert _map_workflow_type_to_json_schema("STRING") == "string"
+        assert _map_workflow_type_to_json_schema("Int") == "integer"
+        assert _map_workflow_type_to_json_schema("BOOL") == "boolean"
 
 
 # ── ToolRegistry._to_tool_definition ──────────────────────────────────

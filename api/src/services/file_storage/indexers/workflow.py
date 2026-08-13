@@ -571,7 +571,14 @@ class WorkflowIndexer:
             if isinstance(slice_node, ast.Tuple)
             else [slice_node]
         )
+        return self._subscript_annotation_to_json_schema(base_name, slice_items)
 
+    def _subscript_annotation_to_json_schema(
+        self,
+        base_name: str,
+        slice_items: list[ast.AST],
+    ) -> dict[str, Any]:
+        """Convert a parameterized annotation into JSON Schema."""
         if base_name in {"list", "List", "Sequence"}:
             item_schema = (
                 self._annotation_to_json_schema(slice_items[0])
@@ -589,23 +596,11 @@ class WorkflowIndexer:
             return {"type": "object", "additionalProperties": value_schema}
 
         if base_name == "Literal":
-            values: list[Any] = []
-            for item in slice_items:
-                try:
-                    values.append(ast.literal_eval(item))
-                except (ValueError, TypeError):
-                    continue
-            schema: dict[str, Any] = {"enum": values}
-            literal_types = {
-                json_type
-                for value in values
-                if (json_type := self._json_type_for_literal(value)) is not None
-            }
-            if len(literal_types) == 1:
-                schema["type"] = literal_types.pop()
-            return schema
+            return self._literal_items_to_json_schema(slice_items)
 
         if base_name == "Optional":
+            if not slice_items:
+                return {}
             inner = self._annotation_to_json_schema(slice_items[0])
             return {"anyOf": [inner, {"type": "null"}]}
 
@@ -632,6 +627,30 @@ class WorkflowIndexer:
             }
 
         return {"type": "object"}
+
+    def _literal_items_to_json_schema(
+        self,
+        slice_items: list[ast.AST],
+    ) -> dict[str, Any]:
+        """Build an enum schema from statically resolvable Literal members."""
+        values: list[Any] = []
+        for item in slice_items:
+            try:
+                values.append(ast.literal_eval(item))
+            except (ValueError, TypeError):
+                continue
+        if not values:
+            return {}
+
+        schema: dict[str, Any] = {"enum": values}
+        literal_types = {
+            json_type
+            for value in values
+            if (json_type := self._json_type_for_literal(value)) is not None
+        }
+        if len(literal_types) == 1:
+            schema["type"] = literal_types.pop()
+        return schema
 
     def _is_optional_annotation(self, annotation: ast.AST) -> bool:
         """Check if annotation represents an optional type."""

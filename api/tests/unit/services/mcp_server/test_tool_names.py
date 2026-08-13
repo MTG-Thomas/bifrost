@@ -352,6 +352,57 @@ class TestToolNameMappings:
         ]
         assert list(warm.local_provider.tools) == list(fresh.local_provider.tools)
 
+    def test_partial_replacement_unwinds_every_prepared_identity(self, monkeypatch):
+        from src.services.mcp_server import server
+
+        class WorkflowTool:
+            def __init__(self, **kwargs):
+                self.name = kwargs["name"]
+
+        class Provider:
+            def __init__(self):
+                self.tools = {"old_tool": object()}
+
+            def remove_tool(self, name):
+                del self.tools[name]
+
+        class MCP:
+            def __init__(self):
+                self.local_provider = Provider()
+                self.add_count = 0
+
+            def add_tool(self, tool):
+                self.add_count += 1
+                self.local_provider.tools[tool.name] = tool
+                if self.add_count == 2:
+                    raise ValueError("invalid schema")
+
+        catalog = server._build_workflow_catalog(
+            [
+                _workflow_tool(
+                    "11111111-1111-1111-1111-111111111111",
+                    name="Alpha",
+                ),
+                _workflow_tool(
+                    "22222222-2222-2222-2222-222222222222",
+                    name="Zulu",
+                ),
+            ],
+            frozenset(),
+        )
+        monkeypatch.setattr(server, "_WorkflowTool", WorkflowTool)
+        monkeypatch.setattr(
+            server,
+            "_WORKFLOW_ID_TO_TOOL_NAME",
+            {"old-id": "old_tool"},
+        )
+        mcp = MCP()
+
+        with pytest.raises(ValueError, match="invalid schema"):
+            server._replace_workflow_catalog(mcp, catalog)
+
+        assert mcp.local_provider.tools == {}
+
     @pytest.mark.asyncio
     async def test_refresh_retries_when_revision_moves_during_snapshot(
         self,
@@ -404,6 +455,33 @@ class TestToolNameMappings:
         with pytest.raises(RuntimeError, match="database unavailable"):
             await server.refresh_workflow_tools(target_revision=3)
 
+        assert server._WORKFLOW_CATALOG_REVISION == 2
+
+    @pytest.mark.asyncio
+    async def test_refresh_is_bounded_without_marking_a_racing_snapshot_current(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        revisions = AsyncMock(side_effect=[3, 4, 4, 5, 5, 6])
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 2)
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            revisions,
+        )
+
+        with pytest.raises(RuntimeError, match="kept changing"):
+            await server.refresh_workflow_tools(target_revision=3)
+
+        assert register.await_count == server._WORKFLOW_CATALOG_REFRESH_ATTEMPTS
         assert server._WORKFLOW_CATALOG_REVISION == 2
 
     @pytest.mark.asyncio

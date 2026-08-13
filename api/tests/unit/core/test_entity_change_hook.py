@@ -142,6 +142,23 @@ def test_bulk_workflow_dml_marks_catalog_for_post_commit_publish() -> None:
     assert len(session.executed) == 1
 
 
+def test_bulk_solution_delete_marks_cascaded_workflows_for_catalog_publish() -> None:
+    session = SessionStub()
+    state = SimpleNamespace(
+        is_insert=False,
+        is_update=False,
+        is_delete=True,
+        statement=SimpleNamespace(table=SimpleNamespace(name="solutions")),
+        session=session,
+    )
+
+    entity_change_hook._track_bulk_workflow_change(state)
+
+    assert getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
+
+
 def test_before_flush_advances_revision_once_per_transaction() -> None:
     from src.models.orm.workflows import Workflow
 
@@ -151,6 +168,19 @@ def test_before_flush_advances_revision_once_per_transaction() -> None:
     entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
     entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
 
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
+
+
+def test_before_flush_advances_revision_for_solution_cascade_delete() -> None:
+    from src.models.orm.solutions import Solution
+
+    solution = object.__new__(Solution)
+    session = SessionStub(deleted=[solution])
+
+    entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
+
+    assert getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
     assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
     assert len(session.executed) == 1
 
@@ -216,6 +246,7 @@ def test_after_commit_schedules_one_catalog_revision_for_workflow_changes() -> N
             ("workflows", "workflow-2", "update"),
         ],
     )
+    setattr(session, entity_change_hook._CATALOG_PENDING_ATTR, True)
     setattr(session, entity_change_hook._CATALOG_REVISION_ATTR, 11)
     scheduled = []
     loop = SimpleNamespace(create_task=lambda task: scheduled.append(task))

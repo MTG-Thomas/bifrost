@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 WORKFLOW_CATALOG_CHANNEL = "mcp:workflow-catalog"
+PUBSUB_UNAVAILABLE_MESSAGE = "Redis pub/sub listener is unavailable"
+
+
 async def get_workflow_catalog_revision() -> int:
     """Read the transactionally durable shared workflow-catalog revision."""
     from sqlalchemy import select
@@ -70,16 +73,28 @@ async def start_workflow_catalog_sync(mcp: "FastMCP") -> int:
     """Subscribe this replica and load a revision-consistent catalog snapshot."""
     from src.services.mcp_server.server import refresh_workflow_tools
 
-    await pubsub_manager.subscribe_internal(
-        WORKFLOW_CATALOG_CHANNEL,
-        _handle_workflow_catalog_changed,
-    )
+    subscribed = False
+    try:
+        await pubsub_manager.subscribe_internal(
+            WORKFLOW_CATALOG_CHANNEL,
+            _handle_workflow_catalog_changed,
+        )
+        subscribed = True
+    except RuntimeError as exc:
+        if str(exc) != PUBSUB_UNAVAILABLE_MESSAGE:
+            raise
+        logger.warning(
+            "MCP workflow catalog pub/sub unavailable; "
+            "request-time database reconciliation remains active"
+        )
+
     try:
         return await refresh_workflow_tools(mcp=mcp, force=True)
     except BaseException:
         # Lifespan never reaches its ``finally`` block when startup fails, so
         # unwind this process-local registration here as well.
-        stop_workflow_catalog_sync()
+        if subscribed:
+            stop_workflow_catalog_sync()
         raise
 
 

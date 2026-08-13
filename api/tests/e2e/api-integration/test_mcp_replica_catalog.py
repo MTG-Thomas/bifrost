@@ -26,6 +26,7 @@ LATEST_MCP_PROTOCOL = "2026-07-28"
 MCP_ACCEPT_HEADER = "application/json, text/event-stream"
 MCP_RESOURCE = f"{TEST_API_URL}/mcp"
 MCP_CANONICAL_HOST = "api:8000"
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 def _admin_headers(token: str) -> dict[str, str]:
@@ -75,6 +76,7 @@ def _mcp_post(
             "method": method,
             "params": stamped_params,
         },
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -176,6 +178,7 @@ async def {function_name}(message: str) -> str:
             f"{TEST_API_URL}/api/files/editor/content",
             headers=admin_headers,
             json={"path": path, "content": source, "encoding": "utf-8"},
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
         assert write_response.status_code in (200, 201), write_response.text
 
@@ -183,6 +186,7 @@ async def {function_name}(message: str) -> str:
             f"{TEST_API_URL}/api/workflows/register",
             headers=admin_headers,
             json={"path": path, "function_name": function_name},
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
         assert register_response.status_code == 201, register_response.text
         workflow_id = register_response.json()["id"]
@@ -200,6 +204,7 @@ async def {function_name}(message: str) -> str:
                 "channels": ["chat"],
                 "tool_ids": [workflow_id],
             },
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
         assert agent_response.status_code == 201, agent_response.text
         agent_id = agent_response.json()["id"]
@@ -275,6 +280,7 @@ async def {function_name}(message: str) -> str:
             f"{TEST_API_URL}/api/workflows/{workflow_id}",
             headers=admin_headers,
             json={"force_deactivation": True},
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
         assert delete_response.status_code == 200, delete_response.text
         workflow_id = None
@@ -293,14 +299,17 @@ async def {function_name}(message: str) -> str:
             requests.delete(
                 f"{TEST_API_URL}/api/agents/{agent_id}",
                 headers=admin_headers,
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
         if workflow_id is not None:
             requests.delete(
                 f"{TEST_API_URL}/api/workflows/{workflow_id}",
                 headers=admin_headers,
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
         requests.delete(
             f"{TEST_API_URL}/api/files/editor",
             headers=admin_headers,
             params={"path": path},
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )

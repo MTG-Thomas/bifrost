@@ -83,6 +83,8 @@ def generate_workflow_openapi_schema(workflow: Workflow) -> dict[str, Any]:
     query_params = []
 
     if isinstance(parameters_schema, dict):
+        # FastAPI emits OpenAPI 3.1, whose Schema Object is a superset of JSON
+        # Schema 2020-12 and explicitly permits $schema on root Schema Objects.
         input_schema = deepcopy(parameters_schema)
         properties = input_schema.get("properties", {})
         required_names = set(input_schema.get("required", []))
