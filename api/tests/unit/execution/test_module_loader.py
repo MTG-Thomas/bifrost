@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-
+from shared.workspace_effects import WorkflowBounds, WorkflowEffect
 from src.services.execution import module_loader
 from src.services.execution.module_loader import (
     DataProviderMetadata,
@@ -186,6 +186,9 @@ def test_convert_workflow_metadata_maps_legacy_fields() -> None:
         tool_description="Sync tickets",
         time_saved=15,
         value=25.5,
+        effects=(WorkflowEffect(kind="integration.write", target="HaloPSA"),),
+        enforced_bounds=WorkflowBounds(max_records_written=10),
+        requested_bounds=WorkflowBounds(max_duration_seconds=30),
     )
 
     converted = module_loader._convert_workflow_metadata(legacy)
@@ -208,6 +211,11 @@ def test_convert_workflow_metadata_maps_legacy_fields() -> None:
     assert converted.tool_description == "Sync tickets"
     assert converted.time_saved == 15
     assert converted.value == 25.5
+    assert converted.effects == (
+        WorkflowEffect(kind="integration.write", target="HaloPSA"),
+    )
+    assert converted.enforced_bounds == WorkflowBounds(max_records_written=10)
+    assert converted.requested_bounds == WorkflowBounds(max_duration_seconds=30)
 
 
 def test_convert_data_provider_metadata_maps_legacy_fields() -> None:
@@ -222,6 +230,9 @@ def test_convert_data_provider_metadata_maps_legacy_fields() -> None:
         function="callable-marker",
         cache_ttl_seconds=900,
         source="workspace",
+        effects=(),
+        enforced_bounds=WorkflowBounds(max_records_read=100),
+        requested_bounds=None,
     )
 
     converted = module_loader._convert_data_provider_metadata(legacy)
@@ -238,6 +249,9 @@ def test_convert_data_provider_metadata_maps_legacy_fields() -> None:
         function="callable-marker",
         cache_ttl_seconds=900,
         source="workspace",
+        effects=(),
+        enforced_bounds=WorkflowBounds(max_records_read=100),
+        requested_bounds=None,
     )
 
 

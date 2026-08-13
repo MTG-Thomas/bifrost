@@ -9,18 +9,21 @@ function signatures - no @param decorator needed.
 
 ## Decorator Parameters
 
-Only identity parameters are accepted in decorators:
+Identity and Workspace promotion policy parameters are accepted in decorators:
 - name: Override function name (stable identifier)
 - description: Override docstring
 - category: Hint for organization (overridable in UI)
 - tags: Hints for filtering (overridable in UI)
 - is_tool: Mark as AI agent tool (@workflow only)
+- effects: Externally observable effects for promotion policy
+- enforced_bounds/requested_bounds: Source and runtime limit declarations
 
-All other configuration (schedules, timeouts, endpoints, etc.) is managed via UI/API.
+Runtime configuration (schedules, timeouts, endpoints, etc.) is managed via UI/API.
 Unknown parameters are ignored with a warning for backwards compatibility.
 """
 
-
+import pytest
+from shared.workspace_effects import WorkflowBounds, WorkflowEffect
 from src.sdk.decorators import data_provider, workflow
 
 
@@ -92,6 +95,35 @@ class TestWorkflowDecorator:
         # Verify function still callable
         result = onboard_user("John", "Doe")
         assert result == "Onboarded John Doe"
+
+    def test_workflow_promotion_declarations_are_typed(self):
+        @workflow(
+            effects=[{"kind": "integration.read", "target": "HaloPSA"}],
+            enforced_bounds={"max_pages": 3},
+            requested_bounds={"max_duration_seconds": 20},
+        )
+        def read_tickets():
+            return []
+
+        metadata = read_tickets._executable_metadata
+        assert metadata.effects == (
+            WorkflowEffect(kind="integration.read", target="HaloPSA"),
+        )
+        assert metadata.enforced_bounds == WorkflowBounds(max_pages=3)
+        assert metadata.requested_bounds == WorkflowBounds(max_duration_seconds=20)
+
+    def test_malformed_promotion_declarations_fail_during_decoration(self):
+        with pytest.raises(ValueError, match="requires an integration target"):
+
+            @workflow(effects=[{"kind": "integration.write"}])
+            def missing_target():
+                return None
+
+        with pytest.raises(TypeError, match="positive integer"):
+
+            @workflow(enforced_bounds={"max_records_written": False})
+            def boolean_bound():
+                return None
 
     def test_workflow_as_tool(self):
         """Test workflow marked as tool"""

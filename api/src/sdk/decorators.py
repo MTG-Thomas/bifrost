@@ -13,8 +13,9 @@ Parameter information is derived from function signatures - no @param decorator 
 
 ## Decorator Parameters
 
-Only identity parameters are accepted in decorators. All other configuration
-(schedules, timeouts, endpoints, etc.) is managed via the UI/API.
+Identity and Workspace promotion policy declarations are accepted in
+decorators. Runtime configuration (schedules, timeouts, endpoints, etc.) is
+managed via the UI/API.
 
 Allowed parameters:
 - name: Override function name (stable identifier)
@@ -22,13 +23,23 @@ Allowed parameters:
 - category: Hint for organization (overridable in UI)
 - tags: Hints for filtering (overridable in UI)
 - is_tool: Mark as AI agent tool (@workflow only)
+- effects: Explicit externally observable effects for promotion policy
+- enforced_bounds: Limits the workflow claims to enforce itself
+- requested_bounds: Limits requested from the execution environment
 
 Unknown parameters are ignored with a warning for backwards compatibility.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
+
+from shared.workspace_effects import (
+    WorkflowBoundsInput,
+    WorkflowEffectInput,
+    normalize_workflow_bounds,
+    normalize_workflow_effects,
+)
 
 from src.services.execution.module_loader import (
     DataProviderMetadata,
@@ -50,6 +61,9 @@ def workflow(
     category: str = "General",
     tags: list[str] | None = None,
     is_tool: bool = False,
+    effects: Sequence[WorkflowEffectInput] | None = None,
+    enforced_bounds: WorkflowBoundsInput | None = None,
+    requested_bounds: WorkflowBoundsInput | None = None,
     # Accept unknown params for backwards compatibility
     **kwargs: Any,
 ):
@@ -57,8 +71,8 @@ def workflow(
     Decorator for registering workflow functions.
 
     Parameters are automatically derived from function signatures.
-    Only identity parameters are accepted - all other configuration
-    (schedules, timeouts, endpoints) is managed via the UI/API.
+    Identity and promotion policy declarations are accepted. Runtime
+    configuration (schedules, timeouts, endpoints) is managed via the UI/API.
 
     Usage:
         @workflow
@@ -77,10 +91,23 @@ def workflow(
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
         is_tool: If True, available as AI agent tool
+        effects: Explicit effects used by Workspace promotion policy
+        enforced_bounds: Limits enforced by the workflow implementation
+        requested_bounds: Limits requested from the execution environment
 
     Returns:
         Decorated function with _executable_metadata attribute
     """
+    normalized_effects = normalize_workflow_effects(effects)
+    normalized_enforced_bounds = normalize_workflow_bounds(
+        enforced_bounds,
+        field_name="enforced_bounds",
+    )
+    normalized_requested_bounds = normalize_workflow_bounds(
+        requested_bounds,
+        field_name="requested_bounds",
+    )
+
     # Warn about deprecated parameters
     if kwargs:
         unknown_params = sorted(kwargs.keys())
@@ -126,8 +153,8 @@ def workflow(
         # Determine type based on is_tool flag
         workflow_type: ExecutableType = "tool" if is_tool else "workflow"
 
-        # Initialize metadata with identity fields only
-        # Execution config (timeout, schedule, endpoint, etc.) comes from DB
+        # Source owns identity and promotion declarations. Execution config
+        # (timeout, schedule, endpoint, etc.) comes from DB.
         metadata = WorkflowMetadata(
             name=workflow_name,
             description=workflow_description,
@@ -137,6 +164,9 @@ def workflow(
             source_file_path=source_file_path,
             parameters=parameters,
             function=func,
+            effects=normalized_effects,
+            enforced_bounds=normalized_enforced_bounds,
+            requested_bounds=normalized_requested_bounds,
         )
 
         # Store metadata on function for dynamic discovery
@@ -168,6 +198,9 @@ def tool(
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
+    effects: Sequence[WorkflowEffectInput] | None = None,
+    enforced_bounds: WorkflowBoundsInput | None = None,
+    requested_bounds: WorkflowBoundsInput | None = None,
     # Accept unknown params for backwards compatibility
     **kwargs: Any,
 ):
@@ -195,6 +228,9 @@ def tool(
         description: LLM-friendly description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
+        effects: Explicit effects used by Workspace promotion policy
+        enforced_bounds: Limits enforced by the tool implementation
+        requested_bounds: Limits requested from the execution environment
 
     Returns:
         Decorated function
@@ -207,6 +243,9 @@ def tool(
         category=category,
         tags=tags,
         is_tool=True,
+        effects=effects,
+        enforced_bounds=enforced_bounds,
+        requested_bounds=requested_bounds,
         **kwargs,
     )
 
@@ -219,6 +258,9 @@ def data_provider(
     description: str | None = None,
     category: str = "General",
     tags: list[str] | None = None,
+    effects: Sequence[WorkflowEffectInput] | None = None,
+    enforced_bounds: WorkflowBoundsInput | None = None,
+    requested_bounds: WorkflowBoundsInput | None = None,
     # Accept unknown params for backwards compatibility
     **kwargs: Any,
 ):
@@ -227,7 +269,8 @@ def data_provider(
 
     Data providers return dynamic options for form fields and app builder.
     Parameters are automatically derived from function signatures.
-    Only identity parameters are accepted - execution configuration is managed via UI/API.
+    Identity and promotion policy declarations are accepted. Execution
+    configuration is managed via UI/API.
 
     Data providers are stored in the workflows table with type='data_provider'.
 
@@ -247,10 +290,23 @@ def data_provider(
         description: Human-readable description (defaults to first line of docstring)
         category: Category for organization (default: "General")
         tags: Optional list of tags for filtering
+        effects: Explicit effects used by Workspace promotion policy
+        enforced_bounds: Limits enforced by the provider implementation
+        requested_bounds: Limits requested from the execution environment
 
     Returns:
         Decorated function with _executable_metadata attribute
     """
+    normalized_effects = normalize_workflow_effects(effects)
+    normalized_enforced_bounds = normalize_workflow_bounds(
+        enforced_bounds,
+        field_name="enforced_bounds",
+    )
+    normalized_requested_bounds = normalize_workflow_bounds(
+        requested_bounds,
+        field_name="requested_bounds",
+    )
+
     # Warn about deprecated parameters
     if kwargs:
         unknown_params = sorted(kwargs.keys())
@@ -293,8 +349,8 @@ def data_provider(
         # Get tags with default
         provider_tags = tags if tags is not None else []
 
-        # Create metadata with identity fields only
-        # Execution config (timeout, cache_ttl) comes from DB
+        # Source owns identity and promotion declarations. Execution config
+        # (timeout, cache_ttl) comes from DB.
         metadata = DataProviderMetadata(
             name=provider_name,
             description=provider_description,
@@ -304,6 +360,9 @@ def data_provider(
             parameters=parameters,
             function=func,
             source_file_path=source_file_path,
+            effects=normalized_effects,
+            enforced_bounds=normalized_enforced_bounds,
+            requested_bounds=normalized_requested_bounds,
         )
 
         # Store metadata on function for dynamic discovery
