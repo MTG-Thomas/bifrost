@@ -55,26 +55,49 @@ interface DiscoveredMetadata {
 	token_endpoint?: string;
 	authorization_url?: string;
 	token_url?: string;
+	issuer?: string;
 	audience?: string;
 	resource?: string;
 	scopes_supported?: string[];
 	scopes?: string[] | string;
 	grant_types_supported?: string[];
+	authorization_server_metadata?: {
+		issuer?: string;
+		authorization_endpoint?: string;
+		token_endpoint?: string;
+		grant_types_supported?: string[];
+	};
+	protected_resource_metadata?: {
+		resource?: string;
+	};
 	[key: string]: unknown;
 }
 
 function readMetadata(metadata: DiscoveredMetadata) {
+	const issuer =
+		metadata.authorization_server_metadata?.issuer ?? metadata.issuer ?? "";
 	const authorization_url =
-		metadata.authorization_endpoint ?? metadata.authorization_url ?? "";
-	const token_url = metadata.token_endpoint ?? metadata.token_url ?? "";
-	const audience = metadata.audience ?? metadata.resource ?? "";
+		metadata.authorization_server_metadata?.authorization_endpoint ??
+		metadata.authorization_endpoint ??
+		metadata.authorization_url ??
+		"";
+	const token_url =
+		metadata.authorization_server_metadata?.token_endpoint ??
+		metadata.token_endpoint ??
+		metadata.token_url ??
+		"";
+	const audience =
+		metadata.protected_resource_metadata?.resource ??
+		metadata.resource ??
+		metadata.audience ??
+		"";
 	const scopesValue = metadata.scopes_supported ?? metadata.scopes;
 	const scopes = Array.isArray(scopesValue)
 		? scopesValue.join(" ")
 		: typeof scopesValue === "string"
 			? scopesValue
 			: "";
-	return { authorization_url, token_url, audience, scopes };
+	return { issuer, authorization_url, token_url, audience, scopes };
 }
 
 /**
@@ -84,7 +107,10 @@ function readMetadata(metadata: DiscoveredMetadata) {
  * default to authorization_code (M365, etc.).
  */
 function detectFlowFromMetadata(metadata: DiscoveredMetadata): OAuthFlowType {
-	const grants = metadata.grant_types_supported ?? [];
+	const grants =
+		metadata.authorization_server_metadata?.grant_types_supported ??
+		metadata.grant_types_supported ??
+		[];
 	const hasCC = grants.includes("client_credentials");
 	const hasAC = grants.includes("authorization_code");
 	if (hasCC && !hasAC) return "client_credentials";
@@ -98,7 +124,10 @@ interface MCPServerFormProps {
 	onCancel?: () => void;
 }
 
-export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) {
+export function MCPServerForm({
+	onSuccess,
+	onCancel,
+}: MCPServerFormProps = {}) {
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
 	const createServer = $api.useMutation("post", "/api/mcp-servers");
@@ -114,13 +143,15 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 	const [overrideMode, setOverrideMode] = useState(false);
 
 	// Manual override values — start blank, populated from metadata when shown.
+	const [manualIssuer, setManualIssuer] = useState("");
 	const [manualAuthUrl, setManualAuthUrl] = useState("");
 	const [manualTokenUrl, setManualTokenUrl] = useState("");
 	const [manualAudience, setManualAudience] = useState("");
 	const [manualScopes, setManualScopes] = useState("");
 
 	// OAuth flow type — detected from discovery, admin can override.
-	const [flowType, setFlowType] = useState<OAuthFlowType>("authorization_code");
+	const [flowType, setFlowType] =
+		useState<OAuthFlowType>("authorization_code");
 
 	const handleDiscover = async () => {
 		const url = form.getValues("server_url");
@@ -148,9 +179,7 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 			}
 
 			const discoveredMetadata = data?.metadata as
-				| DiscoveredMetadata
-				| null
-				| undefined;
+				DiscoveredMetadata | null | undefined;
 			if (!discoveredMetadata) {
 				toast.warning(
 					"No OAuth metadata found — enter values manually",
@@ -162,6 +191,7 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 
 			setMetadata(discoveredMetadata);
 			const parsed = readMetadata(discoveredMetadata);
+			setManualIssuer(parsed.issuer);
 			setManualAuthUrl(parsed.authorization_url);
 			setManualTokenUrl(parsed.token_url);
 			setManualAudience(parsed.audience);
@@ -185,6 +215,7 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 		// Populate manual fields from current metadata if any, then flip to edit
 		if (metadata) {
 			const parsed = readMetadata(metadata);
+			setManualIssuer(parsed.issuer);
 			setManualAuthUrl(parsed.authorization_url);
 			setManualTokenUrl(parsed.token_url);
 			setManualAudience(parsed.audience);
@@ -199,9 +230,11 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 		let payload: DiscoveredMetadata | null = null;
 		if (overrideMode) {
 			payload = {
+				issuer: manualIssuer || undefined,
 				authorization_endpoint: manualAuthUrl || undefined,
 				token_endpoint: manualTokenUrl || undefined,
 				audience: manualAudience || undefined,
+				resource: manualAudience || undefined,
 				scopes_supported: manualScopes
 					? manualScopes.split(/[\s,]+/).filter(Boolean)
 					: undefined,
@@ -215,6 +248,7 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 		// discovered/manual values. Only sent when we have a token_url —
 		// otherwise the server is auth-less and no provider is created.
 		const parsed = metadata ? readMetadata(metadata) : null;
+		const issuer = overrideMode ? manualIssuer : (parsed?.issuer ?? "");
 		const tokenUrl = overrideMode
 			? manualTokenUrl
 			: (parsed?.token_url ?? "");
@@ -224,46 +258,46 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 		const audience = overrideMode
 			? manualAudience
 			: (parsed?.audience ?? "");
-		const scopesStr = overrideMode
-			? manualScopes
-			: (parsed?.scopes ?? "");
+		const scopesStr = overrideMode ? manualScopes : (parsed?.scopes ?? "");
 		const scopes = scopesStr
 			? scopesStr.split(/[\s,]+/).filter(Boolean)
 			: [];
 
 		// authorization_code requires authorization_url; if the admin chose
 		// authorization_code but didn't supply one, fail fast with a toast.
-		if (
-			tokenUrl &&
-			flowType === "authorization_code" &&
-			!authUrl
-		) {
+		if (tokenUrl && flowType === "authorization_code" && !authUrl) {
 			toast.error(
 				"Authorization URL is required for authorization_code flow",
 			);
 			return;
 		}
+		if (tokenUrl && !issuer) {
+			toast.error(
+				"Authorization server issuer is required for OAuth token binding",
+			);
+			return;
+		}
 
-		const oauthProviderPayload =
-			tokenUrl
-				? {
-						oauth_flow_type: flowType,
-						token_url: tokenUrl,
-						authorization_url:
-							flowType === "authorization_code"
-								? authUrl
-								: null,
-						scopes,
-						audience: audience || null,
-					}
-				: undefined;
+		const oauthProviderPayload = tokenUrl
+			? {
+					oauth_flow_type: flowType,
+					token_url: tokenUrl,
+					authorization_url:
+						flowType === "authorization_code" ? authUrl : null,
+					scopes,
+					audience: audience || null,
+				}
+			: undefined;
 
 		try {
 			const result = await createServer.mutateAsync({
 				body: {
 					name: values.name,
 					server_url: values.server_url,
-					discovery_metadata: payload as Record<string, unknown> | null,
+					discovery_metadata: payload as Record<
+						string,
+						unknown
+					> | null,
 					oauth_provider: oauthProviderPayload as never,
 					is_active: true,
 				},
@@ -401,6 +435,34 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 						</div>
 
 						<div className="space-y-2">
+							<label
+								htmlFor="mcp-oauth-issuer"
+								className="text-xs font-medium text-muted-foreground"
+							>
+								Authorization server issuer
+							</label>
+							<Input
+								id="mcp-oauth-issuer"
+								type="url"
+								readOnly={!overrideMode}
+								value={
+									overrideMode
+										? manualIssuer
+										: (parsed?.issuer ?? "")
+								}
+								onChange={(e) =>
+									setManualIssuer(e.target.value)
+								}
+								className="font-mono text-xs"
+							/>
+							<p className="text-xs text-muted-foreground">
+								Exact issuer from the authorization server
+								metadata. It cannot be inferred safely from the
+								MCP resource URL.
+							</p>
+						</div>
+
+						<div className="space-y-2">
 							<label className="text-xs font-medium text-muted-foreground">
 								OAuth flow
 							</label>
@@ -412,10 +474,12 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 								className="h-8 w-full rounded-2xl border border-transparent bg-input/50 px-2.5 text-sm transition-[color,box-shadow] duration-200 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<option value="authorization_code">
-									Authorization Code — user signs in at the vendor
+									Authorization Code — user signs in at the
+									vendor
 								</option>
 								<option value="client_credentials">
-									Client Credentials — server-to-server, no user sign-in
+									Client Credentials — server-to-server, no
+									user sign-in
 								</option>
 							</select>
 							<p className="text-xs text-muted-foreground">
@@ -427,32 +491,42 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 
 						{flowType === "authorization_code" && (
 							<div className="space-y-2">
-								<label className="text-xs font-medium text-muted-foreground">
+								<label
+									htmlFor="mcp-oauth-authorization-url"
+									className="text-xs font-medium text-muted-foreground"
+								>
 									Authorization URL
 								</label>
 								<Input
+									id="mcp-oauth-authorization-url"
 									readOnly={!overrideMode}
 									value={
 										overrideMode
 											? manualAuthUrl
-											: parsed?.authorization_url ?? ""
+											: (parsed?.authorization_url ?? "")
 									}
-									onChange={(e) => setManualAuthUrl(e.target.value)}
+									onChange={(e) =>
+										setManualAuthUrl(e.target.value)
+									}
 									className="font-mono text-xs"
 								/>
 							</div>
 						)}
 
 						<div className="space-y-2">
-							<label className="text-xs font-medium text-muted-foreground">
+							<label
+								htmlFor="mcp-oauth-token-url"
+								className="text-xs font-medium text-muted-foreground"
+							>
 								Token URL
 							</label>
 							<Input
+								id="mcp-oauth-token-url"
 								readOnly={!overrideMode}
 								value={
 									overrideMode
 										? manualTokenUrl
-										: parsed?.token_url ?? ""
+										: (parsed?.token_url ?? "")
 								}
 								onChange={(e) =>
 									setManualTokenUrl(e.target.value)
@@ -462,15 +536,19 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 						</div>
 
 						<div className="space-y-2">
-							<label className="text-xs font-medium text-muted-foreground">
+							<label
+								htmlFor="mcp-oauth-resource"
+								className="text-xs font-medium text-muted-foreground"
+							>
 								Audience / resource indicator
 							</label>
 							<Input
+								id="mcp-oauth-resource"
 								readOnly={!overrideMode}
 								value={
 									overrideMode
 										? manualAudience
-										: parsed?.audience ?? ""
+										: (parsed?.audience ?? "")
 								}
 								onChange={(e) =>
 									setManualAudience(e.target.value)
@@ -480,15 +558,19 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 						</div>
 
 						<div className="space-y-2">
-							<label className="text-xs font-medium text-muted-foreground">
+							<label
+								htmlFor="mcp-oauth-scopes"
+								className="text-xs font-medium text-muted-foreground"
+							>
 								Scopes
 							</label>
 							<Input
+								id="mcp-oauth-scopes"
 								readOnly={!overrideMode}
 								value={
 									overrideMode
 										? manualScopes
-										: parsed?.scopes ?? ""
+										: (parsed?.scopes ?? "")
 								}
 								onChange={(e) =>
 									setManualScopes(e.target.value)
@@ -501,27 +583,27 @@ export function MCPServerForm({ onSuccess, onCancel }: MCPServerFormProps = {}) 
 						    client_credentials is server-to-server; the vendor never redirects
 						    a browser anywhere, so showing this just confuses admins. */}
 						{flowType === "authorization_code" && (
-						<div className="space-y-2">
-							<label className="text-xs font-medium text-muted-foreground flex items-center gap-2">
-								Redirect URL{" "}
-								<Badge
-									variant="default"
-									className="bg-blue-600 hover:bg-blue-700"
-								>
-									Bifrost-managed
-								</Badge>
-							</label>
-							<Input
-								readOnly
-								value={`${window.location.origin}/api/mcp/oauth/callback`}
-								className="font-mono text-xs"
-							/>
-							<p className="text-xs text-muted-foreground">
-								Register this exact URL in the vendor's OAuth
-								app. Same value across all connections of this
-								server.
-							</p>
-						</div>
+							<div className="space-y-2">
+								<label className="text-xs font-medium text-muted-foreground flex items-center gap-2">
+									Redirect URL{" "}
+									<Badge
+										variant="default"
+										className="bg-blue-600 hover:bg-blue-700"
+									>
+										Bifrost-managed
+									</Badge>
+								</label>
+								<Input
+									readOnly
+									value={`${window.location.origin}/api/mcp/oauth/callback`}
+									className="font-mono text-xs"
+								/>
+								<p className="text-xs text-muted-foreground">
+									Register this exact URL in the vendor's
+									OAuth app. Same value across all connections
+									of this server.
+								</p>
+							</div>
 						)}
 					</div>
 				)}
