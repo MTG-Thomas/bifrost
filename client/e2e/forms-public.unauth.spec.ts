@@ -383,10 +383,10 @@ test.describe.serial("Public form iframe", () => {
 		const submit = frame.getByRole("button", { name: "Submit" });
 		await expect(submit).toBeDisabled();
 		await frame.getByRole("checkbox", { name: "I'm not a robot" }).click();
+		await submit.click({ trial: true });
 		await expect(
 			frame.getByText("Verified", { exact: true }),
 		).toBeVisible();
-		await expect(submit).toBeEnabled();
 		await submit.click();
 
 		const confirmation = frame.getByRole("status");

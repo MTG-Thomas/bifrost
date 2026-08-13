@@ -77,7 +77,7 @@ def _normalize_call_tool_result(result: CallToolResult) -> dict[str, Any]:
     ``{"content": <text-or-blocks>, "structured_content": <dict|None>,
        "is_error": bool}``.
 
-    Structured content (``CallToolResult.structuredContent``) is preserved
+    Structured content (``CallToolResult.structured_content``) is preserved
     verbatim — the planner prefers structured JSON over text when both
     are present.
     """
@@ -91,8 +91,8 @@ def _normalize_call_tool_result(result: CallToolResult) -> dict[str, Any]:
 
     return {
         "content": content_blocks,
-        "structured_content": result.structuredContent,
-        "is_error": bool(result.isError),
+        "structured_content": result.structured_content,
+        "is_error": bool(result.is_error),
     }
 
 

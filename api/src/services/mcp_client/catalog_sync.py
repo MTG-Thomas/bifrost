@@ -128,13 +128,13 @@ async def sync_catalog(
 
     for tool in tools_result.tools:
         seen_names.add(tool.name)
-        # The MCP SDK exposes the JSON Schema as ``inputSchema`` on the
+        # The MCP SDK exposes the JSON Schema as ``input_schema`` on the
         # Tool model. Persist it verbatim so the planner can re-emit it
         # to the LLM without re-shaping.
         schema = (
-            tool.inputSchema
-            if isinstance(tool.inputSchema, dict)
-            else (tool.inputSchema.model_dump() if tool.inputSchema is not None else {})
+            tool.input_schema
+            if isinstance(tool.input_schema, dict)
+            else (tool.input_schema.model_dump() if tool.input_schema is not None else {})
         )
 
         existing = existing_by_name.get(tool.name)
