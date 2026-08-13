@@ -163,6 +163,85 @@ function providerCacheKey(field: FormField): string {
 	return field.name;
 }
 
+interface DataProviderFieldProps {
+	fieldName: string;
+	fieldLabel: string | null;
+	fieldRequired: boolean;
+	fieldPlaceholder: string | null;
+	fieldHelpText: string | null;
+	options: ComboboxOption[];
+	isLoading: boolean;
+	error: { message?: string } | undefined;
+	providerError: string | undefined;
+	isEnabled: boolean;
+	value: string;
+	onValueChange: (value: string) => void;
+}
+
+const DataProviderField = memo(
+	({
+		fieldName,
+		fieldLabel,
+		fieldRequired,
+		fieldPlaceholder,
+		fieldHelpText,
+		options,
+		isLoading,
+		error: fieldError,
+		providerError,
+		isEnabled,
+		value,
+		onValueChange,
+	}: DataProviderFieldProps) => (
+		<div className="space-y-2">
+			<Label htmlFor={fieldName}>
+				{fieldLabel}
+				{fieldRequired && (
+					<span className="text-destructive ml-1">*</span>
+				)}
+			</Label>
+			<Combobox
+				id={fieldName}
+				options={options && options.length > 0 ? options : []}
+				value={value}
+				onValueChange={onValueChange}
+				placeholder={fieldPlaceholder || "Select an option..."}
+				emptyText="No options available"
+				isLoading={isLoading}
+				disabled={!isEnabled || isLoading}
+			/>
+			{providerError && (
+				<p className="text-sm text-destructive">{providerError}</p>
+			)}
+			{!providerError && fieldHelpText && (
+				<p className="text-sm text-muted-foreground">
+					{fieldHelpText}
+				</p>
+			)}
+			{fieldError && (
+				<p className="text-sm text-destructive">
+					{fieldError.message as string}
+				</p>
+			)}
+		</div>
+	),
+	(prevProps, nextProps) =>
+		prevProps.fieldName === nextProps.fieldName &&
+		prevProps.fieldLabel === nextProps.fieldLabel &&
+		prevProps.fieldRequired === nextProps.fieldRequired &&
+		prevProps.fieldPlaceholder === nextProps.fieldPlaceholder &&
+		prevProps.fieldHelpText === nextProps.fieldHelpText &&
+		prevProps.options === nextProps.options &&
+		prevProps.isLoading === nextProps.isLoading &&
+		prevProps.providerError === nextProps.providerError &&
+		prevProps.isEnabled === nextProps.isEnabled &&
+		prevProps.value === nextProps.value &&
+		prevProps.error === nextProps.error &&
+		prevProps.onValueChange === nextProps.onValueChange,
+);
+
+DataProviderField.displayName = "DataProviderField";
+
 /**
  * Inner component that uses FormContext
  * Separated to allow FormContextProvider to wrap it
@@ -773,91 +852,6 @@ function FormRendererInner({
 			setIsNavigating(false); // Only re-enable button on error
 		}
 	};
-
-	// Props interface for DataProviderField
-	interface DataProviderFieldProps {
-		fieldName: string;
-		fieldLabel: string | null;
-		fieldRequired: boolean;
-		fieldPlaceholder: string | null;
-		fieldHelpText: string | null;
-		options: ComboboxOption[];
-		isLoading: boolean;
-		error: { message?: string } | undefined;
-		providerError: string | undefined;
-		isEnabled: boolean;
-		value: string;
-		onValueChange: (value: string) => void;
-	}
-
-	// Memoized data provider field renderer - only re-renders when its specific data changes
-	const DataProviderField = memo(
-		({
-			fieldName,
-			fieldLabel,
-			fieldRequired,
-			fieldPlaceholder,
-			fieldHelpText,
-			options,
-			isLoading,
-			error: fieldError,
-			providerError,
-			isEnabled,
-			value,
-			onValueChange,
-		}: DataProviderFieldProps) => (
-			<div className="space-y-2">
-				<Label htmlFor={fieldName}>
-					{fieldLabel}
-					{fieldRequired && (
-						<span className="text-destructive ml-1">*</span>
-					)}
-				</Label>
-				<Combobox
-					id={fieldName}
-					options={options && options.length > 0 ? options : []}
-					value={value}
-					onValueChange={onValueChange}
-					placeholder={fieldPlaceholder || "Select an option..."}
-					emptyText="No options available"
-					isLoading={isLoading}
-					disabled={!isEnabled || isLoading}
-				/>
-				{providerError && (
-					<p className="text-sm text-destructive">{providerError}</p>
-				)}
-				{!providerError && fieldHelpText && (
-					<p className="text-sm text-muted-foreground">
-						{fieldHelpText}
-					</p>
-				)}
-				{fieldError && (
-					<p className="text-sm text-destructive">
-						{fieldError.message as string}
-					</p>
-				)}
-			</div>
-		),
-		(prevProps, nextProps) => {
-			// Only re-render if these specific props change
-			return (
-				prevProps.fieldName === nextProps.fieldName &&
-				prevProps.fieldLabel === nextProps.fieldLabel &&
-				prevProps.fieldRequired === nextProps.fieldRequired &&
-				prevProps.fieldPlaceholder === nextProps.fieldPlaceholder &&
-				prevProps.fieldHelpText === nextProps.fieldHelpText &&
-				prevProps.options === nextProps.options &&
-				prevProps.isLoading === nextProps.isLoading &&
-				prevProps.providerError === nextProps.providerError &&
-				prevProps.isEnabled === nextProps.isEnabled &&
-				prevProps.value === nextProps.value &&
-				prevProps.error === nextProps.error &&
-				prevProps.onValueChange === nextProps.onValueChange
-			);
-		},
-	);
-
-	DataProviderField.displayName = "DataProviderField";
 
 	// Create stable callbacks for field value changes
 	const fieldValueChangeCallbacks = useRef<
