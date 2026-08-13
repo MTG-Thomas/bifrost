@@ -156,7 +156,9 @@ jobs:
   # =============================================================================
   lint:
     needs: affected-test-plan
-    if: always()
+    # Skip the redundant push:main rerun; the merge queue already produced this
+    # required check for the exact reviewed commit.
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Lint & Type Check
     permissions:
@@ -284,7 +286,9 @@ jobs:
   # =============================================================================
   test-client-unit:
     needs: affected-test-plan
-    if: always()
+    # Skip the redundant push:main rerun; the merge queue already produced this
+    # required check for the exact reviewed commit.
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Client Unit Tests
     steps:
