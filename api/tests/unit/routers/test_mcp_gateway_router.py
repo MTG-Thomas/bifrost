@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -10,6 +11,7 @@ from src.routers.mcp import (
     _raise_gateway_http_error,
     resolve_gateway_operation_receipt,
 )
+from src.services import operation_receipts as receipt_service
 from src.services.mcp_server.gateway import GatewayError
 from src.services.operation_receipts import (
     OperationReceiptDisposition,
@@ -68,7 +70,20 @@ async def test_admin_ambiguous_resolution_is_fail_closed_and_audited() -> None:
 @pytest.mark.asyncio
 async def test_audit_failure_rolls_back_ambiguous_resolution(
     async_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    @asynccontextmanager
+    async def test_db_context():
+        async with async_session_factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    monkeypatch.setattr(receipt_service, "get_db_context", test_db_context)
+
     kwargs = {
         "namespace": "test.router-resolution.v1",
         "scope_key": canonical_operation_scope_key({"caller": str(uuid4())}),
