@@ -1,21 +1,28 @@
-"""Regression tests for the Dockerized Pyright path translation."""
+"""Regression tests for the checked-in Dockerized Pyright config."""
 
-from scripts.docker_pyright_config import docker_pyright_config
+from __future__ import annotations
+
+import json
+from pathlib import Path
 
 
-def test_document_renderer_include_targets_the_compose_mount() -> None:
-    original = {
-        "include": [
-            "src/**/*.py",
-            "../doc_renderer_service/**/*.py",
-        ],
-        "venvPath": "..",
-        "venv": ".venv",
-    }
+API_ROOT = Path(__file__).parents[3]
 
-    transformed = docker_pyright_config(original)
 
-    assert transformed == {
-        "include": ["src/**/*.py", "doc_renderer_service/**/*.py"]
-    }
-    assert original["include"][1] == "../doc_renderer_service/**/*.py"
+def test_docker_pyright_config_is_the_fixed_container_translation() -> None:
+    host_config = json.loads((API_ROOT / "pyrightconfig.json").read_text())
+    docker_config = json.loads(
+        (API_ROOT / "pyrightconfig.docker.json").read_text()
+    )
+
+    expected = dict(host_config)
+    expected.pop("venvPath")
+    expected.pop("venv")
+    expected["include"] = [
+        path.removeprefix("../")
+        if path.startswith("../doc_renderer_service/")
+        else path
+        for path in expected["include"]
+    ]
+
+    assert docker_config == expected

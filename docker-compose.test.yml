@@ -394,6 +394,7 @@ services:
       - ./api/pytest.ini:/app/pytest.ini:ro
       - ./api/pyproject.toml:/app/pyproject.toml:ro
       - ./api/pyrightconfig.json:/app/pyrightconfig.json:ro
+      - ./api/pyrightconfig.docker.json:/app/pyrightconfig.docker.json:ro
       - ./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro
       - ./test.sh:/app/test.sh:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro

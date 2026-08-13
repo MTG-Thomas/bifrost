@@ -34,7 +34,7 @@ def test_pull_request_ci_does_not_use_noop_path_ignore() -> None:
     assert "paths-ignore" not in pull_request
 
 
-def test_required_e2e_gate_includes_playwright() -> None:
+def test_required_e2e_gate_includes_playwright_and_mcp_conformance() -> None:
     ci = _load_yaml(".github/workflows/ci.yml")
     jobs = ci["jobs"]
 
@@ -42,6 +42,7 @@ def test_required_e2e_gate_includes_playwright() -> None:
     assert set(jobs["test-e2e-gate"]["needs"]) == {
         "test-e2e",
         "test-client-e2e",
+        "mcp-conformance",
     }
 
     assert (
