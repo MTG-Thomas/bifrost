@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
 import subprocess
 from collections import defaultdict, deque
@@ -119,6 +120,7 @@ IMPORT_FROM_RE = re.compile(r"\bfrom\s*['\"]([^'\"]+)['\"]")
 SIDE_EFFECT_IMPORT_RE = re.compile(r"\bimport\s*['\"]([^'\"]+)['\"]")
 DYNAMIC_IMPORT_RE = re.compile(r"\bimport\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 ROUTE_PARAM_RE = re.compile(r"\{[^/]+\}")
+FULL_GIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 
 
 class PlanError(RuntimeError):
@@ -275,6 +277,8 @@ def _is_mcp_path(path: str) -> bool:
 
 
 def git_changes(base: str, head: str) -> tuple[GitChange, ...]:
+    if not FULL_GIT_SHA_RE.fullmatch(base) or not FULL_GIT_SHA_RE.fullmatch(head):
+        raise PlanError("base and head must be full Git commit SHAs")
     result = subprocess.run(
         [
             "git",
@@ -908,6 +912,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _validated_ci_output(
+    path: Path | None, env_name: str, *, directory: bool = False
+) -> Path | None:
+    if path is None:
+        return None
+    configured = os.environ.get(env_name)
+    if not configured:
+        raise SystemExit(f"{env_name} must be set when writing CI evidence")
+    resolved = path.resolve()
+    allowed = Path(configured).resolve()
+    if (directory and not resolved.is_relative_to(allowed)) or (
+        not directory and resolved != allowed
+    ):
+        raise SystemExit(f"refusing to write outside {env_name}")
+    return resolved
+
+
 def main() -> int:
     args = parse_args()
     if args.force_comprehensive:
@@ -920,12 +941,15 @@ def main() -> int:
         plan = plan_changes(git_changes(args.base, args.head))
     payload = json.dumps(plan.to_dict(), indent=2, sort_keys=True)
     print(payload)
-    if args.github_output:
-        write_github_output(args.github_output, plan)
-    if args.plan_output:
-        args.plan_output.write_text(payload + "\n", encoding="utf-8")
-    if args.summary:
-        write_summary(args.summary, plan)
+    github_output = _validated_ci_output(args.github_output, "GITHUB_OUTPUT")
+    plan_output = _validated_ci_output(args.plan_output, "RUNNER_TEMP", directory=True)
+    summary = _validated_ci_output(args.summary, "GITHUB_STEP_SUMMARY")
+    if github_output:
+        write_github_output(github_output, plan)
+    if plan_output:
+        plan_output.write_text(payload + "\n", encoding="utf-8")
+    if summary:
+        write_summary(summary, plan)
     return 0
 
 

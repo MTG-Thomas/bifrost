@@ -180,3 +180,19 @@ def test_python_test_only_change_runs_exact_test(graph_repo: Path) -> None:
     assert plan.python.unit_tests == ("tests/unit/services/test_leaf.py",)
     assert plan.lane("api_unit") == "affected"
     assert plan.lane("api_e2e") == "skip"
+
+
+def test_git_changes_rejects_argument_injection() -> None:
+    with pytest.raises(affected.PlanError, match="full Git commit SHAs"):
+        affected.git_changes("--output=/tmp/escaped", "a" * 40)
+
+
+def test_ci_evidence_paths_must_match_runner_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allowed = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(allowed))
+
+    assert affected._validated_ci_output(allowed, "GITHUB_OUTPUT") == allowed.resolve()
+    with pytest.raises(SystemExit, match="refusing to write"):
+        affected._validated_ci_output(tmp_path / "escaped", "GITHUB_OUTPUT")
