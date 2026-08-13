@@ -1,14 +1,22 @@
 # Snyk dependency, IaC, and container scans.
 #
-# This is intentionally non-blocking at first. Snyk is a second signal next to
-# Dependabot, CodeQL, and Scorecard; once the finding volume is tuned, selected
-# jobs can become required checks.
+# Snyk is a blocking security signal. A missing token, scanner failure, or
+# high-severity finding must not produce a green audit job.
 
 name: Snyk
 
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "requirements*.lock"
+      - "client/package.json"
+      - "client/package-lock.json"
+      - "api/Dockerfile"
+      - "client/Dockerfile"
+      - "k8s/**"
+      - ".github/workflows/snyk.yml"
   schedule:
     - cron: "0 11 * * 1"
   workflow_dispatch:
@@ -24,11 +32,12 @@ jobs:
   open-source:
     name: Open Source
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
-      - name: Skip when Snyk token is not configured
+      - name: Require Snyk token
         if: env.SNYK_TOKEN == ''
-        run: echo "SNYK_TOKEN is not configured; skipping Snyk open-source scans."
+        run: |
+          echo "SNYK_TOKEN is required; refusing to report a green audit without scanning." >&2
+          exit 1
 
       - name: Checkout
         if: env.SNYK_TOKEN != ''
@@ -78,12 +87,10 @@ jobs:
 
       - name: Test Python dependencies
         if: env.SNYK_TOKEN != ''
-        continue-on-error: true
         run: npx --yes snyk@1.1304.3 test --file="${{ steps.python-requirements.outputs.requirements_file }}" --package-manager=pip --severity-threshold=high --skip-unresolved=true --command=./.venv/bin/python ${SNYK_ORG:+--org="$SNYK_ORG"}
 
       - name: Test client dependencies
         if: env.SNYK_TOKEN != ''
-        continue-on-error: true
         run: npx --yes snyk@1.1304.3 test --file=client/package-lock.json --package-manager=npm --severity-threshold=high ${SNYK_ORG:+--org="$SNYK_ORG"}
 
       - name: Monitor default branch snapshots
@@ -95,11 +102,12 @@ jobs:
   iac:
     name: IaC
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
-      - name: Skip when Snyk token is not configured
+      - name: Require Snyk token
         if: env.SNYK_TOKEN == ''
-        run: echo "SNYK_TOKEN is not configured; skipping Snyk IaC scans."
+        run: |
+          echo "SNYK_TOKEN is required; refusing to report a green audit without scanning." >&2
+          exit 1
 
       - name: Checkout
         if: env.SNYK_TOKEN != ''
@@ -115,18 +123,18 @@ jobs:
 
       - name: Test Kubernetes manifests
         if: env.SNYK_TOKEN != ''
-        continue-on-error: true
         run: npx --yes snyk@1.1304.3 iac test k8s --severity-threshold=high ${SNYK_ORG:+--org="$SNYK_ORG"}
 
   containers:
     name: Containers
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
-    continue-on-error: true
     steps:
-      - name: Skip when Snyk token is not configured
+      - name: Require Snyk token
         if: env.SNYK_TOKEN == ''
-        run: echo "SNYK_TOKEN is not configured; skipping Snyk container scans."
+        run: |
+          echo "SNYK_TOKEN is required; refusing to report a green audit without scanning." >&2
+          exit 1
 
       - name: Checkout
         if: env.SNYK_TOKEN != ''
@@ -142,10 +150,8 @@ jobs:
 
       - name: Test published API image
         if: env.SNYK_TOKEN != ''
-        continue-on-error: true
         run: npx --yes snyk@1.1304.3 container test ghcr.io/mtg-thomas/bifrost-api:dev --file=api/Dockerfile --severity-threshold=high ${SNYK_ORG:+--org="$SNYK_ORG"}
 
       - name: Test published client image
         if: env.SNYK_TOKEN != ''
-        continue-on-error: true
         run: npx --yes snyk@1.1304.3 container test ghcr.io/mtg-thomas/bifrost-client:dev --file=client/Dockerfile --severity-threshold=high ${SNYK_ORG:+--org="$SNYK_ORG"}

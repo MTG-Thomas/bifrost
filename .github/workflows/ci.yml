@@ -26,6 +26,74 @@ env:
 
 jobs:
   # =============================================================================
+  # Change-aware plan - one exact, inspectable plan shared by every test lane.
+  # =============================================================================
+  affected-test-plan:
+    runs-on: ubuntu-latest
+    name: Plan Affected Tests
+    permissions:
+      contents: read
+    outputs:
+      scope: ${{ steps.plan.outputs.scope }}
+      api_quality_mode: ${{ steps.plan.outputs.api_quality_mode }}
+      api_quality_targets: ${{ steps.plan.outputs.api_quality_targets }}
+      api_unit_mode: ${{ steps.plan.outputs.api_unit_mode }}
+      api_unit_targets: ${{ steps.plan.outputs.api_unit_targets }}
+      api_e2e_mode: ${{ steps.plan.outputs.api_e2e_mode }}
+      api_e2e_targets: ${{ steps.plan.outputs.api_e2e_targets }}
+      api_e2e_matrix: ${{ steps.plan.outputs.api_e2e_matrix }}
+      client_quality_mode: ${{ steps.plan.outputs.client_quality_mode }}
+      client_quality_targets: ${{ steps.plan.outputs.client_quality_targets }}
+      client_unit_mode: ${{ steps.plan.outputs.client_unit_mode }}
+      client_unit_targets: ${{ steps.plan.outputs.client_unit_targets }}
+      client_e2e_mode: ${{ steps.plan.outputs.client_e2e_mode }}
+      client_e2e_targets: ${{ steps.plan.outputs.client_e2e_targets }}
+      mcp_conformance_mode: ${{ steps.plan.outputs.mcp_conformance_mode }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build affected test plan
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base_sha="$PR_BASE_SHA" ;;
+            merge_group) base_sha="$MERGE_GROUP_BASE_SHA" ;;
+            push) base_sha="$PUSH_BASE_SHA" ;;
+            *) base_sha="" ;;
+          esac
+          if [ -z "$base_sha" ] || [[ "$base_sha" =~ ^0+$ ]]; then
+            python3 api/scripts/plan_affected_tests.py \
+              --force-comprehensive \
+              --github-output "$GITHUB_OUTPUT" \
+              --plan-output "$RUNNER_TEMP/affected-test-plan.json" \
+              --summary "$GITHUB_STEP_SUMMARY"
+          else
+            python3 api/scripts/plan_affected_tests.py \
+              --base "$base_sha" \
+              --head "$GITHUB_SHA" \
+              --github-output "$GITHUB_OUTPUT" \
+              --plan-output "$RUNNER_TEMP/affected-test-plan.json" \
+              --summary "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload affected test plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: affected-test-plan
+          path: ${{ runner.temp }}/affected-test-plan.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # =============================================================================
   # CI Test Images - Baked dependency/toolchain images for future PR test runs.
   # Source code is still mounted from each PR checkout by docker-compose.test.yml.
   # =============================================================================
@@ -93,14 +161,19 @@ jobs:
   # Lint & Type Check - Fast, gates all builds alongside unit tests
   # =============================================================================
   lint:
-    # Skip on push: main — the merge_group run already covered this
-    # commit. Still runs on PRs, queue, tag pushes, and workflow_dispatch.
-    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    needs: affected-test-plan
+    if: always()
     runs-on: ubuntu-latest
     name: Lint & Type Check
     permissions:
       contents: read
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -120,6 +193,7 @@ jobs:
             || { echo "::error::Codex skill mirrors are stale — run scripts/sync-codex-skills.sh and commit."; exit 1; }
 
       - name: Set up Python
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -136,20 +210,46 @@ jobs:
       # already ships a current pip into the venv and any explicit upgrade
       # would be flagged by Scorecard as an unpinned install.
       - name: Install Python deps into .venv
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
         run: |
           python -m venv .venv
           ./.venv/bin/pip install --require-hashes -r requirements.lock
           ./.venv/bin/pip install --require-hashes -r requirements-pyright.lock
 
       - name: Ruff
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
         working-directory: api
-        run: ../.venv/bin/ruff check .
+        env:
+          QUALITY_MODE: ${{ needs.affected-test-plan.outputs.api_quality_mode }}
+          QUALITY_TARGETS: ${{ needs.affected-test-plan.outputs.api_quality_targets }}
+        run: |
+          if [ "$QUALITY_MODE" = "comprehensive" ]; then
+            ../.venv/bin/ruff check .
+          else
+            mapfile -t targets <<< "$QUALITY_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected API quality lane has no targets." >&2
+              exit 1
+            fi
+            ../.venv/bin/ruff check "${targets[@]}"
+          fi
 
       - name: Pyright
+        if: needs.affected-test-plan.outputs.api_quality_mode != 'skip'
         working-directory: api
-        run: ../.venv/bin/pyright
+        env:
+          QUALITY_MODE: ${{ needs.affected-test-plan.outputs.api_quality_mode }}
+          QUALITY_TARGETS: ${{ needs.affected-test-plan.outputs.api_quality_targets }}
+        run: |
+          if [ "$QUALITY_MODE" = "comprehensive" ]; then
+            ../.venv/bin/pyright
+          else
+            mapfile -t targets <<< "$QUALITY_TARGETS"
+            ../.venv/bin/pyright "${targets[@]}"
+          fi
 
       - name: Set up Node
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "26"
@@ -157,31 +257,55 @@ jobs:
           cache-dependency-path: client/package-lock.json
 
       - name: Install client deps
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
         working-directory: client
         run: npm ci
 
       - name: TypeScript
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
         working-directory: client
         run: npm run tsc
 
       - name: ESLint
+        if: needs.affected-test-plan.outputs.client_quality_mode != 'skip'
         working-directory: client
-        run: npm run lint
+        env:
+          QUALITY_MODE: ${{ needs.affected-test-plan.outputs.client_quality_mode }}
+          QUALITY_TARGETS: ${{ needs.affected-test-plan.outputs.client_quality_targets }}
+        run: |
+          if [ "$QUALITY_MODE" = "comprehensive" ]; then
+            npm run lint
+          else
+            mapfile -t targets <<< "$QUALITY_TARGETS"
+            npx eslint "${targets[@]}"
+          fi
+
+      - name: Report skipped code quality lanes
+        if: needs.affected-test-plan.outputs.api_quality_mode == 'skip' && needs.affected-test-plan.outputs.client_quality_mode == 'skip'
+        run: echo "No executable API or client source is in the affected closure."
 
   # =============================================================================
   # Client Unit Tests (Vitest) - Fast, runs on host Node — no Docker needed.
   # Parallel to Unit Tests; does NOT become the critical path.
   # =============================================================================
   test-client-unit:
-    # Skip on push: main — covered by the merge_group run.
-    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    needs: affected-test-plan
+    if: always()
     runs-on: ubuntu-latest
     name: Client Unit Tests
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "26"
@@ -189,36 +313,67 @@ jobs:
           cache-dependency-path: client/package-lock.json
 
       - name: Install client deps
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
         working-directory: client
         run: npm ci
 
       - name: Vitest
+        if: needs.affected-test-plan.outputs.client_unit_mode != 'skip'
         working-directory: client
-        run: npm test
+        env:
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.client_unit_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.client_unit_targets }}
+        run: |
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            npm test
+          else
+            mapfile -t targets <<< "$TEST_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected client unit lane has no targets." >&2
+              exit 1
+            fi
+            npm test -- "${targets[@]}"
+          fi
+
+      - name: Report skipped client unit lane
+        if: needs.affected-test-plan.outputs.client_unit_mode == 'skip'
+        run: echo "Client unit tests are outside the affected closure."
 
   # =============================================================================
   # Unit Tests - Fast, gates all builds
   # =============================================================================
   test-unit:
+    needs: affected-test-plan
+    if: always()
     runs-on: ubuntu-latest
     name: Unit Tests
     permissions:
       contents: read
       packages: read
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Detect test image input changes
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         id: test-image-inputs
         run: bash scripts/ci/detect-test-image-inputs.sh
 
       - name: Set up Docker Buildx
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -229,7 +384,7 @@ jobs:
       # current checkout, so PR source code is what tests execute.
       - name: Pull API CI test image
         id: pull-api-ci-image
-        if: steps.test-image-inputs.outputs.api_changed != 'true'
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip' && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
           API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
@@ -238,7 +393,7 @@ jobs:
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
 
       - name: Build API dev image
-        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip' && (steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -250,7 +405,7 @@ jobs:
 
       - name: Pull client CI test image
         id: pull-client-ci-image
-        if: steps.test-image-inputs.outputs.client_changed != 'true'
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip' && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
           CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
@@ -259,7 +414,7 @@ jobs:
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
 
       - name: Build client dev image
-        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip' && (steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./client
@@ -270,15 +425,28 @@ jobs:
           cache-to: type=gha,scope=test-client-dev,mode=max
 
       - name: Run unit tests
+        if: needs.affected-test-plan.outputs.api_unit_mode != 'skip'
         env:
           BIFROST_SKIP_BUILD: "1"
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.api_unit_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.api_unit_targets }}
         run: |
           chmod +x test.sh
           ./test.sh stack up
-          ./test.sh unit --cov=. --cov-report=xml:/coverage/coverage.xml
-          ./test.sh coverage coverage.xml
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            ./test.sh unit --cov=. --cov-report=xml:/coverage/coverage.xml
+            ./test.sh coverage coverage.xml
+          else
+            mapfile -t targets <<< "$TEST_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected API unit lane has no targets." >&2
+              exit 1
+            fi
+            ./test.sh "${targets[@]}"
+          fi
 
       - name: Upload coverage to Codecov
+        if: needs.affected-test-plan.outputs.api_unit_mode == 'comprehensive'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: ./coverage.xml
@@ -286,31 +454,47 @@ jobs:
           name: api-coverage
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Report skipped API unit lane
+        if: needs.affected-test-plan.outputs.api_unit_mode == 'skip'
+        run: echo "API unit tests are outside the affected closure."
+
   # =============================================================================
   # MCP Conformance - the exact-pinned official runner gates the stable subset
   # applicable to Bifrost's authenticated four-tool modern gateway. Broader
   # stateless checks remain visible in the uploaded advisory artifact.
   # =============================================================================
   mcp-conformance:
+    needs: affected-test-plan
+    if: always()
     runs-on: ubuntu-latest
     name: MCP Conformance
     permissions:
       contents: read
       packages: read
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Detect test image input changes
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         id: test-image-inputs
         run: bash scripts/ci/detect-test-image-inputs.sh
 
       - name: Set up Docker Buildx
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -319,7 +503,7 @@ jobs:
 
       - name: Pull API CI test image
         id: pull-api-ci-image
-        if: steps.test-image-inputs.outputs.api_changed != 'true'
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip' && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
           API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
@@ -328,7 +512,7 @@ jobs:
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
 
       - name: Build API dev image
-        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip' && (steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -340,7 +524,7 @@ jobs:
 
       - name: Pull client CI test image
         id: pull-client-ci-image
-        if: steps.test-image-inputs.outputs.client_changed != 'true'
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip' && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
           CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
@@ -349,7 +533,7 @@ jobs:
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
 
       - name: Build client dev image
-        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip' && (steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./client
@@ -360,9 +544,11 @@ jobs:
           cache-to: type=gha,scope=test-client-dev,mode=max
 
       - name: Remove registry credentials
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         run: docker logout "$REGISTRY"
 
       - name: Run blocking MCP conformance
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         env:
           BIFROST_SKIP_BUILD: "1"
         run: |
@@ -371,7 +557,7 @@ jobs:
           ./test.sh mcp conformance
 
       - name: Upload MCP conformance results
-        if: always()
+        if: always() && needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mcp-conformance-results
@@ -380,8 +566,12 @@ jobs:
           retention-days: 14
 
       - name: Tear down MCP conformance stack
-        if: always()
+        if: always() && needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         run: ./test.sh stack down
+
+      - name: Report skipped MCP conformance lane
+        if: needs.affected-test-plan.outputs.mcp_conformance_mode == 'skip'
+        run: echo "MCP protocol surfaces are outside the affected closure."
 
   # =============================================================================
   # E2E Tests - Sharded across 4 parallel runners. Each shard boots its own
@@ -396,23 +586,33 @@ jobs:
   # no ruleset edits needed.
   # =============================================================================
   test-e2e:
+    needs: affected-test-plan
+    if: always()
     runs-on: ubuntu-latest
-    name: E2E Tests (shard ${{ matrix.shard }}/4)
+    name: E2E Tests (shard ${{ matrix.shard }}/${{ matrix.total }})
     permissions:
       contents: read
       packages: read
     strategy:
       fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
+      matrix: ${{ fromJSON(needs.affected-test-plan.outputs.api_e2e_matrix || '{"include":[{"shard":0,"total":0}]}') }}
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
+        if: matrix.total != 0
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Docker Buildx
+        if: matrix.total != 0
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
+        if: matrix.total != 0
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -420,12 +620,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Detect test image input changes
+        if: matrix.total != 0
         id: test-image-inputs
         run: bash scripts/ci/detect-test-image-inputs.sh
 
       - name: Pull API CI test image
         id: pull-api-ci-image
-        if: steps.test-image-inputs.outputs.api_changed != 'true'
+        if: matrix.total != 0 && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
           API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
@@ -434,7 +635,7 @@ jobs:
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
 
       - name: Build API dev image
-        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
+        if: matrix.total != 0 && (steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -446,7 +647,7 @@ jobs:
 
       - name: Pull client CI test image
         id: pull-client-ci-image
-        if: steps.test-image-inputs.outputs.client_changed != 'true'
+        if: matrix.total != 0 && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
           CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
@@ -455,7 +656,7 @@ jobs:
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
 
       - name: Build client dev image
-        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
+        if: matrix.total != 0 && (steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./client
@@ -465,30 +666,47 @@ jobs:
           cache-from: type=gha,scope=test-client-dev
           cache-to: type=gha,scope=test-client-dev,mode=max
 
-      - name: Run E2E tests (shard ${{ matrix.shard }}/4)
+      - name: Run E2E tests (shard ${{ matrix.shard }}/${{ matrix.total }})
+        if: matrix.total != 0
         env:
           BIFROST_SKIP_BUILD: "1"
           SHARD_ID: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ matrix.total }}
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.api_e2e_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.api_e2e_targets }}
         run: |
           chmod +x test.sh
           ./test.sh stack up
-          mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id "$SHARD_ID" --total 4)
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            mapfile -t shard_files < <(python3 scripts/e2e_shard.py --shard-id "$SHARD_ID" --total "$SHARD_TOTAL")
+          else
+            mapfile -t shard_files <<< "$TEST_TARGETS"
+          fi
           if [ ${#shard_files[@]} -eq 0 ]; then
             echo "ERROR: shard $SHARD_ID resolved to zero files" >&2
             exit 1
           fi
-          echo "Shard $SHARD_ID/4: ${#shard_files[@]} files"
-          ./test.sh "${shard_files[@]}" -v --durations=50 \
-            --cov=. --cov-report=xml:/coverage/coverage-e2e-${{ matrix.shard }}.xml
-          ./test.sh coverage coverage-e2e-${{ matrix.shard }}.xml
+          echo "Shard $SHARD_ID/$SHARD_TOTAL: ${#shard_files[@]} files"
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            ./test.sh "${shard_files[@]}" -v --durations=50 \
+              --cov=. --cov-report=xml:/coverage/coverage-e2e-${{ matrix.shard }}.xml
+            ./test.sh coverage coverage-e2e-${{ matrix.shard }}.xml
+          else
+            ./test.sh "${shard_files[@]}" -v --durations=50
+          fi
 
       - name: Upload E2E coverage to Codecov
+        if: needs.affected-test-plan.outputs.api_e2e_mode == 'comprehensive'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: ./coverage-e2e-${{ matrix.shard }}.xml
           flags: api-e2e
           name: api-e2e-coverage-${{ matrix.shard }}
           token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Report skipped API e2e lane
+        if: matrix.total == 0
+        run: echo "API e2e tests are outside the affected closure."
 
   # =============================================================================
   # Client E2E Tests - Playwright browser coverage in the Docker test stack.
@@ -497,6 +715,8 @@ jobs:
   # persistent BuildKit caches when their baked inputs change.
   # =============================================================================
   test-client-e2e:
+    needs: affected-test-plan
+    if: always()
     runs-on: ubuntu-latest
     name: Client E2E Tests
     permissions:
@@ -506,13 +726,22 @@ jobs:
       BIFROST_SKIP_BUILD: "1"
       PLAYWRIGHT_RESULTS_MOUNT: ${{ github.workspace }}/client/playwright-results
     steps:
+      - name: Require a valid affected test plan
+        if: needs.affected-test-plan.result != 'success'
+        run: |
+          echo "Affected test planning failed or was cancelled." >&2
+          exit 1
+
       - name: Checkout repository
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Docker Buildx
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to GitHub Container Registry
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -520,12 +749,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Detect test image input changes
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
         id: test-image-inputs
         run: bash scripts/ci/detect-test-image-inputs.sh
 
       - name: Pull API CI test image
         id: pull-api-ci-image
-        if: steps.test-image-inputs.outputs.api_changed != 'true'
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
           API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
@@ -534,7 +764,7 @@ jobs:
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
 
       - name: Build API dev image
-        if: steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped'
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && (steps.test-image-inputs.outputs.api_changed == 'true' || steps.pull-api-ci-image.outcome == 'failure' || steps.pull-api-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -546,7 +776,7 @@ jobs:
 
       - name: Pull client CI test image
         id: pull-client-ci-image
-        if: steps.test-image-inputs.outputs.client_changed != 'true'
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
           CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
@@ -555,7 +785,7 @@ jobs:
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
 
       - name: Build client dev image
-        if: steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped'
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && (steps.test-image-inputs.outputs.client_changed == 'true' || steps.pull-client-ci-image.outcome == 'failure' || steps.pull-client-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./client
@@ -567,7 +797,7 @@ jobs:
 
       - name: Pull Playwright CI test image
         id: pull-playwright-ci-image
-        if: steps.test-image-inputs.outputs.playwright_changed != 'true'
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && steps.test-image-inputs.outputs.playwright_changed != 'true'
         continue-on-error: true
         env:
           PLAYWRIGHT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:main
@@ -576,7 +806,7 @@ jobs:
           docker tag "$PLAYWRIGHT_CI_IMAGE_REF" bifrost-test-playwright-runner:latest
 
       - name: Build Playwright test image
-        if: steps.test-image-inputs.outputs.playwright_changed == 'true' || steps.pull-playwright-ci-image.outcome == 'failure' || steps.pull-playwright-ci-image.outcome == 'skipped'
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && (steps.test-image-inputs.outputs.playwright_changed == 'true' || steps.pull-playwright-ci-image.outcome == 'failure' || steps.pull-playwright-ci-image.outcome == 'skipped')
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./client
@@ -587,15 +817,28 @@ jobs:
           cache-to: type=gha,scope=test-playwright,mode=max
 
       - name: Run Playwright tests
+        if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
+        env:
+          TEST_MODE: ${{ needs.affected-test-plan.outputs.client_e2e_mode }}
+          TEST_TARGETS: ${{ needs.affected-test-plan.outputs.client_e2e_targets }}
         run: |
           mkdir -p client/playwright-results
           chmod 777 client/playwright-results
           chmod +x test.sh
           ./test.sh stack up
-          ./test.sh client e2e
+          if [ "$TEST_MODE" = "comprehensive" ]; then
+            ./test.sh client e2e
+          else
+            mapfile -t targets <<< "$TEST_TARGETS"
+            if (( ${#targets[@]} == 0 )); then
+              echo "Affected client e2e lane has no targets." >&2
+              exit 1
+            fi
+            ./test.sh client e2e "${targets[@]}"
+          fi
 
       - name: Upload Playwright failure artifacts
-        if: failure()
+        if: failure() && needs.affected-test-plan.outputs.client_e2e_mode != 'skip'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-results
@@ -603,17 +846,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Report skipped client e2e lane
+        if: needs.affected-test-plan.outputs.client_e2e_mode == 'skip'
+        run: echo "Client browser tests are outside the affected closure."
+
   # Aggregate gate — required check named "E2E Tests" (matches ruleset 15329014).
   # Fails if any backend shard or the Playwright job failed or was cancelled.
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
     if: always()
-    needs: [test-e2e, test-client-e2e, mcp-conformance]
+    needs: [affected-test-plan, test-e2e, test-client-e2e, mcp-conformance]
     runs-on: ubuntu-latest
     name: E2E Tests
     steps:
       - name: Check shard results
         run: |
+          if [ "${{ needs.affected-test-plan.result }}" != "success" ]; then
+            echo "Affected test planning failed or was cancelled (result: ${{ needs.affected-test-plan.result }})"
+            exit 1
+          fi
           if [ "${{ needs.test-e2e.result }}" != "success" ]; then
             echo "One or more e2e shards failed or were cancelled (result: ${{ needs.test-e2e.result }})"
             exit 1
@@ -626,7 +877,7 @@ jobs:
             echo "MCP conformance failed or was cancelled (result: ${{ needs.mcp-conformance.result }})"
             exit 1
           fi
-          echo "All backend e2e shards, client Playwright tests, and MCP conformance passed."
+          echo "Every selected backend e2e, client Playwright, and MCP conformance lane passed or was explicitly outside the affected closure."
 
   # =============================================================================
   # Dev Build - Every push to main, gated by unit tests only
