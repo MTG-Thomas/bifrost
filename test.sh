@@ -24,6 +24,9 @@
 #   ./test.sh client e2e --screenshots  Capture a screenshot for every test (UX review).
 #   ./test.sh client e2e e2e/auth.unauth.spec.ts   Pass through to playwright.
 #
+# MCP protocol conformance (advisory):
+#   ./test.sh mcp conformance             Run the exact-pinned official runner.
+#
 # CI escape hatch:
 #   ./test.sh ci                        Full isolated run: up, all tests, down.
 #
@@ -374,6 +377,75 @@ cmd_client() {
     esac
 }
 
+cmd_mcp() {
+    local sub="${1:-}"
+    shift || true
+    case "$sub" in
+        conformance) mcp_conformance "$@" ;;
+        *)
+            echo "Usage: ./test.sh mcp conformance" >&2
+            exit 2
+            ;;
+    esac
+}
+
+mcp_conformance() {
+    require_stack_up
+
+    local results_dir="$LOG_DIR/mcp-conformance"
+    local auth_probe_file="$results_dir/auth-probe-headers.txt"
+    local resource_metadata_file="$results_dir/protected-resource-metadata.json"
+    mkdir -p "$results_dir"
+
+    # Keep the whole-scenario baseline honest: it is only valid while the
+    # official runner lacks a token/header option and the real mounted endpoint
+    # rejects its unauthenticated request with Bifrost's Bearer challenge.
+    docker compose -f "$COMPOSE_FILE" exec -T api curl \
+        --silent \
+        --show-error \
+        --output /dev/null \
+        --dump-header - \
+        --request POST \
+        --header "Accept: application/json, text/event-stream" \
+        --header "Content-Type: application/json" \
+        --header "MCP-Protocol-Version: 2025-11-25" \
+        --data-binary '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bifrost-conformance-auth-probe","version":"1.0"}}}' \
+        http://localhost:8000/mcp \
+        | tr -d '\r' > "$auth_probe_file"
+    if ! grep -q '^HTTP/1.1 401 Unauthorized$' "$auth_probe_file" \
+        || ! grep -Eqi '^www-authenticate: Bearer .*resource_metadata=' "$auth_probe_file"; then
+        echo "ERROR: /mcp did not return the expected unauthenticated Bearer challenge:" >&2
+        sed 's/^/  /' "$auth_probe_file" >&2
+        exit 1
+    fi
+
+    docker compose -f "$COMPOSE_FILE" exec -T api curl \
+        --silent \
+        --show-error \
+        --fail \
+        http://localhost:8000/.well-known/oauth-protected-resource/mcp \
+        > "$resource_metadata_file"
+    if ! grep -q '"mcp:access"' "$resource_metadata_file"; then
+        echo "ERROR: MCP protected-resource metadata does not advertise mcp:access:" >&2
+        sed 's/^/  /' "$resource_metadata_file" >&2
+        exit 1
+    fi
+
+    # This image is deliberately separate from the API image: the official
+    # JavaScript runner must not alter Bifrost's Python MCP dependency graph.
+    docker compose -f "$COMPOSE_FILE" --profile test build mcp-conformance
+    docker compose -f "$COMPOSE_FILE" --profile test run --rm \
+        --user "$(id -u):$(id -g)" mcp-conformance \
+        server \
+        --url http://api:8000/mcp \
+        --scenario server-initialize \
+        --spec-version 2025-11-25 \
+        --expected-failures /opt/mcp-conformance/expected-failures.yml \
+        --output-dir /results \
+        --verbose \
+        "$@"
+}
+
 client_unit() {
     echo "Running vitest on host..."
     (cd client && npm test "$@")
@@ -473,6 +545,7 @@ case "$1" in
     all) shift; cmd_all "$@" ;;
     quality) shift; cmd_quality "$@" ;;
     client) shift; cmd_client "$@" ;;
+    mcp) shift; cmd_mcp "$@" ;;
     ci) cmd_ci ;;
     -h|--help|help)
         sed -n '2,35p' "$0"

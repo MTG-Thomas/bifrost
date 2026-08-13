@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+from dataclasses import replace
 from uuid import uuid4
 
 import httpx
@@ -330,6 +331,141 @@ async def test_writer_rejects_remote_path_drift_before_creating_commit(
         )
         with pytest.raises(PlatformCommitError, match="expected .* to be absent"):
             await writer.write(commit_request())
+
+    assert mutation_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_writer_inspects_exact_commit_bytes_without_mutation(private_key_pem):
+    source_sha = "d" * 40
+    content = b"reviewed source\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            payload = graphql_payload(request)
+            assert "query CommitSnapshot" in payload["query"]
+            assert payload["variables"]["expression"] == source_sha
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "object": {
+                                "oid": source_sha,
+                                "tree": {"oid": "1" * 40},
+                            }
+                        }
+                    }
+                },
+            )
+        if request.url.path.endswith("/contents/workflows/example.py"):
+            assert request.url.params["ref"] == source_sha
+            return httpx.Response(200, content=content)
+        if request.url.path.endswith("/contents/workflows/missing.py"):
+            return httpx.Response(404, json={"message": "Not Found"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        snapshot = await writer.inspect(
+            ("workflows/missing.py", "workflows/example.py"), ref=source_sha
+        )
+
+    assert snapshot.commit_sha == source_sha
+    assert snapshot.tree_sha == "1" * 40
+    assert snapshot.file_sha256 == {
+        "workflows/example.py": hashlib.sha256(content).hexdigest(),
+        "workflows/missing.py": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_writer_requires_reviewed_source_to_be_reachable_from_main(
+    private_key_pem,
+):
+    source_sha = "d" * 40
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "object": {
+                                "oid": source_sha,
+                                "tree": {"oid": "1" * 40},
+                            }
+                        }
+                    }
+                },
+            )
+        if "/compare/" in request.url.path:
+            assert request.url.path.endswith(f"/compare/{source_sha}...main")
+            return httpx.Response(200, json={"status": "diverged"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        with pytest.raises(PlatformCommitError, match="not reachable from main"):
+            await writer.inspect(
+                ("workflows/example.py",),
+                ref=source_sha,
+                reachable_from="main",
+            )
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_head_drift_bound_by_convergence_candidate(
+    private_key_pem,
+):
+    mutation_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal mutation_calls
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        payload = graphql_payload(request)
+        if "query BranchHead" in payload["query"]:
+            return head_response(oid="e" * 40)
+        if "mutation CreatePlatformCommit" in payload["query"]:
+            mutation_calls += 1
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        request = replace(
+            commit_request(),
+            expected_head_sha="f" * 40,
+            convergence_candidate_id="sha256:" + "a" * 64,
+        )
+        with pytest.raises(PlatformCommitError, match="head changed"):
+            await writer.write(request)
 
     assert mutation_calls == 0
 

@@ -106,7 +106,7 @@ class TestBifrostAuthProviderInit:
 
     @patch("src.config.get_settings")
     def test_falls_back_to_settings(self, mock_get_settings):
-        """Should fall back to settings.mcp_base_url if no base_url provided."""
+        """Should fall back to settings.public_url if no base_url provided."""
         mock_settings = MagicMock()
         mock_settings.public_url = "https://settings.example.com"
         mock_get_settings.return_value = mock_settings

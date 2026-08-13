@@ -399,6 +399,28 @@ def test_workspace_repo_git_closure_retry_requires_authentication(e2e_client):
 
 
 @pytest.mark.e2e
+@pytest.mark.parametrize("action", ["preview", "apply"])
+def test_workspace_repo_git_convergence_requires_authentication(e2e_client, action):
+    payload = {
+        "changeset_ids": [str(uuid4())],
+        "protected_main_source_sha": "a" * 40,
+    }
+    if action == "apply":
+        payload.update(
+            {
+                "candidate_id": "sha256:" + "b" * 64,
+                "commit_message": "Converge selected production history",
+            }
+        )
+    response = e2e_client.post(
+        f"/api/workspace-repo-changesets/git-convergence/{action}",
+        json=payload,
+    )
+
+    assert response.status_code in {401, 403}
+
+
+@pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_workspace_repo_git_closure_retry_is_org_scoped_and_state_guarded(
     e2e_client, platform_admin, org1, db_session

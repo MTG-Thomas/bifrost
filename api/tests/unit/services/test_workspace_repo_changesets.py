@@ -10,11 +10,14 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoActivateRequest,
     WorkspaceRepoChangesetBegin,
     WorkspaceRepoFileMutationRequest,
+    WorkspaceRepoGitConvergenceApplyRequest,
+    WorkspaceRepoGitConvergencePreviewRequest,
 )
 from src.repositories.workspace_repo_changesets import RETRYABLE_GIT_FAILURE_STATES
 from src.services.platform_commit_writer import (
     PlatformCommitError,
     PlatformCommitResult,
+    PlatformCommitSnapshot,
 )
 from src.services.workspace_repo_changesets import (
     ChangesetConflict,
@@ -79,8 +82,14 @@ class MemoryRows:
             and (scope is None or row.scope == scope)
             and row.failure_detail
             and row.failure_detail.get("state") in RETRYABLE_GIT_FAILURE_STATES
-            and (row.status, row.failure_detail.get("phase"))
-            in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
+            and (
+                (row.status, row.failure_detail.get("phase"))
+                in WorkspaceRepoChangesetService.RETRYABLE_GIT_FAILURES
+                or (
+                    row.status == "activated"
+                    and row.failure_detail.get("phase") == "git_convergence"
+                )
+            )
         ]
 
 
@@ -117,6 +126,30 @@ class RecordingWriter:
         if self.error:
             raise self.error
         return self.result
+
+
+class ConvergenceWriter(RecordingWriter):
+    def __init__(self, *, source_sha, source_hashes, history_sha, history_hashes):
+        super().__init__()
+        self.source_sha = source_sha
+        self.source_hashes = source_hashes
+        self.history_sha = history_sha
+        self.history_hashes = history_hashes
+        self.inspections = []
+
+    async def inspect(self, paths, *, ref=None, reachable_from=None):
+        self.inspections.append((paths, ref, reachable_from))
+        if ref is not None:
+            return PlatformCommitSnapshot(
+                commit_sha=self.source_sha,
+                tree_sha="1" * 40,
+                file_sha256={path: self.source_hashes.get(path) for path in paths},
+            )
+        return PlatformCommitSnapshot(
+            commit_sha=self.history_sha,
+            tree_sha="2" * 40,
+            file_sha256={path: self.history_hashes.get(path) for path in paths},
+        )
 
 
 def activation_request(row, **kwargs):
@@ -797,6 +830,303 @@ async def test_recoverable_git_closures_are_scope_bounded():
     result = await svc.recoverable_git_closures(scope="features/a.txt")
 
     assert [row.id for row in result] == [first.id]
+
+
+@pytest.mark.asyncio
+async def test_git_convergence_uses_history_parent_hash_not_workspace_before_hash():
+    path = "features/readiness.py"
+    workspace_before = b"workspace-before\n"
+    history_before = b"different-history-before\n"
+    live = b"reviewed-and-live\n"
+    source_sha = "d" * 40
+    live_hash = hashlib.sha256(live).hexdigest()
+    history_hash = hashlib.sha256(history_before).hexdigest()
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={path: live_hash},
+        history_sha="e" * 40,
+        history_hashes={path: history_hash},
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(), uuid4(), repo=MemoryRepo({path: workspace_before}), commit_writer=writer
+    )
+    svc.rows = MemoryRows()
+    started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        started.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(live).decode(),
+        ),
+    )
+    row = svc.rows.items[started.id]
+    await svc.repo.write(path, live)
+    row.status = "activated"
+    row.failure_detail = {
+        "phase": "git_closure",
+        "state": "failed",
+        "activation_preserved": True,
+    }
+
+    preview = await svc.preview_git_convergence(
+        WorkspaceRepoGitConvergencePreviewRequest(
+            changeset_ids=[row.id], protected_main_source_sha=source_sha
+        )
+    )
+
+    assert preview.ready_to_apply is True
+    assert preview.paths[0].history_sha256 == history_hash
+    assert preview.paths[0].live_sha256 == live_hash
+    assert preview.paths[0].reviewed_sha256 == live_hash
+    applied = await svc.apply_git_convergence(
+        WorkspaceRepoGitConvergenceApplyRequest(
+            changeset_ids=[row.id],
+            protected_main_source_sha=source_sha,
+            candidate_id=preview.candidate_id,
+            commit_message="Converge selected production history",
+        ),
+        operator="operator@example.com",
+    )
+
+    assert applied.applied is True
+    assert applied.signature_state == "VALID"
+    assert row.status == "committed"
+    assert row.failure_detail is None
+    assert row.validation["history_convergence"]["disposition"] == "reconciled"
+    request = writer.requests[0]
+    assert request.expected_head_sha == "e" * 40
+    assert request.files[0].expected_before_sha256 == history_hash
+    assert request.files[0].expected_before_sha256 != hashlib.sha256(
+        workspace_before
+    ).hexdigest()
+    assert request.files[0].expected_sha256 == live_hash
+    assert request.convergence_candidate_id == preview.candidate_id
+    assert request.reconciled_changeset_ids == (row.id,)
+    assert svc.db.commits == 2
+
+
+@pytest.mark.asyncio
+async def test_git_convergence_resumes_its_durable_pending_plan():
+    path = "features/readiness.py"
+    live = b"reviewed-and-live\n"
+    live_hash = hashlib.sha256(live).hexdigest()
+    source_sha = "d" * 40
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={path: live_hash},
+        history_sha="e" * 40,
+        history_hashes={path: None},
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(), uuid4(), repo=MemoryRepo({path: live}), commit_writer=writer
+    )
+    svc.rows = MemoryRows()
+    started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        started.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(live).decode(),
+        ),
+    )
+    row = svc.rows.items[started.id]
+    row.status = "activated"
+    row.failure_detail = {"phase": "git_closure", "state": "failed"}
+    request = WorkspaceRepoGitConvergencePreviewRequest(
+        changeset_ids=[row.id], protected_main_source_sha=source_sha
+    )
+    preview = await svc.preview_git_convergence(request)
+    row.failure_detail = {
+        "phase": "git_convergence",
+        "state": "pending",
+        "candidate_id": preview.candidate_id,
+        "commit_message": "Converge selected production history",
+        "operator": "original@example.com",
+        "primary_evidence_changeset_id": str(row.id),
+        "plan": preview.model_dump(mode="json"),
+        "files": [
+            {
+                "path": path,
+                "content_base64": base64.b64encode(live).decode(),
+                "expected_before_sha256": None,
+                "expected_sha256": live_hash,
+            }
+        ],
+    }
+    writer.history_sha = "f" * 40
+    writer.history_hashes[path] = live_hash
+
+    resumed_preview = await svc.preview_git_convergence(request)
+    assert resumed_preview.candidate_id == preview.candidate_id
+    applied = await svc.apply_git_convergence(
+        WorkspaceRepoGitConvergenceApplyRequest(
+            **request.model_dump(),
+            candidate_id=preview.candidate_id,
+            commit_message="Converge selected production history",
+        ),
+        operator="retry@example.com",
+    )
+
+    assert applied.applied is True
+    assert writer.requests[0].operator == "original@example.com"
+    assert writer.requests[0].expected_head_sha == "e" * 40
+
+
+@pytest.mark.asyncio
+async def test_git_convergence_apply_rejects_history_drift_after_preview():
+    path = "features/readiness.py"
+    live = b"reviewed-and-live\n"
+    live_hash = hashlib.sha256(live).hexdigest()
+    source_sha = "d" * 40
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={path: live_hash},
+        history_sha="e" * 40,
+        history_hashes={path: None},
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(), uuid4(), repo=MemoryRepo({path: live}), commit_writer=writer
+    )
+    svc.rows = MemoryRows()
+    started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        started.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(live).decode(),
+        ),
+    )
+    row = svc.rows.items[started.id]
+    row.status = "activated"
+    row.failure_detail = {"phase": "git_closure", "state": "failed"}
+    preview_request = WorkspaceRepoGitConvergencePreviewRequest(
+        changeset_ids=[row.id], protected_main_source_sha=source_sha
+    )
+    preview = await svc.preview_git_convergence(preview_request)
+    writer.history_sha = "f" * 40
+
+    with pytest.raises(ChangesetConflict) as exc:
+        await svc.apply_git_convergence(
+            WorkspaceRepoGitConvergenceApplyRequest(
+                **preview_request.model_dump(),
+                candidate_id=preview.candidate_id,
+                commit_message="Converge selected production history",
+            ),
+            operator="operator@example.com",
+        )
+
+    assert exc.value.detail["reason"] == "history_convergence_candidate_mismatch"
+    assert writer.requests == []
+    assert row.status == "activated"
+
+
+@pytest.mark.asyncio
+async def test_git_convergence_marks_older_selected_bytes_as_superseded():
+    path = "features/shared.py"
+    old = b"old selected bytes\n"
+    live = b"latest selected bytes\n"
+    live_hash = hashlib.sha256(live).hexdigest()
+    source_sha = "d" * 40
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={path: live_hash},
+        history_sha="e" * 40,
+        history_hashes={path: None},
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(), uuid4(), repo=MemoryRepo({path: b"base\n"}), commit_writer=writer
+    )
+    svc.rows = MemoryRows()
+    selected = []
+    for content in (old, live):
+        started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+        await svc.stage(
+            started.id,
+            WorkspaceRepoFileMutationRequest(
+                path=path,
+                operation="write",
+                content_base64=base64.b64encode(content).decode(),
+            ),
+        )
+        row = svc.rows.items[started.id]
+        row.status = "activated"
+        row.failure_detail = {"phase": "git_closure", "state": "failed"}
+        selected.append(row)
+    await svc.repo.write(path, live)
+
+    preview = await svc.preview_git_convergence(
+        WorkspaceRepoGitConvergencePreviewRequest(
+            changeset_ids=[row.id for row in selected],
+            protected_main_source_sha=source_sha,
+        )
+    )
+
+    dispositions = {
+        item.changeset_id: item.disposition for item in preview.changesets
+    }
+    assert preview.ready_to_apply is True
+    assert dispositions[selected[0].id] == "superseded"
+    assert dispositions[selected[1].id] == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_git_convergence_uses_current_reviewed_bytes_for_superseded_path():
+    path = "features/shared.py"
+    selected_bytes = b"bytes from selected release\n"
+    current = b"newer reviewed and live bytes\n"
+    current_hash = hashlib.sha256(current).hexdigest()
+    source_sha = "d" * 40
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={path: current_hash},
+        history_sha="e" * 40,
+        history_hashes={path: None},
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(), uuid4(), repo=MemoryRepo({path: b"base\n"}), commit_writer=writer
+    )
+    svc.rows = MemoryRows()
+    started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        started.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(selected_bytes).decode(),
+        ),
+    )
+    row = svc.rows.items[started.id]
+    row.status = "activated"
+    row.failure_detail = {"phase": "git_closure", "state": "failed"}
+    await svc.repo.write(path, current)
+
+    preview = await svc.preview_git_convergence(
+        WorkspaceRepoGitConvergencePreviewRequest(
+            changeset_ids=[row.id], protected_main_source_sha=source_sha
+        )
+    )
+
+    assert preview.ready_to_apply is True
+    assert preview.paths[0].desired_sha256 == current_hash
+    assert preview.paths[0].source_changeset_id is None
+    assert preview.changesets[0].disposition == "superseded"
+    applied = await svc.apply_git_convergence(
+        WorkspaceRepoGitConvergenceApplyRequest(
+            changeset_ids=[row.id],
+            protected_main_source_sha=source_sha,
+            candidate_id=preview.candidate_id,
+            commit_message="Converge selected production history",
+        ),
+        operator="operator@example.com",
+    )
+
+    assert applied.applied is True
+    assert writer.requests[0].files[0].content_base64 == base64.b64encode(
+        current
+    ).decode()
 
 
 @pytest.mark.asyncio
