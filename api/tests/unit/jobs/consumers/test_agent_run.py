@@ -49,6 +49,45 @@ async def test_durable_agent_run_claim_serializes_with_publisher(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected_status", "failed"),
+    [
+        ("scheduled", "scheduled", False),
+        ("queued", "failed", True),
+        ("running", "running", False),
+        ("completed", "completed", False),
+    ],
+)
+async def test_missing_context_agent_run_is_locked_and_state_aware(
+    status: str,
+    expected_status: str,
+    failed: bool,
+) -> None:
+    row = SimpleNamespace(status=status, error=None, completed_at=None)
+    db = AsyncMock()
+    db.get.return_value = row
+    db_context = AsyncMock()
+    db_context.__aenter__.return_value = db
+    db_context.__aexit__.return_value = False
+
+    with patch.object(AgentRunConsumer, "__init__", lambda self: None):
+        consumer = AgentRunConsumer()
+    consumer._session_factory = MagicMock(return_value=db_context)
+
+    result = await consumer._fail_missing_context_run(str(uuid4()))
+
+    assert result == expected_status
+    assert "bifrost:agent-run:" in str(db.execute.await_args.args[0])
+    if failed:
+        assert row.status == "failed"
+        assert row.error == "Agent run context was unavailable before execution"
+        assert row.completed_at is not None
+        db.commit.assert_awaited_once()
+    else:
+        db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cancel_watcher_cancels_task_when_redis_flag_exists(monkeypatch):
     monkeypatch.setattr(agent_run, "CANCEL_CHECK_INTERVAL", 0)
     redis_client = AsyncMock()

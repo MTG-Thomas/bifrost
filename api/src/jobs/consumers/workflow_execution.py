@@ -473,7 +473,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         pending = await self._redis_client.get_pending_execution(execution_id)
 
         if pending is None:
-            existing_status = await self._get_existing_execution_status(execution_id)
+            existing_status = await self._fail_missing_pending_execution(execution_id)
             if existing_status is not None:
                 logger.info(
                     f"No pending execution found in Redis for {execution_id}, "
@@ -915,32 +915,46 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
             raise DomainFailureHandled("workflow setup failure recorded") from e
 
-    async def _get_existing_execution_status(self, execution_id: str) -> str | None:
-        """Return existing durable execution status for duplicate classification."""
-        from uuid import UUID
+    async def _fail_missing_pending_execution(
+        self,
+        execution_id: str,
+    ) -> str | None:
+        """Fail confirmed work whose required Redis context disappeared.
 
-        from sqlalchemy import select
-
-        from src.core.database import get_session_factory
+        Taking the publisher's advisory transaction lock prevents observing
+        SCHEDULED while a confirmed publication is still advancing to PENDING.
+        Unconfirmed SCHEDULED and terminal rows remain untouched.
+        """
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
         from src.models.orm.executions import Execution
 
         try:
             execution_uuid = UUID(execution_id)
-        except ValueError as e:
-            raise MalformedMessage(f"invalid execution_id UUID: {execution_id}") from e
+        except ValueError as exc:
+            raise MalformedMessage(
+                f"invalid execution_id UUID: {execution_id}"
+            ) from exc
 
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            result = await session.execute(
-                select(Execution.status).where(Execution.id == execution_uuid)
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
             )
-            status = result.scalar_one_or_none()
-
-        if status is None:
-            return None
-        if hasattr(status, "value"):
-            return status.value
-        return str(status)
+            execution = await db.get(Execution, execution_uuid)
+            if execution is None:
+                return None
+            if execution.status == ExecutionStatus.PENDING:
+                execution.status = ExecutionStatus.FAILED
+                execution.error_message = (
+                    "Execution context was unavailable before execution"
+                )
+                execution.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+            return execution.status.value
 
     async def _claim_durable_execution(self, execution_id: str) -> bool:
         """Claim a published durable execution before any execution side effects.

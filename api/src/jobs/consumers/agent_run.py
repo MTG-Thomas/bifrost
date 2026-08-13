@@ -51,7 +51,12 @@ class AgentRunConsumer(BaseConsumer):
             context_raw = await redis.get(redis_key)
 
         if not context_raw:
-            logger.error(f"Agent run {run_id}: context not found in Redis")
+            durable_status = await self._fail_missing_context_run(run_id)
+            logger.error(
+                "Agent run %s: context not found in Redis (durable_status=%s)",
+                run_id,
+                durable_status or "missing",
+            )
             return
 
         context = json.loads(context_raw)
@@ -364,6 +369,37 @@ class AgentRunConsumer(BaseConsumer):
             agent_run.status = "running"
             await db.commit()
             return True
+
+    async def _fail_missing_context_run(self, run_id: str) -> str | None:
+        """Fail a published run whose required Redis context disappeared.
+
+        The publisher uses the same transaction lock. If it is still between
+        broker confirmation and the queued commit, this waits and observes the
+        committed state. SCHEDULED and terminal rows are left untouched; only
+        a confirmed queued run is failed.
+        """
+        try:
+            run_uuid = UUID(run_id)
+        except ValueError as exc:
+            raise MalformedMessage(f"invalid agent run UUID: {run_id}") from exc
+
+        async with self._session_factory() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:agent-run:' || :run_id))"
+                ),
+                {"run_id": run_id},
+            )
+            agent_run = await db.get(AgentRun, run_uuid)
+            if agent_run is None:
+                return None
+            if agent_run.status == "queued":
+                agent_run.status = "failed"
+                agent_run.error = "Agent run context was unavailable before execution"
+                agent_run.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+            return str(agent_run.status)
 
     @staticmethod
     async def _cancel_watcher(

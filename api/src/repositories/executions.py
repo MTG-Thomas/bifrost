@@ -480,6 +480,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             result_type=execution.result_type,
             error_message=execution.error_message,
             duration_ms=execution.duration_ms,
+            created_at=execution.created_at,
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             logs=[log.model_dump() for log in logs],
@@ -674,6 +675,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             result_type=execution.result_type,
             error_message=execution.error_message,
             duration_ms=execution.duration_ms,
+            created_at=execution.created_at,
             started_at=execution.started_at,
             completed_at=execution.completed_at,
             logs=None,  # Fetched separately via /logs endpoint

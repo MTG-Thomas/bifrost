@@ -218,12 +218,10 @@ async def get_task_result(task_id: str) -> TaskResult:
         raise MCPError(code=INVALID_PARAMS, message="Task not found")
 
     status = _task_status(kind, body)
-    created_at = str(
-        body.get("created_at")
-        or body.get("started_at")
-        or body.get("completed_at")
-        or "1970-01-01T00:00:00+00:00"
-    )
+    created_at_value = body.get("created_at")
+    if not created_at_value:
+        raise MCPError(code=INVALID_PARAMS, message="Task not found")
+    created_at = str(created_at_value)
     updated_at = str(body.get("updated_at") or body.get("completed_at") or created_at)
     progress: dict[str, Any] = (
         body["progress"] if isinstance(body.get("progress"), dict) else {}

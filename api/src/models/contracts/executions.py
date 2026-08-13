@@ -87,6 +87,7 @@ class ExecutionSummary(BaseModel):
     result_type: str | None = None  # How to render result (json, html, text)
     error_message: str | None = None
     duration_ms: int | None = None
+    created_at: datetime
     started_at: datetime | None = None  # May be None if not started yet
     completed_at: datetime | None = None
     scheduled_at: datetime | None = None  # For Scheduled rows, when the row is due to promote
@@ -286,5 +287,4 @@ class ExecutionPublic(ExecutionBase):
     @field_serializer("created_at", "started_at", "completed_at")
     def serialize_dt(self, dt: datetime | None) -> str | None:
         return dt.isoformat() if dt else None
-
 

@@ -33,6 +33,7 @@ def _execution_row(**overrides):
         result_type="json",
         error_message=None,
         duration_ms=42,
+        created_at=datetime.now(UTC),
         started_at=datetime.now(UTC),
         completed_at=None,
         scheduled_at=None,

@@ -41,6 +41,7 @@ def _execution(**overrides):
         "result_type": "json",
         "error_message": None,
         "duration_ms": 250,
+        "created_at": now,
         "started_at": now,
         "completed_at": now,
         "variables": {"secret": "hidden"},

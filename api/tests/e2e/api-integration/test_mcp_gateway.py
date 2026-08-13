@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import requests
 
+from tests.fixtures.auth import create_test_jwt
+
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
 MCP_ACCEPT = "application/json, text/event-stream"
 MODERN_PROTOCOL_VERSION = "2026-07-28"
@@ -40,6 +42,7 @@ def _mcp_request(
     request_id: int = 1,
     modern: bool = False,
     tasks: bool = False,
+    expect_error: bool = False,
 ) -> dict:
     headers = _mcp_headers(token)
     request_params = dict(params)
@@ -72,8 +75,13 @@ def _mcp_request(
             "params": request_params,
         },
     )
-    assert response.status_code == 200, response.text
     payload = response.json()
+    if expect_error:
+        assert response.status_code in (200, 400), response.text
+        assert "error" in payload, payload
+        return payload
+
+    assert response.status_code == 200, response.text
     assert "error" not in payload, payload
     return payload
 
@@ -101,8 +109,12 @@ class TestMCPAgentGateway:
         suffix = uuid.uuid4().hex[:8]
         function_name = f"gateway_echo_{suffix}"
         path = f"workflows/{function_name}.py"
-        token = platform_admin.access_token
-        assert token is not None
+        token = create_test_jwt(
+            user_id=str(platform_admin.user_id),
+            email=platform_admin.email,
+            is_superuser=True,
+            mcp_resource=f"{TEST_API_URL}/mcp",
+        )
         headers = platform_admin.headers
 
         content = (
@@ -363,6 +375,7 @@ class TestMCPAgentGateway:
         )["result"]
         assert created["resultType"] == "task"
         assert created["taskId"].startswith("execution:")
+        assert created["createdAt"] != "1970-01-01T00:00:00+00:00"
 
         task_id = created["taskId"]
         deadline = time.monotonic() + 10
@@ -379,37 +392,22 @@ class TestMCPAgentGateway:
         assert current["status"] == "completed", current
         assert current["result"]["result"] == {"echo": "task-result"}
 
-        other_token = non_admin_user.access_token
-        assert other_token is not None
-        denied_headers = _mcp_headers(other_token)
-        denied_headers.update(
-            {
-                "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
-                "Mcp-Method": "tasks/get",
-                "Mcp-Name": task_id,
-            }
+        other_token = create_test_jwt(
+            user_id=str(non_admin_user.user_id),
+            email=non_admin_user.email,
+            organization_id=str(non_admin_user.organization_id),
+            mcp_resource=f"{TEST_API_URL}/mcp",
         )
-        denied = requests.post(
-            f"{TEST_API_URL}/mcp",
-            headers=denied_headers,
-            json={
-                "jsonrpc": "2.0",
-                "id": 99,
-                "method": "tasks/get",
-                "params": {
-                    "taskId": task_id,
-                    "_meta": {
-                        PROTOCOL_VERSION_META_KEY: MODERN_PROTOCOL_VERSION,
-                        CLIENT_INFO_META_KEY: {"name": "gateway-e2e", "version": "1.0"},
-                        CLIENT_CAPABILITIES_META_KEY: {
-                            "extensions": {TASKS_EXTENSION_ID: {}}
-                        },
-                    },
-                },
-            },
+        denied = _mcp_request(
+            other_token,
+            "tasks/get",
+            {"taskId": task_id},
+            request_id=99,
+            modern=True,
+            tasks=True,
+            expect_error=True,
         )
-        assert denied.status_code == 400, denied.text
-        assert denied.json()["error"]["message"] == "Task not found"
+        assert denied["error"]["message"] == "Task not found"
 
         cancellable = _mcp_request(
             self.token,
@@ -426,6 +424,17 @@ class TestMCPAgentGateway:
             modern=True,
             tasks=True,
         )["result"]
+        denied_cancel = _mcp_request(
+            other_token,
+            "tasks/cancel",
+            {"taskId": cancellable["taskId"]},
+            request_id=100,
+            modern=True,
+            tasks=True,
+            expect_error=True,
+        )
+        assert denied_cancel["error"]["message"] == "Task not found or not cancellable"
+
         cancelled = _mcp_request(
             self.token,
             "tasks/cancel",
@@ -434,6 +443,19 @@ class TestMCPAgentGateway:
             tasks=True,
         )["result"]
         assert cancelled["resultType"] == "complete"
+
+        deadline = time.monotonic() + 10
+        current = cancellable
+        while current["status"] != "cancelled" and time.monotonic() < deadline:
+            time.sleep(0.1)
+            current = _mcp_request(
+                self.token,
+                "tasks/get",
+                {"taskId": cancellable["taskId"]},
+                modern=True,
+                tasks=True,
+            )["result"]
+        assert current["status"] == "cancelled", current
 
     def test_live_discovery_schema_execution_and_revocation(self):
         found = _call_gateway(

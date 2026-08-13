@@ -31,6 +31,7 @@ async def test_get_task_reads_canonical_requester_authorized_execution_route():
         "/api/executions/exec-1",
     )
     assert result.status == "completed"
+    assert result.created_at == "2026-08-12T12:00:00+00:00"
     assert result.result == {
         "execution_id": "exec-1",
         "result": {"changed": True},
@@ -46,6 +47,20 @@ async def test_get_task_hides_missing_or_forbidden_durable_handle():
         pytest.raises(MCPError, match="Task not found"),
     ):
         await tasks.get_task_result("agent-run:run-1")
+
+
+@pytest.mark.asyncio
+async def test_get_task_never_synthesizes_epoch_for_missing_created_at():
+    with (
+        patch.object(tasks, "_runtime_context", return_value=object()),
+        patch.object(
+            tasks,
+            "call_rest",
+            new=AsyncMock(return_value=(200, {"status": "Pending"})),
+        ),
+        pytest.raises(MCPError, match="Task not found"),
+    ):
+        await tasks.get_task_result("execution:exec-1")
 
 
 @pytest.mark.asyncio
