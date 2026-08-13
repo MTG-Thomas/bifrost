@@ -12,6 +12,9 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoChangesetDiffResponse,
     WorkspaceRepoChangesetResponse,
     WorkspaceRepoFileMutationRequest,
+    WorkspaceRepoGitConvergenceApplyRequest,
+    WorkspaceRepoGitConvergencePreviewRequest,
+    WorkspaceRepoGitConvergenceResponse,
     WorkspaceRepoStateResponse,
     WorkspaceRepoValidationResponse,
 )
@@ -128,6 +131,42 @@ async def list_recoverable_workspace_repo_git_closures(
     try:
         return await (await _service(db, ctx.org_id)).recoverable_git_closures(
             scope=scope
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
+@router.post(
+    "/git-convergence/preview",
+    response_model=WorkspaceRepoGitConvergenceResponse,
+)
+async def preview_workspace_repo_git_convergence(
+    request: WorkspaceRepoGitConvergencePreviewRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    try:
+        return await (await _service(db, ctx.org_id)).preview_git_convergence(
+            request
+        )
+    except Exception as exc:
+        raise _translate(exc) from exc
+
+
+@router.post(
+    "/git-convergence/apply",
+    response_model=WorkspaceRepoGitConvergenceResponse,
+)
+async def apply_workspace_repo_git_convergence(
+    request: WorkspaceRepoGitConvergenceApplyRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    try:
+        return await (await _service(db, ctx.org_id)).apply_git_convergence(
+            request, operator=user.email
         )
     except Exception as exc:
         raise _translate(exc) from exc
