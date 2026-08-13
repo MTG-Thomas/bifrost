@@ -125,6 +125,7 @@ dependencies = [
     "types-aiobotocore[s3]",  # Type stubs for S3
     "azure-identity",  # Managed identity credential for Azure Blob user-delegation SAS
     "azure-storage-blob",  # Azure Blob object storage backend
+    "msal>=1.37.0",  # transitive (azure-identity); permits cryptography 50 advisory fixes
 
     # =========================================================================
     # LLM Providers (AI Agent System)
