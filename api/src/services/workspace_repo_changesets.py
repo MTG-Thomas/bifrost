@@ -13,7 +13,7 @@ import difflib
 import hashlib
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import cast
 from uuid import UUID
@@ -29,6 +29,11 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoChangesetResponse,
     WorkspaceRepoFileDiff,
     WorkspaceRepoFileMutationRequest,
+    WorkspaceRepoGitConvergenceApplyRequest,
+    WorkspaceRepoGitConvergenceChangeset,
+    WorkspaceRepoGitConvergencePath,
+    WorkspaceRepoGitConvergencePreviewRequest,
+    WorkspaceRepoGitConvergenceResponse,
     WorkspaceRepoMutation,
     WorkspaceRepoStateResponse,
     WorkspaceRepoValidationResponse,
@@ -58,6 +63,14 @@ from src.services.workflow_registration import (
 logger = logging.getLogger(__name__)
 
 CANDIDATE_SCHEMA = "bifrost.workspace-candidate/v2"
+GIT_CONVERGENCE_SCHEMA = "bifrost.workspace-history-convergence/v1"
+
+
+@dataclass
+class _GitConvergencePlan:
+    response: WorkspaceRepoGitConvergenceResponse
+    files: tuple[PlatformCommitFile, ...]
+    rows: list[WorkspaceRepoChangeset]
 
 
 class ChangesetConflict(Exception):
@@ -638,6 +651,515 @@ class WorkspaceRepoChangesetService:
             self.organization_id, scope=scope
         )
         return [self._response(row) for row in rows]
+
+    async def preview_git_convergence(
+        self, request: WorkspaceRepoGitConvergencePreviewRequest
+    ) -> WorkspaceRepoGitConvergenceResponse:
+        """Bind live, reviewed, and history state without mutating any of them."""
+        rows = [await self._required(value) for value in request.changeset_ids]
+        pending = self._pending_git_convergence_plan(rows)
+        if pending is not None:
+            return pending.response
+        return (await self._build_git_convergence_plan(request)).response
+
+    async def apply_git_convergence(
+        self,
+        request: WorkspaceRepoGitConvergenceApplyRequest,
+        *,
+        operator: str,
+    ) -> WorkspaceRepoGitConvergenceResponse:
+        """Write only the exact history paths bound by a reviewed preview."""
+        await self.db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtext('bifrost:workspace-repo-changesets'))"
+            )
+        )
+        selected_rows = [
+            await self._required(value, for_update=True)
+            for value in request.changeset_ids
+        ]
+        plan = self._pending_git_convergence_plan(selected_rows)
+        pending_retry = plan is not None
+        if plan is None:
+            plan = await self._build_git_convergence_plan(request, for_update=True)
+        if request.candidate_id != plan.response.candidate_id:
+            raise ChangesetConflict(
+                "history_convergence_candidate_mismatch",
+                expected_candidate_id=request.candidate_id,
+                current_candidate_id=plan.response.candidate_id,
+            )
+        if not plan.response.ready_to_apply:
+            raise ChangesetInvalid(
+                "history convergence preview is not ready to apply"
+            )
+        if self.commit_writer is None:  # guarded in plan construction as well
+            raise ChangesetInvalid("verified GitHub App commit writer is not configured")
+
+        effective_operator = operator
+        if pending_retry:
+            stored = cast(dict, selected_rows[0].failure_detail)
+            original_message = str(stored.get("commit_message") or "")
+            if request.commit_message != original_message:
+                raise ChangesetInvalid(
+                    "pending convergence commit_message must match its immutable plan"
+                )
+            effective_operator = str(stored.get("operator") or operator)
+
+        pending_evidence = {
+            "phase": "git_convergence",
+            "state": "pending",
+            "activation_preserved": True,
+            "candidate_id": plan.response.candidate_id,
+            "protected_main_source_sha": plan.response.protected_main_source_sha,
+            "history_parent_sha": plan.response.history_head_sha,
+            "commit_message": request.commit_message,
+            "operator": effective_operator,
+        }
+        primary_evidence_id = sorted((row.id for row in plan.rows), key=str)[0]
+        if not all(
+            isinstance(row.failure_detail, dict)
+            and row.failure_detail.get("phase") == "git_convergence"
+            and row.failure_detail.get("state") == "pending"
+            and row.failure_detail.get("candidate_id") == plan.response.candidate_id
+            for row in plan.rows
+        ):
+            for row in plan.rows:
+                row.failure_detail = {
+                    **pending_evidence,
+                    "primary_evidence_changeset_id": str(primary_evidence_id),
+                    **(
+                        {
+                            "plan": plan.response.model_dump(mode="json"),
+                            "files": [asdict(value) for value in plan.files],
+                        }
+                        if row.id == primary_evidence_id
+                        else {}
+                    ),
+                    "prior_failure": row.failure_detail,
+                }
+            await self.db.flush()
+            # This durable marker makes an external Git success recoverable even
+            # if the later database closeout is interrupted.
+            await self.db.commit()
+
+        commit_request = PlatformCommitRequest(
+            commit_message=request.commit_message,
+            operator=effective_operator,
+            changeset_id=primary_evidence_id,
+            files=plan.files,
+            plan_id=plan.response.candidate_id,
+            protected_main_source_sha=plan.response.protected_main_source_sha,
+            expected_head_sha=plan.response.history_head_sha,
+            convergence_candidate_id=plan.response.candidate_id,
+            reconciled_changeset_ids=tuple(
+                sorted((row.id for row in plan.rows), key=str)
+            ),
+        )
+        try:
+            result = await self.commit_writer.write(commit_request)
+        except Exception as exc:
+            await self.db.rollback()
+            commit_sha = (
+                exc.commit_sha if isinstance(exc, PlatformCommitError) else None
+            )
+            for changeset_id in request.changeset_ids:
+                row = await self._required(changeset_id, for_update=True)
+                prior_failure = row.failure_detail
+                row.error = str(exc)
+                row.failure_detail = {
+                    "phase": "git_convergence",
+                    "state": "failed",
+                    "message": str(exc),
+                    "activation_preserved": True,
+                    "candidate_id": plan.response.candidate_id,
+                    "protected_main_source_sha": (
+                        plan.response.protected_main_source_sha
+                    ),
+                    "history_parent_sha": plan.response.history_head_sha,
+                    "commit_message": request.commit_message,
+                    "operator": effective_operator,
+                    "primary_evidence_changeset_id": str(primary_evidence_id),
+                    **(
+                        {
+                            "plan": plan.response.model_dump(mode="json"),
+                            "files": [asdict(value) for value in plan.files],
+                        }
+                        if row.id == primary_evidence_id
+                        else {}
+                    ),
+                    "prior_failure": prior_failure,
+                }
+                if commit_sha:
+                    row.commit_sha = commit_sha
+                    row.failure_detail["commit_sha"] = commit_sha
+            await self.db.flush()
+            await self.db.commit()
+            return plan.response.model_copy(
+                update={
+                    "ready_to_apply": False,
+                    "diagnostics": [
+                        *plan.response.diagnostics,
+                        {
+                            "severity": "error",
+                            "source": "git_convergence",
+                            "message": str(exc),
+                            "commit_sha": commit_sha,
+                        },
+                    ],
+                    "commit_sha": commit_sha,
+                }
+            )
+
+        dispositions = {
+            item.changeset_id: item for item in plan.response.changesets
+        }
+        for row in plan.rows:
+            disposition = dispositions[row.id]
+            current_validation = dict(row.validation or {})
+            row.validation = {
+                **current_validation,
+                "history_convergence": {
+                    "schema": GIT_CONVERGENCE_SCHEMA,
+                    "candidate_id": plan.response.candidate_id,
+                    "protected_main_source_sha": (
+                        plan.response.protected_main_source_sha
+                    ),
+                    "history_parent_sha": plan.response.history_head_sha,
+                    "commit_sha": result.commit_sha,
+                    "signature_state": result.signature_state,
+                    "operator": effective_operator,
+                    "selected_changeset_ids": [
+                        str(value)
+                        for value in sorted(request.changeset_ids, key=str)
+                    ],
+                    "disposition": disposition.disposition,
+                    "reconciled_paths": disposition.reconciled_paths,
+                    "superseded_paths": disposition.superseded_paths,
+                },
+            }
+            row.commit_sha = result.commit_sha
+            row.status = "committed"
+            row.error = None
+            row.failure_detail = None
+        await self.db.flush()
+        await self.db.commit()
+        return plan.response.model_copy(
+            update={
+                "applied": True,
+                "commit_sha": result.commit_sha,
+                "signature_state": result.signature_state,
+            }
+        )
+
+    def _pending_git_convergence_plan(
+        self, rows: list[WorkspaceRepoChangeset]
+    ) -> _GitConvergencePlan | None:
+        if not rows:
+            return None
+        details = [
+            row.failure_detail if isinstance(row.failure_detail, dict) else {}
+            for row in rows
+        ]
+        candidate_ids = {str(item.get("candidate_id") or "") for item in details}
+        primary_ids = {
+            str(item.get("primary_evidence_changeset_id") or "")
+            for item in details
+        }
+        if (
+            len(candidate_ids) != 1
+            or "" in candidate_ids
+            or len(primary_ids) != 1
+            or "" in primary_ids
+            or not all(
+                item.get("phase") == "git_convergence"
+                and (
+                    item.get("state") == "pending"
+                    or (
+                        item.get("state") == "failed"
+                        and bool(item.get("commit_sha"))
+                    )
+                )
+                for item in details
+            )
+        ):
+            return None
+        primary_id = next(iter(primary_ids))
+        evidence = [
+            item
+            for row, item in zip(rows, details, strict=True)
+            if str(row.id) == primary_id
+        ]
+        if len(evidence) != 1 or not isinstance(evidence[0].get("plan"), dict):
+            raise ChangesetInvalid(
+                "pending convergence primary evidence is missing"
+            )
+        response = WorkspaceRepoGitConvergenceResponse.model_validate(
+            evidence[0]["plan"]
+        )
+        if {item.changeset_id for item in response.changesets} != {
+            row.id for row in rows
+        }:
+            raise ChangesetInvalid(
+                "pending convergence must resume with its exact selected changesets"
+            )
+        file_evidence = evidence[0].get("files")
+        if not isinstance(file_evidence, list) or not file_evidence:
+            raise ChangesetInvalid(
+                "pending convergence exact file evidence is missing"
+            )
+        try:
+            files = [PlatformCommitFile(**item) for item in file_evidence]
+        except (TypeError, KeyError) as exc:
+            raise ChangesetInvalid(
+                "pending convergence exact file evidence is invalid"
+            ) from exc
+        return _GitConvergencePlan(
+            response=response,
+            files=tuple(files),
+            rows=rows,
+        )
+
+    async def _build_git_convergence_plan(
+        self,
+        request: WorkspaceRepoGitConvergencePreviewRequest,
+        *,
+        for_update: bool = False,
+    ) -> _GitConvergencePlan:
+        if self.commit_writer is None:
+            raise ChangesetInvalid("verified GitHub App commit writer is not configured")
+
+        rows = [
+            await self._required(changeset_id, for_update=for_update)
+            for changeset_id in request.changeset_ids
+        ]
+        entries_by_path: dict[str, list[tuple[WorkspaceRepoChangeset, dict]]] = {}
+        total_source_bytes = 0
+        for row in rows:
+            failure = row.failure_detail if isinstance(row.failure_detail, dict) else {}
+            retry_key = (row.status, str(failure.get("phase") or ""))
+            convergence_retry = (
+                row.status == "activated"
+                and failure.get("phase") == "git_convergence"
+                and failure.get("state") in RETRYABLE_GIT_FAILURE_STATES
+            )
+            if (
+                retry_key not in self.RETRYABLE_GIT_FAILURES
+                and not convergence_retry
+            ):
+                raise ChangesetInvalid(
+                    f"changeset {row.id} is not an activated recoverable Git closure"
+                )
+            source_mutations = [
+                item for item in row.mutations if item.get("operation") != "verify"
+            ]
+            if not source_mutations:
+                raise ChangesetInvalid(
+                    f"changeset {row.id} has no source mutation to reconcile"
+                )
+            for item in source_mutations:
+                if item.get("operation") != "write":
+                    raise ChangesetInvalid(
+                        "history convergence currently accepts exact-byte writes only"
+                    )
+                path = str(item.get("path") or "")
+                content_base64 = item.get("content_base64")
+                after_hash = item.get("after_hash")
+                if not path or not content_base64 or not after_hash:
+                    raise ChangesetInvalid(
+                        f"changeset {row.id} contains incomplete source evidence"
+                    )
+                try:
+                    content = base64.b64decode(content_base64, validate=True)
+                except Exception as exc:
+                    raise ChangesetInvalid(
+                        f"changeset {row.id} contains invalid source evidence"
+                    ) from exc
+                if hashlib.sha256(content).hexdigest() != after_hash:
+                    raise ChangesetInvalid(
+                        f"changeset {row.id} source evidence hash does not match"
+                    )
+                total_source_bytes += len(content)
+                entries_by_path.setdefault(path, []).append((row, item))
+
+        paths = tuple(sorted(entries_by_path))
+        if len(paths) > 100:
+            raise ChangesetInvalid(
+                "history convergence is limited to 100 exact selected paths"
+            )
+        if total_source_bytes > 5 * 1024 * 1024:
+            raise ChangesetInvalid(
+                "history convergence is limited to 5 MiB of selected source evidence"
+            )
+        source_sha = request.protected_main_source_sha.lower()
+        try:
+            reviewed = await self.commit_writer.inspect(
+                paths, ref=source_sha, reachable_from="main"
+            )
+            history = await self.commit_writer.inspect(paths)
+        except PlatformCommitError as exc:
+            raise ChangesetInvalid(str(exc)) from exc
+
+        diagnostics: list[dict] = []
+        if reviewed.commit_sha.lower() != source_sha:
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "source": "protected_main",
+                    "message": "protected-main source SHA resolved to a different commit",
+                    "expected": source_sha,
+                    "observed": reviewed.commit_sha,
+                }
+            )
+
+        path_results: list[WorkspaceRepoGitConvergencePath] = []
+        files: list[PlatformCommitFile] = []
+        source_by_path: dict[str, UUID | None] = {}
+        desired_by_path: dict[str, str] = {}
+        for path in paths:
+            raw = await self._read_optional(path)
+            live_hash = hashlib.sha256(raw).hexdigest() if raw is not None else None
+            reviewed_hash = reviewed.file_sha256.get(path)
+            history_hash = history.file_sha256.get(path)
+            entries = entries_by_path[path]
+            matching = [
+                (row, item)
+                for row, item in entries
+                if item.get("after_hash") == live_hash == reviewed_hash
+            ]
+            evidence_row, evidence_item = max(
+                matching or entries,
+                key=lambda value: (
+                    value[0].created_at,
+                    str(value[0].id),
+                ),
+            )
+            desired_hash = str(live_hash or evidence_item["after_hash"])
+            source_by_path[path] = evidence_row.id if matching else None
+            desired_by_path[path] = desired_hash
+            if live_hash != reviewed_hash:
+                diagnostics.append(
+                    {
+                        "severity": "error",
+                        "source": "live_vs_reviewed",
+                        "path": path,
+                        "live_sha256": live_hash,
+                        "reviewed_sha256": reviewed_hash,
+                    }
+                )
+            if live_hash is None:
+                diagnostics.append(
+                    {
+                        "severity": "error",
+                        "source": "live_source",
+                        "path": path,
+                        "message": "exact-byte history convergence does not support deletion",
+                    }
+                )
+            requires_write = history_hash != desired_hash
+            path_results.append(
+                WorkspaceRepoGitConvergencePath(
+                    path=path,
+                    desired_sha256=desired_hash,
+                    live_sha256=live_hash,
+                    reviewed_sha256=reviewed_hash,
+                    history_sha256=history_hash,
+                    requires_write=requires_write,
+                    source_changeset_id=evidence_row.id if matching else None,
+                )
+            )
+            if requires_write:
+                files.append(
+                    PlatformCommitFile(
+                        path=path,
+                        content_base64=(
+                            base64.b64encode(raw).decode() if raw is not None else None
+                        ),
+                        expected_before_sha256=history_hash,
+                        expected_sha256=desired_hash,
+                    )
+                )
+
+        changeset_results: list[WorkspaceRepoGitConvergenceChangeset] = []
+        for row in sorted(rows, key=lambda value: str(value.id)):
+            reconciled_paths: list[str] = []
+            superseded_paths: list[str] = []
+            for item in row.mutations:
+                if item.get("operation") == "verify":
+                    continue
+                path = str(item["path"])
+                if item.get("after_hash") == desired_by_path[path]:
+                    reconciled_paths.append(path)
+                else:
+                    superseded_paths.append(path)
+            if reconciled_paths and superseded_paths:
+                disposition = "partially_superseded"
+            elif superseded_paths:
+                disposition = "superseded"
+            else:
+                disposition = "reconciled"
+            changeset_results.append(
+                WorkspaceRepoGitConvergenceChangeset(
+                    changeset_id=row.id,
+                    disposition=disposition,
+                    reconciled_paths=sorted(reconciled_paths),
+                    superseded_paths=sorted(superseded_paths),
+                )
+            )
+
+        if not files:
+            diagnostics.append(
+                {
+                    "severity": "error",
+                    "source": "no_op",
+                    "message": "selected paths are already present in production-live history",
+                }
+            )
+        payload = {
+            "schema": GIT_CONVERGENCE_SCHEMA,
+            "changeset_ids": [str(value) for value in sorted(request.changeset_ids, key=str)],
+            "protected_main": {
+                "source_sha": source_sha,
+                "resolved_sha": reviewed.commit_sha,
+                "tree_sha": reviewed.tree_sha,
+                "file_sha256": reviewed.file_sha256,
+            },
+            "live_file_sha256": {
+                item.path: item.live_sha256 for item in path_results
+            },
+            "history": {
+                "head_sha": history.commit_sha,
+                "tree_sha": history.tree_sha,
+                "file_sha256": history.file_sha256,
+            },
+            "desired_file_sha256": desired_by_path,
+            "source_changeset_by_path": {
+                path: str(value) if value is not None else None
+                for path, value in source_by_path.items()
+            },
+            "dispositions": [
+                item.model_dump(mode="json") for item in changeset_results
+            ],
+        }
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        candidate_id = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+        response = WorkspaceRepoGitConvergenceResponse(
+            ready_to_apply=not diagnostics,
+            candidate_id=candidate_id,
+            protected_main_source_sha=source_sha,
+            protected_main_tree_sha=reviewed.tree_sha,
+            history_head_sha=history.commit_sha,
+            history_tree_sha=history.tree_sha,
+            diagnostics=diagnostics,
+            paths=path_results,
+            changesets=changeset_results,
+        )
+        return _GitConvergencePlan(
+            response=response,
+            files=tuple(files),
+            rows=rows,
+        )
 
     async def _complete_git_closure(
         self,

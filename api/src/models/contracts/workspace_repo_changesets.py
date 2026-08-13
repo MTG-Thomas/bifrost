@@ -126,3 +126,60 @@ class WorkspaceRepoActivateRequest(BaseModel):
         default=None,
         pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$",
     )
+
+
+class WorkspaceRepoGitConvergencePreviewRequest(BaseModel):
+    changeset_ids: list[UUID] = Field(min_length=1, max_length=25)
+    protected_main_source_sha: str = Field(
+        pattern=r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$"
+    )
+
+    @model_validator(mode="after")
+    def require_unique_changesets(self):
+        if len(set(self.changeset_ids)) != len(self.changeset_ids):
+            raise ValueError("changeset_ids must be unique")
+        return self
+
+
+class WorkspaceRepoGitConvergenceApplyRequest(
+    WorkspaceRepoGitConvergencePreviewRequest
+):
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    commit_message: str = Field(min_length=1, max_length=500)
+
+
+class WorkspaceRepoGitConvergencePath(BaseModel):
+    path: str
+    desired_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    live_sha256: str | None = None
+    reviewed_sha256: str | None = None
+    history_sha256: str | None = None
+    requires_write: bool
+    source_changeset_id: UUID | None = None
+
+
+class WorkspaceRepoGitConvergenceChangeset(BaseModel):
+    changeset_id: UUID
+    disposition: Literal["reconciled", "partially_superseded", "superseded"]
+    reconciled_paths: list[str] = Field(default_factory=list)
+    superseded_paths: list[str] = Field(default_factory=list)
+
+
+class WorkspaceRepoGitConvergenceResponse(BaseModel):
+    schema_version: Literal["bifrost.workspace-history-convergence/v1"] = (
+        "bifrost.workspace-history-convergence/v1"
+    )
+    ready_to_apply: bool
+    applied: bool = False
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    protected_main_source_sha: str
+    protected_main_tree_sha: str
+    history_head_sha: str
+    history_tree_sha: str
+    commit_sha: str | None = None
+    signature_state: str | None = None
+    diagnostics: list[dict] = Field(default_factory=list)
+    paths: list[WorkspaceRepoGitConvergencePath] = Field(default_factory=list)
+    changesets: list[WorkspaceRepoGitConvergenceChangeset] = Field(
+        default_factory=list
+    )

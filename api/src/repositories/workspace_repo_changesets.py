@@ -62,6 +62,10 @@ class WorkspaceRepoChangesetRepository:
                         WorkspaceRepoChangeset.status == "committed_unpushed",
                         failure_phase == "git_push",
                     ),
+                    and_(
+                        WorkspaceRepoChangeset.status == "activated",
+                        failure_phase == "git_convergence",
+                    ),
                 ),
             )
             .order_by(WorkspaceRepoChangeset.updated_at.desc())
