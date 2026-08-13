@@ -32,6 +32,22 @@ Expected flow:
 - Regenerate OpenAPI TypeScript types when API contracts change.
 - Before merge, make sure CI or the equivalent relevant local checks are green.
 
+CI turns a bounded source diff into an inspectable affected-test plan. Python
+and TypeScript imports are traversed in both directions so a shared helper
+selects tests for its transitive consumers, not just a similarly named test.
+Backend e2e ownership also includes literal HTTP requests matched to FastAPI
+routes. API, client, worker, and MCP lanes keep their stable check names while
+unaffected lanes complete with an explicit skip reason.
+
+The planner fails closed to comprehensive validation for deletions, dependency
+or container inputs, migrations, contracts, CI changes, mixed backend/client
+source changes, unknown paths, parse failures, excessive fan-out, or source in
+the reverse dependency closure without graph-owned tests. Its JSON artifact is
+the review record. If a new registry, dynamic import, or string-dispatch
+mechanism creates an invisible edge, extend
+`api/scripts/plan_affected_tests.py` and its regression tests before relying on
+focused CI.
+
 Review expectation: one human/maintainer review by default. Add a specialist or
 AI review only when the diff is broad, subtle, or crosses an unfamiliar boundary.
 
