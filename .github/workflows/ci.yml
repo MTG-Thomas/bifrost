@@ -23,6 +23,9 @@ env:
   CI_API_TEST_IMAGE: mtg-thomas/bifrost-ci-api-dev
   CI_CLIENT_TEST_IMAGE: mtg-thomas/bifrost-ci-client-dev
   CI_PLAYWRIGHT_TEST_IMAGE: mtg-thomas/bifrost-ci-playwright
+  # Main-push verification must consume the immutable image published by this
+  # exact commit, never the previous mutable :main tag while publication races.
+  CI_TEST_IMAGE_TAG: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('sha-{0}', github.sha) || 'main' }}
 
 jobs:
   # =============================================================================
@@ -341,7 +344,7 @@ jobs:
   # Unit Tests - Fast, gates all builds
   # =============================================================================
   test-unit:
-    needs: affected-test-plan
+    needs: [affected-test-plan, publish-ci-test-images]
     if: always()
     runs-on: ubuntu-latest
     name: Unit Tests
@@ -385,7 +388,7 @@ jobs:
         if: needs.affected-test-plan.outputs.api_unit_mode != 'skip' && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
-          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$API_CI_IMAGE_REF"
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
@@ -406,7 +409,7 @@ jobs:
         if: needs.affected-test-plan.outputs.api_unit_mode != 'skip' && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
-          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$CLIENT_CI_IMAGE_REF"
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
@@ -462,7 +465,7 @@ jobs:
   # stateless checks remain visible in the uploaded advisory artifact.
   # =============================================================================
   mcp-conformance:
-    needs: affected-test-plan
+    needs: [affected-test-plan, publish-ci-test-images]
     if: always()
     runs-on: ubuntu-latest
     name: MCP Conformance
@@ -504,7 +507,7 @@ jobs:
         if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip' && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
-          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$API_CI_IMAGE_REF"
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
@@ -525,7 +528,7 @@ jobs:
         if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip' && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
-          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$CLIENT_CI_IMAGE_REF"
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
@@ -584,7 +587,7 @@ jobs:
   # no ruleset edits needed.
   # =============================================================================
   test-e2e:
-    needs: affected-test-plan
+    needs: [affected-test-plan, publish-ci-test-images]
     if: always()
     runs-on: ubuntu-latest
     name: E2E Tests (shard ${{ matrix.shard }}/${{ matrix.total }})
@@ -627,7 +630,7 @@ jobs:
         if: matrix.total != 0 && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
-          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$API_CI_IMAGE_REF"
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
@@ -648,7 +651,7 @@ jobs:
         if: matrix.total != 0 && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
-          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$CLIENT_CI_IMAGE_REF"
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
@@ -713,7 +716,7 @@ jobs:
   # persistent BuildKit caches when their baked inputs change.
   # =============================================================================
   test-client-e2e:
-    needs: affected-test-plan
+    needs: [affected-test-plan, publish-ci-test-images]
     if: always()
     runs-on: ubuntu-latest
     name: Client E2E Tests
@@ -756,7 +759,7 @@ jobs:
         if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && steps.test-image-inputs.outputs.api_changed != 'true'
         continue-on-error: true
         env:
-          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:main
+          API_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_API_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$API_CI_IMAGE_REF"
           docker tag "$API_CI_IMAGE_REF" bifrost-test-api-dev:latest
@@ -777,7 +780,7 @@ jobs:
         if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && steps.test-image-inputs.outputs.client_changed != 'true'
         continue-on-error: true
         env:
-          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:main
+          CLIENT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_CLIENT_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$CLIENT_CI_IMAGE_REF"
           docker tag "$CLIENT_CI_IMAGE_REF" bifrost-test-client-dev:latest
@@ -798,7 +801,7 @@ jobs:
         if: needs.affected-test-plan.outputs.client_e2e_mode != 'skip' && steps.test-image-inputs.outputs.playwright_changed != 'true'
         continue-on-error: true
         env:
-          PLAYWRIGHT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:main
+          PLAYWRIGHT_CI_IMAGE_REF: ${{ env.REGISTRY }}/${{ env.CI_PLAYWRIGHT_TEST_IMAGE }}:${{ env.CI_TEST_IMAGE_TAG }}
         run: |
           docker pull "$PLAYWRIGHT_CI_IMAGE_REF"
           docker tag "$PLAYWRIGHT_CI_IMAGE_REF" bifrost-test-playwright-runner:latest

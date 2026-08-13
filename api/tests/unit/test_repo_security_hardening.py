@@ -57,6 +57,34 @@ def test_required_e2e_gate_includes_playwright_and_mcp_conformance() -> None:
     ]
 
 
+def test_main_verification_waits_for_immutable_ci_test_images() -> None:
+    ci = _load_yaml(".github/workflows/ci.yml")
+    jobs = ci["jobs"]
+    image_jobs = {"test-unit", "mcp-conformance", "test-e2e", "test-client-e2e"}
+
+    assert ci["env"]["CI_TEST_IMAGE_TAG"] == (
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
+        "&& format('sha-{0}', github.sha) || 'main' }}"
+    )
+    for job_name in image_jobs:
+        assert set(jobs[job_name]["needs"]) == {
+            "affected-test-plan",
+            "publish-ci-test-images",
+        }
+
+    pull_steps = [
+        step
+        for job_name in image_jobs
+        for step in jobs[job_name]["steps"]
+        if step["name"].startswith("Pull ") and "CI test image" in step["name"]
+    ]
+    assert len(pull_steps) == 9
+    for step in pull_steps:
+        image_ref = next(iter(step["env"].values()))
+        assert image_ref.endswith(":${{ env.CI_TEST_IMAGE_TAG }}")
+        assert not image_ref.endswith(":main")
+
+
 def test_playwright_suite_has_no_retries_or_skipped_tests() -> None:
     config = _read("client/playwright.config.ts")
     e2e_source = "\n".join(
