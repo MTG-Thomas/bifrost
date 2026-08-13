@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -137,6 +138,47 @@ async def test_connection_manager_connect_reinitializes_unhealthy_listener(
 
     assert init_calls == 1
     assert "system" in manager.connections
+
+
+@pytest.mark.asyncio
+async def test_internal_subscribers_share_resilient_redis_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = pubsub.ConnectionManager()
+    received: list[dict[str, Any]] = []
+
+    async def subscriber(message: dict[str, Any]) -> None:
+        received.append(message)
+
+    async def init_redis() -> None:
+        manager._pubsub_listener = cast(Any, ListenerHealth(True))
+
+    monkeypatch.setattr(manager, "_init_redis", init_redis)
+
+    await manager.subscribe_internal("catalog", subscriber)
+    await manager._send_local("catalog", {"revision": 2})
+    manager.unsubscribe_internal("catalog", subscriber)
+    await manager._send_local("catalog", {"revision": 3})
+
+    assert received == [{"revision": 2}]
+    assert manager.internal_subscribers == {}
+
+
+@pytest.mark.asyncio
+async def test_internal_subscription_fails_when_redis_listener_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = pubsub.ConnectionManager()
+
+    async def subscriber(message: dict[str, Any]) -> None:
+        pass
+
+    monkeypatch.setattr(manager, "_init_redis", AsyncMock())
+
+    with pytest.raises(RuntimeError, match="Redis pub/sub listener is unavailable"):
+        await manager.subscribe_internal("catalog", subscriber)
+
+    assert manager.internal_subscribers == {}
 
 
 def test_connection_manager_disconnect_removes_empty_channels() -> None:

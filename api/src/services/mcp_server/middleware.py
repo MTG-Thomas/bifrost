@@ -78,9 +78,6 @@ class ToolFilterMiddleware(Middleware):
         Returns:
             Filtered list of tools the user can access
         """
-        # Get all tools first
-        all_tools = await call_next(context)
-
         # Get authenticated user from token
         token = get_access_token()
         if token is None:
@@ -91,6 +88,7 @@ class ToolFilterMiddleware(Middleware):
 
         agent_id = _get_agent_id_from_scope()
         if agent_id is None:
+            all_tools = await call_next(context)
             filtered_tools = [
                 tool for tool in all_tools if tool.name in GATEWAY_TOOL_NAMES
             ]
@@ -114,7 +112,13 @@ class ToolFilterMiddleware(Middleware):
         # Get accessible tool IDs from service
         try:
             from src.core.database import get_db_context
+            from src.services.mcp_server.catalog_sync import (
+                ensure_workflow_catalog_current,
+            )
             from src.services.mcp_server.tool_access import MCPToolAccessService
+
+            await ensure_workflow_catalog_current()
+            all_tools = await call_next(context)
 
             async def load_accessible_ids() -> set[str]:
                 async with get_db_context() as db:
@@ -251,7 +255,12 @@ class ToolFilterMiddleware(Middleware):
         # Check if user has access to this tool
         try:
             from src.core.database import get_db_context
+            from src.services.mcp_server.catalog_sync import (
+                ensure_workflow_catalog_current,
+            )
             from src.services.mcp_server.tool_access import MCPToolAccessService
+
+            await ensure_workflow_catalog_current()
 
             async with get_db_context() as db:
                 service = MCPToolAccessService(db)

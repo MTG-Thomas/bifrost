@@ -137,7 +137,7 @@ services:
     command: ["python", "-m", "scripts.init_container"]
 
   # FastAPI Application (Test) - Only started for E2E tests
-  api:
+  api: &api-service
     image: bifrost-test-api-dev:latest
     build:
       context: .
@@ -204,6 +204,12 @@ services:
     # Entrypoint handles permissions; run as root so it can fix volume ownership
     user: root
     command: ["coverage", "run", "--parallel-mode", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  # Independent API process sharing PostgreSQL/Redis with `api`. Keeping this
+  # replica addressable lets E2E tests prove stateless list/call routing and
+  # cross-process catalog invalidation without relying on service affinity.
+  api-replica:
+    <<: *api-service
 
   # Background Worker (Test) - Only started for E2E tests
   # Note: Discovery service has been removed - workflow/form extraction
@@ -357,6 +363,7 @@ services:
       BIFROST_S3_REGION: us-east-1
       # For E2E tests, point to the API container
       TEST_API_URL: http://api:8000
+      TEST_API_REPLICA_URL: http://api-replica:8000
       PYTHONPATH: /app
       # Coverage data stored on shared volume for cross-phase accumulation
       COVERAGE_FILE: /coverage/.coverage
@@ -420,6 +427,10 @@ services:
       - ${LOG_DIR:-/tmp/bifrost}:/tmp/bifrost
     working_dir: /app
     depends_on:
+      api:
+        condition: service_healthy
+      api-replica:
+        condition: service_healthy
       pgbouncer:
         condition: service_healthy
       rabbitmq:

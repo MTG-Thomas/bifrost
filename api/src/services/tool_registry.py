@@ -7,6 +7,7 @@ Converts workflow metadata to LLM-friendly tool definitions.
 
 import logging
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Sequence
 from uuid import UUID
@@ -72,9 +73,185 @@ class RegisteredTool:
     name: str
     description: str
     category: str
-    parameters_schema: list[dict[str, Any]]
+    parameters_schema: list[dict[str, Any]] | dict[str, Any]
     file_path: str
     function_name: str
+
+
+def _map_workflow_type_to_json_schema(param_type: str) -> str:
+    """Map Bifrost's stored workflow parameter types to JSON Schema types."""
+    type_map = {
+        "string": "string",
+        "str": "string",
+        "int": "integer",
+        "integer": "integer",
+        "float": "number",
+        "number": "number",
+        "bool": "boolean",
+        "boolean": "boolean",
+        "json": "object",
+        "dict": "object",
+        "object": "object",
+        "list": "array",
+        "array": "array",
+    }
+    return type_map.get(param_type.lower(), "string")
+
+
+def _parameter_record_to_property(
+    param: dict[str, Any],
+) -> tuple[str, dict[str, Any], bool] | None:
+    """Convert one legacy parameter record into a named schema property."""
+    param_name = param.get("name")
+    if not param_name:
+        return None
+
+    json_type = _map_workflow_type_to_json_schema(
+        str(param.get("type", "string"))
+    )
+    property_schema: dict[str, Any] = {
+        "type": json_type,
+        "description": (
+            param.get("label") or param.get("description") or param_name
+        ),
+    }
+    if json_type == "array":
+        property_schema["items"] = {"type": "string"}
+    elif json_type == "object":
+        property_schema["additionalProperties"] = True
+
+    options = param.get("options")
+    if options:
+        property_schema["enum"] = [
+            deepcopy(option["value"])
+            for option in options
+            if "value" in option
+        ]
+    if "default_value" in param and param["default_value"] is not None:
+        property_schema["default"] = deepcopy(param["default_value"])
+    return str(param_name), property_schema, bool(param.get("required", False))
+
+
+def workflow_parameters_to_json_schema(
+    parameters_schema: list[dict[str, Any]] | dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the complete JSON Schema exposed for a workflow tool.
+
+    Workflow signatures are normally stored as a list of Bifrost parameter
+    records. Some imported or future records may already contain a complete
+    JSON Schema object; those must pass through without being flattened to
+    primitive ``type`` and ``description`` fields.
+
+    The returned object is detached from the ORM JSON value so consumers may
+    safely hand it to an SDK that normalizes or mutates schemas internally.
+    """
+    if isinstance(parameters_schema, dict):
+        return deepcopy(parameters_schema)
+
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    for param in parameters_schema or []:
+        converted = _parameter_record_to_property(param)
+        if converted is None:
+            continue
+        param_name, property_schema, is_required = converted
+        properties[param_name] = property_schema
+        if is_required:
+            required.append(param_name)
+
+    result: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if required:
+        result["required"] = required
+    return result
+
+
+def _primary_non_null_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Select the non-null branch used by the legacy parameter projection."""
+    variants = schema.get("anyOf")
+    if isinstance(variants, list):
+        for variant in variants:
+            if isinstance(variant, dict) and variant.get("type") != "null":
+                return variant
+    return schema
+
+
+def _property_to_parameter_record(
+    name: str,
+    raw_schema: dict[str, Any],
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    """Project one JSON Schema property onto the legacy parameter shape."""
+    resolved = _primary_non_null_schema(raw_schema)
+    json_type = resolved.get("type")
+    if isinstance(json_type, list):
+        json_type = next(
+            (value for value in json_type if value != "null"),
+            None,
+        )
+    type_map = {
+        "string": "string",
+        "integer": "int",
+        "number": "float",
+        "boolean": "bool",
+        "array": "list",
+        "object": "json",
+    }
+    record: dict[str, Any] = {
+        "name": name,
+        "type": type_map.get(str(json_type), "json"),
+        "required": required,
+    }
+    title = raw_schema.get("title")
+    if isinstance(title, str):
+        record["label"] = title
+    description = raw_schema.get("description")
+    if isinstance(description, str):
+        record["description"] = description
+    if "default" in raw_schema:
+        record["default_value"] = deepcopy(raw_schema["default"])
+    enum = resolved.get("enum")
+    if isinstance(enum, list):
+        record["options"] = [
+            {"label": str(value), "value": str(value)} for value in enum
+        ]
+    return record
+
+
+def workflow_json_schema_to_parameter_records(
+    parameters_schema: list[dict[str, Any]] | dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Project stored input schemas onto the legacy workflow parameter DTO.
+
+    Existing rows already store this list representation and pass through
+    unchanged. Newly indexed rows store complete JSON Schema objects; API/CLI
+    consumers retain their established list-shaped contract through this
+    deliberately lossy presentation adapter.
+    """
+    if not isinstance(parameters_schema, dict):
+        return deepcopy(parameters_schema or [])
+
+    properties = parameters_schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    required = set(parameters_schema.get("required") or [])
+    records: list[dict[str, Any]] = []
+    for name, raw_schema in properties.items():
+        if not isinstance(name, str) or not isinstance(raw_schema, dict):
+            continue
+        records.append(
+            _property_to_parameter_record(
+                name,
+                raw_schema,
+                required=name in required,
+            )
+        )
+    return records
 
 
 class ToolRegistry:
@@ -98,7 +275,7 @@ class ToolRegistry:
             select(Workflow)
             .where(Workflow.is_active.is_(True))
             .where(Workflow.type == "tool")
-            .order_by(Workflow.name)
+            .order_by(Workflow.name, Workflow.id)
         )
         workflows = result.scalars().all()
 
@@ -154,7 +331,7 @@ class ToolRegistry:
             .where(Workflow.id.in_(tool_ids))
             .where(Workflow.is_active.is_(True))
             .where(Workflow.type == "tool")
-            .order_by(Workflow.name)
+            .order_by(Workflow.name, Workflow.id)
         )
         workflows = result.scalars().all()
         logger.info(f"Filtered to {len(workflows)} active tools from {len(tool_ids)} requested IDs")
@@ -199,81 +376,14 @@ class ToolRegistry:
         Converts workflow parameter schema to JSON Schema format
         compatible with OpenAI/Anthropic function calling.
         """
-        # Build JSON Schema from parameters
-        properties: dict[str, Any] = {}
-        required: list[str] = []
-
-        for param in tool.parameters_schema:
-            param_name = param.get("name", "")
-            param_type = param.get("type", "string")
-            param_label = param.get("label") or param_name
-
-            # Map workflow types to JSON Schema types
-            json_type = self._map_type_to_json_schema(param_type)
-
-            properties[param_name] = {
-                "type": json_type,
-                "description": param_label,
-            }
-
-            # Array types require an "items" field for OpenAI schema validation
-            if json_type == "array":
-                properties[param_name]["items"] = {"type": "string"}
-
-            # Object types accept freeform key-value pairs
-            if json_type == "object":
-                properties[param_name]["additionalProperties"] = True
-
-            # Add enum options if present (from Literal type annotations)
-            if param.get("options"):
-                properties[param_name]["enum"] = [
-                    opt["value"] for opt in param["options"]
-                ]
-
-            # Add default value if present
-            if "default_value" in param and param["default_value"] is not None:
-                properties[param_name]["default"] = param["default_value"]
-
-            # Track required parameters
-            if param.get("required", False):
-                required.append(param_name)
-
-        parameters_schema: dict[str, Any] = {
-            "type": "object",
-            "properties": properties,
-            "additionalProperties": False,
-        }
-
-        if required:
-            parameters_schema["required"] = required
-
         return ToolDefinition(
             id=tool.id,
             name=_normalize_tool_name(tool.name, category=tool.category),
             description=tool.description,
-            parameters=parameters_schema,
+            parameters=workflow_parameters_to_json_schema(tool.parameters_schema),
             workflow_name=tool.name,  # Keep original for execution lookup
             category=tool.category,
         )
-
-    def _map_type_to_json_schema(self, param_type: str) -> str:
-        """Map workflow parameter type to JSON Schema type."""
-        type_map = {
-            "string": "string",
-            "str": "string",
-            "int": "integer",
-            "integer": "integer",
-            "float": "number",
-            "number": "number",
-            "bool": "boolean",
-            "boolean": "boolean",
-            "json": "object",
-            "dict": "object",
-            "object": "object",
-            "list": "array",
-            "array": "array",
-        }
-        return type_map.get(param_type.lower(), "string")
 
     async def get_tool_by_name(self, name: str) -> RegisteredTool | None:
         """

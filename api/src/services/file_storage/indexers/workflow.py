@@ -425,13 +425,10 @@ class WorkflowIndexer:
 
     def _extract_parameters_from_ast(
         self, func_node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> list[dict[str, Any]]:
-        """
-        Extract parameter metadata from function definition AST.
-
-        Returns list of parameter dicts with: name, type, required, label, default_value
-        """
-        parameters: list[dict[str, Any]] = []
+    ) -> dict[str, Any]:
+        """Extract the complete JSON Schema for a function's inputs."""
+        properties: dict[str, Any] = {}
+        required: list[str] = []
         args = func_node.args
 
         # Get defaults - they align with the end of the args list
@@ -456,40 +453,38 @@ class WorkflowIndexer:
             default_index = i - (num_args - num_defaults)
             has_default = default_index >= 0
 
-            # Get default value
-            default_value = None
+            property_schema = (
+                self._annotation_to_json_schema(arg.annotation)
+                if arg.annotation
+                else {}
+            )
+            label = re.sub(r"([a-z])([A-Z])", r"\1 \2", param_name.replace("_", " ")).title()
+            property_schema["title"] = label
+
             if has_default:
                 default_node = defaults[default_index]
-                default_value = self._ast_value_to_python(default_node)
+                try:
+                    property_schema["default"] = ast.literal_eval(default_node)
+                except (ValueError, TypeError):
+                    # Non-literal defaults cannot be represented by static JSON Schema.
+                    pass
 
-            # Determine type from annotation
-            ui_type = "string"
-            is_optional = has_default
-            options = None
-            if arg.annotation:
-                ui_type = self._annotation_to_ui_type(arg.annotation)
-                is_optional = is_optional or self._is_optional_annotation(arg.annotation)
-                options = self._extract_literal_options(arg.annotation)
+            properties[param_name] = property_schema
+            if not has_default and not (
+                arg.annotation
+                and self._is_optional_annotation(arg.annotation)
+            ):
+                required.append(param_name)
 
-            # Generate label from parameter name
-            label = re.sub(r"([a-z])([A-Z])", r"\1 \2", param_name.replace("_", " ")).title()
-
-            param_meta = {
-                "name": param_name,
-                "type": ui_type,
-                "required": not is_optional,
-                "label": label,
-            }
-
-            if default_value is not None:
-                param_meta["default_value"] = default_value
-
-            if options:
-                param_meta["options"] = options
-
-            parameters.append(param_meta)
-
-        return parameters
+        schema: dict[str, Any] = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+        if required:
+            schema["required"] = required
+        return schema
 
     def _annotation_to_string(self, annotation: ast.AST) -> str:
         """Convert annotation AST to string representation."""
@@ -508,102 +503,170 @@ class WorkflowIndexer:
             return f"{left} | {right}"
         return ""
 
-    def _annotation_to_ui_type(self, annotation: ast.AST) -> str:
-        """Convert annotation AST to UI type string."""
-        type_mapping = {
+    @staticmethod
+    def _annotation_base_name(annotation: ast.AST) -> str:
+        if isinstance(annotation, ast.Name):
+            return annotation.id
+        if isinstance(annotation, ast.Attribute):
+            return annotation.attr
+        return ""
+
+    @staticmethod
+    def _json_type_for_literal(value: Any) -> str | None:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "boolean"
+        if isinstance(value, int):
+            return "integer"
+        if isinstance(value, float):
+            return "number"
+        if isinstance(value, str):
+            return "string"
+        return None
+
+    def _annotation_to_json_schema(self, annotation: ast.AST) -> dict[str, Any]:
+        """Convert a Python annotation AST into a nested JSON Schema."""
+        primitive_types = {
             "str": "string",
-            "int": "int",
-            "float": "float",
-            "bool": "bool",
-            "list": "list",
-            "dict": "json",
+            "int": "integer",
+            "float": "number",
+            "bool": "boolean",
+            "None": "null",
+            "NoneType": "null",
         }
 
-        if isinstance(annotation, ast.Name):
-            return type_mapping.get(annotation.id, "json")
+        if isinstance(annotation, ast.Constant):
+            if annotation.value is None:
+                return {"type": "null"}
+            return {}
 
-        elif isinstance(annotation, ast.Subscript):
-            # Handle list[str], dict[str, Any], Literal[...], etc.
-            if isinstance(annotation.value, ast.Name):
-                base_type = annotation.value.id
-                if base_type == "list":
-                    return "list"
-                elif base_type == "dict":
-                    return "json"
-                elif base_type == "Optional":
-                    # Optional[str] -> string
-                    if isinstance(annotation.slice, ast.Name):
-                        return type_mapping.get(annotation.slice.id, "string")
-                    return "string"
-                elif base_type == "Literal":
-                    # Literal["a", "b"] -> infer type from values
-                    return self._infer_literal_type(annotation.slice)
+        if isinstance(annotation, (ast.Name, ast.Attribute)):
+            name = self._annotation_base_name(annotation)
+            if name in primitive_types:
+                return {"type": primitive_types[name]}
+            if name in {"list", "List", "Sequence"}:
+                return {"type": "array", "items": {}}
+            if name in {"dict", "Dict", "Mapping"}:
+                return {"type": "object", "additionalProperties": True}
+            if name in {"Any", "object"}:
+                return {}
+            return {"type": "object"}
 
-        elif isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
-            # str | None -> string
-            left_type = self._annotation_to_ui_type(annotation.left)
-            return left_type
+        if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+            return {
+                "anyOf": [
+                    self._annotation_to_json_schema(annotation.left),
+                    self._annotation_to_json_schema(annotation.right),
+                ]
+            }
 
-        return "json"
-
-    def _infer_literal_type(self, slice_node: ast.AST) -> str:
-        """Infer UI type from Literal values."""
-        # Get the first value from the Literal
-        if isinstance(slice_node, ast.Tuple):
-            # Literal["a", "b"] - multiple values
-            if slice_node.elts:
-                first_val = self._ast_value_to_python(slice_node.elts[0])
-            else:
-                return "string"
-        else:
-            # Literal["a"] - single value
-            first_val = self._ast_value_to_python(slice_node)
-
-        if first_val is None:
-            return "string"
-        if isinstance(first_val, str):
-            return "string"
-        if isinstance(first_val, bool):
-            return "bool"
-        if isinstance(first_val, int):
-            return "int"
-        if isinstance(first_val, float):
-            return "float"
-        return "string"
-
-    def _extract_literal_options(self, annotation: ast.AST) -> list[dict[str, str]] | None:
-        """Extract options from Literal type annotation."""
         if not isinstance(annotation, ast.Subscript):
-            return None
-        if not isinstance(annotation.value, ast.Name):
-            return None
-        if annotation.value.id != "Literal":
-            return None
+            return {}
 
-        # Get values from the Literal
+        base_name = self._annotation_base_name(annotation.value)
         slice_node = annotation.slice
-        values = []
+        slice_items = (
+            list(slice_node.elts)
+            if isinstance(slice_node, ast.Tuple)
+            else [slice_node]
+        )
+        return self._subscript_annotation_to_json_schema(base_name, slice_items)
 
-        if isinstance(slice_node, ast.Tuple):
-            # Literal["a", "b"] - multiple values
-            for elt in slice_node.elts:
-                val = self._ast_value_to_python(elt)
-                if val is not None:
-                    values.append({"label": str(val), "value": str(val)})
-        else:
-            # Literal["a"] - single value
-            val = self._ast_value_to_python(slice_node)
-            if val is not None:
-                values.append({"label": str(val), "value": str(val)})
+    def _subscript_annotation_to_json_schema(
+        self,
+        base_name: str,
+        slice_items: list[ast.AST],
+    ) -> dict[str, Any]:
+        """Convert a parameterized annotation into JSON Schema."""
+        if base_name in {"list", "List", "Sequence"}:
+            item_schema = (
+                self._annotation_to_json_schema(slice_items[0])
+                if slice_items
+                else {}
+            )
+            return {"type": "array", "items": item_schema}
 
-        return values if values else None
+        if base_name in {"dict", "Dict", "Mapping"}:
+            value_schema = (
+                self._annotation_to_json_schema(slice_items[1])
+                if len(slice_items) > 1
+                else {}
+            )
+            return {"type": "object", "additionalProperties": value_schema}
+
+        if base_name == "Literal":
+            return self._literal_items_to_json_schema(slice_items)
+
+        if base_name == "Optional":
+            if not slice_items:
+                return {}
+            inner = self._annotation_to_json_schema(slice_items[0])
+            return {"anyOf": [inner, {"type": "null"}]}
+
+        if base_name == "Union":
+            return {
+                "anyOf": [
+                    self._annotation_to_json_schema(item)
+                    for item in slice_items
+                ]
+            }
+
+        if base_name == "Annotated" and slice_items:
+            return self._annotation_to_json_schema(slice_items[0])
+
+        if base_name in {"tuple", "Tuple"}:
+            return {
+                "type": "array",
+                "prefixItems": [
+                    self._annotation_to_json_schema(item)
+                    for item in slice_items
+                ],
+                "minItems": len(slice_items),
+                "maxItems": len(slice_items),
+            }
+
+        return {"type": "object"}
+
+    def _literal_items_to_json_schema(
+        self,
+        slice_items: list[ast.AST],
+    ) -> dict[str, Any]:
+        """Build an enum schema from statically resolvable Literal members."""
+        values: list[Any] = []
+        for item in slice_items:
+            try:
+                values.append(ast.literal_eval(item))
+            except (ValueError, TypeError):
+                continue
+        if not values:
+            return {}
+
+        schema: dict[str, Any] = {"enum": values}
+        literal_types = {
+            json_type
+            for value in values
+            if (json_type := self._json_type_for_literal(value)) is not None
+        }
+        if len(literal_types) == 1:
+            schema["type"] = literal_types.pop()
+        return schema
 
     def _is_optional_annotation(self, annotation: ast.AST) -> bool:
         """Check if annotation represents an optional type."""
         if isinstance(annotation, ast.Subscript):
-            if isinstance(annotation.value, ast.Name):
-                if annotation.value.id == "Optional":
-                    return True
+            if self._annotation_base_name(annotation.value) == "Optional":
+                return True
+            if self._annotation_base_name(annotation.value) == "Union":
+                items = (
+                    annotation.slice.elts
+                    if isinstance(annotation.slice, ast.Tuple)
+                    else [annotation.slice]
+                )
+                return any(
+                    self._annotation_to_string(item) == "None"
+                    for item in items
+                )
 
         elif isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
             # Check for str | None pattern
