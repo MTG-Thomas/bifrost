@@ -1130,6 +1130,79 @@ async def test_git_convergence_uses_current_reviewed_bytes_for_superseded_path()
 
 
 @pytest.mark.asyncio
+async def test_git_convergence_accepts_superseded_path_already_preserved_in_history():
+    superseded_path = "features/already_preserved.py"
+    missing_path = "features/missing.py"
+    superseded_live = b"older reviewed bytes already preserved\n"
+    selected_bytes = b"selected release bytes\n"
+    missing_live = b"missing selected release bytes\n"
+    source_sha = "d" * 40
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={
+            superseded_path: hashlib.sha256(selected_bytes).hexdigest(),
+            missing_path: hashlib.sha256(missing_live).hexdigest(),
+        },
+        history_sha="e" * 40,
+        history_hashes={
+            superseded_path: hashlib.sha256(superseded_live).hexdigest(),
+            missing_path: None,
+        },
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo(
+            {
+                superseded_path: b"base\n",
+                missing_path: b"base\n",
+            }
+        ),
+        commit_writer=writer,
+    )
+    svc.rows = MemoryRows()
+    started = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    for path, content in (
+        (superseded_path, selected_bytes),
+        (missing_path, missing_live),
+    ):
+        await svc.stage(
+            started.id,
+            WorkspaceRepoFileMutationRequest(
+                path=path,
+                operation="write",
+                content_base64=base64.b64encode(content).decode(),
+            ),
+        )
+    row = svc.rows.items[started.id]
+    row.status = "activated"
+    row.failure_detail = {"phase": "git_closure", "state": "failed"}
+    await svc.repo.write(superseded_path, superseded_live)
+    await svc.repo.write(missing_path, missing_live)
+
+    preview = await svc.preview_git_convergence(
+        WorkspaceRepoGitConvergencePreviewRequest(
+            changeset_ids=[row.id], protected_main_source_sha=source_sha
+        )
+    )
+
+    assert preview.ready_to_apply is True
+    assert preview.changesets[0].disposition == "partially_superseded"
+    assert preview.changesets[0].superseded_paths == [superseded_path]
+    assert preview.changesets[0].reconciled_paths == [missing_path]
+    assert preview.diagnostics == [
+        {
+            "severity": "warning",
+            "source": "live_vs_reviewed",
+            "path": superseded_path,
+            "live_sha256": hashlib.sha256(superseded_live).hexdigest(),
+            "reviewed_sha256": hashlib.sha256(selected_bytes).hexdigest(),
+            "history_sha256": hashlib.sha256(superseded_live).hexdigest(),
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_verification_failure_persists_candidate_sha_for_retry(monkeypatch):
     writer = RecordingWriter(
         error=PlatformCommitError(
