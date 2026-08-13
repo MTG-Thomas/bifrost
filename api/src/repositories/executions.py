@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import desc, func, select, text, update
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,7 +137,14 @@ class ExecutionRepository(BaseRepository[Execution]):
                 raise ValueError("immutable scheduled execution deployment pin mismatch")
             existing.workflow_name = workflow_name
             existing.workflow_id = parsed_workflow_id
-            existing.status = status
+            # Cancellation may win the advisory-lock race after a consumer
+            # claims the row but before it finishes setup. Never resurrect
+            # that execution while enriching the pre-created audit row.
+            if existing.status not in {
+                ExecutionStatus.CANCELLING,
+                ExecutionStatus.CANCELLED,
+            }:
+                existing.status = status
             existing.parameters = persisted_parameters
             existing.executed_by = parsed_user_id
             existing.executed_by_name = user_name
@@ -590,6 +597,13 @@ class ExecutionRepository(BaseRepository[Execution]):
         """Cancel a pending or running execution."""
         from src.core.pubsub import publish_execution_update
 
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:workflow-execution:' || :execution_id))"
+            ),
+            {"execution_id": str(execution_id)},
+        )
         result = await self.session.execute(
             select(Execution).where(Execution.id == execution_id)
         )
@@ -601,12 +615,21 @@ class ExecutionRepository(BaseRepository[Execution]):
         if not user.is_superuser and execution.executed_by != user.user_id:
             return None, "Forbidden"
 
-        # Can only cancel pending or running executions
-        if execution.status not in [ExecutionStatus.PENDING.value, ExecutionStatus.RUNNING.value]:
+        # Can only cancel work that has not reached a terminal state.
+        if execution.status not in [
+            ExecutionStatus.SCHEDULED.value,
+            ExecutionStatus.PENDING.value,
+            ExecutionStatus.RUNNING.value,
+        ]:
             return None, "BadRequest"
 
-        # Update status
-        execution.status = ExecutionStatus.CANCELLING.value  # type: ignore[assignment]
+        # Work not yet claimed by a consumer can be cancelled immediately.
+        # Running work needs the existing Redis cancellation signal.
+        execution.status = (  # type: ignore[assignment]
+            ExecutionStatus.CANCELLING.value
+            if execution.status == ExecutionStatus.RUNNING.value
+            else ExecutionStatus.CANCELLED.value
+        )
 
         await self.session.flush()
         await self.session.refresh(execution)
@@ -614,7 +637,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         # Publish update
         await publish_execution_update(
             execution_id=execution_id,
-            status=ExecutionStatus.CANCELLING.value,
+            status=execution.status,
         )
 
         return self._to_pydantic(execution, user), None

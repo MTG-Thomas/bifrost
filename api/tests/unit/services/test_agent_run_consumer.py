@@ -30,6 +30,7 @@ def consumer():
     ):
         mock_settings.return_value = MagicMock(max_concurrency=2)
         c = AgentRunConsumer()
+        c._claim_durable_run = AsyncMock(return_value=True)
         return c
 
 

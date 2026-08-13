@@ -11,7 +11,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import desc, func, literal_column, or_, select
+from sqlalchemy import desc, func, literal_column, or_, select, text
 from sqlalchemy.orm import joinedload, selectinload
 
 from src.core.auth import CurrentActiveUser
@@ -678,6 +678,13 @@ async def cancel_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Cancel a queued or running agent run."""
+    await db.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtext('bifrost:agent-run:' || :run_id))"
+        ),
+        {"run_id": str(run_id)},
+    )
     agent_run = await load_agent_run_for_user(db, run_id, user)
 
     if not agent_run:

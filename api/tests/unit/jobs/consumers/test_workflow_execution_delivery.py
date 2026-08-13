@@ -1,6 +1,7 @@
 """Delivery outcome tests for the workflow execution consumer."""
 
 import sys
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -31,6 +32,8 @@ def make_consumer() -> WorkflowExecutionConsumer:
         consumer = WorkflowExecutionConsumer()
 
     consumer._redis_client = AsyncMock()
+    consumer._claim_durable_execution = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    consumer._release_durable_execution_claim = AsyncMock()  # type: ignore[method-assign]
     return consumer
 
 
@@ -151,6 +154,48 @@ async def test_process_message_retries_missing_pending_context() -> None:
             await consumer.process_message({"execution_id": execution_id, "sync": True})
 
     consumer._redis_client.push_result.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "claimable"),
+    [
+        ("Scheduled", False),
+        ("Pending", True),
+        ("Running", False),
+        ("Success", False),
+    ],
+)
+async def test_durable_execution_claim_serializes_with_publisher(
+    status: str,
+    claimable: bool,
+) -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    del consumer._claim_durable_execution
+    row = SimpleNamespace(status=ExecutionStatus(status))
+    db = AsyncMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    execution_id = str(uuid4())
+    with patch(
+        "src.core.database.get_db_context",
+        side_effect=db_context,
+    ):
+        result = await consumer._claim_durable_execution(execution_id)
+
+    assert result is claimable
+    assert "bifrost:workflow-execution:" in str(db.execute.await_args.args[0])
+    if claimable:
+        assert row.status == ExecutionStatus.RUNNING
+        db.commit.assert_awaited_once()
+    else:
+        db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -284,12 +329,50 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
             )
 
     consumer._redis_client.delete_pending_execution.assert_not_called()
+    consumer._release_durable_execution_claim.assert_awaited_once_with(execution_id)  # type: ignore[attr-defined]
     create_execution.assert_awaited_once()
     update_execution.assert_not_awaited()
     consumer._pool.route_execution.assert_awaited_once()
     publish_execution_update.assert_awaited_once()
     assert publish_execution_update.await_args is not None
     assert publish_execution_update.await_args.args[:2] == (execution_id, "Running")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "released"),
+    [
+        ("Running", True),
+        ("Cancelling", False),
+        ("Cancelled", False),
+        ("Success", False),
+    ],
+)
+async def test_release_execution_claim_preserves_concurrent_terminal_state(
+    status: str,
+    released: bool,
+) -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    del consumer._release_durable_execution_claim
+    row = SimpleNamespace(status=ExecutionStatus(status))
+    db = AsyncMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    with patch("src.core.database.get_db_context", side_effect=db_context):
+        await consumer._release_durable_execution_claim(str(uuid4()))
+
+    if released:
+        assert row.status == ExecutionStatus.PENDING
+        db.commit.assert_awaited_once()
+    else:
+        assert row.status == ExecutionStatus(status)
+        db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

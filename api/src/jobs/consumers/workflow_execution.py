@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import text
+
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import (
@@ -486,6 +488,11 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 f"pending execution not found in Redis: {execution_id}"
             )
 
+        if not await self._claim_durable_execution(execution_id):
+            raise DuplicateMessage(
+                f"workflow execution {execution_id} is not claimable"
+            )
+
         # Extract context from Redis pending record
         parameters = pending["parameters"]
         org_id = pending["org_id"]
@@ -845,6 +852,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
             # Don't mark as failed — the execution hasn't started yet.
             # Keep pending state intact so the requeued message can be routed later.
+            await self._release_durable_execution_claim(execution_id)
             # Re-raise so the consumer framework NACKs with requeue=True
             raise RetryableConsumerError(f"process pool admission rejected: {e}") from e
 
@@ -933,3 +941,62 @@ class WorkflowExecutionConsumer(BaseConsumer):
         if hasattr(status, "value"):
             return status.value
         return str(status)
+
+    async def _claim_durable_execution(self, execution_id: str) -> bool:
+        """Claim a published durable execution before any execution side effects.
+
+        The publisher holds the same advisory transaction lock through broker
+        confirmation and its SCHEDULED -> PENDING transition. A fast consumer
+        therefore waits for that transaction, then advances only PENDING to
+        RUNNING. SCHEDULED means publication was not durably confirmed; any
+        other state is a redelivery or an already-finished execution.
+
+        Rows are absent for legacy inline-code dispatch, which retains its
+        existing Redis-first creation path.
+        """
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
+        from src.models.orm.executions import Execution
+
+        try:
+            execution_uuid = UUID(execution_id)
+        except ValueError as exc:
+            raise MalformedMessage(
+                f"invalid execution_id UUID: {execution_id}"
+            ) from exc
+
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
+            )
+            execution = await db.get(Execution, execution_uuid)
+            if execution is None:
+                return True
+            if execution.status != ExecutionStatus.PENDING:
+                return False
+            execution.status = ExecutionStatus.RUNNING
+            await db.commit()
+            return True
+
+    async def _release_durable_execution_claim(self, execution_id: str) -> None:
+        """Make an admission-rejected claim retryable without undoing cancellation."""
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
+        from src.models.orm.executions import Execution
+
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
+            )
+            execution = await db.get(Execution, UUID(execution_id))
+            if execution is not None and execution.status == ExecutionStatus.RUNNING:
+                execution.status = ExecutionStatus.PENDING
+                await db.commit()
