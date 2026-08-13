@@ -87,7 +87,7 @@ class BifrostAuthProvider(AuthProvider):
         """
         Args:
             base_url: Public URL of the MCP server (e.g., ngrok URL).
-                      Falls back to settings.mcp_base_url config.
+                      Falls back to settings.public_url config.
         """
         if not base_url:
             from src.config import get_settings
