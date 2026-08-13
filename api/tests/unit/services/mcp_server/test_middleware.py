@@ -74,12 +74,16 @@ async def test_logs_negotiated_protocol_without_credentials(caplog):
     middleware = ToolFilterMiddleware()
     context = MagicMock()
     context.method = "tools/list"
-    context.fastmcp_context.request_context.protocol_version = "2026-07-28"
     call_next = AsyncMock(return_value=["tool"])
+    request = MagicMock()
+    request.headers = {"mcp-protocol-version": "2026-07-28"}
 
     with patch(
         "src.services.mcp_server.middleware._get_agent_id_from_scope",
         return_value=uuid4(),
+    ), patch(
+        "src.services.mcp_server.middleware.get_http_request",
+        return_value=request,
     ), caplog.at_level("INFO"):
         result = await middleware.on_request(context, call_next)
 
