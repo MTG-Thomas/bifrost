@@ -2954,6 +2954,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/files/impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a Workspace Python file's dependency impact
+         * @description Trace forward imports and transitive reverse consumers from durable bytes.
+         *
+         *     Optional ``content`` overlays one proposed file without writing it.  The
+         *     returned candidate can be supplied to ``/api/files/write`` so the server
+         *     recomputes the same graph under the Python-source writer barrier before it
+         *     accepts the write.
+         */
+        post: operations["preview_workspace_file_impact_api_files_impact_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/files/write": {
         parameters: {
             query?: never;
@@ -3528,6 +3553,23 @@ export interface paths {
         put?: never;
         /** Abort Workspace Repo Changeset */
         post: operations["abort_workspace_repo_changeset_api_workspace_repo_changesets__changeset_id__abort_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Workspace Promotion */
+        post: operations["preview_workspace_promotion_api_workspace_promotions_preview_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -16681,6 +16723,11 @@ export interface components {
              * @default false
              */
             create_only: boolean;
+            /**
+             * Impact Candidate Id
+             * @description Write only when a fresh durable Workspace impact graph exactly matches this candidate. Python workspace text files only.
+             */
+            impact_candidate_id?: string | null;
         };
         /** FlagConversationResponse */
         FlagConversationResponse: {
@@ -21662,6 +21709,85 @@ export interface components {
              * @description Display name
              */
             name?: string | null;
+        };
+        /** PromotionClientContract */
+        PromotionClientContract: {
+            /** Cli Version */
+            cli_version: string;
+            /** Sdk Version */
+            sdk_version: string;
+            /** Contract Version */
+            contract_version: string;
+        };
+        /** PromotionClosureMember */
+        PromotionClosureMember: {
+            /** Path */
+            path: string;
+            /** Sha256 */
+            sha256: string;
+            /** Size */
+            size: number;
+            /**
+             * Relation
+             * @enum {string}
+             */
+            relation: "selected" | "dependency";
+        };
+        /** PromotionDiagnostic */
+        PromotionDiagnostic: {
+            /** Code */
+            code: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "info" | "warning" | "blocker";
+            /** Message */
+            message: string;
+            /** Path */
+            path?: string | null;
+        };
+        /** PromotionEntry */
+        PromotionEntry: {
+            /** Path */
+            path: string;
+            /** Function */
+            function: string;
+        };
+        /** PromotionFile */
+        PromotionFile: {
+            /** Path */
+            path: string;
+            /** Sha256 */
+            sha256: string;
+            /** Content Base64 */
+            content_base64: string;
+        };
+        /** PromotionRunEvidence */
+        PromotionRunEvidence: {
+            /** Succeeded */
+            succeeded: boolean;
+            /** Snapshot Id */
+            snapshot_id: string;
+            /** Evidence Id */
+            evidence_id?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Observed Effects */
+            observed_effects?: string[];
+        };
+        /** PromotionSnapshot */
+        PromotionSnapshot: {
+            /** Snapshot Id */
+            snapshot_id: string;
+            /** Files */
+            files: {
+                [key: string]: string;
+            };
+            /** Closure */
+            closure: components["schemas"]["PromotionFile"][];
         };
         /** ProposalTurn */
         ProposalTurn: {
@@ -26746,6 +26872,180 @@ export interface components {
             issues?: components["schemas"]["ValidationIssue"][];
             /** @description Workflow metadata if valid */
             metadata?: components["schemas"]["WorkflowMetadata"] | null;
+        };
+        /** WorkspaceFileImpactDiagnostic */
+        WorkspaceFileImpactDiagnostic: {
+            /** Code */
+            code: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "info" | "warning" | "blocker";
+            /** Message */
+            message: string;
+            /** Path */
+            path?: string | null;
+        };
+        /** WorkspaceFileImpactEdge */
+        WorkspaceFileImpactEdge: {
+            /** Importer */
+            importer: string;
+            /** Dependency */
+            dependency: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "import" | "registry";
+        };
+        /** WorkspaceFileImpactMember */
+        WorkspaceFileImpactMember: {
+            /** Path */
+            path: string;
+            /** Sha256 */
+            sha256: string;
+            /** Depth */
+            depth: number;
+        };
+        /** WorkspaceFileImpactRequest */
+        WorkspaceFileImpactRequest: {
+            /** Path */
+            path: string;
+            /**
+             * Content
+             * @description Optional proposed UTF-8 source; omitted to inspect live bytes.
+             */
+            content?: string | null;
+            /**
+             * Direction
+             * @default both
+             * @enum {string}
+             */
+            direction: "forward" | "reverse" | "both";
+        };
+        /** WorkspaceFileImpactResponse */
+        WorkspaceFileImpactResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-file-impact/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-file-impact/v1";
+            /** Candidate Id */
+            candidate_id: string;
+            /** Snapshot Id */
+            snapshot_id: string;
+            /** Path */
+            path: string;
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "forward" | "reverse" | "both";
+            /** Proposed */
+            proposed: boolean;
+            /** Changed */
+            changed: boolean;
+            /** Current Sha256 */
+            current_sha256?: string | null;
+            /** Proposed Sha256 */
+            proposed_sha256: string;
+            /** Forward Dependencies */
+            forward_dependencies?: components["schemas"]["WorkspaceFileImpactMember"][];
+            /** Reverse Dependencies */
+            reverse_dependencies?: components["schemas"]["WorkspaceFileImpactMember"][];
+            /** Impacted Paths */
+            impacted_paths?: string[];
+            /** Edges */
+            edges?: components["schemas"]["WorkspaceFileImpactEdge"][];
+            /** Diagnostics */
+            diagnostics?: components["schemas"]["WorkspaceFileImpactDiagnostic"][];
+            /** Ready To Write */
+            ready_to_write: boolean;
+        };
+        /** WorkspacePromotionPreviewRequest */
+        WorkspacePromotionPreviewRequest: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "bifrost.workspace-promotion-bundle/v1";
+            /**
+             * Target
+             * @default production
+             * @constant
+             */
+            target: "production";
+            entry: components["schemas"]["PromotionEntry"];
+            snapshot: components["schemas"]["PromotionSnapshot"];
+            /** Source Revision */
+            source_revision?: string | null;
+            local_run?: components["schemas"]["PromotionRunEvidence"] | null;
+            client: components["schemas"]["PromotionClientContract"];
+        };
+        /** WorkspacePromotionPreviewResponse */
+        WorkspacePromotionPreviewResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-promotion-preview/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-promotion-preview/v1";
+            /**
+             * Preview Only
+             * @default true
+             * @constant
+             */
+            preview_only: true;
+            /**
+             * Ready To Activate
+             * @default false
+             * @constant
+             */
+            ready_to_activate: false;
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "review_required" | "invalid";
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Candidate Id */
+            candidate_id?: string | null;
+            /** Snapshot Id */
+            snapshot_id: string;
+            /**
+             * Risk Class
+             * @enum {string}
+             */
+            risk_class: "R0" | "R1" | "R2";
+            /** Policy Version */
+            policy_version: string;
+            /** Closure */
+            closure: components["schemas"]["PromotionClosureMember"][];
+            /** Declared Effects */
+            declared_effects: string[];
+            /** Static Effects */
+            static_effects: string[];
+            /** Computed Effects */
+            computed_effects: string[];
+            /** Bounds */
+            bounds: {
+                [key: string]: number;
+            };
+            /** Requested Bounds */
+            requested_bounds: {
+                [key: string]: number;
+            };
+            /** Registration */
+            registration: {
+                [key: string]: unknown;
+            };
+            /** Diagnostics */
+            diagnostics: components["schemas"]["PromotionDiagnostic"][];
+            /** Expires At */
+            expires_at?: string | null;
         };
         /** WorkspaceRepoActivateRequest */
         WorkspaceRepoActivateRequest: {
@@ -32210,6 +32510,39 @@ export interface operations {
             };
         };
     };
+    preview_workspace_file_impact_api_files_impact_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceFileImpactRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileImpactResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     write_file_api_files_write_post: {
         parameters: {
             query?: never;
@@ -33194,6 +33527,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceRepoChangesetResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_workspace_promotion_api_workspace_promotions_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspacePromotionPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePromotionPreviewResponse"];
                 };
             };
             /** @description Validation Error */

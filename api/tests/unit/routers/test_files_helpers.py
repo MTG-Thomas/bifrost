@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID
@@ -355,6 +356,77 @@ async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
             "path": "folder/report.txt",
             "action": "write",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_checked_workspace_write_recomputes_candidate_under_source_barrier(
+    monkeypatch,
+):
+    writes = []
+    barrier_calls = []
+
+    class FakeBackend:
+        async def write(self, path, content, location, updated_by, *, scope):
+            writes.append((path, content, location, updated_by, scope))
+
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def record_file_write_metadata(self, **kwargs):
+            return None
+
+    class FakeImpactService:
+        async def preview(self, request):
+            assert request.path == "workflows/report.py"
+            assert request.content == "VALUE = 2\n"
+            return SimpleNamespace(
+                candidate_id="sha256:" + "a" * 64,
+                ready_to_write=True,
+                diagnostics=[],
+            )
+
+    @asynccontextmanager
+    async def fake_barrier(**kwargs):
+        barrier_calls.append(kwargs)
+        yield
+
+    monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_install_org_id", lambda *_args, **_kwargs: _async_value(ORG_A))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr("src.core.pubsub.publish_file_change", lambda **_kwargs: _async_value(None))
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", fake_barrier)
+    monkeypatch.setattr("src.services.workspace_file_impact.WorkspaceFileImpactService", FakeImpactService)
+
+    await files.write_file(
+        files.FileWriteRequest(
+            path="workflows/report.py",
+            content="VALUE = 2\n",
+            impact_candidate_id="sha256:" + "a" * 64,
+        ),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, is_superuser=True),
+        db=SimpleNamespace(),
+    )
+
+    assert barrier_calls == [
+        {
+            "reason": "checked_workspace_file_write",
+            "changed_paths": ["workflows/report.py"],
+        }
+    ]
+    assert writes == [
+        (
+            "workflows/report.py",
+            b"VALUE = 2\n",
+            "workspace",
+            "user@example.test",
+            "global",
+        )
     ]
 
 

@@ -32,6 +32,10 @@ from src.models.contracts.files import (
     FilePullResponse,
     WatchSessionRequest,
 )
+from src.models.contracts.workspace_file_impact import (
+    WorkspaceFileImpactRequest,
+    WorkspaceFileImpactResponse,
+)
 from src.models.contracts.policies import FileAction
 from src.models.contracts.policies import FilePolicies
 from src.core.database import get_db
@@ -105,6 +109,14 @@ class FileWriteRequest(BaseModel):
     create_only: bool = Field(
         default=False,
         description="Create the file only when the path does not already exist",
+    )
+    impact_candidate_id: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        description=(
+            "Write only when a fresh durable Workspace impact graph exactly "
+            "matches this candidate. Python workspace text files only."
+        ),
     )
 
 
@@ -1188,6 +1200,37 @@ async def read_file(
         )
 
 
+@router.post(
+    "/impact",
+    response_model=WorkspaceFileImpactResponse,
+    summary="Preview a Workspace Python file's dependency impact",
+)
+async def preview_workspace_file_impact(
+    request: WorkspaceFileImpactRequest,
+    user: CurrentSuperuser,
+) -> WorkspaceFileImpactResponse:
+    """Trace forward imports and transitive reverse consumers from durable bytes.
+
+    Optional ``content`` overlays one proposed file without writing it.  The
+    returned candidate can be supplied to ``/api/files/write`` so the server
+    recomputes the same graph under the Python-source writer barrier before it
+    accepts the write.
+    """
+    del user
+    from src.services.workspace_file_impact import (
+        WorkspaceFileImpactInvalid,
+        WorkspaceFileImpactService,
+    )
+
+    try:
+        return await WorkspaceFileImpactService().preview(request)
+    except WorkspaceFileImpactInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
 @router.post("/write", status_code=status.HTTP_204_NO_CONTENT)
 async def write_file(
     request: FileWriteRequest,
@@ -1279,7 +1322,93 @@ async def write_file(
             content = request.content.encode("utf-8")
 
         updated_by = ctx.user.email if ctx.user else "system"
-        await backend.write(request.path, content, request.location, updated_by, scope=effective_scope)
+        if request.impact_candidate_id is not None:
+            if (
+                request.location != "workspace"
+                or request.mode != "cloud"
+                or request.binary
+                or not request.path.endswith(".py")
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "impact_candidate_id is supported only for cloud Workspace "
+                        "Python text files"
+                    ),
+                )
+            if not ctx.user.is_superuser:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="checked Workspace source writes require a platform administrator",
+                )
+            from src.core.module_cache import workspace_source_update
+            from src.models.contracts.workspace_file_impact import (
+                WorkspaceFileImpactRequest,
+            )
+            from src.services.workspace_file_impact import (
+                WorkspaceFileImpactInvalid,
+                WorkspaceFileImpactService,
+            )
+
+            async with workspace_source_update(
+                reason="checked_workspace_file_write",
+                changed_paths=[request.path],
+            ):
+                try:
+                    impact = await WorkspaceFileImpactService().preview(
+                        WorkspaceFileImpactRequest(
+                            path=request.path,
+                            content=content.decode("utf-8"),
+                        )
+                    )
+                except WorkspaceFileImpactInvalid as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "reason": "impact_blocked",
+                            "path": request.path,
+                            "message": str(exc),
+                        },
+                    ) from exc
+                if impact.candidate_id != request.impact_candidate_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "reason": "impact_candidate_conflict",
+                            "path": request.path,
+                            "expected_candidate_id": request.impact_candidate_id,
+                            "current_candidate_id": impact.candidate_id,
+                            "message": (
+                                "Workspace dependency state changed after impact preview."
+                            ),
+                        },
+                    )
+                if not impact.ready_to_write:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "reason": "impact_blocked",
+                            "path": request.path,
+                            "diagnostics": [
+                                item.model_dump() for item in impact.diagnostics
+                            ],
+                        },
+                    )
+                await backend.write(
+                    request.path,
+                    content,
+                    request.location,
+                    updated_by,
+                    scope=effective_scope,
+                )
+        else:
+            await backend.write(
+                request.path,
+                content,
+                request.location,
+                updated_by,
+                scope=effective_scope,
+            )
         if request.mode == "cloud":
             from shared.file_paths import resolve_s3_key
             from src.services.file_storage.s3_client import S3StorageClient

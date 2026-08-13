@@ -8,7 +8,8 @@ Verbs:
 
 * ``bifrost files read <path> [--location LOC] [--solution SLUG|ID]``
 * ``bifrost files stat <path> [--location LOC] [--solution SLUG|ID]``
-* ``bifrost files write <path> (--content S | --from-file F | -) [--create-only | --expected-version VERSION]``
+* ``bifrost files graph <path> [--from-file F] [--direction DIR]``
+* ``bifrost files write <path> (--content S | --from-file F | -) [--check-impact] [--create-only | --expected-version VERSION]``
 * ``bifrost files list [directory] [--location LOC] [--solution SLUG|ID]``
 * ``bifrost files delete <path> [--location LOC]`` -> SDK ``files.delete``
 * ``bifrost files exists <path> [--location LOC]`` -> SDK ``files.exists``;
@@ -59,6 +60,7 @@ Examples:
   bifrost files list workflows/              # instance _repo files
   bifrost files write notes.txt --content hi --create-only
   bifrost files stat workflows/contact.py --json
+  bifrost files graph workflows/contact.py --direction both
   bifrost files read apps/desk/pages/App.tsx # instance _repo file
   bifrost files list --solution desk         # Solution runtime files
   bifrost files read notes/today.txt --solution desk
@@ -141,6 +143,63 @@ def _load_policy_document(path: str) -> list[dict] | dict:
     return policies
 
 
+def _json_requested(ctx: click.Context) -> bool:
+    return bool(isinstance(ctx.obj, dict) and ctx.obj.get("json_output"))
+
+
+def _render_impact(result: dict, *, ctx: click.Context) -> None:
+    if _json_requested(ctx):
+        output_result(result, ctx=ctx)
+        return
+    click.echo(f"Workspace impact: {result['path']}")
+    click.echo(f"  candidate: {result['candidate_id']}")
+    click.echo(f"  snapshot: {result['snapshot_id']}")
+    click.echo(f"  proposed SHA-256: {result['proposed_sha256']}")
+    current = result.get("current_sha256") or "<missing>"
+    click.echo(f"  current SHA-256: {current}")
+    click.echo(f"  changed: {'yes' if result.get('changed') else 'no'}")
+
+    forward = result.get("forward_dependencies") or []
+    click.echo(f"Forward dependencies ({len(forward)}):")
+    for item in forward:
+        click.echo(f"  -> [{item['depth']}] {item['path']}  {item['sha256']}")
+    reverse = result.get("reverse_dependencies") or []
+    click.echo(f"Reverse dependencies ({len(reverse)}):")
+    for item in reverse:
+        click.echo(f"  <- [{item['depth']}] {item['path']}  {item['sha256']}")
+
+    diagnostics = result.get("diagnostics") or []
+    if diagnostics:
+        click.echo("Diagnostics:")
+        for item in diagnostics:
+            location = f" {item['path']}" if item.get("path") else ""
+            click.echo(
+                f"  [{item['severity']}] {item['code']}:{location} {item['message']}"
+            )
+    click.echo(
+        "Ready for checked write: "
+        + ("yes" if result.get("ready_to_write") else "no")
+    )
+
+
+async def _preview_impact(
+    client: BifrostClient,
+    *,
+    path: str,
+    content: str | None,
+    direction: str = "both",
+) -> dict:
+    response = await client.post(
+        "/api/files/impact",
+        json={"path": path, "content": content, "direction": direction},
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not isinstance(result, dict):
+        raise click.ClickException("Workspace impact endpoint returned invalid data")
+    return result
+
+
 @files_group.command("read")
 @click.argument("path")
 @click.option("--location", default="workspace", help=_LOCATION_HELP)
@@ -216,6 +275,57 @@ async def stat_cmd(
         sys.exit(1)
 
 
+@files_group.command("graph")
+@click.argument("path")
+@click.option("--content", "content_flag", default=None, help="Proposed inline source.")
+@click.option(
+    "--from-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Analyze proposed source from a local UTF-8 file.",
+)
+@click.option(
+    "--direction",
+    type=click.Choice(["forward", "reverse", "both"]),
+    default="both",
+    show_default=True,
+)
+@click.pass_context
+@pass_resolver
+@run_async
+async def graph_cmd(
+    ctx: click.Context,
+    path: str,
+    content_flag: str | None,
+    from_file: str | None,
+    direction: str,
+    *,
+    client: BifrostClient,
+    resolver,  # noqa: ARG001
+) -> None:
+    """Trace a Workspace Python file's forward and reverse dependency graph.
+
+    Without a content option this inspects durable live bytes.  ``--content``
+    or ``--from-file`` overlays proposed bytes without writing them.
+    """
+    if content_flag is not None and from_file is not None:
+        raise click.UsageError("--content and --from-file cannot be combined.")
+    content = (
+        content_flag
+        if content_flag is not None
+        else Path(from_file).read_text(encoding="utf-8")
+        if from_file is not None
+        else None
+    )
+    result = await _preview_impact(
+        client,
+        path=path,
+        content=content,
+        direction=direction,
+    )
+    _render_impact(result, ctx=ctx)
+
+
 @files_group.command("write")
 @click.argument("path")
 @click.argument("source", required=False)
@@ -240,6 +350,15 @@ async def stat_cmd(
     default=False,
     help="Create a new file; fail if the path already exists.",
 )
+@click.option(
+    "--check-impact",
+    is_flag=True,
+    default=False,
+    help=(
+        "Preview the proposed Python dependency/reverse-dependency graph, then "
+        "write only if the server recomputes the same blocker-free candidate."
+    ),
+)
 @click.pass_context
 @pass_resolver
 @run_async
@@ -253,6 +372,7 @@ async def write_cmd(
     solution_ref: str | None,
     expected_version: str | None,
     create_only: bool,
+    check_impact: bool,
     *,
     client: BifrostClient,
     resolver,  # noqa: ARG001
@@ -292,6 +412,30 @@ async def write_cmd(
     if solution_ref is not None:
         install_id = await _resolve_solution_install_id(client, solution_ref)
         query = f"?solution={install_id}"
+    impact_candidate_id = None
+    if check_impact:
+        if solution_ref is not None or location != "workspace":
+            raise click.UsageError(
+                "--check-impact currently supports instance Workspace files only."
+            )
+        if not path.endswith(".py"):
+            raise click.UsageError("--check-impact currently supports Python files only.")
+        impact = await _preview_impact(
+            client,
+            path=path,
+            content=content,
+        )
+        _render_impact(impact, ctx=ctx)
+        if not impact.get("ready_to_write"):
+            raise click.ClickException(
+                "Checked write blocked by Workspace impact diagnostics; no bytes were written."
+            )
+        impact_candidate_id = str(impact.get("candidate_id") or "")
+        if not impact_candidate_id.startswith("sha256:"):
+            raise click.ClickException(
+                "Workspace impact preview did not return an immutable candidate."
+            )
+
     response = await client.post(
         f"/api/files/write{query}",
         json={
@@ -302,6 +446,7 @@ async def write_cmd(
             "binary": False,
             "expected_version": expected_version,
             "create_only": create_only,
+            "impact_candidate_id": impact_candidate_id,
         },
     )
     response.raise_for_status()

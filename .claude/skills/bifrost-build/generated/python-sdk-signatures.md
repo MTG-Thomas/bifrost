@@ -57,6 +57,9 @@ Event publishing operations (async).
 
 **`files.get_signed_url(path: str, method: Literal['PUT', 'GET'] = 'PUT', content_type: str = 'application/octet-stream', location: str = 'uploads', scope: str | None = None) -> dict`**
 
+**`files.impact(path: str, content: str | None = None, direction: Literal['forward', 'reverse', 'both'] = 'both') -> dict`**
+  Trace durable Workspace Python dependencies and reverse consumers.
+
 **`files.list(directory: str = '', location: str = 'workspace', mode: Mode = 'cloud', scope: str | None = None) -> list[str]`**
 
 **`files.read(path: str, location: str = 'workspace', mode: Mode = 'cloud', scope: str | None = None) -> str`**
@@ -67,7 +70,7 @@ Event publishing operations (async).
 
 **`files.stat(path: str, location: str = 'workspace', mode: Mode = 'cloud', scope: str | None = None) -> dict`**
 
-**`files.write(path: str, content: str, location: str = 'workspace', mode: Mode = 'cloud', expected_version: str | None = None, create_only: bool = False, scope: str | None = None) -> None`**
+**`files.write(path: str, content: str, location: str = 'workspace', mode: Mode = 'cloud', expected_version: str | None = None, create_only: bool = False, impact_candidate_id: str | None = None, scope: str | None = None) -> None`**
 
 **`files.write_bytes(path: str, content: bytes, location: str = 'workspace', mode: Mode = 'cloud', expected_version: str | None = None, create_only: bool = False, scope: str | None = None) -> None`**
 

@@ -132,6 +132,7 @@ class files:
         mode: Mode = "cloud",
         expected_version: str | None = None,
         create_only: bool = False,
+        impact_candidate_id: str | None = None,
         scope: str | None = None,
     ) -> None:
         """
@@ -145,6 +146,7 @@ class files:
             expected_version: Opaque version from ``files.stat`` required for
                 a guarded replacement.
             create_only: Create a new file and fail if the path already exists.
+            impact_candidate_id: Immutable candidate from ``files.impact``.
             scope: Org scope; provider-org override allowed.
         """
         client = get_client()
@@ -159,10 +161,33 @@ class files:
                 "binary": False,
                 "expected_version": expected_version,
                 "create_only": create_only,
+                "impact_candidate_id": impact_candidate_id,
                 "scope": effective_scope,
             }
         )
         raise_for_status_with_detail(response)
+
+    @staticmethod
+    async def impact(
+        path: str,
+        *,
+        content: str | None = None,
+        direction: Literal["forward", "reverse", "both"] = "both",
+    ) -> dict:
+        """Trace durable Workspace Python dependencies and reverse consumers.
+
+        Supplying ``content`` overlays proposed UTF-8 bytes without writing
+        them.  The response candidate can be passed to :meth:`write` as
+        ``impact_candidate_id`` for server-side recomputation under the
+        Workspace Python writer barrier.
+        """
+        client = get_client()
+        response = await client.post(
+            "/api/files/impact",
+            json={"path": path, "content": content, "direction": direction},
+        )
+        raise_for_status_with_detail(response)
+        return response.json()
 
     @staticmethod
     async def write_bytes(
