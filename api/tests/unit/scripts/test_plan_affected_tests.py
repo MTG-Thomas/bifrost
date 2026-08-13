@@ -224,6 +224,27 @@ def test_python_test_only_change_runs_exact_test(graph_repo: Path) -> None:
     assert plan.lane("api_e2e") == "skip"
 
 
+def test_documentation_only_change_skips_runtime_lanes(graph_repo: Path) -> None:
+    _write(graph_repo, "docs/dev/narrow-change.md", "operator guidance\n")
+
+    plan = affected.plan_changes([affected.GitChange("M", "docs/dev/narrow-change.md")])
+
+    assert plan.scope == "docs-only"
+    assert plan.reason == "documentation and agent guidance only"
+    assert all(
+        plan.lane(lane) == "skip"
+        for lane in (
+            "api_quality",
+            "api_unit",
+            "api_e2e",
+            "client_quality",
+            "client_unit",
+            "client_e2e",
+            "mcp_conformance",
+        )
+    )
+
+
 def test_git_changes_rejects_argument_injection() -> None:
     with pytest.raises(affected.PlanError, match="full Git commit SHAs"):
         affected.git_changes("--output=/tmp/escaped", "a" * 40)
