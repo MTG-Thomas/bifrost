@@ -1,10 +1,9 @@
-"""Streamable HTTP MCP client wrapper, per connection.
+"""Auto-negotiating Streamable HTTP MCP client, per connection.
 
-Exactly one transport: ``mcp.client.streamable_http.streamablehttp_client``.
-No SSE, no stdio — both are deliberately omitted. If a future requirement
-lands for stdio transport (e.g. a local development server), it goes in a
-separate module rather than as a parallel branch here, so the public surface
-stays small and the failure modes stay predictable.
+Exactly one transport: FastMCP's supported HTTP client. It probes the modern
+``server/discover`` path first and falls back to the legacy ``initialize``
+handshake only when the peer does not provide positive modern-era evidence.
+No SSE or stdio transports are exposed here.
 
 The caller — ``dispatch.invoke`` and ``catalog_sync.sync_catalog`` — owns
 auth resolution. By the time we get the ``access_token`` here, the caller
@@ -22,7 +21,7 @@ from typing import TYPE_CHECKING
 from src.models.orm.external_mcp import MCPConnection
 
 if TYPE_CHECKING:
-    from mcp import ClientSession
+    from fastmcp import Client
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +36,16 @@ def _resolve_server_url(connection: MCPConnection) -> str:
 
 
 @asynccontextmanager
-async def open_session(
+async def open_client(
     connection: MCPConnection,
     access_token: str,
-) -> AsyncIterator[ClientSession]:
-    """Open an initialized Streamable HTTP MCP session for a connection.
+) -> AsyncIterator[Client]:
+    """Open an auto-negotiated Streamable HTTP MCP client.
 
-    Yields a fully-initialized ``ClientSession`` ready for ``list_tools()``,
-    ``call_tool(...)``, etc. The session is torn down when the ``async with``
-    block exits.
+    Entering FastMCP's client context performs modern-first negotiation. The
+    yielded client exposes raw protocol methods such as ``list_tools_mcp`` and
+    ``call_tool_mcp``; callers use those so Bifrost preserves the SDK's
+    ``CallToolResult`` rather than FastMCP's convenience result wrapper.
 
     Args:
         connection: The ``MCPConnection`` row whose server URL (or override)
@@ -56,25 +56,28 @@ async def open_session(
             to use (per-user vs. shared service) happens in ``auth_resolution``;
             this layer is auth-agnostic.
     """
-    # Imported lazily so the mcp SDK (and its sse_starlette/uvicorn deps)
+    # Imported lazily so the MCP SDK and its HTTP dependencies
     # stays out of the worker import closure (tests/unit/test_import_hygiene.py).
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from fastmcp import Client
 
     server_url = _resolve_server_url(connection)
-    headers = {"Authorization": f"Bearer {access_token}"}
-
     logger.debug(
-        "Opening MCP session: connection=%s url=%s",
+        "Opening MCP client: connection=%s url=%s negotiation=auto",
         connection.id,
         server_url,
     )
 
-    async with streamablehttp_client(server_url, headers=headers) as (
-        read_stream,
-        write_stream,
-        _get_session_id,
-    ):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            yield session
+    client = Client(server_url, auth=access_token, mode="auto")
+    async with client:
+        negotiation_path = (
+            "modern_discover"
+            if client.initialize_result is None
+            else "legacy_initialize"
+        )
+        logger.info(
+            "MCP client negotiated: connection=%s protocol_version=%s path=%s",
+            connection.id,
+            client.protocol_version,
+            negotiation_path,
+        )
+        yield client

@@ -438,6 +438,20 @@ services:
     profiles:
       - test  # Only start when running tests
 
+  # Official MCP conformance CLI. Its npm dependency graph is isolated from
+  # the application and exact-pinned by api/tests/conformance/package-lock.json.
+  # The runner reaches the real authenticated API surface over this Compose
+  # project's private network; no host ports or test-only MCP endpoint exist.
+  mcp-conformance:
+    image: bifrost-test-mcp-conformance:0.2.0-alpha.11
+    build:
+      context: ./api/tests/conformance
+      dockerfile: Dockerfile
+    volumes:
+      - ${LOG_DIR:-/tmp/bifrost}/mcp-conformance:/results
+    profiles:
+      - test
+
   # =============================================================================
   # Client E2E Testing Services (started with --profile client)
   # =============================================================================

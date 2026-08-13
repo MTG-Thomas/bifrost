@@ -116,8 +116,8 @@ async def _call_remote(
     arguments: dict[str, Any],
 ) -> CallToolResult:
     """Open a session, call the tool, return the raw result."""
-    async with mcp_client_session.open_session(connection, access_token) as session:
-        return await session.call_tool(tool_name, arguments)
+    async with mcp_client_session.open_client(connection, access_token) as client:
+        return await client.call_tool_mcp(tool_name, arguments)
 
 
 async def invoke(

@@ -10,6 +10,10 @@ from tests.fixtures.auth import create_test_jwt
 
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
 MCP_ACCEPT = "application/json, text/event-stream"
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion"
+CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo"
+CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities"
 GATEWAY_TOOLS = {
     "bifrost_find_agents",
     "bifrost_get_agent",
@@ -33,15 +37,33 @@ def _mcp_request(
     *,
     path: str = "/mcp",
     request_id: int = 1,
+    modern: bool = False,
 ) -> dict:
+    headers = _mcp_headers(token)
+    request_params = dict(params)
+    if modern:
+        request_params["_meta"] = {
+            PROTOCOL_VERSION_META_KEY: MODERN_PROTOCOL_VERSION,
+            CLIENT_INFO_META_KEY: {"name": "gateway-e2e", "version": "1.0"},
+            CLIENT_CAPABILITIES_META_KEY: {},
+        }
+        headers.update(
+            {
+                "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                "Mcp-Method": method,
+            }
+        )
+        if method == "tools/call":
+            headers["Mcp-Name"] = str(request_params["name"])
+
     response = requests.post(
         f"{TEST_API_URL}{path}",
-        headers=_mcp_headers(token),
+        headers=headers,
         json={
             "jsonrpc": "2.0",
             "id": request_id,
             "method": method,
-            "params": params,
+            "params": request_params,
         },
     )
     assert response.status_code == 200, response.text
@@ -50,11 +72,18 @@ def _mcp_request(
     return payload
 
 
-def _call_gateway(token: str, name: str, arguments: dict) -> dict:
+def _call_gateway(
+    token: str,
+    name: str,
+    arguments: dict,
+    *,
+    modern: bool = False,
+) -> dict:
     payload = _mcp_request(
         token,
         "tools/call",
         {"name": name, "arguments": arguments},
+        modern=modern,
     )
     return payload["result"]["structuredContent"]
 
@@ -77,7 +106,7 @@ class TestMCPAgentGateway:
         content = (
             "from bifrost import tool\n\n"
             "@tool(description='Echo a message for the MCP gateway proof.')\n"
-            f"def {function_name}(message: str) -> dict:\n"
+            f"async def {function_name}(message: str) -> dict:\n"
             "    return {'echo': message}\n"
         )
         write_response = requests.put(
@@ -166,6 +195,80 @@ class TestMCPAgentGateway:
             for name in scoped_names
         )
         assert not (scoped_names & GATEWAY_TOOLS)
+
+        scoped_initialize = _mcp_request(
+            self.token,
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "gateway-e2e", "version": "1.0"},
+            },
+            path=f"/mcp/{self.agent_id}",
+        )
+        assert scoped_initialize["result"]["protocolVersion"] == "2024-11-05"
+
+        workflow_name = next(
+            name
+            for name in scoped_names
+            if name == self.function_name or name.endswith(self.function_name)
+        )
+        scoped_call = _mcp_request(
+            self.token,
+            "tools/call",
+            {"name": workflow_name, "arguments": {"message": "legacy"}},
+            path=f"/mcp/{self.agent_id}",
+        )
+        assert scoped_call["result"]["structuredContent"] == {"echo": "legacy"}
+
+    def test_modern_discover_list_and_call_on_both_surfaces(self):
+        for path in ("/mcp", f"/mcp/{self.agent_id}"):
+            discover = _mcp_request(
+                self.token,
+                "server/discover",
+                {},
+                path=path,
+                modern=True,
+            )
+            assert MODERN_PROTOCOL_VERSION in discover["result"]["supportedVersions"]
+
+        default_tools = _mcp_request(
+            self.token,
+            "tools/list",
+            {},
+            modern=True,
+        )["result"]["tools"]
+        assert {tool["name"] for tool in default_tools} == GATEWAY_TOOLS
+
+        found = _call_gateway(
+            self.token,
+            "bifrost_find_agents",
+            {"query": self.agent_name},
+            modern=True,
+        )
+        assert any(agent["id"] == self.agent_id for agent in found["agents"])
+
+        scoped_tools = _mcp_request(
+            self.token,
+            "tools/list",
+            {},
+            path=f"/mcp/{self.agent_id}",
+            modern=True,
+        )["result"]["tools"]
+        scoped_names = {tool["name"] for tool in scoped_tools}
+        workflow_name = next(
+            name
+            for name in scoped_names
+            if name == self.function_name or name.endswith(self.function_name)
+        )
+        scoped_call = _mcp_request(
+            self.token,
+            "tools/call",
+            {"name": workflow_name, "arguments": {"message": "modern"}},
+            path=f"/mcp/{self.agent_id}",
+            modern=True,
+        )
+        assert scoped_call["result"]["structuredContent"] == {"echo": "modern"}
 
     def test_live_discovery_schema_execution_and_revocation(self):
         found = _call_gateway(
