@@ -73,6 +73,40 @@ def test_backend_helper_selects_reverse_importers_and_route_e2e(
     assert plan.python.runtime_edges == 1
 
 
+def test_backend_reexport_keeps_reverse_dependency_coverage(
+    graph_repo: Path,
+) -> None:
+    _write(graph_repo, "api/src/services/helper.py", "VALUE = 1\n")
+    _write(
+        graph_repo,
+        "api/src/services/__init__.py",
+        "from src.services.helper import VALUE\n",
+    )
+    _write(
+        graph_repo,
+        "api/src/services/consumer.py",
+        "from src.services import VALUE\n\ndef consume():\n    return VALUE\n",
+    )
+    _write(
+        graph_repo,
+        "api/tests/unit/services/test_consumer.py",
+        "from src.services.consumer import consume\n\ndef test_consume():\n"
+        "    assert consume() == 1\n",
+    )
+
+    plan = affected.plan_changes(
+        [affected.GitChange("M", "api/src/services/helper.py")]
+    )
+
+    assert plan.scope == "affected"
+    assert plan.python.impacted == (
+        "api/src/services/__init__.py",
+        "api/src/services/consumer.py",
+        "api/src/services/helper.py",
+    )
+    assert plan.python.unit_tests == ("tests/unit/services/test_consumer.py",)
+
+
 def test_unowned_backend_downstream_falls_back_to_comprehensive(
     graph_repo: Path,
 ) -> None:

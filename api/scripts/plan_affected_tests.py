@@ -486,7 +486,7 @@ def _transitive(
         if path in seen:
             continue
         seen.add(path)
-        if path in wiring_sinks or path.endswith("/__init__.py"):
+        if path in wiring_sinks:
             continue
         pending.extend(dependencies.get(path, ()))
     return seen
@@ -499,7 +499,7 @@ def _reverse_closure(
 ) -> set[str]:
     reverse: dict[str, set[str]] = defaultdict(set)
     for importer, imported in dependencies.items():
-        if importer in wiring_sinks or importer.endswith("/__init__.py"):
+        if importer in wiring_sinks:
             continue
         for target in imported:
             reverse[target].add(importer)
