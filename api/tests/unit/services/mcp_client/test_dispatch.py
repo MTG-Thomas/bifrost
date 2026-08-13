@@ -18,6 +18,17 @@ class TextBlock:
         return {"type": "text", "text": self.text}
 
 
+class _FakeClientContext:
+    def __init__(self, client) -> None:
+        self.client = client
+
+    async def __aenter__(self):
+        return self.client
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
 def test_looks_like_auth_error_checks_exception_chain() -> None:
     root = RuntimeError("vendor said invalid_token")
     wrapped = RuntimeError("protocol failure")
@@ -80,6 +91,39 @@ def test_enforce_result_size_cap_replaces_oversized_payload(
     assert result["structured_content"]["cap_bytes"] == 20
     assert result["content"][0]["type"] == "text"
     assert "returned" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_call_remote_preserves_raw_call_tool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = SimpleNamespace(id=uuid4())
+    raw_result = SimpleNamespace(
+        content=[TextBlock("remote")],
+        structured_content={"ok": True},
+        is_error=True,
+    )
+
+    class FakeClient:
+        async def call_tool_mcp(self, name, arguments):
+            assert name == "lookup"
+            assert arguments == {"id": 7}
+            return raw_result
+
+    monkeypatch.setattr(
+        dispatch.mcp_client_session,
+        "open_client",
+        lambda connection_arg, token: _FakeClientContext(FakeClient()),
+    )
+
+    result = await dispatch._call_remote(
+        connection,
+        "access-token",
+        "lookup",
+        {"id": 7},
+    )
+
+    assert result is raw_result
 
 
 @pytest.mark.asyncio

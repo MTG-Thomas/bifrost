@@ -42,6 +42,33 @@ class ToolFilterMiddleware(Middleware):
     - on_call_tool: Rejects direct calls to hidden native tools
     """
 
+    async def on_request(self, context: MiddlewareContext, call_next):
+        """Log the negotiated protocol era without recording credentials."""
+        request_context = (
+            context.fastmcp_context.request_context
+            if context.fastmcp_context is not None
+            else None
+        )
+        protocol_version = (
+            request_context.protocol_version
+            if request_context is not None
+            else None
+        )
+        negotiation_path = (
+            "modern_direct"
+            if protocol_version == "2026-07-28"
+            else "legacy_handshake_era"
+        )
+        agent_id = _get_agent_id_from_scope()
+        logger.info(
+            "MCP request negotiated: method=%s protocol_version=%s path=%s scope=%s",
+            context.method,
+            protocol_version,
+            negotiation_path,
+            "agent" if agent_id is not None else "gateway",
+        )
+        return await call_next(context)
+
     async def on_list_tools(
         self, context: MiddlewareContext, call_next
     ) -> list:
