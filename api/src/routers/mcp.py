@@ -296,8 +296,9 @@ def get_mcp_asgi_app():
     except ImportError as e:
         logger.warning(f"Could not add ToolFilterMiddleware: {e}")
 
-    # Create ASGI app with default path="/mcp" - we mount at root so FastMCP
-    # handles /mcp directly without Starlette's trailing slash redirect
+    # FastMCP v4 serves both modern discover/direct requests and the legacy
+    # initialize handshake from this one stateless app. Mount at root so it
+    # handles /mcp directly without Starlette's trailing slash redirect.
     mcp_app = fastmcp_server.http_app(json_response=True, stateless_http=True)
 
     # Store original lifespan before wrapping

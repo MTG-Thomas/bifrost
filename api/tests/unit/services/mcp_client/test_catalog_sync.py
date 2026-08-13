@@ -62,7 +62,7 @@ class _FakeSession:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def list_tools(self):
+    async def list_tools_mcp(self):
         if self._error is not None:
             raise self._error
         return SimpleNamespace(tools=self._tools)
@@ -177,7 +177,7 @@ async def test_sync_catalog_upserts_reenables_and_marks_removed(
     ]
     monkeypatch.setattr(
         catalog_sync.mcp_client_session,
-        "open_session",
+        "open_client",
         lambda connection_arg, token: _FakeSession(tools=tools),
     )
 
@@ -212,7 +212,7 @@ async def test_sync_catalog_wraps_tools_list_failures(
     monkeypatch.setattr(catalog_sync, "_resolve_service_token_for_sync", resolve)
     monkeypatch.setattr(
         catalog_sync.mcp_client_session,
-        "open_session",
+        "open_client",
         lambda connection_arg, token: _FakeSession(error=RuntimeError("vendor down")),
     )
 

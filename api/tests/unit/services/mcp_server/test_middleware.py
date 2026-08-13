@@ -67,6 +67,34 @@ def mock_context():
 # ==================== on_list_tools Tests ====================
 
 
+@pytest.mark.asyncio
+async def test_logs_negotiated_protocol_without_credentials(caplog):
+    from src.services.mcp_server.middleware import ToolFilterMiddleware
+
+    middleware = ToolFilterMiddleware()
+    context = MagicMock()
+    context.method = "tools/list"
+    call_next = AsyncMock(return_value=["tool"])
+    request = MagicMock()
+    request.headers = {"mcp-protocol-version": "2026-07-28"}
+
+    with patch(
+        "src.services.mcp_server.middleware._get_agent_id_from_scope",
+        return_value=uuid4(),
+    ), patch(
+        "src.services.mcp_server.middleware.get_http_request",
+        return_value=request,
+    ), caplog.at_level("INFO"):
+        result = await middleware.on_request(context, call_next)
+
+    assert result == ["tool"]
+    assert (
+        "method=tools/list protocol_version=2026-07-28 "
+        "path=modern_direct scope=agent"
+    ) in caplog.text
+    assert "authorization" not in caplog.text.lower()
+
+
 class TestOnListTools:
     """Tests for ToolFilterMiddleware.on_list_tools()."""
 

@@ -1,0 +1,9 @@
+{
+  "name": "bifrost-mcp-conformance-runner",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Exact-pinned official MCP conformance runner for Bifrost tests",
+  "dependencies": {
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.11"
+  }
+}
