@@ -49,14 +49,24 @@ def test_compose_and_test_runner_use_the_pinned_official_image() -> None:
     assert "--url http://api:8000/mcp" in test_script
     assert "--scenario server-initialize" in test_script
     assert "--spec-version 2025-11-25" in test_script
+    assert "auth-probe-headers.txt" in test_script
+    assert "^HTTP/1.1 401 Unauthorized$" in test_script
+    assert 'scope="mcp:access"' in test_script
 
 
-def test_advisory_baseline_only_records_prerequisite_blocked_initialize() -> None:
+def test_advisory_baseline_only_records_auth_blocked_initialize() -> None:
     baseline = yaml.safe_load(
         (CONFORMANCE_ROOT / "expected-failures.yml").read_text()
     )
 
     assert baseline == {"server": ["server-initialize"]}
+
+    baseline_text = (CONFORMANCE_ROOT / "expected-failures.yml").read_text()
+    readme = (CONFORMANCE_ROOT / "README.md").read_text()
+    assert "401 Bearer challenge" in baseline_text
+    assert "401 Unauthorized" in readme
+    assert "cannot mount" not in readme
+    assert "challenge_scopes" not in readme
 
 
 def test_ci_job_is_advisory_and_retains_runner_artifacts() -> None:

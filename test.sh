@@ -393,8 +393,31 @@ mcp_conformance() {
     require_stack_up
 
     local results_dir="$LOG_DIR/mcp-conformance"
+    local auth_probe_file="$results_dir/auth-probe-headers.txt"
     mkdir -p "$results_dir"
     chmod 777 "$results_dir" 2>/dev/null || true
+
+    # Keep the whole-scenario baseline honest: it is only valid while the
+    # official runner lacks a token/header option and the real mounted endpoint
+    # rejects its unauthenticated request with Bifrost's Bearer challenge.
+    docker compose -f "$COMPOSE_FILE" exec -T api curl \
+        --silent \
+        --show-error \
+        --output /dev/null \
+        --dump-header - \
+        --request POST \
+        --header "Accept: application/json, text/event-stream" \
+        --header "Content-Type: application/json" \
+        --header "MCP-Protocol-Version: 2025-11-25" \
+        --data-binary '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bifrost-conformance-auth-probe","version":"1.0"}}}' \
+        http://localhost:8000/mcp \
+        | tr -d '\r' > "$auth_probe_file"
+    if ! grep -q '^HTTP/1.1 401 Unauthorized$' "$auth_probe_file" \
+        || ! grep -Eqi '^www-authenticate: Bearer .*scope="mcp:access"' "$auth_probe_file"; then
+        echo "ERROR: /mcp did not return the expected unauthenticated Bearer challenge:" >&2
+        sed 's/^/  /' "$auth_probe_file" >&2
+        exit 1
+    fi
 
     # This image is deliberately separate from the API image: the official
     # JavaScript runner must not alter Bifrost's Python MCP dependency graph.

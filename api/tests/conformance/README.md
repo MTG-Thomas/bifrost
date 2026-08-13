@@ -10,21 +10,25 @@ Bifrost's Python MCP SDK. Run it through the Docker test environment:
 
 The runner is intentionally advisory. Its JSON checks are written under the
 worktree-specific `/tmp/bifrost-*/mcp-conformance/` directory and uploaded by
-CI even when a check fails.
+CI even when a check fails. The same artifact directory includes
+`auth-probe-headers.txt`, which contains the non-secret response headers from
+the baseline preflight.
 
 ## Current baseline
 
 The dependency-independent foundation runs `server-initialize` using the
 runner's published `2025-11-25` schema against the real
 `http://api:8000/mcp` endpoint. `expected-failures.yml` temporarily records
-the whole scenario because its prerequisites are not yet available. In this
-checkout the API cannot mount `/mcp` because the installed FastMCP auth API
-expects `challenge_scopes`; after that dependency mismatch is resolved,
-Bifrost still requires a bearer token and the official server runner does not
-expose an option for supplying one. The baseline covers either prerequisite
-failure. It does not bypass authentication or dispatch and is not evidence
-that initialization itself passes. An unexpected pass also fails the baseline
-check so the entry cannot silently become stale.
+the whole scenario because the official server runner does not expose an
+option for supplying the bearer token Bifrost requires. The FastMCP ASGI app
+is mounted at `/mcp`; the unauthenticated runner reaches that real surface and
+receives `401 Unauthorized` with a Bearer challenge for `mcp:access`. The
+baseline does not bypass authentication or dispatch and is not evidence that
+initialization itself passes. An unexpected pass also fails the baseline check
+so the entry cannot silently become stale. Before invoking the official
+runner, `./test.sh` also requires this exact 401 Bearer challenge. A missing
+route, application-construction failure, or changed authentication contract
+therefore fails the command instead of being hidden by the scenario baseline.
 
 Existing Bifrost E2E tests remain the blocking authority for authentication,
 legacy initialization, gateway filtering, agent scoping, and dispatch.
