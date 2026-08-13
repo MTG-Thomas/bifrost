@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 import requests
 
+from tests.fixtures.auth import create_test_jwt
+
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
 TEST_API_REPLICA_URL = os.getenv(
     "TEST_API_REPLICA_URL",
@@ -16,6 +18,8 @@ TEST_API_REPLICA_URL = os.getenv(
 )
 LATEST_MCP_PROTOCOL = "2026-07-28"
 MCP_ACCEPT_HEADER = "application/json, text/event-stream"
+MCP_RESOURCE = f"{TEST_API_URL}/mcp"
+MCP_CANONICAL_HOST = "api:8000"
 
 
 def _admin_headers(token: str) -> dict[str, str]:
@@ -29,6 +33,7 @@ def _mcp_headers(token: str) -> dict[str, str]:
     return {
         **_admin_headers(token),
         "Accept": MCP_ACCEPT_HEADER,
+        "Host": MCP_CANONICAL_HOST,
         "MCP-Protocol-Version": LATEST_MCP_PROTOCOL,
     }
 
@@ -125,14 +130,24 @@ def _assert_private_zero_ttl(payload: dict[str, Any]) -> None:
 def test_workflow_catalog_is_replica_safe_and_fail_closed_for_caching(
     platform_admin,
 ):
-    """Mutations reach both replicas and list-to-call routing stays stateless."""
+    """Workflow mutations converge and list-to-call routing crosses replicas."""
     suffix = uuid.uuid4().hex[:8]
     path = f"workflows/test_mcp_replica_{suffix}.py"
     function_name = f"test_mcp_replica_{suffix}"
     renamed_tool_name = f"renamed_replica_tool_{suffix}"
 
-    token = platform_admin.access_token
-    assert token is not None
+    token = create_test_jwt(
+        user_id=str(platform_admin.user_id),
+        email=platform_admin.email,
+        name=platform_admin.name,
+        is_superuser=True,
+        organization_id=(
+            str(platform_admin.organization_id)
+            if platform_admin.organization_id is not None
+            else None
+        ),
+        mcp_resource=MCP_RESOURCE,
+    )
     admin_headers = platform_admin.headers
     mcp_headers = _mcp_headers(token)
 

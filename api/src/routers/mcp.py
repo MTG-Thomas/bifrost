@@ -307,10 +307,10 @@ def get_mcp_asgi_app():
     # Store original lifespan before wrapping
     original_lifespan = getattr(mcp_app, 'lifespan', None)
 
-    # Create combined lifespan that registers workflow tools on startup
+    # Keep this replica's workflow catalog synchronized for its full lifespan.
     @asynccontextmanager
     async def combined_lifespan(app):
-        """Combined lifespan that registers workflow tools and runs FastMCP lifespan."""
+        """Synchronize the workflow catalog around the FastMCP lifespan."""
         from src.services.mcp_server.catalog_sync import (
             start_workflow_catalog_sync,
             stop_workflow_catalog_sync,
