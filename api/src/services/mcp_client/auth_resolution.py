@@ -42,6 +42,7 @@ from src.core.security import decrypt_secret
 from src.models.orm.external_mcp import MCPConnection, UserMCPCredential
 from src.models.orm.oauth import OAuthProvider, OAuthToken
 from src.services.mcp_client.errors import MisconfigError, NeedsReauthError
+from src.services.mcp_client.oauth_binding import resolve_oauth_binding
 from src.services.oauth_provider import (
     build_token_refresh_context,
     refresh_oauth_token_http,
@@ -81,6 +82,17 @@ def _is_token_fresh(token: OAuthToken) -> bool:
     if token.expires_at is None:
         return True
     return token.expires_at > datetime.now(timezone.utc) + _TOKEN_EXPIRY_MARGIN
+
+
+def _has_current_oauth_binding(
+    token: OAuthToken, connection: MCPConnection
+) -> bool:
+    """Reject credentials minted for a previous issuer or resource."""
+    try:
+        issuer, resource = resolve_oauth_binding(connection)
+    except ValueError:
+        return False
+    return token.oauth_issuer == issuer and token.oauth_resource == resource
 
 
 async def _refresh_token_in_place(
@@ -149,6 +161,12 @@ async def _service_token_healthy(
     token = connection.service_oauth_token
     if token is None:
         return None
+    if not _has_current_oauth_binding(token, connection):
+        logger.info(
+            "MCP auth: service credential binding is stale for connection %s",
+            connection.id,
+        )
+        return None
 
     # Load the provider so we can refresh if needed. The token's provider
     # is not eager-loaded by default on this relationship.
@@ -198,6 +216,12 @@ async def _user_token_healthy(
 
     token = credential.oauth_token
     if token is None:
+        return None
+    if not _has_current_oauth_binding(token, connection):
+        logger.info(
+            "MCP auth: user credential binding is stale for connection %s",
+            connection.id,
+        )
         return None
 
     if _is_token_fresh(token):

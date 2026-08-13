@@ -11,17 +11,12 @@ Architecture:
     - /mcp/{agent_id} preserves the native agent-scoped tool surface
 
 Authentication:
-    Users authenticate through Bifrost's normal login flow (UI or CLI) and use
-    their access token as a Bearer token for MCP requests. The token is validated
-    using Bifrost's existing JWT infrastructure (HS256 with shared secret).
+    Users authenticate through the MCP OAuth flow and receive a token bound to
+    the canonical MCP resource, audience, and scope. General Bifrost UI/API
+    tokens are not accepted by the MCP endpoint.
 
 Usage:
-    # Get access token from Bifrost login
-    curl -X POST https://your-bifrost.com/auth/login \
-        -d '{"email":"admin@example.com","password":"..."}' \
-        -H "Content-Type: application/json"
-
-    # Use token for MCP access (example with test initialize)
+    # Use an MCP OAuth access token (example initialize request)
     curl -X POST https://your-bifrost.com/mcp \
         -H "Authorization: Bearer <access_token>" \
         -H "Accept: application/json, text/event-stream" \
@@ -262,6 +257,7 @@ def get_mcp_asgi_app():
     """
     from contextlib import asynccontextmanager
 
+    from src.config import get_settings
     from src.services.mcp_server.server import HAS_FASTMCP
 
     if not HAS_FASTMCP:
@@ -308,7 +304,14 @@ def get_mcp_asgi_app():
     # FastMCP v4 serves both modern discover/direct requests and the legacy
     # initialize handshake from this one stateless app. Mount at root so it
     # handles /mcp directly without Starlette's trailing slash redirect.
-    mcp_app = fastmcp_server.http_app(json_response=True, stateless_http=True)
+    settings = get_settings()
+    mcp_app = fastmcp_server.http_app(
+        json_response=True,
+        stateless_http=True,
+        host_origin_protection=True,
+        allowed_hosts=settings.mcp_allowed_hosts,
+        allowed_origins=settings.mcp_allowed_origins,
+    )
 
     # Store original lifespan before wrapping
     original_lifespan = getattr(mcp_app, 'lifespan', None)
@@ -340,7 +343,7 @@ def get_mcp_asgi_app():
     # Without this, CORS policy prevents JavaScript from reading the header
     cors_app = CORSMiddleware(
         agent_scoped_app,
-        allow_origins=["*"],  # MCP clients can come from anywhere
+        allow_origins=settings.mcp_allowed_origins,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
         expose_headers=["Mcp-Session-Id"],

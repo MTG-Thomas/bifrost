@@ -53,6 +53,7 @@ from src.services.mcp_client.oauth_state import (
     generate_pkce_verifier,
     remember_nonce,
 )
+from src.services.mcp_client.oauth_binding import resolve_oauth_binding
 from src.services.oauth_provider import (
     OAuthProviderClient,
     append_query_params,
@@ -249,6 +250,7 @@ async def _build_authorization_url(
     state_token: str,
     code_verifier: str,
     redirect_uri: str,
+    resource: str,
 ) -> str:
     """Build the vendor's authorize URL for a connect popup.
 
@@ -275,6 +277,7 @@ async def _build_authorization_url(
         "code_challenge": pkce_challenge_for(code_verifier),
         "code_challenge_method": "S256",
     }
+    params["resource"] = resource
     if provider.scopes:
         params["scope"] = " ".join(provider.scopes)
     if provider.audience:
@@ -321,6 +324,14 @@ async def _activate_client_credentials(
         provider.token_url, defaults=defaults
     )
 
+    try:
+        issuer, resource = resolve_oauth_binding(connection)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
     oauth_client = OAuthProviderClient()
     scopes = " ".join(provider.scopes) if provider.scopes else ""
     success, result = await oauth_client.get_client_credentials_token(
@@ -329,6 +340,7 @@ async def _activate_client_credentials(
         client_secret=client_secret,
         scopes=scopes,
         audience=provider.audience,
+        resource=resource,
     )
 
     if not success:
@@ -384,6 +396,8 @@ async def _activate_client_credentials(
             encrypted_refresh_token=None,
             expires_at=expires_at,
             scopes=response_scopes,
+            oauth_issuer=issuer,
+            oauth_resource=resource,
         )
         ctx.db.add(token_row)
         await ctx.db.flush()
@@ -393,6 +407,8 @@ async def _activate_client_credentials(
         token_row.encrypted_refresh_token = None
         token_row.expires_at = expires_at
         token_row.scopes = response_scopes
+        token_row.oauth_issuer = issuer
+        token_row.oauth_resource = resource
         token_row.updated_at = datetime.now(timezone.utc)
 
     connection.updated_at = datetime.now(timezone.utc)
@@ -760,16 +776,31 @@ async def connect_service_token(
 
     redirect_uri = _build_callback_redirect_uri()
     code_verifier = generate_pkce_verifier()
+    try:
+        issuer, resource = resolve_oauth_binding(connection)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     state_token, nonce = encode_state(
         connection_id=connection_id,
         flow_type="service",
         pkce_verifier=code_verifier,
         redirect_uri=redirect_uri,
+        issuer=issuer,
+        resource=resource,
     )
     await remember_nonce(nonce)
 
     authorization_url = await _build_authorization_url(
-        ctx, connection, provider, state_token, code_verifier, redirect_uri
+        ctx,
+        connection,
+        provider,
+        state_token,
+        code_verifier,
+        redirect_uri,
+        resource,
     )
     return MCPConnectAuthorizeResponse(
         flow="authorization_code",
@@ -819,17 +850,32 @@ async def connect_user_credential(
 
     redirect_uri = _build_callback_redirect_uri()
     code_verifier = generate_pkce_verifier()
+    try:
+        issuer, resource = resolve_oauth_binding(connection)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     state_token, nonce = encode_state(
         connection_id=connection_id,
         flow_type="user",
         pkce_verifier=code_verifier,
         user_id=ctx.user.user_id,
         redirect_uri=redirect_uri,
+        issuer=issuer,
+        resource=resource,
     )
     await remember_nonce(nonce)
 
     authorization_url = await _build_authorization_url(
-        ctx, connection, provider, state_token, code_verifier, redirect_uri
+        ctx,
+        connection,
+        provider,
+        state_token,
+        code_verifier,
+        redirect_uri,
+        resource,
     )
     return MCPConnectAuthorizeResponse(
         flow="authorization_code",

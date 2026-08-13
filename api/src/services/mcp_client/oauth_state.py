@@ -53,8 +53,10 @@ def encode_state(
     connection_id: UUID,
     flow_type: FlowType,
     pkce_verifier: str,
+    issuer: str,
+    resource: str,
     user_id: UUID | None = None,
-    redirect_uri: str | None = None,
+    redirect_uri: str,
 ) -> tuple[str, str]:
     """Encode an MCP OAuth ``state`` token and return ``(token, nonce)``.
 
@@ -66,9 +68,11 @@ def encode_state(
         flow_type: Either ``"service"`` (admin connecting the shared
             service token) or ``"user"`` (per-user delegated token).
         pkce_verifier: The PKCE verifier we'll use at code exchange.
+        issuer: Exact authorization-server issuer expected on callback.
+        resource: Protected-resource URI sent to authorization and token endpoints.
         user_id: Required when ``flow_type == "user"``; rejected when
             ``flow_type == "service"``.
-        redirect_uri: The redirect_uri sent to the vendor.
+        redirect_uri: Exact redirect URI sent to the authorization server.
 
     Returns:
         ``(jwt_token, nonce)``.
@@ -83,11 +87,12 @@ def encode_state(
         "flow_type": flow_type,
         "pkce_verifier": pkce_verifier,
         "code_challenge": pkce_challenge_for(pkce_verifier),
+        "oauth_issuer": issuer,
+        "resource": resource,
     }
     if user_id is not None:
         claims["user_id"] = str(user_id)
-    if redirect_uri is not None:
-        claims["redirect_uri"] = redirect_uri
+    claims["redirect_uri"] = redirect_uri
 
     return encode_state_jwt(audience=_STATE_AUDIENCE, claims=claims)
 
@@ -101,7 +106,14 @@ def decode_state(token: str) -> dict[str, Any]:
     """
     payload = decode_state_jwt(token, audience=_STATE_AUDIENCE)
 
-    for required in ("connection_id", "flow_type", "pkce_verifier"):
+    for required in (
+        "connection_id",
+        "flow_type",
+        "pkce_verifier",
+        "redirect_uri",
+        "oauth_issuer",
+        "resource",
+    ):
         if required not in payload:
             raise StateDecodeError(f"state missing required field: {required}")
 
