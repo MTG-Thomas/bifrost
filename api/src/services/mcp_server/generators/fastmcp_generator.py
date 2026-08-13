@@ -23,6 +23,8 @@ def register_tool_with_context(
     name: str,
     description: str,
     get_context_fn: Callable[[], Any],
+    *,
+    task: bool = False,
 ) -> None:
     """
     Register a tool with automatic context injection.
@@ -68,5 +70,5 @@ def register_tool_with_context(
     wrapper.__annotations__ = annotations
 
     # Register with FastMCP
-    mcp.tool(name=name, description=description)(wrapper)
+    mcp.tool(name=name, description=description, task=task)(wrapper)
     logger.debug(f"Registered tool: {name}")

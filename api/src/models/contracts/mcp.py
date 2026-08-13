@@ -128,6 +128,25 @@ class MCPGatewayExecuteRequest(BaseModel):
     """Arguments passed to an agent-bound tool."""
 
     arguments: dict[str, Any] = Field(default_factory=dict)
+    operation_id: str = Field(
+        min_length=1,
+        max_length=200,
+        description=(
+            "Stable caller-generated identity used to make retries of this "
+            "agent/tool operation idempotent."
+        ),
+    )
+    task_requested: bool = Field(
+        default=False,
+        description="Internal MCP Tasks adapter signal; legacy calls omit it.",
+    )
+
+
+class MCPGatewayDurableHandle(BaseModel):
+    """Canonical Bifrost lifecycle backing an MCP task."""
+
+    kind: str
+    id: str
 
 
 class MCPGatewayExecuteResponse(BaseModel):
@@ -140,3 +159,4 @@ class MCPGatewayExecuteResponse(BaseModel):
     source: str
     duration_ms: int
     result: Any
+    durable_handle: MCPGatewayDurableHandle | None = None

@@ -40,7 +40,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GATEWAY_TOOL_NAMESPACE = UUID("bcf3f4d7-b95e-53cc-9b7f-35e7081d0d84")
+GATEWAY_OPERATION_NAMESPACE = UUID("fdb6cc27-6fa9-53a3-a3e8-88d356822ba1")
 MAX_AGENT_RESULTS = 20
+MCP_TASK_PLATFORM_JOB_TOOLS = frozenset({"publish_app"})
 
 GatewayToolSource = Literal[
     "system",
@@ -274,11 +276,20 @@ class MCPAgentGatewayService:
         agent_id: str,
         tool_ref: str,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool = False,
     ) -> dict[str, Any]:
         """Re-resolve, validate, and execute an agent-bound tool."""
         snapshot = await self.get_agent_snapshot(agent_id)
         tool = self.find_tool(snapshot, tool_ref)
-        return await self.execute_tool(snapshot, tool, arguments)
+        return await self.execute_tool(
+            snapshot,
+            tool,
+            arguments,
+            operation_id=operation_id,
+            task_requested=task_requested,
+        )
 
     def _resolve_gateway_tools(
         self,
@@ -433,12 +444,29 @@ class MCPAgentGatewayService:
         snapshot: AgentToolSnapshot,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool = False,
     ) -> dict[str, Any]:
         started = time.monotonic()
 
         try:
             self.validate_arguments(tool, arguments)
-            result = await self._dispatch(snapshot.agent, tool, arguments)
+            if task_requested and not self._supports_tasks(tool):
+                raise GatewayError(
+                    "TASKS_UNSUPPORTED",
+                    (
+                        f"Tool '{tool.definition.name}' does not return a durable "
+                        "Bifrost execution or platform-job handle."
+                    ),
+                )
+            result = await self._dispatch(
+                snapshot.agent,
+                tool,
+                arguments,
+                operation_id=operation_id,
+                task_requested=task_requested,
+            )
         except GatewayError as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
             exc.details.setdefault("agent_id", str(snapshot.agent.id))
@@ -484,6 +512,21 @@ class MCPAgentGatewayService:
             tool.source,
             duration_ms,
         )
+        durable_handle = self._durable_handle(tool, result)
+        if task_requested and durable_handle is None:
+            raise GatewayError(
+                "TASKS_UNSUPPORTED",
+                (
+                    f"Tool '{tool.definition.name}' does not return a durable "
+                    "Bifrost execution or platform-job handle."
+                ),
+                details={
+                    "agent_id": str(snapshot.agent.id),
+                    "tool_ref": tool.tool_ref,
+                    "tool_name": tool.definition.name,
+                    "source": tool.source,
+                },
+            )
         return {
             "agent_id": str(snapshot.agent.id),
             "agent_name": snapshot.agent.name,
@@ -492,19 +535,89 @@ class MCPAgentGatewayService:
             "source": tool.source,
             "duration_ms": duration_ms,
             "result": result,
+            "durable_handle": durable_handle,
         }
+
+    @staticmethod
+    def _supports_tasks(tool: ResolvedGatewayTool) -> bool:
+        return (
+            tool.source in {"workflow", "delegation"}
+            or (
+                tool.source == "system"
+                and tool.definition.name in MCP_TASK_PLATFORM_JOB_TOOLS
+            )
+        )
+
+    def _operation_execution_id(
+        self,
+        agent: Agent,
+        tool: ResolvedGatewayTool,
+        operation_id: str,
+    ) -> str:
+        """Derive the canonical workflow/agent handle for a caller retry."""
+        scope = ":".join((
+            str(self.context.user_id),
+            str(self.context.org_id or "GLOBAL"),
+            str(agent.id),
+            tool.tool_ref,
+            operation_id,
+        ))
+        return str(uuid5(GATEWAY_OPERATION_NAMESPACE, scope))
+
+    @staticmethod
+    def _durable_handle(
+        tool: ResolvedGatewayTool,
+        result: Any,
+    ) -> dict[str, str] | None:
+        if tool.source == "workflow" and isinstance(result, dict):
+            execution_id = result.get("execution_id")
+            if execution_id:
+                return {"kind": "execution", "id": str(execution_id)}
+        if tool.source == "delegation" and isinstance(result, dict):
+            run_id = result.get("run_id")
+            if run_id:
+                return {"kind": "agent-run", "id": str(run_id)}
+        if isinstance(result, dict):
+            structured = result.get("structured_content")
+            if isinstance(structured, dict) and structured.get("job_id"):
+                return {
+                    "kind": "platform-job",
+                    "id": str(structured["job_id"]),
+                }
+        return None
 
     async def _dispatch(
         self,
         agent: Agent,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool,
     ) -> Any:
         if tool.source in {"system", "knowledge"}:
-            return await self._dispatch_system_tool(agent, tool, arguments)
+            return await self._dispatch_system_tool(
+                agent,
+                tool,
+                arguments,
+                operation_id=operation_id,
+            )
         if tool.source == "workflow":
-            return await self._dispatch_workflow(tool, arguments)
+            return await self._dispatch_workflow(
+                agent,
+                tool,
+                arguments,
+                operation_id=operation_id,
+                task_requested=task_requested,
+            )
         if tool.source == "delegation":
+            if task_requested:
+                return await self._dispatch_delegation_task(
+                    agent,
+                    tool,
+                    arguments,
+                    operation_id=operation_id,
+                )
             return await self._dispatch_delegation(agent, tool, arguments)
         if tool.source == "external_mcp":
             return await self._dispatch_external_mcp(tool, arguments)
@@ -518,6 +631,8 @@ class MCPAgentGatewayService:
         agent: Agent,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
     ) -> Any:
         from src.services.mcp_server.server import (
             MCPContext,
@@ -539,6 +654,7 @@ class MCPAgentGatewayService:
             is_external=self.context.is_external,
             user_email=self.context.user_email,
             user_name=self.context.user_name,
+            operation_id=operation_id,
             accessible_namespaces=list(agent.knowledge_sources or []),
         )
         result = await func(context, **arguments)
@@ -560,8 +676,12 @@ class MCPAgentGatewayService:
 
     async def _dispatch_workflow(
         self,
+        agent: Agent,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool,
     ) -> Any:
         from src.services.execution.service import execute_tool
 
@@ -580,6 +700,12 @@ class MCPAgentGatewayService:
             org_id=str(self.context.org_id) if self.context.org_id else None,
             is_platform_admin=self.context.is_platform_admin,
             is_agent=True,
+            execution_id=self._operation_execution_id(
+                agent,
+                tool,
+                operation_id,
+            ),
+            sync=not task_requested,
         )
         data = {
             "execution_id": response.execution_id,
@@ -589,13 +715,73 @@ class MCPAgentGatewayService:
             "error": response.error,
             "error_type": response.error_type,
         }
-        if response.status.value != "Success":
+        if response.status.value != "Success" and not (
+            task_requested and response.status.value == "Pending"
+        ):
             raise GatewayError(
                 "TOOL_EXECUTION_FAILED",
                 response.error or "Workflow execution failed.",
                 details={"underlying_result": data},
             )
         return data
+
+    async def _dispatch_delegation_task(
+        self,
+        agent: Agent,
+        tool: ResolvedGatewayTool,
+        arguments: dict[str, Any],
+        *,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Enqueue delegation on the canonical agent-run infrastructure."""
+        from src.core.database import get_db_context
+        from src.services.execution.agent_run_service import enqueue_agent_run_once
+
+        if tool.source_id is None:
+            raise GatewayError(
+                "TOOL_EXECUTION_FAILED",
+                "Delegated agent identity is missing.",
+            )
+        task = arguments.get("task")
+        if not isinstance(task, str) or not task.strip():
+            raise GatewayError(
+                "INVALID_ARGUMENTS",
+                "Delegation requires a non-empty task.",
+                retryable=True,
+            )
+        async with get_db_context() as db:
+            delegated = await AgentRepository(
+                db,
+                org_id=agent.organization_id,
+                user_id=self.context.user_id,
+                is_superuser=True,
+                is_external=False,
+            ).get_agent(tool.source_id)
+        if delegated is None or not delegated.is_active:
+            raise GatewayError(
+                "TOOL_NOT_FOUND_OR_FORBIDDEN",
+                "Delegated agent is no longer available.",
+                retryable=True,
+            )
+
+        run_id = self._operation_execution_id(agent, tool, operation_id)
+        _run_id, reused = await enqueue_agent_run_once(
+            agent_id=str(delegated.id),
+            trigger_type="mcp_gateway",
+            trigger_source=str(agent.id),
+            input_data={"task": task, "_delegated_from": agent.name},
+            org_id=str(agent.organization_id) if agent.organization_id else None,
+            caller_user_id=str(self.context.user_id),
+            caller_email=self.context.user_email,
+            caller_name=self.context.user_name,
+            sync=False,
+            run_id=run_id,
+        )
+        return {
+            "run_id": run_id,
+            "status": "queued",
+            "reused": reused,
+        }
 
     async def _dispatch_delegation(
         self,

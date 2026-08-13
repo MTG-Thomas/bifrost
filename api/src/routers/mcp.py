@@ -99,6 +99,7 @@ def _raise_gateway_http_error(exc: Exception) -> NoReturn:
         "NEEDS_REAUTH": status.HTTP_409_CONFLICT,
         "TOOL_SCHEMA_INVALID": status.HTTP_500_INTERNAL_SERVER_ERROR,
         "TOOL_EXECUTION_FAILED": status.HTTP_502_BAD_GATEWAY,
+        "TASKS_UNSUPPORTED": status.HTTP_409_CONFLICT,
     }.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR)
     raise HTTPException(status_code=status_code, detail=exc.as_dict()) from exc
 
@@ -177,6 +178,8 @@ async def execute_gateway_tool(
             agent_id,
             tool_ref,
             request.arguments,
+            operation_id=request.operation_id,
+            task_requested=request.task_requested,
         )
     except Exception as exc:
         _raise_gateway_http_error(exc)
@@ -288,6 +291,9 @@ def get_mcp_asgi_app():
 
     server = BifrostMCPServer(default_context)
     fastmcp_server = server.get_fastmcp_server(auth=auth_provider)
+    from src.services.mcp_server.tasks import BifrostTasksExtension
+
+    fastmcp_server.add_extension(BifrostTasksExtension())
 
     # Add tool filtering middleware to filter tools/list based on user permissions
     try:

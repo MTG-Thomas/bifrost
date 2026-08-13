@@ -13,6 +13,7 @@ Workflows are loaded by ID:
 from __future__ import annotations
 
 import base64
+import asyncio
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Callable
@@ -444,10 +445,10 @@ async def _enqueue_workflow_async(
     If sync=True, waits for result via Redis BLPOP.
     If sync=False, returns immediately with PENDING status.
     """
-    from src.services.execution.async_executor import enqueue_workflow_execution
+    from src.services.execution.async_executor import enqueue_workflow_execution_once
     from src.core.redis_client import get_redis_client
 
-    execution_id = await enqueue_workflow_execution(
+    execution_id, reused = await enqueue_workflow_execution_once(
         context=context,
         workflow_id=workflow_id,
         parameters=parameters,
@@ -463,6 +464,24 @@ async def _enqueue_workflow_async(
             workflow_id=workflow_id,
             workflow_name=workflow_name,
             status=ExecutionStatus.PENDING,
+        )
+
+    if reused:
+        # A concurrent retry must not compete for the single Redis BLPOP result
+        # consumed by the original synchronous request. Observe the canonical
+        # execution row instead; it survives a dropped HTTP response and is
+        # shared across API replicas.
+        workflow_meta = await get_workflow_metadata_only(workflow_id)
+        wait_timeout = (
+            workflow_meta.timeout_seconds + 60
+            if workflow_meta.timeout_seconds > 0
+            else 86400
+        )
+        return await _wait_for_persisted_workflow_result(
+            execution_id=execution_id,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            timeout_seconds=wait_timeout,
         )
 
     # Wait for result via Redis BLPOP — use actual workflow timeout (+ 60s buffer)
@@ -505,6 +524,49 @@ async def _enqueue_workflow_async(
     )
 
 
+async def _wait_for_persisted_workflow_result(
+    *,
+    execution_id: str,
+    workflow_id: str,
+    workflow_name: str,
+    timeout_seconds: int,
+) -> WorkflowExecutionResponse:
+    """Wait for the durable result of an already-dispatched execution."""
+    from src.core.database import get_db_context
+    from src.models.orm.executions import Execution
+
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    active = {
+        ExecutionStatus.SCHEDULED,
+        ExecutionStatus.PENDING,
+        ExecutionStatus.RUNNING,
+        ExecutionStatus.CANCELLING,
+    }
+    while asyncio.get_running_loop().time() < deadline:
+        async with get_db_context() as db:
+            execution = await db.get(Execution, uuid.UUID(execution_id))
+            if execution is not None and execution.status not in active:
+                return WorkflowExecutionResponse(
+                    execution_id=execution_id,
+                    workflow_id=workflow_id,
+                    workflow_name=execution.workflow_name or workflow_name,
+                    status=execution.status,
+                    result=execution.result,
+                    error=execution.error_message,
+                    duration_ms=execution.duration_ms,
+                )
+        await asyncio.sleep(0.1)
+
+    return WorkflowExecutionResponse(
+        execution_id=execution_id,
+        workflow_id=workflow_id,
+        workflow_name=workflow_name,
+        status=ExecutionStatus.TIMEOUT,
+        error="Execution timed out waiting for persisted result",
+        error_type="TimeoutError",
+    )
+
+
 async def _enqueue_code_async(
     context: "ExecutionContext",
     script_name: str,
@@ -540,6 +602,7 @@ async def execute_tool(
     is_platform_admin: bool = False,
     is_agent: bool = False,
     execution_id: str | None = None,
+    sync: bool = True,
 ) -> WorkflowExecutionResponse:
     """
     Execute a workflow as a tool (for AI agent tool calls).
@@ -598,11 +661,12 @@ async def execute_tool(
         public_url=get_settings().public_url,
     )
 
-    # Execute synchronously via queue
+    # Gateway task calls use the same execution pipeline with ``sync=False``;
+    # legacy callers retain the historical synchronous default.
     return await _enqueue_workflow_async(
         context=context,
         workflow_id=workflow_id,
         workflow_name=workflow_name,
         parameters=parameters,
-        sync=True,  # Wait for result
+        sync=sync,
     )

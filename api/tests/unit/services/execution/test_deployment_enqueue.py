@@ -22,6 +22,7 @@ async def test_queue_failure_leaves_committed_durable_deployment_pin(monkeypatch
     )
     added = []
     db = SimpleNamespace(
+        execute=AsyncMock(),
         get=AsyncMock(return_value=None),
         add=added.append,
         commit=AsyncMock(),
@@ -37,7 +38,7 @@ async def test_queue_failure_leaves_committed_durable_deployment_pin(monkeypatch
         AsyncMock(return_value=pinned),
     )
     monkeypatch.setattr(
-        "src.services.execution.async_executor._publish_pending",
+        "src.services.execution.async_executor._publish_scheduled_once",
         AsyncMock(side_effect=OSError("queue unavailable")),
     )
     context = SimpleNamespace(

@@ -206,6 +206,7 @@ async def test_execute_validates_before_dispatch():
                 snapshot,
                 tool,
                 {"ticket_id": "invalid"},
+                operation_id="invalid-operation",
             )
 
     assert exc_info.value.code == "INVALID_ARGUMENTS"
@@ -229,6 +230,7 @@ async def test_execute_returns_auditable_envelope():
             snapshot,
             tool,
             {"ticket_id": 42},
+            operation_id="lookup-42",
         )
 
     assert result["agent_id"] == str(agent.id)
@@ -237,3 +239,50 @@ async def test_execute_returns_auditable_envelope():
     assert result["source"] == "workflow"
     assert result["result"] == {"ticket": 42}
     assert isinstance(result["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_task_request_rejects_unsupported_tool_before_side_effect():
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    workflow = _resolved_tool(name="list_workflows")
+    tool = ResolvedGatewayTool(
+        tool_ref=workflow.tool_ref,
+        definition=workflow.definition,
+        source="system",
+        source_identity="system:list_workflows",
+    )
+    snapshot = AgentToolSnapshot(agent=agent, tools=[tool])
+
+    with patch.object(service, "_dispatch", new_callable=AsyncMock) as dispatch:
+        with pytest.raises(GatewayError) as exc_info:
+            await service.execute_tool(
+                snapshot,
+                tool,
+                {"ticket_id": 42},
+                operation_id="unsupported-task",
+                task_requested=True,
+            )
+
+    assert exc_info.value.code == "TASKS_UNSUPPORTED"
+    dispatch.assert_not_awaited()
+
+
+def test_operation_identity_is_stable_and_scoped_to_caller_agent_and_tool():
+    first_context = _context()
+    first = MCPAgentGatewayService(first_context)
+    agent = _agent()
+    tool = _resolved_tool()
+
+    initial = first._operation_execution_id(agent, tool, "caller-operation-42")
+    retry = first._operation_execution_id(agent, tool, "caller-operation-42")
+    other_operation = first._operation_execution_id(agent, tool, "caller-operation-43")
+    other_caller = MCPAgentGatewayService(_context())._operation_execution_id(
+        agent,
+        tool,
+        "caller-operation-42",
+    )
+
+    assert initial == retry
+    assert initial != other_operation
+    assert initial != other_caller

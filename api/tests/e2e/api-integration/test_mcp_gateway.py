@@ -1,7 +1,9 @@
 """Wire-level proof for progressive agent discovery on the default MCP URL."""
 
 import os
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
@@ -12,6 +14,7 @@ MODERN_PROTOCOL_VERSION = "2026-07-28"
 PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion"
 CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo"
 CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities"
+TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks"
 GATEWAY_TOOLS = {
     "bifrost_find_agents",
     "bifrost_get_agent",
@@ -36,6 +39,7 @@ def _mcp_request(
     path: str = "/mcp",
     request_id: int = 1,
     modern: bool = False,
+    tasks: bool = False,
 ) -> dict:
     headers = _mcp_headers(token)
     request_params = dict(params)
@@ -43,7 +47,9 @@ def _mcp_request(
         request_params["_meta"] = {
             PROTOCOL_VERSION_META_KEY: MODERN_PROTOCOL_VERSION,
             CLIENT_INFO_META_KEY: {"name": "gateway-e2e", "version": "1.0"},
-            CLIENT_CAPABILITIES_META_KEY: {},
+            CLIENT_CAPABILITIES_META_KEY: (
+                {"extensions": {TASKS_EXTENSION_ID: {}}} if tasks else {}
+            ),
         }
         headers.update(
             {
@@ -53,6 +59,8 @@ def _mcp_request(
         )
         if method == "tools/call":
             headers["Mcp-Name"] = str(request_params["name"])
+        elif method.startswith("tasks/"):
+            headers["Mcp-Name"] = str(request_params["taskId"])
 
     response = requests.post(
         f"{TEST_API_URL}{path}",
@@ -98,9 +106,11 @@ class TestMCPAgentGateway:
         headers = platform_admin.headers
 
         content = (
+            "import asyncio\n\n"
             "from bifrost import tool\n\n"
             "@tool(description='Echo a message for the MCP gateway proof.')\n"
             f"async def {function_name}(message: str) -> dict:\n"
+            "    await asyncio.sleep(2 if message == 'cancel-me' else 0.4)\n"
             "    return {'echo': message}\n"
         )
         write_response = requests.put(
@@ -264,6 +274,167 @@ class TestMCPAgentGateway:
         )
         assert scoped_call["result"]["structuredContent"] == {"echo": "modern"}
 
+    def test_dropped_response_and_concurrent_retries_reuse_one_execution(self):
+        loaded = _call_gateway(
+            self.token,
+            "bifrost_get_agent",
+            {"agent_id": self.agent_id},
+        )
+        tool_ref = next(
+            tool["tool_ref"] for tool in loaded["tools"] if tool["source"] == "workflow"
+        )
+
+        dropped_operation = f"dropped-{uuid.uuid4()}"
+        first = _call_gateway(
+            self.token,
+            "bifrost_execute_tool",
+            {
+                "agent_id": self.agent_id,
+                "tool_ref": tool_ref,
+                "arguments": {"message": "dropped"},
+                "operation_id": dropped_operation,
+            },
+        )
+        retry = _call_gateway(
+            self.token,
+            "bifrost_execute_tool",
+            {
+                "agent_id": self.agent_id,
+                "tool_ref": tool_ref,
+                "arguments": {"message": "dropped"},
+                "operation_id": dropped_operation,
+            },
+        )
+        assert retry["result"]["execution_id"] == first["result"]["execution_id"]
+        assert retry["result"]["result"] == {"echo": "dropped"}
+
+        concurrent_operation = f"concurrent-{uuid.uuid4()}"
+
+        def execute_retry() -> dict:
+            return _call_gateway(
+                self.token,
+                "bifrost_execute_tool",
+                {
+                    "agent_id": self.agent_id,
+                    "tool_ref": tool_ref,
+                    "arguments": {"message": "concurrent"},
+                    "operation_id": concurrent_operation,
+                },
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _index: execute_retry(), range(2)))
+
+        execution_ids = {
+            response["result"]["execution_id"] for response in responses
+        }
+        assert len(execution_ids) == 1
+        assert all(
+            response["result"]["result"] == {"echo": "concurrent"}
+            for response in responses
+        )
+
+    def test_modern_tasks_use_execution_status_and_requester_authorization(
+        self,
+        non_admin_user,
+    ):
+        loaded = _call_gateway(
+            self.token,
+            "bifrost_get_agent",
+            {"agent_id": self.agent_id},
+        )
+        tool_ref = next(
+            tool["tool_ref"] for tool in loaded["tools"] if tool["source"] == "workflow"
+        )
+        created = _mcp_request(
+            self.token,
+            "tools/call",
+            {
+                "name": "bifrost_execute_tool",
+                "arguments": {
+                    "agent_id": self.agent_id,
+                    "tool_ref": tool_ref,
+                    "arguments": {"message": "task-result"},
+                    "operation_id": f"task-{uuid.uuid4()}",
+                },
+            },
+            modern=True,
+            tasks=True,
+        )["result"]
+        assert created["resultType"] == "task"
+        assert created["taskId"].startswith("execution:")
+
+        task_id = created["taskId"]
+        deadline = time.monotonic() + 10
+        current = created
+        while current["status"] == "working" and time.monotonic() < deadline:
+            time.sleep(0.1)
+            current = _mcp_request(
+                self.token,
+                "tasks/get",
+                {"taskId": task_id},
+                modern=True,
+                tasks=True,
+            )["result"]
+        assert current["status"] == "completed", current
+        assert current["result"]["result"] == {"echo": "task-result"}
+
+        other_token = non_admin_user.access_token
+        assert other_token is not None
+        denied_headers = _mcp_headers(other_token)
+        denied_headers.update(
+            {
+                "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                "Mcp-Method": "tasks/get",
+                "Mcp-Name": task_id,
+            }
+        )
+        denied = requests.post(
+            f"{TEST_API_URL}/mcp",
+            headers=denied_headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tasks/get",
+                "params": {
+                    "taskId": task_id,
+                    "_meta": {
+                        PROTOCOL_VERSION_META_KEY: MODERN_PROTOCOL_VERSION,
+                        CLIENT_INFO_META_KEY: {"name": "gateway-e2e", "version": "1.0"},
+                        CLIENT_CAPABILITIES_META_KEY: {
+                            "extensions": {TASKS_EXTENSION_ID: {}}
+                        },
+                    },
+                },
+            },
+        )
+        assert denied.status_code == 400, denied.text
+        assert denied.json()["error"]["message"] == "Task not found"
+
+        cancellable = _mcp_request(
+            self.token,
+            "tools/call",
+            {
+                "name": "bifrost_execute_tool",
+                "arguments": {
+                    "agent_id": self.agent_id,
+                    "tool_ref": tool_ref,
+                    "arguments": {"message": "cancel-me"},
+                    "operation_id": f"cancel-{uuid.uuid4()}",
+                },
+            },
+            modern=True,
+            tasks=True,
+        )["result"]
+        cancelled = _mcp_request(
+            self.token,
+            "tasks/cancel",
+            {"taskId": cancellable["taskId"]},
+            modern=True,
+            tasks=True,
+        )["result"]
+        assert cancelled["resultType"] == "complete"
+
     def test_live_discovery_schema_execution_and_revocation(self):
         found = _call_gateway(
             self.token,
@@ -304,6 +475,7 @@ class TestMCPAgentGateway:
                 "agent_id": self.agent_id,
                 "tool_ref": tool_ref,
                 "arguments": {"message": 42},
+                "operation_id": f"invalid-{self.agent_id}",
             },
         )
         assert invalid["code"] == "INVALID_ARGUMENTS"
@@ -318,6 +490,7 @@ class TestMCPAgentGateway:
                 "agent_id": self.agent_id,
                 "tool_ref": system_tool["tool_ref"],
                 "arguments": {},
+                "operation_id": f"docs-{self.agent_id}",
             },
         )
         assert executed["agent_id"] == self.agent_id
@@ -352,6 +525,7 @@ class TestMCPAgentGateway:
                 "agent_id": self.agent_id,
                 "tool_ref": tool_ref,
                 "arguments": {"message": "must not run"},
+                "operation_id": f"revoked-{self.agent_id}",
             },
         )
         assert revoked["code"] == "TOOL_NOT_FOUND_OR_FORBIDDEN"

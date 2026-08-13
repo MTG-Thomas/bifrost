@@ -14558,7 +14558,6 @@ export interface components {
              *             - IN: {"category": {"in": ["a", "b"]}}
              *             - NULL: {"deleted_at": {"is_null": true}}
              *             - Has field: {"field": {"has_key": true}}
-             *
              */
             where?: {
                 [key: string]: unknown;
@@ -19181,6 +19180,16 @@ export interface components {
             description?: string | null;
         };
         /**
+         * MCPGatewayDurableHandle
+         * @description Canonical Bifrost lifecycle backing an MCP task.
+         */
+        MCPGatewayDurableHandle: {
+            /** Kind */
+            kind: string;
+            /** Id */
+            id: string;
+        };
+        /**
          * MCPGatewayExecuteRequest
          * @description Arguments passed to an agent-bound tool.
          */
@@ -19189,6 +19198,17 @@ export interface components {
             arguments?: {
                 [key: string]: unknown;
             };
+            /**
+             * Operation Id
+             * @description Stable caller-generated identity used to make retries of this agent/tool operation idempotent.
+             */
+            operation_id: string;
+            /**
+             * Task Requested
+             * @description Internal MCP Tasks adapter signal; legacy calls omit it.
+             * @default false
+             */
+            task_requested: boolean;
         };
         /**
          * MCPGatewayExecuteResponse
@@ -19209,6 +19229,7 @@ export interface components {
             duration_ms: number;
             /** Result */
             result: unknown;
+            durable_handle?: components["schemas"]["MCPGatewayDurableHandle"] | null;
         };
         /**
          * MCPGatewayFindAgentsResponse
@@ -26730,7 +26751,7 @@ export interface components {
              * Operation
              * @enum {string}
              */
-            operation: "write" | "delete";
+            operation: "write" | "delete" | "verify";
             /** Before Hash */
             before_hash?: string | null;
             /** After Hash */
@@ -26749,7 +26770,7 @@ export interface components {
              * Operation
              * @enum {string}
              */
-            operation: "write" | "delete";
+            operation: "write" | "delete" | "verify";
             /** Content Base64 */
             content_base64?: string | null;
             /** Expected Hash */
@@ -26768,7 +26789,7 @@ export interface components {
              * Operation
              * @enum {string}
              */
-            operation: "write" | "delete";
+            operation: "write" | "delete" | "verify";
             /** Content Base64 */
             content_base64?: string | null;
             /** Before Hash */

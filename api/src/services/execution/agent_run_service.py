@@ -4,6 +4,7 @@ import logging
 from uuid import uuid4
 
 import redis.asyncio as aioredis
+from sqlalchemy import text
 
 from src.core.cache.redis_client import get_redis
 from src.jobs.rabbitmq import publish_message
@@ -30,8 +31,76 @@ async def enqueue_agent_run(
     run_id: str | None = None,
 ) -> str:
     """Enqueue an agent run for worker processing. Returns run_id."""
+    queued_id, _reused = await enqueue_agent_run_once(
+        agent_id=agent_id,
+        trigger_type=trigger_type,
+        input_data=input_data,
+        trigger_source=trigger_source,
+        output_schema=output_schema,
+        org_id=org_id,
+        caller_user_id=caller_user_id,
+        caller_email=caller_email,
+        caller_name=caller_name,
+        event_delivery_id=event_delivery_id,
+        sync=sync,
+        run_id=run_id,
+    )
+    return queued_id
+
+
+async def enqueue_agent_run_once(
+    agent_id: str,
+    trigger_type: str,
+    input_data: dict | None = None,
+    *,
+    trigger_source: str | None = None,
+    output_schema: dict | None = None,
+    org_id: str | None = None,
+    caller_user_id: str | None = None,
+    caller_email: str | None = None,
+    caller_name: str | None = None,
+    event_delivery_id: str | None = None,
+    sync: bool = False,
+    run_id: str | None = None,
+) -> tuple[str, bool]:
+    """Atomically enqueue or reuse one canonical agent-run identity."""
+    from uuid import UUID
+
+    from src.core.database import get_db_context
+    from src.models.orm.agent_runs import AgentRun
+
     if run_id is None:
         run_id = str(uuid4())
+
+    async with get_db_context() as db:
+        await db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:agent-run:' || :run_id))"
+            ),
+            {"run_id": run_id},
+        )
+        if await db.get(AgentRun, UUID(run_id)) is not None:
+            return run_id, True
+        db.add(
+            AgentRun(
+                id=UUID(run_id),
+                agent_id=UUID(agent_id),
+                trigger_type=trigger_type,
+                trigger_source=trigger_source,
+                event_delivery_id=(
+                    UUID(event_delivery_id) if event_delivery_id else None
+                ),
+                input=input_data,
+                output_schema=output_schema,
+                status="queued",
+                org_id=UUID(org_id) if org_id else None,
+                caller_user_id=caller_user_id,
+                caller_email=caller_email,
+                caller_name=caller_name,
+            )
+        )
+        await db.commit()
 
     context = {
         "run_id": run_id,
@@ -67,7 +136,7 @@ async def enqueue_agent_run(
     await publish_message(QUEUE_NAME, message)
 
     logger.info(f"Enqueued agent run {run_id} for agent {agent_id} (trigger={trigger_type})")
-    return run_id
+    return run_id, False
 
 
 async def wait_for_agent_run_result(run_id: str, timeout: int = 1800) -> dict | None:

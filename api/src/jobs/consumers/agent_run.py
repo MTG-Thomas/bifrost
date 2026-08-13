@@ -60,16 +60,22 @@ class AgentRunConsumer(BaseConsumer):
         if context.get("cancelled"):
             logger.info(f"Agent run {run_id}: pre-cancelled, skipping execution")
             async with self._session_factory() as db:
-                agent_run = AgentRun(
-                    id=UUID(run_id),
-                    agent_id=UUID(agent_id),
-                    trigger_type=trigger_type,
-                    status="cancelled",
-                    org_id=UUID(context["org_id"]) if context.get("org_id") else None,
-                    started_at=datetime.now(timezone.utc),
-                    completed_at=datetime.now(timezone.utc),
-                )
-                db.add(agent_run)
+                agent_run = await db.get(AgentRun, UUID(run_id))
+                if agent_run is None:
+                    agent_run = AgentRun(
+                        id=UUID(run_id),
+                        agent_id=UUID(agent_id),
+                        trigger_type=trigger_type,
+                        org_id=(
+                            UUID(context["org_id"])
+                            if context.get("org_id")
+                            else None
+                        ),
+                    )
+                    db.add(agent_run)
+                agent_run.status = "cancelled"
+                agent_run.started_at = datetime.now(timezone.utc)
+                agent_run.completed_at = datetime.now(timezone.utc)
                 await db.commit()
             return
 
@@ -98,24 +104,44 @@ class AgentRunConsumer(BaseConsumer):
 
             # Create AgentRun record (brief DB session)
             async with self._session_factory() as db:
-                agent_run = AgentRun(
-                    id=UUID(run_id),
-                    agent_id=agent.id,
-                    trigger_type=trigger_type,
-                    trigger_source=context.get("trigger_source"),
-                    event_delivery_id=UUID(context["event_delivery_id"]) if context.get("event_delivery_id") else None,
-                    input=context.get("input"),
-                    output_schema=context.get("output_schema"),
-                    status="running",
-                    org_id=UUID(context["org_id"]) if context.get("org_id") else None,
-                    caller_user_id=context["caller"].get("user_id") if context.get("caller") else None,
-                    caller_email=context["caller"].get("email") if context.get("caller") else None,
-                    caller_name=context["caller"].get("name") if context.get("caller") else None,
-                    budget_max_iterations=agent.max_iterations,
-                    budget_max_tokens=agent.max_token_budget,
-                    started_at=datetime.now(timezone.utc),
+                agent_run = await db.get(AgentRun, UUID(run_id))
+                if agent_run is None:
+                    agent_run = AgentRun(
+                        id=UUID(run_id),
+                        agent_id=agent.id,
+                        trigger_type=trigger_type,
+                    )
+                    db.add(agent_run)
+                agent_run.trigger_source = context.get("trigger_source")
+                agent_run.event_delivery_id = (
+                    UUID(context["event_delivery_id"])
+                    if context.get("event_delivery_id")
+                    else None
                 )
-                db.add(agent_run)
+                agent_run.input = context.get("input")
+                agent_run.output_schema = context.get("output_schema")
+                agent_run.status = "running"
+                agent_run.org_id = (
+                    UUID(context["org_id"]) if context.get("org_id") else None
+                )
+                agent_run.caller_user_id = (
+                    context["caller"].get("user_id")
+                    if context.get("caller")
+                    else None
+                )
+                agent_run.caller_email = (
+                    context["caller"].get("email")
+                    if context.get("caller")
+                    else None
+                )
+                agent_run.caller_name = (
+                    context["caller"].get("name")
+                    if context.get("caller")
+                    else None
+                )
+                agent_run.budget_max_iterations = agent.max_iterations
+                agent_run.budget_max_tokens = agent.max_token_budget
+                agent_run.started_at = datetime.now(timezone.utc)
                 await db.commit()
 
             await publish_agent_run_update(agent_run, agent.name)
