@@ -1039,11 +1039,16 @@ class WorkspaceRepoChangesetService:
             if live_hash != reviewed_hash:
                 diagnostics.append(
                     {
-                        "severity": "error",
+                        "severity": (
+                            "warning"
+                            if live_hash is not None and history_hash == live_hash
+                            else "error"
+                        ),
                         "source": "live_vs_reviewed",
                         "path": path,
                         "live_sha256": live_hash,
                         "reviewed_sha256": reviewed_hash,
+                        "history_sha256": history_hash,
                     }
                 )
             if live_hash is None:
@@ -1145,7 +1150,9 @@ class WorkspaceRepoChangesetService:
         ).encode("utf-8")
         candidate_id = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
         response = WorkspaceRepoGitConvergenceResponse(
-            ready_to_apply=not diagnostics,
+            ready_to_apply=not any(
+                item.get("severity") == "error" for item in diagnostics
+            ),
             candidate_id=candidate_id,
             protected_main_source_sha=source_sha,
             protected_main_tree_sha=reviewed.tree_sha,
