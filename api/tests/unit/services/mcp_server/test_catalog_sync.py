@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,18 +11,8 @@ from src.services.mcp_server import catalog_sync
 
 
 class FakeRedis:
-    def __init__(self, revision: int = 0) -> None:
-        self.revision = revision
+    def __init__(self) -> None:
         self.published: list[tuple[str, str]] = []
-
-    async def get(self, key: str) -> str | None:
-        assert key == catalog_sync.WORKFLOW_CATALOG_REVISION_KEY
-        return str(self.revision) if self.revision else None
-
-    async def incr(self, key: str) -> int:
-        assert key == catalog_sync.WORKFLOW_CATALOG_REVISION_KEY
-        self.revision += 1
-        return self.revision
 
     async def publish(self, channel: str, payload: str) -> None:
         self.published.append((channel, payload))
@@ -36,11 +27,13 @@ def redis_context(redis: FakeRedis):
 
 
 @pytest.mark.asyncio
-async def test_publish_advances_durable_revision_before_broadcast(monkeypatch) -> None:
-    redis = FakeRedis(revision=4)
-    monkeypatch.setattr(catalog_sync, "get_redis", redis_context(redis))
+async def test_publish_only_broadcasts_committed_revision(monkeypatch) -> None:
+    from src.core.cache import redis_client
 
-    revision = await catalog_sync.publish_workflow_catalog_changed()
+    redis = FakeRedis()
+    monkeypatch.setattr(redis_client, "get_redis", redis_context(redis))
+
+    revision = await catalog_sync.publish_workflow_catalog_changed(5)
 
     assert revision == 5
     assert redis.published == [
@@ -52,6 +45,24 @@ async def test_publish_advances_durable_revision_before_broadcast(monkeypatch) -
             }),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_revision_reads_durable_database_singleton(monkeypatch) -> None:
+    from src.core import database
+
+    execute = AsyncMock(
+        return_value=SimpleNamespace(scalar_one=lambda: 9)
+    )
+
+    @asynccontextmanager
+    async def db_context():
+        yield SimpleNamespace(execute=execute)
+
+    monkeypatch.setattr(database, "get_db_context", db_context)
+
+    assert await catalog_sync.get_workflow_catalog_revision() == 9
+    execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio

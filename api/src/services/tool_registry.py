@@ -164,6 +164,74 @@ def workflow_parameters_to_json_schema(
     return result
 
 
+def workflow_json_schema_to_parameter_records(
+    parameters_schema: list[dict[str, Any]] | dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Project stored input schemas onto the legacy workflow parameter DTO.
+
+    Existing rows already store this list representation and pass through
+    unchanged. Newly indexed rows store complete JSON Schema objects; API/CLI
+    consumers retain their established list-shaped contract through this
+    deliberately lossy presentation adapter.
+    """
+    if not isinstance(parameters_schema, dict):
+        return deepcopy(parameters_schema or [])
+
+    properties = parameters_schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    required = set(parameters_schema.get("required") or [])
+    records: list[dict[str, Any]] = []
+
+    def primary_schema(schema: dict[str, Any]) -> dict[str, Any]:
+        variants = schema.get("anyOf")
+        if isinstance(variants, list):
+            for variant in variants:
+                if isinstance(variant, dict) and variant.get("type") != "null":
+                    return variant
+        return schema
+
+    type_map = {
+        "string": "string",
+        "integer": "int",
+        "number": "float",
+        "boolean": "bool",
+        "array": "list",
+        "object": "json",
+    }
+    for name, raw_schema in properties.items():
+        if not isinstance(name, str) or not isinstance(raw_schema, dict):
+            continue
+        resolved = primary_schema(raw_schema)
+        json_type = resolved.get("type")
+        if isinstance(json_type, list):
+            json_type = next(
+                (value for value in json_type if value != "null"),
+                None,
+            )
+        record: dict[str, Any] = {
+            "name": name,
+            "type": type_map.get(str(json_type), "json"),
+            "required": name in required,
+        }
+        title = raw_schema.get("title")
+        if isinstance(title, str):
+            record["label"] = title
+        description = raw_schema.get("description")
+        if isinstance(description, str):
+            record["description"] = description
+        if "default" in raw_schema:
+            record["default_value"] = deepcopy(raw_schema["default"])
+        enum = resolved.get("enum")
+        if isinstance(enum, list):
+            record["options"] = [
+                {"label": str(value), "value": str(value)}
+                for value in enum
+            ]
+        records.append(record)
+    return records
+
+
 class ToolRegistry:
     """
     Registry for AI agent tools.

@@ -77,37 +77,54 @@ def generate_workflow_openapi_schema(workflow: Workflow) -> dict[str, Any]:
     """
     path_schema: dict[str, Any] = {}
     allowed_methods = workflow.allowed_methods or ["POST"]
+    from copy import deepcopy
+
     parameters_schema = workflow.parameters_schema or []
-
-    # Build query parameters (used for all methods)
     query_params = []
-    for param in parameters_schema:
-        param_schema = _param_to_openapi_schema(param)
-        query_param = {
-            "name": param["name"],
-            "in": "query",
-            "required": param.get("required", False),
-            "schema": param_schema,
+
+    if isinstance(parameters_schema, dict):
+        input_schema = deepcopy(parameters_schema)
+        properties = input_schema.get("properties", {})
+        required_names = set(input_schema.get("required", []))
+        for name, property_schema in properties.items():
+            query_param = {
+                "name": name,
+                "in": "query",
+                "required": name in required_names,
+                "schema": deepcopy(property_schema),
+            }
+            description = property_schema.get("description") or property_schema.get(
+                "title"
+            )
+            if description:
+                query_param["description"] = description
+            query_params.append(query_param)
+        request_body_schema = input_schema
+    else:
+        request_body_schema = {
+            "type": "object",
+            "properties": {},
         }
-        # Add description from label if available
-        if param.get("label"):
-            query_param["description"] = param["label"]
-        query_params.append(query_param)
+        required_props = []
+        for param in parameters_schema:
+            param_schema = _param_to_openapi_schema(param)
+            query_param = {
+                "name": param["name"],
+                "in": "query",
+                "required": param.get("required", False),
+                "schema": param_schema,
+            }
+            if param.get("label"):
+                query_param["description"] = param["label"]
+            query_params.append(query_param)
+            request_body_schema["properties"][param["name"]] = deepcopy(
+                param_schema
+            )
+            if param.get("required", False):
+                required_props.append(param["name"])
 
-    # Build request body schema (for POST/PUT/PATCH)
-    request_body_schema = {
-        "type": "object",
-        "properties": {},
-    }
-    required_props = []
-    for param in parameters_schema:
-        param_schema = _param_to_openapi_schema(param)
-        request_body_schema["properties"][param["name"]] = param_schema
-        if param.get("required", False):
-            required_props.append(param["name"])
-
-    if required_props:
-        request_body_schema["required"] = required_props
+        if required_props:
+            request_body_schema["required"] = required_props
 
     # Create operation for each allowed method
     for method in allowed_methods:

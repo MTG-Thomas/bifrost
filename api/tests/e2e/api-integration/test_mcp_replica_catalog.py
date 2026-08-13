@@ -8,7 +8,13 @@ from typing import Any
 
 import pytest
 import requests
+from sqlalchemy import update
 
+from src.models.orm.mcp_catalog_revision import (
+    MCPCatalogRevision,
+    WORKFLOW_CATALOG_NAME,
+)
+from src.models.orm.workflows import Workflow
 from tests.fixtures.auth import create_test_jwt
 
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
@@ -117,7 +123,9 @@ def _wait_for_catalog(
         if predicate(names):
             return last_payload
         time.sleep(0.1)
-    pytest.fail(f"MCP catalog did not converge across replicas: {last_payload}")
+    raise AssertionError(
+        f"MCP catalog did not converge across replicas: {last_payload}"
+    )
 
 
 def _assert_private_zero_ttl(payload: dict[str, Any]) -> None:
@@ -127,8 +135,10 @@ def _assert_private_zero_ttl(payload: dict[str, Any]) -> None:
 
 
 @pytest.mark.e2e
-def test_workflow_catalog_is_replica_safe_and_fail_closed_for_caching(
+@pytest.mark.asyncio
+async def test_workflow_catalog_is_replica_safe_and_fail_closed_for_caching(
     platform_admin,
+    db_session,
 ):
     """Workflow mutations converge and list-to-call routing crosses replicas."""
     suffix = uuid.uuid4().hex[:8]
@@ -176,6 +186,10 @@ async def {function_name}(message: str) -> str:
         )
         assert register_response.status_code == 201, register_response.text
         workflow_id = register_response.json()["id"]
+        exposed_tool_name = f"{function_name}__{uuid.UUID(workflow_id).hex}"
+        renamed_exposed_tool_name = (
+            f"{renamed_tool_name}__{uuid.UUID(workflow_id).hex}"
+        )
 
         agent_response = requests.post(
             f"{TEST_API_URL}/api/agents",
@@ -199,14 +213,14 @@ async def {function_name}(message: str) -> str:
                 agent_id,
                 mcp_headers,
             ),
-            lambda names: function_name in names,
+            lambda names: exposed_tool_name in names,
         )
         _assert_private_zero_ttl(replica_list)
 
         # Discovery and execution deliberately hit different processes. The
         # tool name returned by A must be callable on B without session affinity.
         primary_list = _list_tools(TEST_API_URL, agent_id, mcp_headers)
-        assert function_name in {
+        assert exposed_tool_name in {
             tool["name"] for tool in primary_list["result"]["tools"]
         }
         assert primary_list["result"]["tools"] == replica_list["result"]["tools"]
@@ -217,7 +231,7 @@ async def {function_name}(message: str) -> str:
             agent_id,
             mcp_headers,
             "tools/call",
-            {"name": function_name, "arguments": {"message": "routed"}},
+            {"name": exposed_tool_name, "arguments": {"message": "routed"}},
             3,
         )
         call_result = call_payload["result"]
@@ -229,12 +243,20 @@ async def {function_name}(message: str) -> str:
         )
         assert "replica-ok:routed" in content_text
 
-        rename_response = requests.patch(
-            f"{TEST_API_URL}/api/workflows/{workflow_id}",
-            headers=admin_headers,
-            json={"name": renamed_tool_name},
+        # Simulate the mutating API process exiting after its DB commit but
+        # before Redis wake-up publication. The workflow change and durable
+        # revision commit together; no second mutation or pub/sub event occurs.
+        await db_session.execute(
+            update(Workflow)
+            .where(Workflow.id == uuid.UUID(workflow_id))
+            .values(name=renamed_tool_name)
         )
-        assert rename_response.status_code == 200, rename_response.text
+        await db_session.execute(
+            update(MCPCatalogRevision)
+            .where(MCPCatalogRevision.catalog == WORKFLOW_CATALOG_NAME)
+            .values(revision=MCPCatalogRevision.revision + 1)
+        )
+        await db_session.commit()
 
         renamed_list = _wait_for_catalog(
             lambda: _list_tools(
@@ -243,7 +265,8 @@ async def {function_name}(message: str) -> str:
                 mcp_headers,
             ),
             lambda names: (
-                renamed_tool_name in names and function_name not in names
+                renamed_exposed_tool_name in names
+                and exposed_tool_name not in names
             ),
         )
         _assert_private_zero_ttl(renamed_list)
@@ -262,7 +285,7 @@ async def {function_name}(message: str) -> str:
                 agent_id,
                 mcp_headers,
             ),
-            lambda names: renamed_tool_name not in names,
+            lambda names: renamed_exposed_tool_name not in names,
         )
         _assert_private_zero_ttl(removed_list)
     finally:

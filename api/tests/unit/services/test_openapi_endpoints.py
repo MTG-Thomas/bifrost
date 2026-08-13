@@ -344,6 +344,40 @@ class TestGenerateWorkflowOpenAPISchema:
 
         assert "description" not in schema["get"]["parameters"][0]
 
+    def test_complete_json_schema_is_preserved_for_indexed_workflows(self):
+        workflow = MagicMock()
+        workflow.name = "nested_workflow"
+        workflow.description = "Nested input"
+        workflow.allowed_methods = ["GET", "POST"]
+        workflow.parameters_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "enum": ["open", "closed"],
+                            "type": "string",
+                        },
+                    },
+                    "title": "Filters",
+                }
+            },
+            "additionalProperties": False,
+            "required": ["filters"],
+        }
+
+        schema = generate_workflow_openapi_schema(workflow)
+
+        body_schema = schema["post"]["requestBody"]["content"]["application/json"]["schema"]
+        assert body_schema == workflow.parameters_schema
+        assert schema["get"]["parameters"][0]["schema"] == workflow.parameters_schema[
+            "properties"
+        ]["filters"]
+        assert schema["get"]["parameters"][0]["required"] is True
+
 
 class TestGetEndpointEnabledWorkflows:
     """Tests for querying endpoint-enabled workflows from database."""

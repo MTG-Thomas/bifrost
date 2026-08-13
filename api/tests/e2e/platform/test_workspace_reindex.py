@@ -456,4 +456,4 @@ def documented_workflow(message: str, count: int = 5):
         assert pre_wf.is_active is True
         assert pre_wf.function_name == "documented_workflow"
         # Parameters should be extracted
-        assert len(pre_wf.parameters_schema) == 2
+        assert len(pre_wf.parameters_schema["properties"]) == 2

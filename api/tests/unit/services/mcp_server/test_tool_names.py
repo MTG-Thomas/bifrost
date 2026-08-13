@@ -181,12 +181,35 @@ class TestWorkflowCatalog:
 
         assert len(set(names_by_id.values())) == 3
         assert names_by_id[str(native_collision.id)] == (
-            f"execute_workflow_workflow__{native_collision.id.hex}"
+            f"execute_workflow__{native_collision.id.hex}"
         )
         assert names_by_id[str(normalized_collision.id)] == (
             f"execute_workflow_workflow__{normalized_collision.id.hex}"
         )
         assert names_by_id[str(empty_name.id)] == f"workflow__{empty_name.id.hex}"
+
+    def test_identity_does_not_change_when_hidden_collision_appears(self):
+        from src.services.mcp_server.server import _build_workflow_catalog
+
+        visible = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Private Sync",
+        )
+        hidden_other_tenant = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="private-sync",
+        )
+
+        before = _build_workflow_catalog([visible], frozenset())
+        after = _build_workflow_catalog(
+            [visible, hidden_other_tenant],
+            frozenset(),
+        )
+
+        assert before[0].name == f"private_sync__{visible.id.hex}"
+        assert next(
+            entry.name for entry in after if entry.workflow_id == str(visible.id)
+        ) == before[0].name
 
     def test_digest_covers_description_and_complete_nested_input_schema(self):
         from src.services.mcp_server.server import (
@@ -275,39 +298,59 @@ class TestToolNameMappings:
             server._WORKFLOW_ID_TO_TOOL_NAME.clear()
             server._WORKFLOW_ID_TO_TOOL_NAME.update(original_id_to_name)
 
-    @pytest.mark.asyncio
-    async def test_refresh_removes_stale_tool_through_local_provider(self, monkeypatch):
-        """Workflow refresh uses FastMCP's public provider API."""
+    def test_complete_replacement_matches_fresh_provider_order(self, monkeypatch):
+        """Warm and fresh providers expose the same canonical order."""
         from src.services.mcp_server import server
 
-        remove_tool = MagicMock()
-        mcp = SimpleNamespace(
-            local_provider=SimpleNamespace(remove_tool=remove_tool),
+        class WorkflowTool:
+            def __init__(self, **kwargs):
+                self.name = kwargs["name"]
+
+        class Provider:
+            def __init__(self):
+                self.tools = {}
+
+            def remove_tool(self, name):
+                del self.tools[name]
+
+        class MCP:
+            def __init__(self):
+                self.local_provider = Provider()
+
+            def add_tool(self, tool):
+                self.local_provider.tools[tool.name] = tool
+
+        first = _workflow_tool(
+            "11111111-1111-1111-1111-111111111111",
+            name="Alpha",
         )
-        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
-        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 0)
-        monkeypatch.setattr(
-            server,
-            "_WORKFLOW_ID_TO_TOOL_NAME",
-            {"stale-id": "stale_tool"},
+        second = _workflow_tool(
+            "22222222-2222-2222-2222-222222222222",
+            name="Zulu",
         )
-        from src.services.mcp_server import catalog_sync
-
-        monkeypatch.setattr(
-            catalog_sync,
-            "get_workflow_catalog_revision",
-            AsyncMock(return_value=1),
+        full_catalog = server._build_workflow_catalog(
+            [second, first],
+            frozenset(),
         )
+        monkeypatch.setattr(server, "_WorkflowTool", WorkflowTool)
 
-        async def register_workflow_tools(_mcp):
-            server._WORKFLOW_ID_TO_TOOL_NAME = {"current-id": "current_tool"}
-            return 1
+        warm = MCP()
+        initial = server._build_workflow_catalog([second], frozenset())
+        monkeypatch.setattr(server, "_WORKFLOW_ID_TO_TOOL_NAME", {})
+        initial_entries = server._replace_workflow_catalog(warm, initial)
+        server._WORKFLOW_ID_TO_TOOL_NAME = {
+            entry.workflow_id: entry.name for entry in initial_entries
+        }
+        warm_entries = server._replace_workflow_catalog(warm, full_catalog)
 
-        monkeypatch.setattr(server, "_register_workflow_tools", register_workflow_tools)
+        fresh = MCP()
+        server._WORKFLOW_ID_TO_TOOL_NAME = {}
+        fresh_entries = server._replace_workflow_catalog(fresh, full_catalog)
 
-        assert await server.refresh_workflow_tools(target_revision=1) == 1
-        remove_tool.assert_called_once_with("stale_tool")
-        assert server._WORKFLOW_CATALOG_REVISION == 1
+        assert [entry.name for entry in warm_entries] == [
+            entry.name for entry in fresh_entries
+        ]
+        assert list(warm.local_provider.tools) == list(fresh.local_provider.tools)
 
     @pytest.mark.asyncio
     async def test_refresh_retries_when_revision_moves_during_snapshot(

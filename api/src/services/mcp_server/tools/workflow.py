@@ -285,6 +285,10 @@ async def get_workflow(
             if not workflow:
                 return error_result(f"Workflow not found: {workflow_id or workflow_name}")
 
+            from src.services.tool_registry import (
+                workflow_json_schema_to_parameter_records,
+            )
+
             data = {
                 "id": str(workflow.id),
                 "name": workflow.name,
@@ -295,7 +299,9 @@ async def get_workflow(
                 "path": workflow.path,
                 "endpoint_enabled": workflow.endpoint_enabled,
                 "tool_description": workflow.tool_description if workflow.type == "tool" else None,
-                "parameters": workflow.parameters_schema,
+                "parameters": workflow_json_schema_to_parameter_records(
+                    workflow.parameters_schema
+                ),
             }
 
             desc = f" - {workflow.description}" if workflow.description else ""

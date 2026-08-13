@@ -6,8 +6,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from src.core.cache.redis_client import get_redis
 from src.core.pubsub import manager as pubsub_manager
+from src.models.orm.mcp_catalog_revision import WORKFLOW_CATALOG_NAME
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -15,20 +15,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 WORKFLOW_CATALOG_CHANNEL = "mcp:workflow-catalog"
-WORKFLOW_CATALOG_REVISION_KEY = "bifrost:mcp:workflow-catalog:revision"
-
-
 async def get_workflow_catalog_revision() -> int:
-    """Read the durable shared workflow-catalog revision."""
-    async with get_redis() as redis:
-        value = await redis.get(WORKFLOW_CATALOG_REVISION_KEY)
-    return int(value or 0)
+    """Read the transactionally durable shared workflow-catalog revision."""
+    from sqlalchemy import select
+
+    from src.core.database import get_db_context
+    from src.models.orm.mcp_catalog_revision import MCPCatalogRevision
+
+    async with get_db_context() as db:
+        result = await db.execute(
+            select(MCPCatalogRevision.revision).where(
+                MCPCatalogRevision.catalog == WORKFLOW_CATALOG_NAME
+            )
+        )
+        return int(result.scalar_one())
 
 
-async def publish_workflow_catalog_changed() -> int:
-    """Advance the shared revision and notify every subscribed API replica."""
+async def publish_workflow_catalog_changed(revision: int) -> int:
+    """Wake subscribed replicas for an already committed durable revision."""
+    from src.core.cache.redis_client import get_redis
+
     async with get_redis() as redis:
-        revision = int(await redis.incr(WORKFLOW_CATALOG_REVISION_KEY))
         await redis.publish(
             f"bifrost:{WORKFLOW_CATALOG_CHANNEL}",
             json.dumps({

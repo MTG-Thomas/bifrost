@@ -28,6 +28,17 @@ class SessionStub:
         self.new = list(new)
         self.dirty = list(dirty)
         self.deleted = list(deleted)
+        self.executed = []
+
+    def connection(self):
+        session = self
+
+        class Connection:
+            def execute(self, statement):
+                session.executed.append(statement)
+                return SimpleNamespace(scalar_one=lambda: 7)
+
+        return Connection()
 
 
 class ScalarRows:
@@ -127,6 +138,21 @@ def test_bulk_workflow_dml_marks_catalog_for_post_commit_publish() -> None:
     entity_change_hook._track_bulk_workflow_change(state)
 
     assert getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
+
+
+def test_before_flush_advances_revision_once_per_transaction() -> None:
+    from src.models.orm.workflows import Workflow
+
+    workflow = object.__new__(Workflow)
+    session = SessionStub(new=[workflow])
+
+    entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
+    entity_change_hook._before_flush_workflow_catalog_revision(session, None, None)
+
+    assert getattr(session, entity_change_hook._CATALOG_REVISION_ATTR) == 7
+    assert len(session.executed) == 1
 
 
 def test_after_commit_deduplicates_changes_and_schedules_publish_tasks() -> None:
@@ -190,6 +216,7 @@ def test_after_commit_schedules_one_catalog_revision_for_workflow_changes() -> N
             ("workflows", "workflow-2", "update"),
         ],
     )
+    setattr(session, entity_change_hook._CATALOG_REVISION_ATTR, 11)
     scheduled = []
     loop = SimpleNamespace(create_task=lambda task: scheduled.append(task))
 
@@ -208,6 +235,7 @@ def test_after_commit_schedules_one_catalog_revision_for_workflow_changes() -> N
 
     assert len(scheduled) == 3
     assert publish_catalog.call_count == 1
+    publish_catalog.assert_called_once_with(11)
     for task in scheduled:
         task.close()
 
@@ -215,6 +243,7 @@ def test_after_commit_schedules_one_catalog_revision_for_workflow_changes() -> N
 def test_after_commit_publishes_catalog_for_bulk_workflow_dml() -> None:
     session = SessionStub()
     setattr(session, entity_change_hook._CATALOG_PENDING_ATTR, True)
+    setattr(session, entity_change_hook._CATALOG_REVISION_ATTR, 12)
     scheduled = []
     loop = SimpleNamespace(create_task=lambda task: scheduled.append(task))
 
@@ -233,6 +262,7 @@ def test_after_commit_publishes_catalog_for_bulk_workflow_dml() -> None:
     assert not getattr(session, entity_change_hook._CATALOG_PENDING_ATTR)
     assert len(scheduled) == 1
     assert publish_catalog.call_count == 1
+    publish_catalog.assert_called_once_with(12)
     scheduled[0].close()
 
 
@@ -563,6 +593,7 @@ def test_register_entity_change_hooks_registers_session_listeners() -> None:
         entity_change_hook.register_entity_change_hooks()
 
     assert [call.args[1:] for call in listen.call_args_list] == [
+        ("before_flush", entity_change_hook._before_flush_workflow_catalog_revision),
         ("after_flush", entity_change_hook._after_flush),
         ("do_orm_execute", entity_change_hook._track_bulk_workflow_change),
         ("after_commit", entity_change_hook._after_commit),
