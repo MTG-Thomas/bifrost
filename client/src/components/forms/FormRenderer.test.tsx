@@ -23,8 +23,14 @@
  * - scheduled submit sends delay_seconds and navigates to /history with toast
  */
 
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderWithProviders, screen, waitFor, fireEvent } from "@/test-utils";
+import {
+	renderWithProviders,
+	screen,
+	waitFor,
+	fireEvent,
+} from "@/test-utils";
 import type { FormField } from "@/lib/client-types";
 
 // Mock the submit mutation. Each test can override mutateAsync/isPending.
@@ -106,9 +112,9 @@ vi.mock("@/components/forms/FormContextPanel", () => ({
 	FormContextPanel: () => <div />,
 }));
 
-// dataProviders: we don't exercise data providers in these tests.
+const mockGetFormFieldOptions = vi.hoisted(() => vi.fn());
 vi.mock("@/services/dataProviders", () => ({
-	getFormFieldOptions: vi.fn().mockResolvedValue([]),
+	getFormFieldOptions: mockGetFormFieldOptions,
 }));
 
 vi.mock("@/components/forms/FormCaptcha", () => ({
@@ -148,6 +154,8 @@ beforeEach(() => {
 	mockNavigate.mockReset();
 	mockToastSuccess.mockReset();
 	mockToastError.mockReset();
+	mockGetFormFieldOptions.mockReset();
+	mockGetFormFieldOptions.mockResolvedValue([]);
 	mockMutateAsync.mockResolvedValue({
 		execution_id: "exec-1",
 		status: "Pending",
@@ -320,6 +328,45 @@ describe("FormRenderer — conditional rendering", () => {
 });
 
 describe("FormRenderer — field types", () => {
+	it("keeps a dynamic combobox open when its parent rerenders", async () => {
+		const options = [{ value: "acme", label: "Acme Corporation" }];
+		mockGetFormFieldOptions.mockResolvedValue(options);
+
+		const form = makeForm([
+			{
+				name: "company",
+				label: "Company",
+				type: "select",
+				required: true,
+				has_dynamic_options: true,
+			},
+		]);
+		const { user, rerender } = renderWithProviders(
+			<StrictMode>
+				<FormRenderer form={form} />
+			</StrictMode>,
+		);
+
+		const combobox = await screen.findByRole("combobox", {
+			name: /company/i,
+		});
+		await user.click(combobox);
+		expect(await screen.findByText("Acme Corporation")).toBeVisible();
+
+		rerender(
+			<StrictMode>
+				<FormRenderer form={form} />
+			</StrictMode>,
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("combobox", { name: /company/i }),
+			).toHaveAttribute("aria-expanded", "true"),
+		);
+		expect(screen.getByText("Acme Corporation")).toBeVisible();
+	});
+
 	it("renders a markdown field's content", () => {
 		const form = makeForm([
 			{
