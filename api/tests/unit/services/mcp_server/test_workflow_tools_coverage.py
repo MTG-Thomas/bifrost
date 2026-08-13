@@ -137,7 +137,24 @@ class TestWorkflowListAndGet:
 
         db = AsyncMock()
         repo = MagicMock()
-        row = _workflow(type="tool", tool_description="Use this for triage")
+        nested_schema = {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    },
+                }
+            },
+            "required": ["filters"],
+        }
+        row = _workflow(
+            type="tool",
+            tool_description="Use this for triage",
+            parameters_schema=nested_schema,
+        )
         repo.get = AsyncMock(return_value=row)
 
         with (
@@ -148,7 +165,7 @@ class TestWorkflowListAndGet:
 
         assert result.structured_content["id"] == str(row.id)
         assert result.structured_content["tool_description"] == "Use this for triage"
-        assert result.structured_content["parameters"] == {"type": "object"}
+        assert result.structured_content["parameters"] == nested_schema
         assert "Workflow: Ticket triage" in _content_text(result)
 
         repo.get = AsyncMock(side_effect=ValueError("bad id"))

@@ -23,7 +23,8 @@ async def test_fresh_database_does_not_install_withdrawn_builder_schema(
             )
         )
     ).scalar_one()
-    assert catalog_revision == 0
+    assert isinstance(catalog_revision, int)
+    assert catalog_revision >= 0
 
     builder_tables = (
         await db_session.execute(

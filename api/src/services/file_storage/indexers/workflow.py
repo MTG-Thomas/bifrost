@@ -466,6 +466,7 @@ class WorkflowIndexer:
                 try:
                     property_schema["default"] = ast.literal_eval(default_node)
                 except (ValueError, TypeError):
+                    # Non-literal defaults cannot be represented by static JSON Schema.
                     pass
 
             properties[param_name] = property_schema
