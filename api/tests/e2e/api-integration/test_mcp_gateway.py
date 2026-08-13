@@ -122,7 +122,13 @@ class TestMCPAgentGateway:
             "from bifrost import tool\n\n"
             "@tool(description='Echo a message for the MCP gateway proof.')\n"
             f"async def {function_name}(message: str) -> dict:\n"
-            "    await asyncio.sleep(2 if message == 'cancel-me' else 0.4)\n"
+            "    if message == 'dropped-response':\n"
+            "        delay = 4\n"
+            "    elif message == 'cancel-me':\n"
+            "        delay = 2\n"
+            "    else:\n"
+            "        delay = 0.4\n"
+            "    await asyncio.sleep(delay)\n"
             "    return {'echo': message}\n"
         )
         write_response = requests.put(
@@ -163,6 +169,7 @@ class TestMCPAgentGateway:
         request.cls.agent_name = agent_name
         request.cls.prompt = prompt
         request.cls.function_name = function_name
+        request.cls.workflow_id = workflow_id
 
         yield
 
@@ -296,29 +303,71 @@ class TestMCPAgentGateway:
             tool["tool_ref"] for tool in loaded["tools"] if tool["source"] == "workflow"
         )
 
-        dropped_operation = f"dropped-{uuid.uuid4()}"
-        first = _call_gateway(
-            self.token,
-            "bifrost_execute_tool",
-            {
-                "agent_id": self.agent_id,
-                "tool_ref": tool_ref,
-                "arguments": {"message": "dropped"},
-                "operation_id": dropped_operation,
-            },
+        before = requests.get(
+            f"{TEST_API_URL}/api/executions",
+            headers=self.headers,
+            params={"workflowId": self.workflow_id, "limit": 1000},
         )
+        assert before.status_code == 200, before.text
+        before_ids = {
+            execution["execution_id"]
+            for execution in before.json()["executions"]
+        }
+
+        dropped_operation = f"dropped-{uuid.uuid4()}"
+        dropped_arguments = {
+            "agent_id": self.agent_id,
+            "tool_ref": tool_ref,
+            "arguments": {"message": "dropped-response"},
+            "operation_id": dropped_operation,
+        }
+        with pytest.raises(requests.exceptions.ReadTimeout):
+            requests.post(
+                f"{TEST_API_URL}/mcp",
+                headers=_mcp_headers(self.token),
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 77,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "bifrost_execute_tool",
+                        "arguments": dropped_arguments,
+                    },
+                },
+                timeout=2,
+            )
+
+        after_timeout = requests.get(
+            f"{TEST_API_URL}/api/executions",
+            headers=self.headers,
+            params={"workflowId": self.workflow_id, "limit": 1000},
+        )
+        assert after_timeout.status_code == 200, after_timeout.text
+        started_ids = {
+            execution["execution_id"]
+            for execution in after_timeout.json()["executions"]
+        } - before_ids
+        assert len(started_ids) == 1
+
         retry = _call_gateway(
             self.token,
             "bifrost_execute_tool",
-            {
-                "agent_id": self.agent_id,
-                "tool_ref": tool_ref,
-                "arguments": {"message": "dropped"},
-                "operation_id": dropped_operation,
-            },
+            dropped_arguments,
         )
-        assert retry["result"]["execution_id"] == first["result"]["execution_id"]
-        assert retry["result"]["result"] == {"echo": "dropped"}
+        assert {retry["result"]["execution_id"]} == started_ids
+        assert retry["result"]["result"] == {"echo": "dropped-response"}
+
+        after_retry = requests.get(
+            f"{TEST_API_URL}/api/executions",
+            headers=self.headers,
+            params={"workflowId": self.workflow_id, "limit": 1000},
+        )
+        assert after_retry.status_code == 200, after_retry.text
+        final_ids = {
+            execution["execution_id"]
+            for execution in after_retry.json()["executions"]
+        } - before_ids
+        assert final_ids == started_ids
 
         concurrent_operation = f"concurrent-{uuid.uuid4()}"
 
