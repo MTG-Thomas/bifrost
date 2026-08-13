@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -10,10 +11,17 @@ from src.services import operation_receipts as receipt_service
 from src.services.operation_receipts import (
     OperationReceiptDisposition,
     OperationReceiptOwnershipError,
+    bounded_replay_envelope,
+    canonical_operation_scope_key,
     canonical_request_fingerprint,
     claim_operation_receipt,
+    cleanup_expired_operation_receipt_payloads,
     complete_operation_receipt_error,
     complete_operation_receipt_success,
+    record_operation_receipt_handle,
+    read_operation_response_for_handle,
+    reconcile_operation_receipt_success,
+    resolve_ambiguous_operation_receipt,
 )
 
 
@@ -37,9 +45,10 @@ def use_null_pool_sessions(async_session_factory, monkeypatch: pytest.MonkeyPatc
 def _claim_kwargs() -> dict:
     return {
         "namespace": "test.operation.v1",
-        "scope_key": str(uuid4()),
-        "operation_id": "caller-operation",
-        "scope": {"caller": str(uuid4())},
+        "scope_key": canonical_operation_scope_key({
+            "caller": str(uuid4()),
+            "operation_id": "caller-operation",
+        }),
         "request_fingerprint": canonical_request_fingerprint(
             {"arguments": {"value": 1}, "task_requested": False}
         ),
@@ -59,6 +68,17 @@ def test_canonical_request_fingerprint_ignores_mapping_order() -> None:
 
     assert first == second
     assert first != task_mode
+
+
+def test_replay_envelope_redacts_and_bounds_sensitive_values() -> None:
+    payload = bounded_replay_envelope({
+        "token": "secret-value",
+        "nested": {"password": "also-secret", "safe": "x" * 5000},
+    })
+
+    assert payload["token"] == "[REDACTED]"
+    assert payload["nested"]["password"] == "[REDACTED]"
+    assert payload["nested"]["safe"].endswith("[TRUNCATED]")
 
 
 @pytest.mark.asyncio
@@ -154,3 +174,99 @@ async def test_terminal_write_is_fenced_to_original_owner() -> None:
         owner.owner_token,
         {"result": "original owner"},
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_reconciles_started_without_redispatch() -> None:
+    kwargs = _claim_kwargs()
+    owner = await claim_operation_receipt(**kwargs)
+    assert owner.owner_token is not None
+    handle = {"kind": "execution", "id": str(uuid4())}
+    await record_operation_receipt_handle(owner.receipt_id, owner.owner_token, handle)
+
+    retry = await claim_operation_receipt(**kwargs)
+    assert retry.disposition == OperationReceiptDisposition.STARTED
+    assert retry.durable_handle == handle
+
+    response = {"result": {"ok": True}, "durable_handle": handle}
+    assert await reconcile_operation_receipt_success(owner.receipt_id, handle, response)
+    replay = await claim_operation_receipt(**kwargs)
+    assert replay.disposition == OperationReceiptDisposition.SUCCEEDED
+    assert replay.response == response
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expires_payload_but_preserves_tombstone(
+    async_session_factory,
+) -> None:
+    from src.models.orm.operation_receipts import OperationReceipt
+
+    kwargs = _claim_kwargs()
+    owner = await claim_operation_receipt(**kwargs)
+    assert owner.owner_token is not None
+    handle = {"kind": "execution", "id": str(uuid4())}
+    await record_operation_receipt_handle(owner.receipt_id, owner.owner_token, handle)
+    await complete_operation_receipt_success(
+        owner.receipt_id,
+        owner.owner_token,
+        {"result": {"ok": True}, "durable_handle": handle},
+    )
+
+    async with async_session_factory() as db:
+        row = await db.get(OperationReceipt, owner.receipt_id)
+        assert row is not None
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await db.commit()
+
+    assert await cleanup_expired_operation_receipt_payloads() == 1
+    expired = await claim_operation_receipt(**kwargs)
+    assert expired.disposition == OperationReceiptDisposition.EXPIRED
+    assert expired.response is None
+    assert expired.durable_handle is None
+
+
+@pytest.mark.asyncio
+async def test_expiry_is_enforced_before_cleanup(
+    async_session_factory,
+) -> None:
+    from src.models.orm.operation_receipts import OperationReceipt
+
+    kwargs = _claim_kwargs()
+    owner = await claim_operation_receipt(**kwargs)
+    assert owner.owner_token is not None
+    handle = {"kind": "execution", "id": str(uuid4())}
+    response = {"tool_name": "Workflow", "durable_handle": handle}
+    await complete_operation_receipt_success(
+        owner.receipt_id,
+        owner.owner_token,
+        response,
+    )
+    async with async_session_factory() as db:
+        row = await db.get(OperationReceipt, owner.receipt_id)
+        assert row is not None
+        row.expires_at = datetime.now(timezone.utc) - timedelta(microseconds=1)
+        await db.commit()
+
+    expired = await claim_operation_receipt(**kwargs)
+    assert expired.disposition == OperationReceiptDisposition.EXPIRED
+    assert await read_operation_response_for_handle(handle) is None
+
+    async with async_session_factory() as db:
+        row = await db.get(OperationReceipt, owner.receipt_id)
+        assert row is not None
+        assert row.response == response
+        assert row.payload_cleared_at is None
+
+
+@pytest.mark.asyncio
+async def test_operator_resolution_fails_closed(async_session_factory) -> None:
+    kwargs = _claim_kwargs()
+    owner = await claim_operation_receipt(**kwargs)
+    async with async_session_factory() as db:
+        assert await resolve_ambiguous_operation_receipt(owner.receipt_id, db)
+        await db.commit()
+
+    retry = await claim_operation_receipt(**kwargs)
+    assert retry.disposition == OperationReceiptDisposition.FAILED
+    assert retry.error is not None
+    assert retry.error["code"] == "OPERATION_OUTCOME_RESOLVED_UNKNOWN"

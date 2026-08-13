@@ -1,4 +1,4 @@
-"""Durable, request-scoped idempotency receipts."""
+"""Durable, privacy-bounded request idempotency receipts."""
 
 from datetime import datetime, timezone
 from typing import Any
@@ -12,7 +12,7 @@ from src.models.orm.base import Base
 
 
 class OperationReceipt(Base):
-    """One permanent receipt for an at-most-once operation."""
+    """One permanent hashed tombstone with a short-lived replay payload."""
 
     __tablename__ = "operation_receipts"
 
@@ -20,9 +20,7 @@ class OperationReceipt(Base):
         PG_UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     namespace: Mapped[str] = mapped_column(String(100), nullable=False)
-    scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    operation_id: Mapped[str] = mapped_column(String(200), nullable=False)
-    scope: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(64), nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default="started"
@@ -32,6 +30,7 @@ class OperationReceipt(Base):
     )
     response: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    durable_handle: Mapped[dict[str, str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -39,6 +38,10 @@ class OperationReceipt(Base):
         server_default=text("NOW()"),
     )
     completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload_cleared_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -55,11 +58,13 @@ class OperationReceipt(Base):
         ),
         CheckConstraint(
             "(status = 'started' AND response IS NULL AND error IS NULL "
-            "AND completed_at IS NULL) OR "
-            "(status = 'succeeded' AND response IS NOT NULL AND error IS NULL "
-            "AND completed_at IS NOT NULL) OR "
-            "(status = 'failed' AND response IS NULL AND error IS NOT NULL "
-            "AND completed_at IS NOT NULL)",
+            "AND completed_at IS NULL AND payload_cleared_at IS NULL) OR "
+            "(status = 'succeeded' AND error IS NULL AND completed_at IS NOT NULL "
+            "AND ((response IS NOT NULL AND payload_cleared_at IS NULL) OR "
+            "(response IS NULL AND payload_cleared_at IS NOT NULL))) OR "
+            "(status = 'failed' AND response IS NULL AND completed_at IS NOT NULL "
+            "AND ((error IS NOT NULL AND payload_cleared_at IS NULL) OR "
+            "(error IS NULL AND payload_cleared_at IS NOT NULL)))",
             name="ck_operation_receipts_terminal_payload",
         ),
     )

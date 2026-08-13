@@ -36,10 +36,15 @@ from src.services.mcp_server.config_service import MCPConfig, MCPConfigService
 from src.services.operation_receipts import (
     OperationReceiptClaim,
     OperationReceiptDisposition,
+    bounded_replay_envelope,
+    canonical_operation_scope_key,
     canonical_request_fingerprint,
     claim_operation_receipt,
     complete_operation_receipt_error,
     complete_operation_receipt_success,
+    record_operation_receipt_handle,
+    reconcile_operation_receipt_error,
+    reconcile_operation_receipt_success,
     wait_for_operation_receipt,
 )
 
@@ -293,11 +298,14 @@ class MCPAgentGatewayService:
         """Re-resolve and execute one permanently idempotent tool operation."""
         snapshot = await self.get_agent_snapshot(agent_id)
         tool = self.find_tool(snapshot, tool_ref)
-        scope_key = self._operation_execution_id(
-            snapshot.agent,
-            tool,
-            operation_id,
-        )
+        scope_key = canonical_operation_scope_key({
+            "version": 1,
+            "caller_user_id": str(self.context.user_id),
+            "organization_id": str(self.context.org_id or "GLOBAL"),
+            "agent_id": str(snapshot.agent.id),
+            "tool_ref": tool.tool_ref,
+            "operation_id": operation_id,
+        })
         request_fingerprint = canonical_request_fingerprint(
             {
                 "version": 1,
@@ -310,14 +318,6 @@ class MCPAgentGatewayService:
         claim = await claim_operation_receipt(
             namespace=GATEWAY_OPERATION_RECEIPT_NAMESPACE,
             scope_key=scope_key,
-            operation_id=operation_id,
-            scope={
-                "caller_user_id": str(self.context.user_id),
-                "organization_id": str(self.context.org_id or "GLOBAL"),
-                "agent_id": str(snapshot.agent.id),
-                "tool_ref": tool.tool_ref,
-                "source": tool.source,
-            },
             request_fingerprint=request_fingerprint,
         )
         if claim.disposition == OperationReceiptDisposition.STARTED:
@@ -325,10 +325,12 @@ class MCPAgentGatewayService:
                 claim.receipt_id,
                 request_fingerprint=request_fingerprint,
             )
-        replay = self._replay_operation_receipt(
+        replay = await self._replay_operation_receipt(
             claim,
             snapshot=snapshot,
             tool=tool,
+            operation_id=operation_id,
+            task_requested=task_requested,
         )
         if replay is not None:
             return replay
@@ -344,17 +346,26 @@ class MCPAgentGatewayService:
                 task_requested=task_requested,
             )
         except GatewayError as exc:
+            stored_error = bounded_replay_envelope({
+                "code": exc.code,
+                "message": exc.message,
+                "retryable": exc.retryable,
+                "details": exc.details,
+            })
             await complete_operation_receipt_error(
                 claim.receipt_id,
                 claim.owner_token,
-                {
-                    "code": exc.code,
-                    "message": exc.message,
-                    "retryable": exc.retryable,
-                    "details": exc.details,
-                },
+                stored_error,
             )
-            raise
+            raise self._gateway_error_from_receipt(stored_error) from exc
+        result = bounded_replay_envelope(result)
+        durable_handle = result.get("durable_handle")
+        if isinstance(durable_handle, dict):
+            await record_operation_receipt_handle(
+                claim.receipt_id,
+                claim.owner_token,
+                durable_handle,
+            )
         await complete_operation_receipt_success(
             claim.receipt_id,
             claim.owner_token,
@@ -362,12 +373,14 @@ class MCPAgentGatewayService:
         )
         return result
 
-    @staticmethod
-    def _replay_operation_receipt(
+    async def _replay_operation_receipt(
+        self,
         claim: OperationReceiptClaim,
         *,
         snapshot: AgentToolSnapshot,
         tool: ResolvedGatewayTool,
+        operation_id: str,
+        task_requested: bool,
     ) -> dict[str, Any] | None:
         """Return or raise a non-owner receipt disposition."""
         details = {
@@ -385,19 +398,31 @@ class MCPAgentGatewayService:
         if claim.disposition == OperationReceiptDisposition.FAILED:
             if claim.error is None:
                 raise RuntimeError("Failed operation receipt has no error")
-            stored_details = claim.error.get("details")
-            raise GatewayError(
-                str(claim.error.get("code") or "TOOL_EXECUTION_FAILED"),
-                str(claim.error.get("message") or "Tool execution failed."),
-                retryable=bool(claim.error.get("retryable", False)),
-                details=stored_details if isinstance(stored_details, dict) else details,
-            )
+            raise self._gateway_error_from_receipt(claim.error, fallback_details=details)
         if claim.disposition == OperationReceiptDisposition.MISMATCH:
             raise GatewayError(
                 "OPERATION_ID_REUSED",
                 "This operation_id was already used with different arguments or mode.",
                 details=details,
             )
+        if claim.disposition == OperationReceiptDisposition.EXPIRED:
+            raise GatewayError(
+                "OPERATION_RESULT_EXPIRED",
+                (
+                    "This operation was already handled, but its bounded replay "
+                    "payload has expired. It will not be dispatched again."
+                ),
+                details={**details, "receipt_id": str(claim.receipt_id)},
+            )
+        recovered = await self._recover_started_receipt(
+            claim,
+            snapshot=snapshot,
+            tool=tool,
+            operation_id=operation_id,
+            task_requested=task_requested,
+        )
+        if recovered is not None:
+            return recovered
         raise GatewayError(
             "OPERATION_IN_PROGRESS_OR_UNKNOWN",
             (
@@ -406,8 +431,156 @@ class MCPAgentGatewayService:
                 "read a terminal result if one becomes available."
             ),
             retryable=True,
-            details=details,
+            details={**details, "receipt_id": str(claim.receipt_id)},
         )
+
+    @staticmethod
+    def _gateway_error_from_receipt(
+        error: dict[str, Any],
+        *,
+        fallback_details: dict[str, Any] | None = None,
+    ) -> GatewayError:
+        stored_details = error.get("details")
+        return GatewayError(
+            str(error.get("code") or "TOOL_EXECUTION_FAILED"),
+            str(error.get("message") or "Tool execution failed."),
+            retryable=bool(error.get("retryable", False)),
+            details=(
+                stored_details
+                if isinstance(stored_details, dict)
+                else (fallback_details or {})
+            ),
+        )
+
+    def _gateway_response(
+        self,
+        snapshot: AgentToolSnapshot,
+        tool: ResolvedGatewayTool,
+        result: Any,
+        *,
+        duration_ms: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "agent_id": str(snapshot.agent.id),
+            "agent_name": snapshot.agent.name,
+            "tool_ref": tool.tool_ref,
+            "tool_name": tool.definition.name,
+            "source": tool.source,
+            "duration_ms": duration_ms,
+            "result": result,
+            "durable_handle": self._durable_handle(tool, result),
+        }
+
+    async def _recover_started_receipt(
+        self,
+        claim: OperationReceiptClaim,
+        *,
+        snapshot: AgentToolSnapshot,
+        tool: ResolvedGatewayTool,
+        operation_id: str,
+        task_requested: bool,
+    ) -> dict[str, Any] | None:
+        """Reconcile a fenced retry from an authorized canonical lifecycle."""
+        from src.services.mcp_server.tools._http_bridge import call_rest
+
+        handle = claim.durable_handle
+        if handle is None and tool.source == "workflow":
+            handle = {
+                "kind": "execution",
+                "id": self._operation_execution_id(snapshot.agent, tool, operation_id),
+            }
+        elif handle is None and tool.source == "delegation" and task_requested:
+            handle = {
+                "kind": "agent-run",
+                "id": self._operation_execution_id(snapshot.agent, tool, operation_id),
+            }
+        if handle is None:
+            return None
+
+        kind = handle.get("kind")
+        durable_id = handle.get("id")
+        path = {
+            "platform-job": f"/api/platform-jobs/{durable_id}",
+            "execution": f"/api/executions/{durable_id}",
+            "agent-run": f"/api/agent-runs/{durable_id}",
+        }.get(str(kind))
+        if path is None or not durable_id:
+            return None
+        status_code, body = await call_rest(self.context, "GET", path)
+        if status_code != 200 or not isinstance(body, dict):
+            return None
+
+        raw_status = str(body.get("status") or "")
+        normalized_status = raw_status.lower()
+        if task_requested:
+            if kind == "execution":
+                recovered_result: dict[str, Any] = {
+                    "execution_id": str(durable_id),
+                    "status": raw_status,
+                    "duration_ms": body.get("duration_ms"),
+                    "result": body.get("result"),
+                    "error": body.get("error_message"),
+                    "error_type": None,
+                }
+            elif kind == "agent-run":
+                recovered_result = {
+                    "run_id": str(durable_id),
+                    "status": raw_status or "queued",
+                    "reused": True,
+                }
+            else:
+                recovered_result = {
+                    "content": [],
+                    "structured_content": {
+                        "job_id": str(durable_id),
+                        "status": raw_status,
+                    },
+                }
+            response = bounded_replay_envelope(
+                self._gateway_response(snapshot, tool, recovered_result)
+            )
+            await reconcile_operation_receipt_success(
+                claim.receipt_id,
+                handle,
+                response,
+            )
+            return response
+
+        if kind != "execution" or normalized_status in {
+            "scheduled",
+            "pending",
+            "running",
+            "cancelling",
+        }:
+            return None
+
+        execution_result = {
+            "execution_id": str(durable_id),
+            "status": raw_status,
+            "duration_ms": body.get("duration_ms"),
+            "result": body.get("result"),
+            "error": body.get("error_message"),
+            "error_type": None,
+        }
+        if normalized_status == "success":
+            response = bounded_replay_envelope(
+                self._gateway_response(snapshot, tool, execution_result)
+            )
+            await reconcile_operation_receipt_success(
+                claim.receipt_id,
+                handle,
+                response,
+            )
+            return response
+
+        error = bounded_replay_envelope({
+            "code": "TOOL_EXECUTION_FAILED",
+            "message": body.get("error_message") or "Workflow execution failed.",
+            "retryable": False,
+            "details": {"underlying_result": execution_result},
+        })
+        await reconcile_operation_receipt_error(claim.receipt_id, handle, error)
+        raise self._gateway_error_from_receipt(error)
 
     def _resolve_gateway_tools(
         self,

@@ -439,7 +439,20 @@ class TestMCPAgentGateway:
                 tasks=True,
             )["result"]
         assert current["status"] == "completed", current
-        assert current["result"]["result"] == {"echo": "task-result"}
+        # MCP Tasks draft: a completed tools/call task returns the original
+        # CallToolResult shape, not a Bifrost-specific nested result object.
+        call_result = current["result"]
+        assert set(call_result) == {
+            "content",
+            "structuredContent",
+            "isError",
+            "resultType",
+        }
+        assert call_result["content"][0]["type"] == "text"
+        assert call_result["structuredContent"]["result"]["result"] == {
+            "echo": "task-result"
+        }
+        assert call_result["isError"] is False
 
         other_token = create_test_jwt(
             user_id=str(non_admin_user.user_id),
@@ -457,6 +470,16 @@ class TestMCPAgentGateway:
             expect_error=True,
         )
         assert denied["error"]["message"] == "Task not found"
+
+        admin_resolution = requests.post(
+            f"{TEST_API_URL}/api/mcp/operation-receipts/{uuid.uuid4()}/resolve",
+            headers=non_admin_user.headers,
+            json={
+                "resolution": "failed_unknown",
+                "reason": "Attempted non-admin resolution",
+            },
+        )
+        assert admin_resolution.status_code == 403
 
         cancellable = _mcp_request(
             self.token,

@@ -29,6 +29,7 @@ _TASK_METHOD_VERSIONS = frozenset(MODERN_PROTOCOL_VERSIONS)
 _STOCK_RESULT_SURFACE: Any = object()
 _original_result_serializer: Any = None
 _serializer_holds = 0
+TASK_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 TaskStatus = Literal["working", "completed", "failed", "cancelled"]
 TaskKind = Literal["platform-job", "execution", "agent-run"]
@@ -58,13 +59,21 @@ class TaskFields(BaseModel):
     )
 
 
+class JSONRPCError(BaseModel):
+    """Protocol-level task failure; domain failures stay CallToolResult values."""
+
+    code: int
+    message: str
+    data: Any | None = None
+
+
 class TaskResult(TaskFields):
     result_type: Literal["complete"] = Field(
         default="complete",
         serialization_alias="resultType",
     )
     result: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
+    error: JSONRPCError | None = None
 
 
 class CreateTaskResult(TaskFields):
@@ -118,49 +127,101 @@ def _task_status(kind: TaskKind, body: dict[str, Any]) -> TaskStatus:
     if kind == "execution":
         return cast(TaskStatus, {
             "success": "completed",
-            "failed": "failed",
-            "timeout": "failed",
-            "stuck": "failed",
-            "completedwitherrors": "failed",
+            "failed": "completed",
+            "timeout": "completed",
+            "stuck": "completed",
+            "completedwitherrors": "completed",
             "cancelled": "cancelled",
         }.get(raw, "working"))
     if kind == "agent-run":
         return cast(TaskStatus, {
             "completed": "completed",
-            "failed": "failed",
-            "timeout": "failed",
-            "budget_exceeded": "failed",
-            "paused": "failed",
+            "failed": "completed",
+            "timeout": "completed",
+            "budget_exceeded": "completed",
+            "paused": "completed",
             "cancelled": "cancelled",
         }.get(raw, "working"))
     return cast(TaskStatus, {
         "succeeded": "completed",
-        "failed": "failed",
+        "failed": "completed",
         "cancelled": "cancelled",
     }.get(raw, "working"))
 
 
-def _task_result_payload(kind: TaskKind, body: dict[str, Any]) -> dict[str, Any] | None:
-    if kind == "platform-job":
-        return body.get("result")
-    if kind == "execution":
-        return {
-            "execution_id": body.get("execution_id"),
-            "result": body.get("result"),
-            "result_type": body.get("result_type"),
-        }
-    return {
-        "run_id": body.get("id"),
-        "output": body.get("output"),
+def _domain_failure(kind: TaskKind, body: dict[str, Any]) -> bool:
+    raw = str(body.get("status", "")).lower()
+    return raw in {
+        "failed",
+        "timeout",
+        "stuck",
+        "completedwitherrors",
+        "budget_exceeded",
+        "paused",
     }
 
 
-def _task_error(kind: TaskKind, body: dict[str, Any]) -> dict[str, Any] | None:
+def _task_structured_payload(kind: TaskKind, body: dict[str, Any]) -> dict[str, Any]:
     if kind == "platform-job":
-        value = body.get("error")
-        return value if isinstance(value, dict) else None
-    value = body.get("error_message") if kind == "execution" else body.get("error")
-    return {"message": str(value)} if value else None
+        return {
+            "job_id": body.get("id"),
+            "status": body.get("status"),
+            "result": body.get("result"),
+            "error": body.get("error"),
+            "durable_handle": {"kind": kind, "id": str(body.get("id"))},
+        }
+    if kind == "execution":
+        return {
+            "execution_id": body.get("execution_id"),
+            "status": body.get("status"),
+            "result": body.get("result"),
+            "result_type": body.get("result_type"),
+            "error": body.get("error_message"),
+            "duration_ms": body.get("duration_ms"),
+            "durable_handle": {
+                "kind": kind,
+                "id": str(body.get("execution_id")),
+            },
+        }
+    return {
+        "run_id": body.get("id"),
+        "status": body.get("status"),
+        "output": body.get("output"),
+        "error": body.get("error"),
+        "duration_ms": body.get("duration_ms"),
+        "durable_handle": {"kind": kind, "id": str(body.get("id"))},
+    }
+
+
+async def _task_result_payload(kind: TaskKind, body: dict[str, Any]) -> dict[str, Any]:
+    """Return the original tools/call result type required by MCP Tasks."""
+    lifecycle_result = _task_structured_payload(kind, body)
+    durable_id = (
+        lifecycle_result.get("execution_id")
+        or lifecycle_result.get("run_id")
+        or lifecycle_result.get("job_id")
+    )
+    from src.services.operation_receipts import read_operation_response_for_handle
+
+    original = await read_operation_response_for_handle({
+        "kind": kind,
+        "id": str(durable_id),
+    })
+    structured = dict(original) if isinstance(original, dict) else {}
+    structured["result"] = lifecycle_result
+    structured["durable_handle"] = {"kind": kind, "id": str(durable_id)}
+    is_error = _domain_failure(kind, body)
+    if not structured.get("tool_name") or not structured.get("agent_name"):
+        # The receipt metadata is part of the original tools/call result. If it
+        # has expired, do not invent a subtly different result shape.
+        raise MCPError(code=INVALID_PARAMS, message="Task result has expired")
+
+    from src.services.mcp_server.tool_result import tool_result_wire_payload
+    from src.services.mcp_server.tools.gateway import gateway_execute_result
+
+    return tool_result_wire_payload(
+        gateway_execute_result(structured, is_error=is_error)
+    )
 
 
 def _serialize_task_result(
@@ -232,10 +293,14 @@ async def get_task_result(task_id: str) -> TaskResult:
         status=status,
         created_at=created_at,
         last_updated_at=updated_at,
-        ttl_ms=None,
+        ttl_ms=TASK_TTL_MS,
         status_message=str(message) if message else None,
-        result=_task_result_payload(kind, body) if status == "completed" else None,
-        error=_task_error(kind, body) if status == "failed" else None,
+        result=(
+            await _task_result_payload(kind, body)
+            if status == "completed"
+            else None
+        ),
+        error=None,
     )
 
 
@@ -336,6 +401,6 @@ class BifrostTasksExtension(ServerExtension):
             status=current.status,
             created_at=current.created_at,
             last_updated_at=current.last_updated_at,
-            ttl_ms=None,
+            ttl_ms=TASK_TTL_MS,
             status_message=current.status_message,
         )

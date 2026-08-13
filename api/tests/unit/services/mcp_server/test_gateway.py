@@ -1,4 +1,5 @@
 """Unit tests for the unscoped MCP agent gateway."""
+import json
 
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -297,6 +298,7 @@ def _receipt_claim(
     *,
     response: dict | None = None,
     error: dict | None = None,
+    durable_handle: dict[str, str] | None = None,
 ) -> OperationReceiptClaim:
     return OperationReceiptClaim(
         receipt_id=uuid4(),
@@ -306,6 +308,7 @@ def _receipt_claim(
         ),
         response=response,
         error=error,
+        durable_handle=durable_handle,
     )
 
 
@@ -342,6 +345,7 @@ async def test_operation_receipt_replays_every_gateway_source_once(
     owner = _receipt_claim(OperationReceiptDisposition.OWNER)
     claim = AsyncMock(return_value=owner)
     complete = AsyncMock()
+    record_handle = AsyncMock()
     dispatch = AsyncMock(return_value=dispatch_result)
 
     with (
@@ -358,6 +362,10 @@ async def test_operation_receipt_replays_every_gateway_source_once(
         patch(
             "src.services.mcp_server.gateway.complete_operation_receipt_success",
             new=complete,
+        ),
+        patch(
+            "src.services.mcp_server.gateway.record_operation_receipt_handle",
+            new=record_handle,
         ),
     ):
         first = await service.execute_agent_tool(
@@ -487,6 +495,11 @@ async def test_non_owner_receipts_reject_without_dispatch(
             "src.services.mcp_server.gateway.wait_for_operation_receipt",
             new=AsyncMock(return_value=claim),
         ),
+        patch.object(
+            service,
+            "_recover_started_receipt",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         with pytest.raises(GatewayError) as exc_info:
             await service.execute_agent_tool(
@@ -498,6 +511,175 @@ async def test_non_owner_receipts_reject_without_dispatch(
 
     assert exc_info.value.code == expected_code
     dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_receipt_write_failure_recovers_from_durable_handle() -> None:
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    tool = _resolved_tool()
+    snapshot = AgentToolSnapshot(agent=agent, tools=[tool])
+    durable_id = str(uuid4())
+    handle = {"kind": "execution", "id": durable_id}
+    owner = _receipt_claim(OperationReceiptDisposition.OWNER)
+    started = _receipt_claim(
+        OperationReceiptDisposition.STARTED,
+        durable_handle=handle,
+    )
+    execute_result = {
+        "agent_id": str(agent.id),
+        "agent_name": agent.name,
+        "tool_ref": tool.tool_ref,
+        "tool_name": tool.definition.name,
+        "source": "workflow",
+        "duration_ms": 1,
+        "result": {"execution_id": durable_id, "status": "Pending"},
+        "durable_handle": handle,
+    }
+
+    with (
+        patch.object(
+            service,
+            "get_agent_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ),
+        patch.object(
+            service,
+            "execute_tool",
+            new=AsyncMock(return_value=execute_result),
+        ) as execute,
+        patch(
+            "src.services.mcp_server.gateway.claim_operation_receipt",
+            new=AsyncMock(side_effect=[owner, started]),
+        ),
+        patch(
+            "src.services.mcp_server.gateway.wait_for_operation_receipt",
+            new=AsyncMock(return_value=started),
+        ),
+        patch(
+            "src.services.mcp_server.gateway.record_operation_receipt_handle",
+            new=AsyncMock(),
+        ) as record,
+        patch(
+            "src.services.mcp_server.gateway.complete_operation_receipt_success",
+            new=AsyncMock(side_effect=RuntimeError("terminal receipt write lost")),
+        ),
+        patch(
+            "src.services.mcp_server.tools._http_bridge.call_rest",
+            new=AsyncMock(return_value=(200, {
+                "execution_id": durable_id,
+                "status": "Pending",
+                "created_at": "2026-08-13T00:00:00+00:00",
+            })),
+        ),
+        patch(
+            "src.services.mcp_server.gateway.reconcile_operation_receipt_success",
+            new=AsyncMock(return_value=True),
+        ) as reconcile,
+    ):
+        with pytest.raises(RuntimeError, match="terminal receipt write lost"):
+            await service.execute_agent_tool(
+                str(agent.id),
+                tool.tool_ref,
+                {"ticket_id": 42},
+                operation_id="recoverable-operation",
+                task_requested=True,
+            )
+        recovered = await service.execute_agent_tool(
+            str(agent.id),
+            tool.tool_ref,
+            {"ticket_id": 42},
+            operation_id="recoverable-operation",
+            task_requested=True,
+        )
+
+    execute.assert_awaited_once()
+    record.assert_awaited_once()
+    reconcile.assert_awaited_once()
+    assert recovered["durable_handle"] == handle
+
+
+@pytest.mark.asyncio
+async def test_oversized_first_response_exactly_matches_bounded_replay() -> None:
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    tool = _resolved_tool()
+    snapshot = AgentToolSnapshot(agent=agent, tools=[tool])
+    claim = AsyncMock(return_value=_receipt_claim(OperationReceiptDisposition.OWNER))
+    complete = AsyncMock()
+    dispatch = AsyncMock(
+        return_value={"payload": ["x" * 5_000 for _ in range(100)], "token": "secret"}
+    )
+
+    with (
+        patch.object(service, "get_agent_snapshot", new=AsyncMock(return_value=snapshot)),
+        patch.object(service, "_dispatch", new=dispatch),
+        patch("src.services.mcp_server.gateway.claim_operation_receipt", new=claim),
+        patch(
+            "src.services.mcp_server.gateway.complete_operation_receipt_success",
+            new=complete,
+        ),
+        patch(
+            "src.services.mcp_server.gateway.record_operation_receipt_handle",
+            new=AsyncMock(),
+        ),
+    ):
+        first = await service.execute_agent_tool(
+            str(agent.id),
+            tool.tool_ref,
+            {"ticket_id": 42},
+            operation_id="large-operation",
+        )
+        stored = complete.await_args.args[2]
+        claim.return_value = _receipt_claim(
+            OperationReceiptDisposition.SUCCEEDED,
+            response=stored,
+        )
+        replay = await service.execute_agent_tool(
+            str(agent.id),
+            tool.tool_ref,
+            {"ticket_id": 42},
+            operation_id="large-operation",
+        )
+
+    assert first == stored == replay
+    assert len(json.dumps(first).encode("utf-8")) <= 64 * 1024
+    assert first["_receipt_payload_truncated"] is True
+    dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_expired_tombstone_refuses_redispatch() -> None:
+    service = MCPAgentGatewayService(_context())
+    agent = _agent()
+    tool = _resolved_tool()
+    snapshot = AgentToolSnapshot(agent=agent, tools=[tool])
+    expired = _receipt_claim(OperationReceiptDisposition.EXPIRED)
+
+    with (
+        patch.object(service, "get_agent_snapshot", new=AsyncMock(return_value=snapshot)),
+        patch.object(service, "_dispatch", new_callable=AsyncMock) as dispatch,
+        patch(
+            "src.services.mcp_server.gateway.claim_operation_receipt",
+            new=AsyncMock(return_value=expired),
+        ),
+        patch.object(
+            service,
+            "_recover_started_receipt",
+            new=AsyncMock(),
+        ) as recover,
+    ):
+        with pytest.raises(GatewayError) as exc_info:
+            await service.execute_agent_tool(
+                str(agent.id),
+                tool.tool_ref,
+                {"ticket_id": 42},
+                operation_id="expired-operation",
+            )
+
+    assert exc_info.value.code == "OPERATION_RESULT_EXPIRED"
+    dispatch.assert_not_awaited()
+    recover.assert_not_awaited()
 
 
 @pytest.mark.asyncio

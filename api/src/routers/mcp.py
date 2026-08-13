@@ -23,13 +23,15 @@ Usage:
         -d '{"jsonrpc":"2.0","id":1,"method":"initialize",...}'
 """
 
+import hashlib
 import logging
 from typing import NoReturn
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from starlette.middleware.cors import CORSMiddleware
 
-from src.core.auth import CurrentActiveUser
+from src.core.auth import CurrentActiveUser, CurrentSuperuser
 from src.core.db_deps import DbSession
 from src.models.contracts.mcp import (
     MCPConfigRequest,
@@ -39,6 +41,8 @@ from src.models.contracts.mcp import (
     MCPGatewayExecuteResponse,
     MCPGatewayFindAgentsResponse,
     MCPGatewayToolSchemaResponse,
+    MCPOperationReceiptResolutionRequest,
+    MCPOperationReceiptResolutionResponse,
     MCPToolInfo,
     MCPToolsResponse,
 )
@@ -97,6 +101,7 @@ def _raise_gateway_http_error(exc: Exception) -> NoReturn:
         "TASKS_UNSUPPORTED": status.HTTP_409_CONFLICT,
         "OPERATION_ID_REUSED": status.HTTP_409_CONFLICT,
         "OPERATION_IN_PROGRESS_OR_UNKNOWN": status.HTTP_409_CONFLICT,
+        "OPERATION_RESULT_EXPIRED": status.HTTP_409_CONFLICT,
     }.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR)
     raise HTTPException(status_code=status_code, detail=exc.as_dict()) from exc
 
@@ -180,6 +185,56 @@ async def execute_gateway_tool(
         )
     except Exception as exc:
         _raise_gateway_http_error(exc)
+
+
+@router.post(
+    "/operation-receipts/{receipt_id}/resolve",
+    response_model=MCPOperationReceiptResolutionResponse,
+    summary="Resolve an ambiguous MCP operation receipt",
+)
+async def resolve_gateway_operation_receipt(
+    receipt_id: UUID,
+    request: MCPOperationReceiptResolutionRequest,
+    current_user: CurrentSuperuser,
+    db: DbSession,
+) -> MCPOperationReceiptResolutionResponse:
+    """Fail-close one STARTED tombstone after platform-admin investigation.
+
+    This never redispatches the effect. The operator reason is represented in
+    audit history by a one-way fingerprint so the audit row cannot become a
+    second store for incident details or customer data.
+    """
+    from src.services.audit import emit_audit
+    from src.services.operation_receipts import resolve_ambiguous_operation_receipt
+
+    try:
+        resolved = await resolve_ambiguous_operation_receipt(receipt_id, db)
+        if not resolved:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Receipt is not an ambiguous STARTED operation",
+            )
+        await emit_audit(
+            db,
+            "mcp.operation_receipt.resolve",
+            resource_type="operation_receipt",
+            resource_id=receipt_id,
+            details={
+                "resolution": request.resolution,
+                "reason_sha256": hashlib.sha256(
+                    request.reason.encode("utf-8")
+                ).hexdigest(),
+            },
+            strict=True,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return MCPOperationReceiptResolutionResponse(
+        receipt_id=receipt_id,
+        status="failed",
+    )
 
 
 # =============================================================================

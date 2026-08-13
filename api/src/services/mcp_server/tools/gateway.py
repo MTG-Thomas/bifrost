@@ -31,6 +31,25 @@ def _rest_error(action: str, status_code: int, body: Any) -> ToolResult:
     return error_result(message, payload)
 
 
+def gateway_execute_result(
+    data: dict[str, Any],
+    *,
+    is_error: bool = False,
+) -> ToolResult:
+    """Build the one canonical bifrost_execute_tool CallToolResult."""
+    result = success_result(
+        f"Executed '{data['tool_name']}' through '{data['agent_name']}'.",
+        data,
+    )
+    if not is_error:
+        return result
+    return ToolResult(
+        content=result.content,
+        structured_content=result.structured_content,
+        is_error=True,
+    )
+
+
 async def bifrost_find_agents(
     context: Any,
     query: str | None = None,
@@ -101,10 +120,7 @@ async def bifrost_execute_tool(
     )
     if status_code != 200 or not isinstance(data, dict):
         return _rest_error("Tool execution", status_code, data)
-    return success_result(
-        f"Executed '{data['tool_name']}' through '{data['agent_name']}'.",
-        data,
-    )
+    return gateway_execute_result(data)
 
 
 TOOLS = [

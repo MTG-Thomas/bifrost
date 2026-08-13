@@ -5,6 +5,8 @@ import pytest
 from mcp.shared.exceptions import MCPError
 
 from src.services.mcp_server import tasks
+from src.services.mcp_server.tool_result import tool_result_wire_payload
+from src.services.mcp_server.tools.gateway import gateway_execute_result
 
 
 @pytest.mark.asyncio
@@ -22,6 +24,17 @@ async def test_get_task_reads_canonical_requester_authorized_execution_route():
     with (
         patch.object(tasks, "_runtime_context", return_value=runtime_context),
         patch.object(tasks, "call_rest", new=AsyncMock(return_value=(200, body))) as call,
+        patch(
+            "src.services.operation_receipts.read_operation_response_for_handle",
+            new=AsyncMock(return_value={
+                "agent_id": "agent-1",
+                "agent_name": "Agent",
+                "tool_ref": "tool-1",
+                "tool_name": "Workflow",
+                "source": "workflow",
+                "duration_ms": 0,
+            }),
+        ),
     ):
         result = await tasks.get_task_result("execution:exec-1")
 
@@ -32,10 +45,78 @@ async def test_get_task_reads_canonical_requester_authorized_execution_route():
     )
     assert result.status == "completed"
     assert result.created_at == "2026-08-12T12:00:00+00:00"
-    assert result.result == {
-        "execution_id": "exec-1",
-        "result": {"changed": True},
-        "result_type": "json",
+    assert result.result is not None
+    expected_gateway_data = {
+        "agent_id": "agent-1",
+        "agent_name": "Agent",
+        "tool_ref": "tool-1",
+        "tool_name": "Workflow",
+        "source": "workflow",
+        "duration_ms": 0,
+        "result": {
+            "execution_id": "exec-1",
+            "status": "Success",
+            "result": {"changed": True},
+            "result_type": "json",
+            "error": None,
+            "duration_ms": None,
+            "durable_handle": {"kind": "execution", "id": "exec-1"},
+        },
+        "durable_handle": {"kind": "execution", "id": "exec-1"},
+    }
+    assert result.result == tool_result_wire_payload(
+        gateway_execute_result(expected_gateway_data)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["execution", "agent-run", "platform-job"])
+async def test_domain_failure_completes_with_call_tool_error_result(kind: str):
+    durable_id = "failed-1"
+    body = {
+        "id": durable_id,
+        "execution_id": durable_id,
+        "status": "Failed" if kind == "execution" else "failed",
+        "created_at": "2026-08-12T12:00:00+00:00",
+        "completed_at": "2026-08-12T12:00:01+00:00",
+        "error_message": "workflow failed",
+        "error": {"code": "DOMAIN_FAILED", "message": "domain failed"},
+    }
+    with (
+        patch.object(tasks, "_runtime_context", return_value=object()),
+        patch.object(tasks, "call_rest", new=AsyncMock(return_value=(200, body))),
+        patch(
+            "src.services.operation_receipts.read_operation_response_for_handle",
+            new=AsyncMock(return_value={"tool_name": "Tool", "agent_name": "Agent"}),
+        ),
+    ):
+        result = await tasks.get_task_result(f"{kind}:{durable_id}")
+
+    assert result.status == "completed"
+    assert result.error is None
+    assert result.result is not None
+    assert result.result["isError"] is True
+    assert set(result.result) == {
+        "content",
+        "structuredContent",
+        "isError",
+        "resultType",
+    }
+
+
+def test_protocol_failure_error_requires_json_rpc_shape():
+    result = tasks.TaskResult(
+        task_id="execution:exec-1",
+        status="failed",
+        created_at="2026-08-12T12:00:00+00:00",
+        last_updated_at="2026-08-12T12:00:00+00:00",
+        ttl_ms=None,
+        error={"code": -32603, "message": "Protocol failure"},
+    )
+
+    assert result.model_dump(by_alias=True, exclude_none=True)["error"] == {
+        "code": -32603,
+        "message": "Protocol failure",
     }
 
 
@@ -95,6 +176,7 @@ async def test_task_interceptor_returns_durable_handle_without_starting_a_worker
         "status": "working",
         "createdAt": "2026-08-12T12:00:00+00:00",
         "lastUpdatedAt": "2026-08-12T12:00:00+00:00",
+        "ttlMs": 604800000.0,
         "pollIntervalMs": 1000,
         "resultType": "task",
     }

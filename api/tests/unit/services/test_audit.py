@@ -76,6 +76,15 @@ class TestEmitAudit:
         db.add.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_strict_audit_requires_actor(self):
+        with pytest.raises(RuntimeError, match="requires an actor context"):
+            await emit_audit(
+                MagicMock(),
+                "mcp.operation_receipt.resolve",
+                strict=True,
+            )
+
+    @pytest.mark.asyncio
     async def test_writes_when_actor_present(self, monkeypatch):
         """With an actor context, emit_audit writes via the repository."""
         created = {}
@@ -147,6 +156,23 @@ class TestEmitAudit:
 
         # Should NOT raise.
         await emit_audit(_session_mock(), "user.create")
+
+    @pytest.mark.asyncio
+    async def test_strict_audit_propagates_repository_errors(self, monkeypatch):
+        mock_repo = MagicMock()
+        mock_repo.create = AsyncMock(side_effect=RuntimeError("db exploded"))
+        monkeypatch.setattr(
+            "src.services.audit.AuditLogRepository",
+            lambda session: mock_repo,
+        )
+        set_actor(ActorContext(user_id=uuid4(), organization_id=None))
+
+        with pytest.raises(RuntimeError, match="db exploded"):
+            await emit_audit(
+                _session_mock(),
+                "mcp.operation_receipt.resolve",
+                strict=True,
+            )
 
     @pytest.mark.asyncio
     async def test_actor_override_wins(self, monkeypatch):

@@ -5,7 +5,8 @@ Pydantic models for MCP configuration API requests and responses.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -160,3 +161,15 @@ class MCPGatewayExecuteResponse(BaseModel):
     duration_ms: int
     result: Any
     durable_handle: MCPGatewayDurableHandle | None = None
+
+
+class MCPOperationReceiptResolutionRequest(BaseModel):
+    """Explicit fail-closed resolution for an ambiguous at-most-once effect."""
+
+    resolution: Literal["failed_unknown"]
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class MCPOperationReceiptResolutionResponse(BaseModel):
+    receipt_id: UUID
+    status: Literal["failed"]
