@@ -80,12 +80,13 @@ test.describe("Apps Replace", () => {
 		await page.getByRole("button", { name: /^replace$/i }).click();
 
 		// Validation phase: either "No issues found" (clean app) or an Errors/Warnings
-		// panel. Either way, we should see the post-replace footer.
+		// panel. Either way, the unique Open app action proves the post-replace
+		// footer is ready without colliding with the dialog's Close icon.
+		const replaceDialog = page.getByRole("dialog", {
+			name: /replace app path/i,
+		});
 		await expect(
-			page.getByRole("button", { name: "Close", exact: true }),
+			replaceDialog.getByRole("button", { name: /^open app$/i }),
 		).toBeVisible({ timeout: 15000 });
-		await expect(
-			page.getByRole("button", { name: /open app/i }),
-		).toBeVisible();
 	});
 });
