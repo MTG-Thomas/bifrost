@@ -33,23 +33,25 @@ Unknown parameters are ignored with a warning for backwards compatibility.
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeVar
+
+if TYPE_CHECKING:
+    from .workspace_effects import WorkflowBoundsInput, WorkflowEffectInput
+else:
+    WorkflowEffectInput: TypeAlias = Any
+    WorkflowBoundsInput: TypeAlias = Any
 
 try:
     from shared.workspace_effects import (
         WorkflowBounds,
-        WorkflowBoundsInput,
         WorkflowEffect,
-        WorkflowEffectInput,
         normalize_workflow_bounds,
         normalize_workflow_effects,
     )
 except ImportError:
     from .workspace_effects import (
         WorkflowBounds,
-        WorkflowBoundsInput,
         WorkflowEffect,
-        WorkflowEffectInput,
         normalize_workflow_bounds,
         normalize_workflow_effects,
     )

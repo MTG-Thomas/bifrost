@@ -6,8 +6,8 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any, Callable
 from uuid import UUID
 
-from src.config import Settings, get_settings
-from src.services.solutions.deployment_storage import DeploymentArtifactIntegrityError
+from src.config import Settings
+from src.services.solutions.deployment_storage import CreateOnlyArtifactStorage
 
 PROMOTION_ARTIFACTS_ROOT = "_workspace_promotion_artifacts"
 
@@ -21,7 +21,7 @@ def _candidate_digest(candidate_id: str) -> str:
     return digest
 
 
-class WorkspacePromotionArtifactStorage:
+class WorkspacePromotionArtifactStorage(CreateOnlyArtifactStorage):
     """Write an immutable source archive and manifest exactly once."""
 
     def __init__(
@@ -33,25 +33,7 @@ class WorkspacePromotionArtifactStorage:
     ):
         digest = _candidate_digest(candidate_id)
         self.prefix = f"{PROMOTION_ARTIFACTS_ROOT}/{organization_id}/{digest}"
-        self.settings = settings or get_settings()
-        if client_factory is None:
-            if self.settings.object_storage_provider == "azure_blob":
-                from src.services.file_storage.azure_blob_client import (
-                    AzureBlobStorageClient,
-                )
-
-                storage = AzureBlobStorageClient(self.settings)
-            else:
-                from src.services.file_storage.s3_client import S3StorageClient
-
-                storage = S3StorageClient(self.settings)
-            client_factory = storage.get_client
-        self._client_factory = client_factory
-        self._bucket = (
-            self.settings.azure_blob_container
-            if self.settings.object_storage_provider == "azure_blob"
-            else self.settings.s3_bucket
-        ) or ""
+        super().__init__(settings=settings, client_factory=client_factory)
 
     @property
     def source_artifact_key(self) -> str:
@@ -62,45 +44,13 @@ class WorkspacePromotionArtifactStorage:
         return f"{self.prefix}/manifest.json"
 
     async def write_source(self, content: bytes) -> str:
-        await self._create(self.source_artifact_key, content, "application/zip")
+        await self._create(
+            self.source_artifact_key, content, "application/zip", idempotent=True
+        )
         return self.source_artifact_key
 
     async def write_manifest(self, content: bytes) -> str:
-        await self._create(self.manifest_key, content, "application/json")
-        return self.manifest_key
-
-    async def _create(self, key: str, content: bytes, content_type: str) -> None:
-        async with self._client_factory() as client:
-            try:
-                await client.put_object(
-                    Bucket=self._bucket,
-                    Key=key,
-                    Body=content,
-                    ContentType=content_type,
-                    IfNoneMatch="*",
-                )
-            except Exception as exc:  # noqa: BLE001 - storage backends differ
-                if self._is_already_exists(exc):
-                    response = await client.get_object(Bucket=self._bucket, Key=key)
-                    existing = await response["Body"].read()
-                    if existing == content:
-                        return
-                    raise DeploymentArtifactIntegrityError(
-                        f"Workspace promotion object has different bytes: {key}"
-                    ) from exc
-                raise
-
-    @staticmethod
-    def _is_already_exists(exc: Exception) -> bool:
-        return type(exc).__name__ in {
-            "PreconditionFailed",
-            "ResourceExistsError",
-        } or (
-            isinstance(getattr(exc, "response", None), dict)
-            and (
-                exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-                in {409, 412}
-                or exc.response.get("Error", {}).get("Code")
-                in {"PreconditionFailed", "BlobAlreadyExists"}
-            )
+        await self._create(
+            self.manifest_key, content, "application/json", idempotent=True
         )
+        return self.manifest_key
