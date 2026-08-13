@@ -1,6 +1,7 @@
 """Delivery outcome tests for the workflow execution consumer."""
 
 import sys
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -31,6 +32,9 @@ def make_consumer() -> WorkflowExecutionConsumer:
         consumer = WorkflowExecutionConsumer()
 
     consumer._redis_client = AsyncMock()
+    consumer._claim_durable_execution = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    consumer._release_durable_execution_claim = AsyncMock()  # type: ignore[method-assign]
+    consumer._fail_missing_pending_execution = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return consumer
 
 
@@ -122,7 +126,7 @@ async def test_process_message_treats_existing_execution_without_pending_context
     consumer = make_consumer()
     execution_id = str(uuid4())
     consumer._redis_client.get_pending_execution.return_value = None
-    consumer._get_existing_execution_status = AsyncMock(return_value="Success")  # type: ignore[attr-defined]
+    consumer._fail_missing_pending_execution = AsyncMock(return_value="Success")  # type: ignore[method-assign]
 
     with patch(
         "src.services.execution.queue_tracker.remove_from_queue",
@@ -132,7 +136,7 @@ async def test_process_message_treats_existing_execution_without_pending_context
             await consumer.process_message({"execution_id": execution_id})
 
     remove_from_queue.assert_awaited_once_with(execution_id)
-    consumer._get_existing_execution_status.assert_awaited_once_with(execution_id)  # type: ignore[attr-defined]
+    consumer._fail_missing_pending_execution.assert_awaited_once_with(execution_id)  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -141,7 +145,7 @@ async def test_process_message_retries_missing_pending_context() -> None:
     execution_id = str(uuid4())
     consumer._redis_client.get_pending_execution.return_value = None
     consumer._redis_client.push_result = AsyncMock()
-    consumer._get_existing_execution_status = AsyncMock(return_value=None)  # type: ignore[attr-defined]
+    consumer._fail_missing_pending_execution = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     with patch(
         "src.services.execution.queue_tracker.remove_from_queue",
@@ -151,6 +155,93 @@ async def test_process_message_retries_missing_pending_context() -> None:
             await consumer.process_message({"execution_id": execution_id, "sync": True})
 
     consumer._redis_client.push_result.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected_status", "failed"),
+    [
+        ("Scheduled", "Scheduled", False),
+        ("Pending", "Failed", True),
+        ("Running", "Running", False),
+        ("Success", "Success", False),
+    ],
+)
+async def test_missing_context_failure_is_locked_and_state_aware(
+    status: str,
+    expected_status: str,
+    failed: bool,
+) -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    del consumer._fail_missing_pending_execution
+    row = SimpleNamespace(
+        status=ExecutionStatus(status),
+        error_message=None,
+        completed_at=None,
+    )
+    db = AsyncMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    with patch("src.core.database.get_db_context", side_effect=db_context):
+        result = await consumer._fail_missing_pending_execution(str(uuid4()))
+
+    assert result == expected_status
+    assert "bifrost:workflow-execution:" in str(db.execute.await_args.args[0])
+    if failed:
+        assert row.status == ExecutionStatus.FAILED
+        assert row.error_message == "Execution context was unavailable before execution"
+        assert row.completed_at is not None
+        db.commit.assert_awaited_once()
+    else:
+        db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "claimable"),
+    [
+        ("Scheduled", False),
+        ("Pending", True),
+        ("Running", False),
+        ("Success", False),
+    ],
+)
+async def test_durable_execution_claim_serializes_with_publisher(
+    status: str,
+    claimable: bool,
+) -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    del consumer._claim_durable_execution
+    row = SimpleNamespace(status=ExecutionStatus(status))
+    db = AsyncMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    execution_id = str(uuid4())
+    with patch(
+        "src.core.database.get_db_context",
+        side_effect=db_context,
+    ):
+        result = await consumer._claim_durable_execution(execution_id)
+
+    assert result is claimable
+    assert "bifrost:workflow-execution:" in str(db.execute.await_args.args[0])
+    if claimable:
+        assert row.status == ExecutionStatus.RUNNING
+        db.commit.assert_awaited_once()
+    else:
+        db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -284,12 +375,50 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
             )
 
     consumer._redis_client.delete_pending_execution.assert_not_called()
+    consumer._release_durable_execution_claim.assert_awaited_once_with(execution_id)  # type: ignore[attr-defined]
     create_execution.assert_awaited_once()
     update_execution.assert_not_awaited()
     consumer._pool.route_execution.assert_awaited_once()
     publish_execution_update.assert_awaited_once()
     assert publish_execution_update.await_args is not None
     assert publish_execution_update.await_args.args[:2] == (execution_id, "Running")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "released"),
+    [
+        ("Running", True),
+        ("Cancelling", False),
+        ("Cancelled", False),
+        ("Success", False),
+    ],
+)
+async def test_release_execution_claim_preserves_concurrent_terminal_state(
+    status: str,
+    released: bool,
+) -> None:
+    from src.models.enums import ExecutionStatus
+
+    consumer = make_consumer()
+    del consumer._release_durable_execution_claim
+    row = SimpleNamespace(status=ExecutionStatus(status))
+    db = AsyncMock()
+    db.get.return_value = row
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    with patch("src.core.database.get_db_context", side_effect=db_context):
+        await consumer._release_durable_execution_claim(str(uuid4()))
+
+    if released:
+        assert row.status == ExecutionStatus.PENDING
+        db.commit.assert_awaited_once()
+    else:
+        assert row.status == ExecutionStatus(status)
+        db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -342,6 +471,8 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
 
 @pytest.mark.asyncio
 async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() -> None:
+    from src.models.enums import ExecutionStatus
+
     consumer = make_consumer()
     execution_id = str(uuid4())
     session = _Session()
@@ -359,7 +490,11 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch(
+            "src.repositories.executions.update_execution",
+            new_callable=AsyncMock,
+            return_value=ExecutionStatus.SUCCESS,
+        ) as update_execution,
         patch("src.services.events.processor.update_delivery_from_execution", new_callable=AsyncMock) as update_delivery,
         patch("bifrost._sync.flush_pending_changes", new_callable=AsyncMock, return_value=2) as flush_changes,
         patch("bifrost._logging.flush_logs_to_postgres", new_callable=AsyncMock, return_value=3) as flush_logs,
@@ -423,6 +558,8 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
 
 @pytest.mark.asyncio
 async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -> None:
+    from src.models.enums import ExecutionStatus
+
     consumer = make_consumer()
     execution_id = str(uuid4())
     session = _Session()
@@ -448,7 +585,11 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch(
+            "src.repositories.executions.update_execution",
+            new_callable=AsyncMock,
+            return_value=ExecutionStatus.CANCELLED,
+        ) as update_execution,
         patch("src.services.events.processor.update_delivery_from_execution", new_callable=AsyncMock) as update_delivery,
         patch("bifrost._sync.flush_pending_changes", new_callable=AsyncMock, return_value=0),
         patch("bifrost._logging.flush_logs_to_postgres", new_callable=AsyncMock, return_value=0),

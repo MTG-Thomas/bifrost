@@ -3381,6 +3381,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspace-repo-changesets/git-convergence/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Workspace Repo Git Convergence */
+        post: operations["preview_workspace_repo_git_convergence_api_workspace_repo_changesets_git_convergence_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-repo-changesets/git-convergence/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Workspace Repo Git Convergence */
+        post: operations["apply_workspace_repo_git_convergence_api_workspace_repo_changesets_git_convergence_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspace-repo-changesets/{changeset_id}": {
         parameters: {
             query?: never;
@@ -7267,6 +7301,30 @@ export interface paths {
          * @description Re-resolve, validate, and execute an agent-bound tool.
          */
         post: operations["execute_gateway_tool_api_mcp_gateway_agents__agent_id__tools__tool_ref__execute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/operation-receipts/{receipt_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve an ambiguous MCP operation receipt
+         * @description Fail-close one STARTED tombstone after platform-admin investigation.
+         *
+         *     This never redispatches the effect. The operator reason is represented in
+         *     audit history by a one-way fingerprint so the audit row cannot become a
+         *     second store for incident details or customer data.
+         */
+        post: operations["resolve_gateway_operation_receipt_api_mcp_operation_receipts__receipt_id__resolve_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -14558,7 +14616,6 @@ export interface components {
              *             - IN: {"category": {"in": ["a", "b"]}}
              *             - NULL: {"deleted_at": {"is_null": true}}
              *             - Has field: {"field": {"has_key": true}}
-             *
              */
             where?: {
                 [key: string]: unknown;
@@ -15751,6 +15808,11 @@ export interface components {
             error_message?: string | null;
             /** Duration Ms */
             duration_ms?: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
             /** Started At */
             started_at?: string | null;
             /** Completed At */
@@ -19181,6 +19243,16 @@ export interface components {
             description?: string | null;
         };
         /**
+         * MCPGatewayDurableHandle
+         * @description Canonical Bifrost lifecycle backing an MCP task.
+         */
+        MCPGatewayDurableHandle: {
+            /** Kind */
+            kind: string;
+            /** Id */
+            id: string;
+        };
+        /**
          * MCPGatewayExecuteRequest
          * @description Arguments passed to an agent-bound tool.
          */
@@ -19189,6 +19261,17 @@ export interface components {
             arguments?: {
                 [key: string]: unknown;
             };
+            /**
+             * Operation Id
+             * @description Stable caller-generated identity used to make retries of this agent/tool operation idempotent.
+             */
+            operation_id: string;
+            /**
+             * Task Requested
+             * @description Internal MCP Tasks adapter signal; legacy calls omit it.
+             * @default false
+             */
+            task_requested: boolean;
         };
         /**
          * MCPGatewayExecuteResponse
@@ -19209,6 +19292,7 @@ export interface components {
             duration_ms: number;
             /** Result */
             result: unknown;
+            durable_handle?: components["schemas"]["MCPGatewayDurableHandle"] | null;
         };
         /**
          * MCPGatewayFindAgentsResponse
@@ -19259,6 +19343,32 @@ export interface components {
             description: string;
             /** Source */
             source: string;
+        };
+        /**
+         * MCPOperationReceiptResolutionRequest
+         * @description Explicit fail-closed resolution for an ambiguous at-most-once effect.
+         */
+        MCPOperationReceiptResolutionRequest: {
+            /**
+             * Resolution
+             * @constant
+             */
+            resolution: "failed_unknown";
+            /** Reason */
+            reason: string;
+        };
+        /** MCPOperationReceiptResolutionResponse */
+        MCPOperationReceiptResolutionResponse: {
+            /**
+             * Receipt Id
+             * Format: uuid
+             */
+            receipt_id: string;
+            /**
+             * Status
+             * @constant
+             */
+            status: "failed";
         };
         /**
          * MCPServerCreate
@@ -25839,6 +25949,11 @@ export interface components {
             error_message?: string | null;
             /** Duration Ms */
             duration_ms?: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
             /** Started At */
             started_at?: string | null;
             /** Completed At */
@@ -26730,7 +26845,7 @@ export interface components {
              * Operation
              * @enum {string}
              */
-            operation: "write" | "delete";
+            operation: "write" | "delete" | "verify";
             /** Before Hash */
             before_hash?: string | null;
             /** After Hash */
@@ -26749,7 +26864,7 @@ export interface components {
              * Operation
              * @enum {string}
              */
-            operation: "write" | "delete";
+            operation: "write" | "delete" | "verify";
             /** Content Base64 */
             content_base64?: string | null;
             /** Expected Hash */
@@ -26760,6 +26875,96 @@ export interface components {
              */
             force_deactivation: boolean;
         };
+        /** WorkspaceRepoGitConvergenceApplyRequest */
+        WorkspaceRepoGitConvergenceApplyRequest: {
+            /** Changeset Ids */
+            changeset_ids: string[];
+            /** Protected Main Source Sha */
+            protected_main_source_sha: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Commit Message */
+            commit_message: string;
+        };
+        /** WorkspaceRepoGitConvergenceChangeset */
+        WorkspaceRepoGitConvergenceChangeset: {
+            /**
+             * Changeset Id
+             * Format: uuid
+             */
+            changeset_id: string;
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "reconciled" | "partially_superseded" | "superseded";
+            /** Reconciled Paths */
+            reconciled_paths?: string[];
+            /** Superseded Paths */
+            superseded_paths?: string[];
+        };
+        /** WorkspaceRepoGitConvergencePath */
+        WorkspaceRepoGitConvergencePath: {
+            /** Path */
+            path: string;
+            /** Desired Sha256 */
+            desired_sha256: string;
+            /** Live Sha256 */
+            live_sha256?: string | null;
+            /** Reviewed Sha256 */
+            reviewed_sha256?: string | null;
+            /** History Sha256 */
+            history_sha256?: string | null;
+            /** Requires Write */
+            requires_write: boolean;
+            /** Source Changeset Id */
+            source_changeset_id?: string | null;
+        };
+        /** WorkspaceRepoGitConvergencePreviewRequest */
+        WorkspaceRepoGitConvergencePreviewRequest: {
+            /** Changeset Ids */
+            changeset_ids: string[];
+            /** Protected Main Source Sha */
+            protected_main_source_sha: string;
+        };
+        /** WorkspaceRepoGitConvergenceResponse */
+        WorkspaceRepoGitConvergenceResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-history-convergence/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-history-convergence/v1";
+            /** Ready To Apply */
+            ready_to_apply: boolean;
+            /**
+             * Applied
+             * @default false
+             */
+            applied: boolean;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Protected Main Source Sha */
+            protected_main_source_sha: string;
+            /** Protected Main Tree Sha */
+            protected_main_tree_sha: string;
+            /** History Head Sha */
+            history_head_sha: string;
+            /** History Tree Sha */
+            history_tree_sha: string;
+            /** Commit Sha */
+            commit_sha?: string | null;
+            /** Signature State */
+            signature_state?: string | null;
+            /** Diagnostics */
+            diagnostics?: {
+                [key: string]: unknown;
+            }[];
+            /** Paths */
+            paths?: components["schemas"]["WorkspaceRepoGitConvergencePath"][];
+            /** Changesets */
+            changesets?: components["schemas"]["WorkspaceRepoGitConvergenceChangeset"][];
+        };
         /** WorkspaceRepoMutation */
         WorkspaceRepoMutation: {
             /** Path */
@@ -26768,7 +26973,7 @@ export interface components {
              * Operation
              * @enum {string}
              */
-            operation: "write" | "delete";
+            operation: "write" | "delete" | "verify";
             /** Content Base64 */
             content_base64?: string | null;
             /** Before Hash */
@@ -32694,6 +32899,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceRepoChangesetResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_workspace_repo_git_convergence_api_workspace_repo_changesets_git_convergence_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRepoGitConvergencePreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRepoGitConvergenceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_workspace_repo_git_convergence_api_workspace_repo_changesets_git_convergence_apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRepoGitConvergenceApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceRepoGitConvergenceResponse"];
                 };
             };
             /** @description Validation Error */
@@ -39377,6 +39648,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MCPGatewayExecuteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_gateway_operation_receipt_api_mcp_operation_receipts__receipt_id__resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                receipt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPOperationReceiptResolutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPOperationReceiptResolutionResponse"];
                 };
             };
             /** @description Validation Error */

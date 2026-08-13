@@ -11,7 +11,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import desc, func, literal_column, or_, select
+from sqlalchemy import desc, func, literal_column, or_, select, text
 from sqlalchemy.orm import joinedload, selectinload
 
 from src.core.auth import CurrentActiveUser
@@ -534,7 +534,12 @@ async def get_agent_run(
 
     # Dual-read steps: Redis Stream when in-progress, DB when complete
     steps_response: list[AgentRunStepResponse] = []
-    is_in_progress = run.status in ("queued", "running", "cancelling")
+    is_in_progress = run.status in (
+        "scheduled",
+        "queued",
+        "running",
+        "cancelling",
+    )
 
     if is_in_progress:
         # Read from Redis Stream (steps are uncommitted in DB during execution)
@@ -673,6 +678,13 @@ async def cancel_agent_run(
     user: CurrentActiveUser,
 ) -> dict:
     """Cancel a queued or running agent run."""
+    await db.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtext('bifrost:agent-run:' || :run_id))"
+        ),
+        {"run_id": str(run_id)},
+    )
     agent_run = await load_agent_run_for_user(db, run_id, user)
 
     if not agent_run:
@@ -693,7 +705,7 @@ async def cancel_agent_run(
 
     redis_client = get_redis_client()
 
-    if agent_run.status == "queued":
+    if agent_run.status in ("scheduled", "queued"):
         # Not yet picked up by worker — cancel directly
         agent_run.status = "cancelled"
         agent_run.completed_at = datetime.now(timezone.utc)

@@ -293,6 +293,7 @@
 | GET | `/api/mcp/gateway/agents/{agent_id}` |
 | GET | `/api/mcp/gateway/agents/{agent_id}/tools/{tool_ref}` |
 | POST | `/api/mcp/gateway/agents/{agent_id}/tools/{tool_ref}/execute` |
+| POST | `/api/mcp/operation-receipts/{receipt_id}/resolve` |
 | GET | `/api/mcp/status` |
 | GET | `/api/mcp/tools` |
 | GET | `/api/me/mcp-connections` |

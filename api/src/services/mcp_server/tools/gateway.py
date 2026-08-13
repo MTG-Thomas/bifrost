@@ -31,6 +31,25 @@ def _rest_error(action: str, status_code: int, body: Any) -> ToolResult:
     return error_result(message, payload)
 
 
+def gateway_execute_result(
+    data: dict[str, Any],
+    *,
+    is_error: bool = False,
+) -> ToolResult:
+    """Build the one canonical bifrost_execute_tool CallToolResult."""
+    result = success_result(
+        f"Executed '{data['tool_name']}' through '{data['agent_name']}'.",
+        data,
+    )
+    if not is_error:
+        return result
+    return ToolResult(
+        content=result.content,
+        structured_content=result.structured_content,
+        is_error=True,
+    )
+
+
 async def bifrost_find_agents(
     context: Any,
     query: str | None = None,
@@ -84,20 +103,24 @@ async def bifrost_execute_tool(
     agent_id: str,
     tool_ref: str,
     arguments: dict[str, Any],
+    operation_id: str,
 ) -> ToolResult:
     """Validate and execute one live tool through its selected agent."""
+    from src.services.mcp_server.tasks import is_mcp_task_requested
+
     status_code, data = await call_rest(
         context,
         "POST",
         f"/api/mcp/gateway/agents/{agent_id}/tools/{tool_ref}/execute",
-        json_body={"arguments": arguments},
+        json_body={
+            "arguments": arguments,
+            "operation_id": operation_id,
+            "task_requested": is_mcp_task_requested(),
+        },
     )
     if status_code != 200 or not isinstance(data, dict):
         return _rest_error("Tool execution", status_code, data)
-    return success_result(
-        f"Executed '{data['tool_name']}' through '{data['agent_name']}'.",
-        data,
-    )
+    return gateway_execute_result(data)
 
 
 TOOLS = [
@@ -124,7 +147,8 @@ TOOLS = [
         "Execute Bifrost Tool",
         "Execute a tool reference through its selected agent after inspecting its "
         "live schema. Arguments are strictly validated and authorization is "
-        "rechecked on every call.",
+        "rechecked on every call. Supply a stable operation_id and reuse it "
+        "when retrying a request whose response may have been lost.",
     ),
 ]
 
@@ -146,4 +170,5 @@ def register_tools(mcp: Any, get_context_fn: Any) -> None:
             tool_id,
             description,
             get_context_fn,
+            task=tool_id == "bifrost_execute_tool",
         )

@@ -33,6 +33,20 @@ from src.services.mcp_client.errors import (
     ToolDispatchError,
 )
 from src.services.mcp_server.config_service import MCPConfig, MCPConfigService
+from src.services.operation_receipts import (
+    OperationReceiptClaim,
+    OperationReceiptDisposition,
+    bounded_replay_envelope,
+    canonical_operation_scope_key,
+    canonical_request_fingerprint,
+    claim_operation_receipt,
+    complete_operation_receipt_error,
+    complete_operation_receipt_success,
+    record_operation_receipt_handle,
+    reconcile_operation_receipt_error,
+    reconcile_operation_receipt_success,
+    wait_for_operation_receipt,
+)
 
 if TYPE_CHECKING:
     from src.services.mcp_server.server import MCPContext
@@ -40,7 +54,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GATEWAY_TOOL_NAMESPACE = UUID("bcf3f4d7-b95e-53cc-9b7f-35e7081d0d84")
+GATEWAY_OPERATION_NAMESPACE = UUID("fdb6cc27-6fa9-53a3-a3e8-88d356822ba1")
+GATEWAY_OPERATION_RECEIPT_NAMESPACE = "mcp.gateway.execute.v1"
 MAX_AGENT_RESULTS = 20
+MCP_TASK_PLATFORM_JOB_TOOLS = frozenset({"publish_app"})
 
 GatewayToolSource = Literal[
     "system",
@@ -274,11 +291,296 @@ class MCPAgentGatewayService:
         agent_id: str,
         tool_ref: str,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool = False,
     ) -> dict[str, Any]:
-        """Re-resolve, validate, and execute an agent-bound tool."""
+        """Re-resolve and execute one permanently idempotent tool operation."""
         snapshot = await self.get_agent_snapshot(agent_id)
         tool = self.find_tool(snapshot, tool_ref)
-        return await self.execute_tool(snapshot, tool, arguments)
+        scope_key = canonical_operation_scope_key({
+            "version": 1,
+            "caller_user_id": str(self.context.user_id),
+            "organization_id": str(self.context.org_id or "GLOBAL"),
+            "agent_id": str(snapshot.agent.id),
+            "tool_ref": tool.tool_ref,
+            "operation_id": operation_id,
+        })
+        request_fingerprint = canonical_request_fingerprint(
+            {
+                "version": 1,
+                "agent_id": str(snapshot.agent.id),
+                "tool_ref": tool.tool_ref,
+                "arguments": arguments,
+                "task_requested": task_requested,
+            }
+        )
+        claim = await claim_operation_receipt(
+            namespace=GATEWAY_OPERATION_RECEIPT_NAMESPACE,
+            scope_key=scope_key,
+            request_fingerprint=request_fingerprint,
+        )
+        if claim.disposition == OperationReceiptDisposition.STARTED:
+            claim = await wait_for_operation_receipt(
+                claim.receipt_id,
+                request_fingerprint=request_fingerprint,
+            )
+        replay = await self._replay_operation_receipt(
+            claim,
+            snapshot=snapshot,
+            tool=tool,
+            operation_id=operation_id,
+            task_requested=task_requested,
+        )
+        if replay is not None:
+            return replay
+
+        if claim.owner_token is None:
+            raise RuntimeError("Operation receipt owner token is missing")
+        try:
+            result = await self.execute_tool(
+                snapshot,
+                tool,
+                arguments,
+                operation_id=operation_id,
+                task_requested=task_requested,
+            )
+        except GatewayError as exc:
+            stored_error = bounded_replay_envelope({
+                "code": exc.code,
+                "message": exc.message,
+                "retryable": exc.retryable,
+                "details": exc.details,
+            })
+            await complete_operation_receipt_error(
+                claim.receipt_id,
+                claim.owner_token,
+                stored_error,
+            )
+            raise self._gateway_error_from_receipt(stored_error) from exc
+        result = bounded_replay_envelope(result)
+        durable_handle = result.get("durable_handle")
+        if isinstance(durable_handle, dict):
+            await record_operation_receipt_handle(
+                claim.receipt_id,
+                claim.owner_token,
+                durable_handle,
+            )
+        await complete_operation_receipt_success(
+            claim.receipt_id,
+            claim.owner_token,
+            result,
+        )
+        return result
+
+    async def _replay_operation_receipt(
+        self,
+        claim: OperationReceiptClaim,
+        *,
+        snapshot: AgentToolSnapshot,
+        tool: ResolvedGatewayTool,
+        operation_id: str,
+        task_requested: bool,
+    ) -> dict[str, Any] | None:
+        """Return or raise a non-owner receipt disposition."""
+        details = {
+            "agent_id": str(snapshot.agent.id),
+            "tool_ref": tool.tool_ref,
+            "tool_name": tool.definition.name,
+            "source": tool.source,
+        }
+        if claim.disposition == OperationReceiptDisposition.OWNER:
+            return None
+        if claim.disposition == OperationReceiptDisposition.SUCCEEDED:
+            if claim.response is None:
+                raise RuntimeError("Successful operation receipt has no response")
+            return claim.response
+        if claim.disposition == OperationReceiptDisposition.FAILED:
+            if claim.error is None:
+                raise RuntimeError("Failed operation receipt has no error")
+            raise self._gateway_error_from_receipt(claim.error, fallback_details=details)
+        if claim.disposition == OperationReceiptDisposition.MISMATCH:
+            raise GatewayError(
+                "OPERATION_ID_REUSED",
+                "This operation_id was already used with different arguments or mode.",
+                details=details,
+            )
+        if claim.disposition == OperationReceiptDisposition.EXPIRED:
+            raise GatewayError(
+                "OPERATION_RESULT_EXPIRED",
+                (
+                    "This operation was already handled, but its bounded replay "
+                    "payload has expired. It will not be dispatched again."
+                ),
+                details={**details, "receipt_id": str(claim.receipt_id)},
+            )
+        recovered = await self._recover_started_receipt(
+            claim,
+            snapshot=snapshot,
+            tool=tool,
+            operation_id=operation_id,
+            task_requested=task_requested,
+        )
+        if recovered is not None:
+            return recovered
+        raise GatewayError(
+            "OPERATION_IN_PROGRESS_OR_UNKNOWN",
+            (
+                "This operation is still running or its outcome is unknown. "
+                "It will not be dispatched again; retry this operation_id to "
+                "read a terminal result if one becomes available."
+            ),
+            retryable=True,
+            details={**details, "receipt_id": str(claim.receipt_id)},
+        )
+
+    @staticmethod
+    def _gateway_error_from_receipt(
+        error: dict[str, Any],
+        *,
+        fallback_details: dict[str, Any] | None = None,
+    ) -> GatewayError:
+        stored_details = error.get("details")
+        return GatewayError(
+            str(error.get("code") or "TOOL_EXECUTION_FAILED"),
+            str(error.get("message") or "Tool execution failed."),
+            retryable=bool(error.get("retryable", False)),
+            details=(
+                stored_details
+                if isinstance(stored_details, dict)
+                else (fallback_details or {})
+            ),
+        )
+
+    def _gateway_response(
+        self,
+        snapshot: AgentToolSnapshot,
+        tool: ResolvedGatewayTool,
+        result: Any,
+        *,
+        duration_ms: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "agent_id": str(snapshot.agent.id),
+            "agent_name": snapshot.agent.name,
+            "tool_ref": tool.tool_ref,
+            "tool_name": tool.definition.name,
+            "source": tool.source,
+            "duration_ms": duration_ms,
+            "result": result,
+            "durable_handle": self._durable_handle(tool, result),
+        }
+
+    async def _recover_started_receipt(
+        self,
+        claim: OperationReceiptClaim,
+        *,
+        snapshot: AgentToolSnapshot,
+        tool: ResolvedGatewayTool,
+        operation_id: str,
+        task_requested: bool,
+    ) -> dict[str, Any] | None:
+        """Reconcile a fenced retry from an authorized canonical lifecycle."""
+        from src.services.mcp_server.tools._http_bridge import call_rest
+
+        handle = claim.durable_handle
+        if handle is None and tool.source == "workflow":
+            handle = {
+                "kind": "execution",
+                "id": self._operation_execution_id(snapshot.agent, tool, operation_id),
+            }
+        elif handle is None and tool.source == "delegation" and task_requested:
+            handle = {
+                "kind": "agent-run",
+                "id": self._operation_execution_id(snapshot.agent, tool, operation_id),
+            }
+        if handle is None:
+            return None
+
+        kind = handle.get("kind")
+        durable_id = handle.get("id")
+        path = {
+            "platform-job": f"/api/platform-jobs/{durable_id}",
+            "execution": f"/api/executions/{durable_id}",
+            "agent-run": f"/api/agent-runs/{durable_id}",
+        }.get(str(kind))
+        if path is None or not durable_id:
+            return None
+        status_code, body = await call_rest(self.context, "GET", path)
+        if status_code != 200 or not isinstance(body, dict):
+            return None
+
+        raw_status = str(body.get("status") or "")
+        normalized_status = raw_status.lower()
+        if task_requested:
+            if kind == "execution":
+                recovered_result: dict[str, Any] = {
+                    "execution_id": str(durable_id),
+                    "status": raw_status,
+                    "duration_ms": body.get("duration_ms"),
+                    "result": body.get("result"),
+                    "error": body.get("error_message"),
+                    "error_type": None,
+                }
+            elif kind == "agent-run":
+                recovered_result = {
+                    "run_id": str(durable_id),
+                    "status": raw_status or "queued",
+                    "reused": True,
+                }
+            else:
+                recovered_result = {
+                    "content": [],
+                    "structured_content": {
+                        "job_id": str(durable_id),
+                        "status": raw_status,
+                    },
+                }
+            response = bounded_replay_envelope(
+                self._gateway_response(snapshot, tool, recovered_result)
+            )
+            await reconcile_operation_receipt_success(
+                claim.receipt_id,
+                handle,
+                response,
+            )
+            return response
+
+        if kind != "execution" or normalized_status in {
+            "scheduled",
+            "pending",
+            "running",
+            "cancelling",
+        }:
+            return None
+
+        execution_result = {
+            "execution_id": str(durable_id),
+            "status": raw_status,
+            "duration_ms": body.get("duration_ms"),
+            "result": body.get("result"),
+            "error": body.get("error_message"),
+            "error_type": None,
+        }
+        if normalized_status == "success":
+            response = bounded_replay_envelope(
+                self._gateway_response(snapshot, tool, execution_result)
+            )
+            await reconcile_operation_receipt_success(
+                claim.receipt_id,
+                handle,
+                response,
+            )
+            return response
+
+        error = bounded_replay_envelope({
+            "code": "TOOL_EXECUTION_FAILED",
+            "message": body.get("error_message") or "Workflow execution failed.",
+            "retryable": False,
+            "details": {"underlying_result": execution_result},
+        })
+        await reconcile_operation_receipt_error(claim.receipt_id, handle, error)
+        raise self._gateway_error_from_receipt(error)
 
     def _resolve_gateway_tools(
         self,
@@ -433,12 +735,29 @@ class MCPAgentGatewayService:
         snapshot: AgentToolSnapshot,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool = False,
     ) -> dict[str, Any]:
         started = time.monotonic()
 
         try:
             self.validate_arguments(tool, arguments)
-            result = await self._dispatch(snapshot.agent, tool, arguments)
+            if task_requested and not self._supports_tasks(tool):
+                raise GatewayError(
+                    "TASKS_UNSUPPORTED",
+                    (
+                        f"Tool '{tool.definition.name}' does not return a durable "
+                        "Bifrost execution or platform-job handle."
+                    ),
+                )
+            result = await self._dispatch(
+                snapshot.agent,
+                tool,
+                arguments,
+                operation_id=operation_id,
+                task_requested=task_requested,
+            )
         except GatewayError as exc:
             duration_ms = int((time.monotonic() - started) * 1000)
             exc.details.setdefault("agent_id", str(snapshot.agent.id))
@@ -484,6 +803,21 @@ class MCPAgentGatewayService:
             tool.source,
             duration_ms,
         )
+        durable_handle = self._durable_handle(tool, result)
+        if task_requested and durable_handle is None:
+            raise GatewayError(
+                "TASKS_UNSUPPORTED",
+                (
+                    f"Tool '{tool.definition.name}' does not return a durable "
+                    "Bifrost execution or platform-job handle."
+                ),
+                details={
+                    "agent_id": str(snapshot.agent.id),
+                    "tool_ref": tool.tool_ref,
+                    "tool_name": tool.definition.name,
+                    "source": tool.source,
+                },
+            )
         return {
             "agent_id": str(snapshot.agent.id),
             "agent_name": snapshot.agent.name,
@@ -492,19 +826,89 @@ class MCPAgentGatewayService:
             "source": tool.source,
             "duration_ms": duration_ms,
             "result": result,
+            "durable_handle": durable_handle,
         }
+
+    @staticmethod
+    def _supports_tasks(tool: ResolvedGatewayTool) -> bool:
+        return (
+            tool.source in {"workflow", "delegation"}
+            or (
+                tool.source == "system"
+                and tool.definition.name in MCP_TASK_PLATFORM_JOB_TOOLS
+            )
+        )
+
+    def _operation_execution_id(
+        self,
+        agent: Agent,
+        tool: ResolvedGatewayTool,
+        operation_id: str,
+    ) -> str:
+        """Derive the canonical workflow/agent handle for a caller retry."""
+        scope = ":".join((
+            str(self.context.user_id),
+            str(self.context.org_id or "GLOBAL"),
+            str(agent.id),
+            tool.tool_ref,
+            operation_id,
+        ))
+        return str(uuid5(GATEWAY_OPERATION_NAMESPACE, scope))
+
+    @staticmethod
+    def _durable_handle(
+        tool: ResolvedGatewayTool,
+        result: Any,
+    ) -> dict[str, str] | None:
+        if tool.source == "workflow" and isinstance(result, dict):
+            execution_id = result.get("execution_id")
+            if execution_id:
+                return {"kind": "execution", "id": str(execution_id)}
+        if tool.source == "delegation" and isinstance(result, dict):
+            run_id = result.get("run_id")
+            if run_id:
+                return {"kind": "agent-run", "id": str(run_id)}
+        if isinstance(result, dict):
+            structured = result.get("structured_content")
+            if isinstance(structured, dict) and structured.get("job_id"):
+                return {
+                    "kind": "platform-job",
+                    "id": str(structured["job_id"]),
+                }
+        return None
 
     async def _dispatch(
         self,
         agent: Agent,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool,
     ) -> Any:
         if tool.source in {"system", "knowledge"}:
-            return await self._dispatch_system_tool(agent, tool, arguments)
+            return await self._dispatch_system_tool(
+                agent,
+                tool,
+                arguments,
+                operation_id=operation_id,
+            )
         if tool.source == "workflow":
-            return await self._dispatch_workflow(tool, arguments)
+            return await self._dispatch_workflow(
+                agent,
+                tool,
+                arguments,
+                operation_id=operation_id,
+                task_requested=task_requested,
+            )
         if tool.source == "delegation":
+            if task_requested:
+                return await self._dispatch_delegation_task(
+                    agent,
+                    tool,
+                    arguments,
+                    operation_id=operation_id,
+                )
             return await self._dispatch_delegation(agent, tool, arguments)
         if tool.source == "external_mcp":
             return await self._dispatch_external_mcp(tool, arguments)
@@ -518,6 +922,8 @@ class MCPAgentGatewayService:
         agent: Agent,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
     ) -> Any:
         from src.services.mcp_server.server import (
             MCPContext,
@@ -539,6 +945,11 @@ class MCPAgentGatewayService:
             is_external=self.context.is_external,
             user_email=self.context.user_email,
             user_name=self.context.user_name,
+            operation_id=self._operation_execution_id(
+                agent,
+                tool,
+                operation_id,
+            ),
             accessible_namespaces=list(agent.knowledge_sources or []),
         )
         result = await func(context, **arguments)
@@ -560,8 +971,12 @@ class MCPAgentGatewayService:
 
     async def _dispatch_workflow(
         self,
+        agent: Agent,
         tool: ResolvedGatewayTool,
         arguments: dict[str, Any],
+        *,
+        operation_id: str,
+        task_requested: bool,
     ) -> Any:
         from src.services.execution.service import execute_tool
 
@@ -580,6 +995,12 @@ class MCPAgentGatewayService:
             org_id=str(self.context.org_id) if self.context.org_id else None,
             is_platform_admin=self.context.is_platform_admin,
             is_agent=True,
+            execution_id=self._operation_execution_id(
+                agent,
+                tool,
+                operation_id,
+            ),
+            sync=not task_requested,
         )
         data = {
             "execution_id": response.execution_id,
@@ -589,13 +1010,73 @@ class MCPAgentGatewayService:
             "error": response.error,
             "error_type": response.error_type,
         }
-        if response.status.value != "Success":
+        if response.status.value != "Success" and not (
+            task_requested and response.status.value == "Pending"
+        ):
             raise GatewayError(
                 "TOOL_EXECUTION_FAILED",
                 response.error or "Workflow execution failed.",
                 details={"underlying_result": data},
             )
         return data
+
+    async def _dispatch_delegation_task(
+        self,
+        agent: Agent,
+        tool: ResolvedGatewayTool,
+        arguments: dict[str, Any],
+        *,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        """Enqueue delegation on the canonical agent-run infrastructure."""
+        from src.core.database import get_db_context
+        from src.services.execution.agent_run_service import enqueue_agent_run_once
+
+        if tool.source_id is None:
+            raise GatewayError(
+                "TOOL_EXECUTION_FAILED",
+                "Delegated agent identity is missing.",
+            )
+        task = arguments.get("task")
+        if not isinstance(task, str) or not task.strip():
+            raise GatewayError(
+                "INVALID_ARGUMENTS",
+                "Delegation requires a non-empty task.",
+                retryable=True,
+            )
+        async with get_db_context() as db:
+            delegated = await AgentRepository(
+                db,
+                org_id=agent.organization_id,
+                user_id=self.context.user_id,
+                is_superuser=True,
+                is_external=False,
+            ).get_agent(tool.source_id)
+        if delegated is None or not delegated.is_active:
+            raise GatewayError(
+                "TOOL_NOT_FOUND_OR_FORBIDDEN",
+                "Delegated agent is no longer available.",
+                retryable=True,
+            )
+
+        run_id = self._operation_execution_id(agent, tool, operation_id)
+        _run_id, reused = await enqueue_agent_run_once(
+            agent_id=str(delegated.id),
+            trigger_type="mcp_gateway",
+            trigger_source=str(agent.id),
+            input_data={"task": task, "_delegated_from": agent.name},
+            org_id=str(agent.organization_id) if agent.organization_id else None,
+            caller_user_id=str(self.context.user_id),
+            caller_email=self.context.user_email,
+            caller_name=self.context.user_name,
+            sync=False,
+            run_id=run_id,
+        )
+        return {
+            "run_id": run_id,
+            "status": "queued",
+            "reused": reused,
+        }
 
     async def _dispatch_delegation(
         self,
@@ -691,6 +1172,7 @@ class MCPAgentGatewayService:
                     arguments=arguments,
                     caller_user_id=UUID(str(self.context.user_id)),
                     db=db,
+                    retry_auth_rejection=False,
                 )
         except NeedsReauthError as exc:
             raise GatewayError(

@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.services.execution import async_executor
-from src.services.execution.async_executor import _publish_pending
+from src.services.execution.async_executor import (
+    _publish_pending,
+    enqueue_workflow_execution_once,
+)
 
 
 class _FakeSpan:
@@ -29,6 +32,34 @@ class _FakeTracer:
         span = _FakeSpan(name, attributes)
         self.spans.append(span)
         return span
+
+
+@pytest.mark.asyncio
+async def test_retry_reuses_execution_without_republishing():
+    context = AsyncMock()
+    context.solution_deployment_id = None
+    context.event = None
+
+    with (
+        patch(
+            "src.services.execution.async_executor._persist_execution_pin",
+            new=AsyncMock(return_value=(None, None, "repo-v1", False)),
+        ),
+        patch(
+            "src.services.execution.async_executor._publish_scheduled_once",
+            new_callable=AsyncMock,
+        ) as publish,
+    ):
+        execution_id, reused = await enqueue_workflow_execution_once(
+            context=context,
+            workflow_id="11111111-1111-1111-1111-111111111111",
+            parameters={"ticket_id": 42},
+            execution_id="22222222-2222-2222-2222-222222222222",
+        )
+
+    assert execution_id == "22222222-2222-2222-2222-222222222222"
+    assert reused is True
+    publish.assert_awaited_once()
 
 
 @pytest.mark.asyncio

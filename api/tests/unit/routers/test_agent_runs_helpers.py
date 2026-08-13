@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -171,6 +172,29 @@ async def test_get_agent_run_raises_404_when_run_not_visible(
 
     assert exc.value.status_code == 404
     assert exc.value.detail == f"Agent run {run_id} not found"
+
+
+@pytest.mark.asyncio
+async def test_cancel_agent_run_takes_publication_lock_before_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run(status="completed")
+    db = SimpleNamespace(execute=AsyncMock())
+
+    async def fake_load_agent_run_for_user(*args, **kwargs):
+        return run
+
+    monkeypatch.setattr(
+        agent_runs,
+        "load_agent_run_for_user",
+        fake_load_agent_run_for_user,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await agent_runs.cancel_agent_run(run.id, db, _user())
+
+    assert exc.value.status_code == 400
+    assert "bifrost:agent-run:" in str(db.execute.await_args.args[0])
 
 
 @pytest.mark.asyncio

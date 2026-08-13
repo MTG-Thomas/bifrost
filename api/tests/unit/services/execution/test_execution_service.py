@@ -9,6 +9,7 @@ from uuid import uuid4
 
 class _Context:
     execution_id = "exec-context"
+    solution_deployment_id = None
 
 
 class _Module(SimpleNamespace):
@@ -246,9 +247,9 @@ class TestEnqueueHelpers:
         from src.models.enums import ExecutionStatus
         from src.services.execution import service
 
-        enqueue = AsyncMock(return_value="exec-queued")
+        enqueue = AsyncMock(return_value=("exec-queued", False))
         monkeypatch.setattr(
-            "src.services.execution.async_executor.enqueue_workflow_execution",
+            "src.services.execution.async_executor.enqueue_workflow_execution_once",
             enqueue,
         )
 
@@ -274,9 +275,9 @@ class TestEnqueueHelpers:
         from src.models.enums import ExecutionStatus
         from src.services.execution import service
 
-        enqueue = AsyncMock(return_value="exec-sync")
+        enqueue = AsyncMock(return_value=("exec-sync", False))
         monkeypatch.setattr(
-            "src.services.execution.async_executor.enqueue_workflow_execution",
+            "src.services.execution.async_executor.enqueue_workflow_execution_once",
             enqueue,
         )
 
@@ -312,8 +313,8 @@ class TestEnqueueHelpers:
         from src.services.execution import service
 
         monkeypatch.setattr(
-            "src.services.execution.async_executor.enqueue_workflow_execution",
-            AsyncMock(return_value="exec-timeout"),
+            "src.services.execution.async_executor.enqueue_workflow_execution_once",
+            AsyncMock(return_value=("exec-timeout", False)),
         )
         metadata = MagicMock()
         metadata.timeout_seconds = 0

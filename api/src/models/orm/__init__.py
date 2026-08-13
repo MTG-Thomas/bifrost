@@ -16,6 +16,7 @@ from src.models.orm.agents import Agent, AgentDelegation, AgentRole, AgentTool, 
 from src.models.orm.ai_usage import AIModelPricing, AIUsage
 from src.models.orm.app_embed_secrets import AppEmbedSecret
 from src.models.orm.platform_jobs import PlatformJob
+from src.models.orm.operation_receipts import OperationReceipt
 from src.models.orm.scheduler_leases import SchedulerLease
 from src.models.orm.scheduler_diagnostics import (
     SchedulerReplica,
@@ -96,6 +97,7 @@ __all__ = [
     # Applications (App Builder)
     "Application",
     "PlatformJob",
+    "OperationReceipt",
     "SchedulerLease",
     "SchedulerReplica",
     "SchedulerTaskRun",

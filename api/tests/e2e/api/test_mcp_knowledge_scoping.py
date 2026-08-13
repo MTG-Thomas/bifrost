@@ -326,6 +326,7 @@ class TestMCPKnowledgeScoping:
                 "arguments": {
                     "query": _knowledge_scoping_setup["marker_alpha"],
                 },
+                "operation_id": "knowledge-alpha",
             },
         )
         text_blob = str(result)
@@ -343,6 +344,7 @@ class TestMCPKnowledgeScoping:
                 "arguments": {
                     "query": _knowledge_scoping_setup["marker_beta"],
                 },
+                "operation_id": "knowledge-cross",
             },
         )
         assert _knowledge_scoping_setup["ns_beta"] not in str(cross_result), (
@@ -427,6 +429,7 @@ class TestMCPKnowledgeScoping:
                     "query": "anything",
                     "namespace": "this_namespace_does_not_exist",
                 },
+                "operation_id": "knowledge-missing-namespace",
             },
         )
         text_blob = str(result)

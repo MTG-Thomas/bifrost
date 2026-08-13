@@ -43,6 +43,7 @@ def create_test_jwt(
         is_superuser: Whether user should have superuser/platform admin privileges
         organization_id: Organization ID for ORG users (auto-generated if not provided for non-superusers)
         is_provider_org: Whether the user belongs to a provider org (bypass half — grants cross-org / global scope like a superuser)
+        mcp_resource: MCP endpoint URL for a resource-bound MCP access token
 
     Returns:
         str: JWT token signed with test secret

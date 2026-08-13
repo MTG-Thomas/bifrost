@@ -143,6 +143,7 @@ class MCPContext:
     is_external: bool = False
     user_email: str = ""
     user_name: str = ""
+    operation_id: str | None = None
 
     # Knowledge namespaces accessible to this user (from agent.knowledge_sources)
     accessible_namespaces: list[str] = field(default_factory=list)

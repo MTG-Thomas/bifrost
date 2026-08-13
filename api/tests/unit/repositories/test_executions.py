@@ -41,6 +41,7 @@ def _execution(**overrides):
         "result_type": "json",
         "error_message": None,
         "duration_ms": 250,
+        "created_at": now,
         "started_at": now,
         "completed_at": now,
         "variables": {"secret": "hidden"},
@@ -160,6 +161,33 @@ async def test_create_execution_updates_existing_scheduled_row() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cancel_status",
+    [ExecutionStatus.CANCELLING, ExecutionStatus.CANCELLED],
+)
+async def test_create_execution_does_not_resurrect_cancelled_claim(
+    cancel_status: ExecutionStatus,
+) -> None:
+    execution_id = uuid4()
+    existing = _execution(id=execution_id, status=cancel_status.value)
+    session = AsyncMock()
+    session.get.return_value = existing
+    repo = ExecutionRepository(session)
+
+    await repo.create_execution(
+        execution_id=str(execution_id),
+        workflow_name="cancelled_setup",
+        parameters={},
+        org_id=None,
+        user_id=str(uuid4()),
+        user_name="Runner",
+        status=ExecutionStatus.RUNNING,
+    )
+
+    assert existing.status == cancel_status
+
+
+@pytest.mark.asyncio
 async def test_create_execution_adds_new_global_execution() -> None:
     execution_id = uuid4()
     user_id = uuid4()
@@ -220,6 +248,11 @@ async def test_update_execution_sets_result_type_metrics_economics_and_logs() ->
     execution_id = uuid4()
     session = AsyncMock()
     session.add = MagicMock()
+    session.execute.side_effect = [
+        None,
+        ExecuteResult(scalar_row=ExecutionStatus.RUNNING.value),
+        None,
+    ]
     repo = ExecutionRepository(session)
 
     await repo.update_execution(
@@ -250,7 +283,7 @@ async def test_update_execution_sets_result_type_metrics_economics_and_logs() ->
         value=12.25,
     )
 
-    statement = session.execute.await_args.args[0]
+    statement = session.execute.await_args_list[-1].args[0]
     values = statement.compile().params
     assert values["status"] == ExecutionStatus.SUCCESS.value
     assert values["result"] == "<p>done</p>"
@@ -275,6 +308,11 @@ async def test_update_execution_redacts_generated_script_before_persistence() ->
     marker = "SYNTHETIC_EXECUTION_SCRIPT_MARKER"
     session = AsyncMock()
     session.add = MagicMock()
+    session.execute.side_effect = [
+        None,
+        ExecuteResult(scalar_row=ExecutionStatus.RUNNING.value),
+        None,
+    ]
     repo = ExecutionRepository(session)
 
     await repo.update_execution(
@@ -289,7 +327,7 @@ async def test_update_execution_redacts_generated_script_before_persistence() ->
         },
     )
 
-    statement = session.execute.await_args.args[0]
+    statement = session.execute.await_args_list[-1].args[0]
     persisted = statement.compile().params["variables"]
     assert persisted == {
         "script": "[REDACTED]",
@@ -313,6 +351,15 @@ async def test_update_execution_redacts_generated_script_before_persistence() ->
 async def test_update_execution_classifies_json_text_and_default_result_types() -> None:
     session = AsyncMock()
     session.add = MagicMock()
+    session.execute.side_effect = [
+        item
+        for _ in range(4)
+        for item in (
+            None,
+            ExecuteResult(scalar_row=ExecutionStatus.RUNNING.value),
+            None,
+        )
+    ]
     repo = ExecutionRepository(session)
 
     for result, expected in [
@@ -322,8 +369,47 @@ async def test_update_execution_classifies_json_text_and_default_result_types() 
         (123, "json"),
     ]:
         await repo.update_execution(str(uuid4()), ExecutionStatus.SUCCESS, result=result)
-        statement = session.execute.await_args.args[0]
+        statement = session.execute.await_args_list[-1].args[0]
         assert statement.compile().params["result_type"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "current_status",
+    [ExecutionStatus.CANCELLING, ExecutionStatus.CANCELLED],
+)
+async def test_update_execution_preserves_accepted_cancellation(
+    current_status: ExecutionStatus,
+) -> None:
+    execution_id = uuid4()
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.execute.side_effect = [
+        None,
+        ExecuteResult(scalar_row=current_status.value),
+        None,
+    ]
+    repo = ExecutionRepository(session)
+
+    effective_status = await repo.update_execution(
+        str(execution_id),
+        ExecutionStatus.SUCCESS,
+        result={"completed": True},
+        error_message="late worker error",
+        time_saved=4,
+        value=12.5,
+    )
+
+    advisory_lock = session.execute.await_args_list[0]
+    assert advisory_lock.args[1] == {"execution_id": str(execution_id)}
+    statement = session.execute.await_args_list[-1].args[0]
+    values = statement.compile().params
+    assert values["status"] == ExecutionStatus.CANCELLED.value
+    assert "result" not in values
+    assert "error_message" not in values
+    assert "time_saved" not in values
+    assert "value" not in values
+    assert effective_status == ExecutionStatus.CANCELLED
 
 
 class OneOrNoneResult:
@@ -565,7 +651,9 @@ async def test_cancel_execution_handles_not_found_and_forbidden() -> None:
     session = AsyncMock()
     session.execute = AsyncMock(
         side_effect=[
+            None,
             ExecuteResult(scalar_row=None),
+            None,
             ExecuteResult(scalar_row=execution),
         ]
     )
@@ -614,7 +702,9 @@ async def test_cancel_execution_rejects_terminal_status_and_publishes_running_ca
     running = _execution(status=ExecutionStatus.RUNNING.value, executed_by=owner.user_id)
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=[
+        None,
         MagicMock(scalar_one_or_none=MagicMock(return_value=done)),
+        None,
         MagicMock(scalar_one_or_none=MagicMock(return_value=running)),
     ])
     repo = ExecutionRepository(session)
@@ -634,6 +724,37 @@ async def test_cancel_execution_rejects_terminal_status_and_publishes_running_ca
     publish.assert_awaited_once_with(
         execution_id=running.id,
         status=ExecutionStatus.CANCELLING.value,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_status",
+    [ExecutionStatus.SCHEDULED.value, ExecutionStatus.PENDING.value],
+)
+async def test_cancel_execution_immediately_cancels_unclaimed_work(
+    initial_status: str,
+) -> None:
+    owner = _user(is_superuser=True)
+    execution = _execution(status=initial_status, executed_by=owner.user_id)
+    session = AsyncMock()
+    session.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=execution)
+    )
+    repo = ExecutionRepository(session)
+
+    publish = AsyncMock()
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr("src.core.pubsub.publish_execution_update", publish)
+        result, error = await repo.cancel_execution(execution.id, owner)
+
+    assert error is None
+    assert result is not None
+    assert execution.status == ExecutionStatus.CANCELLED.value
+    assert "bifrost:workflow-execution:" in str(session.execute.await_args_list[0].args[0])
+    publish.assert_awaited_once_with(
+        execution_id=execution.id,
+        status=ExecutionStatus.CANCELLED.value,
     )
 
 

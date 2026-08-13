@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import text
+
 from src.core.pubsub import publish_execution_update, publish_history_update
 from src.core.redis_client import get_redis_client
 from src.jobs.rabbitmq import (
@@ -176,7 +178,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # (flush functions do Redis reads internally but DB writes share the session)
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await update_execution(
+            status = await update_execution(
                 execution_id=execution_id,
                 status=status,
                 result=workflow_result,
@@ -190,6 +192,10 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 value=roi_value,
                 session=session,
             )
+            if status == ExecutionStatus.CANCELLED:
+                workflow_result = None
+                roi_time_saved = 0
+                roi_value = 0.0
 
             try:
                 from src.services.events.processor import update_delivery_from_execution
@@ -338,7 +344,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # DB operations + flush — single short-lived session
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await update_execution(
+            status = await update_execution(
                 execution_id=execution_id,
                 status=status,
                 error_message=error,
@@ -471,7 +477,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         pending = await self._redis_client.get_pending_execution(execution_id)
 
         if pending is None:
-            existing_status = await self._get_existing_execution_status(execution_id)
+            existing_status = await self._fail_missing_pending_execution(execution_id)
             if existing_status is not None:
                 logger.info(
                     f"No pending execution found in Redis for {execution_id}, "
@@ -484,6 +490,11 @@ class WorkflowExecutionConsumer(BaseConsumer):
             logger.error(f"No pending execution found in Redis: {execution_id}")
             raise RetryableConsumerError(
                 f"pending execution not found in Redis: {execution_id}"
+            )
+
+        if not await self._claim_durable_execution(execution_id):
+            raise DuplicateMessage(
+                f"workflow execution {execution_id} is not claimable"
             )
 
         # Extract context from Redis pending record
@@ -845,6 +856,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
             # Don't mark as failed — the execution hasn't started yet.
             # Keep pending state intact so the requeued message can be routed later.
+            await self._release_durable_execution_claim(execution_id)
             # Re-raise so the consumer framework NACKs with requeue=True
             raise RetryableConsumerError(f"process pool admission rejected: {e}") from e
 
@@ -907,29 +919,102 @@ class WorkflowExecutionConsumer(BaseConsumer):
             )
             raise DomainFailureHandled("workflow setup failure recorded") from e
 
-    async def _get_existing_execution_status(self, execution_id: str) -> str | None:
-        """Return existing durable execution status for duplicate classification."""
-        from uuid import UUID
+    async def _fail_missing_pending_execution(
+        self,
+        execution_id: str,
+    ) -> str | None:
+        """Fail confirmed work whose required Redis context disappeared.
 
-        from sqlalchemy import select
-
-        from src.core.database import get_session_factory
+        Taking the publisher's advisory transaction lock prevents observing
+        SCHEDULED while a confirmed publication is still advancing to PENDING.
+        Unconfirmed SCHEDULED and terminal rows remain untouched.
+        """
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
         from src.models.orm.executions import Execution
 
         try:
             execution_uuid = UUID(execution_id)
-        except ValueError as e:
-            raise MalformedMessage(f"invalid execution_id UUID: {execution_id}") from e
+        except ValueError as exc:
+            raise MalformedMessage(
+                f"invalid execution_id UUID: {execution_id}"
+            ) from exc
 
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            result = await session.execute(
-                select(Execution.status).where(Execution.id == execution_uuid)
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
             )
-            status = result.scalar_one_or_none()
+            execution = await db.get(Execution, execution_uuid)
+            if execution is None:
+                return None
+            if execution.status == ExecutionStatus.PENDING:
+                execution.status = ExecutionStatus.FAILED
+                execution.error_message = (
+                    "Execution context was unavailable before execution"
+                )
+                execution.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+            return execution.status.value
 
-        if status is None:
-            return None
-        if hasattr(status, "value"):
-            return status.value
-        return str(status)
+    async def _claim_durable_execution(self, execution_id: str) -> bool:
+        """Claim a published durable execution before any execution side effects.
+
+        The publisher holds the same advisory transaction lock through broker
+        confirmation and its SCHEDULED -> PENDING transition. A fast consumer
+        therefore waits for that transaction, then advances only PENDING to
+        RUNNING. SCHEDULED means publication was not durably confirmed; any
+        other state is a redelivery or an already-finished execution.
+
+        Rows are absent for legacy inline-code dispatch, which retains its
+        existing Redis-first creation path.
+        """
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
+        from src.models.orm.executions import Execution
+
+        try:
+            execution_uuid = UUID(execution_id)
+        except ValueError as exc:
+            raise MalformedMessage(
+                f"invalid execution_id UUID: {execution_id}"
+            ) from exc
+
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
+            )
+            execution = await db.get(Execution, execution_uuid)
+            if execution is None:
+                return True
+            if execution.status != ExecutionStatus.PENDING:
+                return False
+            execution.status = ExecutionStatus.RUNNING
+            await db.commit()
+            return True
+
+    async def _release_durable_execution_claim(self, execution_id: str) -> None:
+        """Make an admission-rejected claim retryable without undoing cancellation."""
+        from src.core.database import get_db_context
+        from src.models.enums import ExecutionStatus
+        from src.models.orm.executions import Execution
+
+        async with get_db_context() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:workflow-execution:' || :execution_id))"
+                ),
+                {"execution_id": execution_id},
+            )
+            execution = await db.get(Execution, UUID(execution_id))
+            if execution is not None and execution.status == ExecutionStatus.RUNNING:
+                execution.status = ExecutionStatus.PENDING
+                await db.commit()

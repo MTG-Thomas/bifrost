@@ -416,6 +416,23 @@ class Scheduler:
         except ImportError:
             logger.warning("Solution export artifact cleanup not available")
 
+        # Replay payloads expire after seven days; the hashed at-most-once
+        # tombstones remain permanently so cleanup can never enable redispatch.
+        from src.jobs.schedulers.operation_receipts import (
+            cleanup_operation_receipt_payloads,
+        )
+
+        scheduler.add_job(
+            self._run_scheduled_task,
+            IntervalTrigger(hours=1),
+            id="mcp_operation_receipt_cleanup",
+            name="Expire MCP operation receipt replay payloads",
+            replace_existing=True,
+            args=["mcp_operation_receipt_cleanup", cleanup_operation_receipt_payloads],
+            **misfire_options,
+        )
+        logger.info("MCP operation receipt payload cleanup scheduled (hourly)")
+
         # Event cleanup - daily at 3:00 AM UTC (30-day retention)
         try:
             from src.jobs.schedulers.event_cleanup import cleanup_old_events

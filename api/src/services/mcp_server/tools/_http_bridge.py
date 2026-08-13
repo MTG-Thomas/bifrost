@@ -152,13 +152,24 @@ async def call_rest(
     ``dict`` / ``list`` (on JSON responses), ``None`` (on 204), or a raw
     string (on non-JSON bodies).
     """
+    request_headers: dict[str, str] | None = None
+    if (
+        method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+        and getattr(context, "operation_id", None)
+    ):
+        # REST endpoints that implement Idempotency-Key can now apply their
+        # canonical atomic deduplication. Endpoints that do not support it
+        # simply ignore the standard request header.
+        request_headers = {"Idempotency-Key": str(context.operation_id)}
+
+    request_kwargs: dict[str, Any] = {
+        "json": json_body,
+        "params": params,
+    }
+    if request_headers is not None:
+        request_kwargs["headers"] = request_headers
     async with rest_client(context) as client:
-        response = await client.request(
-            method.upper(),
-            path,
-            json=json_body,
-            params=params,
-        )
+        response = await client.request(method.upper(), path, **request_kwargs)
 
     if response.status_code == 204:
         return response.status_code, None

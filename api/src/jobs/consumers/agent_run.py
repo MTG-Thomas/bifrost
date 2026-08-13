@@ -7,7 +7,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from src.config import get_settings
@@ -15,7 +15,7 @@ from src.core.pubsub import publish_agent_run_update
 from src.core.cache.keys import agent_run_steps_stream_key
 from src.core.cache.redis_client import get_redis
 from src.core.database import get_session_factory
-from src.jobs.rabbitmq import BaseConsumer
+from src.jobs.rabbitmq import BaseConsumer, DuplicateMessage, MalformedMessage
 from src.models.orm.agents import Agent
 from src.models.orm.agent_runs import AgentRun
 from src.services.execution.autonomous_agent_executor import AutonomousAgentExecutor
@@ -51,25 +51,39 @@ class AgentRunConsumer(BaseConsumer):
             context_raw = await redis.get(redis_key)
 
         if not context_raw:
-            logger.error(f"Agent run {run_id}: context not found in Redis")
+            durable_status = await self._fail_missing_context_run(run_id)
+            logger.error(
+                "Agent run %s: context not found in Redis (durable_status=%s)",
+                run_id,
+                durable_status or "missing",
+            )
             return
 
         context = json.loads(context_raw)
+
+        if not await self._claim_durable_run(run_id):
+            raise DuplicateMessage(f"agent run {run_id} is not claimable")
 
         # Pre-cancel check: if cancelled before worker picked it up, skip execution
         if context.get("cancelled"):
             logger.info(f"Agent run {run_id}: pre-cancelled, skipping execution")
             async with self._session_factory() as db:
-                agent_run = AgentRun(
-                    id=UUID(run_id),
-                    agent_id=UUID(agent_id),
-                    trigger_type=trigger_type,
-                    status="cancelled",
-                    org_id=UUID(context["org_id"]) if context.get("org_id") else None,
-                    started_at=datetime.now(timezone.utc),
-                    completed_at=datetime.now(timezone.utc),
-                )
-                db.add(agent_run)
+                agent_run = await db.get(AgentRun, UUID(run_id))
+                if agent_run is None:
+                    agent_run = AgentRun(
+                        id=UUID(run_id),
+                        agent_id=UUID(agent_id),
+                        trigger_type=trigger_type,
+                        org_id=(
+                            UUID(context["org_id"])
+                            if context.get("org_id")
+                            else None
+                        ),
+                    )
+                    db.add(agent_run)
+                agent_run.status = "cancelled"
+                agent_run.started_at = datetime.now(timezone.utc)
+                agent_run.completed_at = datetime.now(timezone.utc)
                 await db.commit()
             return
 
@@ -94,28 +108,55 @@ class AgentRunConsumer(BaseConsumer):
 
             if not agent:
                 logger.error(f"Agent run {run_id}: agent {agent_id} not found")
+                async with self._session_factory() as db:
+                    missing_run = await db.get(AgentRun, UUID(run_id))
+                    if missing_run is not None:
+                        missing_run.status = "failed"
+                        missing_run.error = f"Agent {agent_id} not found"
+                        missing_run.completed_at = datetime.now(timezone.utc)
+                        await db.commit()
                 return
 
             # Create AgentRun record (brief DB session)
             async with self._session_factory() as db:
-                agent_run = AgentRun(
-                    id=UUID(run_id),
-                    agent_id=agent.id,
-                    trigger_type=trigger_type,
-                    trigger_source=context.get("trigger_source"),
-                    event_delivery_id=UUID(context["event_delivery_id"]) if context.get("event_delivery_id") else None,
-                    input=context.get("input"),
-                    output_schema=context.get("output_schema"),
-                    status="running",
-                    org_id=UUID(context["org_id"]) if context.get("org_id") else None,
-                    caller_user_id=context["caller"].get("user_id") if context.get("caller") else None,
-                    caller_email=context["caller"].get("email") if context.get("caller") else None,
-                    caller_name=context["caller"].get("name") if context.get("caller") else None,
-                    budget_max_iterations=agent.max_iterations,
-                    budget_max_tokens=agent.max_token_budget,
-                    started_at=datetime.now(timezone.utc),
+                agent_run = await db.get(AgentRun, UUID(run_id))
+                if agent_run is None:
+                    agent_run = AgentRun(
+                        id=UUID(run_id),
+                        agent_id=agent.id,
+                        trigger_type=trigger_type,
+                        status="running",
+                    )
+                    db.add(agent_run)
+                agent_run.trigger_source = context.get("trigger_source")
+                agent_run.event_delivery_id = (
+                    UUID(context["event_delivery_id"])
+                    if context.get("event_delivery_id")
+                    else None
                 )
-                db.add(agent_run)
+                agent_run.input = context.get("input")
+                agent_run.output_schema = context.get("output_schema")
+                agent_run.org_id = (
+                    UUID(context["org_id"]) if context.get("org_id") else None
+                )
+                agent_run.caller_user_id = (
+                    context["caller"].get("user_id")
+                    if context.get("caller")
+                    else None
+                )
+                agent_run.caller_email = (
+                    context["caller"].get("email")
+                    if context.get("caller")
+                    else None
+                )
+                agent_run.caller_name = (
+                    context["caller"].get("name")
+                    if context.get("caller")
+                    else None
+                )
+                agent_run.budget_max_iterations = agent.max_iterations
+                agent_run.budget_max_tokens = agent.max_token_budget
+                agent_run.started_at = datetime.now(timezone.utc)
                 await db.commit()
 
             await publish_agent_run_update(agent_run, agent.name)
@@ -246,24 +287,25 @@ class AgentRunConsumer(BaseConsumer):
 
         except Exception as e:
             logger.exception(f"Agent run {run_id} failed: {e}")
+            try:
+                async with self._session_factory() as db:
+                    run_obj = await db.get(AgentRun, UUID(run_id))
+                    if run_obj:
+                        run_obj.status = "failed"
+                        run_obj.error = str(e)
+                        run_obj.duration_ms = int((time.time() - start_time) * 1000)
+                        run_obj.completed_at = datetime.now(timezone.utc)
+
+                        # Still flush any buffered steps on failure
+                        if executor:
+                            await executor.flush_to_db(db)
+
+                        await db.commit()
+                        agent_run = run_obj
+            except Exception:
+                logger.exception(f"Failed to update agent_run {run_id} after error")
+
             if agent_run is not None:
-                try:
-                    async with self._session_factory() as db:
-                        run_obj = await db.get(AgentRun, UUID(run_id))
-                        if run_obj:
-                            run_obj.status = "failed"
-                            run_obj.error = str(e)
-                            run_obj.duration_ms = int((time.time() - start_time) * 1000)
-                            run_obj.completed_at = datetime.now(timezone.utc)
-
-                            # Still flush any buffered steps on failure
-                            if executor:
-                                await executor.flush_to_db(db)
-
-                            await db.commit()
-                except Exception:
-                    logger.exception(f"Failed to update agent_run {run_id} after error")
-
                 # Clean up Redis Stream on failure too
                 try:
                     async with get_redis() as r:
@@ -297,6 +339,67 @@ class AgentRunConsumer(BaseConsumer):
             except Exception as e:
                 # Context key has a TTL; leaking one for a few minutes is harmless
                 logger.debug(f"failed to delete agent_run context key for {run_id}: {e}")
+
+    async def _claim_durable_run(self, run_id: str) -> bool:
+        """Claim a published run under the publisher's advisory lock.
+
+        Existing queued rows advance to running before the agent can execute.
+        Scheduled rows represent an unconfirmed publication and all later
+        states represent redelivery, so neither may execute. Legacy messages
+        without a pre-created row retain the historical consumer-create path.
+        """
+        try:
+            run_uuid = UUID(run_id)
+        except ValueError as exc:
+            raise MalformedMessage(f"invalid agent run UUID: {run_id}") from exc
+
+        async with self._session_factory() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:agent-run:' || :run_id))"
+                ),
+                {"run_id": run_id},
+            )
+            agent_run = await db.get(AgentRun, run_uuid)
+            if agent_run is None:
+                return True
+            if agent_run.status != "queued":
+                return False
+            agent_run.status = "running"
+            await db.commit()
+            return True
+
+    async def _fail_missing_context_run(self, run_id: str) -> str | None:
+        """Fail a published run whose required Redis context disappeared.
+
+        The publisher uses the same transaction lock. If it is still between
+        broker confirmation and the queued commit, this waits and observes the
+        committed state. SCHEDULED and terminal rows are left untouched; only
+        a confirmed queued run is failed.
+        """
+        try:
+            run_uuid = UUID(run_id)
+        except ValueError as exc:
+            raise MalformedMessage(f"invalid agent run UUID: {run_id}") from exc
+
+        async with self._session_factory() as db:
+            await db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('bifrost:agent-run:' || :run_id))"
+                ),
+                {"run_id": run_id},
+            )
+            agent_run = await db.get(AgentRun, run_uuid)
+            if agent_run is None:
+                return None
+            if agent_run.status == "queued":
+                agent_run.status = "failed"
+                agent_run.error = "Agent run context was unavailable before execution"
+                agent_run.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+            return str(agent_run.status)
 
     @staticmethod
     async def _cancel_watcher(

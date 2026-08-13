@@ -52,6 +52,7 @@ class TestSchedulerDiagnostics:
             "webhook_renewal",
             "solution_update_check",
             "solution_export_job_cleanup",
+            "mcp_operation_receipt_cleanup",
             "event_cleanup",
             "stuck_event_cleanup",
             "worker_metrics_sampling",
