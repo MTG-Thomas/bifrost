@@ -67,7 +67,13 @@ async def start_workflow_catalog_sync(mcp: "FastMCP") -> int:
         WORKFLOW_CATALOG_CHANNEL,
         _handle_workflow_catalog_changed,
     )
-    return await refresh_workflow_tools(mcp=mcp, force=True)
+    try:
+        return await refresh_workflow_tools(mcp=mcp, force=True)
+    except BaseException:
+        # Lifespan never reaches its ``finally`` block when startup fails, so
+        # unwind this process-local registration here as well.
+        stop_workflow_catalog_sync()
+        raise
 
 
 def stop_workflow_catalog_sync() -> None:

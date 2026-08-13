@@ -363,6 +363,67 @@ class TestToolNameMappings:
 
         assert server._WORKFLOW_CATALOG_REVISION == 2
 
+    @pytest.mark.asyncio
+    async def test_refresh_reconciles_when_shared_revision_moves_backwards(
+        self,
+        monkeypatch,
+    ):
+        """A restored or replaced Redis must not leave a replica stale."""
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 8)
+        monkeypatch.setattr(
+            server,
+            "_WORKFLOW_ID_TO_TOOL_NAME",
+            {"current-id": "current_tool"},
+        )
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            AsyncMock(return_value=1),
+        )
+
+        assert await server.refresh_workflow_tools(target_revision=1) == 1
+
+        register.assert_awaited_once_with(mcp)
+        assert server._WORKFLOW_CATALOG_REVISION == 1
+
+    @pytest.mark.asyncio
+    async def test_refresh_ignores_delayed_pubsub_revision(
+        self,
+        monkeypatch,
+    ):
+        from src.services.mcp_server import catalog_sync, server
+
+        mcp = SimpleNamespace(
+            local_provider=SimpleNamespace(remove_tool=MagicMock()),
+        )
+        register = AsyncMock(return_value=1)
+        monkeypatch.setattr(server, "_fastmcp_instance", mcp)
+        monkeypatch.setattr(server, "_WORKFLOW_CATALOG_REVISION", 8)
+        monkeypatch.setattr(
+            server,
+            "_WORKFLOW_ID_TO_TOOL_NAME",
+            {"current-id": "current_tool"},
+        )
+        monkeypatch.setattr(server, "_register_workflow_tools", register)
+        monkeypatch.setattr(
+            catalog_sync,
+            "get_workflow_catalog_revision",
+            AsyncMock(return_value=8),
+        )
+
+        assert await server.refresh_workflow_tools(target_revision=3) == 1
+
+        register.assert_not_awaited()
+        assert server._WORKFLOW_CATALOG_REVISION == 8
+
 
 class TestMCPContext:
     """Tests for MCPContext claim normalization."""

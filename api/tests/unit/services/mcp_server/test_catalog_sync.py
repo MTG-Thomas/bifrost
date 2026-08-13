@@ -103,3 +103,32 @@ async def test_start_and_stop_use_shared_pubsub_manager(monkeypatch) -> None:
         catalog_sync.WORKFLOW_CATALOG_CHANNEL,
         catalog_sync._handle_workflow_catalog_changed,
     )
+
+
+@pytest.mark.asyncio
+async def test_start_unsubscribes_when_initial_catalog_refresh_fails(
+    monkeypatch,
+) -> None:
+    from src.services.mcp_server import server
+
+    subscribe = AsyncMock()
+    unsubscribe = MagicMock()
+    monkeypatch.setattr(catalog_sync.pubsub_manager, "subscribe_internal", subscribe)
+    monkeypatch.setattr(
+        catalog_sync.pubsub_manager,
+        "unsubscribe_internal",
+        unsubscribe,
+    )
+    monkeypatch.setattr(
+        server,
+        "refresh_workflow_tools",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await catalog_sync.start_workflow_catalog_sync(object())
+
+    unsubscribe.assert_called_once_with(
+        catalog_sync.WORKFLOW_CATALOG_CHANNEL,
+        catalog_sync._handle_workflow_catalog_changed,
+    )

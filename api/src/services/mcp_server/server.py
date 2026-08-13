@@ -880,16 +880,25 @@ async def refresh_workflow_tools(
         return 0
 
     async with _WORKFLOW_CATALOG_REFRESH_LOCK:
+        from src.services.mcp_server.catalog_sync import (
+            get_workflow_catalog_revision,
+        )
+
         if (
             not force
             and target_revision is not None
             and _WORKFLOW_CATALOG_REVISION >= target_revision
         ):
-            return len(_WORKFLOW_ID_TO_TOOL_NAME)
+            if _WORKFLOW_CATALOG_REVISION == target_revision:
+                return len(_WORKFLOW_ID_TO_TOOL_NAME)
 
-        from src.services.mcp_server.catalog_sync import (
-            get_workflow_catalog_revision,
-        )
+            # A delayed pub/sub message may carry an older revision after a
+            # request already reconciled this replica. Only rebuild when the
+            # durable Redis revision itself moved backwards (for example,
+            # after a restore or replacement).
+            shared_revision = await get_workflow_catalog_revision()
+            if shared_revision >= _WORKFLOW_CATALOG_REVISION:
+                return len(_WORKFLOW_ID_TO_TOOL_NAME)
 
         while True:
             revision_before = await get_workflow_catalog_revision()

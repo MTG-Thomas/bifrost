@@ -194,6 +194,7 @@ async def {function_name}(message: str) -> str:
         assert function_name in {
             tool["name"] for tool in primary_list["result"]["tools"]
         }
+        assert primary_list["result"]["tools"] == replica_list["result"]["tools"]
         _assert_private_zero_ttl(primary_list)
 
         call_payload = _mcp_post(
