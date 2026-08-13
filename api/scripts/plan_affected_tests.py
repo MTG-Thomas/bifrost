@@ -84,6 +84,7 @@ COMPREHENSIVE_BASENAMES = frozenset(
 PYTHON_WIRING_SINKS = frozenset(
     {
         "api/src/main.py",
+        "api/src/routers/__init__.py",
         "api/src/worker/main.py",
         "api/src/scheduler/main.py",
     }
@@ -139,6 +140,7 @@ class PythonNode:
     imports: frozenset[str]
     routes: frozenset[str]
     requests: frozenset[str]
+    nonliteral_dynamic_import: bool = False
 
 
 @dataclass
@@ -368,6 +370,7 @@ def _python_node(path: str, index: Mapping[str, str]) -> PythonNode:
     requests: set[str] = set()
     package = _python_module(path).split(".")[:-1]
     router_prefixes: dict[str, str] = {}
+    nonliteral_dynamic_import = False
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -423,8 +426,11 @@ def _python_node(path: str, index: Mapping[str, str]) -> PythonNode:
                     or not isinstance(node.args[0], ast.Constant)
                     or not isinstance(node.args[0].value, str)
                 ):
-                    raise PlanError(f"non-literal dynamic import in {path}")
-                imports.update(_resolve_python_module(node.args[0].value, (), index))
+                    nonliteral_dynamic_import = True
+                else:
+                    imports.update(
+                        _resolve_python_module(node.args[0].value, (), index)
+                    )
             if (
                 call_name
                 in {"get", "post", "put", "patch", "delete", "options", "head"}
@@ -463,7 +469,12 @@ def _python_node(path: str, index: Mapping[str, str]) -> PythonNode:
                 routes.add(f"{router_prefixes[owner.id]}{suffix}")
             elif suffix == "":
                 routes.add(router_prefixes[owner.id])
-    return PythonNode(frozenset(imports), frozenset(routes), frozenset(requests))
+    return PythonNode(
+        frozenset(imports),
+        frozenset(routes),
+        frozenset(requests),
+        nonliteral_dynamic_import,
+    )
 
 
 def _route_matches(route: str, request: str) -> bool:
@@ -534,6 +545,10 @@ def _plan_python(
         path: set(node.imports) for path, node in parsed.items() if path in available
     }
     impacted = _reverse_closure(changed_source, dependencies, PYTHON_WIRING_SINKS)
+    if uncertain := sorted(
+        path for path in impacted if parsed[path].nonliteral_dynamic_import
+    ):
+        raise PlanError(f"non-literal dynamic import in {uncertain[0]}")
 
     test_direct: dict[str, set[str]] = {
         path: set(parsed[path].imports) for path in test_files
@@ -630,8 +645,6 @@ def _client_imports(path: str, available: frozenset[str]) -> set[str]:
     specifiers = set(IMPORT_FROM_RE.findall(text))
     specifiers.update(SIDE_EFFECT_IMPORT_RE.findall(text))
     specifiers.update(DYNAMIC_IMPORT_RE.findall(text))
-    if DYNAMIC_IMPORT_CALL_RE.search(DYNAMIC_IMPORT_RE.sub("", text)):
-        raise PlanError(f"non-literal dynamic import in {path}")
     resolved: set[str] = set()
     for specifier in specifiers:
         resolved.update(_client_candidates(path, specifier, available))
@@ -648,6 +661,14 @@ def _plan_client(
     available = frozenset(source_files)
     dependencies = {path: _client_imports(path, available) for path in source_files}
     impacted = _reverse_closure(changed_source, dependencies, CLIENT_WIRING_SINKS)
+    if uncertain := sorted(
+        path
+        for path in impacted
+        if DYNAMIC_IMPORT_CALL_RE.search(
+            DYNAMIC_IMPORT_RE.sub("", (REPO_ROOT / path).read_text(encoding="utf-8"))
+        )
+    ):
+        raise PlanError(f"non-literal dynamic import in {uncertain[0]}")
     test_direct = {
         path: _client_imports(path, available) for path in (*unit_files, *e2e_files)
     }
