@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import sys
 from typing import Any
 
 
@@ -22,12 +22,9 @@ def docker_pyright_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    source = Path("pyrightconfig.json")
-    destination = Path("pyrightconfig.docker.json")
-    config = json.loads(source.read_text())
-    destination.write_text(
-        json.dumps(docker_pyright_config(config), indent=2) + "\n"
-    )
+    config = json.load(sys.stdin)
+    json.dump(docker_pyright_config(config), sys.stdout, indent=2)
+    sys.stdout.write("\n")
 
 
 if __name__ == "__main__":

@@ -106,3 +106,8 @@ def test_ci_job_blocks_and_retains_runner_artifacts() -> None:
     assert artifact["with"]["path"] == "/tmp/bifrost-*/mcp-conformance/"
     assert artifact["with"]["if-no-files-found"] == "error"
     assert "mcp-conformance" in workflow["jobs"]["verify-release-manifest"]["needs"]
+    e2e_gate = workflow["jobs"]["test-e2e-gate"]
+    assert "mcp-conformance" in e2e_gate["needs"]
+    gate_script = e2e_gate["steps"][0]["run"]
+    assert "needs.mcp-conformance.result" in gate_script
+    assert "MCP conformance failed or was cancelled" in gate_script

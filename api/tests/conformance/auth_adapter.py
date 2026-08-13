@@ -1,42 +1,41 @@
-"""Test-only authenticated transport adapter for the official MCP runner.
+"""Test-only authenticated raw HTTP adapter for the official MCP runner.
 
 The upstream conformance CLI cannot attach an Authorization header to server
 requests. This adapter runs only on the isolated Compose test network and
-forwards request body bytes to Bifrost's real ``/mcp`` endpoint while adding
-resource-bound ``Authorization`` and canonical ``Host`` headers. It does not
-inspect or rewrite MCP payloads, and it does not bypass Bifrost authentication
-or dispatch.
+forwards request bytes to Bifrost's real ``/mcp`` endpoint while adding a
+resource-bound bearer token and canonical ``Host`` header. Keeping this adapter
+at the raw HTTP layer is intentional: the official header-validation scenario
+must reach Bifrost without an ASGI or HTTP client normalizing MCP field values.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
-from contextlib import asynccontextmanager
-
-import httpx
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
-from starlette.routing import Route
+import asyncio
+from collections.abc import Sequence
 
 from tests.fixtures.auth import create_test_jwt
 
 
 UPSTREAM_ORIGIN = "http://api:8000"
 MCP_RESOURCE = f"{UPSTREAM_ORIGIN}/mcp"
-UPSTREAM_HOST = "api:8000"
+UPSTREAM_HOST = "api"
+UPSTREAM_PORT = 8000
+LISTEN_HOST = "0.0.0.0"
+LISTEN_PORT = 8080
+MAX_BODY_BYTES = 16 * 1024 * 1024
 
 _HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "proxy-connection",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
+    b"connection",
+    b"keep-alive",
+    b"proxy-authenticate",
+    b"proxy-authorization",
+    b"proxy-connection",
+    b"te",
+    b"trailer",
+    b"transfer-encoding",
+    b"upgrade",
 }
+_REPLACED_HEADERS = _HOP_BY_HOP_HEADERS | {b"authorization", b"host"}
 
 
 def _authorization_header() -> str:
@@ -44,95 +43,159 @@ def _authorization_header() -> str:
     return f"Bearer {token}"
 
 
-def _upstream_request_headers(
-    headers: Iterable[tuple[str, str]], authorization: str
-) -> list[tuple[str, str]]:
+def _split_request_head(head: bytes) -> tuple[bytes, list[bytes]]:
+    lines = head.removesuffix(b"\r\n\r\n").split(b"\r\n")
+    if not lines or len(lines[0].split(b" ")) != 3:
+        raise ValueError("invalid HTTP request line")
+    if any(not line or b":" not in line for line in lines[1:]):
+        raise ValueError("invalid HTTP request header")
+    return lines[0], lines[1:]
+
+
+def _header_name(line: bytes) -> bytes:
+    return line.split(b":", 1)[0].strip().lower()
+
+
+def _header_value(line: bytes) -> bytes:
+    return line.split(b":", 1)[1].strip(b" \t")
+
+
+def _content_length(headers: Sequence[bytes]) -> int:
+    values = [
+        _header_value(line)
+        for line in headers
+        if _header_name(line) == b"content-length"
+    ]
+    if not values:
+        return 0
+    if len(values) != 1:
+        raise ValueError("multiple Content-Length headers")
+    try:
+        length = int(values[0])
+    except ValueError as exc:
+        raise ValueError("invalid Content-Length header") from exc
+    if length < 0 or length > MAX_BODY_BYTES:
+        raise ValueError("request body exceeds adapter limit")
+    return length
+
+
+def _request_target(request_line: bytes) -> bytes:
+    return request_line.split(b" ", 2)[1].split(b"?", 1)[0]
+
+
+def _build_upstream_request(
+    request_line: bytes,
+    headers: Sequence[bytes],
+    body: bytes,
+    authorization: str,
+    *,
+    upstream_host: str = UPSTREAM_HOST,
+    upstream_port: int = UPSTREAM_PORT,
+) -> bytes:
+    """Build an upstream request without modifying end-to-end header lines."""
     forwarded = [
-        # RFC 9110 section 5.5 defines leading/trailing SP/HTAB as optional
-        # whitespace outside the field value. A forwarding intermediary must
-        # not turn that transport syntax into application data.
-        (name, value.strip(" \t"))
-        for name, value in headers
-        if name.lower()
-        not in _HOP_BY_HOP_HEADERS | {"authorization", "content-length", "host"}
+        line for line in headers if _header_name(line) not in _REPLACED_HEADERS
     ]
     forwarded.extend(
         [
-            ("Authorization", authorization),
-            ("Host", UPSTREAM_HOST),
+            f"Authorization: {authorization}".encode("ascii"),
+            f"Host: {upstream_host}:{upstream_port}".encode("ascii"),
+            b"Connection: close",
         ]
     )
-    return forwarded
+    return b"\r\n".join([request_line, *forwarded, b"", body])
 
 
-def _downstream_response_headers(
-    headers: Iterable[tuple[str, str]],
-) -> list[tuple[bytes, bytes]]:
-    return [
-        (name.encode("latin-1"), value.encode("latin-1"))
-        for name, value in headers
-        if name.lower() not in _HOP_BY_HOP_HEADERS
-    ]
+async def _send_response(
+    writer: asyncio.StreamWriter,
+    status: bytes,
+    body: bytes,
+    *,
+    content_type: bytes = b"text/plain; charset=utf-8",
+) -> None:
+    writer.write(
+        b"\r\n".join(
+            [
+                b"HTTP/1.1 " + status,
+                b"Content-Type: " + content_type,
+                f"Content-Length: {len(body)}".encode("ascii"),
+                b"Connection: close",
+                b"",
+                body,
+            ]
+        )
+    )
+    await writer.drain()
 
 
-@asynccontextmanager
-async def _lifespan(app: Starlette) -> AsyncIterator[None]:
-    app.state.authorization = _authorization_header()
-    app.state.client = httpx.AsyncClient(timeout=None)
+async def _handle_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    *,
+    authorization: str,
+    upstream_host: str = UPSTREAM_HOST,
+    upstream_port: int = UPSTREAM_PORT,
+) -> None:
     try:
-        yield
-    finally:
-        await app.state.client.aclose()
+        head = await reader.readuntil(b"\r\n\r\n")
+        request_line, headers = _split_request_head(head)
+        target = _request_target(request_line)
+        body = await reader.readexactly(_content_length(headers))
 
+        if target == b"/health":
+            await _send_response(
+                writer,
+                b"200 OK",
+                b'{"status":"ok"}',
+                content_type=b"application/json",
+            )
+            return
+        if target != b"/mcp":
+            await _send_response(writer, b"404 Not Found", b"Not Found")
+            return
 
-async def _health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok"})
-
-
-async def _proxy(request: Request) -> StreamingResponse:
-    body = await request.body()
-    query = f"?{request.url.query}" if request.url.query else ""
-    upstream_request = request.app.state.client.build_request(
-        request.method,
-        f"{UPSTREAM_ORIGIN}{request.url.path}{query}",
-        headers=_upstream_request_headers(
-            (
-                (name.decode("latin-1"), value.decode("latin-1"))
-                for name, value in request.headers.raw
-            ),
-            request.app.state.authorization,
-        ),
-        content=body,
-    )
-    upstream_response = await request.app.state.client.send(
-        upstream_request, stream=True
-    )
-
-    async def response_body() -> AsyncIterator[bytes]:
+        upstream_reader, upstream_writer = await asyncio.open_connection(
+            upstream_host, upstream_port
+        )
         try:
-            async for chunk in upstream_response.aiter_raw():
-                yield chunk
+            upstream_writer.write(
+                _build_upstream_request(
+                    request_line,
+                    headers,
+                    body,
+                    authorization,
+                    upstream_host=upstream_host,
+                    upstream_port=upstream_port,
+                )
+            )
+            await upstream_writer.drain()
+            while chunk := await upstream_reader.read(64 * 1024):
+                writer.write(chunk)
+                await writer.drain()
         finally:
-            await upstream_response.aclose()
+            upstream_writer.close()
+            await upstream_writer.wait_closed()
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError):
+        await _send_response(writer, b"400 Bad Request", b"Bad Request")
+    except (ConnectionError, OSError):
+        await _send_response(writer, b"502 Bad Gateway", b"Bad Gateway")
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
-    response = StreamingResponse(
-        response_body(),
-        status_code=upstream_response.status_code,
-    )
-    response.raw_headers = _downstream_response_headers(
-        upstream_response.headers.multi_items()
-    )
-    return response
 
-
-app = Starlette(
-    routes=[
-        Route("/health", _health, methods=["GET"]),
-        Route(
-            "/{path:path}",
-            _proxy,
-            methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+async def serve() -> None:
+    authorization = _authorization_header()
+    server = await asyncio.start_server(
+        lambda reader, writer: _handle_client(
+            reader, writer, authorization=authorization
         ),
-    ],
-    lifespan=_lifespan,
-)
+        LISTEN_HOST,
+        LISTEN_PORT,
+    )
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(serve())

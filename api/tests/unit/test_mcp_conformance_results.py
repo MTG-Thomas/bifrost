@@ -5,7 +5,23 @@ from __future__ import annotations
 import json
 import xml.etree.ElementTree as ET
 
-from tests.conformance.summarize_results import main
+import pytest
+
+from tests.conformance.summarize_results import (
+    EXPECTED_CHECK_PROFILES,
+    EXPECTED_GATEWAY_TOOLS,
+    main,
+)
+
+
+def _checks_for(scenario: str) -> list[dict]:
+    checks = [
+        {"id": check_id, "name": name, "status": status}
+        for check_id, name, status in EXPECTED_CHECK_PROFILES[scenario]
+    ]
+    if scenario == "tools-list":
+        checks[0]["details"] = {"tools": EXPECTED_GATEWAY_TOOLS}
+    return checks
 
 
 def _write_checks(tmp_path, scenario: str, checks: list[dict]) -> None:
@@ -14,33 +30,30 @@ def _write_checks(tmp_path, scenario: str, checks: list[dict]) -> None:
     (result_dir / "checks.json").write_text(json.dumps(checks))
 
 
-def test_summary_accepts_non_empty_success_and_skip_results(tmp_path) -> None:
-    _write_checks(
-        tmp_path,
-        "caching",
-        [
-            {"id": "cache-hints", "status": "SUCCESS"},
-            {"id": "resource-read", "status": "SKIPPED"},
-        ],
-    )
+def _summarize(tmp_path, scenario: str) -> tuple[int, ET.Element]:
     junit = tmp_path / "junit.xml"
-
     status = main(
         [
             "--results-dir",
             str(tmp_path),
             "--scenario",
-            "caching",
+            scenario,
             "--junit",
             str(junit),
         ]
     )
+    return status, ET.parse(junit).getroot()
 
-    suite = ET.parse(junit).getroot()
+
+def test_summary_accepts_exact_pinned_success_and_skip_profile(tmp_path) -> None:
+    _write_checks(tmp_path, "caching", _checks_for("caching"))
+
+    status, suite = _summarize(tmp_path, "caching")
+
     assert status == 0
     assert suite.attrib == {
         "name": "mcp-conformance",
-        "tests": "2",
+        "tests": "8",
         "failures": "0",
         "errors": "0",
         "skipped": "1",
@@ -48,79 +61,59 @@ def test_summary_accepts_non_empty_success_and_skip_results(tmp_path) -> None:
 
 
 def test_summary_fails_closed_for_missing_scenario_and_writes_junit(tmp_path) -> None:
-    junit = tmp_path / "junit.xml"
+    status, suite = _summarize(tmp_path, "tools-list")
 
-    status = main(
-        [
-            "--results-dir",
-            str(tmp_path),
-            "--scenario",
-            "tools-list",
-            "--junit",
-            str(junit),
-        ]
-    )
-
-    suite = ET.parse(junit).getroot()
     assert status == 1
     assert suite.attrib["tests"] == "1"
     assert suite.attrib["failures"] == "1"
 
 
-def test_summary_fails_for_warning_or_failure_checks(tmp_path) -> None:
-    _write_checks(
-        tmp_path,
-        "http-header-validation",
-        [
-            {"id": "valid", "status": "SUCCESS"},
-            {"id": "should", "status": "WARNING", "errorMessage": "gap"},
-        ],
-    )
-    junit = tmp_path / "junit.xml"
+@pytest.mark.parametrize("change", ["missing", "extra", "duplicate", "new-skip"])
+def test_summary_rejects_any_change_to_pinned_check_profile(tmp_path, change) -> None:
+    checks = _checks_for("caching")
+    if change == "missing":
+        checks.pop(0)
+    elif change == "extra":
+        checks.append({"id": "new-check", "name": "NewCheck", "status": "SUCCESS"})
+    elif change == "duplicate":
+        checks.append(dict(checks[0]))
+    else:
+        checks[0]["status"] = "SKIPPED"
+    _write_checks(tmp_path, "caching", checks)
 
-    status = main(
-        [
-            "--results-dir",
-            str(tmp_path),
-            "--scenario",
-            "http-header-validation",
-            "--junit",
-            str(junit),
-        ]
-    )
+    status, suite = _summarize(tmp_path, "caching")
 
-    suite = ET.parse(junit).getroot()
     assert status == 1
-    assert suite.attrib["tests"] == "2"
-    assert suite.attrib["failures"] == "1"
+    assert int(suite.attrib["failures"]) >= 1
 
 
-def test_summary_fails_when_official_tools_list_does_not_match_gateway(tmp_path) -> None:
-    _write_checks(
-        tmp_path,
-        "tools-list",
-        [
-            {
-                "id": "tools-list",
-                "status": "SUCCESS",
-                "details": {"tools": ["unexpected_tool"]},
-            }
-        ],
-    )
-    junit = tmp_path / "junit.xml"
+def test_summary_fails_for_warning_check(tmp_path) -> None:
+    checks = _checks_for("http-header-validation")
+    checks[0]["status"] = "WARNING"
+    checks[0]["errorMessage"] = "gap"
+    _write_checks(tmp_path, "http-header-validation", checks)
 
-    status = main(
-        [
-            "--results-dir",
-            str(tmp_path),
-            "--scenario",
-            "tools-list",
-            "--junit",
-            str(junit),
-        ]
-    )
+    status, suite = _summarize(tmp_path, "http-header-validation")
 
-    suite = ET.parse(junit).getroot()
     assert status == 1
-    assert suite.attrib["tests"] == "2"
+    assert int(suite.attrib["failures"]) >= 1
+
+
+@pytest.mark.parametrize(
+    "observed",
+    [
+        ["unexpected_tool"],
+        [*EXPECTED_GATEWAY_TOOLS, EXPECTED_GATEWAY_TOOLS[0]],
+        list(reversed(EXPECTED_GATEWAY_TOOLS)),
+    ],
+)
+def test_summary_requires_exact_ordered_four_tool_gateway(tmp_path, observed) -> None:
+    checks = _checks_for("tools-list")
+    checks[0]["details"] = {"tools": observed}
+    _write_checks(tmp_path, "tools-list", checks)
+
+    status, suite = _summarize(tmp_path, "tools-list")
+
+    assert status == 1
+    assert suite.attrib["tests"] == "4"
     assert suite.attrib["failures"] == "1"

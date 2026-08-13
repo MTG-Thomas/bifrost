@@ -608,7 +608,7 @@ jobs:
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
     if: always()
-    needs: [test-e2e, test-client-e2e]
+    needs: [test-e2e, test-client-e2e, mcp-conformance]
     runs-on: ubuntu-latest
     name: E2E Tests
     steps:
@@ -622,7 +622,11 @@ jobs:
             echo "Client e2e tests failed or were cancelled (result: ${{ needs.test-client-e2e.result }})"
             exit 1
           fi
-          echo "All backend e2e shards and client Playwright tests passed."
+          if [ "${{ needs.mcp-conformance.result }}" != "success" ]; then
+            echo "MCP conformance failed or was cancelled (result: ${{ needs.mcp-conformance.result }})"
+            exit 1
+          fi
+          echo "All backend e2e shards, client Playwright tests, and MCP conformance passed."
 
   # =============================================================================
   # Dev Build - Every push to main, gated by unit tests only

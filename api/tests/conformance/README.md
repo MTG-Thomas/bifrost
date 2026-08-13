@@ -23,12 +23,17 @@ has no option for a bearer token or request headers. The
 - it mints a fresh two-hour JWT through `tests.fixtures.auth.create_test_jwt`,
   bound to the real `http://api:8000/mcp` resource, `mcp:access` scope, and MCP
   audience;
-- it forwards method, path, query, body, MCP headers, response status, headers,
-  and body to/from the real `/mcp` application;
-- it replaces only `Authorization` and the canonical upstream `Host`, while
-  applying RFC 9110 hop-by-hop filtering and optional-whitespace parsing; and
+- it forwards the raw request line, body, MCP header lines, and raw response
+  bytes to/from the real `/mcp` application;
+- it replaces only `Authorization` and the canonical upstream `Host` while
+  filtering hop-by-hop transport headers; and
 - it neither reads nor rewrites MCP payloads and provides no authentication or
   dispatch bypass.
+
+The real Bifrost ASGI boundary, not the adapter, parses RFC 9110 optional
+whitespace around MCP standard routing-header values before FastMCP validates
+them. The adapter regression test proves those header bytes reach the upstream
+socket unchanged.
 
 Before invoking the adapter, `./test.sh` directly requires the protected
 endpoint to return `401 Unauthorized` with an RFC 9728 resource-metadata
@@ -49,10 +54,12 @@ expected-failures file:
   headers, mismatch errors, case handling, and RFC 9110 optional whitespace.
 
 After the runner exits, `summarize_results.py` independently requires exactly
-one non-empty result directory for every blocking scenario, at least one
-successful check per scenario, and no failures or warnings. It always writes a
-JUnit report. A runner crash, absent artifact, empty check array, warning, or
-failed check therefore cannot silently pass as zero tests.
+one non-empty result directory for every blocking scenario and the exact
+reviewed check identity/status profile for this runner pin. It allows only the
+documented `resources/read` skip, rejects missing, extra, duplicated, or newly
+skipped checks, and requires the exact ordered four-tool gateway list. It
+always writes a JUnit report. A runner crash or changed artifact therefore
+cannot silently pass as zero or reduced tests.
 
 ## Advisory coverage and deliberate exclusions
 

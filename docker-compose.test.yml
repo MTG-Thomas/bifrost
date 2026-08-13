@@ -448,12 +448,9 @@ services:
     volumes:
       - ./api/tests:/app/tests:ro
     command:
-      - uvicorn
-      - tests.conformance.auth_adapter:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
+      - python
+      - -m
+      - tests.conformance.auth_adapter
     depends_on:
       api:
         condition: service_healthy
