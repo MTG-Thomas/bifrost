@@ -3,7 +3,9 @@
 When an admin pastes a server URL in the "New MCP Server" form (mockup §3)
 and clicks "Discover OAuth metadata", the router calls
 ``discover_oauth_metadata`` which fetches the two RFC-defined ``/.well-known``
-endpoints from the server's host and merges them into a single dict. The
+endpoints and merges them into a single dict. Authorization-server metadata
+is host-scoped; RFC 9728 protected-resource metadata preserves the MCP resource
+path. The
 result preserves each discovery document under its own key while retaining
 the flattened fields consumed by the existing form. The payload is stored on
 ``MCPServer.discovery_metadata`` for diff-on-rediscovery later.
@@ -31,6 +33,29 @@ logger = logging.getLogger(__name__)
 _DISCOVERY_TIMEOUT_SECONDS = 5.0
 _AUTHZ_SERVER_PATH = "/.well-known/oauth-authorization-server"
 _PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource"
+_PROTECTED_RESOURCE_FLAT_FIELDS = frozenset(
+    {
+        "resource",
+        "authorization_servers",
+        "bearer_methods_supported",
+        "authorization_details_types_supported",
+        "dpop_bound_access_tokens_required",
+        "dpop_signing_alg_values_supported",
+        "resource_documentation",
+        "resource_name",
+        "resource_policy_uri",
+        "resource_signing_alg_values_supported",
+        "resource_encryption_alg_values_supported",
+        "resource_encryption_enc_values_supported",
+        "resource_tos_uri",
+        "scopes_supported",
+        "jwks_uri",
+        "signed_metadata",
+        "tls_client_certificate_bound_access_tokens",
+        # Compatibility alias used by existing MCP server templates.
+        "audience",
+    }
+)
 
 
 def _well_known_base(server_url: str) -> str:
@@ -47,11 +72,22 @@ def _well_known_base(server_url: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
 
 
+def _protected_resource_metadata_url(server_url: str) -> str:
+    """Build the RFC 9728 path-aware protected-resource metadata URL."""
+    parsed = urlparse(server_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid server_url: {server_url!r}")
+    resource_path = parsed.path.rstrip("/")
+    well_known_path = f"{_PROTECTED_RESOURCE_PATH}{resource_path}"
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, well_known_path, "", "", "")
+    )
+
+
 async def _fetch_well_known(
-    client: httpx.AsyncClient, base: str, path: str
+    client: httpx.AsyncClient, url: str
 ) -> dict[str, Any] | None:
     """Fetch a single ``/.well-known`` endpoint, returning its JSON body or None."""
-    url = base + path
     try:
         response = await client.get(url)
     except (httpx.TimeoutException, httpx.ConnectError, httpx.RequestError) as exc:
@@ -87,16 +123,15 @@ async def _fetch_well_known(
 async def discover_oauth_metadata(server_url: str) -> dict[str, Any] | None:
     """Discover OAuth metadata for an MCP server via ``/.well-known``.
 
-    Fetches both ``/.well-known/oauth-authorization-server`` and
-    ``/.well-known/oauth-protected-resource`` from the server's host and
+    Fetches ``/.well-known/oauth-authorization-server`` from the server host
+    and the RFC 9728 path-aware protected-resource metadata URL, then
     preserves them separately. Flattened compatibility fields are also
     returned for the form; the protected-resource document takes precedence
     for resource-scoped fields.
 
     Args:
-        server_url: The MCP server URL. Path/query are stripped before
-            building the well-known URLs (the spec mandates the well-known
-            documents live at the *host root*, not under the MCP path).
+        server_url: The MCP resource URL. Query and fragment are ignored;
+            its path is retained for protected-resource metadata discovery.
 
     Returns:
         Metadata dict on success, including separate authorization-server and
@@ -111,8 +146,9 @@ async def discover_oauth_metadata(server_url: str) -> dict[str, Any] | None:
 
     timeout = httpx.Timeout(_DISCOVERY_TIMEOUT_SECONDS)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        authz_doc = await _fetch_well_known(client, base, _AUTHZ_SERVER_PATH)
-        resource_doc = await _fetch_well_known(client, base, _PROTECTED_RESOURCE_PATH)
+        authz_doc = await _fetch_well_known(client, base + _AUTHZ_SERVER_PATH)
+        resource_url = _protected_resource_metadata_url(server_url)
+        resource_doc = await _fetch_well_known(client, resource_url)
 
     if authz_doc is None and resource_doc is None:
         return None
@@ -124,7 +160,15 @@ async def discover_oauth_metadata(server_url: str) -> dict[str, Any] | None:
     if authz_doc:
         merged.update(authz_doc)
     if resource_doc:
-        # RFC 9728: protected-resource doc is authoritative for resource-scoped fields
-        merged.update(resource_doc)
+        # RFC 9728 metadata may override only resource-scoped compatibility
+        # fields. In particular, never allow it to replace the authorization
+        # server's issuer or endpoints in the flattened snapshot.
+        merged.update(
+            {
+                key: value
+                for key, value in resource_doc.items()
+                if key in _PROTECTED_RESOURCE_FLAT_FIELDS
+            }
+        )
 
     return merged

@@ -250,6 +250,7 @@ async def _build_authorization_url(
     state_token: str,
     code_verifier: str,
     redirect_uri: str,
+    resource: str,
 ) -> str:
     """Build the vendor's authorize URL for a connect popup.
 
@@ -276,13 +277,6 @@ async def _build_authorization_url(
         "code_challenge": pkce_challenge_for(code_verifier),
         "code_challenge_method": "S256",
     }
-    try:
-        _issuer, resource = resolve_oauth_binding(connection)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
     params["resource"] = resource
     if provider.scopes:
         params["scope"] = " ".join(provider.scopes)
@@ -800,7 +794,13 @@ async def connect_service_token(
     await remember_nonce(nonce)
 
     authorization_url = await _build_authorization_url(
-        ctx, connection, provider, state_token, code_verifier, redirect_uri
+        ctx,
+        connection,
+        provider,
+        state_token,
+        code_verifier,
+        redirect_uri,
+        resource,
     )
     return MCPConnectAuthorizeResponse(
         flow="authorization_code",
@@ -869,7 +869,13 @@ async def connect_user_credential(
     await remember_nonce(nonce)
 
     authorization_url = await _build_authorization_url(
-        ctx, connection, provider, state_token, code_verifier, redirect_uri
+        ctx,
+        connection,
+        provider,
+        state_token,
+        code_verifier,
+        redirect_uri,
+        resource,
     )
     return MCPConnectAuthorizeResponse(
         flow="authorization_code",

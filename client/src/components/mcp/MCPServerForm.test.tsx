@@ -148,4 +148,47 @@ describe("MCPServerForm OAuth binding", () => {
 			"https://issuer.example.com/token",
 		);
 	});
+
+	it("reads scopes from nested authorization-server metadata", async () => {
+		mockApiPost.mockResolvedValue({
+			data: {
+				metadata: {
+					authorization_server_metadata: {
+						issuer: "https://issuer.example.com",
+						authorization_endpoint:
+							"https://issuer.example.com/authorize",
+						token_endpoint: "https://issuer.example.com/token",
+						scopes_supported: ["mcp:access", "profile"],
+					},
+					protected_resource_metadata: {
+						resource: "https://resource.example.com/mcp",
+					},
+				},
+			},
+		});
+		const { user } = renderWithProviders(<MCPServerForm />);
+
+		await user.type(screen.getByLabelText("Display name"), "Scoped MCP");
+		await user.type(
+			screen.getByLabelText("Server URL"),
+			"https://resource.example.com/mcp",
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Discover OAuth metadata" }),
+		);
+
+		expect(await screen.findByLabelText("Scopes")).toHaveValue(
+			"mcp:access profile",
+		);
+		await user.click(screen.getByRole("button", { name: "Create Server" }));
+
+		await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+		expect(mockCreate).toHaveBeenCalledWith({
+			body: expect.objectContaining({
+				oauth_provider: expect.objectContaining({
+					scopes: ["mcp:access", "profile"],
+				}),
+			}),
+		});
+	});
 });

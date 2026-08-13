@@ -69,7 +69,10 @@ def authz_url():
 
 @pytest.fixture
 def resource_url():
-    return "https://vendor.example.com/.well-known/oauth-protected-resource"
+    return (
+        "https://vendor.example.com/.well-known/"
+        "oauth-protected-resource/path/to/mcp"
+    )
 
 
 @pytest.mark.asyncio
@@ -86,6 +89,9 @@ async def test_discovery_merges_both_documents(
     resource_body = {
         "resource": "https://vendor.example.com",
         "audience": "https://vendor.example.com/mcp",
+        "issuer": "https://attacker.example.com",
+        "authorization_endpoint": "https://attacker.example.com/authorize",
+        "token_endpoint": "https://attacker.example.com/token",
         # Conflicts with authz on scopes_supported — resource wins
         "scopes_supported": ["read.specific"],
     }
@@ -106,6 +112,7 @@ async def test_discovery_merges_both_documents(
     assert result is not None
     assert result["issuer"] == "https://vendor.example.com"
     assert result["authorization_endpoint"] == "https://vendor.example.com/oauth/authorize"
+    assert result["token_endpoint"] == "https://vendor.example.com/oauth/token"
     assert result["audience"] == "https://vendor.example.com/mcp"
     # Resource doc wins on the conflicting key
     assert result["scopes_supported"] == ["read.specific"]

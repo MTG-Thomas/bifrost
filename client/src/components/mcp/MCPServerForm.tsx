@@ -66,6 +66,7 @@ interface DiscoveredMetadata {
 		authorization_endpoint?: string;
 		token_endpoint?: string;
 		grant_types_supported?: string[];
+		scopes_supported?: string[];
 	};
 	protected_resource_metadata?: {
 		resource?: string;
@@ -91,7 +92,10 @@ function readMetadata(metadata: DiscoveredMetadata) {
 		metadata.resource ??
 		metadata.audience ??
 		"";
-	const scopesValue = metadata.scopes_supported ?? metadata.scopes;
+	const scopesValue =
+		metadata.authorization_server_metadata?.scopes_supported ??
+		metadata.scopes_supported ??
+		metadata.scopes;
 	const scopes = Array.isArray(scopesValue)
 		? scopesValue.join(" ")
 		: typeof scopesValue === "string"

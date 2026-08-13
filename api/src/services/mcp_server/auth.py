@@ -74,6 +74,28 @@ def _mcp_state_key(state: str) -> str:
     return f"bifrost:mcp:state:{state}"
 
 
+async def _store_refresh_token_jti(user_id: str, jti: str) -> None:
+    """Persist an MCP refresh-token JTI in the canonical revocation store."""
+    from src.core.cache import get_shared_redis
+    from src.core.cache.keys import TTL_REFRESH_TOKEN, refresh_token_jti_key
+
+    redis = await get_shared_redis()
+    await redis.setex(
+        refresh_token_jti_key(user_id, jti),
+        TTL_REFRESH_TOKEN,
+        "1",
+    )
+
+
+async def _consume_refresh_token_jti(user_id: str, jti: str) -> bool:
+    """Atomically consume an MCP refresh-token JTI during rotation."""
+    from src.core.cache import get_shared_redis
+    from src.core.cache.keys import refresh_token_jti_key
+
+    redis = await get_shared_redis()
+    return await redis.delete(refresh_token_jti_key(user_id, jti)) > 0
+
+
 class BifrostAuthProvider(AuthProvider):
     """
     OAuth 2.1 auth provider for MCP using Bifrost's auth system.
@@ -532,7 +554,7 @@ class BifrostAuthProvider(AuthProvider):
                 access_token = create_access_token(
                     data=token_data, audience=self.resource
                 )
-                refresh_token, _jti = create_refresh_token(
+                refresh_token, refresh_jti = create_refresh_token(
                     data={
                         "sub": str(user.id),
                         "mcp": True,
@@ -541,6 +563,7 @@ class BifrostAuthProvider(AuthProvider):
                     },
                     audience=self.resource,
                 )
+                await _store_refresh_token_jti(str(user.id), refresh_jti)
 
             logger.info(f"MCP OAuth: Token issued for user {auth_code_data['email']}")
 
@@ -549,7 +572,7 @@ class BifrostAuthProvider(AuthProvider):
                 "token_type": "Bearer",
                 "expires_in": 1800,  # 30 minutes
                 "refresh_token": refresh_token,
-                "scope": auth_code_data.get("scope", MCP_SCOPE),
+                "scope": MCP_SCOPE,
             })
 
         elif grant_type == "refresh_token":
@@ -573,6 +596,7 @@ class BifrostAuthProvider(AuthProvider):
             if (
                 payload is None
                 or not payload.get("sub")
+                or not payload.get("jti")
                 or payload.get("mcp") is not True
                 or payload.get("scope") != MCP_SCOPE
                 or payload.get("resource") != self.resource
@@ -595,6 +619,17 @@ class BifrostAuthProvider(AuthProvider):
                         status_code=400
                     )
 
+                if not await _consume_refresh_token_jti(
+                    str(user.id), str(payload["jti"])
+                ):
+                    return JSONResponse(
+                        {
+                            "error": "invalid_grant",
+                            "error_description": "Invalid refresh token",
+                        },
+                        status_code=400,
+                    )
+
                 # Create new tokens (carry the is_external claim — LEAK #1).
                 token_data = await _mcp_access_token_data(
                     db, user, resource=self.resource
@@ -602,7 +637,7 @@ class BifrostAuthProvider(AuthProvider):
                 access_token = create_access_token(
                     data=token_data, audience=self.resource
                 )
-                new_refresh_token, _jti = create_refresh_token(
+                new_refresh_token, new_refresh_jti = create_refresh_token(
                     data={
                         "sub": str(user.id),
                         "mcp": True,
@@ -611,6 +646,7 @@ class BifrostAuthProvider(AuthProvider):
                     },
                     audience=self.resource,
                 )
+                await _store_refresh_token_jti(str(user.id), new_refresh_jti)
 
             return JSONResponse({
                 "access_token": access_token,

@@ -542,7 +542,8 @@ class TestTokenEndpoint:
         assert response.status_code == 200
         assert body["access_token"] == "access-token"
         assert body["refresh_token"] == "refresh-token"
-        assert body["scope"] == "mcp:access custom"
+        assert body["scope"] == "mcp:access"
+        redis.setex.assert_awaited_once()
         mock_external.assert_awaited_once_with(db, user)
         assert mock_access.call_args.kwargs["data"]["is_external"] is True
 
@@ -576,7 +577,7 @@ class TestTokenEndpoint:
         db_context.__aenter__ = AsyncMock(return_value=MagicMock())
         db_context.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("src.core.security.decode_token", return_value={"sub": "user-1", "mcp": True, "scope": "mcp:access", "resource": auth_provider.resource}), \
+        with patch("src.core.security.decode_token", return_value={"sub": "user-1", "jti": "parent-jti", "mcp": True, "scope": "mcp:access", "resource": auth_provider.resource}), \
              patch("src.core.database.get_db_context", return_value=db_context), \
              patch("src.repositories.users.UserRepository") as mock_repo_cls:
             mock_repo_cls.return_value.get_by_id = AsyncMock(return_value=None)
@@ -602,8 +603,11 @@ class TestTokenEndpoint:
         db_context = MagicMock()
         db_context.__aenter__ = AsyncMock(return_value=db)
         db_context.__aexit__ = AsyncMock(return_value=None)
+        redis = AsyncMock()
+        redis.delete.return_value = 1
 
-        with patch("src.core.security.decode_token", return_value={"sub": "user-1", "mcp": True, "scope": "mcp:access", "resource": auth_provider.resource}), \
+        with patch("src.core.security.decode_token", return_value={"sub": "user-1", "jti": "parent-jti", "mcp": True, "scope": "mcp:access", "resource": auth_provider.resource}), \
+             patch("src.core.cache.get_shared_redis", AsyncMock(return_value=redis)), \
              patch("src.core.database.get_db_context", return_value=db_context), \
              patch("src.repositories.users.UserRepository") as mock_repo_cls, \
              patch("src.services.mcp_server.auth.resolve_external_claim", AsyncMock(return_value=False)), \
@@ -626,6 +630,52 @@ class TestTokenEndpoint:
         assert token_data["is_superuser"] is True
         assert token_data["is_external"] is False
         assert token_data["org_id"] is None
+        redis.delete.assert_awaited_once()
+        redis.setex.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_rejects_replay_after_rotation(self, auth_provider):
+        user = MagicMock()
+        user.id = "user-1"
+        user.email = "user@example.com"
+        user.name = "MCP User"
+        user.is_superuser = False
+        user.organization_id = None
+        db_context = MagicMock()
+        db_context.__aenter__ = AsyncMock(return_value=MagicMock())
+        db_context.__aexit__ = AsyncMock(return_value=None)
+        redis = AsyncMock()
+        redis.delete.side_effect = [1, 0]
+
+        payload = {
+            "sub": "user-1",
+            "jti": "parent-jti",
+            "mcp": True,
+            "scope": "mcp:access",
+            "resource": auth_provider.resource,
+        }
+        with patch("src.core.security.decode_token", return_value=payload), \
+             patch("src.core.cache.get_shared_redis", AsyncMock(return_value=redis)), \
+             patch("src.core.database.get_db_context", return_value=db_context), \
+             patch("src.repositories.users.UserRepository") as mock_repo_cls, \
+             patch("src.services.mcp_server.auth.resolve_external_claim", AsyncMock(return_value=False)), \
+             patch("src.services.mcp_server.auth.resolve_provider_org_claim", AsyncMock(return_value=False)), \
+             patch("src.core.security.create_access_token", return_value="new-access"), \
+             patch("src.core.security.create_refresh_token", return_value=("new-refresh", "new-jti")) as mock_create_refresh:
+            mock_repo_cls.return_value.get_by_id = AsyncMock(return_value=user)
+            request = self._request_with_form({
+                "grant_type": "refresh_token",
+                "refresh_token": "refresh-token",
+                "resource": auth_provider.resource,
+            })
+
+            first = await auth_provider._token(request)
+            second = await auth_provider._token(request)
+
+        assert first.status_code == 200
+        assert second.status_code == 400
+        assert json.loads(second.body)["error_description"] == "Invalid refresh token"
+        mock_create_refresh.assert_called_once()
 
 
 class TestRegisterEndpoint:

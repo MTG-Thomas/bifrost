@@ -213,9 +213,15 @@ async def test_user_token_is_rejected_after_issuer_change(
         )
     )
     await db_session.flush()
-    server.discovery_metadata["authorization_server_metadata"]["issuer"] = (
-        "https://replacement.example.com"
+    discovery_metadata = dict(server.discovery_metadata)
+    authorization_server_metadata = dict(
+        discovery_metadata["authorization_server_metadata"]
     )
+    authorization_server_metadata["issuer"] = "https://replacement.example.com"
+    server.discovery_metadata = {
+        **discovery_metadata,
+        "authorization_server_metadata": authorization_server_metadata,
+    }
     await db_session.flush()
     connection = await _reload_connection(db_session, connection.id)
 

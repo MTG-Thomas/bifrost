@@ -144,15 +144,19 @@ async def test_refresh_grant_stamps_is_external():
     request.form = AsyncMock(return_value=form)
 
     ctx = _patches(captured, user)
-    with patch(
-        "src.core.security.decode_token",
-        return_value={
-            "sub": str(user.id),
-            "mcp": True,
-            "scope": "mcp:access",
-            "resource": provider.resource,
-        },
-    ):
+    redis = AsyncMock()
+    redis.delete.return_value = 1
+    with patch("src.core.cache.get_shared_redis", new=AsyncMock(return_value=redis)), \
+         patch(
+             "src.core.security.decode_token",
+             return_value={
+                 "sub": str(user.id),
+                 "jti": "parent-jti",
+                 "mcp": True,
+                 "scope": "mcp:access",
+                 "resource": provider.resource,
+             },
+         ):
         for p in ctx:
             p.start()
         try:
