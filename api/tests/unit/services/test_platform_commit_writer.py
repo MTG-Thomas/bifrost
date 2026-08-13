@@ -105,6 +105,16 @@ def readback_response(commit_sha: str, *, signature_state="VALID") -> httpx.Resp
     )
 
 
+def ref_response(commit_sha: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "ref": "refs/heads/production-live",
+            "object": {"type": "commit", "sha": commit_sha},
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree(
     private_key_pem,
@@ -170,6 +180,8 @@ async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree(
                 )
             if "query CommitReadback" in query:
                 return readback_response(created_sha)
+        if request.url.path.endswith("/git/ref/heads/production-live"):
+            return ref_response(created_sha)
         if request.url.path.endswith("/contents/workflows/example.py"):
             assert request.headers["Accept"] == "application/vnd.github.raw+json"
             if request.url.params["ref"] == "a" * 40:
@@ -197,12 +209,137 @@ async def test_writer_scopes_token_creates_cas_commit_and_verifies_remote_tree(
     assert result.commit_sha == created_sha
     assert result.tree_sha == "2" * 40
     assert result.signature_state == "VALID"
-    assert len(seen) == 8
+    assert len(seen) == 9
 
 
 @pytest.mark.asyncio
+async def test_writer_settles_stale_branch_ref_after_commit_creation(
+    private_key_pem,
+    monkeypatch,
+):
+    parent_sha = "a" * 40
+    created_sha = "b" * 40
+    ref_reads = 0
+
+    monkeypatch.setattr(
+        "src.services.platform_commit_writer._REF_SETTLE_DELAYS_SECONDS",
+        (0.0, 0.0),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal ref_reads
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            payload = graphql_payload(request)
+            if "query BranchHead" in payload["query"]:
+                return head_response(oid=parent_sha)
+            if "mutation CreatePlatformCommit" in payload["query"]:
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "createCommitOnBranch": {
+                                "commit": {"oid": created_sha},
+                                "ref": {"name": "production-live"},
+                            }
+                        }
+                    },
+                )
+            if "query CommitReadback" in payload["query"]:
+                return readback_response(created_sha)
+        if request.url.path.endswith("/git/ref/heads/production-live"):
+            ref_reads += 1
+            return ref_response(parent_sha if ref_reads == 1 else created_sha)
+        if request.url.path.endswith(f"/compare/{created_sha}...{parent_sha}"):
+            return httpx.Response(200, json={"status": "behind"})
+        if request.url.path.endswith("/contents/workflows/example.py"):
+            if request.url.params["ref"] == parent_sha:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, content=b"print('verified')\n")
+        if request.url.path.endswith("/contents/workflows/deleted.py"):
+            if request.url.params["ref"] == parent_sha:
+                return httpx.Response(200, content=b"print('deleted')\n")
+            return httpx.Response(404, json={"message": "Not Found"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        result = await writer.write(commit_request())
+
+    assert result.commit_sha == created_sha
+    assert ref_reads == 2
+
+
+@pytest.mark.asyncio
+async def test_writer_accepts_created_commit_already_behind_current_head(
+    private_key_pem,
+):
+    parent_sha = "a" * 40
+    created_sha = "b" * 40
+    advanced_sha = "c" * 40
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            payload = graphql_payload(request)
+            if "query BranchHead" in payload["query"]:
+                return head_response(oid=parent_sha)
+            if "mutation CreatePlatformCommit" in payload["query"]:
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "createCommitOnBranch": {
+                                "commit": {"oid": created_sha},
+                                "ref": {"name": "production-live"},
+                            }
+                        }
+                    },
+                )
+            if "query CommitReadback" in payload["query"]:
+                return readback_response(created_sha)
+        if request.url.path.endswith("/git/ref/heads/production-live"):
+            return ref_response(advanced_sha)
+        if request.url.path.endswith(f"/compare/{created_sha}...{advanced_sha}"):
+            return httpx.Response(200, json={"status": "ahead"})
+        if request.url.path.endswith("/contents/workflows/example.py"):
+            if request.url.params["ref"] == parent_sha:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, content=b"print('verified')\n")
+        if request.url.path.endswith("/contents/workflows/deleted.py"):
+            if request.url.params["ref"] == parent_sha:
+                return httpx.Response(200, content=b"print('deleted')\n")
+            return httpx.Response(404, json={"message": "Not Found"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        result = await writer.write(commit_request())
+
+    assert result.commit_sha == created_sha
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_candidate", [False, True])
 async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mutation(
     private_key_pem,
+    explicit_candidate,
 ):
     changeset_id = uuid4()
     existing_sha = "c" * 40
@@ -217,23 +354,28 @@ async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mut
             if "query BranchHead" in payload["query"]:
                 return head_response(
                     oid="e" * 40,
-                    history=[
-                        {
-                            "oid": existing_sha,
-                            "message": (
-                                "Publish production source\n\n"
-                                f"Workspace-Changeset-ID: {changeset_id} \r\n"
-                            ),
-                        }
-                    ],
+                    history=(
+                        []
+                        if explicit_candidate
+                        else [
+                            {
+                                "oid": existing_sha,
+                                "message": (
+                                    "Publish production source\n\n"
+                                    f"Workspace-Changeset-ID: {changeset_id} \r\n"
+                                ),
+                            }
+                        ]
+                    ),
                 )
             if "mutation CreatePlatformCommit" in payload["query"]:
                 mutation_calls += 1
             if "query CommitReadback" in payload["query"]:
-                response = readback_response(existing_sha)
-                payload = response.json()
-                payload["data"]["repository"]["ref"]["target"]["oid"] = "e" * 40
-                return httpx.Response(200, json=payload)
+                return readback_response(existing_sha)
+        if request.url.path.endswith("/git/ref/heads/production-live"):
+            return ref_response("e" * 40)
+        if request.url.path.endswith(f"/compare/{existing_sha}...{'e' * 40}"):
+            return httpx.Response(200, json={"status": "ahead"})
         if request.url.path.endswith("/contents/workflows/example.py"):
             return httpx.Response(200, content=b"print('verified')\n")
         if request.url.path.endswith("/contents/workflows/deleted.py"):
@@ -249,10 +391,57 @@ async def test_writer_reuses_reachable_changeset_commit_instead_of_replaying_mut
             private_key=private_key_pem,
             client=client,
         )
-        result = await writer.write(commit_request(changeset_id=changeset_id))
+        request = commit_request(changeset_id=changeset_id)
+        if explicit_candidate:
+            request = replace(request, candidate_commit_sha=existing_sha)
+        result = await writer.write(request)
 
     assert result.commit_sha == existing_sha
     assert mutation_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_commit_outside_authoritative_branch_history(
+    private_key_pem,
+    monkeypatch,
+):
+    candidate_sha = "c" * 40
+    divergent_sha = "e" * 40
+    ref_reads = 0
+
+    monkeypatch.setattr(
+        "src.services.platform_commit_writer._REF_SETTLE_DELAYS_SECONDS",
+        (0.0, 0.0),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal ref_reads
+        if request.url.path.endswith("/git/ref/heads/production-live"):
+            ref_reads += 1
+            return ref_response(divergent_sha)
+        if request.url.path.endswith(f"/compare/{candidate_sha}...{divergent_sha}"):
+            return httpx.Response(200, json={"status": "diverged"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        with pytest.raises(PlatformCommitError, match="no longer reachable") as exc:
+            await writer._settle_branch_contains_commit(
+                client,
+                "installation-token",
+                candidate_sha,
+                require_head=False,
+            )
+
+    assert exc.value.commit_sha == candidate_sha
+    assert ref_reads == 2
 
 
 @pytest.mark.asyncio
