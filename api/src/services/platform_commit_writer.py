@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 import urllib.parse
@@ -18,6 +19,7 @@ _REST_URL = "https://api.github.com"
 _CHANGESET_TRAILER = "Workspace-Changeset-ID"
 _CONVERGENCE_TRAILER = "Workspace-History-Convergence-Candidate"
 _RECONCILED_CHANGESET_TRAILER = "Workspace-Reconciled-Changeset-ID"
+_REF_SETTLE_DELAYS_SECONDS = (0.0, 0.25, 0.75, 1.5, 3.0)
 
 
 class PlatformCommitError(RuntimeError):
@@ -264,8 +266,7 @@ class GitHubAppCommitWriter:
                 for item in head["history"]
                 if marker
                 in {
-                    line.strip()
-                    for line in str(item.get("message") or "").splitlines()
+                    line.strip() for line in str(item.get("message") or "").splitlines()
                 }
             ),
             None,
@@ -402,9 +403,7 @@ class GitHubAppCommitWriter:
             encoded_path = urllib.parse.quote(path, safe="/")
             response = await client.get(
                 f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
-                headers=self._headers(
-                    token, accept="application/vnd.github.raw+json"
-                ),
+                headers=self._headers(token, accept="application/vnd.github.raw+json"),
                 params={"ref": ref},
             )
             if response.status_code == 404:
@@ -433,19 +432,16 @@ class GitHubAppCommitWriter:
             {
                 "owner": self.owner,
                 "name": self.repository,
-                "ref": f"refs/heads/{self.branch}",
                 "oid": commit_sha,
             },
         )
         repository = data.get("repository") or {}
-        ref_target = (repository.get("ref") or {}).get("target") or {}
         commit = repository.get("object") or {}
         if commit.get("oid") != commit_sha:
             raise PlatformCommitError(
                 "GitHub commit readback did not match the created commit",
                 commit_sha=commit_sha,
             )
-        self._verify_ref_target(ref_target, commit_sha, require_head=require_head)
         tree_sha = (commit.get("tree") or {}).get("oid")
         if not tree_sha:
             raise PlatformCommitError(
@@ -459,30 +455,70 @@ class GitHubAppCommitWriter:
             commit_sha,
             phase="committed tree",
         )
+        await self._settle_branch_contains_commit(
+            client,
+            token,
+            commit_sha,
+            require_head=require_head,
+        )
         return PlatformCommitResult(
             commit_sha=commit_sha,
             tree_sha=str(tree_sha),
             signature_state=signature_state,
         )
 
-    @staticmethod
-    def _verify_ref_target(
-        ref_target: dict, commit_sha: str, *, require_head: bool
+    async def _settle_branch_contains_commit(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        commit_sha: str,
+        *,
+        require_head: bool,
     ) -> None:
-        reachable = {
-            item.get("oid")
-            for item in ((ref_target.get("history") or {}).get("nodes") or [])
-        }
-        if require_head and ref_target.get("oid") != commit_sha:
-            raise PlatformCommitError(
-                "GitHub branch ref did not advance to the created commit",
+        """Prove the immutable commit is at or behind the authoritative branch ref."""
+        encoded_ref = urllib.parse.quote(f"heads/{self.branch}", safe="/")
+        for delay in _REF_SETTLE_DELAYS_SECONDS:
+            if delay:
+                await asyncio.sleep(delay)
+            response = await client.get(
+                f"{_REST_URL}/repos/{self.owner}/{self.repository}/git/ref/{encoded_ref}",
+                headers=self._headers(token),
+            )
+            payload = self._response_json(
+                response,
+                f"read back branch ref {self.branch}",
                 commit_sha=commit_sha,
             )
-        if not require_head and commit_sha not in reachable:
-            raise PlatformCommitError(
-                "previous changeset commit is no longer reachable from the configured branch",
+            target = payload.get("object") or {}
+            head_sha = target.get("sha")
+            if target.get("type") != "commit" or not head_sha:
+                raise PlatformCommitError(
+                    "GitHub branch ref readback did not resolve to a commit",
+                    commit_sha=commit_sha,
+                )
+            if head_sha == commit_sha:
+                return
+
+            compare = await client.get(
+                f"{_REST_URL}/repos/{self.owner}/{self.repository}/compare/"
+                f"{urllib.parse.quote(commit_sha, safe='')}..."
+                f"{urllib.parse.quote(str(head_sha), safe='')}",
+                headers=self._headers(token),
+            )
+            comparison = self._response_json(
+                compare,
+                f"verify commit reachability from branch {self.branch}",
                 commit_sha=commit_sha,
             )
+            if comparison.get("status") in {"identical", "ahead"}:
+                return
+
+        message = (
+            "GitHub branch ref did not settle on history containing the created commit"
+            if require_head
+            else "previous changeset commit is no longer reachable from the configured branch"
+        )
+        raise PlatformCommitError(message, commit_sha=commit_sha)
 
     @staticmethod
     def _verified_signature_state(commit: dict, commit_sha: str) -> str:
@@ -512,9 +548,7 @@ class GitHubAppCommitWriter:
             encoded_path = urllib.parse.quote(path, safe="/")
             response = await client.get(
                 f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
-                headers=self._headers(
-                    token, accept="application/vnd.github.raw+json"
-                ),
+                headers=self._headers(token, accept="application/vnd.github.raw+json"),
                 params={"ref": ref},
             )
             commit_sha = ref if phase == "committed tree" else None
@@ -642,17 +676,9 @@ class GitHubAppCommitWriter:
 
     _COMMIT_READBACK_QUERY = """
     query CommitReadback(
-      $owner: String!, $name: String!, $ref: String!, $oid: String!
+      $owner: String!, $name: String!, $oid: String!
     ) {
       repository(owner: $owner, name: $name) {
-        ref(qualifiedName: $ref) {
-          target {
-            ... on Commit {
-              oid
-              history(first: 100) { nodes { oid } }
-            }
-          }
-        }
         object(expression: $oid) {
           ... on Commit {
             oid
