@@ -11,8 +11,8 @@ Bifrost's Python MCP SDK. Run it through the Docker test environment:
 The runner is intentionally advisory. Its JSON checks are written under the
 worktree-specific `/tmp/bifrost-*/mcp-conformance/` directory and uploaded by
 CI even when a check fails. The same artifact directory includes
-`auth-probe-headers.txt`, which contains the non-secret response headers from
-the baseline preflight.
+`auth-probe-headers.txt` and `protected-resource-metadata.json`, which capture
+the non-secret OAuth challenge and metadata from the baseline preflight.
 
 ## Current baseline
 
@@ -22,13 +22,15 @@ runner's published `2025-11-25` schema against the real
 the whole scenario because the official server runner does not expose an
 option for supplying the bearer token Bifrost requires. The FastMCP ASGI app
 is mounted at `/mcp`; the unauthenticated runner reaches that real surface and
-receives `401 Unauthorized` with a Bearer challenge for `mcp:access`. The
+receives `401 Unauthorized` with an RFC 9728 protected-resource metadata
+challenge. That metadata must advertise `mcp:access`. The
 baseline does not bypass authentication or dispatch and is not evidence that
 initialization itself passes. An unexpected pass also fails the baseline check
 so the entry cannot silently become stale. Before invoking the official
-runner, `./test.sh` also requires this exact 401 Bearer challenge. A missing
-route, application-construction failure, or changed authentication contract
-therefore fails the command instead of being hidden by the scenario baseline.
+runner, `./test.sh` also requires this exact 401 Bearer challenge and checks the
+referenced metadata contract. A missing route, application-construction
+failure, or changed authentication contract therefore fails the command
+instead of being hidden by the scenario baseline.
 
 Existing Bifrost E2E tests remain the blocking authority for authentication,
 legacy initialization, gateway filtering, agent scoping, and dispatch.

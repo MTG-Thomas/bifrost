@@ -50,8 +50,10 @@ def test_compose_and_test_runner_use_the_pinned_official_image() -> None:
     assert "--scenario server-initialize" in test_script
     assert "--spec-version 2025-11-25" in test_script
     assert "auth-probe-headers.txt" in test_script
+    assert "protected-resource-metadata.json" in test_script
     assert "^HTTP/1.1 401 Unauthorized$" in test_script
-    assert 'scope="mcp:access"' in test_script
+    assert "^www-authenticate: Bearer .*resource_metadata=" in test_script
+    assert 'grep -q \'"mcp:access"\'' in test_script
 
 
 def test_advisory_baseline_only_records_auth_blocked_initialize() -> None:

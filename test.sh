@@ -394,6 +394,7 @@ mcp_conformance() {
 
     local results_dir="$LOG_DIR/mcp-conformance"
     local auth_probe_file="$results_dir/auth-probe-headers.txt"
+    local resource_metadata_file="$results_dir/protected-resource-metadata.json"
     mkdir -p "$results_dir"
     chmod 777 "$results_dir" 2>/dev/null || true
 
@@ -413,9 +414,21 @@ mcp_conformance() {
         http://localhost:8000/mcp \
         | tr -d '\r' > "$auth_probe_file"
     if ! grep -q '^HTTP/1.1 401 Unauthorized$' "$auth_probe_file" \
-        || ! grep -Eqi '^www-authenticate: Bearer .*scope="mcp:access"' "$auth_probe_file"; then
+        || ! grep -Eqi '^www-authenticate: Bearer .*resource_metadata=' "$auth_probe_file"; then
         echo "ERROR: /mcp did not return the expected unauthenticated Bearer challenge:" >&2
         sed 's/^/  /' "$auth_probe_file" >&2
+        exit 1
+    fi
+
+    docker compose -f "$COMPOSE_FILE" exec -T api curl \
+        --silent \
+        --show-error \
+        --fail \
+        http://localhost:8000/.well-known/oauth-protected-resource/mcp \
+        > "$resource_metadata_file"
+    if ! grep -q '"mcp:access"' "$resource_metadata_file"; then
+        echo "ERROR: MCP protected-resource metadata does not advertise mcp:access:" >&2
+        sed 's/^/  /' "$resource_metadata_file" >&2
         exit 1
     fi
 
