@@ -17,6 +17,13 @@ EXPECTED_DEPLOY_DRY_RUN_IF = (
     "github.repository == 'gobifrost/bifrost' "
     "&& github.event_name == 'workflow_dispatch'"
 )
+REQUIRED_CI_JOB_NAMES = {
+    "lint": "Lint & Type Check",
+    "test-client-unit": "Client Unit Tests",
+    "test-unit": "Unit Tests",
+    "mcp-conformance": "MCP Conformance",
+    "test-e2e-gate": "E2E Tests",
+}
 
 
 def _repo_root() -> Path:
@@ -58,11 +65,33 @@ def _parse_if_line(block: list[str]) -> str | None:
     return None
 
 
+def _parse_name_line(block: list[str]) -> str | None:
+    for line in block:
+        stripped = line.strip()
+        if stripped.startswith("name:"):
+            return stripped.removeprefix("name:").strip().strip("\"'")
+    return None
+
+
 def check_ci_workflow(path: Path) -> list[str]:
     if not path.exists():
         return [f"{path}: workflow file does not exist"]
 
     lines = path.read_text(encoding="utf-8").splitlines()
+    for job, expected_name in REQUIRED_CI_JOB_NAMES.items():
+        parsed = _job_block(lines, job)
+        if parsed is None:
+            return [f"{path}: required CI job {job!r} is missing"]
+        start_line, block = parsed
+        actual_name = _parse_name_line(block)
+        if actual_name != expected_name:
+            return [
+                f"{path}:{start_line}: required CI check identity changed for {job!r}.",
+                f"expected: name: {expected_name}",
+                f"actual:   name: {actual_name or '<missing>'}",
+                "Update repository rules first; never silently orphan a required check.",
+            ]
+
     deploy_dry_run = _job_block(lines, "deploy-dry-run")
     if deploy_dry_run is None:
         return [

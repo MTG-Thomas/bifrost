@@ -22,13 +22,17 @@ def test_official_runner_and_lockfile_are_exact_pinned() -> None:
     package = json.loads((CONFORMANCE_ROOT / "package.json").read_text())
     lock = json.loads((CONFORMANCE_ROOT / "package-lock.json").read_text())
 
-    assert package["dependencies"]["@modelcontextprotocol/conformance"] == RUNNER_VERSION
-    assert lock["packages"][""]["dependencies"][
-        "@modelcontextprotocol/conformance"
-    ] == RUNNER_VERSION
-    assert lock["packages"][
-        "node_modules/@modelcontextprotocol/conformance"
-    ]["version"] == RUNNER_VERSION
+    assert (
+        package["dependencies"]["@modelcontextprotocol/conformance"] == RUNNER_VERSION
+    )
+    assert (
+        lock["packages"][""]["dependencies"]["@modelcontextprotocol/conformance"]
+        == RUNNER_VERSION
+    )
+    assert (
+        lock["packages"]["node_modules/@modelcontextprotocol/conformance"]["version"]
+        == RUNNER_VERSION
+    )
     dockerfile = (CONFORMANCE_ROOT / "Dockerfile").read_text()
     assert dockerfile.splitlines()[0] == f"FROM {NODE_IMAGE}"
     assert "\nUSER node\n" in dockerfile
@@ -62,7 +66,7 @@ def test_compose_and_test_runner_use_the_pinned_official_image() -> None:
     assert "protected-resource-metadata.json" in test_script
     assert "^HTTP/1.1 401 Unauthorized$" in test_script
     assert "^www-authenticate: Bearer .*resource_metadata=" in test_script
-    assert 'grep -q \'"mcp:access"\'' in test_script
+    assert "grep -q '\"mcp:access\"'" in test_script
     conformance_function = test_script.split("mcp_conformance() {", 1)[1].split(
         "\n}\n", 1
     )[0]
@@ -98,11 +102,11 @@ def test_ci_job_blocks_and_retains_runner_artifacts() -> None:
     assert step_names.index("Remove registry credentials") < step_names.index(
         "Run blocking MCP conformance"
     )
-    assert "./test.sh mcp conformance" in steps[
-        "Run blocking MCP conformance"
-    ]["run"]
+    assert "./test.sh mcp conformance" in steps["Run blocking MCP conformance"]["run"]
     artifact = steps["Upload MCP conformance results"]
-    assert artifact["if"] == "always()"
+    assert artifact["if"] == (
+        "always() && needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'"
+    )
     assert artifact["with"]["path"] == "/tmp/bifrost-*/mcp-conformance/"
     assert artifact["with"]["if-no-files-found"] == "error"
     assert "mcp-conformance" in workflow["jobs"]["verify-release-manifest"]["needs"]
