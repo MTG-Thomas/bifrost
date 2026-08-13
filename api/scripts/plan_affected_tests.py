@@ -228,7 +228,8 @@ class AffectedPlan:
 
 
 def _normalize(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
+    value = path.replace("\\", "/")
+    return value.removeprefix("./")
 
 
 def _is_docs(path: str) -> bool:

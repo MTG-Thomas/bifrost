@@ -150,6 +150,7 @@ def test_unowned_client_page_requires_comprehensive_browser_validation(
     ("change", "reason"),
     [
         (affected.GitChange("D", "api/src/services/old.py"), "deletions"),
+        (affected.GitChange("M", ".github/workflows/ci.yml"), "high-risk"),
         (affected.GitChange("M", "requirements.lock"), "high-risk"),
         (affected.GitChange("M", "unexpected.toml"), "unmodelled"),
     ],
@@ -163,6 +164,13 @@ def test_uncertain_changes_fail_closed(
 
     assert plan.scope == "comprehensive"
     assert reason in plan.reason
+
+
+def test_normalization_preserves_dotfile_paths() -> None:
+    assert affected._normalize(".github/workflows/ci.yml") == (
+        ".github/workflows/ci.yml"
+    )
+    assert affected._normalize("./.snyk") == ".snyk"
 
 
 def test_python_test_only_change_runs_exact_test(graph_repo: Path) -> None:
