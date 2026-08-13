@@ -9,7 +9,7 @@ import yaml
 
 
 API_ROOT = Path(__file__).resolve().parents[2]
-REPO_ROOT = API_ROOT.parent if (API_ROOT.parent / "test.sh").exists() else API_ROOT
+REPO_ROOT = Path.cwd()
 CONFORMANCE_ROOT = API_ROOT / "tests" / "conformance"
 RUNNER_VERSION = "0.2.0-alpha.11"
 NODE_IMAGE = (
@@ -29,9 +29,9 @@ def test_official_runner_and_lockfile_are_exact_pinned() -> None:
     assert lock["packages"][
         "node_modules/@modelcontextprotocol/conformance"
     ]["version"] == RUNNER_VERSION
-    assert (CONFORMANCE_ROOT / "Dockerfile").read_text().splitlines()[0] == (
-        f"FROM {NODE_IMAGE}"
-    )
+    dockerfile = (CONFORMANCE_ROOT / "Dockerfile").read_text()
+    assert dockerfile.splitlines()[0] == f"FROM {NODE_IMAGE}"
+    assert "\nUSER node\n" in dockerfile
 
 
 def test_compose_and_test_runner_use_the_pinned_official_image() -> None:
@@ -54,6 +54,11 @@ def test_compose_and_test_runner_use_the_pinned_official_image() -> None:
     assert "^HTTP/1.1 401 Unauthorized$" in test_script
     assert "^www-authenticate: Bearer .*resource_metadata=" in test_script
     assert 'grep -q \'"mcp:access"\'' in test_script
+    conformance_function = test_script.split("mcp_conformance() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert "chmod 777" not in conformance_function
+    assert '--user "$(id -u):$(id -g)" mcp-conformance' in test_script
 
 
 def test_advisory_baseline_only_records_auth_blocked_initialize() -> None:
@@ -77,6 +82,14 @@ def test_ci_job_is_advisory_and_retains_runner_artifacts() -> None:
 
     assert job["continue-on-error"] is True
     steps = {step["name"]: step for step in job["steps"]}
+    assert steps["Checkout repository"]["with"]["persist-credentials"] is False
+    step_names = list(steps)
+    assert step_names.index("Detect test image input changes") < step_names.index(
+        "Log in to GitHub Container Registry"
+    )
+    assert step_names.index("Remove registry credentials") < step_names.index(
+        "Run advisory MCP conformance"
+    )
     assert "./test.sh mcp conformance" in steps[
         "Run advisory MCP conformance"
     ]["run"]

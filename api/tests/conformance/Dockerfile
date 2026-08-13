@@ -5,6 +5,8 @@ WORKDIR /opt/mcp-conformance
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts \
     && npm cache clean --force
-COPY expected-failures.yml ./expected-failures.yml
+COPY --chown=node:node --chmod=0444 expected-failures.yml ./expected-failures.yml
+
+USER node
 
 ENTRYPOINT ["node", "node_modules/@modelcontextprotocol/conformance/dist/index.js"]

@@ -396,7 +396,6 @@ mcp_conformance() {
     local auth_probe_file="$results_dir/auth-probe-headers.txt"
     local resource_metadata_file="$results_dir/protected-resource-metadata.json"
     mkdir -p "$results_dir"
-    chmod 777 "$results_dir" 2>/dev/null || true
 
     # Keep the whole-scenario baseline honest: it is only valid while the
     # official runner lacks a token/header option and the real mounted endpoint
@@ -435,7 +434,8 @@ mcp_conformance() {
     # This image is deliberately separate from the API image: the official
     # JavaScript runner must not alter Bifrost's Python MCP dependency graph.
     docker compose -f "$COMPOSE_FILE" --profile test build mcp-conformance
-    docker compose -f "$COMPOSE_FILE" --profile test run --rm mcp-conformance \
+    docker compose -f "$COMPOSE_FILE" --profile test run --rm \
+        --user "$(id -u):$(id -g)" mcp-conformance \
         server \
         --url http://api:8000/mcp \
         --scenario server-initialize \

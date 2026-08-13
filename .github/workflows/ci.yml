@@ -208,6 +208,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect test image input changes
+        id: test-image-inputs
+        run: bash scripts/ci/detect-test-image-inputs.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -218,10 +224,6 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Detect test image input changes
-        id: test-image-inputs
-        run: bash scripts/ci/detect-test-image-inputs.sh
 
       # Prefer baked main images. docker-compose.test.yml still bind-mounts the
       # current checkout, so PR source code is what tests execute.
@@ -300,6 +302,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect test image input changes
+        id: test-image-inputs
+        run: bash scripts/ci/detect-test-image-inputs.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -310,10 +318,6 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Detect test image input changes
-        id: test-image-inputs
-        run: bash scripts/ci/detect-test-image-inputs.sh
 
       - name: Pull API CI test image
         id: pull-api-ci-image
@@ -356,6 +360,9 @@ jobs:
           tags: bifrost-test-client-dev:latest
           cache-from: type=gha,scope=test-client-dev
           cache-to: type=gha,scope=test-client-dev,mode=max
+
+      - name: Remove registry credentials
+        run: docker logout "$REGISTRY"
 
       - name: Run advisory MCP conformance
         env:
