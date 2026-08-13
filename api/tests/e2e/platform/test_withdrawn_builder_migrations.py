@@ -13,7 +13,18 @@ async def test_fresh_database_does_not_install_withdrawn_builder_schema(
     revision = (
         await db_session.execute(text("SELECT version_num FROM alembic_version"))
     ).scalar_one()
-    assert revision == "20260812_mcp_oauth_binding"
+    assert revision == "20260813_mcp_catalog_rev"
+
+    catalog_revision = (
+        await db_session.execute(
+            text(
+                "SELECT revision FROM mcp_catalog_revisions "
+                "WHERE catalog = 'workflow_tools'"
+            )
+        )
+    ).scalar_one()
+    assert isinstance(catalog_revision, int)
+    assert catalog_revision >= 0
 
     builder_tables = (
         await db_session.execute(

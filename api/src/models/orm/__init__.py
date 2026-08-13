@@ -52,6 +52,7 @@ from src.models.orm.knowledge import KnowledgeStore
 from src.models.orm.knowledge_sources import KnowledgeNamespaceRole
 from src.models.orm.metrics import ExecutionMetricsDaily, KnowledgeStorageDaily, PlatformMetricsSnapshot, WorkflowROIDaily
 from src.models.orm.mfa import MFARecoveryCode, TrustedDevice, UserMFAMethod, UserOAuthAccount
+from src.models.orm.mcp_catalog_revision import MCPCatalogRevision
 from src.models.orm.oauth import OAuthProvider, OAuthToken
 from src.models.orm.organizations import Organization
 from src.models.orm.pending_capture import PendingCaptureORM
@@ -148,6 +149,7 @@ __all__ = [
     # OAuth
     "OAuthProvider",
     "OAuthToken",
+    "MCPCatalogRevision",
     # Integrations
     "Integration",
     "IntegrationConfigSchema",

@@ -211,9 +211,7 @@ def _candidate_tool_names_for_workflow(workflow: dict) -> set[str]:
 
     The registration table (``_WORKFLOW_ID_TO_TOOL_NAME``) lives in the API
     process, not the test-runner process, so we can't read it directly.
-    Recreate the normalization rule from
-    ``src.services.mcp_server.server._normalize_tool_name`` and accept either
-    the raw name or the normalized one.
+    Recreate the stable normalization + complete entity suffix used by the API.
     """
     import re as _re
 
@@ -223,7 +221,8 @@ def _candidate_tool_names_for_workflow(workflow: dict) -> set[str]:
         "",
         _re.sub(r"[\s\-]+", "_", name.lower()),
     ).strip("_")
-    return {normalized, name}
+    identity_suffix = uuid.UUID(workflow["id"]).hex
+    return {f"{normalized or 'workflow'}__{identity_suffix}"}
 
 
 def _set_workflow_access_level(

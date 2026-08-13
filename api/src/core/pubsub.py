@@ -15,6 +15,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
@@ -29,6 +30,8 @@ from src.core.log_safety import log_safe
 from src.core.redis_reconnect import ResilientPubSubListener
 
 logger = logging.getLogger(__name__)
+
+InternalSubscriber = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -46,6 +49,12 @@ class ConnectionManager:
     connections: dict[str, set[WebSocket]] = field(default_factory=dict)
     # Resilient pub/sub listener for receiving messages
     _pubsub_listener: ResilientPubSubListener | None = None
+    # Process-local consumers for cross-replica infrastructure events. These
+    # use the same Redis listener as WebSockets rather than creating parallel
+    # feature-specific pub/sub loops.
+    internal_subscribers: dict[str, set[InternalSubscriber]] = field(
+        default_factory=dict
+    )
 
     async def connect(self, websocket: WebSocket, channels: list[str]) -> None:
         """
@@ -102,6 +111,15 @@ class ConnectionManager:
         The dispatcher receives the raw message and decides what, if anything,
         to deliver to the client.
         """
+        for subscriber in tuple(self.internal_subscribers.get(channel, ())):
+            try:
+                await subscriber(message)
+            except Exception:
+                logger.exception(
+                    "Internal Redis subscriber failed for channel %s",
+                    log_safe(channel),
+                )
+
         if channel not in self.connections:
             return
 
@@ -174,10 +192,38 @@ class ConnectionManager:
             logger.warning(f"Failed to connect to Redis: {e}")
             self._pubsub_listener = None
 
+    async def subscribe_internal(
+        self,
+        channel: str,
+        subscriber: InternalSubscriber,
+    ) -> None:
+        """Subscribe a process-local infrastructure consumer to one channel."""
+        self.internal_subscribers.setdefault(channel, set()).add(subscriber)
+        if not self._pubsub_listener or not self._pubsub_listener.is_healthy():
+            await self._init_redis()
+        if not self._pubsub_listener or not self._pubsub_listener.is_healthy():
+            self.unsubscribe_internal(channel, subscriber)
+            raise RuntimeError("Redis pub/sub listener is unavailable")
+
+    def unsubscribe_internal(
+        self,
+        channel: str,
+        subscriber: InternalSubscriber,
+    ) -> None:
+        """Remove a process-local infrastructure consumer."""
+        subscribers = self.internal_subscribers.get(channel)
+        if subscribers is None:
+            return
+        subscribers.discard(subscriber)
+        if not subscribers:
+            del self.internal_subscribers[channel]
+
     async def close(self) -> None:
         """Clean up connections."""
         if self._pubsub_listener:
             await self._pubsub_listener.stop()
+            self._pubsub_listener = None
+        self.internal_subscribers.clear()
 
 
 # Global connection manager instance

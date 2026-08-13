@@ -95,12 +95,18 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
     """Convert ORM model to Pydantic schema for API response."""
     from typing import Literal
     from src.models.contracts.workflows import ExecutableType
+    from src.services.tool_registry import (
+        workflow_json_schema_to_parameter_records,
+    )
 
-    # Convert parameters from JSONB to WorkflowParameter objects
-    parameters = []
-    for param in workflow.parameters_schema or []:
-        if isinstance(param, dict):
-            parameters.append(WorkflowParameter(**param))
+    # Preserve the established list-shaped API contract while the JSONB source
+    # now retains a complete JSON Schema for MCP/OpenAPI consumers.
+    parameters = [
+        WorkflowParameter(**param)
+        for param in workflow_json_schema_to_parameter_records(
+            workflow.parameters_schema
+        )
+    ]
 
     # Validate execution_mode - default to "sync" if invalid
     raw_mode = workflow.execution_mode or "sync"
