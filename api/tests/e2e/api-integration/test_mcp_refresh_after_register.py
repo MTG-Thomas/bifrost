@@ -28,6 +28,7 @@ import requests
 from tests.fixtures.auth import create_test_jwt
 
 TEST_API_URL = os.getenv("TEST_API_URL", "http://api:8000")
+MCP_RESOURCE = f"{TEST_API_URL}/mcp"
 MCP_ACCEPT_HEADER = "application/json, text/event-stream"
 
 
@@ -58,7 +59,9 @@ class TestMCPRefreshAfterRegister:
 
         admin_token = create_test_jwt(is_superuser=True)
         admin_h = _admin_headers(admin_token)
-        mcp_h = _mcp_headers(admin_token)
+        mcp_h = _mcp_headers(
+            create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        )
 
         agent_id: str | None = None
         workflow_id: str | None = None
@@ -165,7 +168,9 @@ def {function_name}(message: str) -> dict:
 
         admin_token = create_test_jwt(is_superuser=True)
         admin_h = _admin_headers(admin_token)
-        mcp_h = _mcp_headers(admin_token)
+        mcp_h = _mcp_headers(
+            create_test_jwt(is_superuser=True, mcp_resource=MCP_RESOURCE)
+        )
 
         agent_id: str | None = None
         workflow_id: str | None = None
