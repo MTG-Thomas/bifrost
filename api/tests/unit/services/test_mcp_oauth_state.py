@@ -46,6 +46,8 @@ class TestEncodeDecodeRoundTrip:
             flow_type="service",
             pkce_verifier=verifier,
             redirect_uri="https://example.com/cb",
+            issuer="https://issuer.example.com",
+            resource="https://resource.example.com/mcp",
         )
         payload = decode_state(token)
         assert payload["connection_id"] == str(connection_id)
@@ -54,6 +56,8 @@ class TestEncodeDecodeRoundTrip:
         assert payload["nonce"] == nonce
         assert payload["redirect_uri"] == "https://example.com/cb"
         assert payload["code_challenge"] == pkce_challenge_for(verifier)
+        assert payload["oauth_issuer"] == "https://issuer.example.com"
+        assert payload["resource"] == "https://resource.example.com/mcp"
         assert "user_id" not in payload
 
     def test_user_flow_round_trip(self):
@@ -65,6 +69,9 @@ class TestEncodeDecodeRoundTrip:
             flow_type="user",
             pkce_verifier=verifier,
             user_id=user_id,
+            redirect_uri="https://example.com/cb",
+            issuer="https://issuer.example.com",
+            resource="https://resource.example.com/mcp",
         )
         payload = decode_state(token)
         assert payload["flow_type"] == "user"
@@ -76,6 +83,9 @@ class TestEncodeDecodeRoundTrip:
                 connection_id=uuid4(),
                 flow_type="user",
                 pkce_verifier=generate_pkce_verifier(),
+                redirect_uri="https://example.com/cb",
+                issuer="https://issuer.example.com",
+                resource="https://resource.example.com/mcp",
             )
 
     def test_service_flow_rejects_user_id(self):
@@ -85,6 +95,9 @@ class TestEncodeDecodeRoundTrip:
                 flow_type="service",
                 pkce_verifier=generate_pkce_verifier(),
                 user_id=uuid4(),
+                redirect_uri="https://example.com/cb",
+                issuer="https://issuer.example.com",
+                resource="https://resource.example.com/mcp",
             )
 
 
@@ -159,6 +172,9 @@ class TestDecodeFailures:
                 "connection_id": str(uuid4()),
                 "flow_type": "weirdo",
                 "pkce_verifier": "v",
+                "redirect_uri": "https://example.com/cb",
+                "oauth_issuer": "https://issuer.example.com",
+                "resource": "https://resource.example.com/mcp",
             },
             settings.secret_key,
             algorithm=settings.algorithm,
@@ -177,6 +193,9 @@ class TestDecodeFailures:
                 "connection_id": str(uuid4()),
                 "flow_type": "user",
                 "pkce_verifier": "v",
+                "redirect_uri": "https://example.com/cb",
+                "oauth_issuer": "https://issuer.example.com",
+                "resource": "https://resource.example.com/mcp",
                 # user_id missing
             },
             settings.secret_key,

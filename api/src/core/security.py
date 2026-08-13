@@ -58,7 +58,9 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(
     data: dict[str, Any],
-    expires_delta: timedelta | None = None
+    expires_delta: timedelta | None = None,
+    *,
+    audience: str | None = None,
 ) -> str:
     """
     Create a JWT access token.
@@ -85,7 +87,7 @@ def create_access_token(
         "exp": expire,
         "type": "access",
         "iss": settings.jwt_issuer,
-        "aud": settings.jwt_audience,
+        "aud": audience or settings.jwt_audience,
     })
 
     encoded_jwt = jwt.encode(
@@ -99,7 +101,9 @@ def create_access_token(
 
 def create_refresh_token(
     data: dict[str, Any],
-    expires_delta: timedelta | None = None
+    expires_delta: timedelta | None = None,
+    *,
+    audience: str | None = None,
 ) -> tuple[str, str]:
     """
     Create a JWT refresh token with JTI for revocation support.
@@ -133,7 +137,7 @@ def create_refresh_token(
         "type": "refresh",
         "jti": jti,
         "iss": settings.jwt_issuer,
-        "aud": settings.jwt_audience,
+        "aud": audience or settings.jwt_audience,
     })
 
     encoded_jwt = jwt.encode(
@@ -145,7 +149,12 @@ def create_refresh_token(
     return encoded_jwt, jti
 
 
-def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any] | None:
+def decode_token(
+    token: str,
+    expected_type: str | None = None,
+    *,
+    audience: str | None = None,
+) -> dict[str, Any] | None:
     """
     Decode and validate a JWT token.
 
@@ -164,7 +173,7 @@ def decode_token(token: str, expected_type: str | None = None) -> dict[str, Any]
             settings.secret_key,
             algorithms=[settings.algorithm],
             issuer=settings.jwt_issuer,
-            audience=settings.jwt_audience,
+            audience=audience or settings.jwt_audience,
         )
 
         # Validate token type if specified

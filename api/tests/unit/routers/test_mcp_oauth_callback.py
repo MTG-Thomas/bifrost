@@ -105,6 +105,7 @@ class TestExchangeCodeForToken:
                 code="vendor-code",
                 pkce_verifier="my-pkce-verifier",
                 redirect_uri="https://bifrost.example.com/cb",
+                resource="https://vendor.example.com/mcp",
                 db=MagicMock(),
             )
         assert result["access_token"] == "ok"
@@ -115,6 +116,7 @@ class TestExchangeCodeForToken:
         assert captured_payload["redirect_uri"] == "https://bifrost.example.com/cb"
         assert captured_payload["scope"] == "read write"
         assert captured_payload["grant_type"] == "authorization_code"
+        assert captured_payload["resource"] == "https://vendor.example.com/mcp"
 
     @pytest.mark.asyncio
     async def test_failure_raises_400(self):
@@ -147,6 +149,7 @@ class TestExchangeCodeForToken:
                     code="x",
                     pkce_verifier="v",
                     redirect_uri="https://example.com/cb",
+                    resource="https://vendor.example.com/mcp",
                     db=MagicMock(),
                 )
         assert exc.value.status_code == 400
@@ -170,6 +173,8 @@ class TestPersistToken:
             refresh_token="vendor-refresh",
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             scopes=["read"],
+            oauth_issuer="https://vendor.example.com",
+            oauth_resource="https://vendor.example.com/mcp",
             db=db,
         )
         assert len(added) == 1
@@ -178,6 +183,8 @@ class TestPersistToken:
         assert token.encrypted_access_token != b"vendor-access"
         assert token.encrypted_refresh_token is not None
         assert token.scopes == ["read"]
+        assert token.oauth_issuer == "https://vendor.example.com"
+        assert token.oauth_resource == "https://vendor.example.com/mcp"
 
 
 class TestUpsertUserCredential:
@@ -245,19 +252,96 @@ class TestCallbackHandler:
 
     @pytest.mark.asyncio
     async def test_vendor_error_returns_error_html_immediately(self):
-        # No DB or state work needed — caller exits before any of that.
-        response = await mcp_oauth_callback(
-            db=MagicMock(),
-            code="",
-            state="ignored",
-            error="access_denied",
-            error_description="</script><img src=x onerror=alert(1)>",
+        from src.services.mcp_client.oauth_state import encode_state
+
+        state, _nonce = encode_state(
+            connection_id=uuid4(),
+            flow_type="service",
+            pkce_verifier="v" * 64,
+            redirect_uri="https://bifrost.example.com/api/mcp/oauth/callback",
+            issuer="https://vendor.example.com",
+            resource="https://vendor.example.com/mcp",
         )
+        with patch(
+            "src.routers.mcp_oauth_callback.consume_nonce",
+            AsyncMock(return_value=True),
+        ):
+            response = await mcp_oauth_callback(
+                db=MagicMock(),
+                code=None,
+                state=state,
+                error="access_denied",
+                error_description="</script><img src=x onerror=alert(1)>",
+                iss="https://vendor.example.com",
+            )
         assert response.status_code == 400
         body = response.body.decode()
         assert "OAuth provider rejected the connection request." in body
         assert "access_denied" not in body
         assert "onerror=alert" not in body
+
+    @pytest.mark.asyncio
+    async def test_issuer_substitution_is_rejected_before_exchange(self):
+        from src.services.mcp_client.oauth_state import encode_state
+
+        connection_id = uuid4()
+        state, _nonce = encode_state(
+            connection_id=connection_id,
+            flow_type="service",
+            pkce_verifier="v" * 64,
+            redirect_uri="https://bifrost.example.com/api/mcp/oauth/callback",
+            issuer="https://vendor.example.com",
+            resource="https://vendor.example.com/mcp",
+        )
+        db = MagicMock()
+        db.execute = AsyncMock()
+
+        with patch(
+            "src.routers.mcp_oauth_callback.consume_nonce",
+            AsyncMock(return_value=True),
+        ) as consume:
+            response = await mcp_oauth_callback(
+                db=db,
+                code="attacker-code",
+                state=state,
+                iss="https://attacker.example.com",
+            )
+
+        assert response.status_code == 400
+        assert "issuer mismatch" in response.body.decode()
+        consume.assert_not_awaited()
+        db.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_replayed_state_is_rejected_before_exchange(self):
+        from src.services.mcp_client.oauth_state import encode_state
+
+        connection_id = uuid4()
+        state, _nonce = encode_state(
+            connection_id=connection_id,
+            flow_type="service",
+            pkce_verifier="v" * 64,
+            redirect_uri="https://bifrost.example.com/api/mcp/oauth/callback",
+            issuer="https://vendor.example.com",
+            resource="https://vendor.example.com/mcp",
+        )
+        db = MagicMock()
+        db.execute = AsyncMock()
+
+        with patch(
+            "src.routers.mcp_oauth_callback.consume_nonce",
+            AsyncMock(return_value=False),
+        ):
+            response = await mcp_oauth_callback(
+                db=db,
+                code="replayed-code",
+                state=state,
+                iss="https://vendor.example.com",
+            )
+
+        assert response.status_code == 400
+        assert "state already used or expired" in response.body.decode()
+        db.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_invalid_state_returns_error_without_db_io(self):

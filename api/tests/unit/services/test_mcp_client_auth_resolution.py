@@ -69,6 +69,14 @@ async def _make_server(db: AsyncSession) -> MCPServer:
         id=uuid4(),
         name=f"mcp-srv-{uuid4().hex[:8]}",
         server_url="https://vendor.example.com/mcp",
+        discovery_metadata={
+            "authorization_server_metadata": {
+                "issuer": "https://vendor.example.com"
+            },
+            "protected_resource_metadata": {
+                "resource": "https://vendor.example.com/mcp"
+            },
+        },
         is_active=True,
     )
     db.add(server)
@@ -95,6 +103,8 @@ async def _make_oauth_token(
         encrypted_refresh_token=_enc(refresh_token) if refresh_token else None,
         expires_at=expires_at,
         scopes=["read"],
+        oauth_issuer="https://vendor.example.com",
+        oauth_resource="https://vendor.example.com/mcp",
     )
     db.add(token)
     await db.flush()
@@ -181,6 +191,42 @@ async def test_path_1_user_token_when_credential_healthy(
 
     assert path == ResolutionPath.USER_TOKEN
     assert access_token == "user-vendor-token"
+
+
+@pytest.mark.asyncio
+async def test_user_token_is_rejected_after_issuer_change(
+    db_session: AsyncSession, seed_user
+):
+    org = await _make_org(db_session)
+    provider = await _make_provider(db_session)
+    server = await _make_server(db_session)
+    connection = await _make_connection(db_session, server, org)
+    user_token = await _make_oauth_token(db_session, provider)
+    db_session.add(
+        UserMCPCredential(
+            id=uuid4(),
+            user_id=seed_user.id,
+            connection_id=connection.id,
+            oauth_token_id=user_token.id,
+            consent_granted_at=datetime.now(timezone.utc),
+            granted_scopes=["read"],
+        )
+    )
+    await db_session.flush()
+    discovery_metadata = dict(server.discovery_metadata)
+    authorization_server_metadata = dict(
+        discovery_metadata["authorization_server_metadata"]
+    )
+    authorization_server_metadata["issuer"] = "https://replacement.example.com"
+    server.discovery_metadata = {
+        **discovery_metadata,
+        "authorization_server_metadata": authorization_server_metadata,
+    }
+    await db_session.flush()
+    connection = await _reload_connection(db_session, connection.id)
+
+    with pytest.raises(NeedsReauthError):
+        await resolve_token(connection, seed_user.id, db_session)
 
 
 # ============================================================================
