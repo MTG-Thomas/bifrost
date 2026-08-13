@@ -200,7 +200,7 @@ class ExecutionRepository(BaseRepository[Execution]):
         metrics: dict | None = None,
         time_saved: int | None = None,
         value: float | None = None,
-    ) -> None:
+    ) -> ExecutionStatus:
         """
         Update an execution record with results.
 
@@ -218,15 +218,43 @@ class ExecutionRepository(BaseRepository[Execution]):
             time_saved: Final time saved in minutes
             value: Final value generated
         """
-        # Get status value if it's an enum
-        status_value = status.value if hasattr(status, "value") else status
+        # Serialize result finalization against claim/cancel. If cancellation
+        # acquired this execution's lock first, the worker result must finish
+        # the accepted cancellation instead of resurrecting the execution as
+        # successful or failed.
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtext('bifrost:workflow-execution:' || :execution_id))"
+            ),
+            {"execution_id": execution_id},
+        )
+        current_status_result = await self.session.execute(
+            select(Execution.status).where(Execution.id == UUID(execution_id))
+        )
+        current_status = current_status_result.scalar_one_or_none()
+        current_status_value = (
+            current_status.value
+            if isinstance(current_status, ExecutionStatus)
+            else current_status
+        )
+        cancellation_won = current_status_value in {
+            ExecutionStatus.CANCELLING.value,
+            ExecutionStatus.CANCELLED.value,
+        }
+        effective_status = (
+            ExecutionStatus.CANCELLED
+            if cancellation_won
+            else status
+        )
+        status_value = effective_status.value
 
         # Build update values
         update_values: dict[str, Any] = {
             "status": status_value,
         }
 
-        if result is not None:
+        if result is not None and not cancellation_won:
             update_values["result"] = _make_json_safe(result)
             # Normalize result_type to frontend-friendly values
             python_type = type(result).__name__
@@ -241,7 +269,7 @@ class ExecutionRepository(BaseRepository[Execution]):
             else:
                 update_values["result_type"] = "json"  # Default to json
 
-        if error_message is not None:
+        if error_message is not None and not cancellation_won:
             update_values["error_message"] = error_message
 
         if duration_ms is not None:
@@ -270,9 +298,9 @@ class ExecutionRepository(BaseRepository[Execution]):
                 update_values["cpu_total_seconds"] = metrics["cpu_total_seconds"]
 
         # Economics
-        if time_saved is not None:
+        if time_saved is not None and not cancellation_won:
             update_values["time_saved"] = time_saved
-        if value is not None:
+        if value is not None and not cancellation_won:
             update_values["value"] = value
 
         # Execute update
@@ -297,6 +325,7 @@ class ExecutionRepository(BaseRepository[Execution]):
 
         await self.session.flush()
         logger.debug(f"Updated execution {log_safe(execution_id)} to status {log_safe(status_value)}")
+        return effective_status
 
     # =========================================================================
     # Read Operations (used by API endpoints)
@@ -765,7 +794,7 @@ async def update_execution(
     time_saved: int | None = None,
     value: float | None = None,
     session: "AsyncSession | None" = None,
-) -> None:
+) -> ExecutionStatus:
     """
     Update an execution record with results.
 
@@ -779,9 +808,9 @@ async def update_execution(
 
     from src.core.database import get_session_factory
 
-    async def _do_update(db: AsyncSessionType) -> None:
+    async def _do_update(db: AsyncSessionType) -> ExecutionStatus:
         repo = ExecutionRepository(db)
-        await repo.update_execution(
+        return await repo.update_execution(
             execution_id=execution_id,
             status=status,
             result=result,
@@ -798,10 +827,11 @@ async def update_execution(
 
     if session is not None:
         # Use provided session (caller manages commit)
-        await _do_update(session)
+        return await _do_update(session)
     else:
         # Backward compatible: create own session
         session_factory = get_session_factory()
         async with session_factory() as db:
-            await _do_update(db)
+            effective_status = await _do_update(db)
             await db.commit()
+            return effective_status

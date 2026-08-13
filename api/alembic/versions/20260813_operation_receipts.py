@@ -11,7 +11,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260813_operation_receipts"
-down_revision: str = "20260807_withdraw_builder"
+down_revision: str = "20260812_mcp_oauth_binding"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

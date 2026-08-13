@@ -471,6 +471,8 @@ async def test_process_message_acknowledges_recorded_setup_failure_as_domain_han
 
 @pytest.mark.asyncio
 async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() -> None:
+    from src.models.enums import ExecutionStatus
+
     consumer = make_consumer()
     execution_id = str(uuid4())
     session = _Session()
@@ -488,7 +490,11 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch(
+            "src.repositories.executions.update_execution",
+            new_callable=AsyncMock,
+            return_value=ExecutionStatus.SUCCESS,
+        ) as update_execution,
         patch("src.services.events.processor.update_delivery_from_execution", new_callable=AsyncMock) as update_delivery,
         patch("bifrost._sync.flush_pending_changes", new_callable=AsyncMock, return_value=2) as flush_changes,
         patch("bifrost._logging.flush_logs_to_postgres", new_callable=AsyncMock, return_value=3) as flush_logs,
@@ -552,6 +558,8 @@ async def test_process_success_updates_storage_metrics_pubsub_and_sync_result() 
 
 @pytest.mark.asyncio
 async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -> None:
+    from src.models.enums import ExecutionStatus
+
     consumer = make_consumer()
     execution_id = str(uuid4())
     session = _Session()
@@ -577,7 +585,11 @@ async def test_process_failure_maps_cancelled_status_and_emits_failure_event() -
 
     with (
         patch("src.core.database.get_session_factory", return_value=_session_factory(session)),
-        patch("src.repositories.executions.update_execution", new_callable=AsyncMock) as update_execution,
+        patch(
+            "src.repositories.executions.update_execution",
+            new_callable=AsyncMock,
+            return_value=ExecutionStatus.CANCELLED,
+        ) as update_execution,
         patch("src.services.events.processor.update_delivery_from_execution", new_callable=AsyncMock) as update_delivery,
         patch("bifrost._sync.flush_pending_changes", new_callable=AsyncMock, return_value=0),
         patch("bifrost._logging.flush_logs_to_postgres", new_callable=AsyncMock, return_value=0),

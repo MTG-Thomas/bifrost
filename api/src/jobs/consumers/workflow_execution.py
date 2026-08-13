@@ -178,7 +178,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # (flush functions do Redis reads internally but DB writes share the session)
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await update_execution(
+            status = await update_execution(
                 execution_id=execution_id,
                 status=status,
                 result=workflow_result,
@@ -192,6 +192,10 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 value=roi_value,
                 session=session,
             )
+            if status == ExecutionStatus.CANCELLED:
+                workflow_result = None
+                roi_time_saved = 0
+                roi_value = 0.0
 
             try:
                 from src.services.events.processor import update_delivery_from_execution
@@ -340,7 +344,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
         # DB operations + flush — single short-lived session
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await update_execution(
+            status = await update_execution(
                 execution_id=execution_id,
                 status=status,
                 error_message=error,

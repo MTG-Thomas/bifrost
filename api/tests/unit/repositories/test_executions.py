@@ -248,6 +248,11 @@ async def test_update_execution_sets_result_type_metrics_economics_and_logs() ->
     execution_id = uuid4()
     session = AsyncMock()
     session.add = MagicMock()
+    session.execute.side_effect = [
+        None,
+        ExecuteResult(scalar_row=ExecutionStatus.RUNNING.value),
+        None,
+    ]
     repo = ExecutionRepository(session)
 
     await repo.update_execution(
@@ -278,7 +283,7 @@ async def test_update_execution_sets_result_type_metrics_economics_and_logs() ->
         value=12.25,
     )
 
-    statement = session.execute.await_args.args[0]
+    statement = session.execute.await_args_list[-1].args[0]
     values = statement.compile().params
     assert values["status"] == ExecutionStatus.SUCCESS.value
     assert values["result"] == "<p>done</p>"
@@ -303,6 +308,11 @@ async def test_update_execution_redacts_generated_script_before_persistence() ->
     marker = "SYNTHETIC_EXECUTION_SCRIPT_MARKER"
     session = AsyncMock()
     session.add = MagicMock()
+    session.execute.side_effect = [
+        None,
+        ExecuteResult(scalar_row=ExecutionStatus.RUNNING.value),
+        None,
+    ]
     repo = ExecutionRepository(session)
 
     await repo.update_execution(
@@ -317,7 +327,7 @@ async def test_update_execution_redacts_generated_script_before_persistence() ->
         },
     )
 
-    statement = session.execute.await_args.args[0]
+    statement = session.execute.await_args_list[-1].args[0]
     persisted = statement.compile().params["variables"]
     assert persisted == {
         "script": "[REDACTED]",
@@ -341,6 +351,15 @@ async def test_update_execution_redacts_generated_script_before_persistence() ->
 async def test_update_execution_classifies_json_text_and_default_result_types() -> None:
     session = AsyncMock()
     session.add = MagicMock()
+    session.execute.side_effect = [
+        item
+        for _ in range(4)
+        for item in (
+            None,
+            ExecuteResult(scalar_row=ExecutionStatus.RUNNING.value),
+            None,
+        )
+    ]
     repo = ExecutionRepository(session)
 
     for result, expected in [
@@ -350,8 +369,47 @@ async def test_update_execution_classifies_json_text_and_default_result_types() 
         (123, "json"),
     ]:
         await repo.update_execution(str(uuid4()), ExecutionStatus.SUCCESS, result=result)
-        statement = session.execute.await_args.args[0]
+        statement = session.execute.await_args_list[-1].args[0]
         assert statement.compile().params["result_type"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "current_status",
+    [ExecutionStatus.CANCELLING, ExecutionStatus.CANCELLED],
+)
+async def test_update_execution_preserves_accepted_cancellation(
+    current_status: ExecutionStatus,
+) -> None:
+    execution_id = uuid4()
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.execute.side_effect = [
+        None,
+        ExecuteResult(scalar_row=current_status.value),
+        None,
+    ]
+    repo = ExecutionRepository(session)
+
+    effective_status = await repo.update_execution(
+        str(execution_id),
+        ExecutionStatus.SUCCESS,
+        result={"completed": True},
+        error_message="late worker error",
+        time_saved=4,
+        value=12.5,
+    )
+
+    advisory_lock = session.execute.await_args_list[0]
+    assert advisory_lock.args[1] == {"execution_id": str(execution_id)}
+    statement = session.execute.await_args_list[-1].args[0]
+    values = statement.compile().params
+    assert values["status"] == ExecutionStatus.CANCELLED.value
+    assert "result" not in values
+    assert "error_message" not in values
+    assert "time_saved" not in values
+    assert "value" not in values
+    assert effective_status == ExecutionStatus.CANCELLED
 
 
 class OneOrNoneResult:
