@@ -287,15 +287,13 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   # =============================================================================
-  # MCP Conformance - Advisory while the modern endpoint lifecycle from #524
-  # is not yet available. The exact-pinned official runner records checks from
-  # the real authenticated MCP surface; this job is intentionally not a
-  # dependency of a required aggregate gate.
+  # MCP Conformance - the exact-pinned official runner gates the stable subset
+  # applicable to Bifrost's authenticated four-tool modern gateway. Broader
+  # stateless checks remain visible in the uploaded advisory artifact.
   # =============================================================================
   mcp-conformance:
     runs-on: ubuntu-latest
-    name: MCP Conformance (advisory)
-    continue-on-error: true
+    name: MCP Conformance
     permissions:
       contents: read
       packages: read
@@ -364,7 +362,7 @@ jobs:
       - name: Remove registry credentials
         run: docker logout "$REGISTRY"
 
-      - name: Run advisory MCP conformance
+      - name: Run blocking MCP conformance
         env:
           BIFROST_SKIP_BUILD: "1"
         run: |
@@ -378,7 +376,7 @@ jobs:
         with:
           name: mcp-conformance-results
           path: /tmp/bifrost-*/mcp-conformance/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Tear down MCP conformance stack
@@ -610,7 +608,7 @@ jobs:
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
     if: always()
-    needs: [test-e2e, test-client-e2e]
+    needs: [test-e2e, test-client-e2e, mcp-conformance]
     runs-on: ubuntu-latest
     name: E2E Tests
     steps:
@@ -624,7 +622,11 @@ jobs:
             echo "Client e2e tests failed or were cancelled (result: ${{ needs.test-client-e2e.result }})"
             exit 1
           fi
-          echo "All backend e2e shards and client Playwright tests passed."
+          if [ "${{ needs.mcp-conformance.result }}" != "success" ]; then
+            echo "MCP conformance failed or was cancelled (result: ${{ needs.mcp-conformance.result }})"
+            exit 1
+          fi
+          echo "All backend e2e shards, client Playwright tests, and MCP conformance passed."
 
   # =============================================================================
   # Dev Build - Every push to main, gated by unit tests only
@@ -958,7 +960,7 @@ jobs:
   # =============================================================================
   verify-release-manifest:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test-unit, test-e2e-gate, lint]
+    needs: [test-unit, test-e2e-gate, lint, mcp-conformance]
     runs-on: ubuntu-latest
     name: Verify Release Manifest
     permissions:

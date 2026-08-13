@@ -145,8 +145,11 @@ def test_test_harness_waits_for_both_api_replicas():
 
 def test_api_quality_script_runs_pyright_without_ci_venv_config():
     script = _find_repo_file("api/scripts/quality_api.sh").read_text()
-    assert 'config.pop("venvPath", None)' in script
-    assert 'config.pop("venv", None)' in script
-    assert 'Path("pyrightconfig.docker.json")' in script
     assert "pyright --project pyrightconfig.docker.json --pythonpath /usr/local/bin/python" in script
     assert "ruff check ." in script
+
+    compose = yaml.safe_load(_find_repo_file("docker-compose.test.yml").read_text())
+    assert (
+        "./api/pyrightconfig.docker.json:/app/pyrightconfig.docker.json:ro"
+        in compose["services"]["test-runner"]["volumes"]
+    )
