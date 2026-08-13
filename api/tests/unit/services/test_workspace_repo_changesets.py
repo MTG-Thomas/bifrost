@@ -907,6 +907,135 @@ async def test_git_convergence_uses_history_parent_hash_not_workspace_before_has
 
 
 @pytest.mark.asyncio
+async def test_git_convergence_closes_already_present_signed_candidate_without_write():
+    path = "features/already_present.py"
+    live = b"reviewed, live, and in history\n"
+    live_hash = hashlib.sha256(live).hexdigest()
+    source_sha = "d" * 40
+    candidate_sha = "c" * 40
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={path: live_hash},
+        history_sha="e" * 40,
+        history_hashes={path: live_hash},
+    )
+    writer.result = PlatformCommitResult(
+        commit_sha=candidate_sha,
+        tree_sha="b" * 40,
+        signature_state="VALID",
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(), uuid4(), repo=MemoryRepo({path: b"before\n"}), commit_writer=writer
+    )
+    svc.rows = MemoryRows()
+    started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        started.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(live).decode(),
+        ),
+    )
+    row = svc.rows.items[started.id]
+    await svc.repo.write(path, live)
+    row.status = "activated"
+    row.commit_sha = candidate_sha
+    row.failure_detail = {
+        "phase": "git_closure",
+        "state": "failed",
+        "commit_sha": candidate_sha,
+        "activation_preserved": True,
+    }
+
+    preview = await svc.preview_git_convergence(
+        WorkspaceRepoGitConvergencePreviewRequest(
+            changeset_ids=[row.id], protected_main_source_sha=source_sha
+        )
+    )
+
+    assert preview.ready_to_apply is True
+    assert preview.paths[0].requires_write is False
+    assert preview.diagnostics == [
+        {
+            "severity": "info",
+            "source": "existing_history",
+            "message": (
+                "selected paths are already present in production-live history; "
+                "apply will verify the recorded signed commit without writing"
+            ),
+            "commit_sha": candidate_sha,
+        }
+    ]
+
+    applied = await svc.apply_git_convergence(
+        WorkspaceRepoGitConvergenceApplyRequest(
+            changeset_ids=[row.id],
+            protected_main_source_sha=source_sha,
+            candidate_id=preview.candidate_id,
+            commit_message="Verify existing production history",
+        ),
+        operator="operator@example.com",
+    )
+
+    assert applied.applied is True
+    assert applied.commit_sha == candidate_sha
+    assert row.status == "committed"
+    assert row.failure_detail is None
+    request = writer.requests[0]
+    assert request.candidate_commit_sha == candidate_sha
+    assert request.enforce_expected_head_sha is True
+    assert request.expected_head_sha == "e" * 40
+    assert request.files[0].expected_sha256 == live_hash
+
+
+@pytest.mark.asyncio
+async def test_git_convergence_rejects_already_present_history_without_common_candidate():
+    path = "features/already_present.py"
+    live = b"reviewed, live, and in history\n"
+    live_hash = hashlib.sha256(live).hexdigest()
+    source_sha = "d" * 40
+    writer = ConvergenceWriter(
+        source_sha=source_sha,
+        source_hashes={path: live_hash},
+        history_sha="e" * 40,
+        history_hashes={path: live_hash},
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(), uuid4(), repo=MemoryRepo({path: b"before\n"}), commit_writer=writer
+    )
+    svc.rows = MemoryRows()
+    started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        started.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(live).decode(),
+        ),
+    )
+    row = svc.rows.items[started.id]
+    await svc.repo.write(path, live)
+    row.status = "activated"
+    row.failure_detail = {
+        "phase": "git_closure",
+        "state": "failed",
+        "activation_preserved": True,
+    }
+
+    preview = await svc.preview_git_convergence(
+        WorkspaceRepoGitConvergencePreviewRequest(
+            changeset_ids=[row.id], protected_main_source_sha=source_sha
+        )
+    )
+
+    assert preview.ready_to_apply is False
+    assert preview.diagnostics[-1]["source"] == "existing_history"
+    assert "common recorded commit SHA" in preview.diagnostics[-1]["message"]
+    assert writer.requests == []
+
+
+@pytest.mark.asyncio
 async def test_git_convergence_resumes_its_durable_pending_plan():
     path = "features/readiness.py"
     live = b"reviewed-and-live\n"

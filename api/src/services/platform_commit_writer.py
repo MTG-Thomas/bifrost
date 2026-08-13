@@ -52,6 +52,7 @@ class PlatformCommitRequest:
     protected_main_source_sha: str | None = None
     candidate_commit_sha: str | None = None
     expected_head_sha: str | None = None
+    enforce_expected_head_sha: bool = False
     convergence_candidate_id: str | None = None
     reconciled_changeset_ids: tuple[UUID, ...] = ()
 
@@ -460,6 +461,9 @@ class GitHubAppCommitWriter:
             token,
             commit_sha,
             require_head=require_head,
+            expected_head_sha=(
+                request.expected_head_sha if request.enforce_expected_head_sha else None
+            ),
         )
         return PlatformCommitResult(
             commit_sha=commit_sha,
@@ -474,6 +478,7 @@ class GitHubAppCommitWriter:
         commit_sha: str,
         *,
         require_head: bool,
+        expected_head_sha: str | None = None,
     ) -> None:
         """Prove the immutable commit is at or behind the authoritative branch ref."""
         encoded_ref = urllib.parse.quote(f"heads/{self.branch}", safe="/")
@@ -494,6 +499,11 @@ class GitHubAppCommitWriter:
             if target.get("type") != "commit" or not head_sha:
                 raise PlatformCommitError(
                     "GitHub branch ref readback did not resolve to a commit",
+                    commit_sha=commit_sha,
+                )
+            if expected_head_sha and head_sha != expected_head_sha:
+                raise PlatformCommitError(
+                    "GitHub branch head changed after the reviewed preview",
                     commit_sha=commit_sha,
                 )
             if head_sha == commit_sha:
