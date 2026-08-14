@@ -32,8 +32,10 @@ def _make_mock_client(
 ) -> mock.AsyncMock:
     """Return a mock BifrostClient that records calls and replies per path."""
 
-    async def capturing_post(path, json=None):  # type: ignore[no-untyped-def]
-        captured.setdefault("calls", []).append({"path": path, "body": json})
+    async def capturing_post(path, json=None, **kwargs):  # type: ignore[no-untyped-def]
+        captured.setdefault("calls", []).append(
+            {"path": path, "body": json, "kwargs": kwargs}
+        )
         body = body_by_path.get(path, {})
         if isinstance(body, httpx.Response):
             return body
@@ -146,6 +148,7 @@ class TestGraph:
             "content": "VALUE = 2\n",
             "direction": "both",
         }
+        assert captured["calls"][0]["kwargs"] == {"timeout": 120.0}
 
 
 class TestWrite:

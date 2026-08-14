@@ -192,6 +192,7 @@ async def _preview_impact(
     response = await client.post(
         "/api/files/impact",
         json={"path": path, "content": content, "direction": direction},
+        timeout=120.0,
     )
     response.raise_for_status()
     result = response.json()
