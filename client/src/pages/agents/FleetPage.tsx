@@ -8,7 +8,7 @@
  */
 
 import { type MouseEvent, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link } from "react-router";
 import {
 	AlertTriangle,
 	Bot,
@@ -473,7 +473,6 @@ function AgentGridCard({
 	showOrg: boolean;
 	orgName: string;
 }) {
-	const navigate = useNavigate();
 	// TODO(plan-2): replace per-card useAgentStats N+1 with a denormalized
 	// list endpoint that returns fleet member stats in one round-trip.
 	const { data: stats, isLoading } = useAgentStats(agent.id ?? undefined);
@@ -483,9 +482,8 @@ function AgentGridCard({
 
 	return (
 		<article
-			onClick={() => navigate(`/agents/${agent.id}`)}
 			className={cn(
-				"group flex cursor-pointer flex-col overflow-hidden",
+				"group relative flex cursor-pointer flex-col overflow-hidden",
 				CARD_SURFACE,
 				CARD_HOVER,
 			)}
@@ -505,8 +503,10 @@ function AgentGridCard({
 						/>
 						<Link
 							to={`/agents/${agent.id}`}
-							className={cn("truncate", TYPE_CARD_TITLE)}
-							onClick={(event) => event.stopPropagation()}
+							className={cn(
+								"truncate before:absolute before:inset-0 before:content-['']",
+								TYPE_CARD_TITLE,
+							)}
 						>
 							{agent.name}
 						</Link>
@@ -516,9 +516,11 @@ function AgentGridCard({
 							</Badge>
 						) : null}
 						{agent.is_solution_managed ? (
-							<SolutionManagedBadge
-								solutionId={agent.solution_id}
-							/>
+							<span className="relative z-10">
+								<SolutionManagedBadge
+									solutionId={agent.solution_id}
+								/>
+							</span>
 						) : null}
 					</div>
 					<div className="flex shrink-0 flex-wrap gap-1">
@@ -612,7 +614,7 @@ function McpUrlBadge({ agentId }: { agentId: string }) {
 			title={url}
 			aria-label="Copy agent MCP URL"
 			data-testid="agent-mcp-copy"
-			className="inline-flex items-center gap-1 rounded-2xl border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+			className="relative z-10 inline-flex items-center gap-1 rounded-2xl border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
 		>
 			MCP
 			<Copy className="h-3 w-3" />
