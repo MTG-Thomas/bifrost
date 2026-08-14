@@ -42,11 +42,45 @@ workspace_impact_snapshot_files = None
 workspace_impact_barrier_duration = None
 
 
+class _WorkspaceSnapshotCache:
+    """Single-flight durable snapshots scoped to one workspace generation."""
+
+    def __init__(self) -> None:
+        self._generation: str | None = None
+        self._snapshot: dict[str, bytes] | None = None
+        self._lock = asyncio.Lock()
+
+    async def get(
+        self,
+        *,
+        generation: Callable[[], Awaitable[str]],
+        load: Callable[[], Awaitable[dict[str, bytes]]],
+    ) -> dict[str, bytes]:
+        async with self._lock:
+            before = await generation()
+            if before.startswith("updating:"):
+                raise WorkspaceFileImpactInvalid(
+                    "workspace source update is in progress; retry impact analysis"
+                )
+            if before == self._generation and self._snapshot is not None:
+                return self._snapshot
+
+            snapshot = await load()
+            after = await generation()
+            if after != before or after.startswith("updating:"):
+                raise WorkspaceFileImpactInvalid(
+                    "workspace source changed during impact analysis; retry"
+                )
+            self._generation = after
+            self._snapshot = snapshot
+            return snapshot
+
+
+_workspace_snapshot_cache = _WorkspaceSnapshotCache()
+
+
 def _is_authored_python_path(path: str) -> bool:
-    return (
-        path.endswith(".py")
-        and path.split("/", 1)[0] in WORKSPACE_IMPORT_ROOTS
-    )
+    return path.endswith(".py") and path.split("/", 1)[0] in WORKSPACE_IMPORT_ROOTS
 
 
 class WorkspaceFileImpactInvalid(ValueError):
@@ -245,17 +279,31 @@ def _edge_rows(
 class WorkspaceFileImpactService:
     """Build a coherent bidirectional graph directly from durable `_repo` bytes."""
 
-    def __init__(self, repo: RepoStorage | None = None):
+    def __init__(
+        self,
+        repo: RepoStorage | None = None,
+        *,
+        snapshot_cache: _WorkspaceSnapshotCache | None = None,
+    ):
         self.repo = repo or RepoStorage()
+        self._snapshot_cache = (
+            snapshot_cache
+            if snapshot_cache is not None
+            else _workspace_snapshot_cache
+            if repo is None
+            else None
+        )
 
-    async def _python_snapshot(self) -> dict[str, bytes]:
+    async def _load_python_snapshot(self) -> dict[str, bytes]:
         started = time.perf_counter()
         snapshot_duration, snapshot_files, _ = _impact_metric_instruments()
         paths: list[str] = []
         success = False
         try:
             paths = sorted(
-                path for path in await self.repo.list() if _is_authored_python_path(path)
+                path
+                for path in await self.repo.list()
+                if _is_authored_python_path(path)
             )
             if not paths or len(paths) > MAX_SNAPSHOT_FILES:
                 raise WorkspaceFileImpactInvalid(
@@ -286,6 +334,17 @@ class WorkspaceFileImpactService:
                 elapsed_ms,
             )
 
+    async def _python_snapshot(self) -> dict[str, bytes]:
+        if self._snapshot_cache is None:
+            return await self._load_python_snapshot()
+
+        from src.core.module_cache import get_workspace_generation
+
+        return await self._snapshot_cache.get(
+            generation=get_workspace_generation,
+            load=self._load_python_snapshot,
+        )
+
     async def guarded_write(
         self,
         request: WorkspaceFileImpactRequest,
@@ -304,7 +363,7 @@ class WorkspaceFileImpactService:
                 reason="checked_workspace_file_write",
                 changed_paths=[request.path],
             ):
-                impact = await self.preview(request)
+                impact = await self.preview(request, use_cache=False)
                 if impact.candidate_id != candidate_id:
                     raise WorkspaceFileImpactConflict(
                         impact.path, candidate_id, impact.candidate_id
@@ -325,7 +384,10 @@ class WorkspaceFileImpactService:
             )
 
     async def preview(
-        self, request: WorkspaceFileImpactRequest
+        self,
+        request: WorkspaceFileImpactRequest,
+        *,
+        use_cache: bool = True,
     ) -> WorkspaceFileImpactResponse:
         path = normalize_workspace_path(request.path)
         if not path.endswith(".py"):
@@ -337,7 +399,11 @@ class WorkspaceFileImpactService:
             raise WorkspaceFileImpactInvalid(
                 f"Workspace impact analysis supports authored roots only: {roots}"
             )
-        live = await self._python_snapshot()
+        live = (
+            await self._python_snapshot()
+            if use_cache
+            else await self._load_python_snapshot()
+        )
         current = live.get(path)
         if request.content is None:
             if current is None:

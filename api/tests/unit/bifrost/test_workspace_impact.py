@@ -72,6 +72,20 @@ def test_analysis_reports_computed_workflow_references() -> None:
     assert graph.dynamic_reference_importers == frozenset({"workflows/parent.py"})
 
 
+def test_analysis_does_not_treat_dynamic_result_fields_as_workflow_dispatch() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/report.py": (
+                b"async def report(item):\n"
+                b"    return {'workflow_id': item.id, 'workflow_name': item.name}\n"
+            )
+        }
+    )
+
+    assert graph.registry_edges == frozenset()
+    assert graph.dynamic_reference_importers == frozenset()
+
+
 def test_analysis_ignores_non_reference_workflow_constants() -> None:
     graph = analyze_workspace_impact(
         {
