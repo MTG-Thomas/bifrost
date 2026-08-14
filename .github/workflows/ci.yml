@@ -6,14 +6,15 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
-  # GitHub merge queue runs CI on a synthetic ref containing
-  # main + queued PRs stacked in queue order. Required status
-  # checks must fire on this event or the queue blocks forever
-  # waiting on absent statuses.
-  merge_group:
   workflow_dispatch:
 
 permissions: read-all
+
+# A new PR head supersedes its prior run. Push/tag runs publish artifacts and
+# must finish; the serialized queue itself has separate non-cancelling lock.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -64,12 +65,10 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           PUSH_BASE_SHA: ${{ github.event.before }}
         run: |
           case "$EVENT_NAME" in
             pull_request) base_sha="$PR_BASE_SHA" ;;
-            merge_group) base_sha="$MERGE_GROUP_BASE_SHA" ;;
             push) base_sha="$PUSH_BASE_SHA" ;;
             *) base_sha="" ;;
           esac
@@ -345,7 +344,7 @@ jobs:
   # =============================================================================
   test-unit:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Unit Tests
     permissions:
@@ -466,7 +465,7 @@ jobs:
   # =============================================================================
   mcp-conformance:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: MCP Conformance
     permissions:
@@ -588,7 +587,7 @@ jobs:
   # =============================================================================
   test-e2e:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: E2E Tests (shard ${{ matrix.shard }}/${{ matrix.total }})
     permissions:
@@ -717,7 +716,7 @@ jobs:
   # =============================================================================
   test-client-e2e:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Client E2E Tests
     permissions:
@@ -855,7 +854,7 @@ jobs:
   # Fails if any backend shard or the Playwright job failed or was cancelled.
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     needs: [affected-test-plan, test-e2e, test-client-e2e, mcp-conformance]
     runs-on: ubuntu-latest
     name: E2E Tests
@@ -884,8 +883,8 @@ jobs:
   # Dev Build - Every push to main, gated by unit tests only
   # =============================================================================
   build-dev:
-    # Only fires on push: main — branch protection + merge queue
-    # already gated this commit, so no needs: here.
+    # Only fires on push: main. The serialized queue already gated the exact
+    # candidate tree; this lane publishes artifacts without repeating tests.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Build Dev Images
