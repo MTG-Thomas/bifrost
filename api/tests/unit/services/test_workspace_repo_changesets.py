@@ -112,14 +112,25 @@ class FakeDB:
 
 
 class RecordingWriter:
-    def __init__(self, result=None, error=None):
+    def __init__(self, result=None, error=None, *, history_hashes=None):
         self.result = result or PlatformCommitResult(
             commit_sha="a" * 40,
             tree_sha="b" * 40,
             signature_state="VALID",
         )
         self.error = error
+        self.history_hashes = dict(history_hashes or {})
         self.requests = []
+        self.inspections = []
+
+    async def inspect(self, paths, *, ref=None, reachable_from=None):
+        self.inspections.append((paths, ref, reachable_from))
+        return PlatformCommitSnapshot(
+            commit_sha="d" * 40,
+            tree_sha="e" * 40,
+            file_sha256={path: self.history_hashes.get(path) for path in paths},
+            signature_state="VALID" if ref is None else None,
+        )
 
     async def write(self, request):
         self.requests.append(request)
@@ -149,6 +160,7 @@ class ConvergenceWriter(RecordingWriter):
             commit_sha=self.history_sha,
             tree_sha="2" * 40,
             file_sha256={path: self.history_hashes.get(path) for path in paths},
+            signature_state="VALID",
         )
 
 
@@ -567,7 +579,9 @@ async def test_activation_persists_failure_when_compensation_also_fails(monkeypa
 
 @pytest.mark.asyncio
 async def test_activation_closes_with_verified_writer_and_provenance(monkeypatch):
-    writer = RecordingWriter()
+    writer = RecordingWriter(
+        history_hashes={"features/a.txt": hashlib.sha256(b"a").hexdigest()}
+    )
     svc = WorkspaceRepoChangesetService(
         FakeDB(),
         uuid4(),
@@ -624,13 +638,227 @@ async def test_activation_closes_with_verified_writer_and_provenance(monkeypatch
     assert request.files[0].content_base64 == base64.b64encode(b"A").decode()
     assert request.files[0].expected_before_sha256 == hashlib.sha256(b"a").hexdigest()
     assert request.files[0].expected_sha256 == hashlib.sha256(b"A").hexdigest()
+    assert request.expected_head_sha == "d" * 40
+
+
+@pytest.mark.asyncio
+async def test_activation_closure_accepts_history_already_at_target(monkeypatch):
+    path = "shared/bifrost/customer_identity.py"
+    stale_runtime = b"stale active runtime\n"
+    reviewed = b"reviewed target\n"
+    reviewed_hash = hashlib.sha256(reviewed).hexdigest()
+    writer = RecordingWriter(history_hashes={path: reviewed_hash})
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({path: stale_runtime}),
+        commit_writer=writer,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(reviewed).decode(),
+        ),
+    )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class Storage:
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, file_path, content, **_kwargs):
+            await svc.repo.write(file_path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+
+    @asynccontextmanager
+    async def source_update(**_kwargs):
+        yield
+
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", source_update)
+    closed = await svc.activate(
+        row.id,
+        activation_request(
+            stored,
+            commit_message="Release reviewed customer identity",
+            push=True,
+        ),
+        "operator@example.com",
+    )
+
+    assert closed.status == "committed"
+    assert closed.commit_sha == "d" * 40
+    assert closed.error is None
+    assert closed.failure_detail is None
+    assert closed.validation["git_closure"] == {
+        "schema": "bifrost.workspace-git-closure/v1",
+        "history_head_sha": "d" * 40,
+        "history_tree_sha": "e" * 40,
+        "signature_state": "VALID",
+        "paths": [
+            {
+                "path": path,
+                "disposition": "target",
+                "before_sha256": hashlib.sha256(stale_runtime).hexdigest(),
+                "target_sha256": reviewed_hash,
+                "history_sha256": reviewed_hash,
+            }
+        ],
+        "disposition": "superseded",
+        "commit_sha": "d" * 40,
+        "superseded_paths": [path],
+        "committed_paths": [],
+    }
+    assert writer.requests == []
+
+
+@pytest.mark.asyncio
+async def test_activation_closure_commits_only_before_paths_from_mixed_history(
+    monkeypatch,
+):
+    preserved_path = "features/preserved.py"
+    missing_path = "features/missing.py"
+    before = b"before\n"
+    preserved_target = b"already preserved\n"
+    missing_target = b"still missing\n"
+    writer = RecordingWriter(
+        history_hashes={
+            preserved_path: hashlib.sha256(preserved_target).hexdigest(),
+            missing_path: hashlib.sha256(before).hexdigest(),
+        }
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({preserved_path: before, missing_path: before}),
+        commit_writer=writer,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    for path, content in (
+        (preserved_path, preserved_target),
+        (missing_path, missing_target),
+    ):
+        await svc.stage(
+            row.id,
+            WorkspaceRepoFileMutationRequest(
+                path=path,
+                operation="write",
+                content_base64=base64.b64encode(content).decode(),
+            ),
+        )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class Storage:
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, path, content, **_kwargs):
+            await svc.repo.write(path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+
+    @asynccontextmanager
+    async def source_update(**_kwargs):
+        yield
+
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", source_update)
+    closed = await svc.activate(
+        row.id,
+        activation_request(stored, commit_message="Release mixed closure", push=True),
+        "operator@example.com",
+    )
+
+    assert closed.status == "committed"
+    assert len(writer.requests) == 1
+    request = writer.requests[0]
+    assert [item.path for item in request.files] == [missing_path]
+    assert request.expected_head_sha == "d" * 40
+    assert closed.validation["git_closure"]["disposition"] == ("partially_superseded")
+    assert closed.validation["git_closure"]["superseded_paths"] == [preserved_path]
+    assert closed.validation["git_closure"]["committed_paths"] == [missing_path]
+
+
+@pytest.mark.asyncio
+async def test_activation_closure_preserves_activation_for_other_history_bytes(
+    monkeypatch,
+):
+    path = "features/diverged.py"
+    writer = RecordingWriter(
+        history_hashes={path: hashlib.sha256(b"unrelated\n").hexdigest()}
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({path: b"before\n"}),
+        commit_writer=writer,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="write",
+            content_base64=base64.b64encode(b"target\n").decode(),
+        ),
+    )
+    stored = svc.rows.items[row.id]
+    stored.validation = {"valid": True}
+    stored.status = "validated"
+
+    class Storage:
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, file_path, content, **_kwargs):
+            await svc.repo.write(file_path, content)
+            return SimpleNamespace(pending_deactivations=[])
+
+    monkeypatch.setattr(
+        "src.services.workspace_repo_changesets.FileStorageService", Storage
+    )
+
+    @asynccontextmanager
+    async def source_update(**_kwargs):
+        yield
+
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", source_update)
+    result = await svc.activate(
+        row.id,
+        activation_request(stored, commit_message="Release diverged path", push=True),
+        "operator@example.com",
+    )
+
+    assert result.status == "activated"
+    assert result.failure_detail["activation_preserved"] is True
+    assert result.failure_detail["history"]["paths"][0]["disposition"] == "other"
+    assert "outside the reviewed before/target states" in result.error
+    assert writer.requests == []
 
 
 @pytest.mark.asyncio
 async def test_git_commit_failure_preserves_activation_with_recovery_evidence(
     monkeypatch,
 ):
-    writer = RecordingWriter(error=RuntimeError("git commit failed"))
+    writer = RecordingWriter(
+        error=RuntimeError("git commit failed"),
+        history_hashes={"features/a.txt": hashlib.sha256(b"a").hexdigest()},
+    )
     svc = WorkspaceRepoChangesetService(
         FakeDB(),
         uuid4(),
@@ -736,7 +964,8 @@ async def test_retry_git_closure_after_writer_configuration_skips_activation(
             commit_sha="b" * 40,
             tree_sha="c" * 40,
             signature_state="VALID",
-        )
+        ),
+        history_hashes={"features/a.txt": hashlib.sha256(b"a").hexdigest()},
     )
     svc.commit_writer = retry_writer
     closed = await svc.retry_git_closure(
@@ -770,9 +999,20 @@ async def test_retry_git_closure_rejects_non_retryable_state():
 @pytest.mark.parametrize("failure_state", RETRYABLE_GIT_FAILURE_STATES)
 async def test_retry_git_closure_accepts_each_durable_failure_state(failure_state):
     svc = service({"features/a.txt": b"a"})
-    svc.commit_writer = RecordingWriter()
+    svc.commit_writer = RecordingWriter(
+        history_hashes={"features/a.txt": hashlib.sha256(b"a").hexdigest()}
+    )
     row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
     stored = svc.rows.items[row.id]
+    stored.mutations = [
+        {
+            "path": "features/a.txt",
+            "operation": "write",
+            "before_hash": hashlib.sha256(b"a").hexdigest(),
+            "after_hash": hashlib.sha256(b"A").hexdigest(),
+            "content_base64": base64.b64encode(b"A").decode(),
+        }
+    ]
     stored.status = "activated"
     stored.failure_detail = {
         "phase": "git_closure",
@@ -1208,7 +1448,8 @@ async def test_verification_failure_persists_candidate_sha_for_retry(monkeypatch
         error=PlatformCommitError(
             "GitHub commit signature is not verified: MISSING",
             commit_sha="c" * 40,
-        )
+        ),
+        history_hashes={"features/a.txt": hashlib.sha256(b"a").hexdigest()},
     )
     svc = WorkspaceRepoChangesetService(
         FakeDB(),
@@ -1251,7 +1492,9 @@ async def test_verification_failure_persists_candidate_sha_for_retry(monkeypatch
     assert failed.failure_detail["commit_sha"] == "c" * 40
     assert svc.repo.files["features/a.txt"] == b"A"
 
-    retry_writer = RecordingWriter()
+    retry_writer = RecordingWriter(
+        history_hashes={"features/a.txt": hashlib.sha256(b"A").hexdigest()}
+    )
     svc.commit_writer = retry_writer
     with pytest.raises(ChangesetInvalid, match="must match the original"):
         await svc.retry_git_closure(
@@ -1265,10 +1508,9 @@ async def test_verification_failure_persists_candidate_sha_for_retry(monkeypatch
         "retrying-operator",
     )
     assert closed.status == "committed"
-    retry_request = retry_writer.requests[0]
-    assert retry_request.candidate_commit_sha == "c" * 40
-    assert retry_request.commit_message == "agent change"
-    assert retry_request.operator == "tester"
+    assert closed.commit_sha == "d" * 40
+    assert closed.validation["git_closure"]["disposition"] == "superseded"
+    assert retry_writer.requests == []
 
 
 @pytest.mark.asyncio

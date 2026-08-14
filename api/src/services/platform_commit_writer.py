@@ -94,6 +94,7 @@ class PlatformCommitSnapshot:
     commit_sha: str
     tree_sha: str
     file_sha256: dict[str, str | None]
+    signature_state: str | None = None
 
 
 class PlatformCommitWriter(Protocol):
@@ -211,8 +212,10 @@ class GitHubAppCommitWriter:
                     "reachability inspection requires an immutable source ref"
                 )
             commit = await self._branch_head(client, token)
+            signature_state = self._verified_signature_state(commit, commit["oid"])
         else:
             commit = await self._commit_snapshot(client, token, ref)
+            signature_state = None
             if reachable_from is not None:
                 await self._verify_reachable_from(
                     client, token, commit["oid"], reachable_from
@@ -222,6 +225,7 @@ class GitHubAppCommitWriter:
             commit_sha=commit["oid"],
             tree_sha=commit["tree_oid"],
             file_sha256=hashes,
+            signature_state=signature_state,
         )
 
     async def _verify_reachable_from(
@@ -367,7 +371,12 @@ class GitHubAppCommitWriter:
         if not oid or not tree.get("oid"):
             raise PlatformCommitError("GitHub branch did not resolve to a commit")
         history = (target.get("history") or {}).get("nodes") or []
-        return {"oid": str(oid), "tree_oid": str(tree["oid"]), "history": history}
+        return {
+            "oid": str(oid),
+            "tree_oid": str(tree["oid"]),
+            "history": history,
+            "signature": target.get("signature"),
+        }
 
     async def _commit_snapshot(
         self, client: httpx.AsyncClient, token: str, ref: str
@@ -642,6 +651,7 @@ class GitHubAppCommitWriter:
             ... on Commit {
               oid
               tree { oid }
+              signature { isValid state wasSignedByGitHub }
               history(first: 100) { nodes { oid message } }
             }
           }

@@ -63,6 +63,7 @@ from src.services.workflow_registration import (
 logger = logging.getLogger(__name__)
 
 CANDIDATE_SCHEMA = "bifrost.workspace-candidate/v2"
+GIT_CLOSURE_SCHEMA = "bifrost.workspace-git-closure/v1"
 GIT_CONVERGENCE_SCHEMA = "bifrost.workspace-history-convergence/v1"
 
 
@@ -1224,31 +1225,103 @@ class WorkspaceRepoChangesetService:
             row.failure_detail["commit_sha"] = str(candidate_commit_sha)
         await self.db.flush()
         await self.db.commit()
+        history_evidence: dict[str, object] | None = None
         try:
-            files = tuple(
-                PlatformCommitFile(
-                    path=item["path"],
-                    content_base64=(
-                        item.get("content_base64")
-                        if item.get("operation") == "write"
-                        else None
-                    ),
-                    expected_before_sha256=item.get("before_hash"),
-                    expected_sha256=(
-                        item.get("after_hash")
-                        if item.get("operation") == "write"
-                        else None
-                    ),
-                )
-                for item in row.mutations
-                if item.get("operation") != "verify"
+            source_mutations = tuple(
+                item for item in row.mutations if item.get("operation") != "verify"
             )
+            paths = tuple(sorted(str(item["path"]) for item in source_mutations))
+            history = await self.commit_writer.inspect(paths)
+            if history.signature_state != "VALID":
+                raise PlatformCommitError(
+                    "production-live history head is not a verified GitHub-signed commit"
+                )
+
+            classifications: list[dict[str, object]] = []
+            files: list[PlatformCommitFile] = []
+            superseded_paths: list[str] = []
+            divergent_paths: list[str] = []
+            for item in source_mutations:
+                path = str(item["path"])
+                before_hash = item.get("before_hash")
+                target_hash = (
+                    item.get("after_hash") if item.get("operation") == "write" else None
+                )
+                history_hash = history.file_sha256.get(path)
+                if history_hash == target_hash:
+                    disposition = "target"
+                    superseded_paths.append(path)
+                elif history_hash == before_hash:
+                    disposition = "before"
+                    files.append(
+                        PlatformCommitFile(
+                            path=path,
+                            content_base64=(
+                                item.get("content_base64")
+                                if item.get("operation") == "write"
+                                else None
+                            ),
+                            expected_before_sha256=before_hash,
+                            expected_sha256=target_hash,
+                        )
+                    )
+                else:
+                    disposition = "other"
+                    divergent_paths.append(path)
+                classifications.append(
+                    {
+                        "path": path,
+                        "disposition": disposition,
+                        "before_sha256": before_hash,
+                        "target_sha256": target_hash,
+                        "history_sha256": history_hash,
+                    }
+                )
+
+            history_evidence = {
+                "schema": GIT_CLOSURE_SCHEMA,
+                "history_head_sha": history.commit_sha,
+                "history_tree_sha": history.tree_sha,
+                "signature_state": history.signature_state,
+                "paths": classifications,
+            }
+            if divergent_paths:
+                raise PlatformCommitError(
+                    "production-live history contains bytes outside the reviewed "
+                    f"before/target states for: {', '.join(sorted(divergent_paths))}"
+                )
+            if candidate_commit_sha and files:
+                raise PlatformCommitError(
+                    "recorded Git candidate is not the current production-live target; "
+                    "use guarded history convergence"
+                )
+            if not files:
+                row = await self._required(changeset_id, for_update=True)
+                current_validation = dict(row.validation or {})
+                row.validation = {
+                    **current_validation,
+                    "git_closure": {
+                        **history_evidence,
+                        "disposition": "superseded",
+                        "commit_sha": history.commit_sha,
+                        "superseded_paths": sorted(superseded_paths),
+                        "committed_paths": [],
+                    },
+                }
+                row.commit_sha = history.commit_sha
+                row.status = "committed"
+                row.error = None
+                row.failure_detail = None
+                await self.db.flush()
+                await self.db.commit()
+                return self._response(row)
+
             result = await self.commit_writer.write(
                 PlatformCommitRequest(
                     commit_message=provenance["commit_message"],
                     operator=provenance["operator"],
                     changeset_id=row.id,
-                    files=files,
+                    files=tuple(files),
                     plan_id=provenance.get("plan_id"),
                     protected_main_source_sha=provenance.get(
                         "protected_main_source_sha"
@@ -1256,6 +1329,7 @@ class WorkspaceRepoChangesetService:
                     candidate_commit_sha=(
                         str(candidate_commit_sha) if candidate_commit_sha else None
                     ),
+                    expected_head_sha=history.commit_sha,
                 )
             )
         except Exception as exc:
@@ -1269,6 +1343,8 @@ class WorkspaceRepoChangesetService:
                 "activation_preserved": True,
                 "provenance": provenance,
             }
+            if history_evidence is not None:
+                row.failure_detail["history"] = history_evidence
             commit_sha = (
                 exc.commit_sha if isinstance(exc, PlatformCommitError) else None
             )
@@ -1280,6 +1356,20 @@ class WorkspaceRepoChangesetService:
             return self._response(row)
 
         row = await self._required(changeset_id, for_update=True)
+        current_validation = dict(row.validation or {})
+        row.validation = {
+            **current_validation,
+            "git_closure": {
+                **(history_evidence or {}),
+                "disposition": (
+                    "partially_superseded" if superseded_paths else "reconciled"
+                ),
+                "commit_sha": result.commit_sha,
+                "signature_state": result.signature_state,
+                "superseded_paths": sorted(superseded_paths),
+                "committed_paths": sorted(item.path for item in files),
+            },
+        }
         row.commit_sha = result.commit_sha
         row.status = "committed"
         row.error = None
