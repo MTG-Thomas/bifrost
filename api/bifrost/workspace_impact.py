@@ -18,6 +18,7 @@ from typing import Iterable, Mapping
 from bifrost.promotion import (
     PromotionBundleError,
     dependency_edges,
+    dependency_edges_for_file,
     normalize_workspace_path,
 )
 
@@ -68,6 +69,31 @@ class _ParsedReferences:
     unresolved_imports: tuple[str, ...]
     dynamic_import: bool
     dynamic_reference: bool
+
+
+@dataclass(frozen=True)
+class WorkspaceImpactIndex:
+    """Parsed base graph reusable for one-file overlays."""
+
+    paths: frozenset[str]
+    modules: Mapping[str, str]
+    imports: Mapping[str, frozenset[str]]
+    parsed: Mapping[str, _ParsedReferences]
+    analysis: WorkspaceImpactAnalysis
+
+    def overlay(self, path: str, raw: bytes) -> WorkspaceImpactAnalysis:
+        """Reparse one existing file without rebuilding the stable base graph."""
+
+        path = normalize_workspace_path(path)
+        if path not in self.paths:
+            raise WorkspaceImpactError(
+                f"incremental impact overlay requires an existing path: {path}"
+            )
+        parsed = dict(self.parsed)
+        parsed[path] = _parse_references(path, raw, modules=self.modules)
+        imports = dict(self.imports)
+        imports[path] = frozenset(dependency_edges_for_file(path, raw, self.paths))
+        return _analysis_from_parts(imports=imports, parsed=parsed)
 
 
 @dataclass
@@ -350,18 +376,11 @@ def _registry_relationships(
     return registry_edges, ambiguous_references
 
 
-def analyze_workspace_impact(
-    contents: Mapping[str, bytes],
+def _analysis_from_parts(
+    *,
+    imports: Mapping[str, Iterable[str]],
+    parsed: Mapping[str, _ParsedReferences],
 ) -> WorkspaceImpactAnalysis:
-    """Build import and literal registry edges for a complete Python snapshot."""
-
-    normalized = {normalize_workspace_path(path): raw for path, raw in contents.items()}
-    modules = _module_index(normalized)
-    imports = dependency_edges(normalized)
-    parsed = {
-        path: _parse_references(path, raw, modules=modules)
-        for path, raw in sorted(normalized.items())
-    }
     combined: dict[str, set[str]] = {
         path: set(targets) for path, targets in imports.items()
     }
@@ -393,6 +412,37 @@ def analyze_workspace_impact(
             path for path, item in parsed.items() if item.dynamic_reference
         ),
     )
+
+
+def index_workspace_impact(contents: Mapping[str, bytes]) -> WorkspaceImpactIndex:
+    """Parse one complete snapshot into a reusable impact index."""
+
+    normalized = {normalize_workspace_path(path): raw for path, raw in contents.items()}
+    modules = _module_index(normalized)
+    imports = {
+        path: frozenset(targets)
+        for path, targets in dependency_edges(normalized).items()
+    }
+    parsed = {
+        path: _parse_references(path, raw, modules=modules)
+        for path, raw in sorted(normalized.items())
+    }
+    analysis = _analysis_from_parts(imports=imports, parsed=parsed)
+    return WorkspaceImpactIndex(
+        paths=frozenset(normalized),
+        modules=modules,
+        imports=imports,
+        parsed=parsed,
+        analysis=analysis,
+    )
+
+
+def analyze_workspace_impact(
+    contents: Mapping[str, bytes],
+) -> WorkspaceImpactAnalysis:
+    """Build import and literal registry edges for a complete Python snapshot."""
+
+    return index_workspace_impact(contents).analysis
 
 
 def transitive_distances(
@@ -428,7 +478,9 @@ def reverse_edges(
 __all__ = [
     "WorkspaceImpactAnalysis",
     "WorkspaceImpactError",
+    "WorkspaceImpactIndex",
     "analyze_workspace_impact",
+    "index_workspace_impact",
     "reverse_edges",
     "transitive_distances",
 ]

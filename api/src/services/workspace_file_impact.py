@@ -9,6 +9,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from opentelemetry import metrics
 
@@ -21,7 +22,9 @@ from bifrost.promotion import (
 from bifrost.workspace_impact import (
     WORKSPACE_IMPORT_ROOTS,
     WorkspaceImpactAnalysis,
+    WorkspaceImpactIndex,
     analyze_workspace_impact,
+    index_workspace_impact,
     reverse_edges,
     transitive_distances,
 )
@@ -42,20 +45,28 @@ workspace_impact_snapshot_files = None
 workspace_impact_barrier_duration = None
 
 
+@dataclass(frozen=True)
+class _WorkspaceSnapshot:
+    files: dict[str, bytes]
+    hashes: dict[str, str]
+    snapshot_id: str
+    impact_index: WorkspaceImpactIndex
+
+
 class _WorkspaceSnapshotCache:
     """Single-flight durable snapshots scoped to one workspace generation."""
 
     def __init__(self) -> None:
         self._generation: str | None = None
-        self._snapshot: dict[str, bytes] | None = None
+        self._snapshot: _WorkspaceSnapshot | None = None
         self._lock = asyncio.Lock()
 
     async def get(
         self,
         *,
         generation: Callable[[], Awaitable[str]],
-        load: Callable[[], Awaitable[dict[str, bytes]]],
-    ) -> dict[str, bytes]:
+        load: Callable[[], Awaitable[_WorkspaceSnapshot]],
+    ) -> _WorkspaceSnapshot:
         async with self._lock:
             before = await generation()
             if before.startswith("updating:"):
@@ -294,7 +305,7 @@ class WorkspaceFileImpactService:
             else None
         )
 
-    async def _load_python_snapshot(self) -> dict[str, bytes]:
+    async def _load_python_snapshot(self) -> _WorkspaceSnapshot:
         started = time.perf_counter()
         snapshot_duration, snapshot_files, _ = _impact_metric_instruments()
         paths: list[str] = []
@@ -311,7 +322,7 @@ class WorkspaceFileImpactService:
                 )
             read_many = getattr(self.repo, "read_many", None)
             if read_many is not None:
-                snapshot = await read_many(paths, concurrency=32)
+                files = await read_many(paths, concurrency=32)
             else:
                 semaphore = asyncio.Semaphore(32)
 
@@ -319,9 +330,19 @@ class WorkspaceFileImpactService:
                     async with semaphore:
                         return path, await self.repo.read(path)
 
-                snapshot = dict(await asyncio.gather(*(read(path) for path in paths)))
+                files = dict(await asyncio.gather(*(read(path) for path in paths)))
+            hashes = {path: _sha256(raw) for path, raw in files.items()}
+            try:
+                impact_index = index_workspace_impact(files)
+            except PromotionBundleError as exc:
+                raise WorkspaceFileImpactInvalid(str(exc)) from exc
             success = True
-            return snapshot
+            return _WorkspaceSnapshot(
+                files=files,
+                hashes=hashes,
+                snapshot_id=snapshot_id(hashes),
+                impact_index=impact_index,
+            )
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000
             snapshot_duration.record(elapsed_ms, {"success": success})
@@ -334,7 +355,7 @@ class WorkspaceFileImpactService:
                 elapsed_ms,
             )
 
-    async def _python_snapshot(self) -> dict[str, bytes]:
+    async def _python_snapshot(self) -> _WorkspaceSnapshot:
         if self._snapshot_cache is None:
             return await self._load_python_snapshot()
 
@@ -399,11 +420,12 @@ class WorkspaceFileImpactService:
             raise WorkspaceFileImpactInvalid(
                 f"Workspace impact analysis supports authored roots only: {roots}"
             )
-        live = (
+        workspace = (
             await self._python_snapshot()
             if use_cache
             else await self._load_python_snapshot()
         )
+        live = workspace.files
         current = live.get(path)
         if request.content is None:
             if current is None:
@@ -414,9 +436,13 @@ class WorkspaceFileImpactService:
         else:
             proposed = request.content.encode("utf-8")
 
-        graph_files = {**live, path: proposed}
         try:
-            analysis = analyze_workspace_impact(graph_files)
+            if proposed == current:
+                analysis = workspace.impact_index.analysis
+            elif current is not None:
+                analysis = workspace.impact_index.overlay(path, proposed)
+            else:
+                analysis = analyze_workspace_impact({**live, path: proposed})
         except PromotionBundleError as exc:
             raise WorkspaceFileImpactInvalid(str(exc)) from exc
 
@@ -437,8 +463,12 @@ class WorkspaceFileImpactService:
             proposed_unchanged=request.content is not None and current == proposed,
         )
 
-        hashes = {item_path: _sha256(raw) for item_path, raw in graph_files.items()}
-        snapshot = snapshot_id(hashes)
+        hashes = (
+            workspace.hashes
+            if proposed == current
+            else {**workspace.hashes, path: _sha256(proposed)}
+        )
+        snapshot = workspace.snapshot_id if proposed == current else snapshot_id(hashes)
         proposed_hash = hashes[path]
         current_hash = _sha256(current) if current is not None else None
         candidate = _candidate_id(

@@ -269,6 +269,20 @@ def dependency_edges(contents: dict[str, bytes]) -> dict[str, set[str]]:
     }
 
 
+def dependency_edges_for_file(
+    path: str,
+    raw: bytes,
+    snapshot_paths: Iterable[str],
+) -> set[str]:
+    """Resolve one file's repo-local imports against a stable path inventory."""
+
+    path = normalize_workspace_path(path)
+    paths = {normalize_workspace_path(item) for item in snapshot_paths}
+    paths.add(path)
+    _reject_path_collisions(paths)
+    return _resolve_imports(path, raw, _module_index(paths))
+
+
 def validate_submitted_bundle(
     *,
     selected_path: str,
@@ -361,6 +375,7 @@ __all__ = [
     "PromotionBundleError",
     "build_promotion_bundle",
     "dependency_edges",
+    "dependency_edges_for_file",
     "git_source_revision",
     "normalize_workspace_path",
     "sha256_bytes",

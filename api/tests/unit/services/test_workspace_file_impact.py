@@ -76,6 +76,22 @@ async def test_preview_binds_proposed_bytes_and_transitive_reverse_closure() -> 
 
 
 @pytest.mark.asyncio
+async def test_preview_new_file_falls_back_to_complete_analysis() -> None:
+    service = WorkspaceFileImpactService(_Repo({"helpers/shared.py": b"VALUE = 1\n"}))
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="workflows/new_report.py",
+            content="from helpers.shared import VALUE\n",
+        )
+    )
+
+    assert result.ready_to_write is True
+    assert result.current_sha256 is None
+    assert [item.path for item in result.forward_dependencies] == ["helpers/shared.py"]
+
+
+@pytest.mark.asyncio
 async def test_preview_ignores_unrelated_legacy_python_module_collisions() -> None:
     service = WorkspaceFileImpactService(
         _Repo(
