@@ -711,9 +711,10 @@ class TestCLIDownload:
         e2e_client,
         platform_admin,
     ):
-        """Test that pyproject.toml defines bifrost CLI entry point."""
+        """Test that pyproject.toml defines the CLI and all wheel modules."""
         import tarfile
         import io
+        import tomllib
 
         response = e2e_client.get(
             "/api/cli/download",
@@ -727,9 +728,11 @@ class TestCLIDownload:
             assert pyproject is not None
             content = pyproject.read().decode()
 
-        # Check for CLI entry point
-        assert "[project.scripts]" in content
-        assert "bifrost" in content
+        package_config = tomllib.loads(content)
+        assert package_config["project"]["scripts"]["bifrost"] == "bifrost.cli:main"
+        assert package_config["tool"]["setuptools"]["py-modules"] == [
+            "_bifrost_workspace_effects"
+        ]
 
     def test_download_sdk_can_be_imported(
         self,
