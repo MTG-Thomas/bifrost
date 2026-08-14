@@ -26,6 +26,16 @@ REQUIRED_CI_JOB_NAMES = {
 }
 
 
+def _has_top_level_key(lines: list[str], key: str) -> bool:
+    marker = f"{key}:"
+    return any(line == marker for line in lines)
+
+
+def _has_event(lines: list[str], event: str) -> bool:
+    marker = f"  {event}:"
+    return any(line == marker for line in lines)
+
+
 def _repo_root() -> Path:
     path = Path(__file__).resolve()
     root = path.parents[2]
@@ -78,6 +88,14 @@ def check_ci_workflow(path: Path) -> list[str]:
         return [f"{path}: workflow file does not exist"]
 
     lines = path.read_text(encoding="utf-8").splitlines()
+    if not _has_event(lines, "merge_group"):
+        return [
+            f"{path}: merge_group trigger is required so native merge queue candidates report CI gates."
+        ]
+    if not _has_top_level_key(lines, "concurrency"):
+        return [
+            f"{path}: event-aware concurrency is required to cancel superseded PR and merge-group runs."
+        ]
     for job, expected_name in REQUIRED_CI_JOB_NAMES.items():
         parsed = _job_block(lines, job)
         if parsed is None:
@@ -129,6 +147,23 @@ def check_ci_workflow(path: Path) -> list[str]:
     return []
 
 
+def check_codeql_workflow(path: Path) -> list[str]:
+    if not path.exists():
+        return [f"{path}: workflow file does not exist"]
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    violations: list[str] = []
+    if not _has_event(lines, "merge_group"):
+        violations.append(
+            f"{path}: merge_group trigger is required because both CodeQL language checks gate the queue."
+        )
+    if not _has_top_level_key(lines, "concurrency"):
+        violations.append(
+            f"{path}: event-aware concurrency is required to cancel superseded CodeQL runs."
+        )
+    return violations
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Check MTG fork CI boundaries that must survive upstream merges."
@@ -139,15 +174,22 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(".github/workflows/ci.yml"),
         help="CI workflow to inspect.",
     )
+    parser.add_argument(
+        "--codeql-workflow",
+        type=Path,
+        default=Path(".github/workflows/codeql.yml"),
+        help="CodeQL workflow to inspect.",
+    )
     args = parser.parse_args(argv)
 
     try:
         workflow = _resolve_workflow_path(args.workflow)
+        codeql_workflow = _resolve_workflow_path(args.codeql_workflow)
     except ValueError as exc:
         print(f"MTG CI boundary check failed: {exc}", file=sys.stderr)
         return 2
 
-    violations = check_ci_workflow(workflow)
+    violations = check_ci_workflow(workflow) + check_codeql_workflow(codeql_workflow)
     if not violations:
         print("MTG CI boundary checks passed.")
         return 0

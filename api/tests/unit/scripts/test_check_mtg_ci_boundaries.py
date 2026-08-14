@@ -7,6 +7,7 @@ from scripts.check_mtg_ci_boundaries import (
     _repo_root,
     _resolve_workflow_path,
     check_ci_workflow,
+    check_codeql_workflow,
 )
 
 
@@ -42,3 +43,29 @@ def test_required_ci_check_identity_change_is_rejected(tmp_path: Path):
     violations = check_ci_workflow(mutated)
 
     assert any("required CI check identity changed" in item for item in violations)
+
+
+def test_ci_merge_queue_contract_is_preserved(tmp_path: Path):
+    workflow = _repo_root() / ".github/workflows/ci.yml"
+    contents = workflow.read_text(encoding="utf-8")
+
+    without_event = tmp_path / "without-event.yml"
+    without_event.write_text(contents.replace("  merge_group:\n", "", 1), encoding="utf-8")
+    assert any("merge_group trigger is required" in item for item in check_ci_workflow(without_event))
+
+    without_concurrency = tmp_path / "without-concurrency.yml"
+    start = contents.index("concurrency:\n")
+    end = contents.index("\nenv:\n", start)
+    without_concurrency.write_text(contents[:start] + contents[end + 1 :], encoding="utf-8")
+    assert any("event-aware concurrency is required" in item for item in check_ci_workflow(without_concurrency))
+
+
+def test_codeql_merge_queue_contract_is_preserved(tmp_path: Path):
+    workflow = _repo_root() / ".github/workflows/codeql.yml"
+    contents = workflow.read_text(encoding="utf-8")
+
+    assert check_codeql_workflow(workflow) == []
+
+    mutated = tmp_path / "codeql.yml"
+    mutated.write_text(contents.replace("  merge_group:\n", "", 1), encoding="utf-8")
+    assert any("both CodeQL language checks gate the queue" in item for item in check_codeql_workflow(mutated))

@@ -15,6 +15,12 @@ on:
 
 permissions: read-all
 
+# Superseded PR heads and obsolete merge-queue reconstructions should stop
+# consuming runners. Push/tag runs publish artifacts and must run to completion.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+
 env:
   REGISTRY: ghcr.io
   API_IMAGE: mtg-thomas/bifrost-api
@@ -64,12 +70,17 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           PUSH_BASE_SHA: ${{ github.event.before }}
         run: |
           case "$EVENT_NAME" in
             pull_request) base_sha="$PR_BASE_SHA" ;;
-            merge_group) base_sha="$MERGE_GROUP_BASE_SHA" ;;
+            # The queue ref is the exact candidate GitHub will merge. Always run
+            # the comprehensive integration suite against it; affected-test
+            # selection remains a PR-local feedback optimization only.
+            merge_group)
+              python3 api/scripts/plan_affected_tests.py --force-comprehensive
+              exit 0
+              ;;
             push) base_sha="$PUSH_BASE_SHA" ;;
             *) base_sha="" ;;
           esac
@@ -345,7 +356,9 @@ jobs:
   # =============================================================================
   test-unit:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    # The exact candidate was already covered by merge_group. Main pushes only
+    # publish deploy/test images; they do not repeat the integration proof.
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Unit Tests
     permissions:
@@ -466,7 +479,7 @@ jobs:
   # =============================================================================
   mcp-conformance:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: MCP Conformance
     permissions:
@@ -588,7 +601,7 @@ jobs:
   # =============================================================================
   test-e2e:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: E2E Tests (shard ${{ matrix.shard }}/${{ matrix.total }})
     permissions:
@@ -717,7 +730,7 @@ jobs:
   # =============================================================================
   test-client-e2e:
     needs: [affected-test-plan, publish-ci-test-images]
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-latest
     name: Client E2E Tests
     permissions:
@@ -855,7 +868,7 @@ jobs:
   # Fails if any backend shard or the Playwright job failed or was cancelled.
   # (if: always()) so branch protection always sees a conclusive result.
   test-e2e-gate:
-    if: always()
+    if: always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')
     needs: [affected-test-plan, test-e2e, test-client-e2e, mcp-conformance]
     runs-on: ubuntu-latest
     name: E2E Tests
