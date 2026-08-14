@@ -423,6 +423,9 @@ class WorkspaceRepoChangesetService:
         has_source_mutations = any(
             item["operation"] != "verify" for item in row.mutations
         )
+        owns_git_closure = bool(
+            has_source_mutations and request.commit_message and request.push
+        )
         if not has_source_mutations and (request.commit_message or request.push):
             raise ChangesetInvalid(
                 "registration-only activation cannot request a Git source commit"
@@ -497,6 +500,10 @@ class WorkspaceRepoChangesetService:
                             base64.b64decode(item["content_base64"]),
                             updated_by=updated_by,
                             force_deactivation=bool(item.get("force_deactivation")),
+                            # A changeset that owns verified Git closure is its
+                            # own durable dirty/closure ledger. The legacy bit
+                            # remains for source writes activated without Git.
+                            skip_dirty_flag=owns_git_closure,
                         )
                         if result.pending_deactivations:
                             raise ChangesetInvalid(
@@ -557,6 +564,7 @@ class WorkspaceRepoChangesetService:
                                 content,
                                 updated_by="changeset-rollback",
                                 force_deactivation=True,
+                                skip_dirty_flag=owns_git_closure,
                             )
                             if restored.pending_deactivations:
                                 raise RuntimeError(
