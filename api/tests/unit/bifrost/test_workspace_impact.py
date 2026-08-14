@@ -73,12 +73,70 @@ def test_analysis_reports_computed_workflow_references() -> None:
     assert graph.dynamic_reference_importers == frozenset({"workflows/parent.py"})
 
 
+@pytest.mark.parametrize(
+    "function_source",
+    [
+        (
+            b"async def parent(workflow_id):\n"
+            b"    return await workflows.execute(workflow_id=workflow_id, inputs={})\n"
+        ),
+        (
+            b"async def parent(function_name):\n"
+            b"    return await workflows.execute_workflow(\n"
+            b"        function_name=function_name, inputs={}\n"
+            b"    )\n"
+        ),
+        (
+            b"async def parent(kwargs):\n"
+            b"    return await workflows.execute(**kwargs)\n"
+        ),
+    ],
+)
+def test_analysis_reports_computed_workflow_reference_keyword(
+    function_source: bytes,
+) -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/parent.py": (
+                b"from bifrost import workflows\n"
+                + function_source
+            )
+        }
+    )
+
+    assert graph.dynamic_reference_importers == frozenset({"workflows/parent.py"})
+
+
 def test_analysis_does_not_treat_dynamic_result_fields_as_workflow_dispatch() -> None:
     graph = analyze_workspace_impact(
         {
             "workflows/report.py": (
                 b"async def report(item):\n"
                 b"    return {'workflow_id': item.id, 'workflow_name': item.name}\n"
+            )
+        }
+    )
+
+    assert graph.registry_edges == frozenset()
+    assert graph.dynamic_reference_importers == frozenset()
+
+
+def test_analysis_does_not_treat_generic_call_keywords_as_workflow_dispatch() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/child.py": (
+                b"@workflow(name='Child')\n"
+                b"def child(): return None\n"
+            ),
+            "workflows/report.py": (
+                b"def render(**kwargs): return kwargs\n"
+                b"def report(item):\n"
+                b"    return (\n"
+                b"        render(workflow_name=item.name),\n"
+                b"        render(workflow_name='Child'),\n"
+                b"        render(workflow_id=item.id),\n"
+                b"        render(function_name=item.function_name),\n"
+                b"    )\n"
             )
         }
     )
