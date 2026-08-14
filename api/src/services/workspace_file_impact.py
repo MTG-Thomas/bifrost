@@ -12,10 +12,15 @@ from collections.abc import Mapping
 
 from opentelemetry import metrics
 
-from bifrost.promotion import MAX_SNAPSHOT_FILES, normalize_workspace_path, snapshot_id
+from bifrost.promotion import (
+    MAX_SNAPSHOT_FILES,
+    PromotionBundleError,
+    normalize_workspace_path,
+    snapshot_id,
+)
 from bifrost.workspace_impact import (
+    WORKSPACE_IMPORT_ROOTS,
     WorkspaceImpactAnalysis,
-    WorkspaceImpactError,
     analyze_workspace_impact,
     reverse_edges,
     transitive_distances,
@@ -35,6 +40,13 @@ logger = logging.getLogger(__name__)
 workspace_impact_snapshot_duration = None
 workspace_impact_snapshot_files = None
 workspace_impact_barrier_duration = None
+
+
+def _is_authored_python_path(path: str) -> bool:
+    return (
+        path.endswith(".py")
+        and path.split("/", 1)[0] in WORKSPACE_IMPORT_ROOTS
+    )
 
 
 class WorkspaceFileImpactInvalid(ValueError):
@@ -229,7 +241,7 @@ class WorkspaceFileImpactService:
         success = False
         try:
             paths = sorted(
-                path for path in await self.repo.list() if path.endswith(".py")
+                path for path in await self.repo.list() if _is_authored_python_path(path)
             )
             if not paths or len(paths) > MAX_SNAPSHOT_FILES:
                 raise WorkspaceFileImpactInvalid(
@@ -302,6 +314,11 @@ class WorkspaceFileImpactService:
             raise WorkspaceFileImpactInvalid(
                 "Workspace impact analysis currently supports Python files only"
             )
+        if not _is_authored_python_path(path):
+            roots = ", ".join(sorted(WORKSPACE_IMPORT_ROOTS))
+            raise WorkspaceFileImpactInvalid(
+                f"Workspace impact analysis supports authored roots only: {roots}"
+            )
         live = await self._python_snapshot()
         current = live.get(path)
         if request.content is None:
@@ -316,7 +333,7 @@ class WorkspaceFileImpactService:
         graph_files = {**live, path: proposed}
         try:
             analysis = analyze_workspace_impact(graph_files)
-        except WorkspaceImpactError as exc:
+        except PromotionBundleError as exc:
             raise WorkspaceFileImpactInvalid(str(exc)) from exc
 
         forward_distances = transitive_distances(path, analysis.edges)
