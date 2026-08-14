@@ -70,7 +70,7 @@ Event publishing operations (async).
 
 **`files.stat(path: str, location: str = 'workspace', mode: Mode = 'cloud', scope: str | None = None) -> dict`**
 
-**`files.write(path: str, content: str, location: str = 'workspace', mode: Mode = 'cloud', expected_version: str | None = None, create_only: bool = False, impact_candidate_id: str | None = None, scope: str | None = None) -> None`**
+**`files.write(path: str, content: str, location: str = 'workspace', mode: Mode = 'cloud', expected_version: str | None = None, create_only: bool = False, scope: str | None = None, impact_candidate_id: str | None = None) -> None`**
 
 **`files.write_bytes(path: str, content: bytes, location: str = 'workspace', mode: Mode = 'cloud', expected_version: str | None = None, create_only: bool = False, scope: str | None = None) -> None`**
 
