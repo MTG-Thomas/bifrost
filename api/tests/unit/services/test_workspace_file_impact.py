@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import pytest
 
 from src.models.contracts.workspace_file_impact import WorkspaceFileImpactRequest
-from src.services.workspace_file_impact import WorkspaceFileImpactService
+from src.services.workspace_file_impact import (
+    WorkspaceFileImpactConflict,
+    WorkspaceFileImpactService,
+)
 
 
 class _Repo:
@@ -104,3 +109,72 @@ async def test_candidate_changes_when_unrelated_workspace_snapshot_changes() -> 
 
     assert first.candidate_id != second.candidate_id
     assert first.snapshot_id != second.snapshot_id
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_computed_workflow_reference() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "workflows/report.py": (
+                    b"from bifrost import workflows\n"
+                    b"async def report(workflow_id):\n"
+                    b"    return await workflows.execute(workflow_id, {})\n"
+                )
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="workflows/report.py",
+            content=(
+                "from bifrost import workflows\n"
+                "async def report(workflow_id):\n"
+                "    return await workflows.execute(workflow_id, {})\n"
+            ),
+        )
+    )
+
+    assert result.ready_to_write is False
+    assert [item.code for item in result.diagnostics] == [
+        "dynamic_workflow_reference_unresolved",
+        "proposed_bytes_unchanged",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_guarded_write_rejects_stale_candidate_before_write(
+    monkeypatch,
+) -> None:
+    calls: list[object] = []
+
+    @asynccontextmanager
+    async def barrier(**kwargs):
+        calls.append(kwargs)
+        yield
+
+    async def write() -> None:
+        calls.append("write")
+
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", barrier)
+    service = WorkspaceFileImpactService(_Repo({"workflows/report.py": b"VALUE = 1\n"}))
+    request = WorkspaceFileImpactRequest(
+        path="workflows/report.py",
+        content="VALUE = 2\n",
+    )
+
+    with pytest.raises(WorkspaceFileImpactConflict) as exc_info:
+        await service.guarded_write(
+            request,
+            "sha256:" + "0" * 64,
+            write,
+        )
+
+    assert exc_info.value.path == "workflows/report.py"
+    assert calls == [
+        {
+            "reason": "checked_workspace_file_write",
+            "changed_paths": ["workflows/report.py"],
+        }
+    ]

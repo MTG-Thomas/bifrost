@@ -55,7 +55,8 @@ The graph combines repo-local Python imports with literal workflow registry
 references. It reports the selected file's transitive forward dependencies,
 transitive reverse dependents, exact hashes, edge types, and the paths that need
 validation. Syntax errors, missing repo-local imports, ambiguous module names,
-computed dynamic imports, and excessive fan-out block the checked write.
+computed dynamic imports, computed workflow references, and excessive fan-out
+block the checked write.
 
 `--check-impact` performs two server calls. The first returns a content-addressed
 candidate over the proposed bytes and the complete durable Python inventory.

@@ -207,7 +207,7 @@ def _resolve_imports(path: str, raw: bytes, modules: dict[str, str]) -> set[str]
                 )
                 or (
                     isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "import_module"
+                    and node.func.attr in {"import_module", "__import__"}
                 )
             )
         ):

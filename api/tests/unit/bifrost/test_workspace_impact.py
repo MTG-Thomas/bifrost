@@ -27,9 +27,7 @@ def test_analysis_combines_import_and_registry_reverse_edges() -> None:
 
     graph = analyze_workspace_impact(files)
 
-    assert graph.edges["features/vendor/child.py"] == frozenset(
-        {"helpers/shared.py"}
-    )
+    assert graph.edges["features/vendor/child.py"] == frozenset({"helpers/shared.py"})
     assert graph.edges["features/vendor/parent.py"] == frozenset(
         {"features/vendor/child.py"}
     )
@@ -57,6 +55,37 @@ def test_analysis_reports_unresolved_and_computed_imports() -> None:
         "features/vendor/report.py": ("helpers.missing",)
     }
     assert graph.dynamic_importers == frozenset({"features/vendor/report.py"})
+    assert graph.dynamic_reference_importers == frozenset()
+
+
+def test_analysis_reports_computed_workflow_references() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/parent.py": (
+                b"from bifrost import workflows\n"
+                b"async def parent(workflow_id):\n"
+                b"    return await workflows.execute(workflow_id, {})\n"
+            )
+        }
+    )
+
+    assert graph.dynamic_reference_importers == frozenset({"workflows/parent.py"})
+
+
+def test_analysis_ignores_non_reference_workflow_constants() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/one.py": (
+                b"@workflow(name='strict')\ndef one():\n    return 1\n"
+            ),
+            "workflows/two.py": (
+                b"@workflow(name='strict')\ndef two():\n    return 2\n"
+            ),
+            "workflows/parent.py": b"WORKFLOW_RETRY_MODE = 'strict'\n",
+        }
+    )
+
+    assert graph.registry_edges == frozenset()
 
 
 def test_analysis_tracks_dunder_import_and_workflow_execution_reference() -> None:
@@ -107,8 +136,7 @@ def test_analysis_fails_on_ambiguous_referenced_workflow_identity() -> None:
                     b"@workflow(name='Child')\ndef two():\n    return 2\n"
                 ),
                 "workflows/parent.py": (
-                    b"async def parent():\n"
-                    b"    return {'workflow_name': 'Child'}\n"
+                    b"async def parent():\n    return {'workflow_name': 'Child'}\n"
                 ),
             }
         )

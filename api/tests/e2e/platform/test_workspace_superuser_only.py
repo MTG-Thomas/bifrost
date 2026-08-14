@@ -12,6 +12,7 @@ superuser WITHOUT a granted file policy, and denied to non-superusers. These
 tests assert that directly, with NO `grant_file_policy` scaffolding.
 """
 import hashlib
+import uuid
 
 
 def _write(e2e_client, headers, path, content):
@@ -91,3 +92,58 @@ def test_access_test_endpoint_reports_workspace_superuser_only(e2e_client, platf
     body = resp.json()
     assert body["allowed"] is True
     assert body["matched_policy"] is None
+
+
+def test_workspace_impact_candidate_guards_http_write(e2e_client, platform_admin):
+    """Impact preview and checked write round-trip through the real API."""
+    path = f"modules/_impact_e2e_{uuid.uuid4().hex}.py"
+    content = "VALUE = 1\n"
+    try:
+        preview = e2e_client.post(
+            "/api/files/impact",
+            headers=platform_admin.headers,
+            json={"path": path, "content": content, "direction": "both"},
+        )
+        assert preview.status_code == 200, preview.text
+        impact = preview.json()
+        assert impact["ready_to_write"] is True
+        assert impact["path"] == path
+        assert impact["candidate_id"].startswith("sha256:")
+
+        write = e2e_client.post(
+            "/api/files/write",
+            headers=platform_admin.headers,
+            json={
+                "path": path,
+                "content": content,
+                "mode": "cloud",
+                "location": "workspace",
+                "binary": False,
+                "impact_candidate_id": impact["candidate_id"],
+            },
+        )
+        assert write.status_code == 204, write.text
+
+        read = e2e_client.post(
+            "/api/files/read",
+            headers=platform_admin.headers,
+            json={"path": path, "location": "workspace", "binary": False},
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["content"] == content
+    finally:
+        e2e_client.post(
+            "/api/files/delete",
+            headers=platform_admin.headers,
+            json={"path": path, "location": "workspace", "mode": "cloud"},
+        )
+
+
+def test_workspace_impact_rejects_non_python_path(e2e_client, platform_admin):
+    response = e2e_client.post(
+        "/api/files/impact",
+        headers=platform_admin.headers,
+        json={"path": "reports/not-python.txt", "content": "text"},
+    )
+
+    assert response.status_code == 422

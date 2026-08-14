@@ -12,7 +12,7 @@ import ast
 import pathlib
 import re
 from collections import Counter, defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
 from bifrost.promotion import (
@@ -39,6 +39,9 @@ UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+REFERENCE_CONSTANT_RE = re.compile(
+    r"(?:^|_)(?:WORKFLOW_ID|WORKFLOW_NAME|FUNCTION_NAME)$"
+)
 
 
 class WorkspaceImpactError(PromotionBundleError):
@@ -54,6 +57,7 @@ class WorkspaceImpactAnalysis:
     registry_edges: frozenset[tuple[str, str]]
     unresolved_imports: Mapping[str, tuple[str, ...]]
     dynamic_importers: frozenset[str]
+    dynamic_reference_importers: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,16 @@ class _ParsedReferences:
     references: frozenset[str]
     unresolved_imports: tuple[str, ...]
     dynamic_import: bool
+    dynamic_reference: bool
+
+
+@dataclass
+class _ReferenceAccumulator:
+    identities: set[str] = field(default_factory=set)
+    references: set[str] = field(default_factory=set)
+    unresolved: set[str] = field(default_factory=set)
+    dynamic_import: bool = False
+    dynamic_reference: bool = False
 
 
 def _module_name(path: str) -> str:
@@ -156,6 +170,134 @@ def _module_is_available(name: str, modules: Mapping[str, str]) -> bool:
     return any(module.startswith(prefix) for module in modules)
 
 
+def _record_reference(
+    node: ast.AST | None,
+    constants: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    value = _literal_string(node, constants)
+    if value is None:
+        accumulator.dynamic_reference = True
+    else:
+        accumulator.references.add(value)
+
+
+def _scan_import(
+    node: ast.Import,
+    modules: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    for alias in node.names:
+        root = alias.name.split(".", 1)[0]
+        if root in WORKSPACE_IMPORT_ROOTS and not _module_is_available(
+            alias.name, modules
+        ):
+            accumulator.unresolved.add(alias.name)
+
+
+def _scan_import_from(
+    path: str,
+    node: ast.ImportFrom,
+    modules: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    module = _absolute_from_module(path, node)
+    root = module.split(".", 1)[0] if module else ""
+    if root in WORKSPACE_IMPORT_ROOTS and not _module_is_available(module, modules):
+        accumulator.unresolved.add(module)
+
+
+def _scan_dict(
+    node: ast.Dict,
+    constants: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    for key_node, value_node in zip(node.keys, node.values, strict=True):
+        if _literal_string(key_node, constants) in REFERENCE_FIELDS:
+            _record_reference(value_node, constants, accumulator)
+
+
+def _scan_dynamic_import(
+    node: ast.Call,
+    call_name: str,
+    constants: Mapping[str, str],
+    modules: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    if call_name in {"eval", "exec", "exec_module"}:
+        accumulator.dynamic_import = True
+        return
+    if call_name not in {"import_module", "__import__"}:
+        return
+    module = _literal_string(node.args[0], constants) if node.args else None
+    if module is None:
+        accumulator.dynamic_import = True
+    elif module.split(".", 1)[0] in WORKSPACE_IMPORT_ROOTS and not _module_is_available(
+        module, modules
+    ):
+        accumulator.unresolved.add(module)
+
+
+def _scan_call(
+    node: ast.Call,
+    constants: Mapping[str, str],
+    modules: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    call_parts = _call_parts(node.func)
+    call_name = call_parts[-1] if call_parts else ""
+    _scan_dynamic_import(node, call_name, constants, modules, accumulator)
+    is_workflow_execution = (
+        call_name in {"execute", "execute_workflow"} and "workflows" in call_parts[:-1]
+    )
+    if is_workflow_execution:
+        if node.args:
+            _record_reference(node.args[0], constants, accumulator)
+        elif not any(keyword.arg in REFERENCE_FIELDS for keyword in node.keywords):
+            accumulator.dynamic_reference = True
+    for keyword in node.keywords:
+        if keyword.arg in REFERENCE_FIELDS:
+            _record_reference(keyword.value, constants, accumulator)
+        elif is_workflow_execution and keyword.arg is None:
+            accumulator.dynamic_reference = True
+
+
+def _scan_entity_decorators(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    constants: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    for decorator in node.decorator_list:
+        if _decorator_name(decorator) not in ENTITY_DECORATORS:
+            continue
+        accumulator.identities.add(node.name)
+        if not isinstance(decorator, ast.Call):
+            continue
+        for keyword in decorator.keywords:
+            if keyword.arg in {"id", "name"}:
+                if value := _literal_string(keyword.value, constants):
+                    accumulator.identities.add(value)
+
+
+def _scan_node(
+    path: str,
+    node: ast.AST,
+    constants: Mapping[str, str],
+    modules: Mapping[str, str],
+    accumulator: _ReferenceAccumulator,
+) -> None:
+    if isinstance(node, ast.Import):
+        _scan_import(node, modules, accumulator)
+    elif isinstance(node, ast.ImportFrom):
+        _scan_import_from(path, node, modules, accumulator)
+    elif isinstance(node, ast.Dict):
+        _scan_dict(node, constants, accumulator)
+    elif isinstance(node, ast.Call):
+        _scan_call(node, constants, modules, accumulator)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        _scan_entity_decorators(node, constants, accumulator)
+
+
 def _parse_references(
     path: str,
     raw: bytes,
@@ -167,77 +309,20 @@ def _parse_references(
     except (SyntaxError, UnicodeDecodeError) as exc:
         raise WorkspaceImpactError(f"cannot parse {path}: {exc}") from exc
     constants = _top_level_constants(tree)
-    identities: set[str] = set()
-    references: set[str] = set()
-    unresolved: set[str] = set()
-    dynamic_import = False
+    accumulator = _ReferenceAccumulator()
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                root = alias.name.split(".", 1)[0]
-                if root in WORKSPACE_IMPORT_ROOTS and not _module_is_available(
-                    alias.name, modules
-                ):
-                    unresolved.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            module = _absolute_from_module(path, node)
-            root = module.split(".", 1)[0] if module else ""
-            if root in WORKSPACE_IMPORT_ROOTS and not _module_is_available(
-                module, modules
-            ):
-                unresolved.add(module)
-        elif isinstance(node, ast.Dict):
-            for key_node, value_node in zip(node.keys, node.values, strict=True):
-                key = _literal_string(key_node, constants)
-                if key in REFERENCE_FIELDS:
-                    if value := _literal_string(value_node, constants):
-                        references.add(value)
-        elif isinstance(node, ast.Call):
-            call_parts = _call_parts(node.func)
-            call_name = call_parts[-1] if call_parts else ""
-            if call_name in {"import_module", "__import__"}:
-                module = _literal_string(node.args[0], constants) if node.args else None
-                if module is None:
-                    dynamic_import = True
-                elif (
-                    module.split(".", 1)[0] in WORKSPACE_IMPORT_ROOTS
-                    and not _module_is_available(module, modules)
-                ):
-                    unresolved.add(module)
-            elif call_name in {"eval", "exec", "exec_module"}:
-                dynamic_import = True
-            if (
-                call_name in {"execute", "execute_workflow"}
-                and "workflows" in call_parts[:-1]
-                and node.args
-            ):
-                if value := _literal_string(node.args[0], constants):
-                    references.add(value)
-            for keyword in node.keywords:
-                if keyword.arg in REFERENCE_FIELDS:
-                    if value := _literal_string(keyword.value, constants):
-                        references.add(value)
-
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for decorator in node.decorator_list:
-                if _decorator_name(decorator) not in ENTITY_DECORATORS:
-                    continue
-                identities.add(node.name)
-                if isinstance(decorator, ast.Call):
-                    for keyword in decorator.keywords:
-                        if keyword.arg in {"id", "name"}:
-                            if value := _literal_string(keyword.value, constants):
-                                identities.add(value)
+        _scan_node(path, node, constants, modules, accumulator)
 
     for name, value in constants.items():
-        if UUID_RE.fullmatch(value) or "WORKFLOW" in name:
-            references.add(value)
+        if UUID_RE.fullmatch(value) or REFERENCE_CONSTANT_RE.search(name):
+            accumulator.references.add(value)
     return _ParsedReferences(
-        identities=frozenset(identities),
-        references=frozenset(references),
-        unresolved_imports=tuple(sorted(unresolved)),
-        dynamic_import=dynamic_import,
+        identities=frozenset(accumulator.identities),
+        references=frozenset(accumulator.references),
+        unresolved_imports=tuple(sorted(accumulator.unresolved)),
+        dynamic_import=accumulator.dynamic_import,
+        dynamic_reference=accumulator.dynamic_reference,
     )
 
 
@@ -246,9 +331,7 @@ def analyze_workspace_impact(
 ) -> WorkspaceImpactAnalysis:
     """Build import and literal registry edges for a complete Python snapshot."""
 
-    normalized = {
-        normalize_workspace_path(path): raw for path, raw in contents.items()
-    }
+    normalized = {normalize_workspace_path(path): raw for path, raw in contents.items()}
     modules = _module_index(normalized)
     imports = dependency_edges(normalized)
     parsed = {
@@ -304,6 +387,9 @@ def analyze_workspace_impact(
         },
         dynamic_importers=frozenset(
             path for path, item in parsed.items() if item.dynamic_import
+        ),
+        dynamic_reference_importers=frozenset(
+            path for path, item in parsed.items() if item.dynamic_reference
         ),
     )
 

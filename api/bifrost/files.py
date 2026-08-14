@@ -132,8 +132,8 @@ class files:
         mode: Mode = "cloud",
         expected_version: str | None = None,
         create_only: bool = False,
-        impact_candidate_id: str | None = None,
         scope: str | None = None,
+        impact_candidate_id: str | None = None,
     ) -> None:
         """
         Write text to a file.
@@ -146,8 +146,8 @@ class files:
             expected_version: Opaque version from ``files.stat`` required for
                 a guarded replacement.
             create_only: Create a new file and fail if the path already exists.
-            impact_candidate_id: Immutable candidate from ``files.impact``.
             scope: Org scope; provider-org override allowed.
+            impact_candidate_id: Immutable candidate from ``files.impact``.
         """
         client = get_client()
         effective_scope = resolve_scope(scope)

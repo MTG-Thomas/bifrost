@@ -1202,7 +1202,6 @@ async def read_file(
 
 @router.post(
     "/impact",
-    response_model=WorkspaceFileImpactResponse,
     summary="Preview a Workspace Python file's dependency impact",
 )
 async def preview_workspace_file_impact(
@@ -1336,64 +1335,22 @@ async def write_file(
                         "Python text files"
                     ),
                 )
-            if not ctx.user.is_superuser:
+            if ctx.user is None or not ctx.user.is_superuser:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="checked Workspace source writes require a platform administrator",
                 )
-            from src.core.module_cache import workspace_source_update
             from src.models.contracts.workspace_file_impact import (
                 WorkspaceFileImpactRequest,
             )
             from src.services.workspace_file_impact import (
+                WorkspaceFileImpactBlocked,
+                WorkspaceFileImpactConflict,
                 WorkspaceFileImpactInvalid,
                 WorkspaceFileImpactService,
             )
 
-            async with workspace_source_update(
-                reason="checked_workspace_file_write",
-                changed_paths=[request.path],
-            ):
-                try:
-                    impact = await WorkspaceFileImpactService().preview(
-                        WorkspaceFileImpactRequest(
-                            path=request.path,
-                            content=content.decode("utf-8"),
-                        )
-                    )
-                except WorkspaceFileImpactInvalid as exc:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "reason": "impact_blocked",
-                            "path": request.path,
-                            "message": str(exc),
-                        },
-                    ) from exc
-                if impact.candidate_id != request.impact_candidate_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail={
-                            "reason": "impact_candidate_conflict",
-                            "path": request.path,
-                            "expected_candidate_id": request.impact_candidate_id,
-                            "current_candidate_id": impact.candidate_id,
-                            "message": (
-                                "Workspace dependency state changed after impact preview."
-                            ),
-                        },
-                    )
-                if not impact.ready_to_write:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "reason": "impact_blocked",
-                            "path": request.path,
-                            "diagnostics": [
-                                item.model_dump() for item in impact.diagnostics
-                            ],
-                        },
-                    )
+            async def checked_write() -> None:
                 await backend.write(
                     request.path,
                     content,
@@ -1401,6 +1358,47 @@ async def write_file(
                     updated_by,
                     scope=effective_scope,
                 )
+
+            try:
+                await WorkspaceFileImpactService().guarded_write(
+                    WorkspaceFileImpactRequest(
+                        path=request.path,
+                        content=content.decode("utf-8"),
+                    ),
+                    request.impact_candidate_id,
+                    checked_write,
+                )
+            except WorkspaceFileImpactInvalid as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "reason": "impact_blocked",
+                        "path": request.path,
+                        "message": str(exc),
+                    },
+                ) from exc
+            except WorkspaceFileImpactConflict as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "reason": "impact_candidate_conflict",
+                        "path": exc.path,
+                        "expected_candidate_id": exc.expected,
+                        "current_candidate_id": exc.current,
+                        "message": str(exc),
+                    },
+                ) from exc
+            except WorkspaceFileImpactBlocked as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "reason": "impact_blocked",
+                        "path": exc.response.path,
+                        "diagnostics": [
+                            item.model_dump() for item in exc.response.diagnostics
+                        ],
+                    },
+                ) from exc
         else:
             await backend.write(
                 request.path,
@@ -1424,7 +1422,7 @@ async def write_file(
                 size_bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
                 updated_by=updated_by,
-                user_id=str(ctx.user.user_id),
+                user_id=str(user.user_id),
                 solution_id=solution_id,
                 org_id=await _install_org_id(ctx, solution_id),
             )
