@@ -63,8 +63,8 @@ def test_main_verification_waits_for_immutable_ci_test_images() -> None:
     image_jobs = {"test-unit", "mcp-conformance", "test-e2e", "test-client-e2e"}
 
     assert ci["env"]["CI_TEST_IMAGE_TAG"] == (
-        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
-        "&& format('sha-{0}', github.sha) || 'main' }}"
+        "${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || "
+        "inputs.queue_post_merge) && format('sha-{0}', github.sha) || 'main' }}"
     )
     for job_name in image_jobs:
         assert set(jobs[job_name]["needs"]) == {

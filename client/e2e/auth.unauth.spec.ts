@@ -74,7 +74,7 @@ test.describe("Login Flow", () => {
 		await page.goto("/workflows");
 
 		// Should redirect to login
-		await page.waitForURL(/\/login/, { timeout: 5000 });
+		await expect(page).toHaveURL(/\/login/, { timeout: 5000 });
 		await expect(page.getByLabel("Email")).toBeVisible();
 	});
 
@@ -124,7 +124,7 @@ test.describe("Login Flow", () => {
 		await page.goto("/workflows");
 
 		// Should redirect to login
-		await page.waitForURL(/\/login/, { timeout: 5000 });
+		await expect(page).toHaveURL(/\/login/, { timeout: 5000 });
 
 		// Login
 		await page.getByLabel("Email").fill(user.email);
@@ -171,6 +171,6 @@ test.describe("Access Control", () => {
 		// app-wide, so testing every page just multiplies flakiness without
 		// adding signal.
 		await page.goto("/workflows");
-		await page.waitForURL(/\/login/, { timeout: 10000 });
+		await expect(page).toHaveURL(/\/login/, { timeout: 10000 });
 	});
 });

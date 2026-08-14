@@ -6,6 +6,7 @@ Requires LLM configuration to be set for message sending tests.
 """
 
 import logging
+from uuid import uuid4
 
 import pytest
 
@@ -464,7 +465,10 @@ def test_chat_agent(e2e_client, platform_admin):
     response = e2e_client.post(
         "/api/agents",
         json={
-            "name": "E2E Chat Test Agent",
+            # Agent creation is name-idempotent. A unique name prevents a
+            # prior fixture's asynchronous cleanup from deleting the agent
+            # returned to the next test.
+            "name": f"E2E Chat Test Agent {uuid4()}",
             "description": "Agent for chat E2E testing",
             "system_prompt": "You are a helpful test assistant. Keep your responses brief.",
             "channels": ["chat"],
