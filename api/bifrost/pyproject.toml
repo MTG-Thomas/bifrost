@@ -31,6 +31,12 @@ dev = [
 [project.scripts]
 bifrost = "bifrost.cli:main"
 
+# The CLI download endpoint places this shared contract module at the archive
+# root.  Declare it explicitly so setuptools includes it in the installed
+# wheel as well as the source archive.
+[tool.setuptools]
+py-modules = ["_bifrost_workspace_effects"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bifrost*"]
