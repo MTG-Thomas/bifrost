@@ -413,11 +413,14 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     stored.status = "validated"
     svc.repo.files["features/b.py"] = b"B"  # unrelated concurrent edit
 
+    write_kwargs = []
+
     class Storage:
         def __init__(self, _db):
             pass
 
-        async def write_file(self, path, content, **_kwargs):
+        async def write_file(self, path, content, **kwargs):
+            write_kwargs.append(kwargs)
             await svc.repo.write(path, content)
             return SimpleNamespace(pending_deactivations=[])
 
@@ -435,6 +438,13 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
     )
     assert activated.status == "activated"
     assert svc.repo.files == {"features/a.py": b"A", "features/b.py": b"B"}
+    assert write_kwargs == [
+        {
+            "updated_by": "tester",
+            "force_deactivation": True,
+            "skip_dirty_flag": False,
+        }
+    ]
     assert activated.validation["activation_evidence"] == {
         "schema": "bifrost.workspace-candidate/v2",
         "candidate_id": candidate_id,
@@ -668,11 +678,14 @@ async def test_activation_closure_accepts_history_already_at_target(monkeypatch)
     stored.validation = {"valid": True}
     stored.status = "validated"
 
+    write_kwargs = []
+
     class Storage:
         def __init__(self, _db):
             pass
 
-        async def write_file(self, file_path, content, **_kwargs):
+        async def write_file(self, file_path, content, **kwargs):
+            write_kwargs.append(kwargs)
             await svc.repo.write(file_path, content)
             return SimpleNamespace(pending_deactivations=[])
 
@@ -719,6 +732,13 @@ async def test_activation_closure_accepts_history_already_at_target(monkeypatch)
         "committed_paths": [],
     }
     assert writer.requests == []
+    assert write_kwargs == [
+        {
+            "updated_by": "operator@example.com",
+            "force_deactivation": False,
+            "skip_dirty_flag": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio
