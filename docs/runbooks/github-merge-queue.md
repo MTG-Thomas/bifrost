@@ -25,17 +25,19 @@ leave the queue waiting for a status that never starts.
 ## Queue policy
 
 - merge method: squash
-- build concurrency: 1
+- simultaneous merge-group builds: 1
 - minimum entries to merge: 1
 - maximum entries to build: 5
 - maximum entries to merge: 5
 - queue wait: 5 minutes
 - status-check timeout: 60 minutes
 
-Branch protections still require pull requests, signed commits, resolved
-conversations, passing required checks, block force pushes and deletions, and
-apply to administrators. Strict branch freshness is disabled only while the
-merge queue is enabled: the synthetic queue commit is the current-base proof.
+The active `main` repository ruleset still requires pull requests, signed
+commits, resolved conversations, and passing required checks, and it blocks
+force pushes and deletions. Its Bypass list is empty, so repository
+administrators and other privileged actors remain subject to the rules. Strict
+branch freshness is disabled only while the merge queue is enabled: the
+synthetic queue commit is the current-base proof.
 
 ## Verification and rollback
 

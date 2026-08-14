@@ -24,6 +24,7 @@ REQUIRED_CI_JOB_NAMES = {
     "mcp-conformance": "MCP Conformance",
     "test-e2e-gate": "E2E Tests",
 }
+EXPECTED_QUEUE_CONCURRENCY = "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
 
 
 def _has_top_level_key(lines: list[str], key: str) -> bool:
@@ -34,6 +35,23 @@ def _has_top_level_key(lines: list[str], key: str) -> bool:
 def _has_event(lines: list[str], event: str) -> bool:
     marker = f"  {event}:"
     return any(line == marker for line in lines)
+
+
+def _check_queue_concurrency(path: Path, lines: list[str]) -> list[str]:
+    violations: list[str] = []
+    if not _has_top_level_key(lines, "concurrency"):
+        violations.append(
+            f"{path}: event-aware concurrency is required to cancel superseded PR runs."
+        )
+    if any("merge_group.base_ref" in line for line in lines):
+        violations.append(
+            f"{path}: merge-group concurrency must use candidate-specific github.ref, not base_ref."
+        )
+    if not any(line.strip() == EXPECTED_QUEUE_CONCURRENCY for line in lines):
+        violations.append(
+            f"{path}: only pull-request runs may be cancelled; merge-group candidates must finish."
+        )
+    return violations
 
 
 def _repo_root() -> Path:
@@ -92,10 +110,9 @@ def check_ci_workflow(path: Path) -> list[str]:
         return [
             f"{path}: merge_group trigger is required so native merge queue candidates report CI gates."
         ]
-    if not _has_top_level_key(lines, "concurrency"):
-        return [
-            f"{path}: event-aware concurrency is required to cancel superseded PR and merge-group runs."
-        ]
+    concurrency_violations = _check_queue_concurrency(path, lines)
+    if concurrency_violations:
+        return concurrency_violations
     for job, expected_name in REQUIRED_CI_JOB_NAMES.items():
         parsed = _job_block(lines, job)
         if parsed is None:
@@ -157,10 +174,7 @@ def check_codeql_workflow(path: Path) -> list[str]:
         violations.append(
             f"{path}: merge_group trigger is required because both CodeQL language checks gate the queue."
         )
-    if not _has_top_level_key(lines, "concurrency"):
-        violations.append(
-            f"{path}: event-aware concurrency is required to cancel superseded CodeQL runs."
-        )
+    violations.extend(_check_queue_concurrency(path, lines))
     return violations
 
 

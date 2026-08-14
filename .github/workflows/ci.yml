@@ -15,11 +15,11 @@ on:
 
 permissions: read-all
 
-# Superseded PR heads and obsolete merge-queue reconstructions should stop
-# consuming runners. Push/tag runs publish artifacts and must run to completion.
+# Superseded PR heads should stop consuming runners. Queue candidates and
+# push/tag runs are authoritative and must run to completion.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.event_name == 'merge_group' && github.event.merge_group.base_ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io

@@ -59,6 +59,17 @@ def test_ci_merge_queue_contract_is_preserved(tmp_path: Path):
     without_concurrency.write_text(contents[:start] + contents[end + 1 :], encoding="utf-8")
     assert any("event-aware concurrency is required" in item for item in check_ci_workflow(without_concurrency))
 
+    unsafe_queue_cancellation = tmp_path / "unsafe-queue-cancellation.yml"
+    unsafe_queue_cancellation.write_text(
+        contents.replace(
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    assert any("merge-group candidates must finish" in item for item in check_ci_workflow(unsafe_queue_cancellation))
+
 
 def test_codeql_merge_queue_contract_is_preserved(tmp_path: Path):
     workflow = _repo_root() / ".github/workflows/codeql.yml"
@@ -69,3 +80,7 @@ def test_codeql_merge_queue_contract_is_preserved(tmp_path: Path):
     mutated = tmp_path / "codeql.yml"
     mutated.write_text(contents.replace("  merge_group:\n", "", 1), encoding="utf-8")
     assert any("both CodeQL language checks gate the queue" in item for item in check_codeql_workflow(mutated))
+
+    shared_base = tmp_path / "codeql-shared-base.yml"
+    shared_base.write_text(contents.replace("github.ref", "github.event.merge_group.base_ref", 1), encoding="utf-8")
+    assert any("candidate-specific github.ref" in item for item in check_codeql_workflow(shared_base))
