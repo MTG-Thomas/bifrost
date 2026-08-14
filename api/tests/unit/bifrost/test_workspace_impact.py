@@ -5,6 +5,7 @@ import pytest
 from bifrost.workspace_impact import (
     WorkspaceImpactError,
     analyze_workspace_impact,
+    index_workspace_impact,
     reverse_edges,
     transitive_distances,
 )
@@ -84,6 +85,34 @@ def test_analysis_does_not_treat_dynamic_result_fields_as_workflow_dispatch() ->
 
     assert graph.registry_edges == frozenset()
     assert graph.dynamic_reference_importers == frozenset()
+
+
+def test_incremental_existing_file_overlay_matches_full_reanalysis() -> None:
+    base = {
+        "helpers/one.py": b"VALUE = 1\n",
+        "helpers/two.py": b"VALUE = 2\n",
+        "workflows/report.py": (
+            b"from helpers.one import VALUE\n"
+            b"@workflow(name='Before')\n"
+            b"def report(): return VALUE\n"
+        ),
+        "workflows/consumer.py": (
+            b"def consumer(): return {'workflow_name': 'After'}\n"
+        ),
+    }
+    proposed = (
+        b"from helpers.two import VALUE\n"
+        b"@workflow(name='After')\n"
+        b"def report(): return VALUE\n"
+    )
+
+    incremental = index_workspace_impact(base).overlay(
+        "workflows/report.py",
+        proposed,
+    )
+    complete = analyze_workspace_impact({**base, "workflows/report.py": proposed})
+
+    assert incremental == complete
 
 
 def test_analysis_ignores_non_reference_workflow_constants() -> None:
