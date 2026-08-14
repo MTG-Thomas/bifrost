@@ -285,7 +285,7 @@ def _scan_call(
         elif not any(keyword.arg in REFERENCE_FIELDS for keyword in node.keywords):
             accumulator.dynamic_reference = True
     for keyword in node.keywords:
-        if keyword.arg in REFERENCE_FIELDS:
+        if is_workflow_execution and keyword.arg in REFERENCE_FIELDS:
             _record_reference(keyword.value, constants, accumulator)
         elif is_workflow_execution and keyword.arg is None:
             accumulator.dynamic_reference = True

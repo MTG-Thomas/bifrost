@@ -73,12 +73,48 @@ def test_analysis_reports_computed_workflow_references() -> None:
     assert graph.dynamic_reference_importers == frozenset({"workflows/parent.py"})
 
 
+def test_analysis_reports_computed_workflow_reference_keyword() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/parent.py": (
+                b"from bifrost import workflows\n"
+                b"async def parent(workflow_id):\n"
+                b"    return await workflows.execute(workflow_id=workflow_id, inputs={})\n"
+            )
+        }
+    )
+
+    assert graph.dynamic_reference_importers == frozenset({"workflows/parent.py"})
+
+
 def test_analysis_does_not_treat_dynamic_result_fields_as_workflow_dispatch() -> None:
     graph = analyze_workspace_impact(
         {
             "workflows/report.py": (
                 b"async def report(item):\n"
                 b"    return {'workflow_id': item.id, 'workflow_name': item.name}\n"
+            )
+        }
+    )
+
+    assert graph.registry_edges == frozenset()
+    assert graph.dynamic_reference_importers == frozenset()
+
+
+def test_analysis_does_not_treat_generic_call_keywords_as_workflow_dispatch() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/child.py": (
+                b"@workflow(name='Child')\n"
+                b"def child(): return None\n"
+            ),
+            "workflows/report.py": (
+                b"def render(*, workflow_name): return workflow_name\n"
+                b"def report(item):\n"
+                b"    return (\n"
+                b"        render(workflow_name=item.name),\n"
+                b"        render(workflow_name='Child'),\n"
+                b"    )\n"
             )
         }
     )
