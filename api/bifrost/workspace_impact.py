@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-from collections import Counter, defaultdict, deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
@@ -56,6 +56,7 @@ class WorkspaceImpactAnalysis:
     import_edges: frozenset[tuple[str, str]]
     registry_edges: frozenset[tuple[str, str]]
     unresolved_imports: Mapping[str, tuple[str, ...]]
+    ambiguous_references: Mapping[str, tuple[str, ...]]
     dynamic_importers: frozenset[str]
     dynamic_reference_importers: frozenset[str]
 
@@ -326,6 +327,27 @@ def _parse_references(
     )
 
 
+def _registry_relationships(
+    parsed: Mapping[str, _ParsedReferences],
+) -> tuple[set[tuple[str, str]], dict[str, set[str]]]:
+    owners_by_identity: dict[str, set[str]] = defaultdict(set)
+    for owner_path, item in parsed.items():
+        for identity in item.identities:
+            owners_by_identity[identity].add(owner_path)
+
+    registry_edges: set[tuple[str, str]] = set()
+    ambiguous_references: dict[str, set[str]] = defaultdict(set)
+    for importer, item in parsed.items():
+        for reference in item.references:
+            targets = owners_by_identity.get(reference, set())
+            if len(targets) > 1:
+                ambiguous_references[importer].add(reference)
+            registry_edges.update(
+                (importer, target) for target in targets if target != importer
+            )
+    return registry_edges, ambiguous_references
+
+
 def analyze_workspace_impact(
     contents: Mapping[str, bytes],
 ) -> WorkspaceImpactAnalysis:
@@ -338,39 +360,12 @@ def analyze_workspace_impact(
         path: _parse_references(path, raw, modules=modules)
         for path, raw in sorted(normalized.items())
     }
-    identity_counts: Counter[str] = Counter(
-        identity for item in parsed.values() for identity in item.identities
-    )
-    references = {
-        reference for item in parsed.values() for reference in item.references
-    }
-    ambiguous = sorted(
-        identity
-        for identity, count in identity_counts.items()
-        if count > 1 and (UUID_RE.fullmatch(identity) or identity in references)
-    )
-    if ambiguous:
-        raise WorkspaceImpactError(
-            "ambiguous referenced workflow identities: " + ", ".join(ambiguous)
-        )
-    owner_by_identity = {
-        identity: path
-        for path, item in parsed.items()
-        for identity in item.identities
-        if identity_counts[identity] == 1
-    }
-
     combined: dict[str, set[str]] = {
         path: set(targets) for path, targets in imports.items()
     }
-    registry_edges: set[tuple[str, str]] = set()
-    for importer, item in parsed.items():
-        for reference in item.references:
-            target = owner_by_identity.get(reference)
-            if target is None or target == importer:
-                continue
-            combined[importer].add(target)
-            registry_edges.add((importer, target))
+    registry_edges, ambiguous_references = _registry_relationships(parsed)
+    for importer, target in registry_edges:
+        combined[importer].add(target)
 
     return WorkspaceImpactAnalysis(
         edges={path: frozenset(sorted(targets)) for path, targets in combined.items()},
@@ -384,6 +379,10 @@ def analyze_workspace_impact(
             path: item.unresolved_imports
             for path, item in parsed.items()
             if item.unresolved_imports
+        },
+        ambiguous_references={
+            path: tuple(sorted(references))
+            for path, references in sorted(ambiguous_references.items())
         },
         dynamic_importers=frozenset(
             path for path, item in parsed.items() if item.dynamic_import

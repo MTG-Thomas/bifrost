@@ -89,6 +89,65 @@ async def test_preview_ignores_unrelated_legacy_python_module_collisions() -> No
 
 
 @pytest.mark.asyncio
+async def test_preview_ignores_unrelated_ambiguous_workflow_reference() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "helpers/shared.py": b"VALUE = 1\n",
+                "workflows/one.py": (
+                    b"@workflow(name='Child')\ndef one():\n    return 1\n"
+                ),
+                "workflows/two.py": (
+                    b"@workflow(name='Child')\ndef two():\n    return 2\n"
+                ),
+                "workflows/parent.py": (
+                    b"async def parent():\n    return {'workflow_name': 'Child'}\n"
+                ),
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(path="helpers/shared.py", content="VALUE = 2\n")
+    )
+
+    assert result.ready_to_write is True
+    assert result.diagnostics == []
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_relevant_ambiguous_workflow_reference() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "workflows/one.py": (
+                    b"@workflow(name='Child')\ndef one():\n    return 1\n"
+                ),
+                "workflows/two.py": (
+                    b"@workflow(name='Child')\ndef two():\n    return 2\n"
+                ),
+                "workflows/parent.py": (
+                    b"async def parent():\n    return {'workflow_name': 'Child'}\n"
+                ),
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(path="workflows/one.py")
+    )
+
+    assert result.ready_to_write is False
+    assert [item.path for item in result.reverse_dependencies] == [
+        "workflows/parent.py"
+    ]
+    assert [(item.code, item.path) for item in result.diagnostics] == [
+        ("ambiguous_workflow_reference", "workflows/parent.py"),
+        ("reverse_dependents_present", "workflows/one.py"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_preview_reports_proposed_syntax_before_unrelated_legacy_paths() -> None:
     service = WorkspaceFileImpactService(
         _Repo(

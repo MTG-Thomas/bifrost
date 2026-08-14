@@ -123,20 +123,22 @@ def test_analysis_fails_on_ambiguous_module_identity() -> None:
         )
 
 
-def test_analysis_fails_on_ambiguous_referenced_workflow_identity() -> None:
-    with pytest.raises(
-        WorkspaceImpactError, match="ambiguous referenced workflow identities: Child"
-    ):
-        analyze_workspace_impact(
-            {
-                "workflows/one.py": (
-                    b"@workflow(name='Child')\ndef one():\n    return 1\n"
-                ),
-                "workflows/two.py": (
-                    b"@workflow(name='Child')\ndef two():\n    return 2\n"
-                ),
-                "workflows/parent.py": (
-                    b"async def parent():\n    return {'workflow_name': 'Child'}\n"
-                ),
-            }
-        )
+def test_analysis_retains_all_edges_for_ambiguous_workflow_reference() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "workflows/one.py": (
+                b"@workflow(name='Child')\ndef one():\n    return 1\n"
+            ),
+            "workflows/two.py": (
+                b"@workflow(name='Child')\ndef two():\n    return 2\n"
+            ),
+            "workflows/parent.py": (
+                b"async def parent():\n    return {'workflow_name': 'Child'}\n"
+            ),
+        }
+    )
+
+    assert graph.edges["workflows/parent.py"] == frozenset(
+        {"workflows/one.py", "workflows/two.py"}
+    )
+    assert graph.ambiguous_references == {"workflows/parent.py": ("Child",)}

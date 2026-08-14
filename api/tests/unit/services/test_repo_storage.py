@@ -54,6 +54,26 @@ async def test_read_write_delete_use_repo_prefix_and_hash():
 
 
 @pytest.mark.asyncio
+async def test_read_many_reuses_one_storage_client():
+    storage = _repo_storage()
+    client = AsyncMock()
+    client.get_object.side_effect = [
+        {"Body": _Body(b"one")},
+        {"Body": _Body(b"two")},
+    ]
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+    context.__aexit__.return_value = None
+    storage._get_client = lambda: context
+
+    result = await storage.read_many(["helpers/one.py", "helpers/two.py"])
+
+    assert result == {"helpers/one.py": b"one", "helpers/two.py": b"two"}
+    context.__aenter__.assert_awaited_once()
+    context.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_list_and_metadata_follow_continuation_tokens_and_strip_repo_prefix():
     storage = _repo_storage()
     first_modified = datetime(2026, 1, 1, tzinfo=timezone.utc)

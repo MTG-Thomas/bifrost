@@ -120,6 +120,7 @@ def _diagnostics(
     relevant_paths: set[str],
     reverse_paths: set[str],
     unresolved_imports: Mapping[str, tuple[str, ...]],
+    ambiguous_references: Mapping[str, tuple[str, ...]],
     dynamic_importers: frozenset[str],
     dynamic_reference_importers: frozenset[str],
     proposed_unchanged: bool,
@@ -138,6 +139,19 @@ def _diagnostics(
             )
         )
     for affected_path in sorted(relevant_paths):
+        ambiguous = ambiguous_references.get(affected_path, ())
+        if ambiguous:
+            diagnostics.append(
+                WorkspaceFileImpactDiagnostic(
+                    code="ambiguous_workflow_reference",
+                    severity="blocker",
+                    message=(
+                        "workflow reference resolves to multiple authored files: "
+                        + ", ".join(ambiguous)
+                    ),
+                    path=affected_path,
+                )
+            )
         unresolved = unresolved_imports.get(affected_path, ())
         if unresolved:
             diagnostics.append(
@@ -247,13 +261,17 @@ class WorkspaceFileImpactService:
                 raise WorkspaceFileImpactInvalid(
                     f"workspace Python inventory must contain 1-{MAX_SNAPSHOT_FILES} files"
                 )
-            semaphore = asyncio.Semaphore(32)
+            read_many = getattr(self.repo, "read_many", None)
+            if read_many is not None:
+                snapshot = await read_many(paths, concurrency=32)
+            else:
+                semaphore = asyncio.Semaphore(32)
 
-            async def read(path: str) -> tuple[str, bytes]:
-                async with semaphore:
-                    return path, await self.repo.read(path)
+                async def read(path: str) -> tuple[str, bytes]:
+                    async with semaphore:
+                        return path, await self.repo.read(path)
 
-            snapshot = dict(await asyncio.gather(*(read(path) for path in paths)))
+                snapshot = dict(await asyncio.gather(*(read(path) for path in paths)))
             success = True
             return snapshot
         finally:
@@ -347,6 +365,7 @@ class WorkspaceFileImpactService:
             relevant_paths=relevant_paths,
             reverse_paths=reverse_paths,
             unresolved_imports=analysis.unresolved_imports,
+            ambiguous_references=analysis.ambiguous_references,
             dynamic_importers=analysis.dynamic_importers,
             dynamic_reference_importers=analysis.dynamic_reference_importers,
             proposed_unchanged=request.content is not None and current == proposed,

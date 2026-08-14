@@ -7,6 +7,7 @@ and this service reads/writes "_repo/workflows/test.py" in S3.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import Callable
@@ -57,6 +58,19 @@ class RepoStorage:
         """Read a file from _repo/."""
         async with self._get_client() as client:
             return await self._read_from_s3(client, path)
+
+    async def read_many(
+        self, paths: list[str], *, concurrency: int = 32
+    ) -> dict[str, bytes]:
+        """Read several repo files through one bounded storage client."""
+        semaphore = asyncio.Semaphore(concurrency)
+        async with self._get_client() as client:
+
+            async def read_one(path: str) -> tuple[str, bytes]:
+                async with semaphore:
+                    return path, await self._read_from_s3(client, path)
+
+            return dict(await asyncio.gather(*(read_one(path) for path in paths)))
 
     async def _read_from_s3(self, client, path: str) -> bytes:
         key = self._repo_key(path)
