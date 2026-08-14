@@ -166,3 +166,22 @@ def test_cove_candidate_cannot_expand_into_unrelated_live_roots(tmp_path: Path) 
     }
     assert "features/ninja/recovery.py" in bundle.snapshot_files
     assert "features/meraki/rollup.py" in bundle.snapshot_files
+
+
+def test_attribute_dunder_import_is_in_forward_closure(tmp_path: Path) -> None:
+    root = _git_workspace(
+        tmp_path,
+        {
+            "features/demo/workflow.py": (
+                "import builtins\nclient = builtins.__import__('modules.client')\n"
+            ),
+            "modules/client.py": "VALUE = 1\n",
+        },
+    )
+
+    bundle = build_promotion_bundle(root, "features/demo/workflow.py")
+
+    assert {item["path"] for item in bundle.files} == {
+        "features/demo/workflow.py",
+        "modules/client.py",
+    }

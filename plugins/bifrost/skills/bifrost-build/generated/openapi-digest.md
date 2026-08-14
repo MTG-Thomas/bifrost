@@ -172,6 +172,7 @@
 | POST | `/api/files/editor/folder` |
 | POST | `/api/files/editor/rename` |
 | POST | `/api/files/exists` |
+| POST | `/api/files/impact` |
 | POST | `/api/files/list` |
 | GET | `/api/files/manifest` |
 | GET | `/api/files/policies` |

@@ -168,7 +168,12 @@ def _print_http_error(exc: httpx.HTTPStatusError) -> _ExitCode:
         status == 409
         and isinstance(detail, dict)
         and detail.get("reason")
-        in {"file_exists", "file_missing", "version_conflict"}
+        in {
+            "file_exists",
+            "file_missing",
+            "version_conflict",
+            "impact_candidate_conflict",
+        }
     ):
         payload = {"error": "file_conflict", "status": status, **detail}
         human = [f"File conflict: {detail.get('message', 'remote file changed')}"]
@@ -176,7 +181,10 @@ def _print_http_error(exc: httpx.HTTPStatusError) -> _ExitCode:
             human.append(f"Path: {detail['path']}")
         if detail.get("current_version"):
             human.append(f"Current version: {detail['current_version']}")
-        human.append("Read the current file, merge the changes, and retry with its new version.")
+        if detail.get("reason") == "impact_candidate_conflict":
+            human.append("Run `bifrost files graph` again and review the new impact candidate.")
+        else:
+            human.append("Read the current file, merge the changes, and retry with its new version.")
         _emit_error(payload, human)
         return 4
 

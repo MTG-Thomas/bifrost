@@ -112,6 +112,42 @@ class TestStat:
         assert "secret source" not in result.output
 
 
+class TestGraph:
+    def test_graphs_proposed_file_in_both_directions(self, tmp_path) -> None:
+        local = tmp_path / "report.py"
+        local.write_text("VALUE = 2\n", encoding="utf-8")
+        captured: dict = {}
+        impact = {
+            "candidate_id": "sha256:" + "a" * 64,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "path": "helpers/report.py",
+            "proposed_sha256": "c" * 64,
+            "current_sha256": "d" * 64,
+            "changed": True,
+            "forward_dependencies": [],
+            "reverse_dependencies": [
+                {"path": "workflows/daily.py", "sha256": "e" * 64, "depth": 1}
+            ],
+            "diagnostics": [],
+            "ready_to_write": True,
+        }
+
+        result = _invoke(
+            ["graph", "helpers/report.py", "--from-file", str(local)],
+            captured,
+            {"/api/files/impact": impact},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Reverse dependencies (1)" in result.output
+        assert "workflows/daily.py" in result.output
+        assert captured["calls"][0]["body"] == {
+            "path": "helpers/report.py",
+            "content": "VALUE = 2\n",
+            "direction": "both",
+        }
+
+
 class TestWrite:
     def test_writes_with_content_flag(self) -> None:
         captured: dict = {}
@@ -217,6 +253,82 @@ class TestWrite:
         assert result.exit_code != 0
         assert "cannot be combined" in result.output
         assert "calls" not in captured
+
+    def test_checked_write_previews_then_binds_candidate(self) -> None:
+        captured: dict = {}
+        impact = {
+            "schema_version": "bifrost.workspace-file-impact/v1",
+            "candidate_id": "sha256:" + "a" * 64,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "path": "workflows/report.py",
+            "proposed": True,
+            "changed": True,
+            "current_sha256": "c" * 64,
+            "proposed_sha256": "d" * 64,
+            "forward_dependencies": [],
+            "reverse_dependencies": [],
+            "diagnostics": [],
+            "ready_to_write": True,
+        }
+        result = _invoke(
+            [
+                "write",
+                "workflows/report.py",
+                "--content",
+                "async def report(): return {}\n",
+                "--check-impact",
+            ],
+            captured,
+            {"/api/files/impact": impact, "/api/files/write": {}},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert [item["path"] for item in captured["calls"]] == [
+            "/api/files/impact",
+            "/api/files/write",
+        ]
+        assert captured["calls"][1]["body"]["impact_candidate_id"] == (
+            "sha256:" + "a" * 64
+        )
+
+    def test_checked_write_stops_before_write_on_blocker(self) -> None:
+        captured: dict = {}
+        impact = {
+            "candidate_id": "sha256:" + "a" * 64,
+            "snapshot_id": "sha256:" + "b" * 64,
+            "path": "workflows/report.py",
+            "proposed_sha256": "d" * 64,
+            "current_sha256": "c" * 64,
+            "changed": True,
+            "forward_dependencies": [],
+            "reverse_dependencies": [],
+            "diagnostics": [
+                {
+                    "code": "unresolved_repo_import",
+                    "severity": "blocker",
+                    "message": "missing helpers.shared",
+                    "path": "workflows/report.py",
+                }
+            ],
+            "ready_to_write": False,
+        }
+        result = _invoke(
+            [
+                "write",
+                "workflows/report.py",
+                "--content",
+                "from helpers.shared import VALUE\n",
+                "--check-impact",
+            ],
+            captured,
+            {"/api/files/impact": impact},
+        )
+
+        assert result.exit_code != 0
+        assert "no bytes were written" in result.output
+        assert [item["path"] for item in captured["calls"]] == [
+            "/api/files/impact"
+        ]
 
     def test_version_conflict_is_machine_readable_and_exit_four(self) -> None:
         request = httpx.Request("POST", "https://bifrost.test/api/files/write")

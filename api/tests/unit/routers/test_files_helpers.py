@@ -359,6 +359,183 @@ async def test_write_file_cloud_records_metadata_and_publishes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_checked_workspace_write_uses_guard_service(
+    monkeypatch,
+):
+    writes = []
+    guard_calls = []
+
+    class FakeBackend:
+        async def write(self, path, content, location, updated_by, *, scope):
+            writes.append((path, content, location, updated_by, scope))
+
+    class FakeStorage:
+        def __init__(self, db):
+            self.db = db
+
+        async def record_file_write_metadata(self, **kwargs):
+            return None
+
+    class FakeImpactService:
+        async def guarded_write(self, request, candidate_id, write):
+            assert request.path == "workflows/report.py"
+            assert request.content == "VALUE = 2\n"
+            guard_calls.append(candidate_id)
+            await write()
+
+    monkeypatch.setattr(files, "_require_declared_solution_file_location", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr(files, "_install_org_id", lambda *_args, **_kwargs: _async_value(ORG_A))
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr(files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None))
+    monkeypatch.setattr("src.core.pubsub.publish_file_change", lambda **_kwargs: _async_value(None))
+    monkeypatch.setattr("src.services.workspace_file_impact.WorkspaceFileImpactService", FakeImpactService)
+
+    await files.write_file(
+        files.FileWriteRequest(
+            path="workflows/report.py",
+            content="VALUE = 2\n",
+            impact_candidate_id="sha256:" + "a" * 64,
+        ),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, is_superuser=True),
+        db=SimpleNamespace(),
+    )
+
+    assert guard_calls == ["sha256:" + "a" * 64]
+    assert writes == [
+        (
+            "workflows/report.py",
+            b"VALUE = 2\n",
+            "workspace",
+            "user@example.test",
+            "global",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["conflict", "blocked"])
+async def test_checked_workspace_write_rejections_do_not_write(
+    monkeypatch,
+    outcome,
+):
+    from src.models.contracts.workspace_file_impact import (
+        WorkspaceFileImpactDiagnostic,
+    )
+    from src.services.workspace_file_impact import (
+        WorkspaceFileImpactBlocked,
+        WorkspaceFileImpactConflict,
+    )
+
+    writes = []
+
+    class FakeBackend:
+        async def write(self, path, content, location, updated_by, *, scope):
+            writes.append((path, content, location, updated_by, scope))
+
+    class FakeImpactService:
+        async def guarded_write(self, request, candidate_id, write):
+            if outcome == "conflict":
+                raise WorkspaceFileImpactConflict(
+                    request.path,
+                    candidate_id,
+                    "sha256:" + "b" * 64,
+                )
+            raise WorkspaceFileImpactBlocked(
+                SimpleNamespace(
+                    path=request.path,
+                    diagnostics=[
+                        WorkspaceFileImpactDiagnostic(
+                            code="dynamic_workflow_reference_unresolved",
+                            severity="blocker",
+                            message="computed reference",
+                            path=request.path,
+                        )
+                    ],
+                )
+            )
+
+    monkeypatch.setattr(
+        files,
+        "_require_declared_solution_file_location",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+    monkeypatch.setattr(
+        files,
+        "_require_file_policy",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: FakeBackend())
+    monkeypatch.setattr(
+        files,
+        "_lock_file_mutation",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_file_impact.WorkspaceFileImpactService",
+        FakeImpactService,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.write_file(
+            files.FileWriteRequest(
+                path="workflows/report.py",
+                content="VALUE = 2\n",
+                impact_candidate_id="sha256:" + "a" * 64,
+            ),
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID, is_superuser=True),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == (409 if outcome == "conflict" else 422)
+    assert exc_info.value.detail["reason"] == (
+        "impact_candidate_conflict" if outcome == "conflict" else "impact_blocked"
+    )
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_checked_workspace_write_without_context_user_is_forbidden(
+    monkeypatch,
+):
+    ctx = _ctx(is_superuser=True)
+    ctx.user = None
+    monkeypatch.setattr(
+        files,
+        "_require_declared_solution_file_location",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+    monkeypatch.setattr(
+        files,
+        "_require_file_policy",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+    monkeypatch.setattr(files, "get_backend", lambda mode, db: SimpleNamespace())
+    monkeypatch.setattr(
+        files,
+        "_lock_file_mutation",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.write_file(
+            files.FileWriteRequest(
+                path="workflows/report.py",
+                content="VALUE = 2\n",
+                impact_candidate_id="sha256:" + "a" * 64,
+            ),
+            ctx,
+            SimpleNamespace(user_id=USER_ID, is_superuser=True),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_write_file_local_binary_decodes_without_cloud_metadata(monkeypatch):
     writes = []
 

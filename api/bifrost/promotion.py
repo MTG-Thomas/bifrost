@@ -201,10 +201,13 @@ def _resolve_imports(path: str, raw: bytes, modules: dict[str, str]) -> set[str]
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
             and (
-                (isinstance(node.func, ast.Name) and node.func.id == "import_module")
+                (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id in {"import_module", "__import__"}
+                )
                 or (
                     isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "import_module"
+                    and node.func.attr in {"import_module", "__import__"}
                 )
             )
         ):

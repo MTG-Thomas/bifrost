@@ -33,6 +33,68 @@ Solutions should ultimately use the same artifact, release, validation,
 activation, rollback, and lock-in state machine. They remain a separate target
 kind and namespace.
 
+## Interactive file impact checks
+
+The lower-level `bifrost files` surface has a guarded loop for quick iteration
+on authored Workspace Python without pretending that an edit is a release:
+
+```bash
+# Inspect the durable file as it exists now.
+bifrost files graph features/vendor/workflows/report.py --direction both
+
+# Inspect proposed local bytes without writing them.
+bifrost files graph features/vendor/workflows/report.py \
+  --from-file features/vendor/workflows/report.py
+
+# Preview, then write only the exact graph candidate the server re-verifies.
+bifrost files write features/vendor/workflows/report.py \
+  --from-file features/vendor/workflows/report.py --check-impact
+```
+
+The graph combines repo-local Python imports with literal workflow registry
+references. It reports the selected file's transitive forward dependencies,
+transitive reverse dependents, exact hashes, edge types, and the paths that need
+validation. Syntax errors, missing repo-local imports, ambiguous module names,
+computed dynamic imports, computed workflow references, and excessive fan-out
+block the checked write.
+
+`--check-impact` performs two server calls. The first returns a content-addressed
+candidate over the proposed bytes and the complete durable Python inventory.
+The write call recomputes that candidate while holding the global Python-source
+writer barrier. If any source or graph edge changed in between, it returns a
+conflict and writes nothing. Agents normally do not handle the candidate ID;
+the CLI carries it between the two calls.
+
+This is a development safety primitive, not promotion:
+
+- it does not register, activate, execute, test, commit, or push anything;
+- it does not make a direct production edit an accepted release mechanism;
+- reverse dependents are surfaced for targeted validation, not rewritten or
+  executed automatically;
+- the checked-write lane is currently limited to platform-admin writes of
+  instance Workspace Python in durable cloud storage;
+- Solution file storage remains policy-scoped application data. Solution
+  workflow source continues through the Solution bundle/artifact model and
+  will consume the same graph primitive when checked Solution source editing is
+  introduced.
+
+SDK callers can perform the same compare-and-write sequence explicitly:
+
+```python
+from bifrost import files
+
+impact = await files.impact(
+    "features/vendor/workflows/report.py",
+    content=proposed_source,
+)
+if impact["ready_to_write"]:
+    await files.write(
+        "features/vendor/workflows/report.py",
+        proposed_source,
+        impact_candidate_id=impact["candidate_id"],
+    )
+```
+
 ## Shipped dark-launch contract
 
 The dark-launch operator loop is:

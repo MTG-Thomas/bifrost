@@ -116,3 +116,35 @@ async def test_file_sdk_omits_solution_query_without_solution_context(
 
     assert capture_file_sdk_urls
     assert all("solution=" not in url for url in capture_file_sdk_urls)
+
+
+@pytest.mark.asyncio
+async def test_file_sdk_preserves_positional_scope_argument(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        is_success = True
+        status_code = 204
+
+    class FakeClient:
+        async def post(self, url, json=None):
+            captured["url"] = url
+            captured["body"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(files_sdk, "get_client", lambda: FakeClient())
+
+    await files_sdk.files.write(
+        "x.txt",
+        "hello",
+        "reports",
+        "cloud",
+        None,
+        False,
+        "customer-scope",
+    )
+
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["scope"] == "customer-scope"
+    assert body["impact_candidate_id"] is None
