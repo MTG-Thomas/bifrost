@@ -388,6 +388,7 @@ async def test_create_default_user_skips_existing_user(monkeypatch, caplog):
         lambda: SimpleNamespace(
             default_user_email="admin@example.test",
             default_user_password="secret",
+            debug=False,
         ),
     )
     monkeypatch.setattr("src.core.database.get_db_context", lambda: context)
