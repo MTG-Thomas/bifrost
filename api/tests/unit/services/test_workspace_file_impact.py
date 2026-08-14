@@ -7,6 +7,7 @@ import pytest
 from src.models.contracts.workspace_file_impact import WorkspaceFileImpactRequest
 from src.services.workspace_file_impact import (
     WorkspaceFileImpactConflict,
+    WorkspaceFileImpactInvalid,
     WorkspaceFileImpactService,
 )
 
@@ -59,6 +60,65 @@ async def test_preview_binds_proposed_bytes_and_transitive_reverse_closure() -> 
         "helpers/shared.py",
     ]
     assert result.candidate_id.startswith("sha256:")
+
+
+@pytest.mark.asyncio
+async def test_preview_ignores_unrelated_legacy_python_module_collisions() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "api/bifrost.py": b"VALUE = 'legacy module'\n",
+                "api/bifrost/__init__.py": b"VALUE = 'legacy package'\n",
+                "helpers/shared.py": b"VALUE = 1\n",
+                "features/vendor/report.py": b"from helpers.shared import VALUE\n",
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="helpers/shared.py",
+            content="VALUE = 2\n",
+        )
+    )
+
+    assert result.ready_to_write is True
+    assert [item.path for item in result.reverse_dependencies] == [
+        "features/vendor/report.py"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_proposed_syntax_before_unrelated_legacy_paths() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "api/bifrost.py": b"VALUE = 'legacy module'\n",
+                "api/bifrost/__init__.py": b"VALUE = 'legacy package'\n",
+                "helpers/shared.py": b"VALUE = 1\n",
+            }
+        )
+    )
+
+    request = WorkspaceFileImpactRequest(
+        path="helpers/shared.py",
+        content="def broken(:\n",
+    )
+
+    with pytest.raises(WorkspaceFileImpactInvalid, match="cannot parse helpers/shared.py"):
+        await service.preview(request)
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_non_authored_python_root() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo({"api/bifrost.py": b"VALUE = 'legacy module'\n"})
+    )
+
+    request = WorkspaceFileImpactRequest(path="api/bifrost.py")
+
+    with pytest.raises(WorkspaceFileImpactInvalid, match="authored roots only"):
+        await service.preview(request)
 
 
 @pytest.mark.asyncio
