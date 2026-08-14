@@ -4,7 +4,7 @@ E2E: search_knowledge exposure and scoping over the MCP HTTP transport.
 Two MCP surfaces:
 
 - POST /mcp                — progressive agent discovery and dispatch through
-                              four stable gateway tools.
+                              stable gateway tools.
 - POST /mcp/{agent_id}     — agent-scoped: tools/list and tool calls
                               are limited to that one agent.
 
@@ -272,18 +272,27 @@ class TestMCPKnowledgeScoping:
         tools = _mcp_list_tools(e2e_client, "/mcp", platform_admin.headers)
 
         assert {tool["name"] for tool in tools} == {
-            "bifrost_find_agents",
-            "bifrost_get_agent",
-            "bifrost_get_tool_schema",
+            "bifrost_get_required_instructions",
+            "bifrost_search_capabilities",
             "bifrost_execute_tool",
+            "bifrost_get_execution",
+            "bifrost_search_memory",
+            "bifrost_save_memory",
+            "bifrost_remove_memory",
         }
         loaded = _gateway_call(
             e2e_client,
             platform_admin.headers,
-            "bifrost_get_agent",
-            {"agent_id": _knowledge_scoping_setup["agent_alpha_id"]},
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
         )
-        assert any(tool["name"] == "search_knowledge" for tool in loaded["tools"])
+        assert any(
+            tool["name"] == "search_knowledge"
+            for tool in loaded["agents"][0]["matching_tools"]
+        )
 
     def test_agent_scoped_lists_search_knowledge(
         self, e2e_client, platform_admin, _knowledge_scoping_setup
@@ -308,12 +317,15 @@ class TestMCPKnowledgeScoping:
         loaded_alpha = _gateway_call(
             e2e_client,
             platform_admin.headers,
-            "bifrost_get_agent",
-            {"agent_id": _knowledge_scoping_setup["agent_alpha_id"]},
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
         )
         alpha_ref = next(
             tool["tool_ref"]
-            for tool in loaded_alpha["tools"]
+            for tool in loaded_alpha["agents"][0]["matching_tools"]
             if tool["name"] == "search_knowledge"
         )
         result = _gateway_call(
@@ -410,12 +422,15 @@ class TestMCPKnowledgeScoping:
         loaded = _gateway_call(
             e2e_client,
             platform_admin.headers,
-            "bifrost_get_agent",
-            {"agent_id": _knowledge_scoping_setup["agent_alpha_id"]},
+            "bifrost_search_capabilities",
+            {
+                "agent_id": _knowledge_scoping_setup["agent_alpha_id"],
+                "query": "search knowledge",
+            },
         )
         search_ref = next(
             tool["tool_ref"]
-            for tool in loaded["tools"]
+            for tool in loaded["agents"][0]["matching_tools"]
             if tool["name"] == "search_knowledge"
         )
         result = _gateway_call(

@@ -11,10 +11,13 @@ from typing import Any
 
 
 EXPECTED_GATEWAY_TOOLS = [
-    "bifrost_find_agents",
-    "bifrost_get_agent",
-    "bifrost_get_tool_schema",
+    "bifrost_get_required_instructions",
+    "bifrost_search_capabilities",
     "bifrost_execute_tool",
+    "bifrost_get_execution",
+    "bifrost_search_memory",
+    "bifrost_save_memory",
+    "bifrost_remove_memory",
 ]
 
 EXPECTED_CHECK_PROFILES = {
@@ -259,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         ):
             errors.append(
                 "official tools-list artifact did not report Bifrost's exact "
-                f"four-tool gateway: {observed!r}"
+                f"seven-tool gateway: {observed!r}"
             )
 
     failed_checks: list[str] = []

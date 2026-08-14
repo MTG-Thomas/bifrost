@@ -8,7 +8,7 @@
  */
 
 import { type MouseEvent, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
 	AlertTriangle,
 	Bot,
@@ -41,7 +41,9 @@ import {
 	DataTableRow,
 } from "@/components/ui/data-table";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 
 import { QueueBanner } from "@/components/agents/QueueBanner";
 import { Sparkline } from "@/components/agents/Sparkline";
@@ -84,16 +86,16 @@ type Organization = components["schemas"]["OrganizationPublic"];
 export function FleetPage() {
 	const [view, setView] = useState<ViewMode>("grid");
 	const [query, setQuery] = useState("");
+	const [showInactive, setShowInactive] = useState(false);
 	const [filterOrgId, setFilterOrgId] = useState<string | null | undefined>(
 		undefined,
 	);
 	const { isPlatformAdmin } = useAuth();
 	const terminology = useTerminology();
 
-	// Fleet view shows paused agents too (they need to be visible to un-pause).
 	const { data: agents, isLoading: agentsLoading } = useAgents(
 		isPlatformAdmin ? filterOrgId : undefined,
-		{ includeInactive: true },
+		{ includeInactive: showInactive },
 	);
 	const { data: fleetStats, isLoading: fleetLoading } = useFleetStats();
 
@@ -240,7 +242,8 @@ export function FleetPage() {
 							delta={
 								fleetStats.total_runs > 0
 									? `${formatCost(
-											Number(fleetStats.total_cost_7d) / 7,
+											Number(fleetStats.total_cost_7d) /
+												7,
 										)}/day avg`
 									: "—"
 							}
@@ -264,7 +267,9 @@ export function FleetPage() {
 									? "runs marked — click to open"
 									: "All runs reviewed"
 							}
-							deltaTone={fleetStats.needs_review > 0 ? "down" : "up"}
+							deltaTone={
+								fleetStats.needs_review > 0 ? "down" : "up"
+							}
 						/>
 					</div>
 				</>
@@ -294,6 +299,19 @@ export function FleetPage() {
 							/>
 						</div>
 					)}
+					<div className="flex items-center gap-2 sm:ml-auto">
+						<Switch
+							id="show-inactive"
+							checked={showInactive}
+							onCheckedChange={setShowInactive}
+						/>
+						<Label
+							htmlFor="show-inactive"
+							className="cursor-pointer whitespace-nowrap text-sm text-muted-foreground"
+						>
+							Show Inactive
+						</Label>
+					</div>
 				</div>
 				<div className="inline-flex items-center rounded-2xl bg-muted p-[3px]">
 					<button
@@ -331,7 +349,12 @@ export function FleetPage() {
 			<div className="flex-1 min-h-0 overflow-auto">
 				{agentsLoading ? (
 					view === "grid" ? (
-						<div className={cn("grid md:grid-cols-2 xl:grid-cols-3", GAP_CARD)}>
+						<div
+							className={cn(
+								"grid md:grid-cols-2 xl:grid-cols-3",
+								GAP_CARD,
+							)}
+						>
 							{[...Array(6)].map((_, i) => (
 								<Skeleton key={i} className="h-52 w-full" />
 							))}
@@ -346,7 +369,12 @@ export function FleetPage() {
 				) : filtered.length === 0 ? (
 					<EmptyState hasQuery={query.trim().length > 0} />
 				) : view === "grid" ? (
-					<div className={cn("grid md:grid-cols-2 xl:grid-cols-3", GAP_CARD)}>
+					<div
+						className={cn(
+							"grid md:grid-cols-2 xl:grid-cols-3",
+							GAP_CARD,
+						)}
+					>
 						{filtered.map((agent) => (
 							<AgentGridCard
 								key={agent.id}
@@ -445,6 +473,7 @@ function AgentGridCard({
 	showOrg: boolean;
 	orgName: string;
 }) {
+	const navigate = useNavigate();
 	// TODO(plan-2): replace per-card useAgentStats N+1 with a denormalized
 	// list endpoint that returns fleet member stats in one round-trip.
 	const { data: stats, isLoading } = useAgentStats(agent.id ?? undefined);
@@ -453,10 +482,10 @@ function AgentGridCard({
 	const hasRuns = (stats?.runs_7d ?? 0) > 0;
 
 	return (
-		<Link
-			to={`/agents/${agent.id}`}
+		<article
+			onClick={() => navigate(`/agents/${agent.id}`)}
 			className={cn(
-				"group flex flex-col overflow-hidden",
+				"group flex cursor-pointer flex-col overflow-hidden",
 				CARD_SURFACE,
 				CARD_HOVER,
 			)}
@@ -468,20 +497,28 @@ function AgentGridCard({
 							entityType="agent"
 							entityId={agent.id}
 							logo={agent.logo ?? null}
-							fallback={<Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+							fallback={
+								<Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+							}
 							size={20}
 							className="h-5 w-5 rounded shrink-0 object-cover"
 						/>
-						<span className={cn("truncate", TYPE_CARD_TITLE)}>
+						<Link
+							to={`/agents/${agent.id}`}
+							className={cn("truncate", TYPE_CARD_TITLE)}
+							onClick={(event) => event.stopPropagation()}
+						>
 							{agent.name}
-						</span>
+						</Link>
 						{!agent.is_active ? (
 							<Badge variant="secondary" className="text-[11px]">
 								Paused
 							</Badge>
 						) : null}
 						{agent.is_solution_managed ? (
-							<SolutionManagedBadge solutionId={agent.solution_id} />
+							<SolutionManagedBadge
+								solutionId={agent.solution_id}
+							/>
 						) : null}
 					</div>
 					<div className="flex shrink-0 flex-wrap gap-1">
@@ -536,7 +573,9 @@ function AgentGridCard({
 									? `Last run ${formatRelativeTime(stats!.last_run_at)}`
 									: "—"}
 							</span>
-							<span>avg {formatDuration(stats!.avg_duration_ms)}</span>
+							<span>
+								avg {formatDuration(stats!.avg_duration_ms)}
+							</span>
 						</div>
 					</>
 				) : (
@@ -554,7 +593,7 @@ function AgentGridCard({
 				)}
 				{agent.id ? <McpUrlBadge agentId={agent.id} /> : null}
 			</div>
-		</Link>
+		</article>
 	);
 }
 
@@ -618,9 +657,7 @@ function MiniStat({
 			<div className="mb-0.5 text-[11px] text-muted-foreground">
 				{label}
 			</div>
-			<div className={cn(TYPE_MINI_STAT_VALUE, valueClass)}>
-				{value}
-			</div>
+			<div className={cn(TYPE_MINI_STAT_VALUE, valueClass)}>{value}</div>
 		</div>
 	);
 }

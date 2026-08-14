@@ -7,7 +7,7 @@ Uses FastMCP to expose tools via Streamable HTTP transport with Bearer token aut
 Architecture:
     - FastMCP server is mounted as an ASGI sub-application at /mcp
     - JWT Bearer token authentication using Bifrost's existing auth system
-    - /mcp exposes four stable agent discovery and dispatch tools
+    - /mcp exposes stable agent discovery, dispatch, instruction, and memory tools
     - /mcp/{agent_id} preserves the native agent-scoped tool surface
 
 Authentication:
@@ -29,20 +29,23 @@ from typing import NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import Response
 from starlette.middleware.cors import CORSMiddleware
 
+from src.config import get_settings
 from src.core.auth import CurrentActiveUser, CurrentSuperuser
 from src.core.db_deps import DbSession
 from src.models.contracts.mcp import (
     MCPConfigRequest,
     MCPConfigResponse,
-    MCPGatewayAgentResponse,
+    MCPGatewayCapabilitySearchRequest,
+    MCPGatewayCapabilitySearchResponse,
     MCPGatewayExecuteRequest,
     MCPGatewayExecuteResponse,
-    MCPGatewayFindAgentsResponse,
-    MCPGatewayToolSchemaResponse,
+    MCPGatewayExecutionResponse,
     MCPOperationReceiptResolutionRequest,
     MCPOperationReceiptResolutionResponse,
+    MCPRunInfoResponse,
     MCPToolInfo,
     MCPToolsResponse,
 )
@@ -93,8 +96,12 @@ def _raise_gateway_http_error(exc: Exception) -> NoReturn:
         raise exc
     status_code = {
         "INVALID_ARGUMENTS": status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "INVALID_CAPABILITY_SEARCH": status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "INVALID_RESULT_PATH": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "AGENT_NOT_FOUND_OR_FORBIDDEN": status.HTTP_404_NOT_FOUND,
         "TOOL_NOT_FOUND_OR_FORBIDDEN": status.HTTP_404_NOT_FOUND,
+        "EXECUTION_NOT_FOUND_OR_FORBIDDEN": status.HTTP_404_NOT_FOUND,
+        "ASYNC_NOT_SUPPORTED": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "NEEDS_REAUTH": status.HTTP_409_CONFLICT,
         "TOOL_SCHEMA_INVALID": status.HTTP_500_INTERNAL_SERVER_ERROR,
         "TOOL_EXECUTION_FAILED": status.HTTP_502_BAD_GATEWAY,
@@ -106,57 +113,48 @@ def _raise_gateway_http_error(exc: Exception) -> NoReturn:
     raise HTTPException(status_code=status_code, detail=exc.as_dict()) from exc
 
 
-@router.get(
-    "/gateway/agents",
-    response_model=MCPGatewayFindAgentsResponse,
+@router.post(
+    "/gateway/capabilities/search",
+    response_model=MCPGatewayCapabilitySearchResponse,
 )
-async def find_gateway_agents(
-    current_user: CurrentActiveUser,
-    db: DbSession,
-    query: str | None = None,
-    limit: int = Query(default=10, ge=1, le=20),
-) -> dict:
-    """Find accessible agents for progressive MCP discovery."""
-    await _require_mcp_enabled(db)
-    return await _gateway_service(current_user).find_agents(
-        query=query,
-        limit=limit,
-    )
-
-
-@router.get(
-    "/gateway/agents/{agent_id}",
-    response_model=MCPGatewayAgentResponse,
-)
-async def get_gateway_agent(
-    agent_id: str,
+async def search_gateway_capabilities(
+    request: MCPGatewayCapabilitySearchRequest,
     current_user: CurrentActiveUser,
     db: DbSession,
 ) -> dict:
-    """Load one accessible agent's live capability package."""
+    """Search agents and tools or hydrate one exact capability."""
     await _require_mcp_enabled(db)
     try:
-        return await _gateway_service(current_user).get_agent(agent_id)
+        return await _gateway_service(current_user).search_capabilities(
+            query=request.query,
+            agent_id=request.agent_id,
+            tool_ref=request.tool_ref,
+            limit=request.limit,
+        )
     except Exception as exc:
         _raise_gateway_http_error(exc)
 
 
 @router.get(
-    "/gateway/agents/{agent_id}/tools/{tool_ref}",
-    response_model=MCPGatewayToolSchemaResponse,
+    "/gateway/executions/{execution_id}",
+    response_model=MCPGatewayExecutionResponse,
 )
-async def get_gateway_tool_schema(
-    agent_id: str,
-    tool_ref: str,
+async def get_gateway_execution(
+    execution_id: str,
     current_user: CurrentActiveUser,
     db: DbSession,
+    result_path: str = "",
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
 ) -> dict:
-    """Load the current schema for an agent-bound tool."""
+    """Read compact status and a bounded result page for an owned execution."""
     await _require_mcp_enabled(db)
     try:
-        return await _gateway_service(current_user).get_tool_schema(
-            agent_id,
-            tool_ref,
+        return await _gateway_service(current_user).get_execution(
+            execution_id,
+            result_path=result_path,
+            offset=offset,
+            limit=limit,
         )
     except Exception as exc:
         _raise_gateway_http_error(exc)
@@ -242,6 +240,52 @@ async def resolve_gateway_operation_receipt(
 # =============================================================================
 
 
+@router.get("/run", response_model=MCPRunInfoResponse)
+async def mcp_run_info(
+    current_user: CurrentActiveUser,
+    db: DbSession,
+) -> MCPRunInfoResponse:
+    """Return install information for the Bifrost Agent plugin."""
+    from src.services.mcp_server.run_package import build_setup_prompt, mcp_url
+
+    config = await MCPConfigService(db).get_config()
+    return MCPRunInfoResponse(
+        enabled=config.enabled,
+        mcp_url=mcp_url(get_settings().public_url),
+        setup_prompt=build_setup_prompt(),
+    )
+
+
+@router.get(
+    "/run/plugin",
+    responses={200: {"content": {"application/zip": {}}}},
+)
+async def download_mcp_run_plugin(
+    current_user: CurrentActiveUser,
+    db: DbSession,
+) -> Response:
+    """Download the instance-matched Bifrost Agent package."""
+    from shared.version import get_version
+    from src.services.mcp_server.run_package import (
+        PLUGIN_FILENAME,
+        build_bifrost_run_plugin,
+    )
+
+    await _require_mcp_enabled(db)
+    zip_bytes = build_bifrost_run_plugin(
+        get_settings().public_url,
+        get_version(),
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{PLUGIN_FILENAME}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @router.get("/status")
 async def mcp_status(
     current_user: CurrentActiveUser,
@@ -267,7 +311,7 @@ async def mcp_status(
         )
 
     gateway = _gateway_service(current_user)
-    agent_result = await gateway.find_agents(limit=1)
+    accessible_agents_count = await gateway.accessible_agent_count()
     gateway_tools = sorted(GATEWAY_TOOL_NAMES)
 
     return {
@@ -276,7 +320,7 @@ async def mcp_status(
         "is_platform_admin": current_user.is_superuser,
         "tools_count": len(gateway_tools),
         "tools": gateway_tools,
-        "accessible_agents_count": agent_result["total_matches"],
+        "accessible_agents_count": accessible_agents_count,
         "mcp_endpoint": "/mcp",
         "transport": "streamable-http",
         "auth": "oauth2.1",

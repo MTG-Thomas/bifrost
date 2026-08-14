@@ -5430,6 +5430,147 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/memory/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get User Memory Settings */
+        get: operations["get_user_memory_settings_api_memory_settings_get"];
+        /** Update User Memory Settings */
+        put: operations["update_user_memory_settings_api_memory_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Memories */
+        get: operations["list_memories_api_memory_get"];
+        put?: never;
+        /** Save Memory */
+        post: operations["save_memory_api_memory_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Search Memory */
+        post: operations["search_memory_api_memory_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory/{memory_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove Memory */
+        delete: operations["remove_memory_api_memory__memory_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/memory/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Platform Memory Settings */
+        get: operations["get_platform_memory_settings_api_admin_memory_settings_get"];
+        /** Update Platform Memory Settings */
+        put: operations["update_platform_memory_settings_api_admin_memory_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/required-instructions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Required Instructions */
+        get: operations["get_required_instructions_api_required_instructions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/required-instructions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Global Required Instructions */
+        get: operations["get_global_required_instructions_api_admin_required_instructions_get"];
+        /** Update Global Required Instructions */
+        put: operations["update_global_required_instructions_api_admin_required_instructions_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/required-instructions/organizations/{organization_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Organization Required Instructions */
+        get: operations["get_organization_required_instructions_api_admin_required_instructions_organizations__organization_id__get"];
+        /** Update Organization Required Instructions */
+        put: operations["update_organization_required_instructions_api_admin_required_instructions_organizations__organization_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -5551,7 +5692,7 @@ export interface paths {
         post?: never;
         /**
          * Delete Agent
-         * @description Soft delete an agent. Admins can delete any agent. Users can delete their own private agents.
+         * @description Permanently delete an agent. Admins can delete any agent. Users can delete their own private agents.
          *
          *     System agents can be deleted - they will be recreated on next startup
          *     if they are still defined in the system agent definitions.
@@ -7269,27 +7410,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/mcp/gateway/agents": {
+    "/api/mcp/gateway/capabilities/search": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Find Gateway Agents
-         * @description Find accessible agents for progressive MCP discovery.
-         */
-        get: operations["find_gateway_agents_api_mcp_gateway_agents_get"];
+        get?: never;
         put?: never;
-        post?: never;
+        /**
+         * Search Gateway Capabilities
+         * @description Search agents and tools or hydrate one exact capability.
+         */
+        post: operations["search_gateway_capabilities_api_mcp_gateway_capabilities_search_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/mcp/gateway/agents/{agent_id}": {
+    "/api/mcp/gateway/executions/{execution_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -7297,30 +7438,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get Gateway Agent
-         * @description Load one accessible agent's live capability package.
+         * Get Gateway Execution
+         * @description Read compact status and a bounded result page for an owned execution.
          */
-        get: operations["get_gateway_agent_api_mcp_gateway_agents__agent_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/mcp/gateway/agents/{agent_id}/tools/{tool_ref}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Gateway Tool Schema
-         * @description Load the current schema for an agent-bound tool.
-         */
-        get: operations["get_gateway_tool_schema_api_mcp_gateway_agents__agent_id__tools__tool_ref__get"];
+        get: operations["get_gateway_execution_api_mcp_gateway_executions__execution_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -7367,6 +7488,46 @@ export interface paths {
          *     second store for incident details or customer data.
          */
         post: operations["resolve_gateway_operation_receipt_api_mcp_operation_receipts__receipt_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Mcp Run Info
+         * @description Return install information for the Bifrost Agent plugin.
+         */
+        get: operations["mcp_run_info_api_mcp_run_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/run/plugin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Mcp Run Plugin
+         * @description Download the instance-matched Bifrost Agent package.
+         */
+        get: operations["download_mcp_run_plugin_api_mcp_run_plugin_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -19253,10 +19414,10 @@ export interface components {
             service_oauth_token_id?: string | null;
         };
         /**
-         * MCPGatewayAgentDetail
-         * @description Live task instructions for a selected agent.
+         * MCPGatewayCapabilityAgent
+         * @description One agent and the bounded subset of tools relevant to the search.
          */
-        MCPGatewayAgentDetail: {
+        MCPGatewayCapabilityAgent: {
             /** Id */
             id: string;
             /** Name */
@@ -19265,29 +19426,66 @@ export interface components {
             description?: string | null;
             /** Instructions */
             instructions?: string | null;
+            /**
+             * Instructions Included
+             * @default false
+             */
+            instructions_included: boolean;
+            /** Matching Tools */
+            matching_tools: components["schemas"]["MCPGatewayToolSummary"][];
+            /** Total Tools */
+            total_tools: number;
+            /** Returned Tools */
+            returned_tools: number;
+            /** Complete */
+            complete: boolean;
+            /** Total Matching Tools */
+            total_matching_tools: number;
+            /** Has More Matches */
+            has_more_matches: boolean;
+            /** Search Again */
+            search_again?: string | null;
         };
         /**
-         * MCPGatewayAgentResponse
-         * @description Selected agent instructions and compact tool catalog.
+         * MCPGatewayCapabilitySearchRequest
+         * @description Progressively search or hydrate the live agent capability catalog.
          */
-        MCPGatewayAgentResponse: {
-            agent: components["schemas"]["MCPGatewayAgentDetail"];
-            /** Tools */
-            tools: components["schemas"]["MCPGatewayToolSummary"][];
-            /** Tool Count */
-            tool_count: number;
+        MCPGatewayCapabilitySearchRequest: {
+            /** Query */
+            query?: string | null;
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Tool Ref */
+            tool_ref?: string | null;
+            /**
+             * Limit
+             * @default 10
+             */
+            limit: number;
         };
         /**
-         * MCPGatewayAgentSummary
-         * @description Compact agent metadata returned by gateway discovery.
+         * MCPGatewayCapabilitySearchResponse
+         * @description Bounded search results with explicit disclosure completeness.
          */
-        MCPGatewayAgentSummary: {
-            /** Id */
-            id: string;
-            /** Name */
-            name: string;
-            /** Description */
-            description?: string | null;
+        MCPGatewayCapabilitySearchResponse: {
+            /** Query */
+            query?: string | null;
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Tool Ref */
+            tool_ref?: string | null;
+            /** Agents */
+            agents: components["schemas"]["MCPGatewayCapabilityAgent"][];
+            /** Returned Matches */
+            returned_matches: number;
+            /** Total Matches */
+            total_matches: number;
+            /** Has More Matches */
+            has_more_matches: boolean;
+            /** Response Complete */
+            response_complete: boolean;
+            /** Guidance */
+            guidance: string;
         };
         /**
          * MCPGatewayDurableHandle
@@ -19322,7 +19520,10 @@ export interface components {
         };
         /**
          * MCPGatewayExecuteResponse
-         * @description Auditable envelope returned after a gateway tool call.
+         * @description Internal REST envelope for an auditable gateway tool call.
+         *
+         *     Synchronous public MCP calls return ``result`` directly. MCP Task calls use
+         *     the durable handle to bridge Bifrost lifecycle state to the MCP task.
          */
         MCPGatewayExecuteResponse: {
             /** Agent Id */
@@ -19342,44 +19543,40 @@ export interface components {
             durable_handle?: components["schemas"]["MCPGatewayDurableHandle"] | null;
         };
         /**
-         * MCPGatewayFindAgentsResponse
-         * @description Search results for agents visible to the caller.
+         * MCPGatewayExecutionResponse
+         * @description Compact, ownership-checked execution status and paged result.
          */
-        MCPGatewayFindAgentsResponse: {
-            /** Query */
-            query?: string | null;
-            /** Agents */
-            agents: components["schemas"]["MCPGatewayAgentSummary"][];
-            /** Count */
-            count: number;
-            /** Total Matches */
-            total_matches: number;
-            /** Has More */
-            has_more: boolean;
-        };
-        /**
-         * MCPGatewayToolSchemaResponse
-         * @description Live schema for one agent-bound tool reference.
-         */
-        MCPGatewayToolSchemaResponse: {
-            /** Agent Id */
-            agent_id: string;
-            /** Tool Ref */
-            tool_ref: string;
-            /** Name */
-            name: string;
-            /** Description */
-            description: string;
-            /** Source */
-            source: string;
-            /** Input Schema */
-            input_schema: {
+        MCPGatewayExecutionResponse: {
+            /** Execution Id */
+            execution_id: string;
+            /** Workflow Id */
+            workflow_id?: string | null;
+            /** Workflow Name */
+            workflow_name?: string | null;
+            /** Status */
+            status: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Error */
+            error?: string | null;
+            /** Result Available */
+            result_available: boolean;
+            /** Result */
+            result?: unknown;
+            /** Result Page */
+            result_page?: {
                 [key: string]: unknown;
-            };
+            } | null;
         };
         /**
          * MCPGatewayToolSummary
-         * @description Schema-free tool metadata returned with an agent.
+         * @description A matching agent-bound tool, optionally hydrated with its schema.
          */
         MCPGatewayToolSummary: {
             /** Tool Ref */
@@ -19390,6 +19587,15 @@ export interface components {
             description: string;
             /** Source */
             source: string;
+            /** Input Schema */
+            input_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Schema Included
+             * @default false
+             */
+            schema_included: boolean;
         };
         /**
          * MCPOperationReceiptResolutionRequest
@@ -19416,6 +19622,27 @@ export interface components {
              * @constant
              */
             status: "failed";
+        };
+        /**
+         * MCPRunInfoResponse
+         * @description Connection information for installing the Bifrost Agent plugin.
+         */
+        MCPRunInfoResponse: {
+            /**
+             * Enabled
+             * @description Whether external MCP access is enabled
+             */
+            enabled: boolean;
+            /**
+             * Mcp Url
+             * @description Public streamable-http MCP endpoint
+             */
+            mcp_url: string;
+            /**
+             * Setup Prompt
+             * @description Prompt for creating a reusable Bifrost skill or agent
+             */
+            setup_prompt: string;
         };
         /**
          * MCPServerCreate
@@ -19775,6 +20002,121 @@ export interface components {
              * @description URL to redirect user for authorization
              */
             authorization_url: string;
+        };
+        /** MemoryDeleteResponse */
+        MemoryDeleteResponse: {
+            /**
+             * Removed Id
+             * Format: uuid
+             */
+            removed_id: string;
+        };
+        /** MemoryEntryList */
+        MemoryEntryList: {
+            /** Entries */
+            entries: components["schemas"]["MemoryEntryPublic"][];
+            /** Count */
+            count: number;
+        };
+        /** MemoryEntryPublic */
+        MemoryEntryPublic: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Content */
+            content: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** MemoryPlatformSettings */
+        MemoryPlatformSettings: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** MemoryPlatformSettingsUpdate */
+        MemoryPlatformSettingsUpdate: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** MemorySaveRequest */
+        MemorySaveRequest: {
+            /** Content */
+            content: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
+        /** MemorySearchRequest */
+        MemorySearchRequest: {
+            /** Query */
+            query: string;
+            /**
+             * Limit
+             * @default 5
+             */
+            limit: number;
+        };
+        /** MemorySearchResponse */
+        MemorySearchResponse: {
+            /** Results */
+            results: components["schemas"]["MemorySearchResult"][];
+            /** Count */
+            count: number;
+        };
+        /** MemorySearchResult */
+        MemorySearchResult: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Content */
+            content: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Score */
+            score: number;
+        };
+        /** MemoryUserSettings */
+        MemoryUserSettings: {
+            /** Platform Enabled */
+            platform_enabled: boolean;
+            /** User Enabled */
+            user_enabled: boolean;
+            /** Effective Enabled */
+            effective_enabled: boolean;
+        };
+        /** MemoryUserSettingsUpdate */
+        MemoryUserSettingsUpdate: {
+            /** Enabled */
+            enabled: boolean;
         };
         /**
          * MessagePublic
@@ -22405,6 +22747,19 @@ export interface components {
              * @description ISO timestamp when repo became dirty
              */
             dirty_since?: string | null;
+        };
+        /** RequiredInstructionsResponse */
+        RequiredInstructionsResponse: {
+            /** Instructions */
+            instructions?: string[];
+        };
+        /** RequiredInstructionsSettings */
+        RequiredInstructionsSettings: {
+            /**
+             * Instructions
+             * @default
+             */
+            instructions: string;
         };
         /**
          * ResolveRequest
@@ -36632,6 +36987,368 @@ export interface operations {
             };
         };
     };
+    get_user_memory_settings_api_memory_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryUserSettings"];
+                };
+            };
+        };
+    };
+    update_user_memory_settings_api_memory_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryUserSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryUserSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_memories_api_memory_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntryList"];
+                };
+            };
+        };
+    };
+    save_memory_api_memory_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySaveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntryPublic"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_memory_api_memory_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemorySearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_memory_api_memory__memory_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                memory_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryDeleteResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_platform_memory_settings_api_admin_memory_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryPlatformSettings"];
+                };
+            };
+        };
+    };
+    update_platform_memory_settings_api_admin_memory_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryPlatformSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryPlatformSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_required_instructions_api_required_instructions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredInstructionsResponse"];
+                };
+            };
+        };
+    };
+    get_global_required_instructions_api_admin_required_instructions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredInstructionsSettings"];
+                };
+            };
+        };
+    };
+    update_global_required_instructions_api_admin_required_instructions_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequiredInstructionsSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredInstructionsSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_organization_required_instructions_api_admin_required_instructions_organizations__organization_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredInstructionsSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_organization_required_instructions_api_admin_required_instructions_organizations__organization_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequiredInstructionsSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequiredInstructionsSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_agents_api_agents_get: {
         parameters: {
             query?: {
@@ -39896,17 +40613,18 @@ export interface operations {
             };
         };
     };
-    find_gateway_agents_api_mcp_gateway_agents_get: {
+    search_gateway_capabilities_api_mcp_gateway_capabilities_search_post: {
         parameters: {
-            query?: {
-                query?: string | null;
-                limit?: number;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPGatewayCapabilitySearchRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -39914,7 +40632,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MCPGatewayFindAgentsResponse"];
+                    "application/json": components["schemas"]["MCPGatewayCapabilitySearchResponse"];
                 };
             };
             /** @description Validation Error */
@@ -39928,12 +40646,16 @@ export interface operations {
             };
         };
     };
-    get_gateway_agent_api_mcp_gateway_agents__agent_id__get: {
+    get_gateway_execution_api_mcp_gateway_executions__execution_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                result_path?: string;
+                offset?: number;
+                limit?: number;
+            };
             header?: never;
             path: {
-                agent_id: string;
+                execution_id: string;
             };
             cookie?: never;
         };
@@ -39945,39 +40667,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MCPGatewayAgentResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_gateway_tool_schema_api_mcp_gateway_agents__agent_id__tools__tool_ref__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                agent_id: string;
-                tool_ref: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MCPGatewayToolSchemaResponse"];
+                    "application/json": components["schemas"]["MCPGatewayExecutionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -40058,6 +40748,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mcp_run_info_api_mcp_run_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPRunInfoResponse"];
+                };
+            };
+        };
+    };
+    download_mcp_run_plugin_api_mcp_run_plugin_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/zip": unknown;
                 };
             };
         };

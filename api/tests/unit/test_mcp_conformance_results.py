@@ -107,7 +107,7 @@ def test_summary_fails_for_warning_check(tmp_path) -> None:
         list(reversed(EXPECTED_GATEWAY_TOOLS)),
     ],
 )
-def test_summary_requires_exact_ordered_four_tool_gateway(tmp_path, observed) -> None:
+def test_summary_requires_exact_ordered_seven_tool_gateway(tmp_path, observed) -> None:
     checks = _checks_for("tools-list")
     checks[0]["details"] = {"tools": observed}
     _write_checks(tmp_path, "tools-list", checks)
