@@ -58,7 +58,10 @@ def graphql_payload(request: httpx.Request) -> dict:
     return json.loads(request.content.decode())
 
 
-def head_response(*, history=None, oid="a" * 40) -> httpx.Response:
+def head_response(
+    *, history=None, oid="a" * 40, signature_state="VALID"
+) -> httpx.Response:
+    valid = signature_state == "VALID"
     return httpx.Response(
         200,
         json={
@@ -68,6 +71,11 @@ def head_response(*, history=None, oid="a" * 40) -> httpx.Response:
                         "target": {
                             "oid": oid,
                             "tree": {"oid": "1" * 40},
+                            "signature": {
+                                "isValid": valid,
+                                "state": signature_state,
+                                "wasSignedByGitHub": valid,
+                            },
                             "history": {"nodes": history or []},
                         }
                     }
@@ -575,6 +583,61 @@ async def test_writer_inspects_exact_commit_bytes_without_mutation(private_key_p
         "workflows/example.py": hashlib.sha256(content).hexdigest(),
         "workflows/missing.py": None,
     }
+    assert snapshot.signature_state is None
+
+
+@pytest.mark.asyncio
+async def test_writer_inspects_verified_branch_head(private_key_pem):
+    content = b"live source\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            payload = graphql_payload(request)
+            assert "query BranchHead" in payload["query"]
+            return head_response()
+        if request.url.path.endswith("/contents/workflows/example.py"):
+            return httpx.Response(200, content=content)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        snapshot = await writer.inspect(("workflows/example.py",))
+
+    assert snapshot.signature_state == "VALID"
+    assert snapshot.file_sha256 == {
+        "workflows/example.py": hashlib.sha256(content).hexdigest()
+    }
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_unverified_branch_head_inspection(private_key_pem):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            return head_response(signature_state="MISSING")
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        with pytest.raises(PlatformCommitError, match="not verified"):
+            await writer.inspect(("workflows/example.py",))
 
 
 @pytest.mark.asyncio

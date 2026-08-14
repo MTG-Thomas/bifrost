@@ -59,9 +59,14 @@ Call activation with `push: true` whenever `commit_message` is supplied:
 The authenticated operator email and workspace changeset ID are always added
 to the commit body. `plan_id` and `protected_main_source_sha` are appended when
 provided. The remote mutation contains only the changeset's exact staged paths.
-Bifrost first requires those paths at the remote parent to match the
-changeset's base hashes, then uses that parent OID as `expectedHeadOid`; a path
-change or ref race fails closed instead of overwriting concurrent GitHub work.
+Bifrost first reads a verified GitHub-signed branch head and classifies every
+selected path as the changeset's `before` bytes, reviewed `target` bytes, or
+`other` bytes. Paths already at `target` are preserved. When every path is
+already at `target`, the existing signed head closes the changeset as a
+superseded success without manufacturing a commit. For a mixed `target`/`before`
+tree, only the `before` paths are sent to `createCommitOnBranch`, bound to the
+inspected parent OID as `expectedHeadOid`. Any `other` path fails closed for the
+guarded history-convergence lane instead of overwriting concurrent history.
 
 Before a changeset reports `committed`, Bifrost requires all of the following:
 
@@ -76,6 +81,10 @@ If the remote mutation succeeds but readback or signing verification fails,
 the activated workspace is not rolled back. The candidate commit SHA and
 original provenance remain in the retry record. A retry verifies that commit
 instead of replaying workspace activation or blindly creating a duplicate.
+Likewise, `status=activated` with `failure_detail.activation_preserved=true`
+means the workspace transition is durable and only Git closure failed. Clients
+must report that distinction and must not attempt to abort the activated
+changeset.
 
 If activation records Git closure as `not_configured`, configure all three App
 values, restart the API process, then retry the existing changeset without a
