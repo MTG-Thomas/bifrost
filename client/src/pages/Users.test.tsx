@@ -294,4 +294,16 @@ describe("Users", () => {
 		expect(within(row!).getByText("Provider")).toBeInTheDocument();
 		expect(row).not.toHaveTextContent("—");
 	});
+
+	it("includes inactive users when Show Inactive is enabled", async () => {
+		const { user } = renderWithProviders(<Users />);
+
+		expect(mockUseUsersFiltered).toHaveBeenLastCalledWith(undefined, false);
+
+		await user.click(
+			screen.getByRole("switch", { name: "Show Inactive" }),
+		);
+
+		expect(mockUseUsersFiltered).toHaveBeenLastCalledWith(undefined, true);
+	});
 });

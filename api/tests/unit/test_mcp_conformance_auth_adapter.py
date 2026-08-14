@@ -65,7 +65,7 @@ def test_adapter_preserves_raw_mcp_header_ows_through_upstream() -> None:
                 b"Authorization: Bearer runner-value\r\n"
                 b"MCP-Protocol-Version: 2026-07-28\r\n"
                 b"Mcp-Method: tools/call\r\n"
-                b"Mcp-Name:   bifrost_find_agents  \r\n"
+                b"Mcp-Name:   bifrost_search_capabilities  \r\n"
                 b"Content-Length: 2\r\n"
                 b"Connection: keep-alive\r\n\r\n{}"
             )
@@ -83,7 +83,7 @@ def test_adapter_preserves_raw_mcp_header_ows_through_upstream() -> None:
 
     upstream_request, downstream_response = asyncio.run(exercise())
 
-    assert b"Mcp-Name:   bifrost_find_agents  \r\n" in upstream_request
+    assert b"Mcp-Name:   bifrost_search_capabilities  \r\n" in upstream_request
     assert b"Authorization: Bearer resource-bound-token\r\n" in upstream_request
     assert b"Host: 127.0.0.1:" in upstream_request
     assert b"Authorization: Bearer runner-value" not in upstream_request

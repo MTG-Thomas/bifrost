@@ -1,5 +1,6 @@
 """Wire-level proof for progressive agent discovery on the default MCP URL."""
 
+import json
 import os
 import time
 import uuid
@@ -18,10 +19,13 @@ CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo"
 CLIENT_CAPABILITIES_META_KEY = "io.modelcontextprotocol/clientCapabilities"
 TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks"
 GATEWAY_TOOLS = {
-    "bifrost_find_agents",
-    "bifrost_get_agent",
-    "bifrost_get_tool_schema",
+    "bifrost_get_required_instructions",
+    "bifrost_search_capabilities",
     "bifrost_execute_tool",
+    "bifrost_get_execution",
+    "bifrost_search_memory",
+    "bifrost_save_memory",
+    "bifrost_remove_memory",
 }
 
 
@@ -99,7 +103,12 @@ def _call_gateway(
         {"name": name, "arguments": arguments},
         modern=modern,
     )
-    return payload["result"]["structuredContent"]
+    result = payload["result"]
+    structured = result.get("structuredContent")
+    if structured is not None:
+        return structured
+    assert len(result["content"]) == 1, result
+    return json.loads(result["content"][0]["text"])
 
 
 @pytest.mark.e2e
@@ -200,7 +209,8 @@ class TestMCPAgentGateway:
                 "clientInfo": {"name": "gateway-e2e", "version": "1.0"},
             },
         )
-        assert "bifrost_find_agents" in initialize["result"]["instructions"]
+        assert "bifrost_search_capabilities" in initialize["result"]["instructions"]
+        assert "bifrost_get_required_instructions" in initialize["result"]["instructions"]
 
         default_tools = _mcp_request(
             self.token,
@@ -263,7 +273,7 @@ class TestMCPAgentGateway:
 
         found = _call_gateway(
             self.token,
-            "bifrost_find_agents",
+            "bifrost_search_capabilities",
             {"query": self.agent_name},
             modern=True,
         )
@@ -293,11 +303,13 @@ class TestMCPAgentGateway:
     def test_dropped_response_and_concurrent_retries_reuse_one_execution(self):
         loaded = _call_gateway(
             self.token,
-            "bifrost_get_agent",
-            {"agent_id": self.agent_id},
+            "bifrost_search_capabilities",
+            {"agent_id": self.agent_id, "query": self.function_name},
         )
         tool_ref = next(
-            tool["tool_ref"] for tool in loaded["tools"] if tool["source"] == "workflow"
+            tool["tool_ref"]
+            for tool in loaded["agents"][0]["matching_tools"]
+            if tool["source"] == "workflow"
         )
 
         before = requests.get(
@@ -351,8 +363,7 @@ class TestMCPAgentGateway:
             "bifrost_execute_tool",
             dropped_arguments,
         )
-        assert {retry["result"]["execution_id"]} == started_ids
-        assert retry["result"]["result"] == {"echo": "dropped-response"}
+        assert retry == {"echo": "dropped-response"}
 
         after_retry = requests.get(
             f"{TEST_API_URL}/api/executions",
@@ -383,14 +394,7 @@ class TestMCPAgentGateway:
         with ThreadPoolExecutor(max_workers=2) as pool:
             responses = list(pool.map(lambda _index: execute_retry(), range(2)))
 
-        execution_ids = {
-            response["result"]["execution_id"] for response in responses
-        }
-        assert len(execution_ids) == 1
-        assert all(
-            response["result"]["result"] == {"echo": "concurrent"}
-            for response in responses
-        )
+        assert responses == [{"echo": "concurrent"}, {"echo": "concurrent"}]
 
     def test_modern_tasks_use_execution_status_and_requester_authorization(
         self,
@@ -398,11 +402,13 @@ class TestMCPAgentGateway:
     ):
         loaded = _call_gateway(
             self.token,
-            "bifrost_get_agent",
-            {"agent_id": self.agent_id},
+            "bifrost_search_capabilities",
+            {"agent_id": self.agent_id, "query": self.function_name},
         )
         tool_ref = next(
-            tool["tool_ref"] for tool in loaded["tools"] if tool["source"] == "workflow"
+            tool["tool_ref"]
+            for tool in loaded["agents"][0]["matching_tools"]
+            if tool["source"] == "workflow"
         )
         created = _mcp_request(
             self.token,
@@ -529,7 +535,7 @@ class TestMCPAgentGateway:
     def test_live_discovery_schema_execution_and_revocation(self):
         found = _call_gateway(
             self.token,
-            "bifrost_find_agents",
+            "bifrost_search_capabilities",
             {"query": self.agent_name},
         )
         assert any(
@@ -538,26 +544,40 @@ class TestMCPAgentGateway:
 
         loaded = _call_gateway(
             self.token,
-            "bifrost_get_agent",
+            "bifrost_search_capabilities",
             {"agent_id": self.agent_id},
         )
-        assert loaded["agent"]["instructions"] == self.prompt
+        assert loaded["agents"][0]["instructions"] == self.prompt
+        workflow_search = _call_gateway(
+            self.token,
+            "bifrost_search_capabilities",
+            {"agent_id": self.agent_id, "query": self.function_name},
+        )
         workflow_tool = next(
-            tool for tool in loaded["tools"] if tool["source"] == "workflow"
+            tool
+            for tool in workflow_search["agents"][0]["matching_tools"]
+            if tool["source"] == "workflow"
         )
         tool_ref = workflow_tool["tool_ref"]
+        system_search = _call_gateway(
+            self.token,
+            "bifrost_search_capabilities",
+            {"agent_id": self.agent_id, "query": "get docs"},
+        )
         system_tool = next(
             tool
-            for tool in loaded["tools"]
+            for tool in system_search["agents"][0]["matching_tools"]
             if tool["source"] == "system" and tool["name"] == "get_docs"
         )
 
         schema = _call_gateway(
             self.token,
-            "bifrost_get_tool_schema",
+            "bifrost_search_capabilities",
             {"agent_id": self.agent_id, "tool_ref": tool_ref},
         )
-        assert schema["input_schema"]["required"] == ["message"]
+        exact_tool = schema["agents"][0]["matching_tools"][0]
+        assert exact_tool["input_schema"]["required"] == ["message"]
+        assert exact_tool["schema_included"] is True
 
         invalid = _call_gateway(
             self.token,
@@ -584,10 +604,7 @@ class TestMCPAgentGateway:
                 "operation_id": f"docs-{self.agent_id}",
             },
         )
-        assert executed["agent_id"] == self.agent_id
-        assert executed["tool_ref"] == system_tool["tool_ref"]
-        assert executed["source"] == "system"
-        assert "schema" in executed["result"]["structured_content"]
+        assert "schema" in executed
 
         updated_prompt = f"{self.prompt} updated"
         update_response = requests.put(
@@ -598,10 +615,10 @@ class TestMCPAgentGateway:
         assert update_response.status_code == 200, update_response.text
         refreshed = _call_gateway(
             self.token,
-            "bifrost_get_agent",
+            "bifrost_search_capabilities",
             {"agent_id": self.agent_id},
         )
-        assert refreshed["agent"]["instructions"] == updated_prompt
+        assert refreshed["agents"][0]["instructions"] == updated_prompt
 
         revoke_response = requests.put(
             f"{TEST_API_URL}/api/agents/{self.agent_id}",

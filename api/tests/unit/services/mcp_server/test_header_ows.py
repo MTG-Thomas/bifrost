@@ -19,7 +19,7 @@ def test_mcp_header_ows_is_parsed_without_changing_other_header_values() -> None
         "type": "http",
         "headers": [
             (b"mcp-method", b"\ttools/call "),
-            (b"Mcp-Name", b"  bifrost_find_agents  "),
+            (b"Mcp-Name", b"  bifrost_search_capabilities  "),
             (b"mcp-protocol-version", b" 2026-07-28\t"),
             (b"x-preserved", b"  exact  "),
         ],
@@ -39,8 +39,8 @@ def test_mcp_header_ows_is_parsed_without_changing_other_header_values() -> None
     assert observed_scope is not None
     assert observed_scope["headers"] == [
         (b"mcp-method", b"tools/call"),
-        (b"Mcp-Name", b"bifrost_find_agents"),
+        (b"Mcp-Name", b"bifrost_search_capabilities"),
         (b"mcp-protocol-version", b"2026-07-28"),
         (b"x-preserved", b"  exact  "),
     ]
-    assert original_scope["headers"][1][1] == b"  bifrost_find_agents  "
+    assert original_scope["headers"][1][1] == b"  bifrost_search_capabilities  "

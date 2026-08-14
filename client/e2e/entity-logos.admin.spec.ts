@@ -111,7 +111,9 @@ test.describe("Entity logos", () => {
 
 			await page.goto("/agents");
 
-			const card = page.getByRole("link", { name: new RegExp(AGENT_NAME) });
+			const card = page.getByRole("article").filter({
+				has: page.getByRole("link", { name: AGENT_NAME, exact: true }),
+			});
 			const logo = card.getByTestId("entity-logo");
 			await expect(logo).toBeVisible();
 			await expect(logo).toHaveAttribute("src", /^data:image\/png;base64,/);

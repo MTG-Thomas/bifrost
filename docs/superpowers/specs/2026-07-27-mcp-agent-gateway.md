@@ -23,12 +23,15 @@ scaling problem. It should remain the native, schema-rich MCP surface.
 
 ## Decision
 
-Replace the unscoped `/mcp` tool surface with four stable gateway tools:
+Replace the unscoped `/mcp` tool surface with seven stable gateway tools:
 
-- `bifrost_find_agents`
-- `bifrost_get_agent`
-- `bifrost_get_tool_schema`
+- `bifrost_get_required_instructions`
+- `bifrost_search_capabilities`
 - `bifrost_execute_tool`
+- `bifrost_get_execution`
+- `bifrost_search_memory`
+- `bifrost_save_memory`
+- `bifrost_remove_memory`
 
 Keep `/mcp/{agent_id}` behavior unchanged.
 
@@ -54,7 +57,7 @@ The existing `AgentScopeMCPMiddleware` continues to identify
 
 | Request | `initialize.instructions` | `tools/list` | `tools/call` authorization |
 |---|---|---|---|
-| `/mcp` | Static gateway workflow instructions | Exactly the four gateway tools | Only the four gateway tools |
+| `/mcp` | Static gateway workflow instructions | Exactly the seven gateway tools | Only the seven gateway tools |
 | `/mcp/{agent_id}` | Shared conditional server instructions | Existing native agent tool list | Existing per-agent tool authorization |
 
 All built-in and workflow tools remain registered in FastMCP because the same
@@ -63,50 +66,28 @@ callable through unscoped `/mcp`.
 
 FastMCP freezes initialization options before MCP middleware runs, so a single
 mounted server cannot safely serialize different instruction strings per
-request path. The shared text explicitly applies only when the four gateway
+request path. The shared text explicitly applies only when the seven gateway
 tools are present. Agent-scoped clients retain their native tool surface; the
-default gateway obtains live agent instructions through `bifrost_get_agent`.
+default gateway obtains live agent instructions through
+`bifrost_search_capabilities`.
 
 ## Gateway workflow
 
-### 1. Find agents
+### 1. Search and hydrate capabilities
 
-`bifrost_find_agents(query: str | None = None, limit: int = 10)`
+`bifrost_search_capabilities(query: str | None = None, agent_id: str | None = None, tool_ref: str | None = None, limit: int = 10)`
 
 - Loads active agents through `AgentRepository`, preserving canonical
   organization, private-owner, external-user, and role access behavior.
 - A platform administrator searches all active agents.
-- An empty query returns the first accessible agents in deterministic name
-  order.
-- A query ranks accessible agents with deterministic lexical scoring over
-  name, description, and instructions. Instructions affect ranking but are not
-  returned by this operation.
-- Results contain only `id`, `name`, and `description`.
-- `limit` is bounded to prevent a second catalog explosion.
+- A query ranks accessible agents and tools with deterministic lexical scoring.
+- Supplying `agent_id` hydrates current agent instructions and performs a
+  bounded, agent-scoped tool search.
+- Supplying `agent_id` and `tool_ref` returns the exact live input schema.
+- Every response reports completeness and omitted-match counts so callers do
+  not mistake a bounded result for the full catalog.
 
-### 2. Get an agent
-
-`bifrost_get_agent(agent_id: str)`
-
-- Repeats the canonical agent access check.
-- Reads current agent instructions on every call.
-- Resolves the current agent tool catalog through `resolve_agent_tools`.
-- Applies the platform MCP allowlist/blocklist to underlying tool names.
-- Returns:
-  - agent identity and description;
-  - live instructions;
-  - compact tool entries containing `tool_ref`, name, description, and source;
-  - no full tool schemas.
-
-### 3. Get one tool schema
-
-`bifrost_get_tool_schema(agent_id: str, tool_ref: str)`
-
-- Repeats agent access and live tool resolution.
-- Locates the current tool represented by the agent-bound reference.
-- Returns its name, source, description, and exact input JSON Schema.
-
-### 4. Execute one tool
+### 2. Execute one tool
 
 `bifrost_execute_tool(agent_id: str, tool_ref: str, arguments: dict)`
 
@@ -120,7 +101,13 @@ default gateway obtains live agent instructions through `bifrost_get_agent`.
   - external MCP tools: `mcp_client.dispatch.invoke`.
 - Uses the authenticated MCP caller identity for downstream execution and
   OAuth resolution.
-- Returns resolved agent/tool provenance, result, and duration.
+- Requires a stable caller-generated `operation_id`; retries with the same
+  identity are at-most-once and replay the prior outcome.
+- Durable workflow, delegation, and platform-job operations can use MCP Tasks,
+  backed by their canonical Bifrost lifecycle rather than a parallel job type.
+- Returns the selected tool's result directly to the MCP caller. Agent/tool
+  provenance, execution identifiers, status, and duration remain in server
+  logs and source-specific execution records rather than the model payload.
 
 The gateway logs the authenticated caller, resolved agent, resolved tool name,
 source, success/failure, and duration. Existing workflow, agent-run, and
@@ -281,12 +268,12 @@ Task: add 17 and 25 using the Bifrost capability gateway.
 
 Observed model-selected sequence:
 
-1. `bifrost_find_agents(query="add two numbers arithmetic addition")`
-2. `bifrost_get_agent(agent_id=...)`
-3. `bifrost_get_tool_schema(agent_id=..., tool_ref=...)`
-4. `bifrost_execute_tool(..., arguments={"a": 17, "b": 25})`
+1. `bifrost_get_required_instructions()`
+2. `bifrost_search_capabilities(query="add two numbers arithmetic addition")`
+3. `bifrost_search_capabilities(agent_id=..., tool_ref=...)`
+4. `bifrost_execute_tool(..., arguments={"a": 17, "b": 25}, operation_id=...)`
 
-The model saw exactly four tools, selected the intended agent without its name
+The model saw the stable gateway tools, selected the intended agent without its name
 being provided, inspected the schema, executed the stable agent-bound
 reference, and reported `42`.
 
