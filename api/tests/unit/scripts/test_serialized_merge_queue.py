@@ -8,6 +8,7 @@ from scripts.serialized_merge_queue import (
     _head_contains_base,
     _same_repository_head,
     _verify_exact_merge,
+    advance_queue,
     load_required_checks,
     required_check_state,
 )
@@ -16,6 +17,7 @@ from scripts.serialized_merge_queue import (
 class FakeClient:
     def __init__(self, responses):
         self.responses = responses
+        self.repository = "MTG-Thomas/bifrost"
 
     def get(self, path):
         return self.responses[path]
@@ -90,3 +92,33 @@ def test_exact_merge_verification_is_tree_and_parent_bound():
         _verify_exact_merge(
             client, merge_sha=merge_sha, validated_head_sha=head_sha, validated_base_sha=base_sha
         )
+
+
+def test_advance_queue_refreshes_against_live_main_not_payload_base(monkeypatch):
+    pull = {
+        "number": 7,
+        "draft": False,
+        "mergeable": True,
+        "mergeable_state": "behind",
+        "base": {"sha": "stale-base"},
+        "head": {
+            "sha": "head",
+            "ref": "topic",
+            "repo": {"full_name": "MTG-Thomas/bifrost"},
+        },
+    }
+    client = FakeClient(
+        {
+            "/git/ref/heads/main": {"object": {"sha": "live-main"}},
+            "/compare/live-main...head": {"status": "behind"},
+        }
+    )
+    monkeypatch.setattr("scripts.serialized_merge_queue._queued_pulls", lambda _client: [pull])
+    monkeypatch.setattr(
+        "scripts.serialized_merge_queue._update_branch_with_deploy_key",
+        lambda _client, _pull: "updated-head",
+    )
+
+    result = advance_queue(client, [])
+
+    assert result == "PR #7 was updated onto current main as updated-head; checks will rerun."

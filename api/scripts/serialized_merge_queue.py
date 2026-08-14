@@ -34,6 +34,10 @@ class BranchUpdateError(RuntimeError):
     pass
 
 
+class MainAdvancedError(BranchUpdateError):
+    pass
+
+
 class QueueInvariantError(RuntimeError):
     pass
 
@@ -190,7 +194,8 @@ def _run_git(args: list[str], cwd: Path, env: dict[str, str]) -> str:
         ["git", *args], cwd=cwd, env=env, text=True, capture_output=True, check=False
     )
     if result.returncode:
-        raise BranchUpdateError(f"git {args[0]} failed")
+        detail = result.stderr.strip()
+        raise BranchUpdateError(f"git {args[0]} failed: {detail or 'no stderr'}")
     return result.stdout.strip()
 
 
@@ -267,7 +272,7 @@ def _update_branch_with_deploy_key(client: GitHubClient, pull: dict[str, Any]) -
         fetched_base = _run_git(["rev-parse", f"refs/remotes/origin/{BASE_BRANCH}"], worktree, env)
         fetched_head = _run_git(["rev-parse", "refs/remotes/origin/queue-head"], worktree, env)
         if fetched_base != current_base_sha:
-            raise BranchUpdateError("main advanced while the queue prepared the update")
+            raise MainAdvancedError("main advanced while the queue prepared the update")
         if fetched_head != head_sha:
             raise BranchUpdateError("pull request head advanced while the queue prepared the update")
         _run_git(["checkout", "--quiet", "--detach", head_sha], worktree, env)
@@ -280,7 +285,7 @@ def _update_branch_with_deploy_key(client: GitHubClient, pull: dict[str, Any]) -
         updated_sha = _run_git(["rev-parse", "HEAD"], worktree, env)
         latest_base = str(client.get(f"/git/ref/heads/{BASE_BRANCH}")["object"]["sha"])
         if latest_base != current_base_sha:
-            raise BranchUpdateError("main advanced before the queue could push the update")
+            raise MainAdvancedError("main advanced before the queue could push the update")
         _run_git(
             ["push", "--quiet", f"--force-with-lease={full_ref}:{head_sha}",
              remote_url, f"HEAD:{full_ref}"],
@@ -299,7 +304,7 @@ def advance_queue(client: GitHubClient, required_checks: Iterable[dict[str, Any]
     pull = pulls[0]
     number = int(pull["number"])
     head_sha = str(pull["head"]["sha"])
-    base_sha = str(pull["base"]["sha"])
+    current_base_sha = str(client.get(f"/git/ref/heads/{BASE_BRANCH}")["object"]["sha"])
     label = f"PR #{number}"
     if pull["draft"]:
         _remove_from_queue(client, number, "the pull request is still a draft")
@@ -309,11 +314,17 @@ def advance_queue(client: GitHubClient, required_checks: Iterable[dict[str, Any]
         return f"{label} was removed because it conflicts with main."
     if pull.get("mergeable") is None or pull.get("mergeable_state") == "unknown":
         return f"{label} mergeability is still being calculated."
-    if not _head_contains_base(client, base_sha, head_sha):
+    if not _head_contains_base(client, current_base_sha, head_sha):
         if not _same_repository_head(client, pull):
             _remove_from_queue(client, number, "a fork head cannot be refreshed onto current main")
             return f"{label} was removed because its fork head is not based on current main."
-        updated_sha = _update_branch_with_deploy_key(client, pull)
+        try:
+            updated_sha = _update_branch_with_deploy_key(client, pull)
+        except MainAdvancedError:
+            return f"{label} refresh raced with a main update; it will retry next pass."
+        except BranchUpdateError as exc:
+            _remove_from_queue(client, number, f"branch refresh failed: {exc}")
+            return f"{label} was removed because its branch could not be refreshed: {exc}."
         return f"{label} was updated onto current main as {updated_sha}; checks will rerun."
 
     runs = client.get(f"/commits/{head_sha}/check-runs?filter=latest&per_page=100").get(
@@ -328,9 +339,9 @@ def advance_queue(client: GitHubClient, required_checks: Iterable[dict[str, Any]
     if state.pending:
         return f"{label} is waiting for required checks: {', '.join(state.pending)}."
 
-    current_base_sha = str(client.get(f"/git/ref/heads/{BASE_BRANCH}")["object"]["sha"])
-    if current_base_sha != base_sha:
-        return f"{label} is no longer based on current main; it will be refreshed next pass."
+    latest_base_sha = str(client.get(f"/git/ref/heads/{BASE_BRANCH}")["object"]["sha"])
+    if latest_base_sha != current_base_sha:
+        return f"{label} validation raced with a main update; it will retry next pass."
     title = str(pull["title"])
     try:
         result = client.put(
@@ -348,7 +359,14 @@ def advance_queue(client: GitHubClient, required_checks: Iterable[dict[str, Any]
         client,
         merge_sha=merge_sha,
         validated_head_sha=head_sha,
-        validated_base_sha=base_sha,
+        validated_base_sha=current_base_sha,
+    )
+    client.post(
+        "/actions/workflows/ci.yml/dispatches",
+        {
+            "ref": BASE_BRANCH,
+            "inputs": {"queue_post_merge": "true", "queue_merge_sha": merge_sha},
+        },
     )
     return f"{label} merged as {merge_sha}. {verification}"
 

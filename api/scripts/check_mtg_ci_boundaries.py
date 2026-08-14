@@ -24,7 +24,15 @@ REQUIRED_CI_JOB_NAMES = {
     "mcp-conformance": "MCP Conformance",
     "test-e2e-gate": "E2E Tests",
 }
-QUEUE_SKIPPED_ON_MAIN = {"lint", "test-client-unit", "test-unit", "mcp-conformance", "test-e2e", "test-client-e2e", "test-e2e-gate"}
+QUEUE_SKIPPED_ON_MAIN = (
+    "lint",
+    "test-client-unit",
+    "test-unit",
+    "mcp-conformance",
+    "test-e2e",
+    "test-client-e2e",
+    "test-e2e-gate",
+)
 EXPECTED_PR_CANCELLATION = "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
 
 
@@ -98,7 +106,10 @@ def check_ci_workflow(path: Path) -> list[str]:
                 "Update repository rules first; never silently orphan a required check.",
             ]
 
-    expected_skip = "always() && (github.event_name != 'push' || github.ref != 'refs/heads/main')"
+    expected_skip = (
+        "always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') "
+        "&& !inputs.queue_post_merge"
+    )
     for job in QUEUE_SKIPPED_ON_MAIN:
         parsed = _job_block(lines, job)
         if parsed is None or _parse_if_line(parsed[1]) != expected_skip:
@@ -153,6 +164,7 @@ def check_serialized_queue_workflow(path: Path) -> list[str]:
         "cancel-in-progress: false",
         "ref: main",
         "persist-credentials: false",
+        "actions: write",
         "SERIALIZED_MERGE_QUEUE_SSH_KEY",
     ]
     return [f"{path}: required queue invariant is missing: {marker}" for marker in required if marker not in contents]

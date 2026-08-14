@@ -10,12 +10,6 @@ on:
     workflows: [CI, CodeQL]
     types: [completed]
 
-permissions:
-  checks: read
-  contents: write
-  issues: write
-  pull-requests: write
-
 concurrency:
   group: serialized-merge-queue-main
   cancel-in-progress: false
@@ -23,6 +17,12 @@ concurrency:
 jobs:
   advance:
     name: Advance protected queue
+    permissions:
+      actions: write # dispatch the artifact-producing post-merge CI run
+      checks: read # validate exact-head check runs
+      contents: write # call the protected pull-request merge API
+      issues: write # manage queue labels and failure comments
+      pull-requests: write # squash merge the validated pull request
     if: >-
       (github.event_name != 'workflow_run' || github.event.workflow_run.head_branch != 'main') &&
       (github.event_name != 'pull_request_target' ||
