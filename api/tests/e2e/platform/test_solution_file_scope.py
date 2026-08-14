@@ -757,6 +757,11 @@ async def test_solution_delete_removes_metadata_row(e2e_client, platform_admin, 
     )
     assert result.scalar_one_or_none() is not None, "FileMetadata row missing after write"
 
+    # End the read transaction before the API performs its delete in another
+    # connection. Keeping this fixture transaction open made the final check
+    # intermittently observe its earlier database snapshot in CI.
+    await db_session.rollback()
+
     # Delete the file.
     del_r = e2e_client.post(
         f"/api/files/delete?solution={sid}",

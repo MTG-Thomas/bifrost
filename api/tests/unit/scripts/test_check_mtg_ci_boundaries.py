@@ -7,6 +7,7 @@ from scripts.check_mtg_ci_boundaries import (
     _repo_root,
     _resolve_workflow_path,
     check_ci_workflow,
+    check_serialized_queue_workflow,
 )
 
 
@@ -25,6 +26,9 @@ def test_required_ci_check_identities_are_preserved():
     workflow = _repo_root() / ".github/workflows/ci.yml"
 
     assert check_ci_workflow(workflow) == []
+    assert check_serialized_queue_workflow(
+        _repo_root() / ".github/workflows/serialized-merge-queue.yml"
+    ) == []
 
 
 def test_required_ci_check_identity_change_is_rejected(tmp_path: Path):
@@ -42,3 +46,11 @@ def test_required_ci_check_identity_change_is_rejected(tmp_path: Path):
     violations = check_ci_workflow(mutated)
 
     assert any("required CI check identity changed" in item for item in violations)
+
+
+def test_serialized_queue_contract_is_preserved(tmp_path: Path):
+    workflow = _repo_root() / ".github/workflows/serialized-merge-queue.yml"
+    contents = workflow.read_text(encoding="utf-8")
+    mutated = tmp_path / "queue.yml"
+    mutated.write_text(contents.replace("cancel-in-progress: false", "cancel-in-progress: true"), encoding="utf-8")
+    assert any("cancel-in-progress: false" in item for item in check_serialized_queue_workflow(mutated))
