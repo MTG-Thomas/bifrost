@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
 
 from src.models.contracts.workspace_file_impact import WorkspaceFileImpactRequest
 from src.services.workspace_file_impact import (
+    _WorkspaceSnapshotCache,
     WorkspaceFileImpactConflict,
     WorkspaceFileImpactInvalid,
     WorkspaceFileImpactService,
@@ -21,6 +23,17 @@ class _Repo:
 
     async def read(self, path: str):
         return self.files[path]
+
+
+class _CountingRepo(_Repo):
+    def __init__(self, files: dict[str, bytes]):
+        super().__init__(files)
+        self.read_count = 0
+
+    async def read(self, path: str):
+        self.read_count += 1
+        await asyncio.sleep(0)
+        return await super().read(path)
 
 
 @pytest.mark.asyncio
@@ -133,9 +146,7 @@ async def test_preview_blocks_relevant_ambiguous_workflow_reference() -> None:
         )
     )
 
-    result = await service.preview(
-        WorkspaceFileImpactRequest(path="workflows/one.py")
-    )
+    result = await service.preview(WorkspaceFileImpactRequest(path="workflows/one.py"))
 
     assert result.ready_to_write is False
     assert [item.path for item in result.reverse_dependencies] == [
@@ -164,7 +175,9 @@ async def test_preview_reports_proposed_syntax_before_unrelated_legacy_paths() -
         content="def broken(:\n",
     )
 
-    with pytest.raises(WorkspaceFileImpactInvalid, match="cannot parse helpers/shared.py"):
+    with pytest.raises(
+        WorkspaceFileImpactInvalid, match="cannot parse helpers/shared.py"
+    ):
         await service.preview(request)
 
 
@@ -228,6 +241,136 @@ async def test_candidate_changes_when_unrelated_workspace_snapshot_changes() -> 
 
     assert first.candidate_id != second.candidate_id
     assert first.snapshot_id != second.snapshot_id
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cache_single_flights_and_rotates_with_workspace_generation(
+    monkeypatch,
+) -> None:
+    generation = "generation-one"
+
+    async def current_generation() -> str:
+        return generation
+
+    monkeypatch.setattr(
+        "src.core.module_cache.get_workspace_generation",
+        current_generation,
+    )
+    repo = _CountingRepo({"helpers/shared.py": b"VALUE = 1\n"})
+    service = WorkspaceFileImpactService(
+        repo,
+        snapshot_cache=_WorkspaceSnapshotCache(),
+    )
+    request = WorkspaceFileImpactRequest(path="helpers/shared.py")
+
+    first, second = await asyncio.gather(
+        service.preview(request),
+        service.preview(request),
+    )
+
+    assert repo.read_count == 1
+    assert first.snapshot_id == second.snapshot_id
+
+    repo.files["helpers/shared.py"] = b"VALUE = 2\n"
+    generation = "generation-two"
+    third = await service.preview(request)
+
+    assert repo.read_count == 2
+    assert third.snapshot_id != first.snapshot_id
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cache_rejects_updating_workspace_generation(
+    monkeypatch,
+) -> None:
+    async def updating_generation() -> str:
+        return "updating:lease"
+
+    monkeypatch.setattr(
+        "src.core.module_cache.get_workspace_generation",
+        updating_generation,
+    )
+    repo = _CountingRepo({"helpers/shared.py": b"VALUE = 1\n"})
+    service = WorkspaceFileImpactService(
+        repo,
+        snapshot_cache=_WorkspaceSnapshotCache(),
+    )
+
+    with pytest.raises(WorkspaceFileImpactInvalid, match="update is in progress"):
+        await service.preview(WorkspaceFileImpactRequest(path="helpers/shared.py"))
+
+    assert repo.read_count == 0
+
+
+@pytest.mark.asyncio
+async def test_snapshot_cache_rejects_generation_change_during_load(
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    async def changing_generation() -> str:
+        nonlocal calls
+        calls += 1
+        return "before" if calls == 1 else "after"
+
+    monkeypatch.setattr(
+        "src.core.module_cache.get_workspace_generation",
+        changing_generation,
+    )
+    repo = _CountingRepo({"helpers/shared.py": b"VALUE = 1\n"})
+    service = WorkspaceFileImpactService(
+        repo,
+        snapshot_cache=_WorkspaceSnapshotCache(),
+    )
+
+    with pytest.raises(WorkspaceFileImpactInvalid, match="changed during"):
+        await service.preview(WorkspaceFileImpactRequest(path="helpers/shared.py"))
+
+    assert repo.read_count == 1
+
+
+@pytest.mark.asyncio
+async def test_guarded_write_recomputes_without_cache_inside_update_barrier(
+    monkeypatch,
+) -> None:
+    generation = "stable"
+    wrote = False
+
+    async def current_generation() -> str:
+        return generation
+
+    @asynccontextmanager
+    async def barrier(**kwargs):
+        nonlocal generation
+        generation = "updating:lease"
+        yield
+        generation = "rotated"
+
+    async def write() -> None:
+        nonlocal wrote
+        wrote = True
+
+    monkeypatch.setattr(
+        "src.core.module_cache.get_workspace_generation",
+        current_generation,
+    )
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", barrier)
+    repo = _CountingRepo({"helpers/shared.py": b"VALUE = 1\n"})
+    service = WorkspaceFileImpactService(
+        repo,
+        snapshot_cache=_WorkspaceSnapshotCache(),
+    )
+    request = WorkspaceFileImpactRequest(
+        path="helpers/shared.py",
+        content="VALUE = 2\n",
+    )
+    preview = await service.preview(request)
+
+    result = await service.guarded_write(request, preview.candidate_id, write)
+
+    assert result.candidate_id == preview.candidate_id
+    assert wrote is True
+    assert repo.read_count == 2
 
 
 @pytest.mark.asyncio

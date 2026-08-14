@@ -215,7 +215,9 @@ def _scan_dict(
 ) -> None:
     for key_node, value_node in zip(node.keys, node.values, strict=True):
         if _literal_string(key_node, constants) in REFERENCE_FIELDS:
-            _record_reference(value_node, constants, accumulator)
+            value = _literal_string(value_node, constants)
+            if value is not None:
+                accumulator.references.add(value)
 
 
 def _scan_dynamic_import(
