@@ -122,6 +122,11 @@ class ManifestWorkflow(EntityCodec, BaseModel):
     endpoint_enabled: bool = Field(default=False, description="Expose as HTTP API endpoint", **classify(FieldClass.CONTENT))
     allowed_methods: list[str] = Field(default_factory=lambda: ["POST"], description="Allowed HTTP methods for endpoint workflows", **classify(FieldClass.CONTENT))
     timeout_seconds: int = Field(default=1800, description="Max execution time in seconds. 0 = no timeout. Default 1800 (30 min), max 86400 (24h).", **classify(FieldClass.CONTENT))
+    execution_backend: str = Field(
+        default="process",
+        description="Execution backend: process | cloudflare-python",
+        **classify(FieldClass.CONTENT),
+    )
     public_endpoint: bool = Field(default=False, description="Allow unauthenticated API access", **classify(FieldClass.CONTENT))
     description: str | None = Field(default=None, description="Workflow description", **classify(FieldClass.CONTENT))
     tool_description: str | None = Field(
@@ -150,6 +155,7 @@ class ManifestWorkflow(EntityCodec, BaseModel):
             allowed_methods=getattr(wf, "allowed_methods", None) or ["POST"],
             # NOT `or 1800` — 0 means "no timeout" and `or` would clobber it.
             timeout_seconds=wf.timeout_seconds if wf.timeout_seconds is not None else 1800,
+            execution_backend=getattr(wf, "execution_backend", None) or "process",
             public_endpoint=wf.public_endpoint or False,
             category=wf.category or "General",
             tags=wf.tags or [],
@@ -178,6 +184,7 @@ class ManifestWorkflow(EntityCodec, BaseModel):
                 "endpoint_enabled": self.endpoint_enabled,
                 "allowed_methods": self.allowed_methods or ["POST"],
                 "timeout_seconds": self.timeout_seconds,
+                "execution_backend": self.execution_backend,
                 "public_endpoint": self.public_endpoint,
                 "category": self.category,
                 "tags": self.tags,
@@ -201,6 +208,7 @@ class ManifestWorkflow(EntityCodec, BaseModel):
             "allowed_methods": self.allowed_methods or ["POST"],
             "public_endpoint": self.public_endpoint,
             "timeout_seconds": self.timeout_seconds,
+            "execution_backend": self.execution_backend,
             "category": self.category,
             "tags": self.tags or [],
         }

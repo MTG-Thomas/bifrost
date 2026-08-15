@@ -29,6 +29,7 @@ class WorkflowUpdateRequest(BaseModel):
     category: str | None = Field(default=None, max_length=100)
     timeout_seconds: int | None = Field(default=None, ge=0, le=86400)
     execution_mode: Literal["sync", "async"] | None = Field(default=None)
+    execution_backend: Literal["process", "cloudflare-python"] | None = Field(default=None)
     time_saved: int | None = Field(default=None, ge=0)
     value: float | None = Field(default=None, ge=0.0)
     tool_description: str | None = Field(default=None, max_length=1000)

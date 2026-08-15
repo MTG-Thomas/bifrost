@@ -1,0 +1,10 @@
+name = "bifrost-python-executor"
+main = "src/entry.py"
+compatibility_date = "2026-08-15"
+compatibility_flags = ["python_workers"]
+
+[observability]
+enabled = true
+
+[limits]
+cpu_ms = 300000

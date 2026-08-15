@@ -131,6 +131,63 @@ class WorkflowExecutionConsumer(BaseConsumer):
             logger.error(f"Failed to process result for {execution_id}: {e}")
             raise
 
+    async def _route_execution_backend(
+        self,
+        *,
+        execution_backend: str,
+        execution_id: str,
+        workflow_id: str | None,
+        workflow_name: str,
+        workflow_function_name: str | None,
+        file_path: str | None,
+        parameters: dict[str, Any],
+        context_data: dict[str, Any],
+        timeout_seconds: int,
+        is_script: bool,
+        solution_id: str | None,
+    ) -> None:
+        """Route one execution without changing the durable result contract."""
+        if execution_backend == "process":
+            await self._pool.route_execution(
+                execution_id=execution_id,
+                context=context_data,
+            )
+            return
+        if execution_backend != "cloudflare-python":
+            raise ValueError(f"unsupported execution backend: {execution_backend}")
+        if is_script:
+            raise ValueError("inline scripts cannot use the cloudflare-python backend")
+        if solution_id is not None:
+            raise ValueError(
+                "Solution-managed workflows cannot use the Cloudflare MVP backend"
+            )
+
+        from src.services.execution.cloudflare_executor import (
+            CloudflarePythonExecutor,
+            load_repo_workflow_source,
+        )
+
+        source = await load_repo_workflow_source(file_path or "")
+        remote_context = {
+            "execution_id": execution_id,
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "caller": context_data["caller"],
+            "organization": context_data["organization"],
+            "startup": context_data["startup"],
+            "event": context_data["event"],
+            "roi": context_data["roi"],
+        }
+        result = await CloudflarePythonExecutor().execute(
+            execution_id=execution_id,
+            source=source,
+            function_name=workflow_function_name or "",
+            parameters=parameters,
+            context=remote_context,
+            timeout_seconds=timeout_seconds,
+        )
+        await self._handle_result(result)
+
     async def _process_success(
         self,
         execution_id: str,
@@ -586,6 +643,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             solution_deployment_id = pending.get("solution_deployment_id")
             runtime_mode = pending.get("runtime_mode") or "legacy"
             runtime_storage_prefix: str | None = None
+            execution_backend = "process"
 
             if not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
@@ -644,6 +702,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                     file_path = workflow_data["path"]  # Used for __file__ injection and Redis/S3 loading
                     workflow_type = workflow_data["type"]
                     cache_ttl_seconds = workflow_data["cache_ttl_seconds"]
+                    execution_backend = workflow_data.get("execution_backend", "process")
 
                     timeout_seconds = workflow_data["timeout_seconds"]
                     # Initialize ROI from workflow defaults
@@ -741,7 +800,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 form_id=form_id,
                 api_key_id=api_key_id,
                 status=ExecutionStatus.RUNNING,
-                execution_model="process",
+                execution_model=execution_backend,
                 workflow_id=workflow_id,
                 solution_deployment_id=solution_deployment_id,
             )
@@ -835,13 +894,19 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "engine_token_expires_at": engine_token_expires_at,
             }
 
-            # Route to process pool
-            # Results are handled asynchronously via _handle_result callback
-            await self._pool.route_execution(
+            await self._route_execution_backend(
+                execution_backend=execution_backend,
                 execution_id=execution_id,
-                context=context_data,
+                workflow_id=workflow_id,
+                workflow_name=workflow_name,
+                workflow_function_name=workflow_function_name,
+                file_path=file_path,
+                parameters=parameters,
+                context_data=context_data,
+                timeout_seconds=timeout_seconds,
+                is_script=is_script,
+                solution_id=solution_id,
             )
-            # Don't wait for result - pool will call back
 
         except asyncio.CancelledError:
             logger.info(f"Execution task {execution_id} was cancelled")

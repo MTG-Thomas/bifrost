@@ -130,6 +130,7 @@ def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 
         access_level=workflow.access_level or "role_based",
         parameters=parameters,
         execution_mode=execution_mode,
+        execution_backend=workflow.execution_backend or "process",
         timeout_seconds=workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800,
         retry_policy=None,
         endpoint_enabled=workflow.endpoint_enabled or False,
@@ -1519,6 +1520,7 @@ async def update_workflow(
     - display_name: User-facing display name (can be set to null to fall back to name)
     - timeout_seconds: Max execution time (0-86400 seconds, where 0 disables the timeout)
     - execution_mode: 'sync' or 'async'
+    - execution_backend: 'process' or 'cloudflare-python'
     - time_saved: Minutes saved per execution (for ROI reporting)
     - value: Flexible value unit per execution
     - tool_description: Description for AI tool selection (can be set to null)
@@ -1668,6 +1670,14 @@ async def update_workflow(
                     detail="execution_mode must be 'sync' or 'async'",
                 )
             workflow.execution_mode = request.execution_mode
+
+        if request.execution_backend is not None:
+            if request.execution_backend not in ("process", "cloudflare-python"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="execution_backend must be 'process' or 'cloudflare-python'",
+                )
+            workflow.execution_backend = request.execution_backend
 
         # Update time_saved if provided
         if request.time_saved is not None:

@@ -87,6 +87,10 @@ class WorkflowMetadata(BaseModel):
 
     # Execution configuration
     execution_mode: Literal["sync", "async"] = Field(default="sync", description="Execution mode")
+    execution_backend: Literal["process", "cloudflare-python"] = Field(
+        default="process",
+        description="Execution backend. Cloudflare is opt-in and supports self-contained compatible workflows.",
+    )
     timeout_seconds: int = Field(default=1800, ge=0, le=86400, description="Max execution time in seconds. 0 = no timeout. Default 1800 (30 min), max 86400 (24h).")
 
     # Retry policy (for future use)
@@ -346,6 +350,10 @@ class WorkflowUpdateRequest(BaseModel):
     execution_mode: Literal["sync", "async"] | None = Field(
         default=None,
         description="Execution mode: 'sync' for immediate response, 'async' for background execution"
+    )
+    execution_backend: Literal["process", "cloudflare-python"] | None = Field(
+        default=None,
+        description="Execution backend: local isolated process or configured Cloudflare Python Worker",
     )
 
     # Economics - value metrics for reporting

@@ -82,6 +82,7 @@ class WorkflowMetadata(BaseModel):
     tags: list[str]
     parameters: dict
     execution_mode: str
+    execution_backend: str = "process"
     timeout_seconds: int | None
     retry_policy: dict | None
     endpoint_enabled: bool

@@ -254,6 +254,44 @@ async def update_persist_workflow() -> str:
             headers=platform_admin.headers,
         )
 
+    def test_workflow_cloudflare_backend_is_explicit_and_persisted(
+        self, e2e_client, platform_admin
+    ):
+        content = '''"""Cloudflare backend opt-in test"""
+from bifrost import workflow
+
+@workflow(name="cloudflare_backend_opt_in")
+async def cloudflare_backend_opt_in() -> dict:
+    return {"backend": "cloudflare"}
+'''
+        workflow = write_and_register(
+            e2e_client,
+            platform_admin.headers,
+            "cloudflare_backend_opt_in.py",
+            content,
+            "cloudflare_backend_opt_in",
+        )
+        workflow_id = workflow["id"]
+
+        response = e2e_client.patch(
+            f"/api/workflows/{workflow_id}",
+            headers=platform_admin.headers,
+            json={"execution_backend": "cloudflare-python"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["execution_backend"] == "cloudflare-python"
+
+        listed = e2e_client.get(
+            "/api/workflows", headers=platform_admin.headers
+        ).json()
+        persisted = next(item for item in listed if item["id"] == workflow_id)
+        assert persisted["execution_backend"] == "cloudflare-python"
+
+        e2e_client.delete(
+            "/api/files/editor?path=cloudflare_backend_opt_in.py",
+            headers=platform_admin.headers,
+        )
+
     def test_workflow_update_accepts_documented_timeout_bounds(self, e2e_client, platform_admin):
         """Workflow updates accept the documented 0-86400 timeout range."""
         content = '''"""Timeout update test"""

@@ -395,6 +395,7 @@ services:
       - ./api/fuzz:/app/fuzz:ro
       - ./api/scripts:/app/scripts:ro  # Scripts for migration utilities
       - ./api/tests:/app/tests:ro
+      - ./cloudflare:/workspace/cloudflare:ro
       - ./scripts:/repo/scripts:ro
       - ./api/alembic:/app/alembic:ro
       - ./api/alembic.ini:/app/alembic.ini:ro

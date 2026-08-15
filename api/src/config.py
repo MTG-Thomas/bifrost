@@ -79,6 +79,14 @@ class Settings(BaseSettings):
         default=10,
         description="Max concurrent workflow executions (controls RabbitMQ prefetch)",
     )
+    cloudflare_python_executor_url: str | None = Field(
+        default=None,
+        description="HTTPS URL of the optional Cloudflare Python execution Worker",
+    )
+    cloudflare_python_executor_token: SecretStr | None = Field(
+        default=None,
+        description="Bearer token shared with the Cloudflare Python execution Worker",
+    )
 
     # Process Pool Configuration (on-demand only — every execution forks
     # a fresh one-shot worker, capped at `max_workers` concurrent forks).

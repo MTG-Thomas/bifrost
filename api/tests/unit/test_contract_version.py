@@ -212,7 +212,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Solution deploy enqueue now requires candidate_id (2026-08-12), binding
     # an accepted asynchronous job to the exact reviewed bundle. CONTRACT_VERSION
     # bumped to 10 because a stale CLI cannot verify that invariant.
-    "442b426ffffe716ea112403b96c5bea094169e5ce7f320cfd756954c0c51b588"
+    #
+    # WorkflowUpdateRequest gained optional execution_backend (2026-08-15).
+    # ADDITIVE: old clients omit it and workflows retain the process backend.
+    "47fe2925fbd85991394728186f1d22e52f63dc390a1195a0fc4068792f674423"
 )
 
 

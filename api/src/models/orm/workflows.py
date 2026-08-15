@@ -80,6 +80,9 @@ class Workflow(Base):
     public_endpoint: Mapped[bool] = mapped_column(Boolean, default=False)
     disable_global_key: Mapped[bool] = mapped_column(Boolean, default=False)
     execution_mode: Mapped[str] = mapped_column(String(20), default="sync")
+    execution_backend: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="process", server_default="process"
+    )
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=1800)  # 30 min default
 
     # Tool configuration (for AI agent tool calling when type='tool')
