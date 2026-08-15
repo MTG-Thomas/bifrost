@@ -33,7 +33,10 @@ bifrost workflows update <workflow-ref> --execution-backend cloudflare-python
 
 Packages required by remote workflows must be listed in this directory's
 `pyproject.toml` before deployment. Pure-Python and PyEmscripten wheels are
-supported by Cloudflare; ordinary native Linux wheels are not.
+supported by Cloudflare; ordinary native Linux wheels are not. The checked-in
+MVP bundles `humanize` as a small third-party-package proof. MTG's Workers Free
+plan cannot raise CPU limits; dependency graphs with expensive snapshot startup
+(including the tested Pydantic graph) require a paid Workers plan.
 
 ## MVP compatibility boundary
 
