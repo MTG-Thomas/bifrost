@@ -5,6 +5,3 @@ compatibility_flags = ["python_workers"]
 
 [observability]
 enabled = true
-
-[limits]
-cpu_ms = 300000

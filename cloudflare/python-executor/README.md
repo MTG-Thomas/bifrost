@@ -10,12 +10,13 @@ executes its selected function, and returns Bifrost's normal result envelope.
 
 ```bash
 cd cloudflare/python-executor
-npx wrangler secret put EXECUTOR_TOKEN
-npx wrangler deploy
+uv run pywrangler secret put EXECUTOR_TOKEN
+uv run pywrangler deploy
 ```
 
-Current Wrangler releases require Node.js 22 or newer. Validate the bundle
-without deploying it with `npx wrangler deploy --dry-run`.
+Pywrangler requires `uv`, Node.js 22 or newer, Wrangler 4.64 or newer, and
+`workers-py` 1.72 or newer. Validate the package-enabled bundle without
+deploying it with `uv run pywrangler deploy --dry-run`.
 
 Configure the Bifrost worker service with the deployed URL and the same secret:
 
@@ -47,7 +48,8 @@ supported by Cloudflare; ordinary native Linux wheels are not.
 - Worker stdout is returned in the protocol response but is not yet streamed
   into Bifrost's live execution log.
 - The Cloudflare Workers limits still apply: 128 MB isolate memory, configured
-  CPU allowance, deployment bundle limits, and runtime compatibility rules.
+  plan CPU allowance, deployment bundle limits, and runtime compatibility
+  rules.
 
 This boundary is explicit: selecting `cloudflare-python` never silently falls
 back to the process worker.
