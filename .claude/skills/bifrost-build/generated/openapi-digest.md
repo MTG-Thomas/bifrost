@@ -14,6 +14,8 @@
 | POST | `/api/admin/llm/embedding-config` |
 | POST | `/api/admin/llm/embedding-reindex` |
 | POST | `/api/admin/llm/embedding-test` |
+| POST | `/api/admin/llm/model-capabilities` |
+| POST | `/api/admin/llm/model-capabilities/verify` |
 | GET | `/api/admin/llm/models` |
 | POST | `/api/admin/llm/test` |
 | POST | `/api/admin/llm/test-saved` |
@@ -100,6 +102,9 @@
 | DELETE | `/api/branding/logo/{logo_type}` |
 | GET | `/api/branding/logo/{logo_type}` |
 | POST | `/api/branding/logo/{logo_type}` |
+| GET | `/api/chat/artifacts` |
+| DELETE | `/api/chat/artifacts/{attachment_id}` |
+| PATCH | `/api/chat/artifacts/{attachment_id}` |
 | GET | `/api/chat/conversations` |
 | POST | `/api/chat/conversations` |
 | DELETE | `/api/chat/conversations/{conversation_id}` |
@@ -271,6 +276,9 @@
 | GET | `/api/knowledge-sources/{namespace}/documents/{doc_id}` |
 | PUT | `/api/knowledge-sources/{namespace}/documents/{doc_id}` |
 | GET | `/api/llms.txt` |
+| POST | `/api/maintenance/artifact-retention/cleanup` |
+| GET | `/api/maintenance/artifact-retention/settings` |
+| PUT | `/api/maintenance/artifact-retention/settings` |
 | POST | `/api/maintenance/cleanup-orphaned` |
 | POST | `/api/maintenance/index-docs` |
 | POST | `/api/maintenance/preflight` |
@@ -402,6 +410,15 @@
 | POST | `/api/sdk/ai/complete` |
 | GET | `/api/sdk/ai/info` |
 | POST | `/api/sdk/ai/stream` |
+| GET | `/api/sdk/artifacts` |
+| POST | `/api/sdk/artifacts` |
+| POST | `/api/sdk/artifacts/document` |
+| POST | `/api/sdk/artifacts/image` |
+| POST | `/api/sdk/artifacts/spreadsheet` |
+| POST | `/api/sdk/artifacts/text` |
+| POST | `/api/sdk/artifacts/video` |
+| GET | `/api/sdk/artifacts/{artifact_id}/content` |
+| GET | `/api/sdk/artifacts/{artifact_id}/download-url` |
 | POST | `/api/sdk/config/delete` |
 | POST | `/api/sdk/config/get` |
 | POST | `/api/sdk/config/list` |

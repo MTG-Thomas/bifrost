@@ -46,7 +46,7 @@ from src.models.contracts.agents import (
     ToolResult,
 )
 from src.models.enums import MessageRole
-from src.models.orm import Agent, Conversation, Message, Workflow
+from src.models.orm import Agent, Conversation, Message, MessageAttachment, Workflow
 from src.repositories.agents import AgentRepository
 from src.services.llm import (
     LLMMessage,
@@ -266,6 +266,37 @@ class AgentExecutor:
             if llm_config is None:
                 raise ValueError("LLM provider is not configured.")
             model_override = llm_config.resolve_chat_model(model_tier)
+            model_capabilities = llm_config.resolve_chat_capabilities(model_tier)
+
+            if attachment_ids:
+                from src.services.chat_attachments import (
+                    IMAGE_CONTENT_TYPES,
+                    PDF_CONTENT_TYPES,
+                )
+
+                async with self._db() as session:
+                    attachment_result = await session.execute(
+                        select(MessageAttachment)
+                        .where(MessageAttachment.artifact_id.in_(attachment_ids))
+                        .where(MessageAttachment.conversation_id == conversation.id)
+                    )
+                    selected_attachments = attachment_result.scalars().all()
+                if any(
+                    attachment.content_type in IMAGE_CONTENT_TYPES
+                    for attachment in selected_attachments
+                ) and not model_capabilities.image_input:
+                    raise ValueError(
+                        f"The {model_tier} Chat model is not configured for image input. "
+                        "Choose another model tier or ask an administrator to verify its capabilities."
+                    )
+                if any(
+                    attachment.content_type in PDF_CONTENT_TYPES
+                    for attachment in selected_attachments
+                ) and not model_capabilities.pdf_input:
+                    raise ValueError(
+                        f"The {model_tier} Chat model is not configured for PDF input. "
+                        "Choose another model tier or ask an administrator to verify its capabilities."
+                    )
 
             # 1. Check for @mention agent switching
             if enable_routing:
@@ -355,6 +386,24 @@ class AgentExecutor:
                 if agent
                 else []
             )
+            if not model_capabilities.tool_calling:
+                tool_definitions = []
+            else:
+                from src.services.chat_artifacts import artifact_tool_definitions
+
+                existing_tool_names = {definition.name for definition in tool_definitions}
+                tool_definitions.extend(
+                    definition
+                    for definition in artifact_tool_definitions(
+                        image_generation_enabled=bool(
+                            llm_config.image_generation_model
+                        ),
+                        video_generation_enabled=bool(
+                            llm_config.video_generation_model
+                        ),
+                    )
+                    if definition.name not in existing_tool_names
+                )
             logger.info(f"Agent '{agent.name if agent else 'None'}' has {len(tool_definitions)} tool definitions")
             if tool_definitions:
                 logger.debug(f"Tools: {[t.name for t in tool_definitions]}")
@@ -365,16 +414,6 @@ class AgentExecutor:
             messages = await self._build_message_history(agent, conversation)
             messages = self._fix_interleaved_messages(messages)
             messages = self._fix_dangling_tool_calls(messages)
-
-            # 5b. Enhance system prompt with tool-use instructions if tools available
-            if tool_definitions and messages and messages[0].role == "system":
-                tool_instruction = """
-
-When a tool can fulfill the request, call it directly. Respond with text only when clarification is required or no tool applies."""
-                messages[0] = LLMMessage(
-                    role="system",
-                    content=(messages[0].content or "") + tool_instruction,
-                )
 
             # 6. Get LLM client
             async with self._db() as session:
@@ -454,14 +493,74 @@ When a tool can fulfill the request, call it directly. Respond with text only wh
                     agent,
                     conversation,
                     execution_id=execution_id,
+                    tool_message_id=message_id,
                     caller_user_id=caller_user_id,
                     caller=caller,
                 )
+                promoted_artifacts = []
+                from src.services.chat_artifacts import (
+                    ARTIFACT_TOOL_NAMES,
+                    IMMEDIATE_ARTIFACT_TOOL_NAMES,
+                    promote_artifact_refs,
+                )
+
+                if (
+                    not tool_result.error
+                    and tool_result.result is not None
+                    and name not in ARTIFACT_TOOL_NAMES
+                ):
+                    try:
+                        async with self._db() as session:
+                            promoted_artifacts = await promote_artifact_refs(
+                                session,
+                                result=tool_result.result,
+                                conversation_id=conversation.id,
+                                conversation_user_id=conversation.user_id,
+                                message_id=message_id,
+                                agent_organization_id=(
+                                    agent.organization_id if agent else None
+                                ),
+                            )
+                    except Exception as exc:
+                        tool_result = ToolResult(
+                            tool_call_id=tool_result.tool_call_id,
+                            tool_name=tool_result.tool_name,
+                            result=None,
+                            error=f"Artifact output could not be imported: {exc}",
+                            duration_ms=tool_result.duration_ms,
+                        )
                 if stream:
                     pending_tool_chunks.append(
                         ChatStreamChunk(
                             type="tool_result",
                             tool_result=tool_result,
+                            message_id=str(message_id),
+                        )
+                    )
+                from src.models.contracts.artifacts import ArtifactRef
+
+                if name in ARTIFACT_TOOL_NAMES:
+                    if tool_result.error:
+                        pending_tool_chunks.append(
+                            ChatStreamChunk(
+                                type="artifact_failed",
+                                content=tool_result.error,
+                                message_id=str(message_id),
+                            )
+                        )
+                    elif name in IMMEDIATE_ARTIFACT_TOOL_NAMES:
+                        pending_tool_chunks.append(
+                            ChatStreamChunk(
+                                type="artifact_ready",
+                                artifact=ArtifactRef.model_validate(tool_result.result),
+                                message_id=str(message_id),
+                            )
+                        )
+                for artifact in promoted_artifacts:
+                    pending_tool_chunks.append(
+                        ChatStreamChunk(
+                            type="artifact_ready",
+                            artifact=artifact,
                             message_id=str(message_id),
                         )
                     )
@@ -489,6 +588,18 @@ When a tool can fulfill the request, call it directly. Respond with text only wh
                 return tool_history_content
 
             system_prompt = messages[0].content or FALLBACK_SYSTEM_PROMPT
+            from src.services.chat_artifacts import (
+                ARTIFACT_WORKSPACE_INSTRUCTIONS,
+                BUILTIN_ARTIFACT_TOOL_NAMES,
+            )
+
+            if any(
+                definition.name in BUILTIN_ARTIFACT_TOOL_NAMES
+                for definition in tool_definitions
+            ):
+                system_prompt = (
+                    f"{system_prompt.rstrip()}\n\n{ARTIFACT_WORKSPACE_INSTRUCTIONS}"
+                )
             history_messages = messages[1:]
             current_prompt = user_message
             if history_messages and history_messages[-1].role == "user":
@@ -614,6 +725,19 @@ When a tool can fulfill the request, call it directly. Respond with text only wh
                                         status="running",
                                     ),
                                 )
+                                from src.services.chat_artifacts import (
+                                    ARTIFACT_TOOL_NAMES,
+                                )
+
+                                if tool_call.name in ARTIFACT_TOOL_NAMES:
+                                    yield ChatStreamChunk(
+                                        type="artifact_started",
+                                        content=str(
+                                            tool_call.arguments.get("filename")
+                                            or "generated file"
+                                        ),
+                                        message_id=str(tool_call_msg.id),
+                                    )
                         elif isinstance(event, AgentRunResultEvent):
                             final_content = str(event.result.output or "")
                     for pending_chunk in pending_tool_chunks:
@@ -1111,6 +1235,7 @@ When a tool can fulfill the request, call it directly. Respond with text only wh
         agent: Agent | None = None,
         conversation: Conversation | None = None,
         execution_id: str | None = None,
+        tool_message_id: UUID | None = None,
         *,
         caller_user_id: UUID | None = None,
         caller: dict[str, Any] | None = None,
@@ -1124,6 +1249,49 @@ When a tool can fulfill the request, call it directly. Respond with text only wh
         search, and remote MCP servers.
         """
         start_time = time.time()
+
+        from src.models.contracts.artifacts import ArtifactRef
+        from src.services.chat_artifacts import BUILTIN_ARTIFACT_TOOL_NAMES
+
+        if tool_call.name in BUILTIN_ARTIFACT_TOOL_NAMES:
+            if conversation is None or tool_message_id is None:
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error="Artifact tools require an active Chat conversation.",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+            try:
+                from src.services.chat_artifacts import execute_artifact_tool
+
+                async with self._db() as session:
+                    _, artifact = await execute_artifact_tool(
+                        session,
+                        tool_name=tool_call.name,
+                        arguments=tool_call.arguments or {},
+                        conversation_id=conversation.id,
+                        message_id=tool_message_id,
+                    )
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=(
+                        artifact.model_dump(mode="json")
+                        if isinstance(artifact, ArtifactRef)
+                        else artifact
+                    ),
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+            except Exception as exc:
+                logger.warning("Artifact generation failed for %s: %s", tool_call.name, exc)
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=None,
+                    error=str(exc),
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
 
         # Check if this is a knowledge search tool call
         if tool_call.name == "search_knowledge" and agent:
@@ -1202,6 +1370,7 @@ When a tool can fulfill the request, call it directly. Respond with text only wh
                 org_id=org_id,
                 is_platform_admin=user.is_superuser if user else False,
                 execution_id=execution_id,
+                artifact_workspace_id=str(conversation.id) if conversation else None,
             )
 
             duration_ms = int((time.time() - start_time) * 1000)

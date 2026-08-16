@@ -17,6 +17,7 @@ from src.services.llm import LLMMessage, ToolDefinition
 from src.services.llm.base import LLMConfig
 from src.services.llm.pydantic_client import PydanticAIClient
 from src.services.llm_config_service import LLMProviderConfig
+from src.services.model_capabilities import manual_capabilities
 
 
 class CountingTestModel(TestModel):
@@ -55,7 +56,18 @@ def executor() -> AgentExecutor:
 @pytest.fixture(autouse=True)
 def configured_chat_model():
     """Keep these runtime-contract tests focused on the Pydantic event loop."""
-    config = LLMProviderConfig(provider="openai", model="test-model")
+    config = LLMProviderConfig(
+        provider="openai",
+        model="test-model",
+        chat_balanced_capabilities=manual_capabilities(
+            provider="openai",
+            model="test-model",
+            endpoint=None,
+            image_input=False,
+            pdf_input=False,
+            tool_calling=True,
+        ),
+    )
     with patch(
         "src.services.llm_config_service.LLMConfigService.get_config",
         new=AsyncMock(return_value=config),
@@ -163,7 +175,9 @@ async def test_chat_reapplies_agent_instructions_when_stored_history_exists(
         for message in model.requests[0]
         if isinstance(message, ModelRequest) and message.instructions
     ]
-    assert instructions == ["Stable triage instructions"]
+    assert len(instructions) == 1
+    assert instructions[0].startswith("Stable triage instructions\n\n")
+    assert "shared artifact workspace" in instructions[0]
 
 
 @pytest.mark.asyncio

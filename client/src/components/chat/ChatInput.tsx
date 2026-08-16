@@ -71,7 +71,19 @@ export function ChatInput({
 	isLoading = false,
 	placeholder = "Reply…",
 	onStop,
-	modelTiers = [{ id: "balanced", label: "Balanced" }],
+	modelTiers = [
+		{
+			id: "balanced",
+			label: "Balanced",
+			capabilities: {
+				image_input: false,
+				pdf_input: false,
+				tool_calling: false,
+				source: "unknown",
+				fingerprint: "",
+			},
+		},
+	],
 	modelTier = "balanced",
 	onModelTierChange,
 }: ChatInputProps) {
@@ -83,6 +95,9 @@ export function ChatInput({
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const attachmentsRef = useRef(attachments);
+	const selectedCapabilities = modelTiers.find(
+		(tier) => tier.id === modelTier,
+	)?.capabilities;
 
 	const [mentionOpen, setMentionOpen] = useState(false);
 	const [mentionSearch, setMentionSearch] = useState("");
@@ -101,30 +116,51 @@ export function ChatInput({
 		[],
 	);
 
-	const addFiles = useCallback((files: File[]) => {
-		setAttachments((current) => {
-			const slots = MAX_ATTACHMENTS_PER_MESSAGE - current.length;
-			if (slots <= 0) {
-				toast.error("You can attach up to 5 files per message.");
-				return current;
-			}
-			const accepted: AttachmentDraft[] = [];
-			for (const file of files.slice(0, slots)) {
-				const error = validateAttachment(file);
-				if (error) {
-					toast.error(error);
-					continue;
+	const addFiles = useCallback(
+		(files: File[]) => {
+			setAttachments((current) => {
+				const slots = MAX_ATTACHMENTS_PER_MESSAGE - current.length;
+				if (slots <= 0) {
+					toast.error("You can attach up to 5 files per message.");
+					return current;
 				}
-				accepted.push({
-					file,
-					previewUrl: isImageAttachment(file.type)
-						? URL.createObjectURL(file)
-						: null,
-				});
-			}
-			return [...current, ...accepted];
-		});
-	}, []);
+				const accepted: AttachmentDraft[] = [];
+				for (const file of files.slice(0, slots)) {
+					if (
+						file.type.startsWith("image/") &&
+						!selectedCapabilities?.image_input
+					) {
+						toast.error(
+							`${modelTiers.find((tier) => tier.id === modelTier)?.label ?? "This model"} cannot inspect images.`,
+						);
+						continue;
+					}
+					if (
+						file.type === "application/pdf" &&
+						!selectedCapabilities?.pdf_input
+					) {
+						toast.error(
+							`${modelTiers.find((tier) => tier.id === modelTier)?.label ?? "This model"} cannot inspect PDFs.`,
+						);
+						continue;
+					}
+					const error = validateAttachment(file);
+					if (error) {
+						toast.error(error);
+						continue;
+					}
+					accepted.push({
+						file,
+						previewUrl: isImageAttachment(file.type)
+							? URL.createObjectURL(file)
+							: null,
+					});
+				}
+				return [...current, ...accepted];
+			});
+		},
+		[modelTier, modelTiers, selectedCapabilities],
+	);
 
 	const removeAttachment = useCallback((index: number) => {
 		setAttachments((current) => {
@@ -136,12 +172,18 @@ export function ChatInput({
 
 	const handleSend = useCallback(async () => {
 		const trimmedMessage = message.trim();
-		if (!trimmedMessage && mentions.length === 0 && attachments.length === 0) {
+		if (
+			!trimmedMessage &&
+			mentions.length === 0 &&
+			attachments.length === 0
+		) {
 			return;
 		}
 		if (disabled || isLoading || isSubmitting) return;
 
-		const mentionPrefixes = mentions.map((mention) => `@[${mention.name}]`).join(" ");
+		const mentionPrefixes = mentions
+			.map((mention) => `@[${mention.name}]`)
+			.join(" ");
 		const finalMessage = mentionPrefixes
 			? `${mentionPrefixes} ${trimmedMessage}`.trim()
 			: trimmedMessage;
@@ -175,7 +217,10 @@ export function ChatInput({
 
 	const handleKeyDown = useCallback(
 		(event: KeyboardEvent<HTMLTextAreaElement>) => {
-			if (mentionOpen && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(event.key)) {
+			if (
+				mentionOpen &&
+				["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(event.key)
+			) {
 				return;
 			}
 			if (event.key === "Enter" && !event.shiftKey && !mentionOpen) {
@@ -186,30 +231,35 @@ export function ChatInput({
 		[handleSend, mentionOpen],
 	);
 
-	const handleInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
-		const value = event.target.value;
-		const cursor = event.target.selectionStart;
-		setMessage(value);
-		const beforeCursor = value.slice(0, cursor);
-		const at = beforeCursor.lastIndexOf("@");
-		if (at >= 0 && (at === 0 || /\s/.test(value[at - 1]))) {
-			const search = beforeCursor.slice(at + 1);
-			if (!search.includes(" ")) {
-				setMentionSearch(search);
-				setMentionStart(at);
-				setMentionOpen(true);
-				return;
+	const handleInputChange = useCallback(
+		(event: ChangeEvent<HTMLTextAreaElement>) => {
+			const value = event.target.value;
+			const cursor = event.target.selectionStart;
+			setMessage(value);
+			const beforeCursor = value.slice(0, cursor);
+			const at = beforeCursor.lastIndexOf("@");
+			if (at >= 0 && (at === 0 || /\s/.test(value[at - 1]))) {
+				const search = beforeCursor.slice(at + 1);
+				if (!search.includes(" ")) {
+					setMentionSearch(search);
+					setMentionStart(at);
+					setMentionOpen(true);
+					return;
+				}
 			}
-		}
-		setMentionOpen(false);
-		setMentionStart(null);
-	}, []);
+			setMentionOpen(false);
+			setMentionStart(null);
+		},
+		[],
+	);
 
 	const handleMentionSelect = useCallback(
 		(agent: AgentSummary) => {
 			if (mentionStart === null) return;
 			const before = message.slice(0, mentionStart);
-			const after = message.slice(mentionStart + 1 + mentionSearch.length);
+			const after = message.slice(
+				mentionStart + 1 + mentionSearch.length,
+			);
 			setMessage(`${before}${after}`.trim());
 			setMentions((current) =>
 				current.some((mention) => mention.name === agent.name)
@@ -256,11 +306,13 @@ export function ChatInput({
 
 	const busy = disabled || isLoading || isSubmitting;
 	const canSend =
-		(message.trim().length > 0 || mentions.length > 0 || attachments.length > 0) &&
+		(message.trim().length > 0 ||
+			mentions.length > 0 ||
+			attachments.length > 0) &&
 		!busy;
 
 	return (
-		<div className="px-3 pb-3 pt-2 sm:px-4 sm:pb-4">
+		<div className="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-4 sm:pb-4">
 			<div className="mx-auto max-w-3xl">
 				<div
 					onDrop={handleDrop}
@@ -301,13 +353,15 @@ export function ChatInput({
 											<FileText className="h-5 w-5 text-muted-foreground" />
 										</div>
 									)}
-									<span className="truncate text-xs font-medium">{draft.file.name}</span>
+									<span className="truncate text-xs font-medium">
+										{draft.file.name}
+									</span>
 									<Button
 										type="button"
 										variant="secondary"
 										size="icon-sm"
 										aria-label={`Remove ${draft.file.name}`}
-										className="absolute -right-1.5 -top-1.5 h-6 w-6 rounded-full"
+										className="absolute -right-1.5 -top-1.5 h-7 w-7 rounded-full after:absolute after:-inset-2 sm:h-6 sm:w-6 sm:after:inset-0"
 										onClick={() => removeAttachment(index)}
 									>
 										<X className="h-3 w-3" />
@@ -331,7 +385,11 @@ export function ChatInput({
 										aria-label={`Remove ${mention.name}`}
 										onClick={() =>
 											setMentions((current) =>
-												current.filter((item) => item.name !== mention.name),
+												current.filter(
+													(item) =>
+														item.name !==
+														mention.name,
+												),
 											)
 										}
 									>
@@ -362,9 +420,21 @@ export function ChatInput({
 								type="file"
 								multiple
 								className="hidden"
-								accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/*,application/json,application/csv"
+								accept={[
+									selectedCapabilities?.image_input
+										? "image/png,image/jpeg,image/webp,image/gif"
+										: "",
+									selectedCapabilities?.pdf_input
+										? "application/pdf"
+										: "",
+									"text/*,application/json,application/csv",
+								]
+									.filter(Boolean)
+									.join(",")}
 								onChange={(event) => {
-									addFiles(Array.from(event.target.files ?? []));
+									addFiles(
+										Array.from(event.target.files ?? []),
+									);
 									event.target.value = "";
 								}}
 							/>
@@ -374,7 +444,12 @@ export function ChatInput({
 								size="icon-sm"
 								aria-label="Attach files"
 								title="Attach files"
-								disabled={busy || attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+								className="size-11 sm:size-7"
+								disabled={
+									busy ||
+									attachments.length >=
+										MAX_ATTACHMENTS_PER_MESSAGE
+								}
 								onClick={() => fileInputRef.current?.click()}
 							>
 								<Paperclip className="h-4 w-4" />
@@ -383,19 +458,24 @@ export function ChatInput({
 								<Select
 									value={modelTier}
 									onValueChange={(value) =>
-										onModelTierChange?.(value as ChatModelTierId)
+										onModelTierChange?.(
+											value as ChatModelTierId,
+										)
 									}
 									disabled={busy}
 								>
 									<SelectTrigger
 										aria-label="Response model"
-										className="h-8 w-auto min-w-24 border-0 bg-transparent px-2 text-xs shadow-none"
+										className="h-11 w-auto min-w-24 border-0 bg-transparent px-2 text-xs shadow-none sm:h-8"
 									>
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
 										{modelTiers.map((tier) => (
-											<SelectItem key={tier.id} value={tier.id}>
+											<SelectItem
+												key={tier.id}
+												value={tier.id}
+											>
 												{tier.label}
 											</SelectItem>
 										))}
@@ -411,7 +491,7 @@ export function ChatInput({
 								variant="destructive"
 								aria-label="Stop generation"
 								title="Stop generation"
-								className="rounded-full"
+								className="size-11 rounded-full sm:size-7"
 							>
 								<Square className="h-3 w-3 fill-current" />
 							</Button>
@@ -421,7 +501,7 @@ export function ChatInput({
 								disabled={!canSend}
 								size="icon-sm"
 								aria-label="Send message"
-								className="rounded-full"
+								className="size-11 rounded-full sm:size-7"
 							>
 								{isSubmitting ? (
 									<Loader2 className="h-4 w-4 animate-spin" />

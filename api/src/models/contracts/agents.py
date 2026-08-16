@@ -6,10 +6,10 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from src.models.contracts.agent_stats import AgentStatsResponse
-
+from src.models.contracts.artifacts import ArtifactRef, ModelCapabilities
 from src.models.contracts.refs import WorkflowRef
 from src.models.enums import AgentAccessLevel, AgentChannel, MessageRole
 
@@ -336,6 +336,7 @@ class AttachmentPublic(BaseModel):
     filename: str
     content_type: str
     size_bytes: int
+    kind: Literal["attachment", "artifact"] = "attachment"
 
     @field_serializer("id")
     def serialize_id(self, value: UUID) -> str:
@@ -348,6 +349,37 @@ class AttachmentUploadResponse(BaseModel):
     attachments: list[AttachmentPublic]
 
 
+class ChatArtifactPublic(AttachmentPublic):
+    """A durable Chat file with enough context for the user's artifact library."""
+
+    conversation_id: UUID | None = None
+    message_id: UUID | None = None
+    conversation_title: str | None = None
+    created_at: datetime
+
+    @field_serializer("conversation_id", "message_id")
+    def serialize_parent_ids(self, value: UUID | None) -> str | None:
+        return str(value) if value is not None else None
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> str:
+        return value.isoformat()
+
+
+class ChatArtifactUpdate(BaseModel):
+    """Editable metadata for a durable Chat file."""
+
+    filename: str = Field(min_length=1, max_length=500)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        cleaned = value.strip()
+        if cleaned in {"", ".", ".."} or "/" in cleaned or "\\" in cleaned:
+            raise ValueError("Enter a filename without folders.")
+        return cleaned
+
+
 ChatModelTierId = Literal["fast", "balanced", "pro"]
 
 
@@ -356,6 +388,7 @@ class ChatModelTierPublic(BaseModel):
 
     id: ChatModelTierId
     label: str
+    capabilities: ModelCapabilities
 
 
 class ChatModelTiersResponse(BaseModel):
@@ -420,6 +453,7 @@ class ChatResponse(BaseModel):
     message_id: UUID
     content: str
     tool_calls: list[ToolCall] | None = None
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
     token_count_input: int | None = None
     token_count_output: int | None = None
     duration_ms: int | None = None
@@ -473,6 +507,9 @@ class ChatStreamChunk(BaseModel):
         "tool_call",
         "tool_progress",
         "tool_result",
+        "artifact_started",
+        "artifact_ready",
+        "artifact_failed",
         "agent_switch",
         "context_warning",
         "title_update",
@@ -487,6 +524,7 @@ class ChatStreamChunk(BaseModel):
     tool_call: ToolCall | None = None
     tool_progress: ToolProgress | None = None
     tool_result: ToolResult | None = None
+    artifact: ArtifactRef | None = None
     execution_id: str | None = Field(default=None, description="Execution ID for tool_call chunks")
 
     # Agent switch and context warning

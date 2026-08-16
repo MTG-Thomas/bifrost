@@ -44,7 +44,19 @@ vi.mock("@/hooks/useChat", () => ({
 	useCreateConversation: () => createConversationRef,
 	useChatModelTiers: () => ({
 		data: {
-			tiers: [{ id: "balanced", label: "Balanced" }],
+			tiers: [
+				{
+					id: "balanced",
+					label: "Balanced",
+					capabilities: {
+						image_input: false,
+						pdf_input: false,
+						tool_calling: true,
+						source: "verified",
+						fingerprint: "test",
+					},
+				},
+			],
 			default_tier: "balanced",
 		},
 	}),
@@ -73,19 +85,18 @@ vi.mock("@/stores/chatStore", () => ({
 
 const mockNavigate = vi.fn();
 vi.mock("react-router-dom", async () => {
-	const actual = await vi.importActual<typeof import("react-router-dom")>(
-		"react-router-dom",
-	);
+	const actual =
+		await vi.importActual<typeof import("react-router-dom")>(
+			"react-router-dom",
+		);
 	return { ...actual, useNavigate: () => mockNavigate };
 });
 
 // Child components we don't need to exercise — stub to simple markers.
 vi.mock("./ChatMessage", () => ({
-	ChatMessage: ({
-		message,
-	}: {
-		message: { content?: string | null };
-	}) => <div data-marker="chat-message">{message.content}</div>,
+	ChatMessage: ({ message }: { message: { content?: string | null } }) => (
+		<div data-marker="chat-message">{message.content}</div>
+	),
 }));
 
 vi.mock("./ChatInput", () => ({
@@ -102,7 +113,11 @@ vi.mock("./ChatInput", () => ({
 				placeholder={placeholder}
 				onKeyDown={(e) => {
 					if (e.key === "Enter") {
-						onSend((e.target as HTMLInputElement).value, [], "balanced");
+						onSend(
+							(e.target as HTMLInputElement).value,
+							[],
+							"balanced",
+						);
 					}
 				}}
 			/>
@@ -188,13 +203,69 @@ describe("ChatWindow — loading state", () => {
 		const { container } = renderWithProviders(
 			<ChatWindow conversationId="c-1" />,
 		);
-		expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(
-			0,
-		);
+		expect(
+			container.querySelectorAll(".animate-pulse").length,
+		).toBeGreaterThan(0);
 	});
 });
 
 describe("ChatWindow — messages render & send", () => {
+	it("shows an immediate thinking activity line while the run is starting", () => {
+		messagesRef.data = [
+			{
+				id: "m-1",
+				role: "user",
+				content: "Build a report",
+				created_at: "2026-04-20T00:00:00Z",
+			},
+		];
+		streamRef.isStreaming = true;
+
+		renderWithProviders(<ChatWindow conversationId="c-1" />);
+
+		expect(screen.getByText("Thinking…")).toHaveClass("chat-activity-shimmer");
+	});
+
+	it("collapses tool activity when the final response starts streaming", () => {
+		messagesRef.data = [
+			{
+				id: "m-1",
+				role: "user",
+				content: "Build a report",
+				created_at: "2026-04-20T00:00:00Z",
+			},
+			{
+				id: "tool-1",
+				role: "tool_call",
+				tool_name: "create_text_artifact",
+				tool_state: "completed",
+				created_at: "2026-04-20T00:00:01Z",
+			},
+			{
+				id: "assistant-final",
+				role: "assistant",
+				content: "I created the report.",
+				isStreaming: true,
+				created_at: "2026-04-20T00:00:02Z",
+			},
+		];
+		streamRef.isStreaming = true;
+		storeSelectors.streamingMessageIds = {
+			"c-1": "assistant-final",
+		};
+
+		const { container } = renderWithProviders(
+			<ChatWindow conversationId="c-1" />,
+		);
+
+		expect(screen.getByText("Responding…")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Responding/i })).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
+		expect(container.querySelector(".grid-rows-\\[0fr\\]")).not.toBeNull();
+	});
+
 	it("renders messages returned from the hook", () => {
 		messagesRef.data = [
 			{
@@ -218,6 +289,34 @@ describe("ChatWindow — messages render & send", () => {
 		expect(screen.getByText("pong")).toBeInTheDocument();
 	});
 
+	it("uses the persisted run summary duration even when its content is empty", () => {
+		messagesRef.data = [
+			{
+				id: "m-1",
+				role: "user",
+				content: "Generate files",
+				created_at: "2026-04-20T00:00:00Z",
+			},
+			{
+				id: "m-2",
+				role: "assistant",
+				content: "I created the files.",
+				created_at: "2026-04-20T00:00:01Z",
+			},
+			{
+				id: "m-3",
+				role: "assistant",
+				content: "",
+				duration_ms: 8_500,
+				created_at: "2026-04-20T00:00:09Z",
+			},
+		];
+
+		renderWithProviders(<ChatWindow conversationId="c-1" />);
+
+		expect(screen.getByText("Worked for 9s")).toBeInTheDocument();
+	});
+
 	it("forwards a typed message to the stream's sendMessage", async () => {
 		messagesRef.data = [
 			{
@@ -230,9 +329,7 @@ describe("ChatWindow — messages render & send", () => {
 
 		renderWithProviders(<ChatWindow conversationId="c-1" />);
 
-		const input = screen.getByLabelText(
-			/chat input/i,
-		) as HTMLInputElement;
+		const input = screen.getByLabelText(/chat input/i) as HTMLInputElement;
 		fireEvent.change(input, { target: { value: "hello" } });
 		fireEvent.keyDown(input, { key: "Enter" });
 
@@ -254,9 +351,7 @@ describe("ChatWindow — messages render & send", () => {
 
 		renderWithProviders(<ChatWindow conversationId={undefined} />);
 
-		const input = screen.getByLabelText(
-			/chat input/i,
-		) as HTMLInputElement;
+		const input = screen.getByLabelText(/chat input/i) as HTMLInputElement;
 		fireEvent.change(input, { target: { value: "hello from draft" } });
 		fireEvent.keyDown(input, { key: "Enter" });
 

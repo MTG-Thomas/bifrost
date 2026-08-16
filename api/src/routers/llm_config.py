@@ -26,6 +26,11 @@ from src.models.contracts.llm import (
     LLMTestRequest,
     LLMTestResponse,
 )
+from src.models.contracts.artifacts import (
+    ModelCapabilityLookupRequest,
+    ModelCapabilityLookupResponse,
+    ModelCapabilityVerifyRequest,
+)
 from src.services.embeddings.factory import (
     EMBEDDING_CONFIG_CATEGORY,
     EMBEDDING_CONFIG_KEY,
@@ -68,12 +73,17 @@ async def get_llm_config(
         default_system_prompt=config.default_system_prompt,
         summarization_model=config.summarization_model,
         tuning_model=config.tuning_model,
+        image_generation_model=config.image_generation_model,
+        video_generation_model=config.video_generation_model,
         chat_fast_label=config.chat_fast_label,
         chat_fast_model=config.chat_fast_model,
         chat_balanced_label=config.chat_balanced_label,
         chat_balanced_model=config.chat_balanced_model,
         chat_pro_label=config.chat_pro_label,
         chat_pro_model=config.chat_pro_model,
+        chat_fast_capabilities=config.resolve_chat_capabilities("fast") if config.chat_fast_model else None,
+        chat_balanced_capabilities=config.resolve_chat_capabilities("balanced"),
+        chat_pro_capabilities=config.resolve_chat_capabilities("pro") if config.chat_pro_model else None,
         is_configured=config.is_configured,
         api_key_set=config.api_key_set,
     )
@@ -103,12 +113,17 @@ async def set_llm_config(
             default_system_prompt=request.default_system_prompt,
             summarization_model=request.summarization_model,
             tuning_model=request.tuning_model,
+            image_generation_model=request.image_generation_model,
+            video_generation_model=request.video_generation_model,
             chat_fast_label=request.chat_fast_label,
             chat_fast_model=request.chat_fast_model,
             chat_balanced_label=request.chat_balanced_label,
             chat_balanced_model=request.chat_balanced_model,
             chat_pro_label=request.chat_pro_label,
             chat_pro_model=request.chat_pro_model,
+            chat_fast_capabilities=request.chat_fast_capabilities,
+            chat_balanced_capabilities=request.chat_balanced_capabilities,
+            chat_pro_capabilities=request.chat_pro_capabilities,
             updated_by=user.email,
         )
     except ValueError as e:
@@ -145,6 +160,8 @@ async def set_llm_config(
                 request.chat_pro_model,
                 request.summarization_model,
                 request.tuning_model,
+                request.image_generation_model,
+                request.video_generation_model,
             )
             count = await service.sync_provider_pricing(
                 provider=canonical_provider(request.provider, request.endpoint),
@@ -181,15 +198,81 @@ async def set_llm_config(
         default_system_prompt=request.default_system_prompt,
         summarization_model=request.summarization_model,
         tuning_model=request.tuning_model,
+        image_generation_model=request.image_generation_model,
+        video_generation_model=request.video_generation_model,
         chat_fast_label=request.chat_fast_label,
         chat_fast_model=request.chat_fast_model,
         chat_balanced_label=request.chat_balanced_label,
         chat_balanced_model=request.chat_balanced_model,
         chat_pro_label=request.chat_pro_label,
         chat_pro_model=request.chat_pro_model,
+        chat_fast_capabilities=config.resolve_chat_capabilities("fast") if config and config.chat_fast_model else None,
+        chat_balanced_capabilities=config.resolve_chat_capabilities("balanced") if config else None,
+        chat_pro_capabilities=config.resolve_chat_capabilities("pro") if config and config.chat_pro_model else None,
         is_configured=True,
         api_key_set=api_key_set,
     )
+
+
+@router.post("/model-capabilities")
+async def discover_model_capabilities(
+    request: ModelCapabilityLookupRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> ModelCapabilityLookupResponse:
+    """Look up model features without trusting provider model-list labels."""
+    del db, user
+    from src.services.model_capabilities import lookup_model_capabilities
+
+    capabilities, message = await lookup_model_capabilities(
+        provider=request.provider,
+        model=request.model,
+        endpoint=request.endpoint,
+    )
+    return ModelCapabilityLookupResponse(capabilities=capabilities, message=message)
+
+
+@router.post("/model-capabilities/verify")
+async def verify_model_capability_support(
+    request: ModelCapabilityVerifyRequest,
+    db: DbSession,
+    user: CurrentActiveUser,
+) -> ModelCapabilityLookupResponse:
+    """Run a bounded, one-time provider conformance check for an unknown model."""
+    del user
+    from src.services.llm.factory import get_llm_config
+    from src.services.model_capabilities import verify_model_capabilities
+
+    api_key = request.api_key
+    if not api_key:
+        try:
+            saved = await get_llm_config(db)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Enter an API key or save the provider configuration before verification.",
+            ) from exc
+        if saved.provider != request.provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The saved API key belongs to a different provider.",
+            )
+        api_key = saved.api_key
+
+    try:
+        capabilities, message = await verify_model_capabilities(
+            provider=request.provider,
+            model=request.model,
+            endpoint=request.endpoint,
+            api_key=api_key,
+        )
+    except Exception as exc:
+        logger.info("Model capability verification failed: %s", log_safe(exc))
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The model did not complete the capability verification. Confirm the endpoint, key, and model, then retry.",
+        ) from exc
+    return ModelCapabilityLookupResponse(capabilities=capabilities, message=message)
 
 
 @router.delete("/config", status_code=status.HTTP_204_NO_CONTENT)
@@ -253,7 +336,10 @@ async def test_llm_connection(
     return LLMTestResponse(
         success=result.success,
         message=result.message,
-        models=[LLMModelInfo(id=m.id, display_name=m.display_name) for m in result.models] if result.models else None,
+        models=[
+            LLMModelInfo(id=m.id, display_name=m.display_name, output_modalities=m.output_modalities)
+            for m in result.models
+        ] if result.models else None,
     )
 
 
@@ -287,7 +373,10 @@ async def test_saved_llm_connection(
     return LLMTestResponse(
         success=result.success,
         message=result.message,
-        models=[LLMModelInfo(id=m.id, display_name=m.display_name) for m in result.models] if result.models else None,
+        models=[
+            LLMModelInfo(id=m.id, display_name=m.display_name, output_modalities=m.output_modalities)
+            for m in result.models
+        ] if result.models else None,
     )
 
 
@@ -320,7 +409,10 @@ async def list_llm_models(
         )
 
     return LLMModelsResponse(
-        models=[LLMModelInfo(id=m.id, display_name=m.display_name) for m in models],
+        models=[
+            LLMModelInfo(id=m.id, display_name=m.display_name, output_modalities=m.output_modalities)
+            for m in models
+        ],
         provider=config.provider,
     )
 
