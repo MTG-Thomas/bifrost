@@ -462,6 +462,36 @@ resulting `merge_group` run must execute and pass lint/type, backend unit,
 client unit, and both E2E shards. If any condition is absent, this change must
 not merge.
 
+### First queue validation incident
+
+The first exact-candidate run exposed two deterministic harness defects. First,
+`Critical Browser Smoke` failed during job setup because the pinned SHAs for
+`actions/upload-artifact@v7.0.1` and `docker/build-push-action@v7.3.0` each
+contained a one-character transcription error. GitHub could not resolve either
+action, so the browser test never ran. This was not a Docker failure or a flaky
+product test.
+
+More importantly, the workflow had two mutually exclusive jobs named `E2E
+Tests`: the real aggregate exact-candidate gate and the ordinary-PR reporting
+job. On `merge_group`, GitHub marked the PR-only job skipped and accepted that
+duplicate skipped context as satisfying the repository's required `E2E Tests`
+name. It merged while both backend shards were still running and while browser
+smoke had failed. The main workflow then promoted and rolled out the candidate
+before its deploy smoke exposed a separate incorrect Kubernetes service name.
+This violated the intended dev-image invariant. The last previously successful
+main workflow was deliberately rerun to restore the shared `:dev` tags and
+deployments to fully gated commit `f1b519f4e`.
+
+The repair uses the official action tag SHAs everywhere and resolves every
+readable version comment in the ordinary PR lint job. A single `E2E Tests` job
+now handles both PR reporting and the full exact-candidate result, eliminating
+the duplicate skipped context. Main promotion also queries GitHub for the exact
+SHA and independently requires one successful instance of every merge-group
+job (both backend shards, unit suites, lint, critical browser smoke, candidate
+build, and aggregate gate) before it can mutate any shared tag. The deployment
+smoke uses the actual `api` and `client` Kubernetes Service names. A new commit
+must pass the corrected merge queue; the failed candidate is not rerun.
+
 ## Limitations
 
 - GitHub retains current run/job metadata more reliably than every historical
