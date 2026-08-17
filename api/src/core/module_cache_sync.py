@@ -594,6 +594,113 @@ def _get_object_storage_module(storage_path: str) -> bytes | None:
     return _get_s3_module(storage_path)
 
 
+def _require_workspace_generation(
+    expected_generation: str | None, *, message: str
+) -> None:
+    if (
+        expected_generation is not None
+        and workspace_generation_for_import() != expected_generation
+    ):
+        raise WorkspaceGenerationChangedError(message)
+
+
+def _cache_sync_module(
+    client: Any,
+    *,
+    key: str,
+    storage_path: str,
+    module: CachedModule,
+    source: str,
+) -> None:
+    try:
+        client.setex(key, MODULE_CACHE_TTL, json.dumps(module))
+        client.sadd(MODULE_INDEX_KEY, storage_path)
+    except redis.RedisError as exc:
+        logger.warning(f"Failed to re-cache {source} module to Redis: {exc}")
+
+
+def _object_storage_cached_module(
+    *, path: str, storage_path: str, expected_generation: str | None
+) -> CachedModule | None:
+    storage_content = _get_object_storage_module(storage_path)
+    if storage_content is None:
+        return None
+    try:
+        content_text = storage_content.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning(
+            f"Could not decode object storage module as UTF-8: {storage_path}"
+        )
+        return None
+    module: CachedModule = {
+        "content": content_text,
+        "path": path,
+        "hash": hashlib.sha256(storage_content).hexdigest(),
+    }
+    if expected_generation:
+        module["generation"] = expected_generation
+    _require_workspace_generation(
+        expected_generation,
+        message="workspace source generation changed during module fallback",
+    )
+    return module
+
+
+def _resolve_module_candidate(
+    client: Any, *, path: str, storage_path: str
+) -> CachedModule | None:
+    solution_module = storage_path.startswith(f"{SOLUTIONS_ROOT}/")
+    expected_generation = None if solution_module else workspace_generation_for_import()
+    key = f"{MODULE_KEY_PREFIX}{storage_path}"
+    data = client.get(key)
+    if data:
+        module = json.loads(data)
+        if solution_module or _cached_module_matches_generation(
+            module, expected_generation or ""
+        ):
+            _verify_deployment_module_hash(path, module)
+            return module
+
+    api_module = _fetch_module_from_api(storage_path)
+    if api_module is not None:
+        if not solution_module and not _cached_module_matches_generation(
+            api_module, expected_generation or ""
+        ):
+            raise WorkspaceGenerationChangedError(
+                "module API returned a different workspace generation"
+            )
+        _cache_sync_module(
+            client,
+            key=key,
+            storage_path=storage_path,
+            module=api_module,
+            source="API",
+        )
+        _verify_deployment_module_hash(path, api_module)
+        return api_module
+
+    module = _object_storage_cached_module(
+        path=path,
+        storage_path=storage_path,
+        expected_generation=expected_generation,
+    )
+    if module is None:
+        return None
+    _cache_sync_module(
+        client,
+        key=key,
+        storage_path=storage_path,
+        module=module,
+        source="object storage",
+    )
+    _verify_deployment_module_hash(path, module)
+    _require_workspace_generation(
+        expected_generation,
+        message="workspace source generation changed during module fallback",
+    )
+    return module
+
+
 def get_module_sync(path: str) -> CachedModule | None:
     """
     Fetch a single module from cache (synchronous).
@@ -623,78 +730,11 @@ def get_module_sync(path: str) -> CachedModule | None:
         client = _get_sync_redis()
 
         for storage_path in _candidate_storage_paths(path):
-            solution_module = storage_path.startswith(f"{SOLUTIONS_ROOT}/")
-            expected_generation = (
-                None if solution_module else workspace_generation_for_import()
+            module = _resolve_module_candidate(
+                client, path=path, storage_path=storage_path
             )
-            key = f"{MODULE_KEY_PREFIX}{storage_path}"
-            data = client.get(key)
-            if data:
-                module = json.loads(data)
-                if solution_module or _cached_module_matches_generation(
-                    module, expected_generation or ""
-                ):
-                    _verify_deployment_module_hash(path, module)
-                    return module
-
-            # --- Cold-cache fallback 1: API endpoint ---
-            api_module = _fetch_module_from_api(storage_path)
-            if api_module is not None:
-                if not solution_module and not _cached_module_matches_generation(
-                    api_module, expected_generation or ""
-                ):
-                    raise WorkspaceGenerationChangedError(
-                        "module API returned a different workspace generation"
-                    )
-                try:
-                    client.setex(key, MODULE_CACHE_TTL, json.dumps(api_module))
-                    client.sadd(MODULE_INDEX_KEY, storage_path)
-                except redis.RedisError as e:
-                    logger.warning(f"Failed to re-cache API module to Redis: {e}")
-                _verify_deployment_module_hash(path, api_module)
-                return api_module
-
-            # --- Cold-cache fallback 2: direct object storage (legacy path) ---
-            storage_content = _get_object_storage_module(storage_path)
-            if storage_content is None:
-                continue
-            try:
-                content_str = storage_content.decode("utf-8")
-            except UnicodeDecodeError:
-                logger.warning(
-                    f"Could not decode object storage module as UTF-8: {storage_path}"
-                )
-                continue
-
-            content_hash = hashlib.sha256(storage_content).hexdigest()
-            module: CachedModule = {
-                "content": content_str,
-                "path": path,
-                "hash": content_hash,
-            }
-            if expected_generation:
-                module["generation"] = expected_generation
-
-            if not solution_module:
-                if workspace_generation_for_import() != expected_generation:
-                    raise WorkspaceGenerationChangedError(
-                        "workspace source generation changed during module fallback"
-                    )
-
-            # Cache back to Redis under the storage-path key + index.
-            try:
-                client.setex(key, MODULE_CACHE_TTL, json.dumps(module))
-                client.sadd(MODULE_INDEX_KEY, storage_path)
-            except redis.RedisError as e:
-                logger.warning(f"Failed to cache object storage module to Redis: {e}")
-
-            _verify_deployment_module_hash(path, module)
-            if not solution_module:
-                if workspace_generation_for_import() != expected_generation:
-                    raise WorkspaceGenerationChangedError(
-                        "workspace source generation changed during module fallback"
-                    )
-            return module
+            if module is not None:
+                return module
 
         logger.debug(f"Module not in cache, API, or object storage: {path}")
         return None

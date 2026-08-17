@@ -89,6 +89,32 @@ def _cached_module_is_current(module: object, generation: str) -> bool:
     )
 
 
+def _decode_cached_module(data: object) -> dict[str, object] | None:
+    if not data:
+        return None
+    try:
+        decoded = json.loads(data)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _module_from_bytes(
+    *, path: str, content: bytes, generation: str | None
+) -> CachedModule | None:
+    try:
+        content_text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning(f"Could not decode {log_safe(path)} as UTF-8, skipping")
+        return None
+    return CachedModule(
+        content=content_text,
+        path=path,
+        hash=hashlib.sha256(content).hexdigest(),
+        **({"generation": generation} if generation else {}),
+    )
+
+
 async def get_workspace_generation() -> str:
     """Return the current workspace generation, creating one when Redis is cold.
 
@@ -395,14 +421,11 @@ async def get_module(path: str) -> CachedModule | None:
     # repopulate Redis with old bytes labelled as the new generation.
     for _attempt in range(3):
         generation = None if solution_module else await wait_for_workspace_generation()
-        data = await redis.get(key)
-        if data:
-            try:
-                cached = json.loads(data)
-            except (TypeError, json.JSONDecodeError):
-                cached = None
-            if solution_module or _cached_module_is_current(cached, generation or ""):
-                return cast(CachedModule, cached)
+        cached = _decode_cached_module(await redis.get(key))
+        if cached is not None and (
+            solution_module or _cached_module_is_current(cached, generation or "")
+        ):
+            return cast(CachedModule, cached)
 
         try:
             content_bytes = await _read_module_from_storage(path)
@@ -410,26 +433,18 @@ async def get_module(path: str) -> CachedModule | None:
             logger.debug(f"Module not in cache or S3: {log_safe(path)}")
             return None
 
-        try:
-            content_str = content_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            logger.warning(f"Could not decode {log_safe(path)} as UTF-8, skipping")
-            return None
-
         if not solution_module and await wait_for_workspace_generation() != generation:
             continue
-        content_hash = hashlib.sha256(content_bytes).hexdigest()
-        module = CachedModule(
-            content=content_str,
-            path=path,
-            hash=content_hash,
-            **({"generation": generation} if generation else {}),
+        module = _module_from_bytes(
+            path=path, content=content_bytes, generation=generation
         )
+        if module is None:
+            return None
         try:
             await set_module(
                 path,
-                content_str,
-                content_hash,
+                module["content"],
+                module["hash"],
                 generation=generation,
             )
         except Exception as exc:
@@ -462,9 +477,8 @@ async def set_module(
     redis = get_redis_client()
     key = f"{MODULE_KEY_PREFIX}{path}"
 
-    if not path.startswith(f"{SOLUTIONS_ROOT}/"):
-        if generation is None:
-            generation = _ready_generation_value(await get_workspace_generation())
+    if not path.startswith(f"{SOLUTIONS_ROOT}/") and generation is None:
+        generation = _ready_generation_value(await get_workspace_generation())
     cached = CachedModule(
         content=content,
         path=path,
@@ -533,9 +547,7 @@ async def get_all_module_paths() -> set[str]:
     rebuilt = workspace_paths | solution_paths
     await redis_conn.delete(MODULE_INDEX_KEY)
     if rebuilt:
-        await cast(
-            Awaitable[int], redis_conn.sadd(MODULE_INDEX_KEY, *sorted(rebuilt))
-        )
+        await cast(Awaitable[int], redis_conn.sadd(MODULE_INDEX_KEY, *sorted(rebuilt)))
     await redis_conn.set(MODULE_INDEX_GENERATION_KEY, generation)
     return rebuilt
 
@@ -579,60 +591,71 @@ async def inspect_module_coherence(
     ready_generation = _ready_generation_value(generation)
     evidence: list[ModuleCoherence] = []
     for path, raw in zip(ordered, values, strict=True):
-        cached: dict = {}
-        if raw:
-            try:
-                cached = json.loads(raw)
-            except (TypeError, json.JSONDecodeError):
-                cached = {}
-        cache_hash = cached.get("hash") if isinstance(cached.get("hash"), str) else None
-        cache_generation = (
-            cached.get("generation")
-            if isinstance(cached.get("generation"), str)
-            else None
-        )
-        indexed = path in indexed_paths
-        coherent = (
-            not generation.startswith(WORKSPACE_UPDATING_PREFIX)
-            and indexed
-            and (
-                (not raw)
-                or (
-                    cache_hash == python_hashes[path]
-                    and cache_generation == ready_generation
-                    and _cached_module_is_current(cached, ready_generation)
-                )
-            )
-        )
-        if generation.startswith(WORKSPACE_UPDATING_PREFIX):
-            state = "updating"
-        elif not raw and indexed:
-            state = "cold"
-        elif not raw:
-            state = "missing"
-        elif cache_hash != python_hashes[path]:
-            state = "stale_content"
-        elif cache_generation != ready_generation:
-            state = "stale_generation"
-        elif not indexed:
-            state = "missing_index"
-        elif not _cached_module_is_current(cached, ready_generation):
-            state = "invalid_content_hash"
-        else:
-            state = "coherent"
         evidence.append(
-            ModuleCoherence(
+            _module_coherence_evidence(
                 path=path,
-                durable_sha256=python_hashes[path],
-                cache_sha256=cache_hash,
-                cache_generation=cache_generation,
-                workspace_generation=ready_generation,
-                indexed=indexed,
-                coherent=coherent,
-                state=state,
+                durable_hash=python_hashes[path],
+                raw=raw,
+                generation=generation,
+                ready_generation=ready_generation,
+                indexed=path in indexed_paths,
             )
         )
     return generation, evidence
+
+
+def _module_coherence_evidence(
+    *,
+    path: str,
+    durable_hash: str,
+    raw: object,
+    generation: str,
+    ready_generation: str,
+    indexed: bool,
+) -> ModuleCoherence:
+    cached = _decode_cached_module(raw) or {}
+    cache_hash = cached.get("hash") if isinstance(cached.get("hash"), str) else None
+    cache_generation = (
+        cached.get("generation") if isinstance(cached.get("generation"), str) else None
+    )
+    current = _cached_module_is_current(cached, ready_generation)
+    updating = generation.startswith(WORKSPACE_UPDATING_PREFIX)
+    coherent = (
+        not updating
+        and indexed
+        and (
+            not raw
+            or (
+                cache_hash == durable_hash
+                and cache_generation == ready_generation
+                and current
+            )
+        )
+    )
+    if updating:
+        state = "updating"
+    elif not raw:
+        state = "cold" if indexed else "missing"
+    elif cache_hash != durable_hash:
+        state = "stale_content"
+    elif cache_generation != ready_generation:
+        state = "stale_generation"
+    elif not indexed:
+        state = "missing_index"
+    elif not current:
+        state = "invalid_content_hash"
+    else:
+        state = "coherent"
+    return ModuleCoherence(
+        path=path,
+        durable_sha256=durable_hash,
+        cache_sha256=cache_hash,
+        cache_generation=cache_generation,
+        workspace_generation=ready_generation,
+        indexed=indexed,
+        coherent=coherent,
+        state=state,
+    )
 
 
 async def reconcile_module_coherence(
@@ -667,8 +690,7 @@ async def reconcile_module_coherence(
             Awaitable[set[str | bytes]], redis_conn.smembers(MODULE_INDEX_KEY)
         )
         indexed_paths = {
-            value if isinstance(value, str) else value.decode()
-            for value in indexed_raw
+            value if isinstance(value, str) else value.decode() for value in indexed_raw
         }
         incomplete_deletes = [
             path

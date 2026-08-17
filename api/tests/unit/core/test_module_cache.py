@@ -759,6 +759,10 @@ class TestModuleCacheSync:
             ),
             patch("src.core.module_cache_sync._list_s3_modules", return_value=set()),
             patch(
+                "src.core.module_cache_sync._fetch_module_index_from_api",
+                return_value=set(),
+            ),
+            patch(
                 "src.core.module_cache_sync.workspace_generation_for_import",
                 return_value="generation-1",
             ),

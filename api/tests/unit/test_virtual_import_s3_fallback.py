@@ -139,6 +139,10 @@ class TestModuleIndexS3Fallback:
             patch(
                 "src.core.module_cache_sync._list_s3_modules", return_value=s3_paths
             ) as mock_list,
+            patch(
+                "src.core.module_cache_sync._fetch_module_index_from_api",
+                return_value=set(),
+            ),
         ):
             mock_redis = MagicMock()
             mock_redis.smembers.return_value = set()  # Redis index empty
@@ -179,6 +183,10 @@ class TestModuleIndexS3Fallback:
         with (
             patch("src.core.module_cache_sync._get_sync_redis") as mock_redis_factory,
             patch("src.core.module_cache_sync._list_s3_modules", return_value=set()),
+            patch(
+                "src.core.module_cache_sync._fetch_module_index_from_api",
+                return_value=set(),
+            ),
         ):
             mock_redis = MagicMock()
             mock_redis.smembers.return_value = set()
@@ -208,6 +216,10 @@ class TestModuleIndexS3Fallback:
                 return_value=blob_paths,
             ) as mock_blob_list,
             patch("src.core.module_cache_sync._list_s3_modules") as mock_s3_list,
+            patch(
+                "src.core.module_cache_sync._fetch_module_index_from_api",
+                return_value=set(),
+            ),
         ):
             mock_redis = MagicMock()
             mock_redis.smembers.return_value = set()
@@ -435,6 +447,10 @@ class TestAzureBlobFallback:
                 "src.core.module_cache_sync._list_blob_modules", return_value=blob_paths
             ) as mock_blob_list,
             patch("src.core.module_cache_sync._list_s3_modules") as mock_s3_list,
+            patch(
+                "src.core.module_cache_sync._fetch_module_index_from_api",
+                return_value=set(),
+            ),
         ):
             mock_redis = MagicMock()
             mock_redis.smembers.return_value = set()

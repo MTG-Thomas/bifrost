@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 CANDIDATE_SCHEMA = "bifrost.workspace-candidate/v2"
 GIT_CLOSURE_SCHEMA = "bifrost.workspace-git-closure/v1"
 GIT_CONVERGENCE_SCHEMA = "bifrost.workspace-history-convergence/v1"
+COMMIT_WRITER_NOT_CONFIGURED = "verified GitHub App commit writer is not configured"
 
 
 @dataclass
@@ -802,9 +803,7 @@ class WorkspaceRepoChangesetService:
         if not plan.response.ready_to_apply:
             raise ChangesetInvalid("history convergence preview is not ready to apply")
         if self.commit_writer is None:  # guarded in plan construction as well
-            raise ChangesetInvalid(
-                "verified GitHub App commit writer is not configured"
-            )
+            raise ChangesetInvalid(COMMIT_WRITER_NOT_CONFIGURED)
 
         effective_operator = operator
         if pending_retry:
@@ -1026,9 +1025,7 @@ class WorkspaceRepoChangesetService:
         for_update: bool = False,
     ) -> _GitConvergencePlan:
         if self.commit_writer is None:
-            raise ChangesetInvalid(
-                "verified GitHub App commit writer is not configured"
-            )
+            raise ChangesetInvalid(COMMIT_WRITER_NOT_CONFIGURED)
 
         rows = [
             await self._required(changeset_id, for_update=for_update)
@@ -1299,7 +1296,7 @@ class WorkspaceRepoChangesetService:
             or request.protected_main_source_sha,
         }
         if self.commit_writer is None:
-            row.error = "verified GitHub App commit writer is not configured"
+            row.error = COMMIT_WRITER_NOT_CONFIGURED
             row.failure_detail = {
                 "phase": "git_closure",
                 "state": "not_configured",
