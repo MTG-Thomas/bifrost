@@ -402,7 +402,13 @@ class ProcessPoolManager:
         catch this — the worker process should crash-loop so Kubernetes
         restarts it and the failure is visible.
         """
-        new_template = TemplateProcess()
+        # Requirements are installed in the manager before initial startup and
+        # before package-driven recycle.  The environment is shared with the
+        # spawned template, so installing them again here only extends the
+        # restart barrier and can make the next admitted execution time out.
+        # Crash/route healing likewise reuses that already-installed shared
+        # environment; source-generation recycle only needs fresh imports.
+        new_template = TemplateProcess(install_requirements_on_startup=False)
         await asyncio.to_thread(new_template.start)
         self._template = new_template
         logger.info(f"Template process started (PID={new_template.pid})")

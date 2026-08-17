@@ -106,6 +106,28 @@ async def test_notify_requirements_failures_creates_deduped_admin_notification(m
     ]
 
 
+@pytest.mark.asyncio
+async def test_start_template_reuses_manager_installed_requirements(monkeypatch):
+    created: list[bool] = []
+
+    class FakeTemplate:
+        pid = 123
+
+        def __init__(self, *, install_requirements_on_startup: bool) -> None:
+            created.append(install_requirements_on_startup)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(process_pool, "TemplateProcess", FakeTemplate)
+    pool = ProcessPoolManager()
+
+    await pool._start_template()
+
+    assert created == [False]
+    assert isinstance(pool._template, FakeTemplate)
+
+
 def test_get_installed_packages_returns_json_on_success(monkeypatch):
     monkeypatch.setattr(
         process_pool.subprocess,
