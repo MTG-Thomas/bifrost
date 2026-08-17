@@ -97,10 +97,14 @@ def test_ci_job_blocks_and_retains_runner_artifacts() -> None:
     assert steps["Checkout repository"]["with"]["persist-credentials"] is False
     step_names = list(steps)
     assert step_names.index("Detect test image input changes") < step_names.index(
-        "Log in to GitHub Container Registry"
+        "Prepare CI test images"
     )
-    assert step_names.index("Remove registry credentials") < step_names.index(
+    assert step_names.index("Prepare CI test images") < step_names.index(
         "Run blocking MCP conformance"
+    )
+    assert (
+        steps["Prepare CI test images"]["run"]
+        == "bash api/scripts/ci/prepare-test-images.sh api client"
     )
     assert "./test.sh mcp conformance" in steps["Run blocking MCP conformance"]["run"]
     artifact = steps["Upload MCP conformance results"]
