@@ -326,7 +326,7 @@ async def test_verify_repairs_stale_runtime_when_durable_source_is_unchanged(
         ]
 
     monkeypatch.setattr(
-        "src.services.file_storage.deactivation.DeactivationProtectionService.detect_pending_deactivations",
+        "src.services.workspace_repo_changesets.DeactivationProtectionService.detect_pending_deactivations",
         AsyncMock(return_value=([], [])),
     )
 
@@ -400,7 +400,7 @@ async def test_runtime_only_activation_rotates_and_records_coherent_readback(
 
     monkeypatch.setattr("src.core.module_cache.workspace_source_update", source_update)
     monkeypatch.setattr(
-        "src.services.file_storage.deactivation.DeactivationProtectionService.detect_pending_deactivations",
+        "src.services.workspace_repo_changesets.DeactivationProtectionService.detect_pending_deactivations",
         AsyncMock(return_value=([], [])),
     )
     svc = WorkspaceRepoChangesetService(

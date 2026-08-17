@@ -11,9 +11,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def stable_workspace_generation():
-    with patch(
-        "src.core.module_cache_sync.workspace_generation_for_import",
-        return_value="generation-1",
+    with (
+        patch(
+            "src.core.module_cache_sync.workspace_generation_for_import",
+            return_value="generation-1",
+        ),
+        patch(
+            "src.services.execution.virtual_import.workspace_generation_for_import",
+            return_value="generation-1",
+        ),
     ):
         yield
 

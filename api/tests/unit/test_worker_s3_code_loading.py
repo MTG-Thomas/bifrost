@@ -1,5 +1,6 @@
 """Tests for worker loading code from S3 via Redis cache."""
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -10,6 +11,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 class TestGetModuleSyncFromCache:
     """Test get_module_sync returns cached modules from Redis."""
 
+    @pytest.fixture(autouse=True)
+    def stable_workspace_generation(self, monkeypatch):
+        monkeypatch.setattr(
+            "src.core.module_cache_sync.workspace_generation_for_import",
+            lambda: "generation-1",
+        )
+
     def test_worker_loads_code_from_redis_cache(self):
         """Worker should load workflow code from Redis cache using path."""
         from src.core.module_cache_sync import get_module_sync
@@ -17,11 +25,14 @@ class TestGetModuleSyncFromCache:
         with patch(
             "src.core.module_cache_sync._get_sync_redis"
         ) as mock_redis_factory:
+            content = "from bifrost import workflow\n@workflow\ndef test(): return {}"
+            content_hash = hashlib.sha256(content.encode()).hexdigest()
             cached = json.dumps(
                 {
-                    "content": "from bifrost import workflow\n@workflow\ndef test(): return {}",
+                    "content": content,
                     "path": "workflows/test.py",
-                    "hash": "abc123",
+                    "hash": content_hash,
+                    "generation": "generation-1",
                 }
             )
             mock_redis = MagicMock()
@@ -30,16 +41,28 @@ class TestGetModuleSyncFromCache:
 
             result = get_module_sync("workflows/test.py")
             assert result is not None
-            assert result["content"] == "from bifrost import workflow\n@workflow\ndef test(): return {}"
+            assert result["content"] == content
             assert result["path"] == "workflows/test.py"
-            assert result["hash"] == "abc123"
+            assert result["hash"] == content_hash
 
     def test_worker_batch_loads_cached_modules_in_one_round_trip(self):
         """Worker hash validation should batch Redis reads for loaded modules."""
         from src.core.module_cache_sync import get_modules_sync
 
-        first = {"content": "x = 1", "path": "modules/a.py", "hash": "a"}
-        second = {"content": "x = 2", "path": "modules/b.py", "hash": "b"}
+        first_content = "x = 1"
+        second_content = "x = 2"
+        first = {
+            "content": first_content,
+            "path": "modules/a.py",
+            "hash": hashlib.sha256(first_content.encode()).hexdigest(),
+            "generation": "generation-1",
+        }
+        second = {
+            "content": second_content,
+            "path": "modules/b.py",
+            "hash": hashlib.sha256(second_content.encode()).hexdigest(),
+            "generation": "generation-1",
+        }
         with patch(
             "src.core.module_cache_sync._get_sync_redis"
         ) as mock_redis_factory:
