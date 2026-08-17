@@ -1028,7 +1028,16 @@ jobs:
   # Release Manifest Check - Fail before any tag image is published
   # =============================================================================
   verify-release-manifest:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # `always()` is required because the tag test jobs have an intentionally
+    # skipped CI-image publication ancestor. Explicit result checks preserve
+    # the fail-closed release gate without inheriting that transitive skip.
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.test-unit.result == 'success' &&
+      needs.test-e2e-gate.result == 'success' &&
+      needs.lint.result == 'success' &&
+      needs.mcp-conformance.result == 'success'
     needs: [test-unit, test-e2e-gate, lint, mcp-conformance]
     runs-on: ubuntu-latest
     name: Verify Release Manifest
@@ -1080,7 +1089,10 @@ jobs:
   # Build API Image - Only on version tags, after tests pass
   # =============================================================================
   build-api:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.verify-release-manifest.result == 'success'
     needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build API Image
@@ -1184,7 +1196,10 @@ jobs:
   # Build Client Image - Only on version tags, after tests pass
   # =============================================================================
   build-client:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.verify-release-manifest.result == 'success'
     needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build Client Image
@@ -1289,7 +1304,10 @@ jobs:
   # Build Worker Image - Only on version tags, after tests pass
   # =============================================================================
   build-worker:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.verify-release-manifest.result == 'success'
     needs: [verify-release-manifest]
     runs-on: ubuntu-latest
     name: Build Worker Image
@@ -1378,7 +1396,12 @@ jobs:
   # action. Both feed Scorecard's Signed-Releases check.
   # =============================================================================
   create-release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      always() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build-api.result == 'success' &&
+      needs.build-client.result == 'success' &&
+      needs.build-worker.result == 'success'
     needs: [build-api, build-client, build-worker]
     runs-on: ubuntu-latest
     name: Create Release
