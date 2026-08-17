@@ -503,6 +503,18 @@ class ProcessPoolManager:
         logger.info(f"Created worker {process_id} (PID={handle.pid})")
         return handle
 
+    async def _ensure_template_alive_for_route(self) -> None:
+        """Ensure an admitted route has a live template while restart-locked."""
+        if not self._started or self._shutdown:
+            raise RuntimeError("Cannot route execution: process pool is not running")
+
+        if self._template is None or not self._template.is_alive():
+            logger.warning("Template unavailable during route admission; starting replacement")
+            await self._start_template()
+
+        if self._template is None or not self._template.is_alive():
+            raise RuntimeError("Replacement template process did not become ready")
+
     async def start(self) -> None:
         """
         Start the pool manager and spawn initial workers.
@@ -730,7 +742,11 @@ class ProcessPoolManager:
         # race across the context/admission awaits: a recycle can shut down the
         # template after that wait but before the fork.
         async with self._restart_lock:
-            # _fork_process performs the final template-alive validation and
+            # A failed or externally interrupted restart can leave the installed
+            # template dead after the restart lock is released. Heal that state
+            # once, while preserving a concurrent stop as authoritative.
+            await self._ensure_template_alive_for_route()
+            # _fork_process repeats the final template-alive validation and
             # returns a handle already in BUSY.
             handle = self._fork_process()
 
@@ -1178,7 +1194,10 @@ class ProcessPoolManager:
         """
         to_remove: list[str] = []
 
-        self._collect_child_exit_statuses()
+        # restart_template mutates the TemplateProcess control pipe in a worker
+        # thread. Do not inspect that pipe while the restart lock is held.
+        if not self._restart_lock.locked():
+            self._collect_child_exit_statuses()
 
         # Snapshot to a list — items() iterator is unsafe across the awaits
         # below (peer coroutines like _handle_result mutate self.processes).

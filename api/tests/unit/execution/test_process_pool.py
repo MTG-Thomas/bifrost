@@ -277,6 +277,8 @@ class TestProcessPoolManagerRouting:
     async def test_route_forks_fresh_worker(self):
         """Every route_execution call should fork a fresh one-shot worker."""
         pool = ProcessPoolManager(max_workers=5)
+        pool._started = True
+        pool._template = MagicMock(is_alive=MagicMock(return_value=True))
 
         forked: list[ProcessHandle] = []
 
@@ -315,6 +317,8 @@ class TestProcessPoolManagerRouting:
     async def test_route_waits_for_slot_when_saturated(self):
         """When at max_workers, route_execution should wait on the slot condition."""
         pool = ProcessPoolManager(max_workers=1)
+        pool._started = True
+        pool._template = MagicMock(is_alive=MagicMock(return_value=True))
 
         # Fill the pool with one busy handle (NOT via _fork_process)
         mock_process = MagicMock()
@@ -710,6 +714,8 @@ class TestProcessPoolManagerIntegration:
         """Test routing and completing an execution (one-shot fork → result)."""
         callback = AsyncMock()
         pool = ProcessPoolManager(on_result=callback)
+        pool._started = True
+        pool._template = MagicMock(is_alive=MagicMock(return_value=True))
 
         # Mock the fork — route_execution will create a fresh BUSY handle.
         mock_work_queue = MagicMock()
@@ -805,6 +811,7 @@ class TestAdmissionControl:
         """Should allow execution when memory is within threshold."""
         pool = ProcessPoolManager(max_workers=5)
         pool._started = True
+        pool._template = MagicMock(is_alive=MagicMock(return_value=True))
 
         mock_handle = ProcessHandle(
             id="process-1",
