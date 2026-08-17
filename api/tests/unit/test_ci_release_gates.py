@@ -26,5 +26,6 @@ def test_tag_release_jobs_explicitly_gate_required_results() -> None:
 
     release_condition = jobs["create-release"]["if"]
     assert "always()" in release_condition
+    assert "startsWith(github.ref, 'refs/tags/v')" in release_condition
     for build_job in ("build-api", "build-client", "build-worker"):
         assert f"needs.{build_job}.result == 'success'" in release_condition
