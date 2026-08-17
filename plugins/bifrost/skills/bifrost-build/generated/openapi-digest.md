@@ -343,6 +343,7 @@
 | PATCH | `/api/organizations/{org_id}` |
 | GET | `/api/packages` |
 | POST | `/api/packages/install` |
+| GET | `/api/packages/installations/{run_id}` |
 | GET | `/api/packages/updates` |
 | DELETE | `/api/packages/{package_name}` |
 | GET | `/api/platform-jobs` |
