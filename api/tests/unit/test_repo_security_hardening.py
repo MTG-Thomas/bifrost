@@ -72,17 +72,27 @@ def test_main_verification_waits_for_immutable_ci_test_images() -> None:
             "publish-ci-test-images",
         }
 
-    pull_steps = [
-        step
-        for job_name in image_jobs
-        for step in jobs[job_name]["steps"]
-        if step["name"].startswith("Pull ") and "CI test image" in step["name"]
-    ]
-    assert len(pull_steps) == 9
-    for step in pull_steps:
-        image_ref = next(iter(step["env"].values()))
-        assert image_ref.endswith(":${{ env.CI_TEST_IMAGE_TAG }}")
-        assert not image_ref.endswith(":main")
+    expected_commands = {
+        "test-unit": "bash api/scripts/ci/prepare-test-images.sh api client",
+        "mcp-conformance": "bash api/scripts/ci/prepare-test-images.sh api client",
+        "test-e2e": "bash api/scripts/ci/prepare-test-images.sh api client",
+        "test-client-e2e": "bash api/scripts/ci/prepare-test-images.sh api client playwright",
+    }
+    for job_name, expected_command in expected_commands.items():
+        prepare = next(
+            step
+            for step in jobs[job_name]["steps"]
+            if step["name"] == "Prepare CI test images"
+        )
+        assert prepare["run"] == expected_command
+        assert prepare["env"]["GHCR_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
+    api_root = Path(__file__).resolve().parents[2]
+    image_script = (api_root / "scripts/ci/prepare-test-images.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'image_tag="${CI_TEST_IMAGE_TAG:?CI_TEST_IMAGE_TAG is required}"' in image_script
+    assert 'remote_ref="${registry}/${remote_image}:${image_tag}"' in image_script
 
 
 def test_playwright_suite_has_no_retries_or_skipped_tests() -> None:
