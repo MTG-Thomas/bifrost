@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path.cwd()
 
 
 def test_tag_release_jobs_explicitly_gate_required_results() -> None:
