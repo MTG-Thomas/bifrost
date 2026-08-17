@@ -341,7 +341,8 @@ async def test_install_package_warms_cache_on_miss_then_broadcasts_recycle() -> 
             _user(),
         )
 
-    assert result.status == "success"
+    assert result.status == "queued"
+    assert result.run_id == publish.await_args.kwargs["message"]["run_id"]
     warm.assert_awaited_once()
     append.assert_called_once_with("fastapi==1\n", "httpx", "0.28.0")
     save.assert_awaited_once_with("fastapi==1\nhttpx==0.28.0\n")
@@ -398,5 +399,33 @@ async def test_uninstall_package_reports_absent_package_but_recycles_workers() -
         result = await packages.uninstall_package("httpx", _ctx(), _user())
 
     assert result["was_present"] is False
+    assert result["run_id"] == publish.await_args.kwargs["message"]["run_id"]
     save.assert_not_awaited()
     assert publish.await_args.kwargs["message"]["action"] == "uninstall"
+
+
+@pytest.mark.asyncio
+async def test_package_installation_progress_returns_fleet_state() -> None:
+    run_id = "a6f42689-89f3-4e2a-909d-4b16804beead"
+    with patch.object(
+        packages,
+        "get_run_progress",
+        AsyncMock(return_value={
+            "run_id": run_id,
+            "status": "succeeded",
+            "total": 1,
+            "reported": 1,
+            "installing": 0,
+            "installed": 1,
+            "recycling": 0,
+            "recycled": 1,
+            "failed": 0,
+            "failures": [],
+        }),
+    ):
+        result = await packages.get_package_installation_progress(
+            packages.UUID(run_id), _ctx(), _user()
+        )
+
+    assert result.status == "succeeded"
+    assert result.recycled == result.total == 1

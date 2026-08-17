@@ -12,7 +12,7 @@ import asyncio
 import logging
 import json
 from typing import Awaitable, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -21,6 +21,7 @@ from src.models import (
     InstalledPackage,
     InstalledPackagesResponse,
     PackageInstallResponse,
+    PackageInstallationProgressResponse,
     PackageUpdate,
     PackageUpdatesResponse,
 )
@@ -35,6 +36,7 @@ from src.core.requirements_cache import (
     warm_requirements_cache,
 )
 from src.jobs.rabbitmq import publish_broadcast
+from src.services.execution.install_progress import get_run_progress
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +341,7 @@ async def install_package(
         # Broadcast to all workers — they pip install + recycle processes.
         # run_id ties all workers' phase reports to the same Redis hash so
         # the frontend sees one aggregate status instead of N per-worker logs.
+        run_id = str(uuid4())
         await publish_broadcast(
             exchange_name="package-installations",
             message={
@@ -346,14 +349,15 @@ async def install_package(
                 "package": request.package_name,
                 "version": request.version if request.version else None,
                 "is_update": is_update,
-                "run_id": str(uuid4()),
+                "run_id": run_id,
             },
         )
 
         return PackageInstallResponse(
             package_name=request.package_name,
             version=request.version,
-            status="success",
+            run_id=run_id,
+            status="queued",
             message="Requirements updated. Workers are recycling to pick up changes.",
         )
 
@@ -363,6 +367,22 @@ async def install_package(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update requirements",
         )
+
+
+@router.get(
+    "/installations/{run_id}",
+    response_model=PackageInstallationProgressResponse,
+    summary="Get package recycle progress",
+)
+async def get_package_installation_progress(
+    run_id: UUID,
+    ctx: Context,
+    user: CurrentSuperuser,
+) -> PackageInstallationProgressResponse:
+    """Read fleet-wide completion for a package install or uninstall."""
+    return PackageInstallationProgressResponse(
+        **await get_run_progress(str(run_id))
+    )
 
 
 @router.delete(
@@ -400,6 +420,7 @@ async def uninstall_package(
         # Tell workers to pip uninstall and recycle. The "action" field
         # is what distinguishes install from uninstall in the consumer.
         # run_id ties all workers' phase reports to the same Redis hash.
+        run_id = str(uuid4())
         await publish_broadcast(
             exchange_name="package-installations",
             message={
@@ -408,7 +429,7 @@ async def uninstall_package(
                 "package": package_name,
                 "version": None,
                 "is_update": True,
-                "run_id": str(uuid4()),
+                "run_id": run_id,
             },
         )
 
@@ -417,6 +438,7 @@ async def uninstall_package(
                 f"Package '{package_name}' removed from requirements; workers recycling."
             ),
             "status": "uninstalled",
+            "run_id": run_id,
             "was_present": was_present,
         }
 

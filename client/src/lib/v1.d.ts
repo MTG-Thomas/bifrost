@@ -3860,6 +3860,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/packages/installations/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get package recycle progress
+         * @description Read fleet-wide completion for a package install or uninstall.
+         */
+        get: operations["get_package_installation_progress_api_packages_installations__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/packages/{package_name}": {
         parameters: {
             query?: never;
@@ -21145,8 +21165,13 @@ export interface components {
             /** Version */
             version?: string | null;
             /**
+             * Run Id
+             * @description Fleet recycle operation identifier
+             */
+            run_id: string;
+            /**
              * Status
-             * @description Installation status (success, queued)
+             * @description Installation status (queued)
              */
             status: string;
             /**
@@ -21154,6 +21179,35 @@ export interface components {
              * @description Installation message
              */
             message: string;
+        };
+        /**
+         * PackageInstallationProgressResponse
+         * @description Fleet-wide package installation/recycle progress.
+         */
+        PackageInstallationProgressResponse: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Status
+             * @description pending, running, succeeded, or failed
+             */
+            status: string;
+            /** Total */
+            total: number;
+            /** Reported */
+            reported: number;
+            /** Installing */
+            installing: number;
+            /** Recycling */
+            recycling: number;
+            /** Recycled */
+            recycled: number;
+            /** Failed */
+            failed: number;
+            /** Failures */
+            failures: {
+                [key: string]: string | null;
+            }[];
         };
         /**
          * PackageUpdate
@@ -34373,6 +34427,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PackageInstallResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_package_installation_progress_api_packages_installations__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackageInstallationProgressResponse"];
                 };
             };
             /** @description Validation Error */

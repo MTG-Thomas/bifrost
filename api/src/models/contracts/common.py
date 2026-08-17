@@ -141,8 +141,22 @@ class PackageInstallResponse(BaseModel):
     """Response model for package installation"""
     package_name: str | None = None
     version: str | None = None
-    status: str = Field(..., description="Installation status (success, queued)")
+    run_id: str = Field(..., description="Fleet recycle operation identifier")
+    status: str = Field(..., description="Installation status (queued)")
     message: str = Field(..., description="Installation message")
+
+
+class PackageInstallationProgressResponse(BaseModel):
+    """Fleet-wide package installation/recycle progress."""
+    run_id: str
+    status: str = Field(..., description="pending, running, succeeded, or failed")
+    total: int
+    reported: int
+    installing: int
+    recycling: int
+    recycled: int
+    failed: int
+    failures: list[dict[str, str | None]]
 
 
 class InstalledPackage(BaseModel):
