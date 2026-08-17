@@ -476,6 +476,8 @@ async def set_module(
     # Add to index set
     redis_conn = await redis._get_redis()
     await cast(Awaitable[int], redis_conn.sadd(MODULE_INDEX_KEY, path))
+    if generation:
+        await redis_conn.set(MODULE_INDEX_GENERATION_KEY, generation)
 
     logger.debug(f"Cached module: {log_safe(path)}")
 
@@ -639,11 +641,13 @@ async def reconcile_module_coherence(
     """Populate exact durable bytes into the current ready cache generation."""
     generation = await wait_for_workspace_generation()
     durable_hashes: dict[str, str] = {}
+    deleted_paths: list[str] = []
     for path in sorted(set(paths)):
         try:
             content = await _read_module_from_storage(path)
         except Exception:
             await invalidate_module(path)
+            deleted_paths.append(path)
             continue
         content_hash = hashlib.sha256(content).hexdigest()
         await set_module(
@@ -653,6 +657,31 @@ async def reconcile_module_coherence(
             generation=generation,
         )
         durable_hashes[path] = content_hash
+    if deleted_paths:
+        redis = get_redis_client()
+        redis_conn = await redis._get_redis()
+        deleted_values = await redis_conn.mget(
+            [f"{MODULE_KEY_PREFIX}{path}" for path in deleted_paths]
+        )
+        indexed_raw = await cast(
+            Awaitable[set[str | bytes]], redis_conn.smembers(MODULE_INDEX_KEY)
+        )
+        indexed_paths = {
+            value if isinstance(value, str) else value.decode()
+            for value in indexed_raw
+        }
+        incomplete_deletes = [
+            path
+            for path, value in zip(deleted_paths, deleted_values, strict=True)
+            if value is not None or path in indexed_paths
+        ]
+        if incomplete_deletes:
+            raise WorkspacePropagationError(
+                "workspace runtime deletion did not converge for: "
+                + ", ".join(incomplete_deletes)
+            )
+    if not durable_hashes:
+        return generation, []
     observed_generation, evidence = await inspect_module_coherence(durable_hashes)
     mismatches = [item.path for item in evidence if not item.coherent]
     if observed_generation != generation or mismatches:

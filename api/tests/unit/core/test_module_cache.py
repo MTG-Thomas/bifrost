@@ -164,6 +164,34 @@ class TestModuleCacheAsync:
                 "bifrost:module:index", storage_path
             )
 
+    async def test_reconcile_module_coherence_proves_deleted_cache_is_absent(
+        self, mock_redis_client
+    ):
+        mock_client, mock_redis = mock_redis_client
+        mock_redis.get.return_value = "generation-2"
+        mock_redis.mget.return_value = [None]
+        mock_redis.smembers.return_value = set()
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache._read_module_from_storage",
+                new=AsyncMock(side_effect=FileNotFoundError),
+            ),
+            patch(
+                "src.core.module_cache.invalidate_module", new=AsyncMock()
+            ) as invalidate,
+        ):
+            from src.core.module_cache import reconcile_module_coherence
+
+            generation, evidence = await reconcile_module_coherence(
+                ["workflows/deleted.py"]
+            )
+
+        assert generation == "generation-2"
+        assert evidence == []
+        invalidate.assert_awaited_once_with("workflows/deleted.py")
+
     async def test_get_module_s3_not_found(self, mock_redis_client):
         """When both Redis and S3 miss, get_module returns None."""
         mock_client, _ = mock_redis_client

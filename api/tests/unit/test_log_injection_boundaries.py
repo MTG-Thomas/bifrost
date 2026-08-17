@@ -20,6 +20,7 @@ async def test_module_cache_sanitizes_path_in_log(monkeypatch, caplog):
     redis_connection = MagicMock()
     redis_connection.get = AsyncMock(return_value="generation-1")
     redis_connection.sadd = AsyncMock(return_value=1)
+    redis_connection.set = AsyncMock()
     redis = MagicMock()
     redis.setex = AsyncMock()
     redis._get_redis = AsyncMock(return_value=redis_connection)
