@@ -33,6 +33,17 @@ QUEUE_SKIPPED_ON_MAIN = (
     "test-client-e2e",
     "test-e2e-gate",
 )
+ACTION_FREE_REQUIRED_TEST_JOBS = (
+    "test-unit",
+    "mcp-conformance",
+    "test-e2e",
+    "test-client-e2e",
+)
+ALLOWED_REQUIRED_TEST_ACTIONS = (
+    "actions/checkout@",
+    "actions/upload-artifact@",
+    "./",
+)
 EXPECTED_PR_CANCELLATION = "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
 
 
@@ -105,6 +116,23 @@ def check_ci_workflow(path: Path) -> list[str]:
                 f"actual:   name: {actual_name or '<missing>'}",
                 "Update repository rules first; never silently orphan a required check.",
             ]
+
+    for job in ACTION_FREE_REQUIRED_TEST_JOBS:
+        parsed = _job_block(lines, job)
+        if parsed is None:
+            return [f"{path}: required CI job {job!r} is missing"]
+        start_line, block = parsed
+        for offset, line in enumerate(block, start=1):
+            stripped = line.strip()
+            if not stripped.startswith("uses:"):
+                continue
+            action = stripped.removeprefix("uses:").strip()
+            if not action.startswith(ALLOWED_REQUIRED_TEST_ACTIONS):
+                return [
+                    f"{path}:{start_line + offset}: required test job {job!r} "
+                    f"must not preload third-party action {action}; use a repo-owned "
+                    "script or an explicitly allowed GitHub-owned action.",
+                ]
 
     expected_skip = (
         "always() && (github.event_name != 'push' || github.ref != 'refs/heads/main') "
