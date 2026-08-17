@@ -7,6 +7,7 @@ Tests the complete flow of:
 """
 
 import importlib
+import hashlib
 import sys
 
 import pytest
@@ -59,10 +60,11 @@ class TestVirtualImportIntegration:
 
         # Set up module in Redis cache
         await clear_module_cache()
+        content = 'VIRTUAL_IMPORT_VALUE = "loaded_from_redis"\ndef test_func(): return 42'
         await set_module(
             path="integration_test_virtual.py",
-            content='VIRTUAL_IMPORT_VALUE = "loaded_from_redis"\ndef test_func(): return 42',
-            content_hash="test123",
+            content=content,
+            content_hash=hashlib.sha256(content.encode()).hexdigest(),
         )
 
         # Install virtual import hook
@@ -93,15 +95,17 @@ class TestVirtualImportIntegration:
 
         # Set up package in Redis cache
         await clear_module_cache()
+        package_content = 'PKG_NAME = "test_package"'
         await set_module(
             path="integration_test_pkg/__init__.py",
-            content='PKG_NAME = "test_package"',
-            content_hash="pkg123",
+            content=package_content,
+            content_hash=hashlib.sha256(package_content.encode()).hexdigest(),
         )
+        helper_content = 'HELPER_VALUE = "from_helpers"'
         await set_module(
             path="integration_test_pkg/helpers.py",
-            content='HELPER_VALUE = "from_helpers"',
-            content_hash="helper123",
+            content=helper_content,
+            content_hash=hashlib.sha256(helper_content.encode()).hexdigest(),
         )
 
         # Install virtual import hook
@@ -217,7 +221,7 @@ def run_workflow(params):
             await set_module(
                 path="e2e_test_workflow.py",
                 content=content,
-                content_hash="e2e123",
+                content_hash=hashlib.sha256(content.encode()).hexdigest(),
             )
 
             # Step 2: Install virtual import hook

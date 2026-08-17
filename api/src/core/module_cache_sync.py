@@ -33,6 +33,7 @@ import redis
 
 from src.core.module_cache import (
     MODULE_INDEX_KEY,
+    MODULE_INDEX_GENERATION_KEY,
     MODULE_KEY_PREFIX,
     WORKSPACE_GENERATION_KEY,
     WORKSPACE_UPDATE_LOCK_SECONDS,
@@ -84,7 +85,9 @@ def set_solution_context(
     _solution_ctx.value = SolutionContext(
         solution_id=str(solution_id),
         global_repo_access=bool(global_repo_access),
-        runtime_storage_prefix=(runtime_storage_prefix.rstrip("/") + "/") if runtime_storage_prefix else None,
+        runtime_storage_prefix=(runtime_storage_prefix.rstrip("/") + "/")
+        if runtime_storage_prefix
+        else None,
         source_hashes=source_hashes,
     )
 
@@ -158,6 +161,7 @@ def candidate_index_prefixes(base_path: str) -> list[str]:
         return [rooted, f"{base}/"]
     return [rooted]
 
+
 # Cached S3 client — reused across calls to avoid repeated setup
 _s3_client: Any = None
 _s3_available: bool | None = None
@@ -169,7 +173,9 @@ def _object_storage_provider() -> str:
     explicit_provider = os.environ.get("BIFROST_OBJECT_STORAGE_PROVIDER")
     if explicit_provider:
         return explicit_provider.lower()
-    if os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL") and os.environ.get("BIFROST_AZURE_BLOB_CONTAINER"):
+    if os.environ.get("BIFROST_AZURE_BLOB_ACCOUNT_URL") and os.environ.get(
+        "BIFROST_AZURE_BLOB_CONTAINER"
+    ):
         return "azure_blob"
     return "s3"
 
@@ -232,7 +238,9 @@ def get_workspace_generation_sync() -> str:
 
 
 def wait_for_workspace_generation_sync(
-    *, timeout_seconds: float = WORKSPACE_UPDATE_LOCK_SECONDS, poll_seconds: float = 0.05
+    *,
+    timeout_seconds: float = WORKSPACE_UPDATE_LOCK_SECONDS,
+    poll_seconds: float = 0.05,
 ) -> str:
     """Wait for an in-progress source transaction to become stable."""
     deadline = time.monotonic() + timeout_seconds
@@ -288,6 +296,7 @@ def _get_engine_credentials() -> tuple[str, str] | None:
     """
     try:
         from bifrost.credentials import get_credentials
+
         creds = get_credentials()
         if creds and creds.get("access_token") and creds.get("api_url"):
             return creds["api_url"].rstrip("/"), creds["access_token"]
@@ -332,9 +341,7 @@ def _fetch_module_from_api(path: str) -> CachedModule | None:
         if resp.status_code == 404:
             return None
         if resp.status_code != 200:
-            logger.warning(
-                f"API module-fetch returned {resp.status_code} for {path}"
-            )
+            logger.warning(f"API module-fetch returned {resp.status_code} for {path}")
             return None
 
         data: CachedModule = resp.json()
@@ -587,6 +594,113 @@ def _get_object_storage_module(storage_path: str) -> bytes | None:
     return _get_s3_module(storage_path)
 
 
+def _require_workspace_generation(
+    expected_generation: str | None, *, message: str
+) -> None:
+    if (
+        expected_generation is not None
+        and workspace_generation_for_import() != expected_generation
+    ):
+        raise WorkspaceGenerationChangedError(message)
+
+
+def _cache_sync_module(
+    client: Any,
+    *,
+    key: str,
+    storage_path: str,
+    module: CachedModule,
+    source: str,
+) -> None:
+    try:
+        client.setex(key, MODULE_CACHE_TTL, json.dumps(module))
+        client.sadd(MODULE_INDEX_KEY, storage_path)
+    except redis.RedisError as exc:
+        logger.warning(f"Failed to re-cache {source} module to Redis: {exc}")
+
+
+def _object_storage_cached_module(
+    *, path: str, storage_path: str, expected_generation: str | None
+) -> CachedModule | None:
+    storage_content = _get_object_storage_module(storage_path)
+    if storage_content is None:
+        return None
+    try:
+        content_text = storage_content.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning(
+            f"Could not decode object storage module as UTF-8: {storage_path}"
+        )
+        return None
+    module: CachedModule = {
+        "content": content_text,
+        "path": path,
+        "hash": hashlib.sha256(storage_content).hexdigest(),
+    }
+    if expected_generation:
+        module["generation"] = expected_generation
+    _require_workspace_generation(
+        expected_generation,
+        message="workspace source generation changed during module fallback",
+    )
+    return module
+
+
+def _resolve_module_candidate(
+    client: Any, *, path: str, storage_path: str
+) -> CachedModule | None:
+    solution_module = storage_path.startswith(f"{SOLUTIONS_ROOT}/")
+    expected_generation = None if solution_module else workspace_generation_for_import()
+    key = f"{MODULE_KEY_PREFIX}{storage_path}"
+    data = client.get(key)
+    if data:
+        module = json.loads(data)
+        if solution_module or _cached_module_matches_generation(
+            module, expected_generation or ""
+        ):
+            _verify_deployment_module_hash(path, module)
+            return module
+
+    api_module = _fetch_module_from_api(storage_path)
+    if api_module is not None:
+        if not solution_module and not _cached_module_matches_generation(
+            api_module, expected_generation or ""
+        ):
+            raise WorkspaceGenerationChangedError(
+                "module API returned a different workspace generation"
+            )
+        _cache_sync_module(
+            client,
+            key=key,
+            storage_path=storage_path,
+            module=api_module,
+            source="API",
+        )
+        _verify_deployment_module_hash(path, api_module)
+        return api_module
+
+    module = _object_storage_cached_module(
+        path=path,
+        storage_path=storage_path,
+        expected_generation=expected_generation,
+    )
+    if module is None:
+        return None
+    _cache_sync_module(
+        client,
+        key=key,
+        storage_path=storage_path,
+        module=module,
+        source="object storage",
+    )
+    _verify_deployment_module_hash(path, module)
+    _require_workspace_generation(
+        expected_generation,
+        message="workspace source generation changed during module fallback",
+    )
+    return module
+
+
 def get_module_sync(path: str) -> CachedModule | None:
     """
     Fetch a single module from cache (synchronous).
@@ -616,52 +730,11 @@ def get_module_sync(path: str) -> CachedModule | None:
         client = _get_sync_redis()
 
         for storage_path in _candidate_storage_paths(path):
-            key = f"{MODULE_KEY_PREFIX}{storage_path}"
-            data = client.get(key)
-            if data:
-                module = json.loads(data)
-                _verify_deployment_module_hash(path, module)
+            module = _resolve_module_candidate(
+                client, path=path, storage_path=storage_path
+            )
+            if module is not None:
                 return module
-
-            # --- Cold-cache fallback 1: API endpoint ---
-            api_module = _fetch_module_from_api(storage_path)
-            if api_module is not None:
-                try:
-                    client.setex(key, MODULE_CACHE_TTL, json.dumps(api_module))
-                    client.sadd(MODULE_INDEX_KEY, storage_path)
-                except redis.RedisError as e:
-                    logger.warning(f"Failed to re-cache API module to Redis: {e}")
-                _verify_deployment_module_hash(path, api_module)
-                return api_module
-
-            # --- Cold-cache fallback 2: direct object storage (legacy path) ---
-            storage_content = _get_object_storage_module(storage_path)
-            if storage_content is None:
-                continue
-            try:
-                content_str = storage_content.decode("utf-8")
-            except UnicodeDecodeError:
-                logger.warning(
-                    f"Could not decode object storage module as UTF-8: {storage_path}"
-                )
-                continue
-
-            content_hash = hashlib.sha256(storage_content).hexdigest()
-            module: CachedModule = {
-                "content": content_str,
-                "path": path,
-                "hash": content_hash,
-            }
-
-            # Cache back to Redis under the storage-path key + index.
-            try:
-                client.setex(key, MODULE_CACHE_TTL, json.dumps(module))
-                client.sadd(MODULE_INDEX_KEY, storage_path)
-            except redis.RedisError as e:
-                logger.warning(f"Failed to cache object storage module to Redis: {e}")
-
-            _verify_deployment_module_hash(path, module)
-            return module
 
         logger.debug(f"Module not in cache, API, or object storage: {path}")
         return None
@@ -688,10 +761,15 @@ def get_modules_sync(paths: list[str]) -> dict[str, CachedModule | None]:
             [f"{MODULE_KEY_PREFIX}{storage_path}" for _path, storage_path in candidates]
         )
         resolved: dict[str, CachedModule | None] = {}
-        for (path, _storage_path), data in zip(candidates, values, strict=True):
+        expected_generation = workspace_generation_for_import()
+        for (path, storage_path), data in zip(candidates, values, strict=True):
             if path in resolved or not data:
                 continue
             module = json.loads(data)
+            if not storage_path.startswith(
+                f"{SOLUTIONS_ROOT}/"
+            ) and not _cached_module_matches_generation(module, expected_generation):
+                continue
             _verify_deployment_module_hash(path, module)
             resolved[path] = module
 
@@ -714,6 +792,19 @@ def _verify_deployment_module_hash(path: str, module: CachedModule) -> None:
     actual = str(module.get("hash") or "").removeprefix("sha256:")
     if actual != expected.removeprefix("sha256:"):
         raise RuntimeError(f"deployment import integrity mismatch: {path}")
+
+
+def _cached_module_matches_generation(module: object, generation: str) -> bool:
+    if not isinstance(module, dict):
+        return False
+    content = module.get("content")
+    content_hash = module.get("hash")
+    return (
+        isinstance(content, str)
+        and isinstance(content_hash, str)
+        and module.get("generation") == generation
+        and hashlib.sha256(content.encode("utf-8")).hexdigest() == content_hash
+    )
 
 
 def _list_s3_modules() -> set[str]:
@@ -740,7 +831,7 @@ def _list_s3_modules() -> set[str]:
                 key: str = obj["Key"]
                 if key.endswith(".py"):
                     # Strip the _repo/ prefix to get the relative path
-                    paths.add(key[len(REPO_PREFIX):])
+                    paths.add(key[len(REPO_PREFIX) :])
     except Exception as e:
         logger.warning(f"S3 list error when rebuilding module index: {e}")
 
@@ -758,7 +849,7 @@ def _list_blob_modules() -> set[str]:
         for blob in client.list_blobs(name_starts_with=REPO_PREFIX):
             key: str = blob.name
             if key.endswith(".py"):
-                paths.add(key[len(REPO_PREFIX):])
+                paths.add(key[len(REPO_PREFIX) :])
     except Exception as e:
         logger.warning(f"Azure Blob list error when rebuilding module index: {e}")
 
@@ -785,8 +876,12 @@ def get_module_index_sync() -> set[str]:
     """
     try:
         client = _get_sync_redis()
+        generation = workspace_generation_for_import()
+        index_generation = client.get(MODULE_INDEX_GENERATION_KEY)
+        if isinstance(index_generation, bytes):
+            index_generation = index_generation.decode()
         paths = client.smembers(MODULE_INDEX_KEY)
-        if paths:
+        if paths and index_generation == generation:
             return {p if isinstance(p, str) else p.decode() for p in paths}
 
         # Redis index is empty — try API first
@@ -801,6 +896,7 @@ def get_module_index_sync() -> set[str]:
             try:
                 client.sadd(MODULE_INDEX_KEY, *api_paths)
                 client.expire(MODULE_INDEX_KEY, MODULE_CACHE_TTL)
+                client.set(MODULE_INDEX_GENERATION_KEY, generation)
             except redis.RedisError as e:
                 logger.warning(f"Failed to repopulate module index from API: {e}")
             return api_paths
@@ -812,6 +908,7 @@ def get_module_index_sync() -> set[str]:
             try:
                 client.sadd(MODULE_INDEX_KEY, *storage_paths)
                 client.expire(MODULE_INDEX_KEY, MODULE_CACHE_TTL)
+                client.set(MODULE_INDEX_GENERATION_KEY, generation)
             except redis.RedisError as e:
                 logger.warning(f"Failed to repopulate module index in Redis: {e}")
             return storage_paths

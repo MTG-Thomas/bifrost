@@ -2,13 +2,14 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
+import asyncio
 import json
 import subprocess
 import sys
 import types
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -103,6 +104,28 @@ async def test_notify_requirements_failures_creates_deduped_admin_notification(m
     assert kwargs["request"].metadata["failed"] == [
         {"package": "bad", "error": "build failed"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_start_template_reuses_manager_installed_requirements(monkeypatch):
+    created: list[bool] = []
+
+    class FakeTemplate:
+        pid = 123
+
+        def __init__(self, *, install_requirements_on_startup: bool) -> None:
+            created.append(install_requirements_on_startup)
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(process_pool, "TemplateProcess", FakeTemplate)
+    pool = ProcessPoolManager()
+
+    await pool._start_template()
+
+    assert created == [False]
+    assert isinstance(pool._template, FakeTemplate)
 
 
 def test_get_installed_packages_returns_json_on_success(monkeypatch):
@@ -266,6 +289,8 @@ def test_build_heartbeat_includes_admission_and_capacity(monkeypatch):
 @pytest.mark.asyncio
 async def test_route_execution_records_success_and_sends_execution_id(monkeypatch):
     pool = ProcessPoolManager(max_workers=2, execution_timeout_seconds=33)
+    pool._started = True
+    pool._template = SimpleNamespace(is_alive=lambda: True)
     handle = _handle(execution_id=None)
     sent: list[str] = []
     handle.work_queue = SimpleNamespace(put_nowait=sent.append)
@@ -292,6 +317,271 @@ async def test_route_execution_records_success_and_sends_execution_id(monkeypatc
     assert pool._admission_attempts == 1
     assert pool._admission_successes == 1
     assert pool._admission_rejections == {"slot_timeout": 0, "memory_pressure": 0}
+
+
+class _ObservedAsyncLock:
+    """Async lock that exposes when a second task is queued behind its owner."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self.waiter_blocked = asyncio.Event()
+
+    async def __aenter__(self):
+        if self._lock.locked():
+            self.waiter_blocked.set()
+        await self._lock.acquire()
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_route_fork_is_atomic_with_generation_recycle(monkeypatch):
+    """A recycle arriving after route readiness cannot kill its template."""
+    pool = ProcessPoolManager(max_workers=2)
+    pool._started = True
+    observed_lock = _ObservedAsyncLock()
+    pool._restart_lock = observed_lock  # type: ignore[assignment]
+
+    template = SimpleNamespace(alive=True)
+    pool._template = SimpleNamespace(is_alive=lambda: template.alive)
+    context_ready = asyncio.Event()
+    release_context = asyncio.Event()
+    recycle_holds_lock = asyncio.Event()
+    release_recycle = asyncio.Event()
+    forked = asyncio.Event()
+    events: list[str] = []
+
+    async def write_context(_execution_id: str, _context: dict) -> None:
+        assert not observed_lock.locked()
+        context_ready.set()
+        await release_context.wait()
+
+    async def recycle_for_generation_change() -> None:
+        async with observed_lock:
+            template.alive = False
+            events.append("template_down")
+            recycle_holds_lock.set()
+            await release_recycle.wait()
+            template.alive = True
+            events.append("template_ready")
+
+    handle = _handle(execution_id=None)
+
+    def fork_process() -> ProcessHandle:
+        forked.set()
+        assert observed_lock.locked()
+        assert template.alive
+        events.append("fork")
+        pool.processes[handle.id] = handle
+        return handle
+
+    pool._write_context_to_redis = write_context  # type: ignore[method-assign]
+    pool._fork_process = fork_process  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.9),
+    )
+    monkeypatch.setattr(
+        process_pool,
+        "has_sufficient_memory_cgroup",
+        lambda threshold: True,
+    )
+
+    route_task = asyncio.create_task(pool.route_execution("exec-race", {}))
+    await context_ready.wait()
+    recycle_task = asyncio.create_task(recycle_for_generation_change())
+    await recycle_holds_lock.wait()
+
+    release_context.set()
+    lock_waiter = asyncio.create_task(observed_lock.waiter_blocked.wait())
+    fork_waiter = asyncio.create_task(forked.wait())
+    completed, pending = await asyncio.wait(
+        {lock_waiter, fork_waiter},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    assert lock_waiter in completed
+    assert not forked.is_set()
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+    release_recycle.set()
+    await recycle_task
+    await route_task
+
+    assert events == ["template_down", "template_ready", "fork"]
+    assert handle.current_execution is not None
+    assert handle.current_execution.execution_id == "exec-race"
+
+
+@pytest.mark.asyncio
+async def test_normal_drain_waits_for_newly_forked_execution(monkeypatch):
+    """The protected fork still participates in the normal drain path."""
+    pool = ProcessPoolManager(max_workers=2)
+    pool._started = True
+    pool._template = SimpleNamespace(is_alive=lambda: True)
+    handle = _handle(execution_id=None)
+    pool._write_context_to_redis = AsyncMock()
+
+    def fork_process() -> ProcessHandle:
+        pool.processes[handle.id] = handle
+        return handle
+
+    pool._fork_process = fork_process  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.9),
+    )
+    monkeypatch.setattr(
+        process_pool,
+        "has_sufficient_memory_cgroup",
+        lambda threshold: True,
+    )
+
+    await pool.route_execution("exec-drain", {})
+
+    drain_waiting = asyncio.Event()
+    release_drain = asyncio.Event()
+
+    async def controlled_drain_wait(_seconds: float) -> None:
+        drain_waiting.set()
+        await release_drain.wait()
+
+    monkeypatch.setattr(process_pool.asyncio, "sleep", controlled_drain_wait)
+    pool.restart_template = AsyncMock()
+    pool._terminate_process = AsyncMock()
+
+    drain_task = asyncio.create_task(pool.drain_and_restart_template())
+    await drain_waiting.wait()
+    pool.restart_template.assert_not_awaited()
+
+    pool.processes.pop(handle.id)
+    release_drain.set()
+    await drain_task
+
+    pool._terminate_process.assert_not_awaited()
+    pool.restart_template.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_route_heals_dead_template_left_by_failed_restart(monkeypatch):
+    pool = ProcessPoolManager(max_workers=2)
+    pool._started = True
+    dead_template = SimpleNamespace(is_alive=lambda: False)
+    replacement_template = SimpleNamespace(is_alive=lambda: True)
+    pool._template = dead_template
+    pool._write_context_to_redis = AsyncMock()
+    handle = _handle(execution_id=None)
+
+    async def start_replacement() -> None:
+        assert pool._restart_lock.locked()
+        pool._template = replacement_template
+
+    def fork_process() -> ProcessHandle:
+        assert pool._restart_lock.locked()
+        assert pool._template is replacement_template
+        return handle
+
+    pool._start_template = AsyncMock(side_effect=start_replacement)
+    pool._fork_process = fork_process  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.9),
+    )
+    monkeypatch.setattr(
+        process_pool,
+        "has_sufficient_memory_cgroup",
+        lambda threshold: True,
+    )
+
+    await pool.route_execution("exec-healed", {})
+
+    pool._start_template.assert_awaited_once_with()
+    assert handle.current_execution is not None
+    assert handle.current_execution.execution_id == "exec-healed"
+
+
+@pytest.mark.asyncio
+async def test_route_propagates_replacement_template_start_failure(monkeypatch):
+    pool = ProcessPoolManager(max_workers=2)
+    pool._started = True
+    pool._template = SimpleNamespace(is_alive=lambda: False)
+    pool._write_context_to_redis = AsyncMock()
+    pool._start_template = AsyncMock(
+        side_effect=RuntimeError("replacement template preload failed")
+    )
+    pool._fork_process = Mock(side_effect=AssertionError("must not fork"))
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.9),
+    )
+    monkeypatch.setattr(
+        process_pool,
+        "has_sufficient_memory_cgroup",
+        lambda threshold: True,
+    )
+
+    with pytest.raises(RuntimeError, match="replacement template preload failed"):
+        await pool.route_execution("exec-start-failed", {})
+
+    pool._start_template.assert_awaited_once_with()
+    pool._fork_process.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_route_does_not_restart_pool_stopped_while_waiting(monkeypatch):
+    pool = ProcessPoolManager(max_workers=2)
+    pool._started = True
+    pool._template = SimpleNamespace(is_alive=lambda: False)
+    pool._write_context_to_redis = AsyncMock()
+    observed_lock = _ObservedAsyncLock()
+    pool._restart_lock = observed_lock  # type: ignore[assignment]
+    pool._start_template = AsyncMock()
+    pool._fork_process = Mock(side_effect=AssertionError("must not fork"))
+    monkeypatch.setattr(
+        process_pool,
+        "get_settings",
+        lambda: SimpleNamespace(memory_pressure_threshold=0.9),
+    )
+    monkeypatch.setattr(
+        process_pool,
+        "has_sufficient_memory_cgroup",
+        lambda threshold: True,
+    )
+
+    async with observed_lock:
+        route_task = asyncio.create_task(pool.route_execution("exec-stopped", {}))
+        await observed_lock.waiter_blocked.wait()
+        pool._shutdown = True
+        pool._started = False
+
+    with pytest.raises(RuntimeError, match="process pool is not running"):
+        await route_task
+
+    pool._start_template.assert_not_awaited()
+    pool._fork_process.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_health_skips_template_pipe_during_restart_lock():
+    pool = ProcessPoolManager()
+    pool._collect_child_exit_statuses = Mock()
+
+    async with pool._restart_lock:
+        await pool._check_process_health()
+    pool._collect_child_exit_statuses.assert_not_called()
+
+    await pool._check_process_health()
+    pool._collect_child_exit_statuses.assert_called_once_with()
 
 
 @pytest.mark.asyncio

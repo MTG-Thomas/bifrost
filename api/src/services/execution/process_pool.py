@@ -402,7 +402,13 @@ class ProcessPoolManager:
         catch this — the worker process should crash-loop so Kubernetes
         restarts it and the failure is visible.
         """
-        new_template = TemplateProcess()
+        # Requirements are installed in the manager before initial startup and
+        # before package-driven recycle.  The environment is shared with the
+        # spawned template, so installing them again here only extends the
+        # restart barrier and can make the next admitted execution time out.
+        # Crash/route healing likewise reuses that already-installed shared
+        # environment; source-generation recycle only needs fresh imports.
+        new_template = TemplateProcess(install_requirements_on_startup=False)
         await asyncio.to_thread(new_template.start)
         self._template = new_template
         logger.info(f"Template process started (PID={new_template.pid})")
@@ -502,6 +508,18 @@ class ProcessPoolManager:
         self.processes[process_id] = handle
         logger.info(f"Created worker {process_id} (PID={handle.pid})")
         return handle
+
+    async def _ensure_template_alive_for_route(self) -> None:
+        """Ensure an admitted route has a live template while restart-locked."""
+        if not self._started or self._shutdown:
+            raise RuntimeError("Cannot route execution: process pool is not running")
+
+        if self._template is None or not self._template.is_alive():
+            logger.warning("Template unavailable during route admission; starting replacement")
+            await self._start_template()
+
+        if self._template is None or not self._template.is_alive():
+            raise RuntimeError("Replacement template process did not become ready")
 
     async def start(self) -> None:
         """
@@ -691,12 +709,6 @@ class ProcessPoolManager:
         self._admission_attempts += 1
         admission_started = time.monotonic()
 
-        # Wait for any in-progress drain+restart to complete before routing.
-        # Without this, executions arriving during a package-install restart
-        # would hit a dead template and fail with ConnectionResetError.
-        async with self._restart_lock:
-            pass  # just wait for it to be released
-
         # Write context to Redis
         await self._write_context_to_redis(execution_id, context)
 
@@ -731,8 +743,18 @@ class ProcessPoolManager:
                 )
                 raise ProcessPoolAdmissionRejected("No worker slot available after timeout")
 
-        # Fork the worker. _fork_process returns a handle already in BUSY.
-        handle = self._fork_process()
+        # Validate and fork while holding the same lock used by template
+        # recycling. Merely waiting on the lock earlier in this method leaves a
+        # race across the context/admission awaits: a recycle can shut down the
+        # template after that wait but before the fork.
+        async with self._restart_lock:
+            # A failed or externally interrupted restart can leave the installed
+            # template dead after the restart lock is released. Heal that state
+            # once, while preserving a concurrent stop as authoritative.
+            await self._ensure_template_alive_for_route()
+            # _fork_process repeats the final template-alive validation and
+            # returns a handle already in BUSY.
+            handle = self._fork_process()
 
         # Get timeout from context or use default
         timeout = context.get("timeout_seconds", self.execution_timeout_seconds)
@@ -1178,7 +1200,10 @@ class ProcessPoolManager:
         """
         to_remove: list[str] = []
 
-        self._collect_child_exit_statuses()
+        # restart_template mutates the TemplateProcess control pipe in a worker
+        # thread. Do not inspect that pipe while the restart lock is held.
+        if not self._restart_lock.locked():
+            self._collect_child_exit_statuses()
 
         # Snapshot to a list — items() iterator is unsafe across the awaits
         # below (peer coroutines like _handle_result mutate self.processes).

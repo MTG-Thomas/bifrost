@@ -142,10 +142,12 @@ The client at `localhost:3000` proxies `/api/*` to the API container. This means
 |-------------|-----------|----------|----------------|
 | All files | S3 `_repo/` via `RepoStorage` | S3 `_repo/` via `RepoStorage` | S3 is source of truth |
 | Text files | + `file_index` DB | `file_index` (search only) | Search index, never read content |
-| Python modules/workflows | + Redis via `set_module()` | Redis via `get_module()` → S3 fallback | Write-through (warm on write) |
+| Python modules/workflows | + generation-stamped Redis via `set_module()` | current-generation Redis via `get_module()` → object-storage fallback | Write-through; stale generations are misses and self-heal |
 | Compiled app files | S3 `_apps/{id}/preview/` | Redis render cache → S3 fallback | Invalidate on write, lazy rebuild |
 
 **`get_module()` must NOT be used for non-Python files.** App source reads (TSX, YAML, etc.) go to S3 directly via `RepoStorage.read()`.
+The complete contract and release-repair semantics are documented in
+[`docs/architecture/workspace-source-coherence.md`](docs/architecture/workspace-source-coherence.md).
 
 ### Form & agent inline manifest content — portability design
 
