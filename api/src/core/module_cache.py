@@ -531,7 +531,9 @@ async def get_all_module_paths() -> set[str]:
     rebuilt = workspace_paths | solution_paths
     await redis_conn.delete(MODULE_INDEX_KEY)
     if rebuilt:
-        await redis_conn.sadd(MODULE_INDEX_KEY, *sorted(rebuilt))
+        await cast(
+            Awaitable[int], redis_conn.sadd(MODULE_INDEX_KEY, *sorted(rebuilt))
+        )
     await redis_conn.set(MODULE_INDEX_GENERATION_KEY, generation)
     return rebuilt
 
@@ -566,7 +568,9 @@ async def inspect_module_coherence(
     redis_conn = await redis._get_redis()
     ordered = sorted(python_hashes)
     values = await redis_conn.mget([f"{MODULE_KEY_PREFIX}{path}" for path in ordered])
-    indexed_raw = await redis_conn.smembers(MODULE_INDEX_KEY)
+    indexed_raw = await cast(
+        Awaitable[set[str | bytes]], redis_conn.smembers(MODULE_INDEX_KEY)
+    )
     indexed_paths = {
         value if isinstance(value, str) else value.decode() for value in indexed_raw
     }

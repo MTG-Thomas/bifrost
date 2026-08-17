@@ -671,8 +671,9 @@ def get_module_sync(path: str) -> CachedModule | None:
                 "content": content_str,
                 "path": path,
                 "hash": content_hash,
-                **({"generation": expected_generation} if expected_generation else {}),
             }
+            if expected_generation:
+                module["generation"] = expected_generation
 
             if not solution_module:
                 if workspace_generation_for_import() != expected_generation:
