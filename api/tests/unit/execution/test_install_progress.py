@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from src.services.execution.install_progress import (
     WorkerPhase,
     aggregate_phases,
+    get_run_progress,
     summary_line,
 )
 
@@ -23,6 +24,7 @@ def test_aggregate_counts_phases_out_of_total():
     assert agg["installed"] == 1
     assert agg["installing"] == 1
     assert agg["failed"] == 1
+    assert agg["reported"] == 3
     assert agg["failures"] == [{"worker": "w3", "package": "xhtml2pdf", "error": "no cc"}]
 
 
@@ -79,3 +81,35 @@ async def test_report_phase_writes_hash_and_publishes_once():
     assert published[0]["total"] == 2
     assert published[0]["installed"] == 1
     assert published[0]["line"] == "Installing on 1/2 workers…"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("worker_phases", "total", "expected"),
+    [
+        ({}, 2, "pending"),
+        ({"w1": "recycling"}, 2, "running"),
+        ({"w1": "recycled", "w2": "recycled"}, 2, "succeeded"),
+        ({"w1": "recycled", "w2": "failed"}, 2, "failed"),
+    ],
+)
+async def test_get_run_progress_reports_fleet_terminal_state(
+    worker_phases: dict[str, str], total: int, expected: str
+) -> None:
+    fake_redis = AsyncMock()
+    fake_redis.hgetall.return_value = {
+        worker_id: json.dumps({"phase": phase})
+        for worker_id, phase in worker_phases.items()
+    }
+    fake_redis.scan.return_value = (
+        0,
+        [f"bifrost:pool:w{index}" for index in range(1, total + 1)],
+    )
+
+    from src.services.execution import install_progress as ip
+    with patch.object(ip, "_raw_redis", AsyncMock(return_value=fake_redis)):
+        progress = await get_run_progress("run-1")
+
+    assert progress["status"] == expected
+    assert progress["reported"] == len(worker_phases)
+    assert progress["total"] == total

@@ -11,6 +11,29 @@ import pytest
 from tests.e2e.conftest import poll_until, write_and_register, execute_workflow_sync
 
 
+def wait_for_package_recycle(e2e_client, headers, response, *, max_wait=90.0):
+    """Wait for the exact async package operation to finish on every worker."""
+    assert response.status_code == 200, response.text
+    run_id = response.json().get("run_id")
+    assert run_id, f"Package operation did not return run_id: {response.text}"
+
+    def check_complete():
+        progress = e2e_client.get(
+            f"/api/packages/installations/{run_id}", headers=headers
+        )
+        assert progress.status_code == 200, progress.text
+        body = progress.json()
+        if body["status"] in {"succeeded", "failed"}:
+            return body
+        return None
+
+    result = poll_until(check_complete, max_wait=max_wait)
+    assert result is not None, f"Package operation {run_id} did not finish"
+    assert result["status"] == "succeeded", result
+    assert result["reported"] == result["total"], result
+    return result
+
+
 # Module-level fixtures for workflows used across multiple test classes
 
 
@@ -1054,9 +1077,12 @@ def get_value():
             packages = response.json().get("packages", [])
             if not any(p.get("name", "").lower() == package_name for p in packages):
                 return
-            e2e_client.delete(
+            uninstall_response = e2e_client.delete(
                 f"/api/packages/{package_name}",
                 headers=platform_admin.headers,
+            )
+            wait_for_package_recycle(
+                e2e_client, platform_admin.headers, uninstall_response
             )
 
             def check_gone():
@@ -1120,9 +1146,10 @@ async def {workflow_name}(number: int = 1000000):
                 f"Install request failed: {response.text}"
             )
             install_data = response.json()
-            assert install_data.get("status") == "success", (
+            assert install_data.get("status") == "queued", (
                 f"Unexpected install status: {install_data}"
             )
+            wait_for_package_recycle(e2e_client, platform_admin.headers, response)
 
             # Step 4: Poll until package appears in installed list
             # Workers pip install the package then recycle processes.
@@ -1339,9 +1366,12 @@ def get_data():
             packages = response.json().get("packages", [])
             if any(p.get("name", "").lower() == package_name for p in packages):
                 # Uninstall it first to ensure clean test
-                e2e_client.delete(
+                uninstall_response = e2e_client.delete(
                     f"/api/packages/{package_name}",
                     headers=platform_admin.headers,
+                )
+                wait_for_package_recycle(
+                    e2e_client, platform_admin.headers, uninstall_response
                 )
 
         # Install a package
@@ -1354,9 +1384,10 @@ def get_data():
             f"Install failed: {install_response.text}"
         )
         install_data = install_response.json()
-        assert install_data.get("status") == "success", (
+        assert install_data.get("status") == "queued", (
             f"Unexpected install status: {install_data}"
         )
+        wait_for_package_recycle(e2e_client, platform_admin.headers, install_response)
 
         # Read requirements.txt from S3
         repo = RepoStorage()
@@ -1369,10 +1400,11 @@ def get_data():
         )
 
         # Cleanup: uninstall package
-        e2e_client.delete(
+        uninstall_response = e2e_client.delete(
             f"/api/packages/{package_name}",
             headers=platform_admin.headers,
         )
+        wait_for_package_recycle(e2e_client, platform_admin.headers, uninstall_response)
 
     @pytest.mark.asyncio
     async def test_requirements_cached_in_redis(self, e2e_client, platform_admin):
@@ -1396,9 +1428,12 @@ def get_data():
             packages = response.json().get("packages", [])
             if any(p.get("name", "").lower() == package_name for p in packages):
                 # Uninstall it first to ensure clean test
-                e2e_client.delete(
+                uninstall_response = e2e_client.delete(
                     f"/api/packages/{package_name}",
                     headers=platform_admin.headers,
+                )
+                wait_for_package_recycle(
+                    e2e_client, platform_admin.headers, uninstall_response
                 )
 
         # Install a package
@@ -1411,9 +1446,10 @@ def get_data():
             f"Install failed: {install_response.text}"
         )
         install_data = install_response.json()
-        assert install_data.get("status") == "success", (
+        assert install_data.get("status") == "queued", (
             f"Unexpected install status: {install_data}"
         )
+        wait_for_package_recycle(e2e_client, platform_admin.headers, install_response)
 
         # Poll until package appears in installed list (confirms installation completed)
         def check_package_installed():
@@ -1438,10 +1474,11 @@ def get_data():
         )
 
         # Cleanup: uninstall package
-        e2e_client.delete(
+        uninstall_response = e2e_client.delete(
             f"/api/packages/{package_name}",
             headers=platform_admin.headers,
         )
+        wait_for_package_recycle(e2e_client, platform_admin.headers, uninstall_response)
 
 
 @pytest.mark.e2e
