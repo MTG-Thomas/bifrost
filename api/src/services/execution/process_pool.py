@@ -691,12 +691,6 @@ class ProcessPoolManager:
         self._admission_attempts += 1
         admission_started = time.monotonic()
 
-        # Wait for any in-progress drain+restart to complete before routing.
-        # Without this, executions arriving during a package-install restart
-        # would hit a dead template and fail with ConnectionResetError.
-        async with self._restart_lock:
-            pass  # just wait for it to be released
-
         # Write context to Redis
         await self._write_context_to_redis(execution_id, context)
 
@@ -731,8 +725,14 @@ class ProcessPoolManager:
                 )
                 raise ProcessPoolAdmissionRejected("No worker slot available after timeout")
 
-        # Fork the worker. _fork_process returns a handle already in BUSY.
-        handle = self._fork_process()
+        # Validate and fork while holding the same lock used by template
+        # recycling. Merely waiting on the lock earlier in this method leaves a
+        # race across the context/admission awaits: a recycle can shut down the
+        # template after that wait but before the fork.
+        async with self._restart_lock:
+            # _fork_process performs the final template-alive validation and
+            # returns a handle already in BUSY.
+            handle = self._fork_process()
 
         # Get timeout from context or use default
         timeout = context.get("timeout_seconds", self.execution_timeout_seconds)
