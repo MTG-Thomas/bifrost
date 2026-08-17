@@ -15,7 +15,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
-from typing import cast
+from typing import TYPE_CHECKING, Awaitable, Callable, cast
 from uuid import UUID
 
 from sqlalchemy import text
@@ -35,6 +35,7 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoGitConvergencePreviewRequest,
     WorkspaceRepoGitConvergenceResponse,
     WorkspaceRepoMutation,
+    WorkspaceRepoRuntimeState,
     WorkspaceRepoStateResponse,
     WorkspaceRepoValidationResponse,
 )
@@ -59,6 +60,9 @@ from src.services.workflow_registration import (
     apply_workspace_registration_plan,
     plan_workspace_registrations,
 )
+
+if TYPE_CHECKING:
+    from src.core.module_cache import ModuleCoherence
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +114,21 @@ class WorkspaceRepoChangesetService:
         organization_id: UUID,
         repo: RepoStorage | None = None,
         commit_writer: PlatformCommitWriter | None = None,
+        module_coherence_inspector: Callable[
+            [dict[str, str]], Awaitable[tuple[str, list["ModuleCoherence"]]]
+        ]
+        | None = None,
     ):
         self.db = db
         self.organization_id = organization_id
         self.repo = repo or RepoStorage()
         self.rows = WorkspaceRepoChangesetRepository(db)
         self.commit_writer = commit_writer
+        if module_coherence_inspector is None:
+            from src.core.module_cache import inspect_module_coherence
+
+            module_coherence_inspector = inspect_module_coherence
+        self.inspect_module_coherence = module_coherence_inspector
 
     @staticmethod
     def normalize_scope(scope: str) -> str:
@@ -160,6 +173,8 @@ class WorkspaceRepoChangesetService:
     ) -> WorkspaceRepoStateResponse:
         scope = self.normalize_scope(scope)
         revision, files = await self._snapshot(scope)
+        generation, runtime_files = await self.inspect_module_coherence(files)
+        mismatches = [item for item in runtime_files if not item.coherent]
         count = await self.rows.count_open(scope, self.organization_id)
         return WorkspaceRepoStateResponse(
             scope=scope,
@@ -169,6 +184,15 @@ class WorkspaceRepoChangesetService:
             dirty=workspace_dirty or count > 0,
             open_changesets=count,
             git_status=git_status,
+            runtime=(
+                WorkspaceRepoRuntimeState(
+                    generation=generation,
+                    coherent=not mismatches,
+                    files=[item.to_dict() for item in mismatches],
+                )
+                if any(path.endswith(".py") for path in files)
+                else None
+            ),
         )
 
     async def begin(
@@ -364,6 +388,19 @@ class WorkspaceRepoChangesetService:
             self.db, self.organization_id, registration_candidates
         )
         diagnostics.extend(registry_diagnostics)
+        verify_hashes = {
+            item["path"]: str(item["after_hash"])
+            for item in row.mutations
+            if item["operation"] == "verify"
+            and item["path"].endswith(".py")
+            and item.get("after_hash")
+        }
+        _runtime_generation, runtime_state = await self.inspect_module_coherence(
+            verify_hashes
+        )
+        runtime_repairs = [
+            item.to_dict() for item in runtime_state if not item.coherent
+        ]
         has_source_mutations = any(
             item["operation"] != "verify" for item in row.mutations
         )
@@ -371,7 +408,12 @@ class WorkspaceRepoChangesetService:
             item.get("action") in {"create", "reactivate"}
             for item in registration_actions
         )
-        if not has_source_mutations and not has_registration_mutations:
+        has_runtime_repairs = bool(runtime_repairs)
+        if (
+            not has_source_mutations
+            and not has_registration_mutations
+            and not has_runtime_repairs
+        ):
             diagnostics.append(
                 {
                     "severity": "error",
@@ -387,13 +429,18 @@ class WorkspaceRepoChangesetService:
             not diagnostics
             and not pending
             and bool(row.mutations)
-            and (has_source_mutations or has_registration_mutations)
+            and (
+                has_source_mutations
+                or has_registration_mutations
+                or has_runtime_repairs
+            )
         )
         current_revision, _ = await self._snapshot(row.scope)
         candidate_id = self._candidate_id(
             row,
             validated_revision=current_revision,
             registration_actions=registration_actions,
+            runtime_repairs=runtime_repairs,
         )
         result = WorkspaceRepoValidationResponse(
             valid=valid,
@@ -401,6 +448,7 @@ class WorkspaceRepoChangesetService:
             diagnostics=diagnostics,
             pending_deactivations=pending,
             registration_actions=registration_actions,
+            runtime_repairs=runtime_repairs,
             validated_revision=current_revision,
         )
         row.validation = result.model_dump(mode="json")
@@ -438,6 +486,12 @@ class WorkspaceRepoChangesetService:
             raise ChangesetInvalid(
                 "changeset must pass validation immediately before activation"
             )
+        runtime_repairs = list(row.validation.get("runtime_repairs") or [])
+        runtime_repair_paths = {
+            str(item.get("path") or "")
+            for item in runtime_repairs
+            if isinstance(item, dict)
+        }
         candidate_id = str(row.validation.get("candidate_id") or "")
         if not candidate_id or request.candidate_id != candidate_id:
             raise ChangesetInvalid(
@@ -469,130 +523,178 @@ class WorkspaceRepoChangesetService:
         python_paths = [
             item["path"]
             for item in row.mutations
-            if item["operation"] != "verify" and item["path"].endswith(".py")
+            if item["path"].endswith(".py")
+            and (item["operation"] != "verify" or item["path"] in runtime_repair_paths)
         ]
-        from src.core.module_cache import workspace_source_update
+        from src.core.module_cache import (
+            WorkspacePropagationError,
+            workspace_source_update,
+        )
 
-        async with workspace_source_update(
-            reason="workspace_changeset_activated",
-            changed_paths=python_paths,
-            broadcast=True,
-        ):
-            try:
+        try:
+            async with workspace_source_update(
+                reason="workspace_changeset_activated",
+                changed_paths=python_paths,
+                broadcast=True,
+            ):
                 try:
-                    applied_registrations = await apply_workspace_registration_plan(
-                        self.db,
-                        self.organization_id,
-                        list(row.validation.get("registration_actions") or []),
-                    )
-                    row.validation = {
-                        **row.validation,
-                        "registration_actions": applied_registrations,
-                    }
-                except WorkflowRegistrationConflict as exc:
-                    raise ChangesetInvalid(str(exc)) from exc
-                for item in row.mutations:
-                    if item["operation"] == "delete":
-                        await storage.delete_file(item["path"])
-                    elif item["operation"] == "write":
-                        result = await storage.write_file(
-                            item["path"],
-                            base64.b64decode(item["content_base64"]),
-                            updated_by=updated_by,
-                            force_deactivation=bool(item.get("force_deactivation")),
-                            # A changeset that owns verified Git closure is its
-                            # own durable dirty/closure ledger. The legacy bit
-                            # remains for source writes activated without Git.
-                            skip_dirty_flag=owns_git_closure,
-                        )
-                        if result.pending_deactivations:
-                            raise ChangesetInvalid(
-                                f"deactivation preflight changed for {item['path']}"
-                            )
-                activated_revision, activated_files = await self._snapshot(row.scope)
-                file_evidence: list[dict] = []
-                for item in sorted(row.mutations, key=lambda value: value["path"]):
-                    observed_hash = activated_files.get(item["path"])
-                    expected_hash = (
-                        item.get("after_hash")
-                        if item["operation"] in {"write", "verify"}
-                        else None
-                    )
-                    if observed_hash != expected_hash:
-                        raise ChangesetInvalid(
-                            f"activation readback mismatch for {item['path']}"
-                        )
-                    file_evidence.append(
-                        {
-                            "path": item["path"],
-                            "operation": item["operation"],
-                            "sha256": observed_hash,
-                        }
-                    )
-                row.activated_revision = activated_revision
-                current_validation: dict[str, object] = dict(row.validation or {})
-                row.validation = {
-                    **current_validation,
-                    "activation_evidence": {
-                        "schema": CANDIDATE_SCHEMA,
-                        "candidate_id": candidate_id,
-                        "activated_revision": activated_revision,
-                        "files": file_evidence,
-                        "registration_actions": current_validation.get(
-                            "registration_actions", []
-                        ),
-                    },
-                }
-                row.status = "activated"
-                await self.db.flush()
-                # Activation is the authoritative workspace transition. Make it
-                # durable before crossing the independent Git boundary.
-                await self.db.commit()
-            except Exception as exc:
-                await self.db.rollback()
-                # Compensate through the normal facade so S3, index, workflow metadata,
-                # module cache, app previews, and activity observers converge on the
-                # restored state rather than leaving a direct-storage-only rollback.
-                rollback_errors: list[str] = []
-                for path, content in originals.items():
                     try:
-                        if content is None:
-                            await storage.delete_file(path)
-                        else:
-                            restored = await storage.write_file(
-                                path,
-                                content,
-                                updated_by="changeset-rollback",
-                                force_deactivation=True,
+                        applied_registrations = await apply_workspace_registration_plan(
+                            self.db,
+                            self.organization_id,
+                            list(row.validation.get("registration_actions") or []),
+                        )
+                        row.validation = {
+                            **row.validation,
+                            "registration_actions": applied_registrations,
+                        }
+                    except WorkflowRegistrationConflict as exc:
+                        raise ChangesetInvalid(str(exc)) from exc
+                    for item in row.mutations:
+                        if item["operation"] == "delete":
+                            await storage.delete_file(item["path"])
+                        elif item["operation"] == "write":
+                            result = await storage.write_file(
+                                item["path"],
+                                base64.b64decode(item["content_base64"]),
+                                updated_by=updated_by,
+                                force_deactivation=bool(item.get("force_deactivation")),
+                                # A changeset that owns verified Git closure is
+                                # its own durable dirty/closure ledger.
                                 skip_dirty_flag=owns_git_closure,
                             )
-                            if restored.pending_deactivations:
-                                raise RuntimeError(
-                                    f"deactivation preflight blocked restore of {path}"
+                            if result.pending_deactivations:
+                                raise ChangesetInvalid(
+                                    f"deactivation preflight changed for {item['path']}"
                                 )
-                    except Exception as rollback_exc:
-                        rollback_errors.append(f"{path}: {rollback_exc}")
-                row.status = "recovery_required" if rollback_errors else "failed"
-                row.error = str(exc)
-                row.failure_detail = {
-                    "phase": "activation",
-                    "message": str(exc),
-                    "rollback": {
-                        "state": "failed" if rollback_errors else "completed",
-                        "errors": rollback_errors,
-                    },
-                }
-                if rollback_errors:
-                    row.error = (
-                        f"{row.error}; rollback failed: {'; '.join(rollback_errors)}"
+                    activated_revision, activated_files = await self._snapshot(
+                        row.scope
                     )
-                await self.db.flush()
-                # Failure state and the compensating writes are part of the durable
-                # audit record even though the HTTP request returns an error.
-                await self.db.commit()
-                if rollback_errors:
-                    raise RuntimeError(row.error) from exc
-                raise
+                    file_evidence: list[dict] = []
+                    for item in sorted(row.mutations, key=lambda value: value["path"]):
+                        observed_hash = activated_files.get(item["path"])
+                        expected_hash = (
+                            item.get("after_hash")
+                            if item["operation"] in {"write", "verify"}
+                            else None
+                        )
+                        if observed_hash != expected_hash:
+                            raise ChangesetInvalid(
+                                f"activation readback mismatch for {item['path']}"
+                            )
+                        file_evidence.append(
+                            {
+                                "path": item["path"],
+                                "operation": item["operation"],
+                                "sha256": observed_hash,
+                            }
+                        )
+                    row.activated_revision = activated_revision
+                    current_validation: dict[str, object] = dict(row.validation or {})
+                    row.validation = {
+                        **current_validation,
+                        "activation_evidence": {
+                            "schema": CANDIDATE_SCHEMA,
+                            "candidate_id": candidate_id,
+                            "activated_revision": activated_revision,
+                            "files": file_evidence,
+                            "registration_actions": current_validation.get(
+                                "registration_actions", []
+                            ),
+                        },
+                    }
+                    row.status = "activated"
+                    await self.db.flush()
+                    # Activation is authoritative and durable before Git closure.
+                    await self.db.commit()
+                except Exception as exc:
+                    await self.db.rollback()
+                    rollback_errors: list[str] = []
+                    for path, content in originals.items():
+                        try:
+                            if content is None:
+                                await storage.delete_file(path)
+                            else:
+                                restored = await storage.write_file(
+                                    path,
+                                    content,
+                                    updated_by="changeset-rollback",
+                                    force_deactivation=True,
+                                    skip_dirty_flag=owns_git_closure,
+                                )
+                                if restored.pending_deactivations:
+                                    raise RuntimeError(
+                                        "deactivation preflight blocked restore of "
+                                        f"{path}"
+                                    )
+                        except Exception as rollback_exc:
+                            rollback_errors.append(f"{path}: {rollback_exc}")
+                    row.status = "recovery_required" if rollback_errors else "failed"
+                    row.error = str(exc)
+                    row.failure_detail = {
+                        "phase": "activation",
+                        "message": str(exc),
+                        "rollback": {
+                            "state": "failed" if rollback_errors else "completed",
+                            "errors": rollback_errors,
+                        },
+                    }
+                    if rollback_errors:
+                        row.error = f"{row.error}; rollback failed: " + "; ".join(
+                            rollback_errors
+                        )
+                    await self.db.flush()
+                    await self.db.commit()
+                    if rollback_errors:
+                        raise RuntimeError(row.error) from exc
+                    raise
+        except WorkspacePropagationError as exc:
+            row.error = str(exc)
+            row.failure_detail = {
+                "phase": "runtime_propagation",
+                "state": "pending",
+                "message": str(exc),
+                "durable_activation_preserved": row.status == "activated",
+            }
+            await self.db.flush()
+            await self.db.commit()
+            return self._response(row)
+
+        if python_paths:
+            activated_hashes = {
+                item["path"]: str(item["after_hash"])
+                for item in row.mutations
+                if item["path"] in python_paths and item.get("after_hash")
+            }
+            runtime_generation, runtime_files = await self.inspect_module_coherence(
+                activated_hashes
+            )
+            runtime_mismatches = [item for item in runtime_files if not item.coherent]
+            if runtime_mismatches:
+                row.error = "workspace runtime propagation proof is incomplete"
+                row.failure_detail = {
+                    "phase": "runtime_propagation",
+                    "state": "pending",
+                    "message": row.error,
+                    "durable_activation_preserved": True,
+                }
+            current_validation = dict(row.validation or {})
+            activation_evidence = dict(
+                current_validation.get("activation_evidence") or {}
+            )
+            current_validation["activation_evidence"] = {
+                **activation_evidence,
+                "runtime": {
+                    "generation": runtime_generation,
+                    "coherent": not runtime_mismatches,
+                    "files": [item.to_dict() for item in runtime_files],
+                },
+            }
+            row.validation = current_validation
+            await self.db.flush()
+            await self.db.commit()
+            if runtime_mismatches:
+                return self._response(row)
 
         if row.validation.get("registration_actions"):
             try:
@@ -698,11 +800,11 @@ class WorkspaceRepoChangesetService:
                 current_candidate_id=plan.response.candidate_id,
             )
         if not plan.response.ready_to_apply:
-            raise ChangesetInvalid(
-                "history convergence preview is not ready to apply"
-            )
+            raise ChangesetInvalid("history convergence preview is not ready to apply")
         if self.commit_writer is None:  # guarded in plan construction as well
-            raise ChangesetInvalid("verified GitHub App commit writer is not configured")
+            raise ChangesetInvalid(
+                "verified GitHub App commit writer is not configured"
+            )
 
         effective_operator = operator
         if pending_retry:
@@ -819,9 +921,7 @@ class WorkspaceRepoChangesetService:
                 }
             )
 
-        dispositions = {
-            item.changeset_id: item for item in plan.response.changesets
-        }
+        dispositions = {item.changeset_id: item for item in plan.response.changesets}
         for row in plan.rows:
             disposition = dispositions[row.id]
             current_validation = dict(row.validation or {})
@@ -838,8 +938,7 @@ class WorkspaceRepoChangesetService:
                     "signature_state": result.signature_state,
                     "operator": effective_operator,
                     "selected_changeset_ids": [
-                        str(value)
-                        for value in sorted(request.changeset_ids, key=str)
+                        str(value) for value in sorted(request.changeset_ids, key=str)
                     ],
                     "disposition": disposition.disposition,
                     "reconciled_paths": disposition.reconciled_paths,
@@ -871,8 +970,7 @@ class WorkspaceRepoChangesetService:
         ]
         candidate_ids = {str(item.get("candidate_id") or "") for item in details}
         primary_ids = {
-            str(item.get("primary_evidence_changeset_id") or "")
-            for item in details
+            str(item.get("primary_evidence_changeset_id") or "") for item in details
         }
         if (
             len(candidate_ids) != 1
@@ -883,10 +981,7 @@ class WorkspaceRepoChangesetService:
                 item.get("phase") == "git_convergence"
                 and (
                     item.get("state") == "pending"
-                    or (
-                        item.get("state") == "failed"
-                        and bool(item.get("commit_sha"))
-                    )
+                    or (item.get("state") == "failed" and bool(item.get("commit_sha")))
                 )
                 for item in details
             )
@@ -899,9 +994,7 @@ class WorkspaceRepoChangesetService:
             if str(row.id) == primary_id
         ]
         if len(evidence) != 1 or not isinstance(evidence[0].get("plan"), dict):
-            raise ChangesetInvalid(
-                "pending convergence primary evidence is missing"
-            )
+            raise ChangesetInvalid("pending convergence primary evidence is missing")
         response = WorkspaceRepoGitConvergenceResponse.model_validate(
             evidence[0]["plan"]
         )
@@ -913,9 +1006,7 @@ class WorkspaceRepoChangesetService:
             )
         file_evidence = evidence[0].get("files")
         if not isinstance(file_evidence, list) or not file_evidence:
-            raise ChangesetInvalid(
-                "pending convergence exact file evidence is missing"
-            )
+            raise ChangesetInvalid("pending convergence exact file evidence is missing")
         try:
             files = [PlatformCommitFile(**item) for item in file_evidence]
         except (TypeError, KeyError) as exc:
@@ -935,7 +1026,9 @@ class WorkspaceRepoChangesetService:
         for_update: bool = False,
     ) -> _GitConvergencePlan:
         if self.commit_writer is None:
-            raise ChangesetInvalid("verified GitHub App commit writer is not configured")
+            raise ChangesetInvalid(
+                "verified GitHub App commit writer is not configured"
+            )
 
         rows = [
             await self._required(changeset_id, for_update=for_update)
@@ -951,10 +1044,7 @@ class WorkspaceRepoChangesetService:
                 and failure.get("phase") == "git_convergence"
                 and failure.get("state") in RETRYABLE_GIT_FAILURE_STATES
             )
-            if (
-                retry_key not in self.RETRYABLE_GIT_FAILURES
-                and not convergence_retry
-            ):
+            if retry_key not in self.RETRYABLE_GIT_FAILURES and not convergence_retry:
                 raise ChangesetInvalid(
                     f"changeset {row.id} is not an activated recoverable Git closure"
                 )
@@ -1130,16 +1220,16 @@ class WorkspaceRepoChangesetService:
             )
         payload = {
             "schema": GIT_CONVERGENCE_SCHEMA,
-            "changeset_ids": [str(value) for value in sorted(request.changeset_ids, key=str)],
+            "changeset_ids": [
+                str(value) for value in sorted(request.changeset_ids, key=str)
+            ],
             "protected_main": {
                 "source_sha": source_sha,
                 "resolved_sha": reviewed.commit_sha,
                 "tree_sha": reviewed.tree_sha,
                 "file_sha256": reviewed.file_sha256,
             },
-            "live_file_sha256": {
-                item.path: item.live_sha256 for item in path_results
-            },
+            "live_file_sha256": {item.path: item.live_sha256 for item in path_results},
             "history": {
                 "head_sha": history.commit_sha,
                 "tree_sha": history.tree_sha,
@@ -1412,6 +1502,7 @@ class WorkspaceRepoChangesetService:
         *,
         validated_revision: str,
         registration_actions: list[dict],
+        runtime_repairs: list[dict] | None = None,
     ) -> str:
         """Hash the exact source CAS and registry intent approved for activation."""
         payload = {
@@ -1437,6 +1528,16 @@ class WorkspaceRepoChangesetService:
                     str(item.get("type") or ""),
                     str(item.get("action") or ""),
                 ),
+            ),
+            "runtime_repairs": sorted(
+                [
+                    {
+                        "path": str(item.get("path") or ""),
+                        "durable_sha256": str(item.get("durable_sha256") or ""),
+                    }
+                    for item in (runtime_repairs or [])
+                ],
+                key=lambda item: item["path"],
             ),
         }
         canonical = json.dumps(

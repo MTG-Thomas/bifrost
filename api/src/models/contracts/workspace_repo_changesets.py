@@ -21,6 +21,32 @@ ChangesetStatus = Literal[
 ]
 
 
+class WorkspaceRepoRuntimeFileState(BaseModel):
+    path: str
+    durable_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cache_sha256: str | None = None
+    cache_generation: str | None = None
+    workspace_generation: str
+    indexed: bool
+    coherent: bool
+    state: Literal[
+        "coherent",
+        "cold",
+        "missing",
+        "stale_content",
+        "stale_generation",
+        "missing_index",
+        "invalid_content_hash",
+        "updating",
+    ]
+
+
+class WorkspaceRepoRuntimeState(BaseModel):
+    generation: str
+    coherent: bool
+    files: list[WorkspaceRepoRuntimeFileState] = Field(default_factory=list)
+
+
 class WorkspaceRepoStateResponse(BaseModel):
     storage_root: Literal["_repo"] = "_repo"
     scope: str
@@ -30,6 +56,7 @@ class WorkspaceRepoStateResponse(BaseModel):
     dirty: bool
     open_changesets: int
     git_status: dict | None = None
+    runtime: WorkspaceRepoRuntimeState | None = None
 
 
 class WorkspaceRepoChangesetBegin(BaseModel):
@@ -110,6 +137,7 @@ class WorkspaceRepoValidationResponse(BaseModel):
     diagnostics: list[dict] = Field(default_factory=list)
     pending_deactivations: list[dict] = Field(default_factory=list)
     registration_actions: list[dict] = Field(default_factory=list)
+    runtime_repairs: list[WorkspaceRepoRuntimeFileState] = Field(default_factory=list)
     validated_revision: str
 
 
@@ -180,6 +208,4 @@ class WorkspaceRepoGitConvergenceResponse(BaseModel):
     signature_state: str | None = None
     diagnostics: list[dict] = Field(default_factory=list)
     paths: list[WorkspaceRepoGitConvergencePath] = Field(default_factory=list)
-    changesets: list[WorkspaceRepoGitConvergenceChangeset] = Field(
-        default_factory=list
-    )
+    changesets: list[WorkspaceRepoGitConvergenceChangeset] = Field(default_factory=list)

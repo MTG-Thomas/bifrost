@@ -3,6 +3,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from src.models.contracts.workspace_repo_changesets import (
     WorkspaceRepoGitConvergencePreviewRequest,
 )
 from src.repositories.workspace_repo_changesets import RETRYABLE_GIT_FAILURE_STATES
+from src.core.module_cache import ModuleCoherence
 from src.services.platform_commit_writer import (
     PlatformCommitError,
     PlatformCommitResult,
@@ -173,9 +175,17 @@ def activation_request(row, **kwargs):
     return WorkspaceRepoActivateRequest(candidate_id=candidate_id, **kwargs)
 
 
+async def coherent_runtime(_hashes):
+    return "test-generation", []
+
+
 def service(files=None, organization_id=None):
+
     value = WorkspaceRepoChangesetService(
-        FakeDB(), organization_id or uuid4(), repo=MemoryRepo(files)
+        FakeDB(),
+        organization_id or uuid4(),
+        repo=MemoryRepo(files),
+        module_coherence_inspector=coherent_runtime,
     )
     value.rows = MemoryRows()
     return value
@@ -293,6 +303,146 @@ async def test_validate_empty_changeset_explains_no_op():
 
 
 @pytest.mark.asyncio
+async def test_verify_repairs_stale_runtime_when_durable_source_is_unchanged(
+    monkeypatch,
+):
+    path = "features/existing.py"
+    source = b"VALUE = 'reviewed'\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    stale_hash = hashlib.sha256(b"VALUE = 'stale'\n").hexdigest()
+
+    async def stale_runtime(_hashes):
+        return "generation-2", [
+            ModuleCoherence(
+                path=path,
+                durable_sha256=source_hash,
+                cache_sha256=stale_hash,
+                cache_generation="generation-1",
+                workspace_generation="generation-2",
+                indexed=True,
+                coherent=False,
+                state="stale_content",
+            )
+        ]
+
+    monkeypatch.setattr(
+        "src.services.file_storage.deactivation.DeactivationProtectionService.detect_pending_deactivations",
+        AsyncMock(return_value=([], [])),
+    )
+
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({path: source}),
+        module_coherence_inspector=stale_runtime,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="verify",
+            expected_hash=source_hash,
+        ),
+    )
+
+    result = await svc.validate(row.id)
+
+    assert result.valid is True
+    assert result.diagnostics == []
+    assert [item.path for item in result.runtime_repairs] == [path]
+    assert result.runtime_repairs[0].state == "stale_content"
+    assert svc.rows.items[row.id].status == "validated"
+
+
+@pytest.mark.asyncio
+async def test_runtime_only_activation_rotates_and_records_coherent_readback(
+    monkeypatch,
+):
+    path = "features/existing.py"
+    source = b"VALUE = 'reviewed'\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+    stale_hash = hashlib.sha256(b"VALUE = 'stale'\n").hexdigest()
+    observations = [
+        ModuleCoherence(
+            path=path,
+            durable_sha256=source_hash,
+            cache_sha256=stale_hash,
+            cache_generation="generation-1",
+            workspace_generation="generation-2",
+            indexed=True,
+            coherent=False,
+            state="stale_content",
+        ),
+        ModuleCoherence(
+            path=path,
+            durable_sha256=source_hash,
+            cache_sha256=source_hash,
+            cache_generation="generation-3",
+            workspace_generation="generation-3",
+            indexed=True,
+            coherent=True,
+            state="coherent",
+        ),
+    ]
+
+    async def runtime_state(_hashes):
+        item = observations.pop(0)
+        return item.workspace_generation, [item]
+
+    barriers = []
+
+    @asynccontextmanager
+    async def source_update(**kwargs):
+        barriers.append(kwargs)
+        yield
+
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", source_update)
+    monkeypatch.setattr(
+        "src.services.file_storage.deactivation.DeactivationProtectionService.detect_pending_deactivations",
+        AsyncMock(return_value=([], [])),
+    )
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({path: source}),
+        module_coherence_inspector=runtime_state,
+    )
+    svc.rows = MemoryRows()
+    row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
+    await svc.stage(
+        row.id,
+        WorkspaceRepoFileMutationRequest(
+            path=path,
+            operation="verify",
+            expected_hash=source_hash,
+        ),
+    )
+    validation = await svc.validate(row.id)
+
+    activated = await svc.activate(
+        row.id,
+        WorkspaceRepoActivateRequest(candidate_id=validation.candidate_id),
+        "tester",
+    )
+
+    assert activated.status == "activated"
+    assert activated.commit_sha is None
+    assert barriers == [
+        {
+            "reason": "workspace_changeset_activated",
+            "changed_paths": [path],
+            "broadcast": True,
+        }
+    ]
+    runtime = activated.validation["activation_evidence"]["runtime"]
+    assert runtime["generation"] == "generation-3"
+    assert runtime["coherent"] is True
+    assert runtime["files"][0]["cache_sha256"] == source_hash
+
+
+@pytest.mark.asyncio
 async def test_begin_uses_canonical_revision_and_rejects_stale_revision():
     svc = service(
         {"features/a.py": b"one", "features/b.py": b"two", "other/x": b"ignored"}
@@ -319,6 +469,43 @@ async def test_begin_uses_canonical_revision_and_rejects_stale_revision():
         )
     assert exc.value.detail["reason"] == "revision_mismatch"
 
+
+@pytest.mark.asyncio
+async def test_state_exposes_runtime_drift_separately_from_durable_hashes():
+    path = "features/autotask/workflows/_ticket_lifecycle.py"
+    source = b"def parse(payload): return payload['Id']\n"
+    source_hash = hashlib.sha256(source).hexdigest()
+
+    async def stale_runtime(_hashes):
+        return "generation-2", [
+            ModuleCoherence(
+                path=path,
+                durable_sha256=source_hash,
+                cache_sha256="9" * 64,
+                cache_generation="generation-1",
+                workspace_generation="generation-2",
+                indexed=True,
+                coherent=False,
+                state="stale_content",
+            )
+        ]
+
+    svc = WorkspaceRepoChangesetService(
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({path: source}),
+        module_coherence_inspector=stale_runtime,
+    )
+    svc.rows = MemoryRows()
+
+    state = await svc.state("features")
+
+    assert state.file_hashes[path] == source_hash
+    assert state.runtime is not None
+    assert state.runtime.coherent is False
+    assert state.runtime.generation == "generation-2"
+    assert state.runtime.files[0].state == "stale_content"
+    assert state.runtime.files[0].cache_sha256 == "9" * 64
 
 @pytest.mark.asyncio
 async def test_stage_is_scope_bounded_and_diff_does_not_mutate_workspace():
@@ -457,6 +644,11 @@ async def test_path_level_cas_allows_disjoint_change_and_rejects_touched_change(
             }
         ],
         "registration_actions": [],
+        "runtime": {
+            "generation": "test-generation",
+            "coherent": True,
+            "files": [],
+        },
     }
     assert barriers == [
         (
@@ -663,6 +855,7 @@ async def test_activation_closure_accepts_history_already_at_target(monkeypatch)
         uuid4(),
         repo=MemoryRepo({path: stale_runtime}),
         commit_writer=writer,
+        module_coherence_inspector=coherent_runtime,
     )
     svc.rows = MemoryRows()
     row = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
@@ -761,6 +954,7 @@ async def test_activation_closure_commits_only_before_paths_from_mixed_history(
         uuid4(),
         repo=MemoryRepo({preserved_path: before, missing_path: before}),
         commit_writer=writer,
+        module_coherence_inspector=coherent_runtime,
     )
     svc.rows = MemoryRows()
     row = await svc.begin(WorkspaceRepoChangesetBegin(scope="features"), uuid4())
@@ -826,6 +1020,7 @@ async def test_activation_closure_preserves_activation_for_other_history_bytes(
         uuid4(),
         repo=MemoryRepo({path: b"before\n"}),
         commit_writer=writer,
+        module_coherence_inspector=coherent_runtime,
     )
     svc.rows = MemoryRows()
     row = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
@@ -1108,7 +1303,10 @@ async def test_git_convergence_uses_history_parent_hash_not_workspace_before_has
         history_hashes={path: history_hash},
     )
     svc = WorkspaceRepoChangesetService(
-        FakeDB(), uuid4(), repo=MemoryRepo({path: workspace_before}), commit_writer=writer
+        FakeDB(),
+        uuid4(),
+        repo=MemoryRepo({path: workspace_before}),
+        commit_writer=writer,
     )
     svc.rows = MemoryRows()
     started = await svc.begin(WorkspaceRepoChangesetBegin(scope=path), uuid4())
@@ -1157,9 +1355,10 @@ async def test_git_convergence_uses_history_parent_hash_not_workspace_before_has
     request = writer.requests[0]
     assert request.expected_head_sha == "e" * 40
     assert request.files[0].expected_before_sha256 == history_hash
-    assert request.files[0].expected_before_sha256 != hashlib.sha256(
-        workspace_before
-    ).hexdigest()
+    assert (
+        request.files[0].expected_before_sha256
+        != hashlib.sha256(workspace_before).hexdigest()
+    )
     assert request.files[0].expected_sha256 == live_hash
     assert request.convergence_candidate_id == preview.candidate_id
     assert request.reconciled_changeset_ids == (row.id,)
@@ -1324,9 +1523,7 @@ async def test_git_convergence_marks_older_selected_bytes_as_superseded():
         )
     )
 
-    dispositions = {
-        item.changeset_id: item.disposition for item in preview.changesets
-    }
+    dispositions = {item.changeset_id: item.disposition for item in preview.changesets}
     assert preview.ready_to_apply is True
     assert dispositions[selected[0].id] == "superseded"
     assert dispositions[selected[1].id] == "reconciled"
@@ -1384,9 +1581,9 @@ async def test_git_convergence_uses_current_reviewed_bytes_for_superseded_path()
     )
 
     assert applied.applied is True
-    assert writer.requests[0].files[0].content_base64 == base64.b64encode(
-        current
-    ).decode()
+    assert (
+        writer.requests[0].files[0].content_base64 == base64.b64encode(current).decode()
+    )
 
 
 @pytest.mark.asyncio

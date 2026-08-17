@@ -1,11 +1,21 @@
 """Tests for virtual import S3 fallback."""
 
 import importlib
+import hashlib
 import json
 import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def stable_workspace_generation():
+    with patch(
+        "src.core.module_cache_sync.workspace_generation_for_import",
+        return_value="generation-1",
+    ):
+        yield
 
 
 def test_s3_fallback_on_redis_miss():
@@ -39,8 +49,14 @@ def test_redis_hit_skips_s3():
     """When Redis has the module, should not touch S3."""
     from src.core.module_cache_sync import get_module_sync
 
+    content = "cached content"
     cached = json.dumps(
-        {"content": "cached content", "path": "shared/utils.py", "hash": "abc"}
+        {
+            "content": content,
+            "path": "shared/utils.py",
+            "hash": hashlib.sha256(content.encode()).hexdigest(),
+            "generation": "generation-1",
+        }
     )
 
     with (
@@ -142,6 +158,7 @@ class TestModuleIndexS3Fallback:
             mock_redis.smembers.return_value = {
                 "features/spotify_journal/services/spotify_api.py"
             }
+            mock_redis.get.return_value = "generation-1"
             mock_redis_factory.return_value = mock_redis
 
             result = get_module_index_sync()
@@ -197,6 +214,7 @@ class TestModuleIndexS3Fallback:
             assert result == blob_paths
             mock_redis.sadd.assert_called_once()
             assert mock_redis.sadd.call_args[0][0] == MODULE_INDEX_KEY
+
     def test_api_index_fetch_sends_solution_id_param(self):
         """Solution-scoped child index fetches ask the server for that install."""
         from src.core.module_cache_sync import _fetch_module_index_from_api
@@ -206,7 +224,10 @@ class TestModuleIndexS3Fallback:
         response.json.return_value = {"paths": ["_solutions/sol-1/modules/helpers.py"]}
 
         with (
-            patch("src.core.module_cache_sync._get_engine_credentials", return_value=("http://api", "token")),
+            patch(
+                "src.core.module_cache_sync._get_engine_credentials",
+                return_value=("http://api", "token"),
+            ),
             patch("httpx.get", return_value=response) as mock_get,
         ):
             result = _fetch_module_index_from_api(solution_id="sol-1")
@@ -218,6 +239,7 @@ class TestModuleIndexS3Fallback:
             params={"solution_id": "sol-1"},
             timeout=10.0,
         )
+
     def test_namespace_package_resolves_via_s3_index_fallback(self):
         """Integration: namespace package lookup succeeds when Redis index is cold but S3 has modules."""
         from src.services.execution.virtual_import import VirtualModuleFinder
@@ -258,7 +280,10 @@ class TestModuleIndexS3Fallback:
         mcs.set_solution_context(solution_id, global_repo_access=False)
         try:
             with (
-                patch("src.core.module_cache_sync._fetch_module_index_from_api", return_value=api_paths) as mock_api_index,
+                patch(
+                    "src.core.module_cache_sync._fetch_module_index_from_api",
+                    return_value=api_paths,
+                ) as mock_api_index,
                 patch("src.core.module_cache_sync._get_s3_client") as mock_s3_client,
                 patch.dict("os.environ", {}, clear=True),
             ):
