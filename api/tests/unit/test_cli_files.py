@@ -154,6 +154,7 @@ class TestGraph:
         assert "Reverse dependencies (1)" in result.output
         assert "workflows/daily.py" in result.output
         assert "traversal: complete (2 paths, 1 edges)" in result.output
+        assert "Blocking diagnostics: 0" in result.output
         assert captured["calls"][0]["body"] == {
             "path": "helpers/report.py",
             "content": "VALUE = 2\n",
@@ -180,8 +181,12 @@ class TestWrite:
         captured: dict = {}
         runner = CliRunner()
         client = _make_mock_client(captured, {"/api/files/write": {}})
-        with mock.patch("bifrost.client.BifrostClient.get_instance", return_value=client):
-            result = runner.invoke(files_group, ["write", "out.txt", "-"], input="from-stdin\n")
+        with mock.patch(
+            "bifrost.client.BifrostClient.get_instance", return_value=client
+        ):
+            result = runner.invoke(
+                files_group, ["write", "out.txt", "-"], input="from-stdin\n"
+            )
         assert result.exit_code == 0, result.output
         assert captured["calls"][0]["body"]["content"] == "from-stdin\n"
 
@@ -340,9 +345,7 @@ class TestWrite:
 
         assert result.exit_code != 0
         assert "no bytes were written" in result.output
-        assert [item["path"] for item in captured["calls"]] == [
-            "/api/files/impact"
-        ]
+        assert [item["path"] for item in captured["calls"]] == ["/api/files/impact"]
 
     def test_version_conflict_is_machine_readable_and_exit_four(self) -> None:
         request = httpx.Request("POST", "https://bifrost.test/api/files/write")
@@ -453,14 +456,16 @@ class TestSearch:
         result = _invoke(
             ["search", "TODO"],
             captured,
-            {"/api/files/search": {
-                "query": "TODO",
-                "total_matches": 0,
-                "files_searched": 0,
-                "results": [],
-                "truncated": False,
-                "search_time_ms": 1,
-            }},
+            {
+                "/api/files/search": {
+                    "query": "TODO",
+                    "total_matches": 0,
+                    "files_searched": 0,
+                    "results": [],
+                    "truncated": False,
+                    "search_time_ms": 1,
+                }
+            },
         )
         assert result.exit_code == 0, result.output
         body = captured["calls"][0]["body"]
@@ -473,17 +478,27 @@ class TestSearch:
     def test_search_passes_through_flags(self) -> None:
         captured: dict = {}
         _invoke(
-            ["search", "f.*o", "--regex", "--case-sensitive",
-             "--include", "**/*.py", "--max-results", "50"],
+            [
+                "search",
+                "f.*o",
+                "--regex",
+                "--case-sensitive",
+                "--include",
+                "**/*.py",
+                "--max-results",
+                "50",
+            ],
             captured,
-            {"/api/files/search": {
-                "query": "f.*o",
-                "total_matches": 0,
-                "files_searched": 0,
-                "results": [],
-                "truncated": False,
-                "search_time_ms": 1,
-            }},
+            {
+                "/api/files/search": {
+                    "query": "f.*o",
+                    "total_matches": 0,
+                    "files_searched": 0,
+                    "results": [],
+                    "truncated": False,
+                    "search_time_ms": 1,
+                }
+            },
         )
         body = captured["calls"][0]["body"]
         assert body["is_regex"] is True
@@ -496,17 +511,25 @@ class TestSearch:
         result = _invoke(
             ["search", "x", "--json"],
             captured,
-            {"/api/files/search": {
-                "query": "x",
-                "total_matches": 1,
-                "files_searched": 1,
-                "results": [{
-                    "file_path": "a.py", "line": 3, "column": 0,
-                    "match_text": "x", "context_before": None, "context_after": None,
-                }],
-                "truncated": False,
-                "search_time_ms": 2,
-            }},
+            {
+                "/api/files/search": {
+                    "query": "x",
+                    "total_matches": 1,
+                    "files_searched": 1,
+                    "results": [
+                        {
+                            "file_path": "a.py",
+                            "line": 3,
+                            "column": 0,
+                            "match_text": "x",
+                            "context_before": None,
+                            "context_after": None,
+                        }
+                    ],
+                    "truncated": False,
+                    "search_time_ms": 2,
+                }
+            },
         )
         assert result.exit_code == 0, result.output
         assert '"total_matches": 1' in result.output
@@ -516,6 +539,7 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 # Fix 5: _resolve_solution_install_id slug ambiguity
 # ---------------------------------------------------------------------------
+
 
 class TestResolveSolutionInstallId:
     """_resolve_solution_install_id must error on multi-org slug ambiguity."""
@@ -533,11 +557,13 @@ class TestResolveSolutionInstallId:
         import asyncio
         from bifrost.commands.files import _resolve_solution_install_id
 
-        client = self._make_get_client({
-            "solutions": [
-                {"id": "aaaa-1111", "slug": "my-sol"},
-            ]
-        })
+        client = self._make_get_client(
+            {
+                "solutions": [
+                    {"id": "aaaa-1111", "slug": "my-sol"},
+                ]
+            }
+        )
         result = asyncio.get_event_loop().run_until_complete(
             _resolve_solution_install_id(client, "my-sol")
         )
@@ -545,7 +571,9 @@ class TestResolveSolutionInstallId:
 
     def test_no_match_raises(self) -> None:
         client = self._make_get_client({"solutions": []})
-        with mock.patch("bifrost.client.BifrostClient.get_instance", return_value=client):
+        with mock.patch(
+            "bifrost.client.BifrostClient.get_instance", return_value=client
+        ):
             runner = CliRunner()
             # Invoke a real read command; slug won't resolve → ClickException
             result = runner.invoke(
@@ -561,12 +589,14 @@ class TestResolveSolutionInstallId:
         import click
         from bifrost.commands.files import _resolve_solution_install_id
 
-        client = self._make_get_client({
-            "solutions": [
-                {"id": "aaaa-1111", "slug": "shared-sol"},
-                {"id": "bbbb-2222", "slug": "shared-sol"},
-            ]
-        })
+        client = self._make_get_client(
+            {
+                "solutions": [
+                    {"id": "aaaa-1111", "slug": "shared-sol"},
+                    {"id": "bbbb-2222", "slug": "shared-sol"},
+                ]
+            }
+        )
         with pytest.raises(click.ClickException, match="multiple orgs"):
             asyncio.get_event_loop().run_until_complete(
                 _resolve_solution_install_id(client, "shared-sol")

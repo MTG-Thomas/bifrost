@@ -86,22 +86,14 @@ def test_analysis_reports_computed_workflow_references() -> None:
             b"        function_name=function_name, inputs={}\n"
             b"    )\n"
         ),
-        (
-            b"async def parent(kwargs):\n"
-            b"    return await workflows.execute(**kwargs)\n"
-        ),
+        (b"async def parent(kwargs):\n    return await workflows.execute(**kwargs)\n"),
     ],
 )
 def test_analysis_reports_computed_workflow_reference_keyword(
     function_source: bytes,
 ) -> None:
     graph = analyze_workspace_impact(
-        {
-            "workflows/parent.py": (
-                b"from bifrost import workflows\n"
-                + function_source
-            )
-        }
+        {"workflows/parent.py": (b"from bifrost import workflows\n" + function_source)}
     )
 
     assert graph.dynamic_reference_importers == frozenset({"workflows/parent.py"})
@@ -125,8 +117,7 @@ def test_analysis_does_not_treat_generic_call_keywords_as_workflow_dispatch() ->
     graph = analyze_workspace_impact(
         {
             "workflows/child.py": (
-                b"@workflow(name='Child')\n"
-                b"def child(): return None\n"
+                b"@workflow(name='Child')\ndef child(): return None\n"
             ),
             "workflows/report.py": (
                 b"def render(**kwargs): return kwargs\n"
@@ -137,7 +128,7 @@ def test_analysis_does_not_treat_generic_call_keywords_as_workflow_dispatch() ->
                 b"        render(workflow_id=item.id),\n"
                 b"        render(function_name=item.function_name),\n"
                 b"    )\n"
-            )
+            ),
         }
     )
 
@@ -195,6 +186,55 @@ def test_analysis_indexes_direct_aliased_relative_and_qualified_symbol_use() -> 
     assert graph.symbol_imports[("features/vendor/direct.py", target)] == ("Client",)
     assert graph.symbol_imports[("features/vendor/aliased.py", target)] == ("Client",)
     assert graph.symbol_imports[("features/vendor/qualified.py", target)] == ("VALUE",)
+
+
+def test_analysis_respects_lexical_shadowing_of_module_aliases() -> None:
+    target = "modules/vendor.py"
+    graph = analyze_workspace_impact(
+        {
+            target: b"def legacy(): return 1\n",
+            "workflows/report.py": (
+                b"import modules.vendor as vendor\n"
+                b"def shadowed(vendor): return vendor.legacy()\n"
+                b"def actual(): return vendor.legacy()\n"
+            ),
+        }
+    )
+
+    assert graph.symbol_imports[("workflows/report.py", target)] == ("legacy",)
+
+
+def test_analysis_respects_generic_type_parameter_shadowing() -> None:
+    target = "modules/vendor.py"
+    graph = analyze_workspace_impact(
+        {
+            target: b"def legacy(): return 1\n",
+            "workflows/report.py": (
+                b"import modules.vendor as vendor\n"
+                b"def generic[vendor](): return vendor.legacy\n"
+            ),
+        }
+    )
+
+    assert ("workflows/report.py", target) not in graph.symbol_imports
+
+
+def test_analysis_indexes_conditional_walrus_with_and_dynamic_exports() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "modules/vendor.py": (
+                b"if enabled := True:\n"
+                b"    with manager() as managed:\n"
+                b"        conditional = 1\n"
+                b"def __getattr__(name): return dynamic[name]\n"
+            )
+        }
+    )
+
+    symbols = graph.module_symbols["modules/vendor.py"]
+    assert {"enabled", "managed", "conditional", "__getattr__"} <= symbols
+    assert graph.dynamic_exporters == frozenset({"modules/vendor.py"})
+    assert graph.dynamic_export_contracts["modules/vendor.py"]
 
 
 def test_analysis_ignores_non_reference_workflow_constants() -> None:

@@ -181,8 +181,15 @@ def _diagnostic_severity(
     return "warning"
 
 
-def _preexisting_prefix(severity: Literal["warning", "blocker"]) -> str:
-    return "pre-existing connected-file issue: " if severity == "warning" else ""
+def _preexisting_prefix(
+    *,
+    path: str,
+    affected_path: str,
+    severity: Literal["warning", "blocker"],
+) -> str:
+    if severity != "warning" or affected_path == path:
+        return ""
+    return "pre-existing connected-file issue: "
 
 
 def _diagnostics(
@@ -194,10 +201,6 @@ def _diagnostics(
     reverse_paths: set[str],
     analysis: WorkspaceImpactAnalysis,
     base_analysis: WorkspaceImpactAnalysis,
-    unresolved_imports: Mapping[str, tuple[str, ...]],
-    ambiguous_references: Mapping[str, tuple[str, ...]],
-    dynamic_importers: frozenset[str],
-    dynamic_reference_importers: frozenset[str],
     proposed_unchanged: bool,
 ) -> list[WorkspaceFileImpactDiagnostic]:
     diagnostics: list[WorkspaceFileImpactDiagnostic] = []
@@ -205,7 +208,7 @@ def _diagnostics(
         diagnostics.append(
             WorkspaceFileImpactDiagnostic(
                 code="large_impact_graph",
-                severity="warning",
+                severity="info",
                 message=(
                     f"complete transitive traversal analyzed all "
                     f"{len(relevant_paths)} files without truncation"
@@ -215,7 +218,7 @@ def _diagnostics(
         )
 
     for affected_path in sorted(relevant_paths):
-        ambiguous = ambiguous_references.get(affected_path, ())
+        ambiguous = analysis.ambiguous_references.get(affected_path, ())
         if ambiguous:
             base_ambiguous = set(
                 base_analysis.ambiguous_references.get(affected_path, ())
@@ -235,14 +238,18 @@ def _diagnostics(
                     code="ambiguous_workflow_reference",
                     severity=severity,
                     message=(
-                        _preexisting_prefix(severity)
+                        _preexisting_prefix(
+                            path=path,
+                            affected_path=affected_path,
+                            severity=severity,
+                        )
                         + "workflow reference resolves to multiple authored files: "
                         + ", ".join(ambiguous)
                     ),
                     path=affected_path,
                 )
             )
-        unresolved = unresolved_imports.get(affected_path, ())
+        unresolved = analysis.unresolved_imports.get(affected_path, ())
         if unresolved:
             base_unresolved = set(
                 base_analysis.unresolved_imports.get(affected_path, ())
@@ -259,14 +266,18 @@ def _diagnostics(
                     code="unresolved_repo_import",
                     severity=severity,
                     message=(
-                        _preexisting_prefix(severity)
+                        _preexisting_prefix(
+                            path=path,
+                            affected_path=affected_path,
+                            severity=severity,
+                        )
                         + "unresolved repo-local imports: "
                         + ", ".join(unresolved)
                     ),
                     path=affected_path,
                 )
             )
-        if affected_path in dynamic_importers:
+        if affected_path in analysis.dynamic_importers:
             severity = _diagnostic_severity(
                 path=path,
                 changed=changed,
@@ -279,13 +290,17 @@ def _diagnostics(
                     code="dynamic_import_unresolved",
                     severity=severity,
                     message=(
-                        _preexisting_prefix(severity)
+                        _preexisting_prefix(
+                            path=path,
+                            affected_path=affected_path,
+                            severity=severity,
+                        )
                         + "computed dynamic import prevents complete static impact proof"
                     ),
                     path=affected_path,
                 )
             )
-        if affected_path in dynamic_reference_importers:
+        if affected_path in analysis.dynamic_reference_importers:
             severity = _diagnostic_severity(
                 path=path,
                 changed=changed,
@@ -300,7 +315,11 @@ def _diagnostics(
                     code="dynamic_workflow_reference_unresolved",
                     severity=severity,
                     message=(
-                        _preexisting_prefix(severity)
+                        _preexisting_prefix(
+                            path=path,
+                            affected_path=affected_path,
+                            severity=severity,
+                        )
                         + "computed workflow reference prevents complete static impact proof"
                     ),
                     path=affected_path,
@@ -343,7 +362,10 @@ def _symbol_contract_diagnostics(
     current_symbols = base_analysis.module_symbols.get(path, frozenset())
     proposed_symbols = analysis.module_symbols.get(path, frozenset())
     removed = current_symbols - proposed_symbols
-    if not removed:
+    dynamic_contract_changed = base_analysis.dynamic_export_contracts.get(
+        path, ()
+    ) != analysis.dynamic_export_contracts.get(path, ())
+    if not removed and not dynamic_contract_changed:
         return []
 
     diagnostics: list[WorkspaceFileImpactDiagnostic] = []
@@ -354,6 +376,20 @@ def _symbol_contract_diagnostics(
             path,
         ) in analysis.star_import_edges
         removed_required = sorted(removed & required)
+        dynamic_required = sorted(required - current_symbols)
+        if dynamic_contract_changed and dynamic_required:
+            diagnostics.append(
+                WorkspaceFileImpactDiagnostic(
+                    code="dynamic_module_export_contract",
+                    severity="blocker",
+                    message=(
+                        "proposed source changes the dynamic module export contract "
+                        "used for symbols: "
+                    )
+                    + ", ".join(dynamic_required),
+                    path=importer_path,
+                )
+            )
         if removed_required:
             dynamic = (
                 path in base_analysis.dynamic_exporters
@@ -601,10 +637,6 @@ class WorkspaceFileImpactService:
             reverse_paths=reverse_paths,
             analysis=analysis,
             base_analysis=workspace.impact_index.analysis,
-            unresolved_imports=analysis.unresolved_imports,
-            ambiguous_references=analysis.ambiguous_references,
-            dynamic_importers=analysis.dynamic_importers,
-            dynamic_reference_importers=analysis.dynamic_reference_importers,
             proposed_unchanged=request.content is not None and current == proposed,
         )
         diagnostics.extend(

@@ -17,7 +17,7 @@ import subprocess
 import unicodedata
 from collections import deque
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
 
 PROMOTION_BUNDLE_SCHEMA = "bifrost.workspace-promotion-bundle/v1"
 MAX_SNAPSHOT_FILES = 4_000
@@ -160,27 +160,49 @@ def _resolve_imports(path: str, raw: bytes, modules: dict[str, str]) -> set[str]
         tree = ast.parse(raw.decode("utf-8"), filename=path)
     except (SyntaxError, UnicodeDecodeError) as exc:
         raise PromotionBundleError(f"cannot parse {path}: {exc}") from exc
-    current_module = _module_name(path)
-    package_parts = current_module.split(".")
-    if pathlib.PurePosixPath(path).name != "__init__.py":
-        package_parts = package_parts[:-1]
-    resolved: set[str] = set()
+    return resolve_imports_from_tree(path, tree, modules)
 
-    def add_module(name: str) -> None:
+
+def resolve_imports_from_tree(
+    path: str,
+    tree: ast.AST,
+    modules: Mapping[str, str],
+) -> set[str]:
+    """Resolve repo-local imports from an already parsed Python syntax tree."""
+
+    resolver = WorkspaceImportResolver(path, modules)
+    for node in ast.walk(tree):
+        resolver.scan(node)
+    return resolver.result()
+
+
+class WorkspaceImportResolver:
+    """Incrementally resolve repo-local imports while walking one syntax tree."""
+
+    def __init__(self, path: str, modules: Mapping[str, str]) -> None:
+        self.path = path
+        self.modules = modules
+        current_module = _module_name(path)
+        self.package_parts = current_module.split(".")
+        if pathlib.PurePosixPath(path).name != "__init__.py":
+            self.package_parts = self.package_parts[:-1]
+        self.resolved: set[str] = set()
+
+    def _add_module(self, name: str) -> None:
         parts = name.split(".")
         for length in range(len(parts), 0, -1):
             candidate = ".".join(parts[:length])
-            target = modules.get(candidate)
+            target = self.modules.get(candidate)
             if target:
-                resolved.add(target)
+                self.resolved.add(target)
                 return
 
-    for node in ast.walk(tree):
+    def scan(self, node: ast.AST) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                add_module(alias.name)
+                self._add_module(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            base_parts = package_parts[:]
+            base_parts = self.package_parts[:]
             if node.level:
                 trim = node.level - 1
                 base_parts = (
@@ -191,10 +213,12 @@ def _resolve_imports(path: str, raw: bytes, modules: dict[str, str]) -> set[str]
             module_parts = (node.module or "").split(".") if node.module else []
             base = ".".join([*base_parts, *module_parts])
             if base:
-                add_module(base)
+                self._add_module(base)
             for alias in node.names:
                 if alias.name != "*":
-                    add_module(".".join(value for value in (base, alias.name) if value))
+                    self._add_module(
+                        ".".join(value for value in (base, alias.name) if value)
+                    )
         elif (
             isinstance(node, ast.Call)
             and node.args
@@ -211,9 +235,12 @@ def _resolve_imports(path: str, raw: bytes, modules: dict[str, str]) -> set[str]
                 )
             )
         ):
-            add_module(node.args[0].value)
-    resolved.discard(path)
-    return resolved
+            self._add_module(node.args[0].value)
+
+    def result(self) -> set[str]:
+        resolved = set(self.resolved)
+        resolved.discard(self.path)
+        return resolved
 
 
 def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionBundle:

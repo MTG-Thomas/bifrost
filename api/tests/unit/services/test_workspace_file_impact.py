@@ -7,6 +7,7 @@ import pytest
 
 from src.models.contracts.workspace_file_impact import WorkspaceFileImpactRequest
 from src.services.workspace_file_impact import (
+    LARGE_IMPACT_GRAPH_FILES,
     _WorkspaceSnapshotCache,
     WorkspaceFileImpactConflict,
     WorkspaceFileImpactInvalid,
@@ -275,6 +276,7 @@ async def test_preview_blocks_new_unresolved_import_in_changed_source() -> None:
 async def test_checked_write_traverses_large_graph_without_truncating_or_blocking(
     monkeypatch,
 ) -> None:
+    consumer_count = LARGE_IMPACT_GRAPH_FILES + 50
     files = {"helpers/shared.py": b"VALUE = 1\n"}
     files.update(
         {
@@ -282,7 +284,7 @@ async def test_checked_write_traverses_large_graph_without_truncating_or_blockin
                 b"from helpers.shared import VALUE\n"
                 + f"def consumer_{index:03d}(): return VALUE\n".encode()
             )
-            for index in range(250)
+            for index in range(consumer_count)
         }
     )
     service = WorkspaceFileImpactService(_Repo(files))
@@ -309,13 +311,13 @@ async def test_checked_write_traverses_large_graph_without_truncating_or_blockin
     result = await service.preview(request)
 
     assert result.traversal_complete is True
-    assert result.analyzed_path_count == 251
-    assert len(result.reverse_dependencies) == 250
-    assert len(result.edges) == 250
+    assert result.analyzed_path_count == consumer_count + 1
+    assert len(result.reverse_dependencies) == consumer_count
+    assert len(result.edges) == consumer_count
     assert result.blocking_diagnostic_count == 0
     assert result.ready_to_write is True
     assert [(item.code, item.severity) for item in result.diagnostics] == [
-        ("large_impact_graph", "warning"),
+        ("large_impact_graph", "info"),
         ("reverse_dependents_present", "info"),
     ]
     consumed = await service.guarded_write(request, result.candidate_id, write)
@@ -416,6 +418,45 @@ async def test_preview_blocks_star_import_when_module_surface_shrinks() -> None:
     assert [(item.code, item.path) for item in result.diagnostics] == [
         ("reverse_dependents_present", "helpers/shared.py"),
         ("star_import_contract_unresolved", "workflows/report.py"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_changed_dynamic_export_contract_in_use() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "modules/vendor.py": (
+                    b"VALUE = 1\ndef __getattr__(name): return {'dynamic': 1}[name]\n"
+                ),
+                "workflows/report.py": (
+                    b"import modules.vendor as vendor\n"
+                    b"def report(): return vendor.dynamic\n"
+                ),
+            }
+        )
+    )
+
+    unrelated = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="modules/vendor.py",
+            content=("VALUE = 2\ndef __getattr__(name): return {'dynamic': 1}[name]\n"),
+        )
+    )
+    changed_contract = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="modules/vendor.py",
+            content=(
+                "VALUE = 1\ndef __getattr__(name): return {'replacement': 1}[name]\n"
+            ),
+        )
+    )
+
+    assert unrelated.ready_to_write is True
+    assert changed_contract.ready_to_write is False
+    assert [(item.code, item.path) for item in changed_contract.diagnostics] == [
+        ("reverse_dependents_present", "modules/vendor.py"),
+        ("dynamic_module_export_contract", "workflows/report.py"),
     ]
 
 
@@ -572,7 +613,7 @@ async def test_guarded_write_recomputes_without_cache_inside_update_barrier(
 
 
 @pytest.mark.asyncio
-async def test_preview_blocks_computed_workflow_reference() -> None:
+async def test_preview_warns_on_unchanged_computed_workflow_reference() -> None:
     service = WorkspaceFileImpactService(
         _Repo(
             {
@@ -600,6 +641,29 @@ async def test_preview_blocks_computed_workflow_reference() -> None:
     assert [(item.code, item.severity) for item in result.diagnostics] == [
         ("dynamic_workflow_reference_unresolved", "warning"),
         ("proposed_bytes_unchanged", "warning"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_new_computed_workflow_reference() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo({"workflows/report.py": b"async def report(): return None\n"})
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="workflows/report.py",
+            content=(
+                "from bifrost import workflows\n"
+                "async def report(workflow_id):\n"
+                "    return await workflows.execute(workflow_id, {})\n"
+            ),
+        )
+    )
+
+    assert result.ready_to_write is False
+    assert [(item.code, item.severity) for item in result.diagnostics] == [
+        ("dynamic_workflow_reference_unresolved", "blocker"),
     ]
 
 

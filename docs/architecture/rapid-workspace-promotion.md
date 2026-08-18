@@ -56,7 +56,8 @@ references. It reports the selected file's transitive forward dependencies,
 transitive reverse dependents, exact hashes, edge types, and the paths that need
 validation. Traversal is never truncated or blocked merely because a shared
 module has many consumers. The response states how many paths and edges were
-fully traversed; a large graph is visible evidence, not a safety failure.
+fully traversed; a large graph is an informational diagnostic, not a safety
+failure.
 
 Checked-write diagnostics are change-aware. Syntax errors and uncertainty in
 the changed file or its forward closure block. Newly introduced uncertainty,

@@ -157,8 +157,7 @@ def _render_traversal(result: dict) -> None:
 
 
 def _render_blocker_count(result: dict) -> None:
-    if blockers := result.get("blocking_diagnostic_count"):
-        click.echo(f"Blocking diagnostics: {blockers}")
+    click.echo(f"Blocking diagnostics: {result.get('blocking_diagnostic_count', 0)}")
 
 
 def _render_impact(result: dict, *, ctx: click.Context) -> None:
@@ -192,8 +191,7 @@ def _render_impact(result: dict, *, ctx: click.Context) -> None:
                 f"  [{item['severity']}] {item['code']}:{location} {item['message']}"
             )
     click.echo(
-        "Ready for checked write: "
-        + ("yes" if result.get("ready_to_write") else "no")
+        "Ready for checked write: " + ("yes" if result.get("ready_to_write") else "no")
     )
     _render_blocker_count(result)
 
@@ -346,7 +344,9 @@ async def graph_cmd(
 @files_group.command("write")
 @click.argument("path")
 @click.argument("source", required=False)
-@click.option("--content", "content_flag", default=None, help="Inline content to write.")
+@click.option(
+    "--content", "content_flag", default=None, help="Inline content to write."
+)
 @click.option(
     "--from-file",
     "from_file",
@@ -436,7 +436,9 @@ async def write_cmd(
                 "--check-impact currently supports instance Workspace files only."
             )
         if not path.endswith(".py"):
-            raise click.UsageError("--check-impact currently supports Python files only.")
+            raise click.UsageError(
+                "--check-impact currently supports Python files only."
+            )
         impact = await _preview_impact(
             client,
             path=path,
@@ -563,7 +565,9 @@ async def exists_cmd(
 
 @files_group.command("search")
 @click.argument("query")
-@click.option("--regex", "is_regex", is_flag=True, default=False, help="Treat query as a regex.")
+@click.option(
+    "--regex", "is_regex", is_flag=True, default=False, help="Treat query as a regex."
+)
 @click.option("--case-sensitive", "case_sensitive", is_flag=True, default=False)
 @click.option(
     "--include",
@@ -605,7 +609,9 @@ async def search_cmd(
 
 @policies_group.command("list")
 @click.option("--location", default="workspace", help=_LOCATION_HELP)
-@click.option("--scope", default=None, help="Organization UUID for org-scoped policies.")
+@click.option(
+    "--scope", default=None, help="Organization UUID for org-scoped policies."
+)
 @click.pass_context
 @pass_resolver
 @run_async
@@ -629,7 +635,9 @@ async def list_policies_cmd(
 @policies_group.command("get")
 @click.argument("path")
 @click.option("--location", default="workspace", help=_LOCATION_HELP)
-@click.option("--scope", default=None, help="Organization UUID for org-scoped policies.")
+@click.option(
+    "--scope", default=None, help="Organization UUID for org-scoped policies."
+)
 @click.pass_context
 @pass_resolver
 @run_async
@@ -654,7 +662,9 @@ async def get_policy_cmd(
 @policies_group.command("set")
 @click.argument("path")
 @click.option("--location", default="workspace", help=_LOCATION_HELP)
-@click.option("--scope", default=None, help="Organization UUID for org-scoped policies.")
+@click.option(
+    "--scope", default=None, help="Organization UUID for org-scoped policies."
+)
 @click.option(
     "--file",
     "policy_file",
@@ -688,7 +698,9 @@ async def set_policy_cmd(
 @policies_group.command("delete")
 @click.argument("path")
 @click.option("--location", default="workspace", help=_LOCATION_HELP)
-@click.option("--scope", default=None, help="Organization UUID for org-scoped policies.")
+@click.option(
+    "--scope", default=None, help="Organization UUID for org-scoped policies."
+)
 @click.pass_context
 @pass_resolver
 @run_async
