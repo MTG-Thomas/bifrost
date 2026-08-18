@@ -177,9 +177,11 @@ async def test_preview_blocks_relevant_ambiguous_workflow_reference() -> None:
     assert [item.path for item in result.reverse_dependencies] == [
         "workflows/parent.py"
     ]
-    assert [(item.code, item.path) for item in result.diagnostics] == [
-        ("ambiguous_workflow_reference", "workflows/parent.py"),
-        ("reverse_dependents_present", "workflows/one.py"),
+    assert [
+        (item.code, item.severity, item.path) for item in result.diagnostics
+    ] == [
+        ("ambiguous_workflow_reference", "blocker", "workflows/parent.py"),
+        ("reverse_dependents_present", "info", "workflows/one.py"),
     ]
 
 
