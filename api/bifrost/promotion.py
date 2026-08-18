@@ -97,7 +97,7 @@ def discover_python_snapshot(
             f"snapshot must contain 1-{MAX_SNAPSHOT_FILES} Python files"
         )
 
-    _reject_path_collisions(paths)
+    reject_path_collisions(paths)
     for path in paths:
         candidate = root / path
         if candidate.is_symlink():
@@ -143,7 +143,9 @@ def _module_index(snapshot_paths: Iterable[str]) -> dict[str, str]:
     return index
 
 
-def _reject_path_collisions(paths: Iterable[str]) -> None:
+def reject_path_collisions(paths: Iterable[str]) -> None:
+    """Reject paths that collide after Workspace normalization and case-folding."""
+
     identities: dict[str, str] = {}
     for raw_path in paths:
         path = normalize_workspace_path(raw_path)
@@ -291,7 +293,7 @@ def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionB
 def dependency_edges(contents: dict[str, bytes]) -> dict[str, set[str]]:
     """Return importer -> repo-local imports for one complete Python inventory."""
     normalized = {normalize_workspace_path(path): raw for path, raw in contents.items()}
-    _reject_path_collisions(normalized)
+    reject_path_collisions(normalized)
     modules = _module_index(normalized)
     return {
         path: _resolve_imports(path, raw, modules)
@@ -309,7 +311,7 @@ def dependency_edges_for_file(
     path = normalize_workspace_path(path)
     paths = {normalize_workspace_path(item) for item in snapshot_paths}
     paths.add(path)
-    _reject_path_collisions(paths)
+    reject_path_collisions(paths)
     return _resolve_imports(path, raw, _module_index(paths))
 
 
@@ -328,7 +330,7 @@ def validate_submitted_bundle(
         normalize_workspace_path(path): digest
         for path, digest in snapshot_files.items()
     }
-    _reject_path_collisions(normalized_snapshot)
+    reject_path_collisions(normalized_snapshot)
     for path, digest in normalized_snapshot.items():
         if not path.endswith(".py"):
             raise PromotionBundleError(f"snapshot contains a non-Python path: {path}")

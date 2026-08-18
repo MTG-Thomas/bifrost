@@ -461,6 +461,35 @@ async def test_preview_blocks_changed_dynamic_export_contract_in_use() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preview_explains_star_import_dynamic_contract_change() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "modules/vendor.py": (
+                    b"def __getattr__(name): return {'dynamic': 1}[name]\n"
+                ),
+                "workflows/report.py": b"from modules.vendor import *\n",
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="modules/vendor.py",
+            content="def __getattr__(name): return {'replacement': 1}[name]\n",
+        )
+    )
+
+    diagnostic = next(
+        item
+        for item in result.diagnostics
+        if item.code == "star_import_contract_unresolved"
+    )
+    assert result.ready_to_write is False
+    assert "changes the dynamic module export contract" in diagnostic.message
+
+
+@pytest.mark.asyncio
 async def test_candidate_changes_when_unrelated_workspace_snapshot_changes() -> None:
     repo = _Repo(
         {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from bifrost.workspace_impact import (
@@ -204,6 +206,10 @@ def test_analysis_respects_lexical_shadowing_of_module_aliases() -> None:
     assert graph.symbol_imports[("workflows/report.py", target)] == ("legacy",)
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason="PEP 695 type-parameter syntax requires Python 3.12+",
+)
 def test_analysis_respects_generic_type_parameter_shadowing() -> None:
     target = "modules/vendor.py"
     graph = analyze_workspace_impact(
@@ -250,6 +256,29 @@ def test_analysis_respects_control_flow_and_comprehension_shadowing() -> None:
     assert graph.symbol_imports[("workflows/comprehension.py", target)] == ("actual",)
 
 
+def test_analysis_resolves_sibling_and_comprehension_lambdas_positionally() -> None:
+    target = "modules/vendor.py"
+    graph = analyze_workspace_impact(
+        {
+            target: b"def one(): pass\ndef two(): pass\n",
+            "workflows/siblings.py": (
+                b"import modules.vendor as vendor\n"
+                b"handlers = (lambda: vendor.one(), lambda: vendor.two())\n"
+            ),
+            "workflows/generator.py": (
+                b"import modules.vendor as vendor\n"
+                b"values = tuple((lambda: vendor.one())() for _ in items)\n"
+            ),
+        }
+    )
+
+    assert graph.symbol_imports[("workflows/siblings.py", target)] == (
+        "one",
+        "two",
+    )
+    assert graph.symbol_imports[("workflows/generator.py", target)] == ("one",)
+
+
 def test_analysis_indexes_conditional_walrus_with_and_dynamic_exports() -> None:
     graph = analyze_workspace_impact(
         {
@@ -266,6 +295,23 @@ def test_analysis_indexes_conditional_walrus_with_and_dynamic_exports() -> None:
     assert {"enabled", "managed", "conditional", "__getattr__"} <= symbols
     assert graph.dynamic_exporters == frozenset({"modules/vendor.py"})
     assert graph.dynamic_export_contracts["modules/vendor.py"]
+
+
+def test_analysis_indexes_match_captures_and_assigned_dynamic_export() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "modules/vendor.py": (
+                b"match payload:\n"
+                b"    case {'kind': kind, **rest}:\n"
+                b"        captured = kind\n"
+                b"__getattr__ = load_dynamic\n"
+            )
+        }
+    )
+
+    symbols = graph.module_symbols["modules/vendor.py"]
+    assert {"kind", "rest", "captured", "__getattr__"} <= symbols
+    assert graph.dynamic_exporters == frozenset({"modules/vendor.py"})
 
 
 def test_analysis_ignores_non_reference_workflow_constants() -> None:

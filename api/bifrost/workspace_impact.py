@@ -12,7 +12,6 @@ import ast
 import pathlib
 import re
 import symtable
-import unicodedata
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
@@ -21,6 +20,7 @@ from bifrost.promotion import (
     PromotionBundleError,
     WorkspaceImportResolver,
     normalize_workspace_path,
+    reject_path_collisions,
 )
 
 WORKSPACE_IMPORT_ROOTS = frozenset(
@@ -143,15 +143,8 @@ def _module_name(path: str) -> str:
 
 def _module_index(paths: Iterable[str]) -> dict[str, str]:
     result: dict[str, str] = {}
-    identities: dict[str, str] = {}
     for raw_path in paths:
         path = normalize_workspace_path(raw_path)
-        identity = unicodedata.normalize("NFC", path).casefold()
-        if previous_path := identities.get(identity):
-            raise WorkspaceImpactError(
-                f"case/Unicode-colliding workspace paths: {previous_path}, {path}"
-            )
-        identities[identity] = path
         if not path.endswith(".py"):
             continue
         module = _module_name(path)
@@ -381,6 +374,17 @@ def _named_expression_names(node: ast.stmt) -> set[str]:
     return collector.names
 
 
+def _match_pattern_names(node: ast.Match) -> set[str]:
+    names: set[str] = set()
+    for case in node.cases:
+        for pattern in ast.walk(case.pattern):
+            if isinstance(pattern, (ast.MatchAs, ast.MatchStar)) and pattern.name:
+                names.add(pattern.name)
+            elif isinstance(pattern, ast.MatchMapping) and pattern.rest:
+                names.add(pattern.rest)
+    return names
+
+
 def _statement_bindings(node: ast.stmt) -> tuple[set[str], bool]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return {node.name}, node.name == "__getattr__"
@@ -403,8 +407,10 @@ def _statement_bindings(node: ast.stmt) -> tuple[set[str], bool]:
         names.update(
             alias.asname or alias.name for alias in node.names if alias.name != "*"
         )
+    elif isinstance(node, ast.Match):
+        names.update(_match_pattern_names(node))
     names.update(_named_expression_names(node))
-    return names, False
+    return names, "__getattr__" in names
 
 
 def _nested_statement_blocks(node: ast.stmt) -> list[list[ast.stmt]]:
@@ -467,6 +473,7 @@ class _SymbolUseVisitor(ast.NodeVisitor):
         self.scope = _SymbolScope(parent=None, kind="module")
         self.symbol_table = symbol_table
         self._table_stack = [symbol_table]
+        self._child_positions: dict[tuple[int, str, int], int] = defaultdict(int)
         self._named_expression_binding_scope: _SymbolScope | None = None
 
     @staticmethod
@@ -486,24 +493,43 @@ class _SymbolUseVisitor(ast.NodeVisitor):
     def _child_table(
         self, name: str, lineno: int
     ) -> tuple[symtable.SymbolTable, symtable.SymbolTable | None]:
-        matches = [
-            table
-            for table in self._table_stack[-1].get_children()
-            if table.get_name() == name and table.get_lineno() == lineno
-        ]
-        wrapper = None
-        if len(matches) == 1 and matches[0].get_type() == "type parameters":
-            wrapper = matches[0]
-            matches = [
-                table
-                for table in wrapper.get_children()
-                if table.get_name() == name and table.get_lineno() == lineno
-            ]
-        if len(matches) != 1:
+        parent = self._table_stack[-1]
+        candidates: list[tuple[symtable.SymbolTable, symtable.SymbolTable | None]] = []
+        for child in parent.get_children():
+            if child.get_name() != name or child.get_lineno() != lineno:
+                continue
+            if child.get_type() != "type parameters":
+                candidates.append((child, None))
+                continue
+            candidates.extend(
+                (nested, child)
+                for nested in child.get_children()
+                if nested.get_name() == name and nested.get_lineno() == lineno
+            )
+        key = (id(parent), name, lineno)
+        position = self._child_positions[key]
+        if position >= len(candidates):
             raise WorkspaceImpactError(
                 f"cannot resolve lexical scope {name!r} at {self.path}:{lineno}"
             )
-        return matches[0], wrapper
+        self._child_positions[key] += 1
+        return candidates[position]
+
+    def _optional_child_table(
+        self, name: str, lineno: int
+    ) -> symtable.SymbolTable | None:
+        parent = self._table_stack[-1]
+        matches = [
+            child
+            for child in parent.get_children()
+            if child.get_name() == name and child.get_lineno() == lineno
+        ]
+        key = (id(parent), name, lineno)
+        position = self._child_positions[key]
+        if position >= len(matches):
+            return None
+        self._child_positions[key] += 1
+        return matches[position]
 
     def _type_parameter_scope(
         self,
@@ -705,12 +731,27 @@ class _SymbolUseVisitor(ast.NodeVisitor):
         self,
         generators: list[ast.comprehension],
         values: Iterable[ast.expr],
+        *,
+        table_name: str,
+        lineno: int,
     ) -> None:
         containing_scope = self.scope
-        self.scope = _SymbolScope(parent=containing_scope, kind="comprehension")
+        first, *remaining = generators
+        self.visit(first.iter)
+        table = self._optional_child_table(table_name, lineno)
+        self.scope = _SymbolScope(
+            parent=containing_scope,
+            kind="comprehension",
+            blocked=self._blocked_names(table) if table is not None else set(),
+        )
+        if table is not None:
+            self._table_stack.append(table)
         previous_binding_scope = self._named_expression_binding_scope
         self._named_expression_binding_scope = containing_scope
-        for generator in generators:
+        self.scope.blocked.update(_target_names(first.target))
+        for condition in first.ifs:
+            self.visit(condition)
+        for generator in remaining:
             self.visit(generator.iter)
             self.scope.blocked.update(_target_names(generator.target))
             for condition in generator.ifs:
@@ -718,19 +759,41 @@ class _SymbolUseVisitor(ast.NodeVisitor):
         for value in values:
             self.visit(value)
         self._named_expression_binding_scope = previous_binding_scope
+        if table is not None:
+            self._table_stack.pop()
         self.scope = containing_scope
 
     def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: N802
-        self._visit_comprehension(node.generators, [node.elt])
+        self._visit_comprehension(
+            node.generators,
+            [node.elt],
+            table_name="listcomp",
+            lineno=node.lineno,
+        )
 
     def visit_SetComp(self, node: ast.SetComp) -> None:  # noqa: N802
-        self._visit_comprehension(node.generators, [node.elt])
+        self._visit_comprehension(
+            node.generators,
+            [node.elt],
+            table_name="setcomp",
+            lineno=node.lineno,
+        )
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
-        self._visit_comprehension(node.generators, [node.elt])
+        self._visit_comprehension(
+            node.generators,
+            [node.elt],
+            table_name="genexpr",
+            lineno=node.lineno,
+        )
 
     def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
-        self._visit_comprehension(node.generators, [node.key, node.value])
+        self._visit_comprehension(
+            node.generators,
+            [node.key, node.value],
+            table_name="dictcomp",
+            lineno=node.lineno,
+        )
 
 
 def _symbol_requirements(
@@ -942,6 +1005,7 @@ def _analysis_from_parts(
 def index_workspace_impact(contents: Mapping[str, bytes]) -> WorkspaceImpactIndex:
     """Parse one complete snapshot into a reusable impact index."""
 
+    reject_path_collisions(contents)
     normalized = {normalize_workspace_path(path): raw for path, raw in contents.items()}
     modules = _module_index(normalized)
     parsed = {

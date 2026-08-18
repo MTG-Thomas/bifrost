@@ -398,14 +398,16 @@ def _importer_symbol_contract_diagnostics(
             )
         )
     if (importer_path, path) in analysis.star_import_edges:
+        cause = (
+            "removes module-level symbols"
+            if removed
+            else "changes the dynamic module export contract"
+        )
         diagnostics.append(
             WorkspaceFileImpactDiagnostic(
                 code="star_import_contract_unresolved",
                 severity="blocker",
-                message=(
-                    "consumer uses a star import while the dependency removes "
-                    "module-level symbols"
-                ),
+                message=("consumer uses a star import while the dependency " + cause),
                 path=importer_path,
             )
         )
