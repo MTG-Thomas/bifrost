@@ -142,7 +142,6 @@ class AzureBlobStorageClient:
             page = await anext(pager)
         except StopAsyncIteration:
             page = []
-        next_token = getattr(pager, "continuation_token", None)
 
         contents: list[dict] = []
         common_prefixes: set[str] = set()
@@ -150,6 +149,10 @@ class AzureBlobStorageClient:
             blobs = [blob async for blob in cast(AsyncIterator[Any], page)]
         else:
             blobs = list(cast(Iterable[Any], page))
+        # Azure's async pager advances ``continuation_token`` while the page is
+        # consumed. Reading it before iterating the page silently truncates
+        # listings at the first service page.
+        next_token = getattr(pager, "continuation_token", None)
 
         for blob in blobs:
             name = blob.name
