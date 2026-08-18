@@ -197,45 +197,48 @@ class WorkspaceImportResolver:
                 self.resolved.add(target)
                 return
 
+    def _scan_import_from(self, node: ast.ImportFrom) -> None:
+        base_parts = self.package_parts[:]
+        if node.level:
+            trim = node.level - 1
+            base_parts = base_parts[: len(base_parts) - trim] if trim else base_parts
+        elif node.module:
+            base_parts = []
+        module_parts = (node.module or "").split(".") if node.module else []
+        base = ".".join([*base_parts, *module_parts])
+        if base:
+            self._add_module(base)
+        for alias in node.names:
+            if alias.name != "*":
+                self._add_module(
+                    ".".join(value for value in (base, alias.name) if value)
+                )
+
+    @staticmethod
+    def _literal_dynamic_import(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Call) or not node.args:
+            return None
+        first = node.args[0]
+        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+            return None
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        else:
+            return None
+        return first.value if name in {"import_module", "__import__"} else None
+
     def scan(self, node: ast.AST) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 self._add_module(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            base_parts = self.package_parts[:]
-            if node.level:
-                trim = node.level - 1
-                base_parts = (
-                    base_parts[: len(base_parts) - trim] if trim else base_parts
-                )
-            elif node.module:
-                base_parts = []
-            module_parts = (node.module or "").split(".") if node.module else []
-            base = ".".join([*base_parts, *module_parts])
-            if base:
-                self._add_module(base)
-            for alias in node.names:
-                if alias.name != "*":
-                    self._add_module(
-                        ".".join(value for value in (base, alias.name) if value)
-                    )
-        elif (
-            isinstance(node, ast.Call)
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-            and (
-                (
-                    isinstance(node.func, ast.Name)
-                    and node.func.id in {"import_module", "__import__"}
-                )
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr in {"import_module", "__import__"}
-                )
-            )
-        ):
-            self._add_module(node.args[0].value)
+            return
+        if isinstance(node, ast.ImportFrom):
+            self._scan_import_from(node)
+            return
+        if module := self._literal_dynamic_import(node):
+            self._add_module(module)
 
     def result(self) -> set[str]:
         resolved = set(self.resolved)

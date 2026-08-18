@@ -348,6 +348,70 @@ def _diagnostics(
     return diagnostics
 
 
+def _importer_symbol_contract_diagnostics(
+    *,
+    path: str,
+    importer_path: str,
+    removed: set[str],
+    current_symbols: frozenset[str],
+    dynamic_contract_changed: bool,
+    analysis: WorkspaceImpactAnalysis,
+    base_analysis: WorkspaceImpactAnalysis,
+) -> list[WorkspaceFileImpactDiagnostic]:
+    diagnostics: list[WorkspaceFileImpactDiagnostic] = []
+    required = set(analysis.symbol_imports.get((importer_path, path), ()))
+    removed_required = sorted(removed & required)
+    dynamic_required = sorted(required - current_symbols)
+    if dynamic_contract_changed and dynamic_required:
+        diagnostics.append(
+            WorkspaceFileImpactDiagnostic(
+                code="dynamic_module_export_contract",
+                severity="blocker",
+                message=(
+                    "proposed source changes the dynamic module export contract "
+                    "used for symbols: "
+                )
+                + ", ".join(dynamic_required),
+                path=importer_path,
+            )
+        )
+    if removed_required:
+        dynamic = (
+            path in base_analysis.dynamic_exporters
+            or path in analysis.dynamic_exporters
+        )
+        diagnostics.append(
+            WorkspaceFileImpactDiagnostic(
+                code=(
+                    "dynamic_module_export_contract"
+                    if dynamic
+                    else "removed_imported_symbol"
+                ),
+                severity="blocker",
+                message=(
+                    "module uses dynamic exports; cannot prove removed symbols: "
+                    if dynamic
+                    else "proposed source removes imported symbols: "
+                )
+                + ", ".join(removed_required),
+                path=importer_path,
+            )
+        )
+    if (importer_path, path) in analysis.star_import_edges:
+        diagnostics.append(
+            WorkspaceFileImpactDiagnostic(
+                code="star_import_contract_unresolved",
+                severity="blocker",
+                message=(
+                    "consumer uses a star import while the dependency removes "
+                    "module-level symbols"
+                ),
+                path=importer_path,
+            )
+        )
+    return diagnostics
+
+
 def _symbol_contract_diagnostics(
     *,
     path: str,
@@ -361,7 +425,7 @@ def _symbol_contract_diagnostics(
         return []
     current_symbols = base_analysis.module_symbols.get(path, frozenset())
     proposed_symbols = analysis.module_symbols.get(path, frozenset())
-    removed = current_symbols - proposed_symbols
+    removed = set(current_symbols - proposed_symbols)
     dynamic_contract_changed = base_analysis.dynamic_export_contracts.get(
         path, ()
     ) != analysis.dynamic_export_contracts.get(path, ())
@@ -370,60 +434,17 @@ def _symbol_contract_diagnostics(
 
     diagnostics: list[WorkspaceFileImpactDiagnostic] = []
     for importer_path in sorted(reverse_paths):
-        required = set(analysis.symbol_imports.get((importer_path, path), ()))
-        star_import = (
-            importer_path,
-            path,
-        ) in analysis.star_import_edges
-        removed_required = sorted(removed & required)
-        dynamic_required = sorted(required - current_symbols)
-        if dynamic_contract_changed and dynamic_required:
-            diagnostics.append(
-                WorkspaceFileImpactDiagnostic(
-                    code="dynamic_module_export_contract",
-                    severity="blocker",
-                    message=(
-                        "proposed source changes the dynamic module export contract "
-                        "used for symbols: "
-                    )
-                    + ", ".join(dynamic_required),
-                    path=importer_path,
-                )
+        diagnostics.extend(
+            _importer_symbol_contract_diagnostics(
+                path=path,
+                importer_path=importer_path,
+                removed=removed,
+                current_symbols=current_symbols,
+                dynamic_contract_changed=dynamic_contract_changed,
+                analysis=analysis,
+                base_analysis=base_analysis,
             )
-        if removed_required:
-            dynamic = (
-                path in base_analysis.dynamic_exporters
-                or path in analysis.dynamic_exporters
-            )
-            diagnostics.append(
-                WorkspaceFileImpactDiagnostic(
-                    code=(
-                        "dynamic_module_export_contract"
-                        if dynamic
-                        else "removed_imported_symbol"
-                    ),
-                    severity="blocker",
-                    message=(
-                        "module uses dynamic exports; cannot prove removed symbols: "
-                        if dynamic
-                        else "proposed source removes imported symbols: "
-                    )
-                    + ", ".join(removed_required),
-                    path=importer_path,
-                )
-            )
-        if star_import:
-            diagnostics.append(
-                WorkspaceFileImpactDiagnostic(
-                    code="star_import_contract_unresolved",
-                    severity="blocker",
-                    message=(
-                        "consumer uses a star import while the dependency removes "
-                        "module-level symbols"
-                    ),
-                    path=importer_path,
-                )
-            )
+        )
     return diagnostics
 
 
