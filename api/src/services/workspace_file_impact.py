@@ -10,6 +10,7 @@ import time
 from collections.abc import Awaitable, Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from opentelemetry import metrics
 
@@ -38,7 +39,7 @@ from src.models.contracts.workspace_file_impact import (
 )
 from src.services.repo_storage import RepoStorage
 
-MAX_IMPACTED_FILES = 200
+LARGE_IMPACT_GRAPH_FILES = 200
 logger = logging.getLogger(__name__)
 workspace_impact_snapshot_duration = None
 workspace_impact_snapshot_files = None
@@ -162,8 +163,12 @@ def _impact_metric_instruments():
 def _diagnostics(
     *,
     path: str,
+    changed: bool,
     relevant_paths: set[str],
+    forward_paths: set[str],
     reverse_paths: set[str],
+    analysis: WorkspaceImpactAnalysis,
+    base_analysis: WorkspaceImpactAnalysis,
     unresolved_imports: Mapping[str, tuple[str, ...]],
     ambiguous_references: Mapping[str, tuple[str, ...]],
     dynamic_importers: frozenset[str],
@@ -171,27 +176,59 @@ def _diagnostics(
     proposed_unchanged: bool,
 ) -> list[WorkspaceFileImpactDiagnostic]:
     diagnostics: list[WorkspaceFileImpactDiagnostic] = []
-    if len(relevant_paths) > MAX_IMPACTED_FILES:
+    if len(relevant_paths) > LARGE_IMPACT_GRAPH_FILES:
         diagnostics.append(
             WorkspaceFileImpactDiagnostic(
-                code="impact_fanout_exceeded",
-                severity="blocker",
+                code="large_impact_graph",
+                severity="warning",
                 message=(
-                    f"transitive impact contains {len(relevant_paths)} files; "
-                    "use reviewed comprehensive validation"
+                    f"complete transitive traversal analyzed all "
+                    f"{len(relevant_paths)} files without truncation"
                 ),
                 path=path,
             )
         )
+
+    def severity_for(
+        affected_path: str,
+        *,
+        newly_introduced: bool,
+        registry_edge_to_target: bool = False,
+    ) -> Literal["warning", "blocker"]:
+        if not changed:
+            return "warning"
+        if (
+            affected_path == path
+            or affected_path in forward_paths
+            or newly_introduced
+            or registry_edge_to_target
+        ):
+            return "blocker"
+        return "warning"
+
+    def preexisting_prefix(severity: Literal["warning", "blocker"]) -> str:
+        return "pre-existing connected-file issue: " if severity == "warning" else ""
+
     for affected_path in sorted(relevant_paths):
         ambiguous = ambiguous_references.get(affected_path, ())
         if ambiguous:
+            base_ambiguous = set(
+                base_analysis.ambiguous_references.get(affected_path, ())
+            )
+            severity = severity_for(
+                affected_path,
+                newly_introduced=not set(ambiguous).issubset(base_ambiguous),
+                registry_edge_to_target=(
+                    (affected_path, path) in analysis.registry_edges
+                ),
+            )
             diagnostics.append(
                 WorkspaceFileImpactDiagnostic(
                     code="ambiguous_workflow_reference",
-                    severity="blocker",
+                    severity=severity,
                     message=(
-                        "workflow reference resolves to multiple authored files: "
+                        preexisting_prefix(severity)
+                        + "workflow reference resolves to multiple authored files: "
                         + ", ".join(ambiguous)
                     ),
                     path=affected_path,
@@ -199,30 +236,55 @@ def _diagnostics(
             )
         unresolved = unresolved_imports.get(affected_path, ())
         if unresolved:
+            base_unresolved = set(
+                base_analysis.unresolved_imports.get(affected_path, ())
+            )
+            severity = severity_for(
+                affected_path,
+                newly_introduced=not set(unresolved).issubset(base_unresolved),
+            )
             diagnostics.append(
                 WorkspaceFileImpactDiagnostic(
                     code="unresolved_repo_import",
-                    severity="blocker",
-                    message="unresolved repo-local imports: " + ", ".join(unresolved),
+                    severity=severity,
+                    message=(
+                        preexisting_prefix(severity)
+                        + "unresolved repo-local imports: "
+                        + ", ".join(unresolved)
+                    ),
                     path=affected_path,
                 )
             )
         if affected_path in dynamic_importers:
+            severity = severity_for(
+                affected_path,
+                newly_introduced=(affected_path not in base_analysis.dynamic_importers),
+            )
             diagnostics.append(
                 WorkspaceFileImpactDiagnostic(
                     code="dynamic_import_unresolved",
-                    severity="blocker",
-                    message="computed dynamic import prevents complete static impact proof",
+                    severity=severity,
+                    message=(
+                        preexisting_prefix(severity)
+                        + "computed dynamic import prevents complete static impact proof"
+                    ),
                     path=affected_path,
                 )
             )
         if affected_path in dynamic_reference_importers:
+            severity = severity_for(
+                affected_path,
+                newly_introduced=(
+                    affected_path not in base_analysis.dynamic_reference_importers
+                ),
+            )
             diagnostics.append(
                 WorkspaceFileImpactDiagnostic(
                     code="dynamic_workflow_reference_unresolved",
-                    severity="blocker",
+                    severity=severity,
                     message=(
-                        "computed workflow reference prevents complete static impact proof"
+                        preexisting_prefix(severity)
+                        + "computed workflow reference prevents complete static impact proof"
                     ),
                     path=affected_path,
                 )
@@ -247,6 +309,68 @@ def _diagnostics(
                 path=path,
             )
         )
+    return diagnostics
+
+
+def _symbol_contract_diagnostics(
+    *,
+    path: str,
+    current_exists: bool,
+    changed: bool,
+    reverse_paths: set[str],
+    analysis: WorkspaceImpactAnalysis,
+    base_analysis: WorkspaceImpactAnalysis,
+) -> list[WorkspaceFileImpactDiagnostic]:
+    if not current_exists or not changed:
+        return []
+    current_symbols = base_analysis.module_symbols.get(path, frozenset())
+    proposed_symbols = analysis.module_symbols.get(path, frozenset())
+    removed = current_symbols - proposed_symbols
+    if not removed:
+        return []
+
+    diagnostics: list[WorkspaceFileImpactDiagnostic] = []
+    for importer_path in sorted(reverse_paths):
+        required = set(analysis.symbol_imports.get((importer_path, path), ()))
+        star_import = (
+            importer_path,
+            path,
+        ) in analysis.star_import_edges
+        removed_required = sorted(removed & required)
+        if removed_required:
+            dynamic = (
+                path in base_analysis.dynamic_exporters
+                or path in analysis.dynamic_exporters
+            )
+            diagnostics.append(
+                WorkspaceFileImpactDiagnostic(
+                    code=(
+                        "dynamic_module_export_contract"
+                        if dynamic
+                        else "removed_imported_symbol"
+                    ),
+                    severity="blocker",
+                    message=(
+                        "module uses dynamic exports; cannot prove removed symbols: "
+                        if dynamic
+                        else "proposed source removes imported symbols: "
+                    )
+                    + ", ".join(removed_required),
+                    path=importer_path,
+                )
+            )
+        if star_import:
+            diagnostics.append(
+                WorkspaceFileImpactDiagnostic(
+                    code="star_import_contract_unresolved",
+                    severity="blocker",
+                    message=(
+                        "consumer uses a star import while the dependency removes "
+                        "module-level symbols"
+                    ),
+                    path=importer_path,
+                )
+            )
     return diagnostics
 
 
@@ -454,13 +578,27 @@ class WorkspaceFileImpactService:
 
         diagnostics = _diagnostics(
             path=path,
+            changed=current != proposed,
             relevant_paths=relevant_paths,
+            forward_paths=forward_paths,
             reverse_paths=reverse_paths,
+            analysis=analysis,
+            base_analysis=workspace.impact_index.analysis,
             unresolved_imports=analysis.unresolved_imports,
             ambiguous_references=analysis.ambiguous_references,
             dynamic_importers=analysis.dynamic_importers,
             dynamic_reference_importers=analysis.dynamic_reference_importers,
             proposed_unchanged=request.content is not None and current == proposed,
+        )
+        diagnostics.extend(
+            _symbol_contract_diagnostics(
+                path=path,
+                current_exists=current is not None,
+                changed=current != proposed,
+                reverse_paths=reverse_paths,
+                analysis=analysis,
+                base_analysis=workspace.impact_index.analysis,
+            )
         )
 
         hashes = (
@@ -503,6 +641,11 @@ class WorkspaceFileImpactService:
             impacted_paths=sorted({path, *reverse_paths}),
             edges=_edge_rows(analysis=analysis, relevant_paths=relevant_paths),
             diagnostics=diagnostics,
+            traversal_complete=True,
+            analyzed_path_count=len(relevant_paths),
+            blocking_diagnostic_count=sum(
+                item.severity == "blocker" for item in diagnostics
+            ),
             ready_to_write=not any(item.severity == "blocker" for item in diagnostics),
         )
 

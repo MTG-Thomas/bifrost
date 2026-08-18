@@ -27370,6 +27370,15 @@ export interface components {
             edges?: components["schemas"]["WorkspaceFileImpactEdge"][];
             /** Diagnostics */
             diagnostics?: components["schemas"]["WorkspaceFileImpactDiagnostic"][];
+            /**
+             * Traversal Complete
+             * @description True when every known transitive edge was returned without truncation.
+             */
+            traversal_complete: boolean;
+            /** Analyzed Path Count */
+            analyzed_path_count: number;
+            /** Blocking Diagnostic Count */
+            blocking_diagnostic_count: number;
             /** Ready To Write */
             ready_to_write: boolean;
         };

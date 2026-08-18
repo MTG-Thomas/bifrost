@@ -73,6 +73,9 @@ async def test_preview_binds_proposed_bytes_and_transitive_reverse_closure() -> 
         "helpers/shared.py",
     ]
     assert result.candidate_id.startswith("sha256:")
+    assert result.traversal_complete is True
+    assert result.analyzed_path_count == 3
+    assert result.blocking_diagnostic_count == 0
 
 
 @pytest.mark.asyncio
@@ -162,7 +165,12 @@ async def test_preview_blocks_relevant_ambiguous_workflow_reference() -> None:
         )
     )
 
-    result = await service.preview(WorkspaceFileImpactRequest(path="workflows/one.py"))
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="workflows/one.py",
+            content="@workflow(name='Child')\ndef one():\n    return 3\n",
+        )
+    )
 
     assert result.ready_to_write is False
     assert [item.path for item in result.reverse_dependencies] == [
@@ -210,7 +218,9 @@ async def test_preview_rejects_non_authored_python_root() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preview_blocks_unresolved_import_in_affected_consumer() -> None:
+async def test_preview_reports_preexisting_unrelated_consumer_issue_without_blocking() -> (
+    None
+):
     service = WorkspaceFileImpactService(
         _Repo(
             {
@@ -230,10 +240,182 @@ async def test_preview_blocks_unresolved_import_in_affected_consumer() -> None:
         )
     )
 
+    assert result.ready_to_write is True
+    assert [(item.code, item.severity, item.path) for item in result.diagnostics] == [
+        (
+            "unresolved_repo_import",
+            "warning",
+            "features/vendor/report.py",
+        ),
+        ("reverse_dependents_present", "info", "helpers/shared.py"),
+    ]
+    assert result.diagnostics[0].message.startswith(
+        "pre-existing connected-file issue:"
+    )
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_new_unresolved_import_in_changed_source() -> None:
+    service = WorkspaceFileImpactService(_Repo({"helpers/shared.py": b"VALUE = 1\n"}))
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="helpers/shared.py",
+            content="from modules.missing import OTHER\nVALUE = OTHER\n",
+        )
+    )
+
+    assert result.ready_to_write is False
+    assert [(item.code, item.severity, item.path) for item in result.diagnostics] == [
+        ("unresolved_repo_import", "blocker", "helpers/shared.py")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_checked_write_traverses_large_graph_without_truncating_or_blocking(
+    monkeypatch,
+) -> None:
+    files = {"helpers/shared.py": b"VALUE = 1\n"}
+    files.update(
+        {
+            f"workflows/consumer_{index:03d}.py": (
+                b"from helpers.shared import VALUE\n"
+                + f"def consumer_{index:03d}(): return VALUE\n".encode()
+            )
+            for index in range(250)
+        }
+    )
+    service = WorkspaceFileImpactService(_Repo(files))
+    wrote = False
+
+    @asynccontextmanager
+    async def barrier(**kwargs):
+        assert kwargs == {
+            "reason": "checked_workspace_file_write",
+            "changed_paths": ["helpers/shared.py"],
+        }
+        yield
+
+    async def write() -> None:
+        nonlocal wrote
+        wrote = True
+
+    monkeypatch.setattr("src.core.module_cache.workspace_source_update", barrier)
+
+    request = WorkspaceFileImpactRequest(
+        path="helpers/shared.py",
+        content="VALUE = 2\n",
+    )
+    result = await service.preview(request)
+
+    assert result.traversal_complete is True
+    assert result.analyzed_path_count == 251
+    assert len(result.reverse_dependencies) == 250
+    assert len(result.edges) == 250
+    assert result.blocking_diagnostic_count == 0
+    assert result.ready_to_write is True
+    assert [(item.code, item.severity) for item in result.diagnostics] == [
+        ("large_impact_graph", "warning"),
+        ("reverse_dependents_present", "info"),
+    ]
+    consumed = await service.guarded_write(request, result.candidate_id, write)
+    assert consumed.candidate_id == result.candidate_id
+    assert wrote is True
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_removing_symbol_used_by_reverse_dependent() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "modules/vendor.py": (
+                    b"class Client:\n    pass\n\ndef retained(): return 1\n"
+                ),
+                "workflows/direct.py": (
+                    b"from modules.vendor import Client\n"
+                    b"def direct(): return Client()\n"
+                ),
+                "workflows/alias.py": (
+                    b"import modules.vendor as vendor_module\n"
+                    b"def alias(): return vendor_module.Client()\n"
+                ),
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="modules/vendor.py",
+            content="def retained(): return 1\n",
+        )
+    )
+
+    assert result.ready_to_write is False
+    assert result.blocking_diagnostic_count == 2
+    assert [(item.code, item.path) for item in result.diagnostics] == [
+        ("reverse_dependents_present", "modules/vendor.py"),
+        ("removed_imported_symbol", "workflows/alias.py"),
+        ("removed_imported_symbol", "workflows/direct.py"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_checks_relative_imports_and_conditional_module_exports() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "features/vendor/_shared.py": (
+                    b"try:\n"
+                    b"    def available(): return 1\n"
+                    b"except Exception:\n"
+                    b"    available = None\n"
+                ),
+                "features/vendor/report.py": (
+                    b"from ._shared import available\n"
+                    b"def report(): return available()\n"
+                ),
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="features/vendor/_shared.py",
+            content="VALUE = 1\n",
+        )
+    )
+
     assert result.ready_to_write is False
     assert [(item.code, item.path) for item in result.diagnostics] == [
-        ("unresolved_repo_import", "features/vendor/report.py"),
+        ("reverse_dependents_present", "features/vendor/_shared.py"),
+        ("removed_imported_symbol", "features/vendor/report.py"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_star_import_when_module_surface_shrinks() -> None:
+    service = WorkspaceFileImpactService(
+        _Repo(
+            {
+                "helpers/shared.py": b"ONE = 1\nTWO = 2\n",
+                "workflows/report.py": (
+                    b"from helpers.shared import *\ndef report(): return ONE + TWO\n"
+                ),
+            }
+        )
+    )
+
+    result = await service.preview(
+        WorkspaceFileImpactRequest(
+            path="helpers/shared.py",
+            content="ONE = 1\n",
+        )
+    )
+
+    assert result.ready_to_write is False
+    assert [(item.code, item.path) for item in result.diagnostics] == [
         ("reverse_dependents_present", "helpers/shared.py"),
+        ("star_import_contract_unresolved", "workflows/report.py"),
     ]
 
 
@@ -414,10 +596,10 @@ async def test_preview_blocks_computed_workflow_reference() -> None:
         )
     )
 
-    assert result.ready_to_write is False
-    assert [item.code for item in result.diagnostics] == [
-        "dynamic_workflow_reference_unresolved",
-        "proposed_bytes_unchanged",
+    assert result.ready_to_write is True
+    assert [(item.code, item.severity) for item in result.diagnostics] == [
+        ("dynamic_workflow_reference_unresolved", "warning"),
+        ("proposed_bytes_unchanged", "warning"),
     ]
 
 

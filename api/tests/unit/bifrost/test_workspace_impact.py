@@ -173,6 +173,30 @@ def test_incremental_existing_file_overlay_matches_full_reanalysis() -> None:
     assert incremental == complete
 
 
+def test_analysis_indexes_direct_aliased_relative_and_qualified_symbol_use() -> None:
+    graph = analyze_workspace_impact(
+        {
+            "features/vendor/_shared.py": b"class Client: pass\nVALUE = 1\n",
+            "features/vendor/direct.py": (
+                b"from ._shared import Client\ndef direct(): return Client()\n"
+            ),
+            "features/vendor/aliased.py": (
+                b"import features.vendor._shared as shared\n"
+                b"def aliased(): return shared.Client()\n"
+            ),
+            "features/vendor/qualified.py": (
+                b"import features.vendor._shared\n"
+                b"def qualified(): return features.vendor._shared.VALUE\n"
+            ),
+        }
+    )
+
+    target = "features/vendor/_shared.py"
+    assert graph.symbol_imports[("features/vendor/direct.py", target)] == ("Client",)
+    assert graph.symbol_imports[("features/vendor/aliased.py", target)] == ("Client",)
+    assert graph.symbol_imports[("features/vendor/qualified.py", target)] == ("VALUE",)
+
+
 def test_analysis_ignores_non_reference_workflow_constants() -> None:
     graph = analyze_workspace_impact(
         {

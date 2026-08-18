@@ -130,7 +130,17 @@ class TestGraph:
             "reverse_dependencies": [
                 {"path": "workflows/daily.py", "sha256": "e" * 64, "depth": 1}
             ],
+            "edges": [
+                {
+                    "importer": "workflows/daily.py",
+                    "dependency": "helpers/report.py",
+                    "kind": "import",
+                }
+            ],
             "diagnostics": [],
+            "traversal_complete": True,
+            "analyzed_path_count": 2,
+            "blocking_diagnostic_count": 0,
             "ready_to_write": True,
         }
 
@@ -143,6 +153,7 @@ class TestGraph:
         assert result.exit_code == 0, result.output
         assert "Reverse dependencies (1)" in result.output
         assert "workflows/daily.py" in result.output
+        assert "traversal: complete (2 paths, 1 edges)" in result.output
         assert captured["calls"][0]["body"] == {
             "path": "helpers/report.py",
             "content": "VALUE = 2\n",

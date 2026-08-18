@@ -60,6 +60,10 @@ class WorkspaceImpactAnalysis:
     ambiguous_references: Mapping[str, tuple[str, ...]]
     dynamic_importers: frozenset[str]
     dynamic_reference_importers: frozenset[str]
+    module_symbols: Mapping[str, frozenset[str]]
+    dynamic_exporters: frozenset[str]
+    symbol_imports: Mapping[tuple[str, str], tuple[str, ...]]
+    star_import_edges: frozenset[tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,10 @@ class _ParsedReferences:
     unresolved_imports: tuple[str, ...]
     dynamic_import: bool
     dynamic_reference: bool
+    module_symbols: frozenset[str]
+    dynamic_exports: bool
+    symbol_imports: Mapping[str, tuple[str, ...]]
+    star_imports: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -103,6 +111,15 @@ class _ReferenceAccumulator:
     unresolved: set[str] = field(default_factory=set)
     dynamic_import: bool = False
     dynamic_reference: bool = False
+
+
+@dataclass
+class _SymbolAccumulator:
+    aliases: dict[str, str] = field(default_factory=dict)
+    qualified_modules: dict[tuple[str, ...], str] = field(default_factory=dict)
+    required: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    stars: set[str] = field(default_factory=set)
+    attribute_chains: set[tuple[str, ...]] = field(default_factory=set)
 
 
 def _module_name(path: str) -> str:
@@ -308,6 +325,124 @@ def _scan_entity_decorators(
                     accumulator.identities.add(value)
 
 
+def _top_level_symbols(tree: ast.Module) -> tuple[frozenset[str], bool]:
+    symbols: set[str] = set()
+    dynamic_exports = False
+
+    def add_target(node: ast.expr) -> None:
+        if isinstance(node, ast.Name):
+            symbols.add(node.id)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for item in node.elts:
+                add_target(item)
+
+    def visit(statements: list[ast.stmt]) -> None:
+        nonlocal dynamic_exports
+        for node in statements:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                symbols.add(node.name)
+                dynamic_exports = dynamic_exports or node.name == "__getattr__"
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    add_target(target)
+            elif isinstance(node, ast.AnnAssign):
+                add_target(node.target)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                add_target(node.target)
+                visit(node.body)
+                visit(node.orelse)
+            elif isinstance(node, (ast.If, ast.While)):
+                visit(node.body)
+                visit(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                visit(node.body)
+            elif isinstance(node, (ast.Try, ast.TryStar)):
+                visit(node.body)
+                for handler in node.handlers:
+                    visit(handler.body)
+                visit(node.orelse)
+                visit(node.finalbody)
+            elif isinstance(node, ast.Match):
+                for case in node.cases:
+                    visit(case.body)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    symbols.add(alias.asname or alias.name.split(".", 1)[0])
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name != "*":
+                        symbols.add(alias.asname or alias.name)
+
+    visit(tree.body)
+    return frozenset(symbols), dynamic_exports
+
+
+def _attribute_chain(node: ast.AST) -> tuple[str, ...]:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        return tuple(reversed(parts))
+    return ()
+
+
+def _scan_symbol_node(
+    node: ast.AST,
+    path: str,
+    modules: Mapping[str, str],
+    accumulator: _SymbolAccumulator,
+) -> None:
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            target = modules.get(alias.name)
+            if target is not None:
+                if alias.asname:
+                    accumulator.aliases[alias.asname] = target
+                else:
+                    accumulator.qualified_modules[tuple(alias.name.split("."))] = target
+    elif isinstance(node, ast.ImportFrom):
+        module = _absolute_from_module(path, node)
+        target = modules.get(module)
+        if target is not None:
+            for alias in node.names:
+                if alias.name == "*":
+                    accumulator.stars.add(target)
+                else:
+                    accumulator.required[target].add(alias.name)
+            return
+        for alias in node.names:
+            candidate = f"{module}.{alias.name}" if module else alias.name
+            target = modules.get(candidate)
+            if target is not None:
+                accumulator.aliases[alias.asname or alias.name] = target
+    elif isinstance(node, ast.Attribute):
+        if chain := _attribute_chain(node):
+            accumulator.attribute_chains.add(chain)
+
+
+def _symbol_requirements(
+    accumulator: _SymbolAccumulator,
+) -> tuple[dict[str, tuple[str, ...]], frozenset[str]]:
+    for chain in accumulator.attribute_chains:
+        if len(chain) >= 2 and chain[0] in accumulator.aliases:
+            accumulator.required[accumulator.aliases[chain[0]]].add(chain[1])
+            continue
+        for parts, target in accumulator.qualified_modules.items():
+            if len(chain) > len(parts) and chain[: len(parts)] == parts:
+                accumulator.required[target].add(chain[len(parts)])
+                break
+    return (
+        {
+            target: tuple(sorted(names))
+            for target, names in accumulator.required.items()
+        },
+        frozenset(accumulator.stars),
+    )
+
+
 def _scan_node(
     path: str,
     node: ast.AST,
@@ -338,10 +473,15 @@ def _parse_references(
     except (SyntaxError, UnicodeDecodeError) as exc:
         raise WorkspaceImpactError(f"cannot parse {path}: {exc}") from exc
     constants = _top_level_constants(tree)
+    module_symbols, dynamic_exports = _top_level_symbols(tree)
     accumulator = _ReferenceAccumulator()
+    symbol_accumulator = _SymbolAccumulator()
 
     for node in ast.walk(tree):
         _scan_node(path, node, constants, modules, accumulator)
+        _scan_symbol_node(node, path, modules, symbol_accumulator)
+
+    symbol_imports, star_imports = _symbol_requirements(symbol_accumulator)
 
     for name, value in constants.items():
         if UUID_RE.fullmatch(value) or REFERENCE_CONSTANT_RE.search(name):
@@ -352,6 +492,10 @@ def _parse_references(
         unresolved_imports=tuple(sorted(accumulator.unresolved)),
         dynamic_import=accumulator.dynamic_import,
         dynamic_reference=accumulator.dynamic_reference,
+        module_symbols=module_symbols,
+        dynamic_exports=dynamic_exports,
+        symbol_imports=symbol_imports,
+        star_imports=star_imports,
     )
 
 
@@ -410,6 +554,20 @@ def _analysis_from_parts(
         ),
         dynamic_reference_importers=frozenset(
             path for path, item in parsed.items() if item.dynamic_reference
+        ),
+        module_symbols={path: item.module_symbols for path, item in parsed.items()},
+        dynamic_exporters=frozenset(
+            path for path, item in parsed.items() if item.dynamic_exports
+        ),
+        symbol_imports={
+            (importer, target): names
+            for importer, item in parsed.items()
+            for target, names in item.symbol_imports.items()
+        },
+        star_import_edges=frozenset(
+            (importer, target)
+            for importer, item in parsed.items()
+            for target in item.star_imports
         ),
     )
 
