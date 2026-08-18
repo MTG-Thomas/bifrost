@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 import pytest
 
 from bifrost.workspace_impact import (
@@ -206,10 +204,6 @@ def test_analysis_respects_lexical_shadowing_of_module_aliases() -> None:
     assert graph.symbol_imports[("workflows/report.py", target)] == ("legacy",)
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 12),
-    reason="PEP 695 type-parameter syntax requires Python 3.12+",
-)
 def test_analysis_respects_generic_type_parameter_shadowing() -> None:
     target = "modules/vendor.py"
     graph = analyze_workspace_impact(
@@ -217,7 +211,9 @@ def test_analysis_respects_generic_type_parameter_shadowing() -> None:
             target: b"def legacy(): return 1\n",
             "workflows/report.py": (
                 b"import modules.vendor as vendor\n"
-                b"def generic[vendor](): return vendor.legacy\n"
+                b"from typing import TypeVar\n"
+                b"vendor = TypeVar('vendor')\n"
+                b"def generic(): return vendor.legacy\n"
             ),
         }
     )
