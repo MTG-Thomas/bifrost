@@ -325,55 +325,63 @@ def _scan_entity_decorators(
                     accumulator.identities.add(value)
 
 
+def _target_names(node: ast.expr) -> set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return {name for item in node.elts for name in _target_names(item)}
+    return set()
+
+
+def _statement_bindings(node: ast.stmt) -> tuple[set[str], bool]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}, node.name == "__getattr__"
+    if isinstance(node, ast.Assign):
+        return {
+            name for target in node.targets for name in _target_names(target)
+        }, False
+    if isinstance(node, ast.AnnAssign):
+        return _target_names(node.target), False
+    if isinstance(node, (ast.For, ast.AsyncFor)):
+        return _target_names(node.target), False
+    if isinstance(node, ast.Import):
+        return {
+            alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+        }, False
+    if isinstance(node, ast.ImportFrom):
+        return {
+            alias.asname or alias.name for alias in node.names if alias.name != "*"
+        }, False
+    return set(), False
+
+
+def _nested_statement_blocks(node: ast.stmt) -> list[list[ast.stmt]]:
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.If, ast.While)):
+        return [node.body, node.orelse]
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return [node.body]
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        return [
+            node.body,
+            *(handler.body for handler in node.handlers),
+            node.orelse,
+            node.finalbody,
+        ]
+    if isinstance(node, ast.Match):
+        return [case.body for case in node.cases]
+    return []
+
+
 def _top_level_symbols(tree: ast.Module) -> tuple[frozenset[str], bool]:
     symbols: set[str] = set()
     dynamic_exports = False
-
-    def add_target(node: ast.expr) -> None:
-        if isinstance(node, ast.Name):
-            symbols.add(node.id)
-        elif isinstance(node, (ast.Tuple, ast.List)):
-            for item in node.elts:
-                add_target(item)
-
-    def visit(statements: list[ast.stmt]) -> None:
-        nonlocal dynamic_exports
-        for node in statements:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                symbols.add(node.name)
-                dynamic_exports = dynamic_exports or node.name == "__getattr__"
-            elif isinstance(node, ast.Assign):
-                for target in node.targets:
-                    add_target(target)
-            elif isinstance(node, ast.AnnAssign):
-                add_target(node.target)
-            elif isinstance(node, (ast.For, ast.AsyncFor)):
-                add_target(node.target)
-                visit(node.body)
-                visit(node.orelse)
-            elif isinstance(node, (ast.If, ast.While)):
-                visit(node.body)
-                visit(node.orelse)
-            elif isinstance(node, (ast.With, ast.AsyncWith)):
-                visit(node.body)
-            elif isinstance(node, (ast.Try, ast.TryStar)):
-                visit(node.body)
-                for handler in node.handlers:
-                    visit(handler.body)
-                visit(node.orelse)
-                visit(node.finalbody)
-            elif isinstance(node, ast.Match):
-                for case in node.cases:
-                    visit(case.body)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    symbols.add(alias.asname or alias.name.split(".", 1)[0])
-            elif isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    if alias.name != "*":
-                        symbols.add(alias.asname or alias.name)
-
-    visit(tree.body)
+    pending = [tree.body]
+    while pending:
+        for node in pending.pop():
+            bound, dynamic = _statement_bindings(node)
+            symbols.update(bound)
+            dynamic_exports = dynamic_exports or dynamic
+            pending.extend(_nested_statement_blocks(node))
     return frozenset(symbols), dynamic_exports
 
 
@@ -389,6 +397,43 @@ def _attribute_chain(node: ast.AST) -> tuple[str, ...]:
     return ()
 
 
+def _scan_symbol_import(
+    node: ast.Import,
+    modules: Mapping[str, str],
+    accumulator: _SymbolAccumulator,
+) -> None:
+    for alias in node.names:
+        target = modules.get(alias.name)
+        if target is None:
+            continue
+        if alias.asname:
+            accumulator.aliases[alias.asname] = target
+        else:
+            accumulator.qualified_modules[tuple(alias.name.split("."))] = target
+
+
+def _scan_symbol_import_from(
+    node: ast.ImportFrom,
+    path: str,
+    modules: Mapping[str, str],
+    accumulator: _SymbolAccumulator,
+) -> None:
+    module = _absolute_from_module(path, node)
+    target = modules.get(module)
+    if target is not None:
+        for alias in node.names:
+            if alias.name == "*":
+                accumulator.stars.add(target)
+            else:
+                accumulator.required[target].add(alias.name)
+        return
+    for alias in node.names:
+        candidate = f"{module}.{alias.name}" if module else alias.name
+        target = modules.get(candidate)
+        if target is not None:
+            accumulator.aliases[alias.asname or alias.name] = target
+
+
 def _scan_symbol_node(
     node: ast.AST,
     path: str,
@@ -396,31 +441,11 @@ def _scan_symbol_node(
     accumulator: _SymbolAccumulator,
 ) -> None:
     if isinstance(node, ast.Import):
-        for alias in node.names:
-            target = modules.get(alias.name)
-            if target is not None:
-                if alias.asname:
-                    accumulator.aliases[alias.asname] = target
-                else:
-                    accumulator.qualified_modules[tuple(alias.name.split("."))] = target
+        _scan_symbol_import(node, modules, accumulator)
     elif isinstance(node, ast.ImportFrom):
-        module = _absolute_from_module(path, node)
-        target = modules.get(module)
-        if target is not None:
-            for alias in node.names:
-                if alias.name == "*":
-                    accumulator.stars.add(target)
-                else:
-                    accumulator.required[target].add(alias.name)
-            return
-        for alias in node.names:
-            candidate = f"{module}.{alias.name}" if module else alias.name
-            target = modules.get(candidate)
-            if target is not None:
-                accumulator.aliases[alias.asname or alias.name] = target
-    elif isinstance(node, ast.Attribute):
-        if chain := _attribute_chain(node):
-            accumulator.attribute_chains.add(chain)
+        _scan_symbol_import_from(node, path, modules, accumulator)
+    elif isinstance(node, ast.Attribute) and (chain := _attribute_chain(node)):
+        accumulator.attribute_chains.add(chain)
 
 
 def _symbol_requirements(

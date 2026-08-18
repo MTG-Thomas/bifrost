@@ -147,6 +147,20 @@ def _json_requested(ctx: click.Context) -> bool:
     return bool(isinstance(ctx.obj, dict) and ctx.obj.get("json_output"))
 
 
+def _render_traversal(result: dict) -> None:
+    status = "complete" if result.get("traversal_complete") else "incomplete"
+    click.echo(
+        f"  traversal: {status} "
+        f"({result.get('analyzed_path_count', 0)} paths, "
+        f"{len(result.get('edges') or [])} edges)"
+    )
+
+
+def _render_blocker_count(result: dict) -> None:
+    if blockers := result.get("blocking_diagnostic_count"):
+        click.echo(f"Blocking diagnostics: {blockers}")
+
+
 def _render_impact(result: dict, *, ctx: click.Context) -> None:
     if _json_requested(ctx):
         output_result(result, ctx=ctx)
@@ -158,12 +172,7 @@ def _render_impact(result: dict, *, ctx: click.Context) -> None:
     current = result.get("current_sha256") or "<missing>"
     click.echo(f"  current SHA-256: {current}")
     click.echo(f"  changed: {'yes' if result.get('changed') else 'no'}")
-    click.echo(
-        "  traversal: "
-        + ("complete" if result.get("traversal_complete") else "incomplete")
-        + f" ({result.get('analyzed_path_count', 0)} paths, "
-        + f"{len(result.get('edges') or [])} edges)"
-    )
+    _render_traversal(result)
 
     forward = result.get("forward_dependencies") or []
     click.echo(f"Forward dependencies ({len(forward)}):")
@@ -186,8 +195,7 @@ def _render_impact(result: dict, *, ctx: click.Context) -> None:
         "Ready for checked write: "
         + ("yes" if result.get("ready_to_write") else "no")
     )
-    if result.get("blocking_diagnostic_count"):
-        click.echo(f"Blocking diagnostics: {result['blocking_diagnostic_count']}")
+    _render_blocker_count(result)
 
 
 async def _preview_impact(

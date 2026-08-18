@@ -160,6 +160,31 @@ def _impact_metric_instruments():
     )
 
 
+def _diagnostic_severity(
+    *,
+    path: str,
+    changed: bool,
+    forward_paths: set[str],
+    affected_path: str,
+    newly_introduced: bool,
+    registry_edge_to_target: bool = False,
+) -> Literal["warning", "blocker"]:
+    if not changed:
+        return "warning"
+    if (
+        affected_path == path
+        or affected_path in forward_paths
+        or newly_introduced
+        or registry_edge_to_target
+    ):
+        return "blocker"
+    return "warning"
+
+
+def _preexisting_prefix(severity: Literal["warning", "blocker"]) -> str:
+    return "pre-existing connected-file issue: " if severity == "warning" else ""
+
+
 def _diagnostics(
     *,
     path: str,
@@ -189,34 +214,17 @@ def _diagnostics(
             )
         )
 
-    def severity_for(
-        affected_path: str,
-        *,
-        newly_introduced: bool,
-        registry_edge_to_target: bool = False,
-    ) -> Literal["warning", "blocker"]:
-        if not changed:
-            return "warning"
-        if (
-            affected_path == path
-            or affected_path in forward_paths
-            or newly_introduced
-            or registry_edge_to_target
-        ):
-            return "blocker"
-        return "warning"
-
-    def preexisting_prefix(severity: Literal["warning", "blocker"]) -> str:
-        return "pre-existing connected-file issue: " if severity == "warning" else ""
-
     for affected_path in sorted(relevant_paths):
         ambiguous = ambiguous_references.get(affected_path, ())
         if ambiguous:
             base_ambiguous = set(
                 base_analysis.ambiguous_references.get(affected_path, ())
             )
-            severity = severity_for(
-                affected_path,
+            severity = _diagnostic_severity(
+                path=path,
+                changed=changed,
+                forward_paths=forward_paths,
+                affected_path=affected_path,
                 newly_introduced=not set(ambiguous).issubset(base_ambiguous),
                 registry_edge_to_target=(
                     (affected_path, path) in analysis.registry_edges
@@ -227,7 +235,7 @@ def _diagnostics(
                     code="ambiguous_workflow_reference",
                     severity=severity,
                     message=(
-                        preexisting_prefix(severity)
+                        _preexisting_prefix(severity)
                         + "workflow reference resolves to multiple authored files: "
                         + ", ".join(ambiguous)
                     ),
@@ -239,8 +247,11 @@ def _diagnostics(
             base_unresolved = set(
                 base_analysis.unresolved_imports.get(affected_path, ())
             )
-            severity = severity_for(
-                affected_path,
+            severity = _diagnostic_severity(
+                path=path,
+                changed=changed,
+                forward_paths=forward_paths,
+                affected_path=affected_path,
                 newly_introduced=not set(unresolved).issubset(base_unresolved),
             )
             diagnostics.append(
@@ -248,7 +259,7 @@ def _diagnostics(
                     code="unresolved_repo_import",
                     severity=severity,
                     message=(
-                        preexisting_prefix(severity)
+                        _preexisting_prefix(severity)
                         + "unresolved repo-local imports: "
                         + ", ".join(unresolved)
                     ),
@@ -256,8 +267,11 @@ def _diagnostics(
                 )
             )
         if affected_path in dynamic_importers:
-            severity = severity_for(
-                affected_path,
+            severity = _diagnostic_severity(
+                path=path,
+                changed=changed,
+                forward_paths=forward_paths,
+                affected_path=affected_path,
                 newly_introduced=(affected_path not in base_analysis.dynamic_importers),
             )
             diagnostics.append(
@@ -265,15 +279,18 @@ def _diagnostics(
                     code="dynamic_import_unresolved",
                     severity=severity,
                     message=(
-                        preexisting_prefix(severity)
+                        _preexisting_prefix(severity)
                         + "computed dynamic import prevents complete static impact proof"
                     ),
                     path=affected_path,
                 )
             )
         if affected_path in dynamic_reference_importers:
-            severity = severity_for(
-                affected_path,
+            severity = _diagnostic_severity(
+                path=path,
+                changed=changed,
+                forward_paths=forward_paths,
+                affected_path=affected_path,
                 newly_introduced=(
                     affected_path not in base_analysis.dynamic_reference_importers
                 ),
@@ -283,7 +300,7 @@ def _diagnostics(
                     code="dynamic_workflow_reference_unresolved",
                     severity=severity,
                     message=(
-                        preexisting_prefix(severity)
+                        _preexisting_prefix(severity)
                         + "computed workflow reference prevents complete static impact proof"
                     ),
                     path=affected_path,
