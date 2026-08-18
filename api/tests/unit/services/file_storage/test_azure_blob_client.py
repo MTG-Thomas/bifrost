@@ -210,10 +210,9 @@ async def test_list_objects_v2_shapes_contents_prefixes_and_continuation_token()
     client = AzureBlobStorageClient(_settings())
 
     class FakePager:
-        continuation_token = "next-token"
-
         def __init__(self):
             self._sent = False
+            self.continuation_token = None
 
         def by_page(self, continuation_token=None):
             assert continuation_token == "incoming-token"
@@ -226,15 +225,20 @@ async def test_list_objects_v2_shapes_contents_prefixes_and_continuation_token()
             if self._sent:
                 raise StopAsyncIteration
             self._sent = True
-            return [
-                SimpleNamespace(
+
+            async def page():
+                yield SimpleNamespace(
                     name="forms/a.txt",
                     size=10,
                     etag='"etag-a"',
                     last_modified="today",
-                ),
-                SimpleNamespace(name="forms/nested/b.txt", size=20, etag='"etag-b"'),
-            ]
+                )
+                yield SimpleNamespace(
+                    name="forms/nested/b.txt", size=20, etag='"etag-b"'
+                )
+                self.continuation_token = "next-token"
+
+            return page()
 
     class FakeContainer:
         def list_blobs(self, **kwargs):

@@ -99,7 +99,7 @@ async def run_file_index_reconciliation(
         "file_index_reconciliation_completed",
         (
             f"File index reconciliation completed: {result['added']} added, "
-            f"{result['removed']} removed, {result['reverse_synced']} reverse-synced"
+            f"{result['removed']} removed, {result['updated']} updated"
         ),
     )
     return result
