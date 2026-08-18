@@ -467,6 +467,7 @@ class _SymbolUseVisitor(ast.NodeVisitor):
         self.scope = _SymbolScope(parent=None, kind="module")
         self.symbol_table = symbol_table
         self._table_stack = [symbol_table]
+        self._named_expression_binding_scope: _SymbolScope | None = None
 
     @staticmethod
     def _blocked_names(table: symtable.SymbolTable) -> set[str]:
@@ -521,8 +522,13 @@ class _SymbolUseVisitor(ast.NodeVisitor):
         self.scope.aliases[name].append((prefix, target))
 
     def _clear_bound_aliases(self, names: Iterable[str]) -> None:
+        self._clear_scope_aliases(self.scope, names)
+
+    @staticmethod
+    def _clear_scope_aliases(scope: _SymbolScope, names: Iterable[str]) -> None:
         for name in names:
-            self.scope.aliases.pop(name, None)
+            scope.aliases.pop(name, None)
+            scope.blocked.add(name)
 
     def _resolve(self, chain: tuple[str, ...]) -> list[tuple[tuple[str, ...], str]]:
         scope: _SymbolScope | None = self.scope
@@ -663,7 +669,37 @@ class _SymbolUseVisitor(ast.NodeVisitor):
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:  # noqa: N802
         self.visit(node.value)
-        self._clear_bound_aliases(_target_names(node.target))
+        target_scope = self._named_expression_binding_scope or self.scope
+        self._clear_scope_aliases(target_scope, _target_names(node.target))
+
+    def _visit_loop(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        self._clear_scope_aliases(self.scope, _target_names(node.target))
+        for item in (*node.body, *node.orelse):
+            self.visit(item)
+
+    def visit_For(self, node: ast.For) -> None:  # noqa: N802
+        self._visit_loop(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+        self._visit_loop(node)
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._clear_scope_aliases(
+                    self.scope,
+                    _target_names(item.optional_vars),
+                )
+        for item in node.body:
+            self.visit(item)
+
+    def visit_With(self, node: ast.With) -> None:  # noqa: N802
+        self._visit_with(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802
+        self._visit_with(node)
 
     def _visit_comprehension(
         self,
@@ -672,6 +708,8 @@ class _SymbolUseVisitor(ast.NodeVisitor):
     ) -> None:
         containing_scope = self.scope
         self.scope = _SymbolScope(parent=containing_scope, kind="comprehension")
+        previous_binding_scope = self._named_expression_binding_scope
+        self._named_expression_binding_scope = containing_scope
         for generator in generators:
             self.visit(generator.iter)
             self.scope.blocked.update(_target_names(generator.target))
@@ -679,6 +717,7 @@ class _SymbolUseVisitor(ast.NodeVisitor):
                 self.visit(condition)
         for value in values:
             self.visit(value)
+        self._named_expression_binding_scope = previous_binding_scope
         self.scope = containing_scope
 
     def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: N802

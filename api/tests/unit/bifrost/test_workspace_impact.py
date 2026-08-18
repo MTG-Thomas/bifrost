@@ -219,6 +219,37 @@ def test_analysis_respects_generic_type_parameter_shadowing() -> None:
     assert ("workflows/report.py", target) not in graph.symbol_imports
 
 
+def test_analysis_respects_control_flow_and_comprehension_shadowing() -> None:
+    target = "modules/vendor.py"
+    graph = analyze_workspace_impact(
+        {
+            target: b"def shadow(): pass\ndef actual(): pass\n",
+            "workflows/loop.py": (
+                b"import modules.vendor as vendor\n"
+                b"for vendor in values:\n    vendor.shadow()\n"
+            ),
+            "workflows/with_alias.py": (
+                b"import modules.vendor as vendor\n"
+                b"with manager() as vendor:\n    vendor.shadow()\n"
+            ),
+            "workflows/walrus.py": (
+                b"import modules.vendor as vendor\n"
+                b"if vendor := local:\n    vendor.shadow()\n"
+            ),
+            "workflows/comprehension.py": (
+                b"import modules.vendor as vendor\n"
+                b"items = [vendor.shadow() for vendor in values]\n"
+                b"result = vendor.actual()\n"
+            ),
+        }
+    )
+
+    assert ("workflows/loop.py", target) not in graph.symbol_imports
+    assert ("workflows/with_alias.py", target) not in graph.symbol_imports
+    assert ("workflows/walrus.py", target) not in graph.symbol_imports
+    assert graph.symbol_imports[("workflows/comprehension.py", target)] == ("actual",)
+
+
 def test_analysis_indexes_conditional_walrus_with_and_dynamic_exports() -> None:
     graph = analyze_workspace_impact(
         {
