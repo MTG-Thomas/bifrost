@@ -53,4 +53,9 @@ class WorkspaceFileImpactResponse(BaseModel):
     impacted_paths: list[str] = Field(default_factory=list)
     edges: list[WorkspaceFileImpactEdge] = Field(default_factory=list)
     diagnostics: list[WorkspaceFileImpactDiagnostic] = Field(default_factory=list)
+    traversal_complete: bool = Field(
+        description="True when every known transitive edge was returned without truncation."
+    )
+    analyzed_path_count: int = Field(ge=1)
+    blocking_diagnostic_count: int = Field(ge=0)
     ready_to_write: bool

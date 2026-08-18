@@ -11,15 +11,16 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+import symtable
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
 from bifrost.promotion import (
     PromotionBundleError,
-    dependency_edges,
-    dependency_edges_for_file,
+    WorkspaceImportResolver,
     normalize_workspace_path,
+    reject_path_collisions,
 )
 
 WORKSPACE_IMPORT_ROOTS = frozenset(
@@ -60,15 +61,26 @@ class WorkspaceImpactAnalysis:
     ambiguous_references: Mapping[str, tuple[str, ...]]
     dynamic_importers: frozenset[str]
     dynamic_reference_importers: frozenset[str]
+    module_symbols: Mapping[str, frozenset[str]]
+    dynamic_exporters: frozenset[str]
+    dynamic_export_contracts: Mapping[str, tuple[str, ...]]
+    symbol_imports: Mapping[tuple[str, str], tuple[str, ...]]
+    star_import_edges: frozenset[tuple[str, str]]
 
 
 @dataclass(frozen=True)
 class _ParsedReferences:
+    imports: frozenset[str]
     identities: frozenset[str]
     references: frozenset[str]
     unresolved_imports: tuple[str, ...]
     dynamic_import: bool
     dynamic_reference: bool
+    module_symbols: frozenset[str]
+    dynamic_exports: bool
+    dynamic_export_contract: tuple[str, ...]
+    symbol_imports: Mapping[str, tuple[str, ...]]
+    star_imports: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -92,7 +104,7 @@ class WorkspaceImpactIndex:
         parsed = dict(self.parsed)
         parsed[path] = _parse_references(path, raw, modules=self.modules)
         imports = dict(self.imports)
-        imports[path] = frozenset(dependency_edges_for_file(path, raw, self.paths))
+        imports[path] = parsed[path].imports
         return _analysis_from_parts(imports=imports, parsed=parsed)
 
 
@@ -103,6 +115,23 @@ class _ReferenceAccumulator:
     unresolved: set[str] = field(default_factory=set)
     dynamic_import: bool = False
     dynamic_reference: bool = False
+
+
+@dataclass
+class _SymbolAccumulator:
+    required: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    stars: set[str] = field(default_factory=set)
+    has_module_alias: bool = False
+
+
+@dataclass
+class _SymbolScope:
+    parent: _SymbolScope | None
+    kind: str = "module"
+    blocked: set[str] = field(default_factory=set)
+    aliases: dict[str, list[tuple[tuple[str, ...], str]]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
 
 
 def _module_name(path: str) -> str:
@@ -308,6 +337,521 @@ def _scan_entity_decorators(
                     accumulator.identities.add(value)
 
 
+def _target_names(node: ast.expr) -> set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return {name for item in node.elts for name in _target_names(item)}
+    return set()
+
+
+class _NamedExpressionCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:  # noqa: N802
+        self.names.update(_target_names(node.target))
+        self.visit(node.value)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        return
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        return
+
+
+def _named_expression_names(node: ast.stmt) -> set[str]:
+    collector = _NamedExpressionCollector()
+    collector.visit(node)
+    return collector.names
+
+
+def _match_pattern_names(node: ast.Match) -> set[str]:
+    names: set[str] = set()
+    for case in node.cases:
+        for pattern in ast.walk(case.pattern):
+            if isinstance(pattern, (ast.MatchAs, ast.MatchStar)) and pattern.name:
+                names.add(pattern.name)
+            elif isinstance(pattern, ast.MatchMapping) and pattern.rest:
+                names.add(pattern.rest)
+    return names
+
+
+def _statement_bindings(node: ast.stmt) -> tuple[set[str], bool]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}, node.name == "__getattr__"
+    names: set[str] = set()
+    if isinstance(node, ast.Assign):
+        names.update(name for target in node.targets for name in _target_names(target))
+    elif isinstance(node, ast.AnnAssign):
+        names.update(_target_names(node.target))
+    elif isinstance(node, (ast.For, ast.AsyncFor)):
+        names.update(_target_names(node.target))
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        for item in node.items:
+            if item.optional_vars is not None:
+                names.update(_target_names(item.optional_vars))
+    elif isinstance(node, ast.Import):
+        names.update(
+            alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+        )
+    elif isinstance(node, ast.ImportFrom):
+        names.update(
+            alias.asname or alias.name for alias in node.names if alias.name != "*"
+        )
+    elif isinstance(node, ast.Match):
+        names.update(_match_pattern_names(node))
+    names.update(_named_expression_names(node))
+    return names, "__getattr__" in names
+
+
+def _nested_statement_blocks(node: ast.stmt) -> list[list[ast.stmt]]:
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.If, ast.While)):
+        return [node.body, node.orelse]
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return [node.body]
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        return [
+            node.body,
+            *(handler.body for handler in node.handlers),
+            node.orelse,
+            node.finalbody,
+        ]
+    if isinstance(node, ast.Match):
+        return [case.body for case in node.cases]
+    return []
+
+
+def _top_level_symbols(
+    tree: ast.Module,
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    symbols: set[str] = set()
+    dynamic_export_contract: set[str] = set()
+    pending = [tree.body]
+    while pending:
+        for node in pending.pop():
+            bound, dynamic = _statement_bindings(node)
+            symbols.update(bound)
+            if dynamic:
+                dynamic_export_contract.add(ast.dump(node, include_attributes=False))
+            pending.extend(_nested_statement_blocks(node))
+    return frozenset(symbols), tuple(sorted(dynamic_export_contract))
+
+
+def _attribute_chain(node: ast.AST) -> tuple[str, ...]:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        return tuple(reversed(parts))
+    return ()
+
+
+class _SymbolUseVisitor(ast.NodeVisitor):
+    """Resolve imported-module attribute uses with Python lexical shadowing."""
+
+    def __init__(
+        self,
+        path: str,
+        modules: Mapping[str, str],
+        symbol_table: symtable.SymbolTable,
+    ) -> None:
+        self.path = path
+        self.modules = modules
+        self.accumulator = _SymbolAccumulator()
+        self.scope = _SymbolScope(parent=None, kind="module")
+        self.symbol_table = symbol_table
+        self._table_stack = [symbol_table]
+        self._child_positions: dict[tuple[int, str, int], int] = defaultdict(int)
+        self._named_expression_binding_scope: _SymbolScope | None = None
+
+    @staticmethod
+    def _blocked_names(table: symtable.SymbolTable) -> set[str]:
+        return {
+            name
+            for name in table.get_identifiers()
+            if (
+                table.lookup(name).is_local()
+                or table.lookup(name).is_parameter()
+                or table.lookup(name).is_imported()
+            )
+            and not table.lookup(name).is_global()
+            and not table.lookup(name).is_nonlocal()
+        }
+
+    def _child_table(
+        self, name: str, lineno: int
+    ) -> tuple[symtable.SymbolTable, symtable.SymbolTable | None]:
+        parent = self._table_stack[-1]
+        candidates: list[tuple[symtable.SymbolTable, symtable.SymbolTable | None]] = []
+        for child in parent.get_children():
+            if child.get_name() != name or child.get_lineno() != lineno:
+                continue
+            if child.get_type() != "type parameters":
+                candidates.append((child, None))
+                continue
+            candidates.extend(
+                (nested, child)
+                for nested in child.get_children()
+                if nested.get_name() == name and nested.get_lineno() == lineno
+            )
+        key = (id(parent), name, lineno)
+        position = self._child_positions[key]
+        if position >= len(candidates):
+            raise WorkspaceImpactError(
+                f"cannot resolve lexical scope {name!r} at {self.path}:{lineno}"
+            )
+        self._child_positions[key] += 1
+        return candidates[position]
+
+    def _optional_child_table(
+        self, name: str, lineno: int
+    ) -> symtable.SymbolTable | None:
+        parent = self._table_stack[-1]
+        matches = [
+            child
+            for child in parent.get_children()
+            if child.get_name() == name and child.get_lineno() == lineno
+        ]
+        key = (id(parent), name, lineno)
+        position = self._child_positions[key]
+        if position >= len(matches):
+            return None
+        self._child_positions[key] += 1
+        return matches[position]
+
+    def _type_parameter_scope(
+        self,
+        parent: _SymbolScope | None,
+        wrapper: symtable.SymbolTable | None,
+    ) -> _SymbolScope | None:
+        if wrapper is None:
+            return parent
+        return _SymbolScope(
+            parent=parent,
+            kind="type_parameters",
+            blocked=self._blocked_names(wrapper),
+        )
+
+    def _bind_alias(self, name: str, prefix: tuple[str, ...], target: str) -> None:
+        self.scope.aliases[name].append((prefix, target))
+
+    def _clear_bound_aliases(self, names: Iterable[str]) -> None:
+        self._clear_scope_aliases(self.scope, names)
+
+    @staticmethod
+    def _clear_scope_aliases(scope: _SymbolScope, names: Iterable[str]) -> None:
+        for name in names:
+            scope.aliases.pop(name, None)
+            scope.blocked.add(name)
+
+    def _resolve(self, chain: tuple[str, ...]) -> list[tuple[tuple[str, ...], str]]:
+        scope: _SymbolScope | None = self.scope
+        while scope is not None:
+            if aliases := scope.aliases.get(chain[0]):
+                return aliases
+            if chain[0] in scope.blocked:
+                return []
+            scope = scope.parent
+        return []
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
+        chain = _attribute_chain(node)
+        if chain:
+            for prefix, target in self._resolve(chain):
+                if len(chain) > len(prefix) and chain[: len(prefix)] == prefix:
+                    self.accumulator.required[target].add(chain[len(prefix)])
+        self.generic_visit(node)
+
+    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+        for alias in node.names:
+            target = self.modules.get(alias.name)
+            bound = alias.asname or alias.name.split(".", 1)[0]
+            self._clear_bound_aliases({bound})
+            if target is None:
+                continue
+            prefix = (bound,) if alias.asname else tuple(alias.name.split("."))
+            self._bind_alias(bound, prefix, target)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+        module = _absolute_from_module(self.path, node)
+        target = self.modules.get(module)
+        if target is not None:
+            for alias in node.names:
+                if alias.name == "*":
+                    self.accumulator.stars.add(target)
+                else:
+                    self.accumulator.required[target].add(alias.name)
+            return
+        for alias in node.names:
+            candidate = f"{module}.{alias.name}" if module else alias.name
+            target = self.modules.get(candidate)
+            bound = alias.asname or alias.name
+            self._clear_bound_aliases({bound})
+            if target is not None:
+                self._bind_alias(bound, (bound,), target)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if node.args.vararg is not None and node.args.vararg.annotation is not None:
+            self.visit(node.args.vararg.annotation)
+        if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+            self.visit(node.args.kwarg.annotation)
+        if node.returns is not None:
+            self.visit(node.returns)
+        containing_scope = self.scope
+        lookup_parent = (
+            containing_scope.parent
+            if containing_scope.kind == "class"
+            else containing_scope
+        )
+        table, wrapper = self._child_table(node.name, node.lineno)
+        lookup_parent = self._type_parameter_scope(lookup_parent, wrapper)
+        self.scope = _SymbolScope(
+            parent=lookup_parent,
+            kind="function",
+            blocked=self._blocked_names(table),
+        )
+        self._table_stack.append(table)
+        for item in node.body:
+            self.visit(item)
+        self._table_stack.pop()
+        self.scope = containing_scope
+        self._clear_bound_aliases({node.name})
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(  # noqa: N802
+        self, node: ast.AsyncFunctionDef
+    ) -> None:
+        self._visit_function(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+        containing_scope = self.scope
+        lookup_parent = (
+            containing_scope.parent
+            if containing_scope.kind == "class"
+            else containing_scope
+        )
+        table, _ = self._child_table("lambda", node.lineno)
+        self.scope = _SymbolScope(
+            parent=lookup_parent,
+            kind="function",
+            blocked=self._blocked_names(table),
+        )
+        self._table_stack.append(table)
+        self.visit(node.body)
+        self._table_stack.pop()
+        self.scope = containing_scope
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+        for item in (*node.decorator_list, *node.bases, *node.keywords):
+            self.visit(item.value if isinstance(item, ast.keyword) else item)
+        parent = self.scope
+        table, wrapper = self._child_table(node.name, node.lineno)
+        lookup_parent = self._type_parameter_scope(parent, wrapper)
+        self.scope = _SymbolScope(parent=lookup_parent, kind="class")
+        self._table_stack.append(table)
+        for item in node.body:
+            self.visit(item)
+        self._table_stack.pop()
+        self.scope = parent
+        self._clear_bound_aliases({node.name})
+
+    def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+        self.visit(node.value)
+        self._clear_bound_aliases(
+            name for target in node.targets for name in _target_names(target)
+        )
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+        if node.value is not None:
+            self.visit(node.value)
+        self.visit(node.annotation)
+        self._clear_bound_aliases(_target_names(node.target))
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:  # noqa: N802
+        self.visit(node.value)
+        target_scope = self._named_expression_binding_scope or self.scope
+        self._clear_scope_aliases(target_scope, _target_names(node.target))
+
+    def _visit_loop(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        self._clear_scope_aliases(self.scope, _target_names(node.target))
+        for item in (*node.body, *node.orelse):
+            self.visit(item)
+
+    def visit_For(self, node: ast.For) -> None:  # noqa: N802
+        self._visit_loop(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+        self._visit_loop(node)
+
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._clear_scope_aliases(
+                    self.scope,
+                    _target_names(item.optional_vars),
+                )
+        for item in node.body:
+            self.visit(item)
+
+    def visit_With(self, node: ast.With) -> None:  # noqa: N802
+        self._visit_with(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802
+        self._visit_with(node)
+
+    def _visit_comprehension(
+        self,
+        generators: list[ast.comprehension],
+        values: Iterable[ast.expr],
+        *,
+        table_name: str,
+        lineno: int,
+    ) -> None:
+        containing_scope = self.scope
+        first, *remaining = generators
+        self.visit(first.iter)
+        table = self._optional_child_table(table_name, lineno)
+        self.scope = _SymbolScope(
+            parent=containing_scope,
+            kind="comprehension",
+            blocked=self._blocked_names(table) if table is not None else set(),
+        )
+        if table is not None:
+            self._table_stack.append(table)
+        previous_binding_scope = self._named_expression_binding_scope
+        self._named_expression_binding_scope = containing_scope
+        self.scope.blocked.update(_target_names(first.target))
+        for condition in first.ifs:
+            self.visit(condition)
+        for generator in remaining:
+            self.visit(generator.iter)
+            self.scope.blocked.update(_target_names(generator.target))
+            for condition in generator.ifs:
+                self.visit(condition)
+        for value in values:
+            self.visit(value)
+        self._named_expression_binding_scope = previous_binding_scope
+        if table is not None:
+            self._table_stack.pop()
+        self.scope = containing_scope
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: N802
+        self._visit_comprehension(
+            node.generators,
+            [node.elt],
+            table_name="listcomp",
+            lineno=node.lineno,
+        )
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:  # noqa: N802
+        self._visit_comprehension(
+            node.generators,
+            [node.elt],
+            table_name="setcomp",
+            lineno=node.lineno,
+        )
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
+        self._visit_comprehension(
+            node.generators,
+            [node.elt],
+            table_name="genexpr",
+            lineno=node.lineno,
+        )
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
+        self._visit_comprehension(
+            node.generators,
+            [node.key, node.value],
+            table_name="dictcomp",
+            lineno=node.lineno,
+        )
+
+
+def _symbol_requirements(
+    tree: ast.Module,
+    *,
+    path: str,
+    modules: Mapping[str, str],
+    source: str,
+    seed: _SymbolAccumulator,
+) -> tuple[dict[str, tuple[str, ...]], frozenset[str]]:
+    if not seed.has_module_alias:
+        return (
+            {target: tuple(sorted(names)) for target, names in seed.required.items()},
+            frozenset(seed.stars),
+        )
+    try:
+        table = symtable.symtable(source, path, "exec")
+    except SyntaxError as exc:
+        raise WorkspaceImpactError(f"cannot resolve scopes in {path}: {exc}") from exc
+    visitor = _SymbolUseVisitor(path, modules, table)
+    visitor.visit(tree)
+    return (
+        {
+            target: tuple(sorted(names))
+            for target, names in visitor.accumulator.required.items()
+        },
+        frozenset(visitor.accumulator.stars),
+    )
+
+
+def _scan_symbol_import_seed(
+    node: ast.AST,
+    *,
+    path: str,
+    modules: Mapping[str, str],
+    seed: _SymbolAccumulator,
+) -> None:
+    if isinstance(node, ast.Import):
+        seed.has_module_alias = seed.has_module_alias or any(
+            alias.name in modules for alias in node.names
+        )
+        return
+    if not isinstance(node, ast.ImportFrom):
+        return
+    module = _absolute_from_module(path, node)
+    if target := modules.get(module):
+        for alias in node.names:
+            if alias.name == "*":
+                seed.stars.add(target)
+            else:
+                seed.required[target].add(alias.name)
+        return
+    seed.has_module_alias = seed.has_module_alias or any(
+        (f"{module}.{alias.name}" if module else alias.name) in modules
+        for alias in node.names
+    )
+
+
 def _scan_node(
     path: str,
     node: ast.AST,
@@ -334,24 +878,49 @@ def _parse_references(
     modules: Mapping[str, str],
 ) -> _ParsedReferences:
     try:
-        tree = ast.parse(raw.decode("utf-8"), filename=path)
+        source = raw.decode("utf-8")
+        tree = ast.parse(source, filename=path)
     except (SyntaxError, UnicodeDecodeError) as exc:
         raise WorkspaceImpactError(f"cannot parse {path}: {exc}") from exc
     constants = _top_level_constants(tree)
+    module_symbols, dynamic_export_contract = _top_level_symbols(tree)
     accumulator = _ReferenceAccumulator()
+    symbol_seed = _SymbolAccumulator()
+    import_resolver = WorkspaceImportResolver(path, modules)
 
     for node in ast.walk(tree):
+        import_resolver.scan(node)
         _scan_node(path, node, constants, modules, accumulator)
+        _scan_symbol_import_seed(
+            node,
+            path=path,
+            modules=modules,
+            seed=symbol_seed,
+        )
+
+    symbol_imports, star_imports = _symbol_requirements(
+        tree,
+        path=path,
+        modules=modules,
+        source=source,
+        seed=symbol_seed,
+    )
 
     for name, value in constants.items():
         if UUID_RE.fullmatch(value) or REFERENCE_CONSTANT_RE.search(name):
             accumulator.references.add(value)
     return _ParsedReferences(
+        imports=frozenset(import_resolver.result()),
         identities=frozenset(accumulator.identities),
         references=frozenset(accumulator.references),
         unresolved_imports=tuple(sorted(accumulator.unresolved)),
         dynamic_import=accumulator.dynamic_import,
         dynamic_reference=accumulator.dynamic_reference,
+        module_symbols=module_symbols,
+        dynamic_exports=bool(dynamic_export_contract),
+        dynamic_export_contract=dynamic_export_contract,
+        symbol_imports=symbol_imports,
+        star_imports=star_imports,
     )
 
 
@@ -411,22 +980,39 @@ def _analysis_from_parts(
         dynamic_reference_importers=frozenset(
             path for path, item in parsed.items() if item.dynamic_reference
         ),
+        module_symbols={path: item.module_symbols for path, item in parsed.items()},
+        dynamic_exporters=frozenset(
+            path for path, item in parsed.items() if item.dynamic_exports
+        ),
+        dynamic_export_contracts={
+            path: item.dynamic_export_contract
+            for path, item in parsed.items()
+            if item.dynamic_export_contract
+        },
+        symbol_imports={
+            (importer, target): names
+            for importer, item in parsed.items()
+            for target, names in item.symbol_imports.items()
+        },
+        star_import_edges=frozenset(
+            (importer, target)
+            for importer, item in parsed.items()
+            for target in item.star_imports
+        ),
     )
 
 
 def index_workspace_impact(contents: Mapping[str, bytes]) -> WorkspaceImpactIndex:
     """Parse one complete snapshot into a reusable impact index."""
 
+    reject_path_collisions(contents)
     normalized = {normalize_workspace_path(path): raw for path, raw in contents.items()}
     modules = _module_index(normalized)
-    imports = {
-        path: frozenset(targets)
-        for path, targets in dependency_edges(normalized).items()
-    }
     parsed = {
         path: _parse_references(path, raw, modules=modules)
         for path, raw in sorted(normalized.items())
     }
+    imports = {path: item.imports for path, item in parsed.items()}
     analysis = _analysis_from_parts(imports=imports, parsed=parsed)
     return WorkspaceImpactIndex(
         paths=frozenset(normalized),

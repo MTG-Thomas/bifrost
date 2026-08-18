@@ -54,9 +54,19 @@ bifrost files write features/vendor/workflows/report.py \
 The graph combines repo-local Python imports with literal workflow registry
 references. It reports the selected file's transitive forward dependencies,
 transitive reverse dependents, exact hashes, edge types, and the paths that need
-validation. Syntax errors, missing repo-local imports, ambiguous module names,
-computed dynamic imports, computed workflow references, and excessive fan-out
-block the checked write.
+validation. Traversal is never truncated or blocked merely because a shared
+module has many consumers. The response states how many paths and edges were
+fully traversed; a large graph is an informational diagnostic, not a safety
+failure.
+
+Checked-write diagnostics are change-aware. Syntax errors and uncertainty in
+the changed file or its forward closure block. Newly introduced uncertainty,
+an ambiguous registry edge to the changed workflow, star imports across a
+removed module surface, and removal of a symbol that a reverse dependent
+imports also block. An unrelated issue that already existed in a connected
+consumer remains visible as a warning, but does not falsely claim that the
+proposed edit created it. Graph inspection without proposed bytes always
+returns the evidence even when the connected source already contains warnings.
 
 `--check-impact` performs two server calls. The first returns a content-addressed
 candidate over the proposed bytes and the complete durable Python inventory.
@@ -64,6 +74,11 @@ The write call recomputes that candidate while holding the global Python-source
 writer barrier. If any source or graph edge changed in between, it returns a
 conflict and writes nothing. Agents normally do not handle the candidate ID;
 the CLI carries it between the two calls.
+
+`traversal_complete` means every statically known transitive edge was returned
+without a fan-out cutoff. It does not mean that Python can prove arbitrary
+dynamic behavior. Those limitations remain explicit diagnostics, and only
+diagnostics relevant to the proposed change make `ready_to_write` false.
 
 This is a development safety primitive, not promotion:
 
