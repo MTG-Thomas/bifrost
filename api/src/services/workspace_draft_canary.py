@@ -23,9 +23,11 @@ from src.services.workspace_promotion_storage import (
     workspace_draft_runtime_prefix,
 )
 
-DRAFT_RUNTIME_MODE = "workspace-draft-v1"
-DRAFT_RUNTIME_SCHEMA = "bifrost.workspace-draft-runtime/v1"
-DRAFT_CANARY_ATTESTATION_SCHEMA = "bifrost.workspace-draft-canary-attestation/v1"
+DRAFT_RUNTIME_MODE = "workspace-canary-v1"
+DRAFT_RUNTIME_SCHEMA = "bifrost.workspace-reviewed-canary-runtime/v1"
+DRAFT_CANARY_ATTESTATION_SCHEMA = (
+    "bifrost.workspace-reviewed-canary-attestation/v1"
+)
 ALLOWED_CANARY_EFFECTS = {"bifrost.read"}
 MAX_CANARY_DURATION_SECONDS = 60
 MAX_CANARY_OUTPUT_BYTES = 1_048_576
@@ -136,6 +138,14 @@ def build_draft_runtime_evidence(
 ) -> dict[str, Any]:
     validate_reviewed_canary_artifact(artifact)
     manifest = artifact.manifest
+    if (
+        getattr(artifact, "target_kind", None) != "workspace"
+        or getattr(artifact, "schema_version", None)
+        != "bifrost.workspace-promotion-bundle/v2"
+    ):
+        raise WorkspaceDraftCanaryError(
+            "only reviewed protected-main artifacts are canary eligible"
+        )
     declared = set(manifest.get("declared_effects") or [])
     computed = set(manifest.get("computed_effects") or [])
     if declared != ALLOWED_CANARY_EFFECTS or computed != ALLOWED_CANARY_EFFECTS:
@@ -408,7 +418,7 @@ class WorkspaceDraftCanaryService:
 
         await emit_audit(
             self.db,
-            "workspace_promotion.draft_canary_issued",
+            "workspace_promotion.reviewed_canary_issued",
             resource_type="execution",
             resource_id=execution_id,
             details={
@@ -468,4 +478,11 @@ class WorkspaceDraftCanaryService:
             raise KeyError(artifact_id)
         if artifact.content_id is None or artifact.closure_id is None:
             raise WorkspaceDraftCanaryError("legacy preview is not canary eligible")
+        if (
+            artifact.target_kind != "workspace"
+            or artifact.schema_version != "bifrost.workspace-promotion-bundle/v2"
+        ):
+            raise WorkspaceDraftCanaryError(
+                "only reviewed protected-main artifacts are canary eligible"
+            )
         return artifact

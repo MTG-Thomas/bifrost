@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import subprocess
@@ -46,6 +45,9 @@ def test_legacy_promote_spelling_is_a_reviewed_preview_alias(
 ) -> None:
     path = _workspace(tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        promote, "refresh_protected_main", lambda root: None
+    )
     captured = {}
 
     class Response:
@@ -75,6 +77,9 @@ def test_promote_submits_exact_bundle_and_has_no_activation_option(
 ) -> None:
     path = _workspace(tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        promote, "refresh_protected_main", lambda root: None
+    )
     captured = {}
 
     class Response:
@@ -119,7 +124,7 @@ def test_promote_submits_exact_bundle_and_has_no_activation_option(
 
 
 def test_draft_is_private_local_only_and_includes_complete_graph(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, capsys
 ) -> None:
     path = _workspace(tmp_path)
     dependent = tmp_path / "features/consumer.py"
@@ -130,7 +135,7 @@ def test_draft_is_private_local_only_and_includes_complete_graph(
 
     assert (
         promote.handle_promote(
-            ["draft", str(path), "-w", "demo", "--out", str(output), "--json"]
+            ["draft", str(path), "-w", "demo", "--out", str(output)]
         )
         == 0
     )
@@ -143,6 +148,7 @@ def test_draft_is_private_local_only_and_includes_complete_graph(
         "features/consumer.py"
     ]
     assert output.stat().st_mode & 0o077 == 0
+    assert "use `bifrost run` locally" in capsys.readouterr().out
 
 
 def test_reviewed_preview_uses_git_blob_not_dirty_worktree(
@@ -154,6 +160,9 @@ def test_reviewed_preview_uses_git_blob_not_dirty_worktree(
         reviewed.replace(b"return []", b"return ['dirty']").replace(b"\n", b"\r\n")
     )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        promote, "refresh_protected_main", lambda root: None
+    )
     captured = {}
 
     class Response:
@@ -178,18 +187,9 @@ def test_reviewed_preview_uses_git_blob_not_dirty_worktree(
     assert "content_base64" not in selected
 
 
-def test_canary_uploads_exact_non_activatable_draft_then_executes(
-    tmp_path: Path, monkeypatch, capsys
+def test_canary_executes_only_an_existing_reviewed_artifact(
+    monkeypatch, capsys
 ) -> None:
-    path = _workspace(tmp_path)
-    draft_path = tmp_path / "draft.json"
-    monkeypatch.chdir(tmp_path)
-    assert (
-        promote.handle_promote(
-            ["draft", str(path), "-w", "demo", "--out", str(draft_path)]
-        )
-        == 0
-    )
     captured = []
 
     class Response:
@@ -204,19 +204,9 @@ def test_canary_uploads_exact_non_activatable_draft_then_executes(
     class Client:
         def post_sync(self, endpoint, **kwargs):
             captured.append((endpoint, kwargs))
-            if endpoint == promote.PROMOTION_DRAFTS_ENDPOINT:
-                return Response(
-                    {
-                        "artifact_id": "draft-artifact",
-                        "content_id": "sha256:" + "5" * 64,
-                        "authority": "local_only",
-                        "activatable": False,
-                    }
-                )
             return Response(
                 {
                     "execution_id": "execution-1",
-                    "expires_at": "2026-08-19T12:15:00Z",
                 }
             )
 
@@ -227,55 +217,35 @@ def test_canary_uploads_exact_non_activatable_draft_then_executes(
         promote.handle_promote(
             [
                 "canary",
-                str(draft_path),
+                "reviewed-artifact-id",
                 "--params",
                 '{"tenant":"bounded"}',
-                "--ttl-seconds",
-                "300",
             ]
         )
         == 0
     )
 
-    assert captured[0][0] == promote.PROMOTION_DRAFTS_ENDPOINT
-    assert captured[0][1]["json"]["activatable"] is False
-    assert captured[0][1]["timeout"] == 120.0
-    assert captured[1] == (
-        promote.PROMOTION_DRAFT_CANARY_ENDPOINT.format(artifact_id="draft-artifact"),
-        {"json": {"parameters": {"tenant": "bounded"}, "ttl_seconds": 300}},
-    )
-    assert "no registration, trigger, or Live pointer change" in capsys.readouterr().out
+    assert captured == [(
+        promote.PROMOTION_CANARY_ENDPOINT.format(
+            artifact_id="reviewed-artifact-id"
+        ),
+        {"json": {"parameters": {"tenant": "bounded"}}},
+    )]
+    output = capsys.readouterr().out
+    assert "Reviewed artifact: reviewed-artifact-id" in output
+    assert "no registration, trigger, or Live pointer change" in output
 
 
-def test_canary_refuses_tampered_draft_before_network(
-    tmp_path: Path, monkeypatch
-) -> None:
-    path = _workspace(tmp_path)
-    draft_path = tmp_path / "draft.json"
-    monkeypatch.chdir(tmp_path)
-    assert (
-        promote.handle_promote(
-            ["draft", str(path), "-w", "demo", "--out", str(draft_path)]
-        )
-        == 0
-    )
-    draft = json.loads(draft_path.read_text(encoding="utf-8"))
-    draft["snapshot"]["closure"][0]["content_base64"] = base64.b64encode(
-        b"tampered\n"
-    ).decode("ascii")
-    draft_path.write_text(json.dumps(draft), encoding="utf-8")
-    called = False
+def test_canary_has_no_local_draft_or_client_ttl_options(capsys) -> None:
+    assert promote.handle_promote(
+        ["canary", "draft.json", "--ttl-seconds", "300"]
+    ) == 2
+    assert "unrecognized arguments: --ttl-seconds 300" in capsys.readouterr().err
 
-    class Client:
-        @staticmethod
-        def post_sync(*_args, **_kwargs):
-            nonlocal called
-            called = True
 
-    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kwargs: Client())
-
-    assert promote.handle_promote(["canary", str(draft_path)]) == 1
-    assert called is False
+def test_status_is_not_advertised_without_a_server_route(capsys) -> None:
+    assert promote.handle_promote(["status"]) == 2
+    assert "invalid choice: 'status'" in capsys.readouterr().err
 
 
 def test_successful_local_run_writes_snapshot_bound_evidence(
@@ -315,80 +285,6 @@ def test_successful_local_run_writes_snapshot_bound_evidence(
     assert evidence["entry"] == {"path": "features/demo.py", "function": "demo"}
     assert len(evidence["input_sha256"]) == 64
     assert len(evidence["result_sha256"]) == 64
-
-
-def test_status_distinguishes_live_runtime_coherent_history_pending(
-    monkeypatch, capsys
-) -> None:
-    captured = {}
-
-    class Response:
-        is_success = True
-
-        @staticmethod
-        def json():
-            return {
-                "release_id": "sha256:" + "1" * 64,
-                "candidate_id": "sha256:" + "2" * 64,
-                "activation_state": "live",
-                "propagation_state": "complete",
-                "history_state": "pending",
-                "coherent": True,
-                "files": [
-                    {
-                        "path": "modules/meraki.py",
-                        "expected_sha256": "3" * 64,
-                        "immutable_coherent": True,
-                        "cache_coherent": True,
-                        "projected_repo_coherent": True,
-                        "history_coherent": False,
-                    }
-                ],
-                "diagnostics": [],
-            }
-
-    class Client:
-        def get_sync(self, endpoint):
-            captured["endpoint"] = endpoint
-            return Response()
-
-    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kwargs: Client())
-    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
-
-    assert promote.handle_promote(["status"]) == 0
-
-    output = capsys.readouterr().out
-    assert captured["endpoint"] == promote.PROMOTION_LIVE_ENDPOINT
-    assert "Runtime coherent: yes" in output
-    assert "History: pending" in output
-    assert "Outcome: Live / runtime coherent / history pending" in output
-    assert "history=MISMATCH" in output
-
-
-def test_status_reads_one_exact_release_as_json(monkeypatch, capsys) -> None:
-    release_id = "sha256:" + "4" * 64
-    captured = {}
-
-    class Response:
-        is_success = True
-
-        @staticmethod
-        def json():
-            return {"release_id": release_id, "coherent": False}
-
-    class Client:
-        def get_sync(self, endpoint):
-            captured["endpoint"] = endpoint
-            return Response()
-
-    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kwargs: Client())
-    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
-
-    assert promote.handle_promote(["status", release_id, "--json"]) == 0
-    assert captured["endpoint"] == promote.PROMOTION_RELEASE_ENDPOINT.format(
-        release_id=release_id
-    )
-    assert json.loads(capsys.readouterr().out)["release_id"] == release_id
 
 
 def test_preview_surfaces_dma_registration_only_intent(capsys) -> None:

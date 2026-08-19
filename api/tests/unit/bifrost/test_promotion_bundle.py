@@ -14,6 +14,7 @@ from bifrost.promotion import (
     build_reviewed_promotion_bundle,
     dependency_edges,
     protected_main_provenance,
+    refresh_protected_main,
     snapshot_id,
     validate_submitted_bundle,
 )
@@ -69,6 +70,21 @@ def test_bundle_contains_transitive_forward_closure_and_hash_inventory(
         {"path": "features/demo/workflow.py", "function": "demo"},
         {item["path"]: item["sha256"] for item in bundle.files},
     ).startswith("sha256:")
+
+
+def test_snapshot_uses_the_same_executable_roots_as_the_server(tmp_path: Path) -> None:
+    root = _git_workspace(
+        tmp_path,
+        {
+            "workflows/demo.py": "def demo(): return 1\n",
+            "scripts/release.py": "raise RuntimeError('not runtime source')\n",
+            "tests/test_demo.py": "def test_demo(): pass\n",
+        },
+    )
+
+    local = build_promotion_bundle(root, "workflows/demo.py")
+
+    assert local.snapshot_files.keys() == {"workflows/demo.py"}
 
 
 def test_server_rebuild_rejects_missing_dependency(tmp_path: Path) -> None:
@@ -242,6 +258,51 @@ def test_reviewed_bundle_reads_exact_git_objects_not_worktree(tmp_path: Path) ->
     assert provenance == protected_main_provenance(root)
     assert len(provenance.commit_sha) == 40
     assert len(provenance.tree_sha) == 40
+
+
+def test_reviewed_preview_refreshes_exact_origin_main_refspec(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+
+    def git(_root: Path, *args: str, input_bytes=None) -> bytes:
+        calls.append(args)
+        if args == ("remote", "get-url", "origin"):
+            return b"https://github.com/example/workspace.git\n"
+        if args[0] == "rev-parse" and "tree" in args[-1]:
+            return ("2" * 40 + "\n").encode()
+        if args[0] == "rev-parse":
+            return ("1" * 40 + "\n").encode()
+        if args[0] == "fetch":
+            return b""
+        raise AssertionError(args)
+
+    monkeypatch.setattr("bifrost.promotion._run_git_bytes", git)
+
+    provenance = refresh_protected_main(tmp_path)
+
+    assert provenance.commit_sha == "1" * 40
+    assert (
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "origin",
+        "+refs/heads/main:refs/remotes/origin/main",
+    ) in calls
+
+
+def test_reviewed_preview_fails_closed_when_origin_main_cannot_refresh(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def git(_root: Path, *args: str, input_bytes=None) -> bytes:
+        if args == ("remote", "get-url", "origin"):
+            return b"https://github.com/example/workspace.git\n"
+        raise PromotionBundleError("fetch failed")
+
+    monkeypatch.setattr("bifrost.promotion._run_git_bytes", git)
+
+    with pytest.raises(PromotionBundleError, match="authoritative origin/main"):
+        refresh_protected_main(tmp_path)
 
 
 def test_meraki_sized_vendor_module_fits_bounded_closure(tmp_path: Path) -> None:

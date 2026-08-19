@@ -209,17 +209,19 @@ class WorkspacePromotionArtifactResponse(BaseModel):
     created_at: datetime
 
 
-class WorkspaceDraftCanaryRequest(BaseModel):
+class WorkspacePromotionCanaryRequest(BaseModel):
+    """Parameters for an isolated canary of one reviewed artifact."""
+
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
-class WorkspaceDraftCanaryAccepted(BaseModel):
-    schema_version: Literal["bifrost.workspace-draft-canary/v1"] = (
-        "bifrost.workspace-draft-canary/v1"
+class WorkspacePromotionCanaryAccepted(BaseModel):
+    schema_version: Literal["bifrost.workspace-reviewed-canary/v1"] = (
+        "bifrost.workspace-reviewed-canary/v1"
     )
     execution_id: UUID
     artifact_id: UUID
-    runtime_mode: Literal["workspace-draft-v1"] = "workspace-draft-v1"
+    runtime_mode: Literal["workspace-canary-v1"] = "workspace-canary-v1"
     status: Literal["Pending"] = "Pending"
 class WorkspaceReleaseActivateRequest(BaseModel):
     artifact_id: UUID

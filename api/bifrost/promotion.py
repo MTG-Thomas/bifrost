@@ -28,6 +28,18 @@ MAX_CLOSURE_FILES = 200
 # and server validation; production activation can reuse/fetch reviewed blobs
 # instead of accepting an unbounded request body.
 MAX_CLOSURE_BYTES = 32 * 1024 * 1024
+WORKSPACE_EXECUTABLE_ROOTS = frozenset(
+    {
+        "agents",
+        "apps",
+        "features",
+        "helpers",
+        "integrations",
+        "modules",
+        "shared",
+        "workflows",
+    }
+)
 
 
 class PromotionBundleError(ValueError):
@@ -59,6 +71,16 @@ def normalize_workspace_path(value: str) -> str:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def is_executable_workspace_path(path: str) -> bool:
+    """Return whether a path belongs to the executable release-v1 tree."""
+
+    normalized = normalize_workspace_path(path)
+    return (
+        normalized.endswith(".py")
+        and normalized.split("/", 1)[0] in WORKSPACE_EXECUTABLE_ROOTS
+    )
 
 
 def snapshot_id(snapshot_files: dict[str, str]) -> str:
@@ -101,7 +123,7 @@ def discover_python_snapshot(
             {
                 normalize_workspace_path(line)
                 for line in result.stdout.splitlines()
-                if line
+                if line and is_executable_workspace_path(line)
             }
         )
 
@@ -189,6 +211,33 @@ def protected_main_provenance(
     )
 
 
+def refresh_protected_main(root: pathlib.Path) -> ProtectedMainProvenance:
+    """Fetch the authoritative protected branch before compiling a preview."""
+
+    root = root.resolve()
+    # Validate that the configured origin is the GitHub repository whose
+    # protected branch the API will independently read. This happens before
+    # network access so an accidental fork/local remote fails with a useful
+    # diagnostic instead of producing misleading provenance.
+    remote_url = _run_git_bytes(root, "remote", "get-url", "origin").decode().strip()
+    _github_repository(remote_url)
+    try:
+        _run_git_bytes(
+            root,
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        )
+    except PromotionBundleError as exc:
+        raise PromotionBundleError(
+            "could not refresh authoritative origin/main; verify GitHub access and "
+            "run `git fetch origin main` before building a reviewed preview"
+        ) from exc
+    return protected_main_provenance(root)
+
+
 def discover_git_python_snapshot(
     root: pathlib.Path,
     *,
@@ -208,7 +257,7 @@ def discover_git_python_snapshot(
             path = normalize_workspace_path(raw_path.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise PromotionBundleError("reviewed Git tree contains an invalid entry") from exc
-        if not path.endswith(".py"):
+        if not is_executable_workspace_path(path):
             continue
         if mode == "120000":
             raise PromotionBundleError(f"symlinks are not eligible for promotion: {path}")
@@ -576,6 +625,8 @@ __all__ = [
     "dependency_edges",
     "dependency_edges_for_file",
     "discover_git_python_snapshot",
+    "is_executable_workspace_path",
+    "refresh_protected_main",
     "git_source_revision",
     "normalize_workspace_path",
     "protected_main_provenance",

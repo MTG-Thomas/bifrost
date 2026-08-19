@@ -12,7 +12,7 @@ from src.models.orm.base import Base
 
 
 class WorkspacePromotionArtifact(Base):
-    """One content-addressed, create-only promotion preview."""
+    """One content-addressed preview; reviewed rows are permanently immutable."""
 
     __tablename__ = "workspace_promotion_artifacts"
 
@@ -96,6 +96,11 @@ class WorkspacePromotionArtifact(Base):
             "ix_workspace_promotion_artifact_release",
             "organization_id",
             "release_id",
+        ),
+        Index(
+            "ix_workspace_promotion_artifact_draft_expiry",
+            "expires_at",
+            postgresql_where=text("target_kind = 'draft'"),
         ),
         Index(
             "uq_workspace_promotion_artifact_supersedes",

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bifrost.promotion import (
@@ -100,6 +100,21 @@ _SECRET_PATTERNS = (
 
 class WorkspacePromotionInvalid(ValueError):
     """Submitted bytes do not form one safe, coherent preview artifact."""
+
+
+async def acquire_workspace_promotion_artifact_lock(
+    db: AsyncSession, organization_id: UUID
+) -> None:
+    """Serialize candidate/supersession/retention changes for one organization."""
+
+    await db.execute(
+        text(
+            "SELECT pg_advisory_xact_lock("
+            "hashtext('bifrost:workspace-promotion-artifacts:' || :organization_id)"
+            ")"
+        ),
+        {"organization_id": str(organization_id)},
+    )
 
 
 @dataclass(frozen=True)
@@ -628,6 +643,13 @@ class WorkspacePromotionPreviewService:
         self.workspace_generation = workspace_generation
         self.base_resolver = base_resolver
 
+    async def _lock_artifact_creation(self) -> None:
+        """Serialize immutable candidate creation and supersession per org."""
+
+        await acquire_workspace_promotion_artifact_lock(
+            self.db, self.organization_id
+        )
+
     async def upload_draft(
         self, request: WorkspacePromotionDraftRequest, user_id: UUID
     ) -> WorkspacePromotionDraftResponse:
@@ -738,6 +760,7 @@ class WorkspacePromotionPreviewService:
         }
         candidate_id = _canonical_candidate(candidate_payload)
         expires_at = datetime.now(timezone.utc) + DRAFT_ARTIFACT_TTL
+        await self._lock_artifact_creation()
         artifact = await self._find_artifact(candidate_id)
         if artifact is None:
             storage = WorkspacePromotionArtifactStorage(
@@ -1058,6 +1081,7 @@ class WorkspacePromotionPreviewService:
         }
         candidate_id = _canonical_candidate(candidate_payload)
         expires_at = datetime.now(timezone.utc) + ARTIFACT_TTL
+        await self._lock_artifact_creation()
         artifact = await self._find_artifact(candidate_id)
         if artifact is None:
             superseded = await self._resolve_superseded(
@@ -1342,6 +1366,10 @@ class WorkspacePromotionPreviewService:
         if artifact is None:
             raise WorkspacePromotionInvalid(
                 "superseded candidate does not exist in this organization"
+            )
+        if artifact.target_kind != "workspace":
+            raise WorkspacePromotionInvalid(
+                "local draft artifacts cannot be superseded by reviewed releases"
             )
         if artifact.expires_at <= datetime.now(timezone.utc):
             raise WorkspacePromotionInvalid("expired candidates cannot be superseded")

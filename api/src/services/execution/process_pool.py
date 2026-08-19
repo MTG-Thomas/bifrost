@@ -157,7 +157,7 @@ def execution_timeout_from_context(
 ) -> int:
     """Resolve the parent-enforced deadline, failing closed for draft canaries."""
     timeout = context.get("timeout_seconds", default_timeout)
-    if context.get("runtime_mode") != "workspace-draft-v1":
+    if context.get("runtime_mode") != "workspace-canary-v1":
         return timeout
     hard_limit = context.get("draft_max_duration_seconds")
     if (

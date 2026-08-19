@@ -10,11 +10,12 @@ laptop or mutable cache to become production authority:
 
 1. Author a workflow and its private helpers locally.
 2. Record local-run evidence and an immutable local-only draft.
-3. Optionally execute that exact draft as a bounded, TTL canary with no
-   registration or trigger/public surface.
+3. Execute and iterate locally with `bifrost run`; local uploads remain inert.
 4. Merge the proven bytes through protected Git.
-5. Preview the exact protected commit/tree and complete effective snapshot.
-6. Atomically activate by candidate ID, then prove one release ID across
+5. Preview the exact current protected commit/tree and complete effective snapshot.
+6. Optionally execute that reviewed artifact as a bounded canary with no
+   registration or trigger/public surface.
+7. Atomically activate by candidate ID, then prove one release ID across
    runtime, source reads, registration, and history.
 
 Local evidence is useful but never activatable. Production activation never
@@ -122,14 +123,14 @@ The v1 operator loop is:
 bifrost run <path> -w <function> --promotion-evidence .promotion-run.json
 bifrost promote draft <path> -w <function> \
   --run-evidence .promotion-run.json
-bifrost promote canary <draft-id> --ttl 15m
 # branch, PR, CI, protected main
 bifrost promote preview <path> -w <function> \
   --run-evidence .promotion-run.json
-bifrost promote activate <candidate-id> \
-  --expected-active-release-id <release-id> --idempotency-key <key>
-bifrost promote status <candidate-or-release-id>
+bifrost promote canary <reviewed-artifact-id>
 ```
+
+Activation and status commands are intentionally not advertised until their
+server routes and atomic Live-pointer contracts ship together.
 
 Draft compilation:
 
@@ -142,10 +143,14 @@ Draft compilation:
 - computes complete forward/reverse graph evidence; and
 - marks the artifact `authority=local_only`, `activatable=false`.
 
-A canary may upload bounded draft bytes for one manual execution, but cannot
-register, schedule, subscribe, expose an endpoint/API key, or move Live state.
+An optional server draft upload stores the same local-only bundle for 24 hours,
+but it is inert: it cannot prepare, canary, register, schedule, subscribe,
+expose an endpoint/API key, or move Live state. Use `bifrost run` for local
+iteration, then commit and build a reviewed preview. Only an exact reviewed
+artifact may enter the bounded server canary lane.
 
-Reviewed preview reads Git blobs directly from protected source and calls
+Reviewed preview first refreshes authoritative `origin/main`, reads Git blobs
+directly from that exact protected source, and calls
 `POST /api/workspace-promotions/preview` with bundle schema v2:
 
 - exact commit SHA and tree SHA;

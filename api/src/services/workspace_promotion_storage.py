@@ -26,11 +26,11 @@ def workspace_draft_runtime_prefix(
     organization_id: UUID | str, content_id: str
 ) -> str:
     digest = _candidate_digest(content_id)
-    return f"{DRAFT_RUNTIME_ROOT}/{organization_id}/drafts/{digest}/files/"
+    return f"{DRAFT_RUNTIME_ROOT}/{organization_id}/canaries/{digest}/files/"
 
 
 class WorkspacePromotionArtifactStorage(CreateOnlyArtifactStorage):
-    """Write an immutable source archive and manifest exactly once."""
+    """Write once; retention may remove only unreferenced expired draft objects."""
 
     def __init__(
         self,
@@ -69,6 +69,13 @@ class WorkspacePromotionArtifactStorage(CreateOnlyArtifactStorage):
                 Bucket=self._bucket, Key=self.source_artifact_key
             )
             return await response["Body"].read()
+
+    async def delete_expired_draft(self) -> None:
+        """Delete only this content-addressed draft's two inert objects."""
+
+        async with self._client_factory() as client:
+            await client.delete_object(Bucket=self._bucket, Key=self.source_artifact_key)
+            await client.delete_object(Bucket=self._bucket, Key=self.manifest_key)
 
 
 class WorkspaceDraftRuntimeStorage(CreateOnlyArtifactStorage):

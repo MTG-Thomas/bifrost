@@ -104,7 +104,7 @@ class WorkspaceReleaseStorage(CreateOnlyArtifactStorage):
         full_prefix = f"{self.runtime_prefix}{normalized}"
         paths: list[str] = []
         continuation_token = None
-        async with self._storage.get_client() as client:
+        async with self._client_factory() as client:
             while True:
                 kwargs = {"Bucket": self._bucket, "Prefix": full_prefix}
                 if continuation_token:

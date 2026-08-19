@@ -9,8 +9,8 @@ from src.config import get_settings
 from src.core.auth import Context, CurrentSuperuser
 from src.core.db_deps import DbSession
 from src.models.contracts.workspace_promotions import (
-    WorkspaceDraftCanaryAccepted,
-    WorkspaceDraftCanaryRequest,
+    WorkspacePromotionCanaryAccepted,
+    WorkspacePromotionCanaryRequest,
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
     WorkspacePromotionArtifactResponse,
@@ -118,10 +118,10 @@ async def upload_workspace_promotion_draft(
     user: CurrentSuperuser,
 ) -> WorkspacePromotionDraftResponse:
     settings = get_settings()
-    if not settings.workspace_rapid_promotion_preview_enabled:
+    if not settings.workspace_rapid_promotion_draft_upload_enabled:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="rapid Workspace promotion preview is not enabled",
+            detail="local Workspace draft upload is not enabled",
         )
     if ctx.org_id is None:
         raise HTTPException(
@@ -164,21 +164,21 @@ async def get_workspace_promotion_artifact(
 
 @router.post(
     "/artifacts/{artifact_id}/canary",
-    response_model=WorkspaceDraftCanaryAccepted,
+    response_model=WorkspacePromotionCanaryAccepted,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def execute_workspace_draft_canary(
+async def execute_workspace_promotion_canary(
     artifact_id: UUID,
-    request: WorkspaceDraftCanaryRequest,
+    request: WorkspacePromotionCanaryRequest,
     ctx: Context,
     db: DbSession,
     user: CurrentSuperuser,
 ):
     settings = get_settings()
-    if not settings.workspace_rapid_promotion_preview_enabled:
+    if not settings.workspace_release_prepare_canary_enabled:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="rapid Workspace promotion preview is not enabled",
+            detail="Workspace release canaries are not enabled",
         )
     if ctx.org_id is None:
         raise HTTPException(
@@ -207,7 +207,7 @@ async def execute_workspace_draft_canary(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
-    return WorkspaceDraftCanaryAccepted(
+    return WorkspacePromotionCanaryAccepted(
         execution_id=execution_id,
         artifact_id=artifact_id,
     )
@@ -227,10 +227,10 @@ async def prepare_workspace_release(
     user: CurrentSuperuser,
 ) -> PlatformJobAccepted:
     settings = get_settings()
-    if not settings.workspace_rapid_promotion_preview_enabled:
+    if not settings.workspace_release_prepare_canary_enabled:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="rapid Workspace promotion preview is not enabled",
+            detail="Workspace release preparation is not enabled",
         )
     if ctx.org_id is None:
         raise HTTPException(

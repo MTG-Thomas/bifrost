@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -52,6 +53,42 @@ def test_candidate_hash_is_canonical_and_org_sensitive() -> None:
 
     assert first == reordered
     assert first != other_org
+
+
+@pytest.mark.asyncio
+async def test_artifact_creation_uses_one_org_transaction_lock() -> None:
+    organization_id = uuid4()
+    calls = []
+
+    class Database:
+        async def execute(self, statement, parameters=None):
+            calls.append((str(statement), parameters))
+
+    service = WorkspacePromotionPreviewService(Database(), organization_id)
+
+    await service._lock_artifact_creation()
+
+    assert len(calls) == 1
+    assert "pg_advisory_xact_lock" in calls[0][0]
+    assert calls[0][1] == {"organization_id": str(organization_id)}
+
+
+@pytest.mark.asyncio
+async def test_reviewed_preview_cannot_supersede_an_inert_local_draft() -> None:
+    artifact = SimpleNamespace(target_kind="draft")
+
+    class Result:
+        def scalar_one_or_none(self):
+            return artifact
+
+    class Database:
+        async def execute(self, _statement, _parameters=None):
+            return Result()
+
+    service = WorkspacePromotionPreviewService(Database(), uuid4())
+
+    with pytest.raises(WorkspacePromotionInvalid, match="local draft artifacts"):
+        await service._resolve_superseded("sha256:" + "a" * 64)
 
 
 def test_entry_requires_literal_effects_and_enforced_bounds() -> None:
@@ -345,7 +382,7 @@ def run():
         def __init__(self):
             self.artifact = None
 
-        async def execute(self, _statement):
+        async def execute(self, _statement, _parameters=None):
             return Result(self.artifact)
 
         def add(self, value):

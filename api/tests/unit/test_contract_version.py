@@ -75,6 +75,8 @@ from src.models.contracts.tables import TableCreate, TableUpdate  # noqa: E402
 from src.models.contracts.users import RoleCreate, RoleUpdate  # noqa: E402
 from src.models.contracts.workflows import WorkflowUpdateRequest  # noqa: E402
 from src.models.contracts.workspace_promotions import (  # noqa: E402
+    WorkspacePromotionCanaryAccepted,
+    WorkspacePromotionCanaryRequest,
     WorkspacePromotionArtifactResponse,
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
@@ -129,6 +131,8 @@ _COMMAND_DTOS: list[type] = [
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
     WorkspacePromotionArtifactResponse,
+    WorkspacePromotionCanaryRequest,
+    WorkspacePromotionCanaryAccepted,
 ]
 
 #: Every request/response DTO the in-workflow SDK sends/parses against
@@ -226,7 +230,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # bytes are server-fetched, and the response binds content, candidate,
     # release, effective file, and registration identities. CONTRACT_VERSION
     # bumped to 11 because v1 clients cannot safely interpret or activate v2.
-    "c83d58b94ab21976b40c3fc925b9de8d3aa0260ebe7f4019db3861282a9f0824"
+    # The same unreleased v11 contract includes reviewed-artifact-only canary
+    # request/acceptance DTOs; local draft uploads are not executable.
+    "5d254009f575a618ffd68e5d09009457124d13d5eacfd06e47a773221d987d67"
 )
 
 

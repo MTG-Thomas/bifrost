@@ -12,7 +12,7 @@ class WorkspaceDraftOutputLimitExceeded(RuntimeError):
 
 def enforce_draft_output_limit(context_data: dict[str, Any], result: Any) -> None:
     """Enforce draft output size before it crosses the worker boundary."""
-    if context_data.get("runtime_mode") != "workspace-draft-v1":
+    if context_data.get("runtime_mode") != "workspace-canary-v1":
         return
     limit = context_data.get("draft_max_output_bytes")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:

@@ -590,7 +590,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
             workspace_release_source_hashes: dict[str, str] | None = None
             draft_max_output_bytes: int | None = None
 
-            if not is_script and runtime_mode == "workspace-draft-v1":
+            if not is_script and runtime_mode == "workspace-canary-v1":
                 from src.models.orm.executions import Execution
                 from src.services.workspace_draft_canary import (
                     WorkspaceDraftCanaryError,
@@ -604,7 +604,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         if (
                             execution is None
                             or execution.workflow_id is not None
-                            or execution.runtime_mode != "workspace-draft-v1"
+                            or execution.runtime_mode != "workspace-canary-v1"
                         ):
                             raise WorkspaceDraftCanaryError(
                                 "draft canary is missing its durable execution pin"
@@ -926,7 +926,7 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "workspace_generation": workspace_release_id,
                 "runtime_mode": runtime_mode,
                 "draft_max_duration_seconds": (
-                    timeout_seconds if runtime_mode == "workspace-draft-v1" else None
+                    timeout_seconds if runtime_mode == "workspace-canary-v1" else None
                 ),
                 "draft_max_output_bytes": draft_max_output_bytes,
                 "solution_global_repo_access": solution_global_repo_access,

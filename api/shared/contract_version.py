@@ -35,7 +35,8 @@ or cosmetic changes do NOT bump it. The tripwire in
 # v11: Workspace promotion preview uses immutable artifact v2: production
 #      source is bound to protected Git commit/tree, the server fetches reviewed
 #      closure bytes, and response identities cover effective files and
-#      registrations (2026-08-19)
+#      registrations; server canaries accept reviewed artifacts only
+#      (2026-08-19)
 CONTRACT_VERSION: int = 11
 
 

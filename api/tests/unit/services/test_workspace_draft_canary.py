@@ -16,6 +16,7 @@ from src.models.enums import ExecutionStatus
 from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
 from src.services.workspace_draft_canary import (
     WorkspaceDraftCanaryError,
+    WorkspaceDraftCanaryService,
     build_draft_runtime_evidence,
     draft_canary_attestation,
     extract_verified_draft_source,
@@ -134,6 +135,36 @@ def test_first_canary_policy_allows_only_bifrost_read(effects: list[str]) -> Non
         build_draft_runtime_evidence(artifact, "_workspace_releases/o/d/x/files/")
 
 
+def test_local_only_draft_artifact_is_never_canary_eligible() -> None:
+    artifact, _ = _artifact()
+    artifact.target_kind = "draft"
+    artifact.schema_version = "bifrost.workspace-draft-upload/v1"
+
+    with pytest.raises(WorkspaceDraftCanaryError, match="only reviewed"):
+        build_draft_runtime_evidence(
+            artifact,
+            workspace_draft_runtime_prefix(
+                artifact.organization_id, artifact.content_id
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_canary_service_rejects_local_upload_before_execution() -> None:
+    artifact, _ = _artifact()
+    artifact.target_kind = "draft"
+    artifact.schema_version = "bifrost.workspace-draft-upload/v1"
+
+    class Database:
+        async def scalar(self, _statement):
+            return artifact
+
+    service = WorkspaceDraftCanaryService(Database(), artifact.organization_id)
+
+    with pytest.raises(WorkspaceDraftCanaryError, match="only reviewed"):
+        await service._artifact(artifact.id)
+
+
 def test_queue_and_durable_draft_evidence_must_be_identical() -> None:
     artifact, _ = _artifact()
     evidence = build_draft_runtime_evidence(
@@ -169,7 +200,7 @@ def test_draft_workflow_data_is_derived_only_from_pin() -> None:
 def test_process_pool_enforces_draft_deadline_from_immutable_context() -> None:
     assert execution_timeout_from_context(
         {
-            "runtime_mode": "workspace-draft-v1",
+            "runtime_mode": "workspace-canary-v1",
             "timeout_seconds": 30,
             "draft_max_duration_seconds": 7,
         },
@@ -178,13 +209,13 @@ def test_process_pool_enforces_draft_deadline_from_immutable_context() -> None:
 
     with pytest.raises(WorkspaceDraftDurationLimitInvalid, match="hard duration"):
         execution_timeout_from_context(
-            {"runtime_mode": "workspace-draft-v1", "timeout_seconds": 30}, 300
+            {"runtime_mode": "workspace-canary-v1", "timeout_seconds": 30}, 300
         )
 
 
 def test_worker_rejects_oversize_serialized_draft_output() -> None:
     context = {
-        "runtime_mode": "workspace-draft-v1",
+        "runtime_mode": "workspace-canary-v1",
         "draft_max_output_bytes": 10,
     }
 
@@ -207,7 +238,7 @@ def test_activation_attestation_requires_successful_exact_execution_pin() -> Non
         status=ExecutionStatus.SUCCESS,
         completed_at=datetime.now(timezone.utc),
         duration_ms=12,
-        runtime_mode="workspace-draft-v1",
+        runtime_mode="workspace-canary-v1",
         workflow_id=None,
         organization_id=artifact.organization_id,
         runtime_evidence=evidence,

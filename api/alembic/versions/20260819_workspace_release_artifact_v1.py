@@ -90,6 +90,12 @@ def upgrade() -> None:
         ["organization_id", "release_id"],
     )
     op.create_index(
+        "ix_workspace_promotion_artifact_draft_expiry",
+        "workspace_promotion_artifacts",
+        ["expires_at"],
+        postgresql_where=sa.text("target_kind = 'draft'"),
+    )
+    op.create_index(
         "uq_workspace_promotion_artifact_supersedes",
         "workspace_promotion_artifacts",
         ["supersedes_artifact_id"],
@@ -103,6 +109,20 @@ def upgrade() -> None:
         LANGUAGE plpgsql
         AS $$
         BEGIN
+            IF TG_OP = 'DELETE' THEN
+                -- Local uploads are deliberately ephemeral and never carry
+                -- release authority. Reviewed artifacts remain immutable.
+                IF OLD.target_kind = 'draft' AND OLD.expires_at <= NOW() THEN
+                    RETURN OLD;
+                END IF;
+                -- Preserve the organizations.id ON DELETE CASCADE contract.
+                -- At this point the parent row has already left the table.
+                IF NOT EXISTS (
+                    SELECT 1 FROM organizations WHERE id = OLD.organization_id
+                ) THEN
+                    RETURN OLD;
+                END IF;
+            END IF;
             RAISE EXCEPTION 'workspace promotion artifacts are append-only';
         END;
         $$
@@ -125,6 +145,10 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION reject_workspace_promotion_artifact_mutation()")
     op.drop_index(
         "uq_workspace_promotion_artifact_supersedes",
+        table_name="workspace_promotion_artifacts",
+    )
+    op.drop_index(
+        "ix_workspace_promotion_artifact_draft_expiry",
         table_name="workspace_promotion_artifacts",
     )
     op.drop_index(
