@@ -79,8 +79,25 @@ def _source_hashes(manifest: dict[str, Any]) -> dict[str, str]:
     return dict(sorted(result.items()))
 
 
-def _effective_registrations(
+def _governed_paths(
     manifest: dict[str, Any], source_hashes: dict[str, str]
+) -> tuple[str, ...]:
+    value = manifest.get("governed_paths")
+    if (
+        not isinstance(value, list)
+        or not value
+        or value != sorted(value)
+        or len(value) != len(set(value))
+        or any(not isinstance(path, str) or path not in source_hashes for path in value)
+    ):
+        raise WorkspaceReleaseRuntimeError(
+            "Workspace release governed path manifest is invalid"
+        )
+    return tuple(value)
+
+
+def _effective_registrations(
+    manifest: dict[str, Any], source_hashes: dict[str, str], governed_paths: tuple[str, ...]
 ) -> dict[str, dict[str, Any]]:
     value = manifest.get("effective_registrations")
     if not isinstance(value, dict):
@@ -120,6 +137,7 @@ def _effective_registrations(
             or not isinstance(function, str)
             or not function
             or raw.get("is_active") is not True
+            or path not in governed_paths
             or source_hash != source_hashes.get(path)
         ):
             raise WorkspaceReleaseRuntimeError(
@@ -165,6 +183,8 @@ class WorkspaceReleaseDescriptor:
     effective_manifest_id: str
     runtime_storage_prefix: str
     source_hashes: dict[str, str]
+    governed_paths: tuple[str, ...]
+    governed_manifest_id: str
     effective_registrations: dict[str, dict[str, Any]]
     effective_registration_manifest_id: str
     source_commit_sha: str
@@ -186,7 +206,17 @@ class WorkspaceReleaseDescriptor:
         if not release_id.startswith("sha256:") or len(release_id) != 71:
             raise WorkspaceReleaseRuntimeError("Workspace release id is invalid")
         source_hashes = _source_hashes(manifest)
-        effective_registrations = _effective_registrations(manifest, source_hashes)
+        governed_paths = _governed_paths(manifest, source_hashes)
+        governed_manifest_id = _required_text(manifest, "governed_manifest_id")
+        if workspace_manifest_id(
+            {path: source_hashes[path] for path in governed_paths}
+        ) != governed_manifest_id:
+            raise WorkspaceReleaseRuntimeError(
+                "Workspace release governed manifest digest does not match"
+            )
+        effective_registrations = _effective_registrations(
+            manifest, source_hashes, governed_paths
+        )
         release_digest = release_id.removeprefix("sha256:")
         runtime_prefix = normalize_workspace_release_prefix(
             f"_workspace_releases/{release.organization_id}/{release_digest}/files/"
@@ -207,6 +237,8 @@ class WorkspaceReleaseDescriptor:
             effective_manifest_id=_required_text(manifest, "effective_manifest_id"),
             runtime_storage_prefix=runtime_prefix,
             source_hashes=source_hashes,
+            governed_paths=governed_paths,
+            governed_manifest_id=governed_manifest_id,
             effective_registrations=effective_registrations,
             effective_registration_manifest_id=_required_text(
                 manifest, "effective_registration_manifest_id"
@@ -217,6 +249,11 @@ class WorkspaceReleaseDescriptor:
                 registration, "state_fingerprint"
             ),
         )
+
+    @property
+    def governed_source_hashes(self) -> dict[str, str]:
+        """Hashes available to Live reads and immutable execution imports."""
+        return {path: self.source_hashes[path] for path in self.governed_paths}
 
 
 @dataclass(frozen=True)
@@ -253,10 +290,13 @@ class PinnedWorkspaceRuntime:
             "workspace_release_effective_manifest_id": (
                 self.release.effective_manifest_id
             ),
+            "workspace_release_governed_manifest_id": (
+                self.release.governed_manifest_id
+            ),
             "workspace_release_runtime_storage_prefix": (
                 self.release.runtime_storage_prefix
             ),
-            "workspace_release_source_hashes": self.release.source_hashes,
+            "workspace_release_source_hashes": self.release.governed_source_hashes,
             "workspace_release_registration_manifest_id": (
                 self.release.effective_registration_manifest_id
             ),
@@ -571,7 +611,7 @@ async def inspect_workspace_release_coherence(
     from src.services.repo_storage import RepoStorage
     from src.services.workspace_release_storage import WorkspaceReleaseStorage
 
-    paths = sorted(release.source_hashes)
+    paths = list(release.governed_paths)
     storage = WorkspaceReleaseStorage(release.runtime_storage_prefix)
     try:
         immutable = await storage.read_many(paths)
@@ -597,7 +637,7 @@ async def inspect_workspace_release_coherence(
     cache_by_path = dict(zip(python_paths, cache_values, strict=True))
     evidence: list[WorkspaceReleaseFileCoherence] = []
     for path in paths:
-        expected = release.source_hashes[path]
+        expected = release.governed_source_hashes[path]
         immutable_raw = immutable.get(path)
         immutable_hash = (
             hashlib.sha256(immutable_raw).hexdigest()

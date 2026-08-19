@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -18,7 +19,10 @@ from bifrost.workspace_release import (
     workspace_registration_manifest_id,
     workspace_release_id,
 )
-from src.models.orm.workspace_promotions import WorkspacePromotionArtifact
+from src.models.orm.workspace_promotions import (
+    WorkspacePromotionArtifact,
+    WorkspacePromotionRelease,
+)
 from src.services.workspace_promotions import _canonical_candidate
 from src.services.workspace_release_materialization import (
     PREPARED_EVIDENCE_SCHEMA,
@@ -36,6 +40,10 @@ def _zip(files: dict[str, bytes]) -> bytes:
         for path, raw in files.items():
             archive.writestr(path, raw)
     return output.getvalue()
+
+
+async def _stable_generation() -> str:
+    return "generation-1"
 
 
 def _artifact(
@@ -60,6 +68,7 @@ def _artifact(
     base_hashes = {path: sha256_bytes(raw) for path, raw in base_files.items()}
     closure_hashes = {path: sha256_bytes(raw) for path, raw in closure_files.items()}
     effective_hashes = dict(sorted({**base_hashes, **closure_hashes}.items()))
+    governed_paths = sorted(closure_hashes)
     entry = {"path": "workflows/demo.py", "function": "run"}
     validation_targets = [
         {
@@ -88,6 +97,10 @@ def _artifact(
         "base_manifest_id": workspace_manifest_id(base_hashes),
         "effective_manifest_id": workspace_manifest_id(effective_hashes),
         "effective_files": effective_hashes,
+        "governed_paths": sorted(closure_hashes),
+        "governed_manifest_id": workspace_manifest_id(
+            {path: effective_hashes[path] for path in governed_paths}
+        ),
         "effective_registration_manifest_id": registration_id,
         "effective_registrations": {},
         "entry": entry,
@@ -328,11 +341,19 @@ async def test_prepare_materializes_and_verifies_complete_effective_tree() -> No
         artifact_storage_factory=lambda _org, _content: ContentStorage(),
         release_storage_factory=lambda _prefix: release_storage,
         smoke_runner=smoke,
+        workspace_generation=_stable_generation,
     ).prepare(artifact.id, artifact.candidate_id, uuid4())
 
     assert release.activation_state == "prepared"
     assert evidence["schema_version"] == PREPARED_EVIDENCE_SCHEMA
     assert evidence["effective_files"] == artifact.manifest["effective_files"]
+    assert evidence["governed_paths"] == ["workflows/demo.py"]
+    assert evidence["governed_manifest_id"] == artifact.manifest[
+        "governed_manifest_id"
+    ]
+    assert [item["path"] for item in evidence["projection_paths"]] == [
+        "workflows/demo.py"
+    ]
     assert evidence["import_smoke"]["relation"] == "selected_entry"
     assert len(evidence["validation_smokes"]) == 1
     assert release_storage.files == {**base_files, **closure_files}
@@ -421,6 +442,7 @@ async def test_prepare_r2_smokes_every_bound_affected_executable() -> None:
         artifact_storage_factory=lambda _org, _content: ContentStorage(),
         release_storage_factory=lambda _prefix: ReleaseStorage(),
         smoke_runner=smoke,
+        workspace_generation=_stable_generation,
     ).prepare(artifact.id, artifact.candidate_id, uuid4())
 
     assert smoke_calls == [
@@ -432,6 +454,68 @@ async def test_prepare_r2_smokes_every_bound_affected_executable() -> None:
         "affected_executable",
     ]
     assert evidence["import_smoke"] == evidence["validation_smokes"][0]
+
+
+@pytest.mark.asyncio
+async def test_active_base_is_current_repo_with_only_governed_live_overlay() -> None:
+    organization_id = uuid4()
+    base_artifact, original_repo, closure_files = _artifact(organization_id)
+    live_release = WorkspacePromotionRelease(
+        id=uuid4(),
+        organization_id=organization_id,
+        artifact_id=base_artifact.id,
+        activation_state="live",
+        lock_state="locked",
+        created_by=uuid4(),
+    )
+    current_repo = {
+        "modules/base.py": b"VALUE = 99\n",
+        "workflows/demo.py": b"stale projected bytes\n",
+        "modules/new_legacy.py": b"NEW = True\n",
+    }
+    immutable = {**original_repo, **closure_files}
+    expected_hybrid = {
+        **current_repo,
+        "workflows/demo.py": closure_files["workflows/demo.py"],
+    }
+    target_artifact = SimpleNamespace(
+        base_release_id=base_artifact.release_id,
+        base_manifest_id=workspace_manifest_id(
+            {
+                path: sha256_bytes(raw)
+                for path, raw in sorted(expected_hybrid.items())
+            }
+        ),
+    )
+
+    class Result:
+        def all(self):
+            return [(live_release, base_artifact)]
+
+    class Database:
+        async def execute(self, _statement):
+            return Result()
+
+    class Repo:
+        async def list(self):
+            return list(current_repo)
+
+        async def read_many(self, paths, **_kwargs):
+            return {path: current_repo[path] for path in paths}
+
+    class ReleaseStorage:
+        async def read_many(self, paths):
+            return {path: immutable[path] for path in paths}
+
+    materializer = WorkspaceReleaseMaterializer(
+        Database(),
+        organization_id,
+        repo_storage=Repo(),
+        release_storage_factory=lambda _prefix: ReleaseStorage(),
+        workspace_generation=_stable_generation,
+    )
+
+    assert await materializer._base_files(target_artifact) == expected_hybrid
 
 
 @pytest.mark.asyncio

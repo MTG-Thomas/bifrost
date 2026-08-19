@@ -70,6 +70,8 @@ def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
             "release_id": release_id,
             "effective_manifest_id": workspace_manifest_id(files),
             "effective_files": files,
+            "governed_paths": sorted(files),
+            "governed_manifest_id": workspace_manifest_id(files),
             "effective_registration_manifest_id": workspace_registration_manifest_id(
                 registrations
             ),
@@ -129,6 +131,57 @@ def test_descriptor_rejects_manifest_digest_drift() -> None:
 
     with pytest.raises(WorkspaceReleaseRuntimeError, match="digest does not match"):
         WorkspaceReleaseDescriptor.from_rows(release, artifact)
+
+
+def test_descriptor_rejects_registration_outside_governed_paths() -> None:
+    release, artifact = _rows()
+    artifact.manifest = {
+        **artifact.manifest,
+        "governed_paths": ["modules/helper.py"],
+        "governed_manifest_id": workspace_manifest_id(
+            {"modules/helper.py": artifact.manifest["effective_files"]["modules/helper.py"]}
+        ),
+    }
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="registration binding"):
+        WorkspaceReleaseDescriptor.from_rows(release, artifact)
+
+
+def test_pinned_runtime_excludes_ungoverned_snapshot_members_from_imports() -> None:
+    release_row, artifact = _rows()
+    effective_files = {
+        **artifact.manifest["effective_files"],
+        "modules/unrelated.py": "9" * 64,
+    }
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_files": effective_files,
+        "effective_manifest_id": workspace_manifest_id(effective_files),
+    }
+    descriptor = WorkspaceReleaseDescriptor.from_rows(release_row, artifact)
+    registration = next(iter(descriptor.effective_registrations.values()))
+    pinned = PinnedWorkspaceRuntime(
+        workflow_id=UUID(registration["workflow_id"]),
+        release=descriptor,
+        name="Demo",
+        function_name="run",
+        path="features/demo.py",
+        source_hash="b" * 64,
+        timeout_seconds=30,
+        time_saved=0,
+        value=0,
+        execution_mode="async",
+        workflow_type="workflow",
+        cache_ttl_seconds=0,
+        organization_id=str(release_row.organization_id),
+        runtime_bounds=registration["runtime_bounds"],
+    )
+
+    evidence = pinned.queue_evidence()
+    assert "modules/unrelated.py" not in evidence["workspace_release_source_hashes"]
+    assert evidence["workspace_release_source_hashes"] == (
+        descriptor.governed_source_hashes
+    )
 
 
 def test_queue_pin_must_match_durable_and_authoritative_release() -> None:
@@ -235,6 +288,8 @@ async def test_inspector_exposes_current_immutable_tree_and_stale_cache_and_repo
         **artifact.manifest,
         "effective_manifest_id": workspace_manifest_id(files),
         "effective_files": files,
+        "governed_paths": sorted(files),
+        "governed_manifest_id": workspace_manifest_id(files),
         "effective_registration_manifest_id": workspace_registration_manifest_id({}),
         "effective_registrations": {},
     }
@@ -299,6 +354,8 @@ async def test_inspector_fails_closed_when_immutable_release_bytes_regress(
         **artifact.manifest,
         "effective_manifest_id": workspace_manifest_id(files),
         "effective_files": files,
+        "governed_paths": sorted(files),
+        "governed_manifest_id": workspace_manifest_id(files),
         "effective_registration_manifest_id": workspace_registration_manifest_id({}),
         "effective_registrations": {},
     }

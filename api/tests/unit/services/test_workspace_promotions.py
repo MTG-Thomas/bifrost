@@ -29,6 +29,7 @@ from src.services.workspace_promotions import (
     _allocated_registration_id,
     _canonical_candidate,
     _canonical_impact_diagnostics,
+    _cumulative_governed_paths,
     _closure_id,
     _content_id,
     _decode_draft_closure,
@@ -42,6 +43,8 @@ from src.services.workspace_promotions import (
     _source_zip,
     _static_effects,
     _validation_targets,
+    overlay_governed_base,
+    read_generation_stable_executable_snapshot,
     _validate_draft_snapshot,
 )
 
@@ -446,6 +449,60 @@ def test_effective_manifest_and_repo_base_ids_bind_every_path() -> None:
     changed = {**files, "helpers/shared.py": "c" * 64}
     assert _manifest_id(changed) != _manifest_id(files)
     assert _repo_v1_release_id(changed) != _repo_v1_release_id(files)
+
+
+def test_first_release_governs_only_closure_and_later_release_accumulates() -> None:
+    first = _cumulative_governed_paths(
+        (), {"workflows/leaf.py": "a" * 64, "modules/leaf_dep.py": "b" * 64}
+    )
+    second = _cumulative_governed_paths(
+        tuple(first), {"workflows/second.py": "c" * 64}
+    )
+
+    assert first == ["modules/leaf_dep.py", "workflows/leaf.py"]
+    assert second == [
+        "modules/leaf_dep.py",
+        "workflows/leaf.py",
+        "workflows/second.py",
+    ]
+
+
+def test_hybrid_base_keeps_current_legacy_bytes_and_overlays_live_governed() -> None:
+    repo = {
+        "modules/governed.py": b"stale legacy copy\n",
+        "modules/legacy.py": b"new legacy revision\n",
+    }
+    immutable = {
+        "modules/governed.py": b"immutable live\n",
+        "modules/legacy.py": b"old snapshot only\n",
+    }
+
+    hybrid = overlay_governed_base(
+        repo, immutable, ("modules/governed.py",)
+    )
+
+    assert hybrid == {
+        "modules/governed.py": b"immutable live\n",
+        "modules/legacy.py": b"new legacy revision\n",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hybrid_snapshot_fails_cas_when_legacy_generation_changes() -> None:
+    class Repo:
+        async def list(self):
+            return ["modules/legacy.py"]
+
+        async def read_many(self, paths, **_kwargs):
+            return {path: b"legacy bytes\n" for path in paths}
+
+    generations = iter(("generation-1", "generation-2"))
+
+    async def generation() -> str:
+        return next(generations)
+
+    with pytest.raises(WorkspacePromotionInvalid, match="source changed"):
+        await read_generation_stable_executable_snapshot(Repo(), generation)
 
 
 def test_release_v1_executable_tree_excludes_generated_workspace_state() -> None:

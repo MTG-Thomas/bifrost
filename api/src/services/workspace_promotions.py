@@ -125,6 +125,7 @@ class _BaseSnapshot:
     files: dict[str, bytes]
     hashes: dict[str, str]
     registrations: dict[str, dict[str, Any]]
+    governed_paths: tuple[str, ...] = ()
 
 
 def _digest(payload: Any) -> str:
@@ -137,6 +138,67 @@ def _manifest_id(files: dict[str, str]) -> str:
 
 def _repo_v1_release_id(files: dict[str, str]) -> str:
     return repo_v1_release_id(files)
+
+
+def _cumulative_governed_paths(
+    base_paths: tuple[str, ...], closure_paths: set[str] | dict[str, Any]
+) -> list[str]:
+    return sorted(set(base_paths) | set(closure_paths))
+
+
+def overlay_governed_base(
+    repo_files: dict[str, bytes],
+    immutable_files: dict[str, bytes],
+    governed_paths: tuple[str, ...],
+) -> dict[str, bytes]:
+    """Overlay authoritative Live bytes onto the current mutable repo snapshot."""
+    missing = [path for path in governed_paths if path not in immutable_files]
+    if missing:
+        raise WorkspacePromotionInvalid(
+            "active Workspace release is missing governed bytes for "
+            + ", ".join(missing)
+        )
+    result = dict(repo_files)
+    for path in governed_paths:
+        result[path] = immutable_files[path]
+    return dict(sorted(result.items()))
+
+
+async def read_generation_stable_executable_snapshot(
+    repo_storage: RepoStorage,
+    workspace_generation: Callable[[], Awaitable[str]],
+) -> dict[str, bytes]:
+    """Read one complete RepoStorage tree without crossing a source generation."""
+    before = await workspace_generation()
+    if before.startswith("updating:"):
+        raise WorkspacePromotionInvalid(
+            "workspace source update is in progress; retry release planning"
+        )
+    paths = sorted(
+        path for path in await repo_storage.list() if _is_executable_python_path(path)
+    )
+    if len(paths) > MAX_SNAPSHOT_FILES:
+        raise WorkspacePromotionInvalid(
+            f"workspace base exceeds {MAX_SNAPSHOT_FILES} files"
+        )
+    reject_path_collisions(paths)
+    read_many = getattr(repo_storage, "read_many", None)
+    if read_many is not None:
+        files = await read_many(paths, concurrency=32)
+    else:
+        semaphore = asyncio.Semaphore(32)
+
+        async def read(path: str) -> tuple[str, bytes]:
+            async with semaphore:
+                return path, await repo_storage.read(path)
+
+        files = dict(await asyncio.gather(*(read(path) for path in paths)))
+    after = await workspace_generation()
+    if before != after or after.startswith("updating:"):
+        raise WorkspacePromotionInvalid(
+            "workspace source changed while resolving the release base"
+        )
+    return dict(sorted(files.items()))
 
 
 def _closure_id(entry: PromotionEntry, hashes: dict[str, str]) -> str:
@@ -1217,6 +1279,12 @@ class WorkspacePromotionPreviewService:
             for path, raw in sorted(files.items())
         ]
         effective_files = dict(sorted({**base.hashes, **closure_hashes}.items()))
+        governed_paths = _cumulative_governed_paths(
+            base.governed_paths, closure_hashes
+        )
+        governed_manifest_id = _manifest_id(
+            {path: effective_files[path] for path in governed_paths}
+        )
         effective_manifest_id = _manifest_id(effective_files)
         registration_key = f"{request.entry.path}::{request.entry.function}"
         action = registration_intent[0] if registration_intent else {}
@@ -1244,6 +1312,8 @@ class WorkspacePromotionPreviewService:
             "base_manifest_id": base.manifest_id,
             "effective_manifest_id": effective_manifest_id,
             "effective_files": effective_files,
+            "governed_paths": governed_paths,
+            "governed_manifest_id": governed_manifest_id,
             "effective_registration_manifest_id": (
                 effective_registration_manifest_id
             ),
@@ -1270,6 +1340,8 @@ class WorkspacePromotionPreviewService:
             "base_manifest_id": base.manifest_id,
             "effective_manifest_id": effective_manifest_id,
             "effective_files": effective_files,
+            "governed_paths": governed_paths,
+            "governed_manifest_id": governed_manifest_id,
             "effective_registration_manifest_id": (
                 effective_registration_manifest_id
             ),
@@ -1400,6 +1472,8 @@ class WorkspacePromotionPreviewService:
             base_manifest_id=base.manifest_id,
             effective_manifest_id=effective_manifest_id,
             effective_files=effective_files,
+            governed_paths=governed_paths,
+            governed_manifest_id=governed_manifest_id,
             effective_registration_manifest_id=(
                 effective_registration_manifest_id
             ),
@@ -1495,7 +1569,6 @@ class WorkspacePromotionPreviewService:
                     == WorkspacePromotionRelease.artifact_id,
                 )
                 .where(
-                    WorkspacePromotionRelease.organization_id == self.organization_id,
                     WorkspacePromotionRelease.activation_state == "live",
                 )
                 .limit(2)
@@ -1515,61 +1588,43 @@ class WorkspacePromotionPreviewService:
         release, artifact = rows[0]
         try:
             descriptor = WorkspaceReleaseDescriptor.from_rows(release, artifact)
-            files = await WorkspaceReleaseStorage(
+            immutable_files = await WorkspaceReleaseStorage(
                 descriptor.runtime_storage_prefix
             ).read_many(sorted(descriptor.source_hashes))
         except Exception as exc:  # noqa: BLE001 - storage backends vary
             raise WorkspacePromotionInvalid(
                 "active Workspace release base is not readable"
             ) from exc
-        hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
+        immutable_hashes = {
+            path: sha256_bytes(raw) for path, raw in sorted(immutable_files.items())
+        }
         if (
-            hashes != descriptor.source_hashes
-            or _manifest_id(hashes) != descriptor.effective_manifest_id
+            immutable_hashes != descriptor.source_hashes
+            or _manifest_id(immutable_hashes) != descriptor.effective_manifest_id
         ):
             raise WorkspacePromotionInvalid(
                 "active Workspace release base failed immutable readback"
             )
+        repo_files = await read_generation_stable_executable_snapshot(
+            self.repo_storage, self.workspace_generation
+        )
+        files = overlay_governed_base(
+            repo_files, immutable_files, descriptor.governed_paths
+        )
+        hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
         return _BaseSnapshot(
             release_id=descriptor.release_id,
-            manifest_id=descriptor.effective_manifest_id,
+            manifest_id=_manifest_id(hashes),
             files=files,
             hashes=hashes,
             registrations=descriptor.effective_registrations,
+            governed_paths=descriptor.governed_paths,
         )
 
     async def _repo_v1_base(self) -> _BaseSnapshot:
-        before = await self.workspace_generation()
-        if before.startswith("updating:"):
-            raise WorkspacePromotionInvalid(
-                "workspace source update is in progress; retry preview"
-            )
-        paths = sorted(
-            path
-            for path in await self.repo_storage.list()
-            if _is_executable_python_path(path)
+        files = await read_generation_stable_executable_snapshot(
+            self.repo_storage, self.workspace_generation
         )
-        if len(paths) > MAX_SNAPSHOT_FILES:
-            raise WorkspacePromotionInvalid(
-                f"workspace base exceeds {MAX_SNAPSHOT_FILES} files"
-            )
-        reject_path_collisions(paths)
-        read_many = getattr(self.repo_storage, "read_many", None)
-        if read_many is not None:
-            files = await read_many(paths, concurrency=32)
-        else:
-            semaphore = asyncio.Semaphore(32)
-
-            async def read(path: str) -> tuple[str, bytes]:
-                async with semaphore:
-                    return path, await self.repo_storage.read(path)
-
-            files = dict(await asyncio.gather(*(read(path) for path in paths)))
-        after = await self.workspace_generation()
-        if before != after or after.startswith("updating:"):
-            raise WorkspacePromotionInvalid(
-                "workspace source changed while resolving the release base"
-            )
         hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
         return _BaseSnapshot(
             release_id=_repo_v1_release_id(hashes),
@@ -1577,6 +1632,7 @@ class WorkspacePromotionPreviewService:
             files=files,
             hashes=hashes,
             registrations={},
+            governed_paths=(),
         )
 
     async def _resolve_superseded(
@@ -1643,6 +1699,8 @@ class WorkspacePromotionPreviewService:
             base_manifest_id=str(artifact.base_manifest_id),
             effective_manifest_id=str(artifact.effective_manifest_id),
             effective_files=manifest["effective_files"],
+            governed_paths=manifest["governed_paths"],
+            governed_manifest_id=manifest["governed_manifest_id"],
             effective_registration_manifest_id=str(
                 artifact.effective_registration_manifest_id
             ),

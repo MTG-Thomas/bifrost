@@ -83,6 +83,8 @@ def _rows():
             "release_id": release_id,
             "effective_manifest_id": workspace_manifest_id(effective),
             "effective_files": effective,
+            "governed_paths": sorted(effective),
+            "governed_manifest_id": workspace_manifest_id(effective),
             "effective_registration_manifest_id": workspace_registration_manifest_id(
                 {}
             ),
@@ -427,7 +429,7 @@ async def test_lock_projects_only_base_paths_and_records_signed_readback(
 
 
 @pytest.mark.asyncio
-async def test_inherited_full_tree_mismatch_prevents_lock(monkeypatch) -> None:
+async def test_ungoverned_snapshot_mismatch_is_not_projected_or_claimed(monkeypatch) -> None:
     release, artifact, paths = _rows()
     inherited_path, inherited_content = _add_inherited_path(release, artifact, paths)
     target_files = {path: target for path, (_base, target) in paths.items()}
@@ -457,14 +459,15 @@ async def test_inherited_full_tree_mismatch_prevents_lock(monkeypatch) -> None:
     service._load_release = AsyncMock(return_value=(release, artifact))
     service._ensure_still_live = AsyncMock()
 
-    with pytest.raises(WorkspaceReleaseProjectionError, match="shared/inherited.py"):
-        await service.lock_release(
-            release.id, artifact.release_id, operator="operator@example.com"
-        )
+    evidence = await service.lock_release(
+        release.id, artifact.release_id, operator="operator@example.com"
+    )
 
-    assert release.lock_state == "attention_required"
+    assert release.lock_state == "locked"
     assert file_writer.writes == []
-    assert history.requests == []
+    assert inherited_path not in evidence["repo_after_sha256"]
+    assert inherited_path not in evidence["history_after"]["file_sha256"]
+    assert evidence["governed_paths"] == sorted(paths)
 
 
 @pytest.mark.asyncio

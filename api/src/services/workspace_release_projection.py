@@ -146,6 +146,8 @@ def _release_ledger(
         "release_id": descriptor.release_id,
         "base_release_id": artifact.base_release_id,
         "effective_source_manifest_id": descriptor.effective_manifest_id,
+        "governed_manifest_id": descriptor.governed_manifest_id,
+        "governed_paths": list(descriptor.governed_paths),
         "effective_registration_manifest_id": (
             descriptor.effective_registration_manifest_id
         ),
@@ -227,6 +229,15 @@ def _projection_paths(
                 "Workspace release artifact closure is invalid.",
             )
         closure_targets[item["path"]] = item["sha256"]
+    governed_targets = descriptor.governed_source_hashes
+    if any(
+        path not in governed_targets or governed_targets[path] != target
+        for path, target in closure_targets.items()
+    ):
+        raise WorkspaceReleaseProjectionError(
+            "workspace_release_projection_invalid",
+            "Workspace release closure is outside its governed paths.",
+        )
     parsed: list[WorkspaceReleaseProjectionPath] = []
     for item in raw_paths:
         if not isinstance(item, dict) or set(item) != {
@@ -243,10 +254,9 @@ def _projection_paths(
         target_sha256 = item["target_sha256"]
         if (
             not isinstance(path, str)
-            or path not in closure_targets
+            or path not in governed_targets
             or not isinstance(target_sha256, str)
-            or target_sha256 != closure_targets.get(path)
-            or descriptor.source_hashes.get(path) != target_sha256
+            or target_sha256 != governed_targets.get(path)
             or (base_sha256 is not None and not isinstance(base_sha256, str))
             or any(
                 digest is not None
@@ -269,15 +279,15 @@ def _projection_paths(
             )
         )
     if (
-        len(parsed) != len(closure_targets)
-        or [item.path for item in parsed] != sorted(closure_targets)
+        len(parsed) != len(governed_targets)
+        or [item.path for item in parsed] != sorted(governed_targets)
         or activation_projection.get("projection_paths_id")
         != canonical_digest({"schema": PROJECTION_PATHS_SCHEMA, "paths": raw_paths})
         or prepared.get("projection_paths") != raw_paths
     ):
         raise WorkspaceReleaseProjectionError(
             "workspace_release_projection_invalid",
-            "Workspace release projection paths do not match the activated reviewed closure.",
+            "Workspace release projection paths do not match cumulative governed paths.",
         )
     reconstructed_base = dict(descriptor.source_hashes)
     for item in parsed:
@@ -413,19 +423,21 @@ class WorkspaceReleaseProjectionService:
     ) -> dict[str, Any]:
         projection_paths = _projection_paths(release, artifact, descriptor)
         projection_by_path = {item.path: item for item in projection_paths}
-        paths = tuple(sorted(descriptor.source_hashes))
+        governed_hashes = descriptor.governed_source_hashes
+        paths = descriptor.governed_paths
         ledger_path, ledger_content, ledger_sha256 = _release_ledger(
             release, artifact, descriptor
         )
         history_paths = (*paths, ledger_path)
         await self._ensure_still_live(release.id)
-        immutable = await self.release_storage_factory(
+        immutable_full = await self.release_storage_factory(
             descriptor.runtime_storage_prefix
-        ).read_many(list(paths))
+        ).read_many(sorted(descriptor.source_hashes))
         invalid_targets = [
             path
-            for path, target_sha256 in descriptor.source_hashes.items()
-            if path not in immutable or _sha256(immutable[path]) != target_sha256
+            for path, target_sha256 in governed_hashes.items()
+            if path not in immutable_full
+            or _sha256(immutable_full[path]) != target_sha256
         ]
         if invalid_targets:
             raise WorkspaceReleaseProjectionError(
@@ -433,6 +445,7 @@ class WorkspaceReleaseProjectionService:
                 "Immutable release readback failed for: " + ", ".join(invalid_targets),
                 evidence={"phase": "immutable_readback"},
             )
+        immutable = {path: immutable_full[path] for path in paths}
         repo_hashes = await self._repo_hashes(paths)
         repo_states = tuple(
             classify_workspace_release_path(
@@ -444,7 +457,7 @@ class WorkspaceReleaseProjectionService:
                 ),
                 repo_hashes.get(path),
             )
-            for path, target_sha256 in descriptor.source_hashes.items()
+            for path, target_sha256 in governed_hashes.items()
         )
         writer = self.commit_writer
         if writer is None:
@@ -484,7 +497,7 @@ class WorkspaceReleaseProjectionService:
                 ),
                 history_before.file_sha256.get(path),
             )
-            for path, target_sha256 in descriptor.source_hashes.items()
+            for path, target_sha256 in governed_hashes.items()
         )
         ledger_state = classify_workspace_release_path(
             WorkspaceReleaseProjectionPath(
@@ -560,19 +573,17 @@ class WorkspaceReleaseProjectionService:
         repo_after = await self._repo_hashes(paths)
         repo_mismatches = [
             path
-            for path, target_sha256 in descriptor.source_hashes.items()
+            for path, target_sha256 in governed_hashes.items()
             if repo_after.get(path) != target_sha256
         ]
-        generation, cache_rows = await self.coherence_inspector(
-            descriptor.source_hashes
-        )
+        generation, cache_rows = await self.coherence_inspector(governed_hashes)
         cache_evidence = [
             item.to_dict() if hasattr(item, "to_dict") else asdict(item)
             for item in cache_rows
         ]
         cache_by_path = {str(item.get("path")): item for item in cache_evidence}
         cache_mismatches = []
-        for path, target_sha256 in descriptor.source_hashes.items():
+        for path, target_sha256 in governed_hashes.items():
             observed = cache_by_path.get(path)
             if (
                 observed is None
@@ -667,7 +678,7 @@ class WorkspaceReleaseProjectionService:
             ) from exc
         history_mismatches = [
             path
-            for path, target_sha256 in descriptor.source_hashes.items()
+            for path, target_sha256 in governed_hashes.items()
             if history_after.file_sha256.get(path) != target_sha256
         ]
         if history_after.file_sha256.get(ledger_path) != ledger_sha256:
@@ -697,6 +708,8 @@ class WorkspaceReleaseProjectionService:
             "artifact_id": str(artifact.id),
             "release_id": descriptor.release_id,
             "effective_manifest_id": descriptor.effective_manifest_id,
+            "governed_manifest_id": descriptor.governed_manifest_id,
+            "governed_paths": list(descriptor.governed_paths),
             "effective_registration_manifest_id": (
                 descriptor.effective_registration_manifest_id
             ),

@@ -63,11 +63,11 @@ class WorkspaceReleaseFileView:
         )
 
     def governs(self, path: str) -> bool:
-        return normalize_release_path(path) in self.release.source_hashes
+        return normalize_release_path(path) in self.release.governed_paths
 
     async def read(self, path: str) -> bytes:
         normalized = normalize_release_path(path)
-        expected = self.release.source_hashes.get(normalized)
+        expected = self.release.governed_source_hashes.get(normalized)
         if expected is None:
             raise FileNotFoundError(normalized)
         raw = await self.storage.read(normalized)
@@ -83,14 +83,14 @@ class WorkspaceReleaseFileView:
     ) -> dict[str, bytes]:
         normalized = [normalize_release_path(path) for path in paths]
         missing = [
-            path for path in normalized if path not in self.release.source_hashes
+            path for path in normalized if path not in self.release.governed_paths
         ]
         if missing:
             raise FileNotFoundError(missing[0])
         rows = await self.storage.read_many(normalized, concurrency=concurrency)
         for path in normalized:
             raw = rows.get(path)
-            expected = self.release.source_hashes[path]
+            expected = self.release.governed_source_hashes[path]
             if raw is None or hashlib.sha256(raw).hexdigest() != expected:
                 raise WorkspaceReleaseRuntimeError(
                     f"immutable Workspace release bytes do not match {path}"
@@ -103,7 +103,7 @@ class WorkspaceReleaseFileView:
             raise ValueError("Workspace prefix cannot contain '..'")
         return [
             path
-            for path in sorted(self.release.source_hashes)
+            for path in self.release.governed_paths
             if path.startswith(normalized)
         ]
 
@@ -173,7 +173,7 @@ async def reject_release_governed_paths(
         return
     for path in paths:
         normalized = normalize_release_path(path)
-        if normalized in release.source_hashes:
+        if normalized in release.governed_paths:
             raise WorkspaceReleasePathGoverned(normalized, release.release_id)
 
 
@@ -194,7 +194,7 @@ async def reject_release_governed_prefixes(
     for prefix in prefixes:
         normalized = normalize_release_path(prefix)
         marker = normalized + "/"
-        for governed_path in release.source_hashes:
+        for governed_path in release.governed_paths:
             if governed_path == normalized or governed_path.startswith(marker):
                 raise WorkspaceReleasePathGoverned(governed_path, release.release_id)
 

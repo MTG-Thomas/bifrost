@@ -30,11 +30,19 @@ class _Storage:
         return {path: self.files[path] for path in paths}
 
 
-def _view(files: dict[str, bytes]) -> WorkspaceReleaseFileView:
+def _view(
+    files: dict[str, bytes], *, governed_paths: tuple[str, ...] | None = None
+) -> WorkspaceReleaseFileView:
+    source_hashes = {
+        path: hashlib.sha256(content).hexdigest() for path, content in files.items()
+    }
     release = SimpleNamespace(
         release_id="sha256:" + "a" * 64,
-        source_hashes={
-            path: hashlib.sha256(content).hexdigest() for path, content in files.items()
+        source_hashes=source_hashes,
+        governed_paths=governed_paths or tuple(sorted(files)),
+        governed_source_hashes={
+            path: source_hashes[path]
+            for path in (governed_paths or tuple(sorted(files)))
         },
         runtime_storage_prefix="_workspace_releases/release/artifact/files/",
     )
@@ -75,6 +83,22 @@ async def test_immutable_view_ignores_repo_history_and_reads_release_bytes() -> 
     # input to this view. The active immutable manifest remains authoritative.
     assert await view.read("modules/vendor.py") == live
     assert await view.list("modules/") == ["modules/vendor.py"]
+
+
+@pytest.mark.asyncio
+async def test_immutable_view_exposes_only_cumulative_governed_paths() -> None:
+    view = _view(
+        {
+            "modules/governed.py": b"VALUE = 'live'\n",
+            "modules/legacy.py": b"VALUE = 'snapshot-only'\n",
+        },
+        governed_paths=("modules/governed.py",),
+    )
+
+    assert await view.list("modules/") == ["modules/governed.py"]
+    assert view.governs("modules/legacy.py") is False
+    with pytest.raises(FileNotFoundError):
+        await view.read("modules/legacy.py")
 
 
 @pytest.mark.asyncio

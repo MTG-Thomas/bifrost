@@ -43,6 +43,8 @@ from src.services.workspace_promotions import (
     _canonical_candidate,
     _is_executable_python_path,
     _risk_class_for_effects,
+    overlay_governed_base,
+    read_generation_stable_executable_snapshot,
 )
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
@@ -187,6 +189,7 @@ class WorkspaceReleaseMaterializer:
             [str], WorkspaceReleaseStorage
         ] = WorkspaceReleaseStorage,
         smoke_runner: SmokeRunner = isolated_candidate_import_smoke,
+        workspace_generation: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         self.db = db
         self.organization_id = organization_id
@@ -194,6 +197,11 @@ class WorkspaceReleaseMaterializer:
         self.artifact_storage_factory = artifact_storage_factory
         self.release_storage_factory = release_storage_factory
         self.smoke_runner = smoke_runner
+        if workspace_generation is None:
+            from src.core.module_cache import get_workspace_generation
+
+            workspace_generation = get_workspace_generation
+        self.workspace_generation = workspace_generation
 
     async def prepare(
         self,
@@ -226,9 +234,9 @@ class WorkspaceReleaseMaterializer:
                 "base_sha256": (
                     sha256_bytes(base_files[path]) if path in base_files else None
                 ),
-                "target_sha256": closure_hashes[path],
+                "target_sha256": manifest["effective_files"][path],
             }
-            for path in sorted(closure_hashes)
+            for path in manifest["governed_paths"]
         ]
         effective = dict(sorted({**base_files, **closure_files}.items()))
         self._validate_effective(manifest, effective)
@@ -294,6 +302,8 @@ class WorkspaceReleaseMaterializer:
             "base_manifest_id": artifact.base_manifest_id,
             "effective_manifest_id": artifact.effective_manifest_id,
             "effective_files": manifest["effective_files"],
+            "governed_paths": manifest["governed_paths"],
+            "governed_manifest_id": manifest["governed_manifest_id"],
             "runtime_storage_prefix": runtime_prefix,
             "file_count": len(readback),
             "total_bytes": sum(map(len, readback.values())),
@@ -419,6 +429,8 @@ class WorkspaceReleaseMaterializer:
                 "base_manifest_id",
                 "effective_manifest_id",
                 "effective_files",
+                "governed_paths",
+                "governed_manifest_id",
                 "effective_registration_manifest_id",
                 "effective_registrations",
                 "entry",
@@ -448,6 +460,31 @@ class WorkspaceReleaseMaterializer:
         ):
             raise WorkspaceReleasePreparationError(
                 "artifact effective executable tree is invalid"
+            )
+        governed_paths = manifest.get("governed_paths")
+        if (
+            not isinstance(governed_paths, list)
+            or not governed_paths
+            or governed_paths != sorted(governed_paths)
+            or len(governed_paths) != len(set(governed_paths))
+            or any(path not in effective_files for path in governed_paths)
+        ):
+            raise WorkspaceReleasePreparationError(
+                "artifact governed path manifest is invalid"
+            )
+        if workspace_manifest_id(
+            {path: effective_files[path] for path in governed_paths}
+        ) != manifest.get("governed_manifest_id"):
+            raise WorkspaceReleasePreparationError(
+                "artifact governed manifest digest is invalid"
+            )
+        registrations = manifest.get("effective_registrations")
+        if not isinstance(registrations, dict) or any(
+            not isinstance(row, dict) or row.get("path") not in governed_paths
+            for row in registrations.values()
+        ):
+            raise WorkspaceReleasePreparationError(
+                "artifact registration is outside its governed paths"
             )
         effects = manifest.get("computed_effects")
         if (
@@ -531,7 +568,6 @@ class WorkspaceReleaseMaterializer:
                     == WorkspacePromotionRelease.artifact_id,
                 )
                 .where(
-                    WorkspacePromotionRelease.organization_id == self.organization_id,
                     WorkspacePromotionRelease.activation_state == "live",
                 )
                 .limit(2)
@@ -549,37 +585,47 @@ class WorkspaceReleaseMaterializer:
                 )
             except WorkspaceReleaseRuntimeError as exc:
                 raise WorkspaceReleasePreparationError(str(exc)) from exc
-            if (
-                descriptor.release_id != artifact.base_release_id
-                or descriptor.effective_manifest_id != artifact.base_manifest_id
-            ):
+            if descriptor.release_id != artifact.base_release_id:
                 raise WorkspaceReleasePreparationError(
                     "active Workspace release changed after preview"
                 )
-            files = await self.release_storage_factory(
+            immutable_files = await self.release_storage_factory(
                 descriptor.runtime_storage_prefix
             ).read_many(sorted(descriptor.source_hashes))
-            hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
-            if hashes != descriptor.source_hashes:
+            immutable_hashes = {
+                path: sha256_bytes(raw)
+                for path, raw in sorted(immutable_files.items())
+            }
+            if (
+                immutable_hashes != descriptor.source_hashes
+                or workspace_manifest_id(immutable_hashes)
+                != descriptor.effective_manifest_id
+            ):
                 raise WorkspaceReleasePreparationError(
                     "active Workspace base failed immutable readback"
                 )
+            try:
+                files = await read_generation_stable_executable_snapshot(
+                    self.repo_storage, self.workspace_generation
+                )
+            except ValueError as exc:
+                raise WorkspaceReleasePreparationError(str(exc)) from exc
+            files = overlay_governed_base(
+                files, immutable_files, descriptor.governed_paths
+            )
+            hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
+            if workspace_manifest_id(hashes) != artifact.base_manifest_id:
+                raise WorkspaceReleasePreparationError(
+                    "hybrid Workspace base changed after preview"
+                )
             return files
 
-        paths = sorted(
-            path
-            for path in await self.repo_storage.list()
-            if _is_executable_python_path(path)
-        )
-        if len(paths) > MAX_SNAPSHOT_FILES:
-            raise WorkspaceReleasePreparationError(
-                "durable Workspace base exceeds the executable file limit"
+        try:
+            files = await read_generation_stable_executable_snapshot(
+                self.repo_storage, self.workspace_generation
             )
-        read_many = getattr(self.repo_storage, "read_many", None)
-        if read_many is not None:
-            files = await read_many(paths, concurrency=32)
-        else:
-            files = {path: await self.repo_storage.read(path) for path in paths}
+        except ValueError as exc:
+            raise WorkspaceReleasePreparationError(str(exc)) from exc
         hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
         if (
             repo_v1_release_id(hashes) != artifact.base_release_id

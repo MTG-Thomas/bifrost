@@ -163,6 +163,12 @@ class WorkspacePromotionPreviewResponse(BaseModel):
             "Complete executable authored-Python path-to-SHA-256 tree for release v1."
         )
     )
+    governed_paths: list[str] = Field(
+        description=(
+            "Sorted cumulative paths whose reads and mutations are governed by Live."
+        )
+    )
+    governed_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     effective_registration_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     effective_registrations: dict[str, dict]
     snapshot_id: str
@@ -201,6 +207,12 @@ class WorkspacePromotionArtifactResponse(BaseModel):
             "Complete executable authored-Python path-to-SHA-256 tree for release v1."
         )
     )
+    governed_paths: list[str] = Field(
+        description=(
+            "Sorted cumulative paths whose reads and mutations are governed by Live."
+        )
+    )
+    governed_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     effective_registration_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     effective_registrations: dict[str, dict]
     entry: PromotionEntry
