@@ -11,7 +11,10 @@ import pytest
 from bifrost.promotion import (
     PromotionBundleError,
     build_promotion_bundle,
+    build_reviewed_promotion_bundle,
+    closure_id,
     dependency_edges,
+    protected_main_provenance,
     snapshot_id,
     validate_submitted_bundle,
 )
@@ -63,6 +66,11 @@ def test_bundle_contains_transitive_forward_closure_and_hash_inventory(
     }
     assert "features/unrelated.py" in bundle.snapshot_files
     assert bundle.snapshot_id == snapshot_id(bundle.snapshot_files)
+    assert closure_id(
+        bundle.files,
+        selected_path="features/demo/workflow.py",
+        function_name="demo",
+    ).startswith("sha256:")
 
 
 def test_server_rebuild_rejects_missing_dependency(tmp_path: Path) -> None:
@@ -198,4 +206,64 @@ def test_attribute_dunder_import_is_in_forward_closure(tmp_path: Path) -> None:
     assert {item["path"] for item in bundle.files} == {
         "features/demo/workflow.py",
         "modules/client.py",
+    }
+
+
+def test_reviewed_bundle_reads_exact_git_objects_not_worktree(tmp_path: Path) -> None:
+    root = _git_workspace(
+        tmp_path,
+        {
+            "features/demo/workflow.py": "from modules.client import VALUE\n",
+            "modules/client.py": "VALUE = 'reviewed'\n",
+        },
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=root, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "reviewed"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:example/workspace.git"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=root,
+        check=True,
+    )
+    (root / "modules/client.py").write_text("VALUE = 'dirty'\n", encoding="utf-8")
+
+    bundle, provenance = build_reviewed_promotion_bundle(
+        root, "features/demo/workflow.py"
+    )
+
+    client = next(item for item in bundle.files if item["path"] == "modules/client.py")
+    assert base64.b64decode(client["content_base64"]) == b"VALUE = 'reviewed'\n"
+    assert provenance.repository == "example/workspace"
+    assert provenance == protected_main_provenance(root)
+    assert len(provenance.commit_sha) == 40
+    assert len(provenance.tree_sha) == 40
+
+
+def test_meraki_sized_vendor_module_fits_bounded_closure(tmp_path: Path) -> None:
+    large_client = "MERAKI_ARRAY_QUERY = 'networkIds[]'\n" + ("# x\n" * 1_100_000)
+    root = _git_workspace(
+        tmp_path,
+        {
+            "features/meraki/workflows/ingest.py": (
+                "from modules.meraki import MERAKI_ARRAY_QUERY\n"
+            ),
+            "modules/meraki.py": large_client,
+        },
+    )
+
+    bundle = build_promotion_bundle(root, "features/meraki/workflows/ingest.py")
+
+    assert sum(len(base64.b64decode(item["content_base64"])) for item in bundle.files) > (
+        4 * 1024 * 1024
+    )
+    assert {item["path"] for item in bundle.files} == {
+        "features/meraki/workflows/ingest.py",
+        "modules/meraki.py",
     }

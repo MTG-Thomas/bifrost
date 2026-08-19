@@ -952,7 +952,7 @@ Usage:
 Commands:
   sync        Bidirectional sync between local files and Bifrost platform
   run         Run a workflow directly (silent JSON output) or interactively via browser
-  promote     Compile an immutable Workspace promotion preview (activation disabled)
+  promote     Build a local-only draft or preview exact protected-main bytes
   git         Git source control operations (fetch, status, commit, push, resolve, diff, discard)
   push        Push local files to Bifrost platform (alias for sync)
   pull        Pull files from Bifrost platform to local directory (alias for sync)
@@ -1013,7 +1013,8 @@ Direct files vs bulk local sync:
 
 Examples:
   bifrost run workflow.py -w greet
-  bifrost promote workflow.py -w greet --preview
+  bifrost promote draft workflow.py -w greet
+  bifrost promote preview workflow.py -w greet
   bifrost run workflow.py -w greet -p '{"name": "World"}'
   bifrost run workflow.py -w greet | jq .
   bifrost run workflow.py --interactive
@@ -1684,19 +1685,43 @@ def _run_direct(
         else:
             print(json.dumps(result, default=str))
         if promotion_evidence is not None and workflow_file is not None:
-            from bifrost.promotion import build_promotion_bundle
+            from bifrost.promotion import (
+                build_promotion_bundle,
+                closure_id,
+                sha256_bytes,
+            )
 
             root = pathlib.Path.cwd().resolve()
             selected_path = pathlib.Path(workflow_file)
             if selected_path.is_absolute():
                 selected_path = selected_path.resolve().relative_to(root)
             bundle = build_promotion_bundle(root, selected_path.as_posix())
+            canonical_params = json.dumps(
+                params, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")
+            canonical_result = json.dumps(
+                result, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8")
             evidence = {
+                "schema_version": "bifrost.workspace-local-run-evidence/v1",
+                "authority": "local_only",
+                "activatable": False,
                 "succeeded": True,
                 "snapshot_id": bundle.snapshot_id,
+                "closure_id": closure_id(
+                    bundle.files,
+                    selected_path=selected_path.as_posix(),
+                    function_name=selected_workflow,
+                ),
+                "entry": {
+                    "path": selected_path.as_posix(),
+                    "function": selected_workflow,
+                },
                 "evidence_id": f"local:{uuid.uuid4()}",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
+                "input_sha256": sha256_bytes(canonical_params),
+                "result_sha256": sha256_bytes(canonical_result),
                 "observed_effects": [],
             }
             temporary = promotion_evidence.with_suffix(

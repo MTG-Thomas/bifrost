@@ -1,37 +1,41 @@
 # Rapid Workspace Promotion
 
-Status: preview-only dark launch. Production activation is intentionally absent.
+Status: immutable artifact and operator channels under implementation. The
+existing exact-path reviewed release remains the production fallback.
 
 ## Goal
 
-Make the common Workspace loop feel like local development:
+Make the common Workspace loop feel like local development without allowing a
+laptop or mutable cache to become production authority:
 
 1. Author a workflow and its private helpers locally.
-2. Run it against the selected Bifrost data plane.
-3. Compile one immutable preview that names every byte and behavioral claim.
-4. Activate that exact candidate quickly when it qualifies for the bounded R0 lane.
-5. Let durable background work lock the already-live artifact into protected Git.
+2. Record local-run evidence and an immutable local-only draft.
+3. Optionally execute that exact draft as a bounded, TTL canary with no
+   registration or trigger/public surface.
+4. Merge the proven bytes through protected Git.
+5. Preview the exact protected commit/tree and complete effective snapshot.
+6. Atomically activate by candidate ID, then prove one release ID across
+   runtime, source reads, registration, and history.
 
-Git review remains the durable system of record, but GitHub queue latency is not
-on the future activation critical path. A Git failure must never replay an
-activation or turn a verified Live release into an activation failure.
+Local evidence is useful but never activatable. Production activation never
+accepts source bytes; it accepts an immutable reviewed candidate plus base CAS
+and idempotency guards.
 
 ## Ownership
 
-- The CLI constructs a coherent local snapshot and sends the selected
-  workflow's complete forward Python closure.
-- The API independently reconstructs that closure, computes reverse-dependency
-  risk against live Workspace bytes, classifies effects, binds registry/access
-  state, and creates the immutable candidate.
+- The CLI stores local-only drafts, displays complete graph evidence, and reads
+  reviewed source directly from exact Git objects for production preview.
+- The API verifies protected source, reconstructs the complete effective
+  snapshot, computes forward/reverse impact, classifies effects, binds
+  registry/access state, and creates the immutable candidate.
 - The Workspace repository owns authored source, effect declarations, focused
-  tests, and the eventual lock-in pull request.
+  tests, and protected-main provenance before Live activation.
 - Infrastructure owns feature enablement, migration-before-rollout, encrypted
   artifact storage policy, and GitHub credentials. It does not classify or
   activate a candidate.
 
-Solutions should ultimately use the same artifact, release, validation,
-activation, rollback, and lock-in state machine. They remain a separate target
-kind and namespace.
+Solutions use the same artifact, release, validation, activation, rollback,
+and status state machine. They remain a separate target kind and namespace.
 
 ## Interactive file impact checks
 
@@ -110,57 +114,81 @@ if impact["ready_to_write"]:
     )
 ```
 
-## Shipped dark-launch contract
+## Operator-channel contract
 
-The dark-launch operator loop is:
+The v1 operator loop is:
 
 ```bash
 bifrost run <path> -w <function> --promotion-evidence .promotion-run.json
-bifrost promote <path> -w <function> --preview \
+bifrost promote draft <path> -w <function> \
   --run-evidence .promotion-run.json
+bifrost promote canary <draft-id> --ttl 15m
+# branch, PR, CI, protected main
+bifrost promote preview <path> -w <function> \
+  --run-evidence .promotion-run.json
+bifrost promote activate <candidate-id> \
+  --expected-active-release-id <release-id> --idempotency-key <key>
+bifrost promote status <candidate-or-release-id>
 ```
 
-`bifrost promote` then:
+Draft compilation:
 
 - reads tracked and untracked, non-ignored Python files twice;
 - rejects traversal, symlinks, case/Unicode collisions, ambiguous module names,
   size limits, and a changing snapshot;
-- sends a complete path/hash inventory plus exact forward-closure bytes;
-- optionally binds local-run evidence to that exact snapshot;
-- calls `POST /api/workspace-promotions/preview`.
+- stores an immutable private local artifact with exact bytes;
+- binds local-run evidence to the selected entry and forward-closure ID rather
+  than the entire repository, so unrelated later merges do not invalidate it;
+- computes complete forward/reverse graph evidence; and
+- marks the artifact `authority=local_only`, `activatable=false`.
+
+A canary may upload bounded draft bytes for one manual execution, but cannot
+register, schedule, subscribe, expose an endpoint/API key, or move Live state.
+
+Reviewed preview reads Git blobs directly from protected source and calls
+`POST /api/workspace-promotions/preview` with bundle schema v2:
+
+- exact commit SHA and tree SHA;
+- full snapshot and selected forward-closure path/hash identities;
+- optional matching local/canary evidence;
+- optional expected-base and supersession CAS; and
+- no client-supplied production source bytes. The server fetches the reviewed
+  blobs and validates them against protected Git.
 
 The server:
 
-- derives organization from authenticated context;
-- rebuilds imports from submitted bytes and rejects missing, mixed, or extra
-  closure members;
-- never fills a missing dependency from live storage, Git, another checkout, or
-  another candidate, and never expands a selected closure into unrelated roots;
-- scans authoritative live source to find reverse importers;
+- derives organization and authoritative active base from authenticated context;
+- verifies protected commit/tree and fetches exact blobs;
+- reconstructs the complete effective snapshot using content-addressed reuse;
+- rejects missing, mixed, extra, ambiguous, or dynamically unprovable closure;
+- scans the effective snapshot for all reverse importers;
 - blocks a changed helper when a live consumer is outside the candidate;
 - binds workflow create/reactivate/preserve intent and existing access/trigger
-  state;
+  state fingerprints, including registration-only candidates;
 - computes declared, static, and combined effects plus enforced bounds;
 - scans high-confidence secret patterns before storing source;
 - writes source and manifest to create-only, content-addressed object keys;
-- stores immutable artifact metadata separately from future mutable release
-  state;
+- stores immutable artifact metadata separately from the atomic Live pointer;
 - commits a strict, source-free audit event with candidate, snapshot, entry,
   risk, policy, and closure hashes;
-- always returns `preview_only=true` and `ready_to_activate=false`.
+- returns content, closure, candidate, release, base/effective manifest,
+  registration, source, lifecycle, and exact per-path hash evidence.
 
-The capability flag `BIFROST_WORKSPACE_RAPID_PROMOTION_PREVIEW_ENABLED` defaults
-to false. There is no activation endpoint or CLI activation option in this
-slice.
+Activation sends no source. Status distinguishes candidate validation,
+activation, runtime coherence, and signed-history projection. In particular,
+`Live / runtime coherent / history pending` is not an activation failure.
 
 ## Candidate identity
 
-The SHA-256 candidate binds behaviorally meaningful inputs:
+The model separates stable content from release evidence:
 
-- organization and production target;
-- entry path and function;
-- full snapshot identity and exact closure path/hash/size/relation;
-- source revision when available;
+- `closure_id` binds entry path/function plus exact forward path/hash members;
+- `content_id` binds the deployable behavior independent of evidence;
+- `effective_manifest_id` binds every path/hash in the resulting Workspace;
+- `candidate_id` also binds organization, protected source, active base,
+  registration fingerprints, validation/effect evidence, and policy version;
+- `release_id` identifies the immutable activation target;
+- protected source always includes full commit and tree SHA;
 - declared, statically inferred, and computed effects;
 - enforced resource bounds;
 - create/reactivate/preserve registration intent;
@@ -170,10 +198,9 @@ The SHA-256 candidate binds behaviorally meaningful inputs:
 - CLI, SDK, and contract versions;
 - policy version.
 
-Presentation text, timestamps, and diagnostic wording do not affect candidate
-identity. Activation will eventually accept only a candidate ID plus an
-idempotency/confirmation token; it will not accept replacement source or policy
-claims.
+Presentation text, timestamps, and diagnostic wording do not affect content
+identity. Activation accepts only candidate/base/idempotency evidence; it does
+not accept replacement source or policy claims.
 
 ## Dependency and reverse-dependency invariant
 
@@ -216,9 +243,10 @@ and unknown behavior are R2. A declaration cannot weaken a static or observed
 lower bound. Runtime enforcement and server-issued run evidence are required
 before activation is introduced; decorator metadata alone is not enforcement.
 
-## Activation prerequisites
+## Activation rollout prerequisites
 
-The activation route must remain absent until tests prove all of the following:
+The activation route must remain feature-disabled in production until tests
+prove all of the following:
 
 - candidate-backed production loader smoke has no fallback to live or local
   files and blocks top-level effects;
@@ -232,15 +260,17 @@ The activation route must remain absent until tests prove all of the following:
 - preserve-only exact live state returns `already_live` with no candidate/job;
 - duplicate or competing activation is idempotent/fail-closed;
 - activation performs no Git or GitHub operation;
-- the later lock-in job performs no activation, workflow execution, webhook
-  replay, or vendor mutation;
-- Git ref delay, later branch advancement, or CI failure affects only lock
-  state, never Live activation state.
+- signed-history projection performs no activation, workflow execution,
+  webhook replay, or vendor mutation;
+- Git ref delay or later branch advancement affects only history projection,
+  never Live activation state;
+- Meraki array-query, AutoTask parser, Cove shared-helper, and DMA
+  registration-only incident fixtures all pass against the same release model.
 
 ## Durable state
 
 `workspace_promotion_artifacts` is immutable candidate metadata pointing to
-create-only source and manifest objects. `workspace_promotion_releases` is a
-separate future state machine with independent activation and Git lock states.
-Keeping them separate prevents history synchronization failures from being
-misreported as source activation failures.
+create-only source and manifest objects. The active Workspace release pointer
+is a separate CAS-updated record, and signed history is a projection of that
+release. Keeping these states separate prevents history synchronization
+failures from being misreported as source activation failures.
