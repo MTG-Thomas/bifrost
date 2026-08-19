@@ -35,6 +35,10 @@ from src.models.orm import (
 from src.models.orm.file_index import FileIndex
 from src.services.app_dependencies import parse_dependencies
 from src.services.notification_service import get_notification_service
+from src.services.workspace_release_registration_authority import (
+    WorkspaceReleaseRegistrationGoverned,
+    guard_workspace_registration_mutation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -234,16 +238,25 @@ async def cleanup_orphaned(
         wf_result = await db.execute(
             select(Workflow).where(Workflow.is_active.is_(True))
         )
-        for wf in wf_result.scalars().all():
-            if wf.path and wf.path not in existing_paths:
-                wf.is_active = False
-                wf.is_orphaned = True
-                cleaned.append(OrphanedEntity(
-                    entity_type="workflow",
-                    entity_id=str(wf.id),
-                    entity_name=wf.display_name or wf.name,
-                    path=wf.path,
-                ))
+        orphaned_workflows = [
+            wf
+            for wf in wf_result.scalars().all()
+            if wf.path and wf.path not in existing_paths
+        ]
+        await guard_workspace_registration_mutation(
+            db,
+            operation="clean up orphaned workflows",
+            workflows=orphaned_workflows,
+        )
+        for wf in orphaned_workflows:
+            wf.is_active = False
+            wf.is_orphaned = True
+            cleaned.append(OrphanedEntity(
+                entity_type="workflow",
+                entity_id=str(wf.id),
+                entity_name=wf.display_name or wf.name,
+                path=wf.path,
+            ))
 
         await db.commit()
 
@@ -259,6 +272,11 @@ async def cleanup_orphaned(
             count=len(cleaned),
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except Exception as e:
         logger.error(f"Error cleaning up orphaned entities: {e}", exc_info=True)
         raise HTTPException(

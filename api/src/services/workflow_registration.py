@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.models import Workflow as WorkflowORM
+from src.services.workspace_release_registration_authority import (
+    WorkspaceRegistrationMutationAuthority,
+    guard_workspace_registration_mutation,
+)
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,10 @@ async def apply_workspace_registration_plan(
     db: AsyncSession,
     organization_id: UUID,
     actions: list[dict],
+    *,
+    authority: WorkspaceRegistrationMutationAuthority = (
+        WorkspaceRegistrationMutationAuthority.EXTERNAL
+    ),
 ) -> list[dict]:
     """Create missing Workspace rows in the caller's activation transaction.
 
@@ -143,6 +151,12 @@ async def apply_workspace_registration_plan(
     activation does not depend on a source rewrite. A subsequent source write may
     still let ``WorkflowIndexer`` enrich the row from the activated file.
     """
+    await guard_workspace_registration_mutation(
+        db,
+        operation="apply workflow registration plan",
+        paths=(action["path"] for action in actions),
+        authority=authority,
+    )
     applied: list[dict] = []
     for action in actions:
         existing = await find_workspace_workflow(

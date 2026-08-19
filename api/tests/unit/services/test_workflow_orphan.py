@@ -888,3 +888,11 @@ def run(self, ticket_id: str, context: ExecutionContext, priority: int = 1) -> s
         assert service._props_contain_workflow({"workflowId": "wf-1"}, "wf-1")
         assert not service._props_contain_workflow({"workflowId": "wf-2"}, "wf-1")
         assert not service._props_contain_workflow(None, "wf-1")
+
+@pytest.fixture(autouse=True)
+def bypass_live_registration_authority(monkeypatch):
+    """Legacy orphan examples run without a Workspace Live fixture."""
+    monkeypatch.setattr(
+        "src.services.workflow_orphan.guard_workspace_registration_mutation",
+        AsyncMock(),
+    )

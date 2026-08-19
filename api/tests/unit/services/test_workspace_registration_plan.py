@@ -7,12 +7,17 @@ from uuid import uuid4
 
 import pytest
 
+import src.services.workflow_registration as workflow_registration
+
 from src.services.workflow_registration import (
     WorkspaceRegistrationCandidate,
     WorkflowRegistrationConflict,
     apply_workspace_registration_plan,
     plan_workspace_registrations,
     workspace_workflow_lookup_statement,
+)
+from src.services.workspace_release_registration_authority import (
+    WorkspaceRegistrationMutationAuthority,
 )
 
 
@@ -28,6 +33,35 @@ def test_lookup_prefers_org_override_before_same_key_global_registration():
 
     assert "organization_id IS NULL ASC" in sql
     assert "LIMIT 1" in sql
+
+
+@pytest.mark.asyncio
+async def test_apply_defaults_to_external_live_authority(monkeypatch):
+    blocked = RuntimeError("governed")
+    guard = AsyncMock(side_effect=blocked)
+    monkeypatch.setattr(
+        workflow_registration,
+        "guard_workspace_registration_mutation",
+        guard,
+    )
+    actions = [
+        {
+            "action": "create",
+            "path": "features/live.py",
+            "function_name": "run",
+            "type": "workflow",
+            "name": "Live",
+            "requested_id": None,
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="governed"):
+        await apply_workspace_registration_plan(SimpleNamespace(), uuid4(), actions)
+
+    assert guard.await_args.kwargs["authority"] is (
+        WorkspaceRegistrationMutationAuthority.EXTERNAL
+    )
+    assert list(guard.await_args.kwargs["paths"]) == ["features/live.py"]
 
 
 @pytest.mark.asyncio
@@ -169,6 +203,7 @@ async def test_apply_assigns_identity_inside_callers_transaction():
                 "organization_id": str(organization_id),
             }
         ],
+        authority=WorkspaceRegistrationMutationAuthority.RELEASE_ACTIVATION,
     )
 
     assert applied[0]["workflow_id"] == str(db.added[0].id)
@@ -209,6 +244,7 @@ async def test_apply_reactivates_existing_row_without_rewriting_source():
                 "organization_id": str(organization_id),
             }
         ],
+        authority=WorkspaceRegistrationMutationAuthority.RELEASE_ACTIVATION,
     )
 
     assert existing.is_active is True
@@ -243,6 +279,7 @@ async def test_apply_rejects_registry_state_that_changed_after_plan():
                     "requested_id": None,
                 }
             ],
+            authority=WorkspaceRegistrationMutationAuthority.RELEASE_ACTIVATION,
         )
 
 
@@ -278,4 +315,5 @@ async def test_apply_rejects_changed_active_state(
                     "requested_id": None,
                 }
             ],
+            authority=WorkspaceRegistrationMutationAuthority.RELEASE_ACTIVATION,
         )

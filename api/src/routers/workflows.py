@@ -65,6 +65,10 @@ from src.services.workflow_registration import (
     add_workflow_registration,
     resolve_workflow_registration_id,
 )
+from src.services.workspace_release_registration_authority import (
+    WorkspaceReleaseRegistrationGoverned,
+    guard_workspace_registration_mutation,
+)
 from src.services.workflow_validation import _extract_relative_path
 from src.services.solution_scope import (
     derive_execution_solution_scope,
@@ -89,6 +93,27 @@ router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+
+async def _guard_workflow_registration_mutation(
+    db: AsyncSession,
+    *,
+    operation: str,
+    paths: tuple[str, ...] = (),
+    workflows: tuple[WorkflowORM, ...] = (),
+) -> None:
+    try:
+        await guard_workspace_registration_mutation(
+            db,
+            operation=operation,
+            paths=paths,
+            workflows=workflows,
+        )
+    except WorkspaceReleaseRegistrationGoverned as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
 
 def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 0) -> WorkflowMetadata:
@@ -1358,6 +1383,13 @@ async def register_workflow(
     )
     existing_wf = existing.scalar_one_or_none()
 
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="register or reactivate workflow",
+        paths=(request.path,),
+        workflows=(existing_wf,) if existing_wf is not None else (),
+    )
+
     try:
         requested_workflow_id = await resolve_workflow_registration_id(
             db, request.id, existing_wf
@@ -1554,6 +1586,11 @@ async def update_workflow(
 
         # Solution-managed workflows are read-only here; deploy is the writer.
         assert_not_solution_managed(workflow)
+        await _guard_workflow_registration_mutation(
+            db,
+            operation="update workflow",
+            workflows=(workflow,),
+        )
 
         # Update organization_id - use model_fields_set to distinguish "not provided" from "explicitly null"
         if "organization_id" in request.model_fields_set:
@@ -1937,6 +1974,11 @@ async def replace_workflow(
             new_path=workflow.path,
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2053,6 +2095,11 @@ async def recreate_workflow_file(
             path=workflow.path,
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2109,6 +2156,11 @@ async def deactivate_workflow(
             warning=warning,
         )
 
+    except WorkspaceReleaseRegistrationGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2188,9 +2240,10 @@ async def assign_roles_to_workflow(
     """
     # Verify workflow exists
     result = await db.execute(
-        select(WorkflowORM.id).where(WorkflowORM.id == workflow_id)
+        select(WorkflowORM).where(WorkflowORM.id == workflow_id)
     )
-    if not result.scalar_one_or_none():
+    workflow = result.scalar_one_or_none()
+    if workflow is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow with ID '{workflow_id}' not found",
@@ -2199,6 +2252,11 @@ async def assign_roles_to_workflow(
     # The before_flush backstop can't see this (we add WorkflowRole rows, never
     # dirtying the Workflow itself), so the explicit guard is load-bearing here.
     await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="assign workflow roles",
+        workflows=(workflow,),
+    )
 
     now = datetime.now(timezone.utc)
 
@@ -2260,6 +2318,20 @@ async def remove_role_from_workflow(
     # ORM unit-of-work, so the before_flush backstop never sees it — the guard
     # is the only protection here.
     await assert_entity_id_not_solution_managed(db, WorkflowORM, workflow_id)
+    workflow_result = await db.execute(
+        select(WorkflowORM).where(WorkflowORM.id == workflow_id)
+    )
+    workflow = workflow_result.scalar_one_or_none()
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow with ID '{workflow_id}' not found",
+        )
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="remove workflow role",
+        workflows=(workflow,),
+    )
     result = await db.execute(
         delete(WorkflowRole).where(
             WorkflowRole.workflow_id == workflow_id,
@@ -2324,6 +2396,11 @@ async def delete_workflow(
 
     # Solution-managed workflows are read-only here; deploy is the writer.
     assert_not_solution_managed(workflow)
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="delete workflow",
+        workflows=(workflow,),
+    )
 
     if not workflow.path:
         raise HTTPException(

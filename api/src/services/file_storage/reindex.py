@@ -78,6 +78,17 @@ class WorkspaceReindexService:
                     if not key:
                         continue
 
+                    if key.endswith(".py"):
+                        from src.services.workspace_release_registration_authority import (
+                            guard_workspace_registration_mutation,
+                        )
+
+                        await guard_workspace_registration_mutation(
+                            self.db,
+                            operation="reindex Workspace workflow from S3",
+                            paths=(key,),
+                        )
+
                     # Get content for hash
                     response = await s3.get_object(
                         Bucket=self.settings.s3_bucket,
@@ -145,6 +156,16 @@ class WorkspaceReindexService:
                 if not is_excluded_path(rel_path):
                     existing_paths.add(rel_path)
 
+        from src.services.workspace_release_registration_authority import (
+            guard_workspace_registration_mutation,
+        )
+
+        await guard_workspace_registration_mutation(
+            self.db,
+            operation="reindex Workspace workflows",
+            paths=(path for path in existing_paths if path.endswith(".py")),
+        )
+
         # 2. Remove orphaned file_index entries (files no longer on disk)
         if existing_paths:
             del_stmt = delete(FileIndex).where(
@@ -207,12 +228,21 @@ class WorkspaceReindexService:
         result = await self.db.execute(
             select(Workflow).where(
                 Workflow.is_active == True,  # noqa: E712
-                Workflow.endpoint_enabled == True,  # noqa: E712
                 Workflow.solution_id.is_(None),
                 ~Workflow.path.in_(existing_paths) if existing_paths else True,
             )
         )
-        orphaned_endpoint_workflows = result.scalars().all()
+        orphaned_workflows = list(result.scalars().all())
+        await guard_workspace_registration_mutation(
+            self.db,
+            operation="deactivate workflows missing during reindex",
+            workflows=orphaned_workflows,
+        )
+        orphaned_endpoint_workflows = [
+            workflow
+            for workflow in orphaned_workflows
+            if workflow.endpoint_enabled
+        ]
 
         for workflow in orphaned_endpoint_workflows:
             try:

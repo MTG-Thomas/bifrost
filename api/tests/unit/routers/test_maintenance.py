@@ -333,3 +333,12 @@ async def test_run_preflight_warns_for_unregistered_decorated_functions(monkeypa
     assert response.warnings[0].category == "unregistered_function"
     assert "missing_tool" in response.warnings[0].detail
     assert response.warnings[0].path == "workflows/missing.py"
+
+@pytest.fixture(autouse=True)
+def bypass_live_registration_authority(monkeypatch):
+    """Maintenance examples run without a Workspace Live fixture."""
+    monkeypatch.setattr(
+        maintenance,
+        "guard_workspace_registration_mutation",
+        AsyncMock(),
+    )

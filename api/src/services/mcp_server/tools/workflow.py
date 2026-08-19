@@ -324,6 +324,9 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
     from src.models.orm.workflows import Workflow as WorkflowORM
     from src.services.file_storage import FileStorageService
     from src.services.file_storage.indexers.workflow import WorkflowIndexer
+    from src.services.workspace_release_registration_authority import (
+        guard_workspace_registration_mutation,
+    )
 
     if not path:
         return error_result("path is required")
@@ -386,8 +389,15 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
                     WorkflowORM.solution_id.is_(None),
                 )
             )
-            if existing.scalar_one_or_none():
+            existing_workflow = existing.scalar_one_or_none()
+            if existing_workflow:
                 return error_result(f"Workflow '{function_name}' in {path} is already registered")
+
+            await guard_workspace_registration_mutation(
+                db,
+                operation="register workflow through MCP",
+                paths=(path,),
+            )
 
             # Create record
             wf_type = "data_provider" if decorator_type == "data_provider" else (

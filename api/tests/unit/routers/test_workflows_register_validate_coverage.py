@@ -968,3 +968,12 @@ async def test_cancel_scheduled_execution_handles_success_and_race_conflict() ->
     assert exc.value.detail == "Execution is not Scheduled (current status: Pending)"
     assert conflict_db.committed is True
     assert conflict_db.refreshed is True
+
+@pytest.fixture(autouse=True)
+def bypass_live_registration_authority(monkeypatch):
+    """Router examples isolate request behavior from Workspace Live state."""
+    monkeypatch.setattr(
+        workflows,
+        "_guard_workflow_registration_mutation",
+        AsyncMock(),
+    )
