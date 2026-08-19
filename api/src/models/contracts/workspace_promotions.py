@@ -184,4 +184,4 @@ class WorkspaceDraftCanaryAccepted(BaseModel):
     execution_id: UUID
     artifact_id: UUID
     runtime_mode: Literal["workspace-draft-v1"] = "workspace-draft-v1"
-    status: Literal["Scheduled"] = "Scheduled"
+    status: Literal["Pending"] = "Pending"
