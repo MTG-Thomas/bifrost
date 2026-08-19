@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -87,6 +89,12 @@ def _rows():
             "effective_registrations": {},
             "protected_source": {"commit_sha": "4" * 40, "tree_sha": "5" * 40},
             "registration": {"state_fingerprint": "sha256:" + "2" * 64},
+            "bounds": {
+                "max_duration_seconds": 60,
+                "max_external_calls": 10,
+                "max_records_read": 100,
+                "max_output_bytes": 1024,
+            },
             "closure": [
                 {
                     "path": path,
@@ -117,6 +125,7 @@ def _rows():
     prepared_evidence["evidence_id"] = canonical_digest(prepared_evidence)
     activation_evidence = {
         "prepared_evidence_id": prepared_evidence["evidence_id"],
+        "registration_actions": [],
         "projection_paths": {
             "projection_paths_id": canonical_digest(
                 {
@@ -139,6 +148,54 @@ def _rows():
         created_by=uuid4(),
     )
     return release, artifact, paths
+
+
+def _add_inherited_path(release, artifact, paths):
+    inherited_path = "shared/inherited.py"
+    inherited_content = b"INHERITED = True\n"
+    inherited_sha256 = _hash(inherited_content)
+    effective = dict(artifact.manifest["effective_files"])
+    effective[inherited_path] = inherited_sha256
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_files": dict(sorted(effective.items())),
+        "effective_manifest_id": workspace_manifest_id(effective),
+    }
+    artifact.effective_manifest_id = workspace_manifest_id(effective)
+    base_effective = {path: _hash(base) for path, (base, _target) in paths.items()}
+    base_effective[inherited_path] = inherited_sha256
+    artifact.base_manifest_id = workspace_manifest_id(base_effective)
+    return inherited_path, inherited_content
+
+
+def _make_source_already_target(release, artifact, paths):
+    projection_paths = [
+        {
+            "path": path,
+            "base_sha256": _hash(target),
+            "target_sha256": _hash(target),
+        }
+        for path, (_base, target) in paths.items()
+    ]
+    prepared = {"projection_paths": projection_paths}
+    prepared["evidence_id"] = canonical_digest(prepared)
+    activation = {
+        "prepared_evidence_id": prepared["evidence_id"],
+        "registration_actions": [{"intent": "preserve"}],
+        "projection_paths": {
+            "projection_paths_id": canonical_digest(
+                {
+                    "schema": "bifrost.workspace-release-projection-paths/v1",
+                    "paths": projection_paths,
+                }
+            ),
+            "paths": projection_paths,
+        },
+    }
+    activation["evidence_id"] = canonical_digest(activation)
+    release.prepared_evidence = prepared
+    release.activation_evidence = activation
+    artifact.base_manifest_id = artifact.effective_manifest_id
 
 
 class Database:
@@ -360,10 +417,113 @@ async def test_lock_projects_only_base_paths_and_records_signed_readback(
     assert release.lock_state == "locked"
     assert file_writer.writes == [first]
     assert len(history.requests) == 1
-    assert [item.path for item in history.requests[0].files] == [first]
+    assert [item.path for item in history.requests[0].files][0] == first
+    assert [item.path for item in history.requests[0].files][1].startswith(
+        ".bifrost/workspace-releases/ledger/"
+    )
     assert history.requests[0].workspace_release_id == artifact.release_id
     assert evidence["history_after"]["signature_state"] == "VALID"
     assert evidence["repo_after_sha256"] == artifact.manifest["effective_files"]
+
+
+@pytest.mark.asyncio
+async def test_inherited_full_tree_mismatch_prevents_lock(monkeypatch) -> None:
+    release, artifact, paths = _rows()
+    inherited_path, inherited_content = _add_inherited_path(release, artifact, paths)
+    target_files = {path: target for path, (_base, target) in paths.items()}
+    target_files[inherited_path] = inherited_content
+    repo = Repo({**target_files, inherited_path: b"STALE = True\n"})
+    history = HistoryWriter(
+        {path: _hash(content) for path, content in target_files.items()}
+    )
+    file_writer = FileWriter(repo)
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.acquire_workspace_release_lock",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.workspace_source_update",
+        _source_update,
+    )
+    service = WorkspaceReleaseProjectionService(
+        Database(),
+        release.organization_id,
+        commit_writer=history,
+        repo_storage=repo,
+        release_storage_factory=lambda _prefix: ReleaseStorage(target_files),
+        file_storage_factory=lambda _db: file_writer,
+        coherence_inspector=_coherent,
+    )
+    service._load_release = AsyncMock(return_value=(release, artifact))
+    service._ensure_still_live = AsyncMock()
+
+    with pytest.raises(WorkspaceReleaseProjectionError, match="shared/inherited.py"):
+        await service.lock_release(
+            release.id, artifact.release_id, operator="operator@example.com"
+        )
+
+    assert release.lock_state == "attention_required"
+    assert file_writer.writes == []
+    assert history.requests == []
+
+
+@pytest.mark.asyncio
+async def test_registration_only_target_creates_one_signed_release_ledger(
+    monkeypatch,
+) -> None:
+    release, artifact, paths = _rows()
+    _make_source_already_target(release, artifact, paths)
+    target_files = {path: target for path, (_base, target) in paths.items()}
+    repo = Repo(target_files)
+    history = HistoryWriter(
+        {path: _hash(content) for path, content in target_files.items()}
+    )
+    file_writer = FileWriter(repo)
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.acquire_workspace_release_lock",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.workspace_source_update",
+        _source_update,
+    )
+    service = WorkspaceReleaseProjectionService(
+        Database(),
+        release.organization_id,
+        commit_writer=history,
+        repo_storage=repo,
+        release_storage_factory=lambda _prefix: ReleaseStorage(target_files),
+        file_storage_factory=lambda _db: file_writer,
+        coherence_inspector=_coherent,
+    )
+    service._load_release = AsyncMock(return_value=(release, artifact))
+    service._ensure_still_live = AsyncMock()
+
+    evidence = await service.lock_release(
+        release.id, artifact.release_id, operator="operator@example.com"
+    )
+
+    assert file_writer.writes == []
+    assert len(history.requests) == 1
+    request = history.requests[0]
+    assert len(request.files) == 1
+    ledger_file = request.files[0]
+    assert ledger_file.path == evidence["release_ledger"]["path"]
+    assert ledger_file.expected_before_sha256 is None
+    assert ledger_file.expected_sha256 == evidence["release_ledger"]["sha256"]
+    ledger = json.loads(base64.b64decode(ledger_file.content_base64))
+    assert ledger["artifact_row_id"] == str(artifact.id)
+    assert ledger["release_row_id"] == str(release.id)
+    assert ledger["release_id"] == artifact.release_id
+    assert ledger["effective_source_manifest_id"] == artifact.effective_manifest_id
+    assert ledger["effective_registration_manifest_id"] == (
+        artifact.effective_registration_manifest_id
+    )
+    assert ledger["registration_outcome"] == [{"intent": "preserve"}]
+    assert request.expected_head_sha == "6" * 40
+    assert request.expected_head_tree_sha == "7" * 40
+    assert request.workspace_release_ledger_sha256 == ledger_file.expected_sha256
+    assert evidence["history_after"]["signature_state"] == "VALID"
 
 
 @pytest.mark.asyncio

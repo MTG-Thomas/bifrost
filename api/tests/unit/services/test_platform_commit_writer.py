@@ -64,12 +64,14 @@ def test_workspace_release_provenance_is_written_as_commit_trailers() -> None:
         commit_request(changeset_id=release_row_id),
         workspace_release_id="sha256:" + "a" * 64,
         workspace_release_row_id=release_row_id,
+        workspace_release_ledger_sha256="b" * 64,
     )
 
     _headline, body = request.github_message()
 
     assert f"Workspace-Release-ID: {'sha256:' + 'a' * 64}" in body
     assert f"Workspace-Release-Row-ID: {release_row_id}" in body
+    assert f"Workspace-Release-Ledger-SHA256: {'b' * 64}" in body
 
 
 def head_response(
@@ -778,6 +780,37 @@ async def test_writer_rejects_head_drift_bound_by_convergence_candidate(
             convergence_candidate_id="sha256:" + "a" * 64,
         )
         with pytest.raises(PlatformCommitError, match="head changed"):
+            await writer.write(request)
+
+    assert mutation_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_writer_rejects_head_tree_drift_before_mutation(private_key_pem):
+    mutation_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal mutation_calls
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        payload = graphql_payload(request)
+        if "query BranchHead" in payload["query"]:
+            return head_response()
+        if "mutation CreatePlatformCommit" in payload["query"]:
+            mutation_calls += 1
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        request = replace(commit_request(), expected_head_tree_sha="f" * 40)
+        with pytest.raises(PlatformCommitError, match="tree changed"):
             await writer.write(request)
 
     assert mutation_calls == 0

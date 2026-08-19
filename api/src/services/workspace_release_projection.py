@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
@@ -34,6 +35,8 @@ from src.services.workspace_release_storage import WorkspaceReleaseStorage
 
 WORKSPACE_RELEASE_LOCK_EVIDENCE_SCHEMA = "bifrost.workspace-release-lock/v1"
 PROJECTION_PATHS_SCHEMA = "bifrost.workspace-release-projection-paths/v1"
+WORKSPACE_RELEASE_LEDGER_SCHEMA = "bifrost.workspace-release-ledger/v1"
+WORKSPACE_RELEASE_LEDGER_ROOT = ".bifrost/workspace-releases/ledger"
 ProgressReporter = Callable[[str, int, int | None, float | None], Awaitable[None]]
 
 
@@ -118,6 +121,51 @@ def classify_workspace_release_path(
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _release_ledger(
+    release: WorkspacePromotionRelease,
+    artifact: WorkspacePromotionArtifact,
+    descriptor: WorkspaceReleaseDescriptor,
+) -> tuple[str, bytes, str]:
+    activation = release.activation_evidence
+    if not isinstance(activation, dict) or not isinstance(
+        activation.get("registration_actions"), list
+    ):
+        raise WorkspaceReleaseProjectionError(
+            "workspace_release_projection_invalid",
+            "Workspace release activation is missing its registration outcome.",
+        )
+    ledger = {
+        "schema_version": WORKSPACE_RELEASE_LEDGER_SCHEMA,
+        "release_row_id": str(release.id),
+        "artifact_row_id": str(artifact.id),
+        "artifact_candidate_id": artifact.candidate_id,
+        "artifact_content_id": artifact.content_id,
+        "artifact_closure_id": artifact.closure_id,
+        "release_id": descriptor.release_id,
+        "base_release_id": artifact.base_release_id,
+        "effective_source_manifest_id": descriptor.effective_manifest_id,
+        "effective_registration_manifest_id": (
+            descriptor.effective_registration_manifest_id
+        ),
+        "registration_outcome": activation["registration_actions"],
+        "prepared_evidence_id": activation.get("prepared_evidence_id"),
+        "activation_evidence_id": activation.get("evidence_id"),
+        "protected_source": {
+            "commit_sha": descriptor.source_commit_sha,
+            "tree_sha": descriptor.source_tree_sha,
+        },
+    }
+    content = json.dumps(
+        ledger,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    digest = _sha256(content)
+    return f"{WORKSPACE_RELEASE_LEDGER_ROOT}/{digest}.json", content, digest
 
 
 def _projection_paths(
@@ -364,16 +412,20 @@ class WorkspaceReleaseProjectionService:
         report: ProgressReporter | None,
     ) -> dict[str, Any]:
         projection_paths = _projection_paths(release, artifact, descriptor)
-        paths = tuple(item.path for item in projection_paths)
+        projection_by_path = {item.path: item for item in projection_paths}
+        paths = tuple(sorted(descriptor.source_hashes))
+        ledger_path, ledger_content, ledger_sha256 = _release_ledger(
+            release, artifact, descriptor
+        )
+        history_paths = (*paths, ledger_path)
         await self._ensure_still_live(release.id)
         immutable = await self.release_storage_factory(
             descriptor.runtime_storage_prefix
         ).read_many(list(paths))
         invalid_targets = [
-            item.path
-            for item in projection_paths
-            if item.path not in immutable
-            or _sha256(immutable[item.path]) != item.target_sha256
+            path
+            for path, target_sha256 in descriptor.source_hashes.items()
+            if path not in immutable or _sha256(immutable[path]) != target_sha256
         ]
         if invalid_targets:
             raise WorkspaceReleaseProjectionError(
@@ -383,8 +435,16 @@ class WorkspaceReleaseProjectionService:
             )
         repo_hashes = await self._repo_hashes(paths)
         repo_states = tuple(
-            classify_workspace_release_path(item, repo_hashes.get(item.path))
-            for item in projection_paths
+            classify_workspace_release_path(
+                projection_by_path.get(path)
+                or WorkspaceReleaseProjectionPath(
+                    path=path,
+                    base_sha256=target_sha256,
+                    target_sha256=target_sha256,
+                ),
+                repo_hashes.get(path),
+            )
+            for path, target_sha256 in descriptor.source_hashes.items()
         )
         writer = self.commit_writer
         if writer is None:
@@ -397,7 +457,7 @@ class WorkspaceReleaseProjectionService:
                 },
             )
         try:
-            history_before = await writer.inspect(paths)
+            history_before = await writer.inspect(history_paths)
         except PlatformCommitError as exc:
             raise WorkspaceReleaseProjectionError(
                 "workspace_release_history_inspection_failed",
@@ -416,9 +476,23 @@ class WorkspaceReleaseProjectionService:
             )
         history_states = tuple(
             classify_workspace_release_path(
-                item, history_before.file_sha256.get(item.path)
+                projection_by_path.get(path)
+                or WorkspaceReleaseProjectionPath(
+                    path=path,
+                    base_sha256=target_sha256,
+                    target_sha256=target_sha256,
+                ),
+                history_before.file_sha256.get(path),
             )
-            for item in projection_paths
+            for path, target_sha256 in descriptor.source_hashes.items()
+        )
+        ledger_state = classify_workspace_release_path(
+            WorkspaceReleaseProjectionPath(
+                path=ledger_path,
+                base_sha256=None,
+                target_sha256=ledger_sha256,
+            ),
+            history_before.file_sha256.get(ledger_path),
         )
         divergent = [
             f"repo:{item.path}" for item in repo_states if item.disposition == "other"
@@ -427,6 +501,8 @@ class WorkspaceReleaseProjectionService:
             for item in history_states
             if item.disposition == "other"
         ]
+        if ledger_state.disposition == "other":
+            divergent.append(f"history:{ledger_path}")
         classification_evidence = {
             "repo_paths": [asdict(item) for item in repo_states],
             "history_before": {
@@ -434,6 +510,7 @@ class WorkspaceReleaseProjectionService:
                 "tree_sha": history_before.tree_sha,
                 "signature_state": history_before.signature_state,
                 "paths": [asdict(item) for item in history_states],
+                "ledger": asdict(ledger_state),
             },
         }
         if divergent:
@@ -446,7 +523,11 @@ class WorkspaceReleaseProjectionService:
         if report:
             await report("Workspace projection classified", 1, 3, 30)
 
-        repo_writes = [item for item in repo_states if item.disposition == "base"]
+        repo_writes = [
+            item
+            for item in repo_states
+            if item.path in projection_by_path and item.disposition == "base"
+        ]
         await self._ensure_still_live(release.id)
         storage = self.file_storage_factory(self.db)
         async with workspace_source_update(
@@ -478,12 +559,12 @@ class WorkspaceReleaseProjectionService:
 
         repo_after = await self._repo_hashes(paths)
         repo_mismatches = [
-            item.path
-            for item in projection_paths
-            if repo_after.get(item.path) != item.target_sha256
+            path
+            for path, target_sha256 in descriptor.source_hashes.items()
+            if repo_after.get(path) != target_sha256
         ]
         generation, cache_rows = await self.coherence_inspector(
-            {item.path: item.target_sha256 for item in projection_paths}
+            descriptor.source_hashes
         )
         cache_evidence = [
             item.to_dict() if hasattr(item, "to_dict") else asdict(item)
@@ -491,18 +572,18 @@ class WorkspaceReleaseProjectionService:
         ]
         cache_by_path = {str(item.get("path")): item for item in cache_evidence}
         cache_mismatches = []
-        for item in projection_paths:
-            observed = cache_by_path.get(item.path)
+        for path, target_sha256 in descriptor.source_hashes.items():
+            observed = cache_by_path.get(path)
             if (
                 observed is None
                 or observed.get("coherent") is not True
                 or observed.get("indexed") is not True
-                or observed.get("durable_sha256") != item.target_sha256
-                or observed.get("cache_sha256") != item.target_sha256
+                or observed.get("durable_sha256") != target_sha256
+                or observed.get("cache_sha256") != target_sha256
                 or observed.get("cache_generation") != generation
                 or observed.get("workspace_generation") != generation
             ):
-                cache_mismatches.append(item.path)
+                cache_mismatches.append(path)
         if repo_mismatches or cache_mismatches:
             raise WorkspaceReleaseProjectionError(
                 "workspace_release_repo_readback_failed",
@@ -519,8 +600,30 @@ class WorkspaceReleaseProjectionService:
         if report:
             await report("Compatibility Workspace projection verified", 2, 3, 65)
 
-        history_writes = [item for item in history_states if item.disposition == "base"]
-        if history_writes:
+        history_writes = [
+            item
+            for item in history_states
+            if item.path in projection_by_path and item.disposition == "base"
+        ]
+        commit_files = [
+            PlatformCommitFile(
+                path=item.path,
+                content_base64=base64.b64encode(immutable[item.path]).decode("ascii"),
+                expected_before_sha256=item.base_sha256,
+                expected_sha256=item.target_sha256,
+            )
+            for item in history_writes
+        ]
+        if ledger_state.disposition == "base":
+            commit_files.append(
+                PlatformCommitFile(
+                    path=ledger_path,
+                    content_base64=base64.b64encode(ledger_content).decode("ascii"),
+                    expected_before_sha256=None,
+                    expected_sha256=ledger_sha256,
+                )
+            )
+        if commit_files:
             await self._ensure_still_live(release.id)
             try:
                 await writer.write(
@@ -531,22 +634,14 @@ class WorkspaceReleaseProjectionService:
                         ),
                         operator=operator,
                         changeset_id=release.id,
-                        files=tuple(
-                            PlatformCommitFile(
-                                path=item.path,
-                                content_base64=base64.b64encode(
-                                    immutable[item.path]
-                                ).decode("ascii"),
-                                expected_before_sha256=item.base_sha256,
-                                expected_sha256=item.target_sha256,
-                            )
-                            for item in history_writes
-                        ),
+                        files=tuple(commit_files),
                         plan_id=artifact.candidate_id,
                         protected_main_source_sha=descriptor.source_commit_sha,
                         expected_head_sha=history_before.commit_sha,
+                        expected_head_tree_sha=history_before.tree_sha,
                         workspace_release_id=descriptor.release_id,
                         workspace_release_row_id=release.id,
+                        workspace_release_ledger_sha256=ledger_sha256,
                     )
                 )
             except PlatformCommitError as exc:
@@ -562,7 +657,7 @@ class WorkspaceReleaseProjectionService:
                 ) from exc
 
         try:
-            history_after = await writer.inspect(paths)
+            history_after = await writer.inspect(history_paths)
         except PlatformCommitError as exc:
             raise WorkspaceReleaseProjectionError(
                 "workspace_release_history_readback_failed",
@@ -571,10 +666,12 @@ class WorkspaceReleaseProjectionService:
                 retryable=True,
             ) from exc
         history_mismatches = [
-            item.path
-            for item in projection_paths
-            if history_after.file_sha256.get(item.path) != item.target_sha256
+            path
+            for path, target_sha256 in descriptor.source_hashes.items()
+            if history_after.file_sha256.get(path) != target_sha256
         ]
+        if history_after.file_sha256.get(ledger_path) != ledger_sha256:
+            history_mismatches.append(ledger_path)
         if history_after.signature_state != "VALID" or history_mismatches:
             raise WorkspaceReleaseProjectionError(
                 "workspace_release_history_readback_failed",
@@ -600,6 +697,9 @@ class WorkspaceReleaseProjectionService:
             "artifact_id": str(artifact.id),
             "release_id": descriptor.release_id,
             "effective_manifest_id": descriptor.effective_manifest_id,
+            "effective_registration_manifest_id": (
+                descriptor.effective_registration_manifest_id
+            ),
             "prepared_evidence_id": prepared_evidence["evidence_id"],
             "activation_evidence_id": activation_evidence["evidence_id"],
             "projection_paths_id": activated_projection["projection_paths_id"],
@@ -614,6 +714,11 @@ class WorkspaceReleaseProjectionService:
                 "tree_sha": history_after.tree_sha,
                 "signature_state": history_after.signature_state,
                 "file_sha256": history_after.file_sha256,
+            },
+            "release_ledger": {
+                "path": ledger_path,
+                "sha256": ledger_sha256,
+                "schema_version": WORKSPACE_RELEASE_LEDGER_SCHEMA,
             },
             "locked_at": datetime.now(timezone.utc).isoformat(),
         }

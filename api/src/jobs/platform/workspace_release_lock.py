@@ -102,6 +102,10 @@ async def run_workspace_release_lock(
             "history_commit_sha": (
                 (evidence.get("history_after") or {}).get("commit_sha")
             ),
+            "release_ledger_path": ((evidence.get("release_ledger") or {}).get("path")),
+            "release_ledger_sha256": (
+                (evidence.get("release_ledger") or {}).get("sha256")
+            ),
         }
     except WorkspaceReleaseProjectionError as exc:
         raise PlatformJobFailure(
