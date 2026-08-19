@@ -57,7 +57,7 @@ async def test_activation_uses_dedicated_fail_closed_feature_gate(monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_activation_makes_live_durable_before_projection_is_queued(
+async def test_activation_commits_live_with_durable_projection_before_publish(
     monkeypatch,
 ) -> None:
     events: list[str] = []
@@ -68,13 +68,13 @@ async def test_activation_makes_live_durable_before_projection_is_queued(
         def __init__(self, _db, _organization_id):
             pass
 
-        async def activate(self, _release_id, _request):
-            events.append("live_committed")
+        async def activate(self, _release_id, _request, **_operator):
+            events.append("live_and_projection_committed")
             return SimpleNamespace(activation_state="live")
 
         async def enqueue_projection(self, _release_id, **_operator):
-            assert events == ["live_committed"]
-            events.append("projection_queued")
+            assert events == ["live_and_projection_committed"]
+            events.append("projection_job_reused")
             return result, job, False
 
     monkeypatch.setattr(
@@ -97,40 +97,34 @@ async def test_activation_makes_live_durable_before_projection_is_queued(
     )
 
     assert response is result
-    assert events == ["live_committed", "projection_queued"]
+    assert events == ["live_and_projection_committed", "projection_job_reused"]
     publish.assert_awaited_once_with(job)
 
 
 @pytest.mark.asyncio
-async def test_projection_enqueue_failure_preserves_live_with_attention_evidence(
+async def test_projection_publish_lookup_failure_preserves_durable_queued_live(
     monkeypatch,
 ) -> None:
     events: list[str] = []
     release_id = uuid4()
     db = SimpleNamespace(rollback=AsyncMock())
-    attention = SimpleNamespace(
+    live = SimpleNamespace(
         activation_state="live",
-        lock_state="attention_required",
-        error_code="workspace_release_lock_queue_failed",
+        lock_state="queued",
+        error_code=None,
     )
 
     class Service:
         def __init__(self, _db, _organization_id):
             pass
 
-        async def activate(self, _release_id, _request):
-            events.append("live_committed")
-            return SimpleNamespace(activation_state="live")
+        async def activate(self, _release_id, _request, **_operator):
+            events.append("live_and_projection_committed")
+            return live
 
         async def enqueue_projection(self, _release_id, **_operator):
-            assert events == ["live_committed"]
+            assert events == ["live_and_projection_committed"]
             raise RuntimeError("queue unavailable")
-
-        async def mark_projection_queue_failed(self, target_id, message):
-            assert target_id == release_id
-            assert message == "queue unavailable"
-            events.append("attention_recorded")
-            return attention
 
     monkeypatch.setattr(
         workspace_promotions,
@@ -149,11 +143,11 @@ async def test_projection_enqueue_failure_preserves_live_with_attention_evidence
         _user(),
     )
 
-    assert response is attention
+    assert response is live
     assert response.activation_state == "live"
-    assert response.lock_state == "attention_required"
-    assert response.error_code == "workspace_release_lock_queue_failed"
-    assert events == ["live_committed", "attention_recorded"]
+    assert response.lock_state == "queued"
+    assert response.error_code is None
+    assert events == ["live_and_projection_committed"]
     db.rollback.assert_awaited_once()
 
 
@@ -165,7 +159,7 @@ async def test_unexpected_activation_failure_is_not_masked_as_projection_failure
         def __init__(self, _db, _organization_id):
             pass
 
-        async def activate(self, _release_id, _request):
+        async def activate(self, _release_id, _request, **_operator):
             raise RuntimeError("activation transaction failed")
 
         async def enqueue_projection(self, *_args, **_kwargs):

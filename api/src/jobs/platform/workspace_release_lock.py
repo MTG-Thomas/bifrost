@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -126,7 +126,11 @@ async def enqueue_workspace_release_lock(
     requested_by_name: str,
 ) -> tuple[PlatformJob, bool]:
     """Queue one globally serialized idempotent projection after activation."""
-    await acquire_workspace_release_lock(db, release.organization_id)
+    # Callers may already have staged the global Live pointer. Prevent an
+    # implicit autoflush from exposing a transient live/not_queued row before
+    # this same transaction has created and linked its durable projection job.
+    with db.no_autoflush:
+        await acquire_workspace_release_lock(db, release.organization_id)
     if release.activation_state != "live":
         raise ValueError("only the current Live Workspace release can be locked")
     if release.lock_state in {"queued", "in_progress", "locked"}:
@@ -147,27 +151,32 @@ async def enqueue_workspace_release_lock(
             f"Workspace release lock state {release.lock_state!r} cannot be queued"
         )
     descriptor = WorkspaceReleaseDescriptor.from_rows(release, artifact)
-    job, reused = await enqueue_platform_job(
-        db,
-        WORKSPACE_RELEASE_LOCK_DEFINITION,
-        WorkspaceReleaseLockPayload(
-            release_row_id=release.id,
-            release_id=descriptor.release_id,
-        ),
-        dedupe_key=f"{release.id}:{descriptor.release_id}",
-        resource_lock_key="workspace-release",
-        priority=200,
-        organization_id=release.organization_id,
-        requested_by_user_id=requested_by_user_id,
-        requested_by_email=requested_by_email,
-        requested_by_name=requested_by_name,
-        resource_type="workspace_release",
-        resource_id=str(release.id),
-        title="Lock immutable Workspace release",
-        action_url=None,
-    )
+    job_id = uuid4()
     release.lock_state = "queued"
-    release.lock_in_job_id = job.id
+    release.lock_in_job_id = job_id
+    with db.no_autoflush:
+        job, reused = await enqueue_platform_job(
+            db,
+            WORKSPACE_RELEASE_LOCK_DEFINITION,
+            WorkspaceReleaseLockPayload(
+                release_row_id=release.id,
+                release_id=descriptor.release_id,
+            ),
+            dedupe_key=f"{release.id}:{descriptor.release_id}",
+            resource_lock_key="workspace-release",
+            priority=200,
+            organization_id=release.organization_id,
+            requested_by_user_id=requested_by_user_id,
+            requested_by_email=requested_by_email,
+            requested_by_name=requested_by_name,
+            resource_type="workspace_release",
+            resource_id=str(release.id),
+            title="Lock immutable Workspace release",
+            action_url=None,
+            job_id=job_id,
+        )
+    if job.id != job_id:
+        raise ValueError("Workspace release lock job identity changed while queuing")
     await db.flush()
     return job, reused
 

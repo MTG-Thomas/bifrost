@@ -304,7 +304,13 @@ async def activate_workspace_release(
         )
     service = WorkspaceReleaseActivationService(db, ctx.org_id)
     try:
-        result = await service.activate(release_id, request)
+        result = await service.activate(
+            release_id,
+            request,
+            authorized_by_user_id=user.user_id,
+            authorized_by_email=user.email,
+            authorized_by_name=user.name or user.email or "Unknown",
+        )
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -316,9 +322,9 @@ async def activate_workspace_release(
             detail=str(exc),
         ) from exc
 
-    # Live is durable before compatibility/history projection begins. Only
-    # failures in this second phase may be reported as attention-required Live;
-    # unexpected activation failures must remain HTTP 500 errors.
+    # The Live pointer and durable projection job are one committed transaction.
+    # This second phase only attaches optional UI notification/pubsub evidence;
+    # its failure cannot erase or downgrade the already queued durable job.
     if result.activation_state != "live":
         raise RuntimeError("Workspace release activation did not produce Live")
     try:
@@ -341,15 +347,14 @@ async def activate_workspace_release(
                 )
         await publish_platform_job_update(job)
         return result
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            "Workspace release is Live but history projection could not be queued",
+            "Workspace release is Live and history projection is durable, but "
+            "its notification could not be published",
             extra={"workspace_release_row_id": str(release_id)},
         )
         await db.rollback()
-        return await WorkspaceReleaseActivationService(
-            db, ctx.org_id
-        ).mark_projection_queue_failed(release_id, str(exc))
+        return result
 
 
 @router.get("/live", response_model=WorkspaceLiveStatusResponse)

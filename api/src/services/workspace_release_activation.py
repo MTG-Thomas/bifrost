@@ -15,6 +15,10 @@ from bifrost.workspace_release import (
     repo_v1_release_id,
     workspace_manifest_id,
 )
+from bifrost.workspace_release_authorization import (
+    AUTHORIZATION_EVIDENCE_SCHEMA,
+    validate_risk_acknowledgement,
+)
 from src.models.contracts.workspace_promotions import (
     WorkspaceLiveStatusResponse,
     WorkspaceReleaseActivateRequest,
@@ -39,7 +43,10 @@ from src.services.workspace_promotions import (
     overlay_governed_base,
     read_generation_stable_executable_snapshot,
 )
-from src.services.workspace_release_materialization import PREPARED_EVIDENCE_SCHEMA
+from src.services.workspace_release_materialization import (
+    PREPARED_EVIDENCE_SCHEMA,
+    prepared_activation_challenge,
+)
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
@@ -52,10 +59,9 @@ from src.services.workflow_registration import (
     find_workspace_workflow,
 )
 
-ACTIVATION_EVIDENCE_SCHEMA = "bifrost.workspace-release-activation/v1"
+ACTIVATION_EVIDENCE_SCHEMA = "bifrost.workspace-release-activation/v2"
 REGISTRATION_STATE_SCHEMA = "bifrost.workspace-registration-state/v1"
 REGISTRATION_INTENT_SCHEMA = "bifrost.workspace-registration-intent/v1"
-ALLOWED_LIVE_EFFECTS = {"bifrost.read"}
 PROJECTION_PATHS_SCHEMA = "bifrost.workspace-release-projection-paths/v1"
 
 
@@ -83,12 +89,18 @@ def validate_prepared_release_evidence(
         "effective_files",
         "governed_paths",
         "governed_manifest_id",
+        "effective_registration_manifest_id",
+        "risk_class",
+        "policy_version",
+        "computed_effects",
+        "computed_effects_id",
+        "protected_source",
         "runtime_storage_prefix",
         "file_count",
         "total_bytes",
         "compile",
-        "import_smoke",
-        "validation_smokes",
+        "import_validation",
+        "effect_execution",
         "prepared_at",
         "projection_paths",
         "evidence_id",
@@ -115,6 +127,13 @@ def validate_prepared_release_evidence(
         "effective_files": descriptor.source_hashes,
         "governed_paths": list(descriptor.governed_paths),
         "governed_manifest_id": descriptor.governed_manifest_id,
+        "effective_registration_manifest_id": (
+            descriptor.effective_registration_manifest_id
+        ),
+        "risk_class": artifact.risk_class,
+        "policy_version": artifact.policy_version,
+        "computed_effects": manifest.get("computed_effects"),
+        "protected_source": manifest.get("protected_source"),
         "runtime_storage_prefix": descriptor.runtime_storage_prefix,
         "file_count": len(descriptor.source_hashes),
     }
@@ -136,22 +155,53 @@ def validate_prepared_release_evidence(
     if not isinstance(evidence.get("total_bytes"), int) or evidence["total_bytes"] <= 0:
         raise WorkspaceReleaseActivationError("prepared byte count is invalid")
     compile_evidence = evidence.get("compile")
-    smoke = evidence.get("import_smoke")
-    entry = manifest.get("entry") or {}
     if compile_evidence != {
         "succeeded": True,
         "file_count": len(descriptor.source_hashes),
     }:
         raise WorkspaceReleaseActivationError("prepared compile evidence is invalid")
-    if (
-        not isinstance(smoke, dict)
-        or smoke.get("imported") is not True
-        or smoke.get("function_callable") is not True
-        or smoke.get("source") != "immutable_candidate_tree"
-        or smoke.get("entry_path") != entry.get("path")
-        or smoke.get("entry_function") != entry.get("function")
+    try:
+        challenge = prepared_activation_challenge(evidence)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WorkspaceReleaseActivationError(
+            "prepared activation challenge is invalid"
+        ) from exc
+    if challenge["computed_effects_id"] != evidence.get("computed_effects_id"):
+        raise WorkspaceReleaseActivationError(
+            "prepared computed effects digest is invalid"
+        )
+    import_validation = evidence.get("import_validation")
+    if artifact.risk_class == "R0":
+        selected = (
+            import_validation.get("selected")
+            if isinstance(import_validation, dict)
+            else None
+        )
+        entry = manifest.get("entry") or {}
+        if (
+            not isinstance(selected, dict)
+            or import_validation.get("state") != "succeeded"
+            or selected.get("imported") is not True
+            or selected.get("function_callable") is not True
+            or selected.get("source") != "immutable_candidate_tree"
+            or selected.get("entry_path") != entry.get("path")
+            or selected.get("entry_function") != entry.get("function")
+            or evidence.get("effect_execution") != "reviewed_canary_required"
+        ):
+            raise WorkspaceReleaseActivationError(
+                "prepared R0 import validation is invalid"
+            )
+    elif (
+        import_validation
+        != {
+            "state": "not_performed",
+            "reason": "non_r0_source_is_not_executed_during_prepare",
+        }
+        or evidence.get("effect_execution") != "not_performed"
     ):
-        raise WorkspaceReleaseActivationError("prepared import smoke is invalid")
+        raise WorkspaceReleaseActivationError(
+            "prepared R1/R2 non-execution evidence is invalid"
+        )
     try:
         prepared_at = datetime.fromisoformat(str(evidence["prepared_at"]))
     except ValueError as exc:
@@ -286,10 +336,25 @@ def release_status(
     manifest = dict(artifact.manifest or {})
     activation = release.activation_evidence or {}
     prepared = release.prepared_evidence or {}
-    canary = activation.get("canary") if isinstance(activation, dict) else None
+    authorization = (
+        activation.get("authorization") if isinstance(activation, dict) else None
+    )
+    authorization_kind = None
+    authorization_id = None
+    risk_acknowledgement_id = None
     canary_execution_id = None
-    if isinstance(canary, dict) and canary.get("execution_id"):
-        canary_execution_id = UUID(str(canary["execution_id"]))
+    if isinstance(authorization, dict):
+        authorization_kind = authorization.get("kind")
+        authorization_id = authorization.get("authorization_id")
+        canary = authorization.get("canary_attestation")
+        acknowledgement = authorization.get("acknowledgement")
+        if isinstance(canary, dict) and canary.get("execution_id"):
+            canary_execution_id = UUID(str(canary["execution_id"]))
+        if isinstance(acknowledgement, dict):
+            risk_acknowledgement_id = acknowledgement.get("acknowledgement_id")
+    activation_authorization = None
+    if isinstance(prepared, dict) and prepared.get("evidence_id"):
+        activation_authorization = prepared_activation_challenge(prepared)
     if release.activation_state == "live":
         runtime_state = "coherent"
     elif release.prepared_evidence is not None:
@@ -321,7 +386,11 @@ def release_status(
                 if isinstance(prepared, dict) and prepared.get("evidence_id")
                 else None
             ),
+            activation_authorization=activation_authorization,
+            authorization_kind=authorization_kind,
+            authorization_id=authorization_id,
             canary_execution_id=canary_execution_id,
+            risk_acknowledgement_id=risk_acknowledgement_id,
         ),
         history=_history_status(release),
         activated_at=activated_at,
@@ -337,9 +406,19 @@ class WorkspaceReleaseActivationService:
         self,
         release_row_id: UUID,
         request: WorkspaceReleaseActivateRequest,
+        *,
+        authorized_by_user_id: UUID,
+        authorized_by_email: str,
+        authorized_by_name: str,
     ) -> WorkspaceReleaseStatusResponse:
         try:
-            return await self._activate_locked(release_row_id, request)
+            return await self._activate_locked(
+                release_row_id,
+                request,
+                authorized_by_user_id=authorized_by_user_id,
+                authorized_by_email=authorized_by_email,
+                authorized_by_name=authorized_by_name,
+            )
         except Exception:
             # The route translates safety/CAS failures into HTTP responses. Roll back
             # here so that translation cannot accidentally commit partial registry or
@@ -351,6 +430,10 @@ class WorkspaceReleaseActivationService:
         self,
         release_row_id: UUID,
         request: WorkspaceReleaseActivateRequest,
+        *,
+        authorized_by_user_id: UUID,
+        authorized_by_email: str,
+        authorized_by_name: str,
     ) -> WorkspaceReleaseStatusResponse:
         await acquire_workspace_release_lock(self.db, self.organization_id)
         target = await self._release_rows(release_row_id, for_update=True)
@@ -384,16 +467,34 @@ class WorkspaceReleaseActivationService:
             raise WorkspaceReleaseActivationError("prepared evidence CAS mismatch")
 
         await self._validate_base_cas(request, artifact, current)
-        canary = await self._canary_attestation(request.canary_execution_id, artifact)
+        now = datetime.now(timezone.utc)
+        authorization = await self._authorization_evidence(
+            request,
+            artifact,
+            prepared,
+            authorized_by_user_id=authorized_by_user_id,
+            authorized_at=now,
+        )
         applied = await self._apply_registration(artifact)
 
-        now = datetime.now(timezone.utc)
         previous_release_id = current[0].id if current else None
         if current is not None:
             current[0].activation_state = "superseded"
             await self.db.flush()
         release.previous_release_id = previous_release_id
         release.activation_state = "live"
+        from src.jobs.platform.workspace_release_lock import (
+            enqueue_workspace_release_lock,
+        )
+
+        projection_job, _reused = await enqueue_workspace_release_lock(
+            self.db,
+            release=release,
+            artifact=artifact,
+            requested_by_user_id=authorized_by_user_id,
+            requested_by_email=authorized_by_email,
+            requested_by_name=authorized_by_name,
+        )
         activation_evidence = {
             "schema_version": ACTIVATION_EVIDENCE_SCHEMA,
             "artifact_id": str(artifact.id),
@@ -410,7 +511,7 @@ class WorkspaceReleaseActivationService:
                 ),
                 "paths": prepared["projection_paths"],
             },
-            "canary": canary,
+            "authorization": authorization,
             "registration_actions": applied,
             "runtime": {
                 "state": "coherent",
@@ -419,7 +520,11 @@ class WorkspaceReleaseActivationService:
                 "governed_paths": list(descriptor.governed_paths),
                 "governed_manifest_id": descriptor.governed_manifest_id,
             },
-            "history": {"state": "pending", "lock_state": release.lock_state},
+            "history": {
+                "state": "pending",
+                "lock_state": release.lock_state,
+                "job_id": str(projection_job.id),
+            },
             "activated_at": now.isoformat(),
         }
         activation_evidence["evidence_id"] = canonical_digest(activation_evidence)
@@ -439,7 +544,15 @@ class WorkspaceReleaseActivationService:
                 "previous_release_row_id": (
                     str(previous_release_id) if previous_release_id else None
                 ),
-                "canary_execution_id": str(request.canary_execution_id),
+                "authorization_kind": authorization["kind"],
+                "authorization_id": authorization["authorization_id"],
+                "challenge_id": authorization["challenge_id"],
+                "risk_class": artifact.risk_class,
+                "computed_effects_id": prepared["computed_effects_id"],
+                "protected_source_commit": prepared["protected_source"][
+                    "commit_sha"
+                ],
+                "projection_job_id": str(projection_job.id),
                 "runtime_state": "coherent",
                 "history_state": "pending",
             },
@@ -600,12 +713,33 @@ class WorkspaceReleaseActivationService:
         release: WorkspacePromotionRelease,
     ) -> None:
         evidence = release.activation_evidence or {}
-        canary = evidence.get("canary") if isinstance(evidence, dict) else None
-        if (
-            evidence.get("prepared_evidence_id") != request.prepared_evidence_id
-            or not isinstance(canary, dict)
-            or canary.get("execution_id") != str(request.canary_execution_id)
-        ):
+        authorization = (
+            evidence.get("authorization") if isinstance(evidence, dict) else None
+        )
+        request_authorization = request.authorization
+        matches = False
+        if isinstance(authorization, dict):
+            if request_authorization.kind == "reviewed_canary":
+                canary = authorization.get("canary_attestation")
+                matches = (
+                    authorization.get("kind") == "reviewed_canary"
+                    and authorization.get("challenge_id")
+                    == request_authorization.challenge_id
+                    and isinstance(canary, dict)
+                    and canary.get("execution_id")
+                    == str(request_authorization.canary_execution_id)
+                )
+            else:
+                acknowledgement = authorization.get("acknowledgement")
+                matches = (
+                    authorization.get("kind") == "risk_acknowledgement"
+                    and isinstance(acknowledgement, dict)
+                    and acknowledgement.get("acknowledgement_id")
+                    == request_authorization.acknowledgement.acknowledgement_id
+                    and authorization.get("challenge_id")
+                    == request_authorization.acknowledgement.challenge_id
+                )
+        if evidence.get("prepared_evidence_id") != request.prepared_evidence_id or not matches:
             raise WorkspaceReleaseActivationError(
                 "Live release activation evidence differs from this request"
             )
@@ -616,6 +750,7 @@ class WorkspaceReleaseActivationService:
         now = datetime.now(timezone.utc)
         manifest = artifact.manifest or {}
         protected = manifest.get("protected_source") or {}
+        effects = manifest.get("computed_effects")
         if (
             artifact.target_kind != "workspace"
             or artifact.schema_version != "bifrost.workspace-promotion-bundle/v2"
@@ -623,11 +758,14 @@ class WorkspaceReleaseActivationService:
             or artifact.expires_at <= now
             or protected.get("commit_sha") != artifact.source_revision
             or protected.get("tree_sha") != artifact.source_tree_sha
-            or set(manifest.get("declared_effects") or []) != ALLOWED_LIVE_EFFECTS
-            or set(manifest.get("computed_effects") or []) != ALLOWED_LIVE_EFFECTS
+            or artifact.risk_class not in {"R0", "R1", "R2"}
+            or manifest.get("risk_class") != artifact.risk_class
+            or not isinstance(effects, list)
+            or effects != sorted(set(effects))
+            or not effects
         ):
             raise WorkspaceReleaseActivationError(
-                "artifact is not an unexpired protected-source bifrost.read release"
+                "artifact is not an unexpired canonical protected-source release"
             )
         child = await self.db.scalar(
             select(WorkspacePromotionArtifact.id).where(
@@ -732,6 +870,65 @@ class WorkspaceReleaseActivationService:
                 "canary execution is for different immutable content"
             )
         return attestation
+
+    async def _authorization_evidence(
+        self,
+        request: WorkspaceReleaseActivateRequest,
+        artifact: WorkspacePromotionArtifact,
+        prepared: dict[str, Any],
+        *,
+        authorized_by_user_id: UUID,
+        authorized_at: datetime,
+    ) -> dict[str, Any]:
+        try:
+            challenge = prepared_activation_challenge(prepared)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorkspaceReleaseActivationError(
+                "prepared activation challenge is invalid"
+            ) from exc
+        supplied = request.authorization
+        if supplied.kind == "reviewed_canary":
+            if challenge["required_authorization"] != "reviewed_canary":
+                raise WorkspaceReleaseActivationError(
+                    "R1/R2 releases require an explicit risk acknowledgement"
+                )
+            if supplied.challenge_id != challenge["challenge_id"]:
+                raise WorkspaceReleaseActivationError(
+                    "reviewed canary authorization challenge CAS mismatch"
+                )
+            attestation = await self._canary_attestation(
+                supplied.canary_execution_id, artifact
+            )
+            attestation_id = canonical_digest(attestation)
+            payload = {
+                "schema_version": AUTHORIZATION_EVIDENCE_SCHEMA,
+                "kind": "reviewed_canary",
+                "challenge_id": challenge["challenge_id"],
+                "canary_attestation": attestation,
+                "canary_attestation_id": attestation_id,
+                "authorized_by_user_id": str(authorized_by_user_id),
+                "authorized_at": authorized_at.isoformat(),
+            }
+        else:
+            if challenge["required_authorization"] != "risk_acknowledgement":
+                raise WorkspaceReleaseActivationError(
+                    "R0 releases require a successful exact reviewed canary"
+                )
+            try:
+                acknowledgement = validate_risk_acknowledgement(
+                    supplied.acknowledgement.model_dump(mode="json"), challenge
+                )
+            except ValueError as exc:
+                raise WorkspaceReleaseActivationError(str(exc)) from exc
+            payload = {
+                "schema_version": AUTHORIZATION_EVIDENCE_SCHEMA,
+                "kind": "risk_acknowledgement",
+                "challenge_id": challenge["challenge_id"],
+                "acknowledgement": acknowledgement,
+                "authorized_by_user_id": str(authorized_by_user_id),
+                "authorized_at": authorized_at.isoformat(),
+            }
+        return {**payload, "authorization_id": canonical_digest(payload)}
 
     async def _apply_registration(
         self, artifact: WorkspacePromotionArtifact

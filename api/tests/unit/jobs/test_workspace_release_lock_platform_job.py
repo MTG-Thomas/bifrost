@@ -1,5 +1,6 @@
 """Registration, policy, and enqueue contract for Workspace release lock-in."""
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock
 from uuid import uuid4
@@ -36,8 +37,11 @@ async def test_enqueue_uses_global_resource_fence_and_binds_release_digest(
         lock_in_job_id=None,
     )
     artifact = SimpleNamespace()
-    job = SimpleNamespace(id=uuid4())
-    enqueue = AsyncMock(return_value=(job, False))
+
+    async def enqueue_side_effect(*_args, **kwargs):
+        return SimpleNamespace(id=kwargs["job_id"]), False
+
+    enqueue = AsyncMock(side_effect=enqueue_side_effect)
     lock = AsyncMock()
     monkeypatch.setattr(
         "src.jobs.platform.workspace_release_lock.acquire_workspace_release_lock",
@@ -52,6 +56,8 @@ async def test_enqueue_uses_global_resource_fence_and_binds_release_digest(
     )
 
     class Database:
+        no_autoflush = nullcontext()
+
         async def flush(self):
             return None
 
@@ -64,14 +70,14 @@ async def test_enqueue_uses_global_resource_fence_and_binds_release_digest(
         requested_by_name="Operator",
     )
 
-    assert observed is job
+    assert observed.id == release.lock_in_job_id
     assert reused is False
     lock.assert_awaited_once_with(ANY, release.organization_id)
     kwargs = enqueue.await_args.kwargs
     assert kwargs["resource_lock_key"] == "workspace-release"
     assert kwargs["dedupe_key"] == f"{release.id}:sha256:{'a' * 64}"
     assert release.lock_state == "queued"
-    assert release.lock_in_job_id == job.id
+    assert release.lock_in_job_id == kwargs["job_id"]
 
 
 @pytest.mark.asyncio
@@ -93,6 +99,8 @@ async def test_enqueue_reuses_existing_durable_lock_job(
     )
 
     class Database:
+        no_autoflush = nullcontext()
+
         async def execute(self, _statement, _parameters=None):
             return None
 
@@ -131,7 +139,7 @@ async def test_enqueue_fails_closed_when_lock_state_lost_its_job(monkeypatch) ->
 
     with pytest.raises(ValueError, match="missing its durable platform job"):
         await enqueue_workspace_release_lock(
-            SimpleNamespace(),
+            SimpleNamespace(no_autoflush=nullcontext()),
             release=release,
             artifact=SimpleNamespace(),
             requested_by_user_id=uuid4(),
