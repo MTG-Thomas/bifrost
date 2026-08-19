@@ -21,10 +21,29 @@ from fastmcp.tools import ToolResult
 from src.services.mcp_server.tool_result import error_result, success_result
 from src.services.mcp_server.tools._http_bridge import call_rest, rest_client
 from src.services.mcp_server.tools.db import get_tool_db
+from src.services.workspace_release_files import active_workspace_release_file_view
 
 # MCPContext is imported where needed to avoid circular imports
 
 logger = logging.getLogger(__name__)
+
+
+async def _read_authoritative_workspace_file(
+    db: Any,
+    context: Any,
+    path: str,
+) -> bytes:
+    """Read immutable Live source when it governs a Python workflow path."""
+    release_view = await active_workspace_release_file_view(
+        db, getattr(context, "org_id", None)
+    )
+    if release_view is not None and release_view.governs(path):
+        return await release_view.read(path)
+
+    from src.services.file_storage import FileStorageService
+
+    content, _ = await FileStorageService(db).read_file(path)
+    return content
 
 
 def _ref_error_payload(exc: Exception) -> dict[str, Any]:
@@ -169,14 +188,13 @@ async def validate_workflow(context: Any, file_path: str) -> ToolResult:
     """Validate a workflow Python file for syntax and decorator issues."""
     import ast
 
-    from src.services.file_storage import FileStorageService
-
     logger.info(f"MCP validate_workflow called with file_path={file_path}")
 
     try:
         async with get_tool_db(context) as db:
-            service = FileStorageService(db)
-            content_bytes, _ = await service.read_file(file_path)
+            content_bytes = await _read_authoritative_workspace_file(
+                db, context, file_path
+            )
             content = content_bytes.decode("utf-8")
 
             errors: list[str | dict[str, Any]] = []
@@ -322,7 +340,6 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
     from sqlalchemy import select
 
     from src.models.orm.workflows import Workflow as WorkflowORM
-    from src.services.file_storage import FileStorageService
     from src.services.file_storage.indexers.workflow import WorkflowIndexer
     from src.services.workspace_release_registration_authority import (
         guard_workspace_registration_mutation,
@@ -337,11 +354,9 @@ async def register_workflow(context: Any, path: str, function_name: str, organiz
 
     try:
         async with get_tool_db(context) as db:
-            service = FileStorageService(db)
-
             # Read file
             try:
-                content, _ = await service.read_file(path)
+                content = await _read_authoritative_workspace_file(db, context, path)
             except FileNotFoundError:
                 return error_result(f"File not found: {path}")
 

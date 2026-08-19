@@ -7,6 +7,23 @@ import pytest
 
 from src.services.mcp_server.server import MCPContext
 from src.services.mcp_server.tools import apps
+from src.services import workspace_release_files
+from src.services.workspace_release_files import WorkspaceReleasePathGoverned
+
+
+@pytest.fixture(autouse=True)
+def _legacy_workspace_authority(monkeypatch: pytest.MonkeyPatch):
+    """Keep legacy cases focused when no immutable Live release is active."""
+    monkeypatch.setattr(
+        workspace_release_files,
+        "reject_release_governed_paths",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        workspace_release_files,
+        "reject_release_governed_prefixes",
+        AsyncMock(return_value=None),
+    )
 
 
 def _context(*, admin: bool = False, org_id=None) -> MCPContext:
@@ -550,6 +567,70 @@ async def test_push_files_rejects_solution_managed_writes_and_delete_sweeps():
     assert blocked_write.structured_content["blocked_paths"] == ["apps/managed/pages/index.tsx"]
     assert "Solution-managed" in blocked_delete.structured_content["error"]
     assert blocked_delete.structured_content["blocked_delete_prefix"] == "apps"
+
+
+@pytest.mark.asyncio
+async def test_push_files_rejects_governed_python_before_any_write(monkeypatch):
+    app = _app(repo_path="apps/portal")
+    db = _Db([_ScalarRowsResult([app])])
+    guard = AsyncMock(
+        side_effect=WorkspaceReleasePathGoverned(
+            "apps/portal/workflow.py", "release-1"
+        )
+    )
+    file_storage = MagicMock()
+    file_storage.write_file = AsyncMock()
+    monkeypatch.setattr(workspace_release_files, "reject_release_governed_paths", guard)
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch("src.services.file_storage.FileStorageService", return_value=file_storage),
+    ):
+        result = await apps.push_files(
+            _context(),
+            {
+                "apps/portal/pages/index.tsx": "export default function Index() {}",
+                "apps/portal/workflow.py": "reviewed = True",
+            },
+        )
+
+    assert "governed by active workspace-release-v1" in result.structured_content["error"]
+    assert guard.await_args.args[2] == ["apps/portal/workflow.py"]
+    file_storage.write_file.assert_not_awaited()
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_push_files_rejects_governed_delete_prefix_before_any_write(monkeypatch):
+    app = _app(repo_path="apps/portal")
+    db = _Db([_ScalarRowsResult([app])])
+    guard = AsyncMock(
+        side_effect=WorkspaceReleasePathGoverned(
+            "apps/portal/workflow.py", "release-1"
+        )
+    )
+    file_storage = MagicMock()
+    file_storage.write_file = AsyncMock()
+    file_storage.delete_file = AsyncMock()
+    monkeypatch.setattr(workspace_release_files, "reject_release_governed_prefixes", guard)
+
+    with (
+        patch.object(apps, "get_tool_db", _tool_db(db)),
+        patch("src.services.solutions.guard.is_solution_managed", return_value=False),
+        patch("src.services.file_storage.FileStorageService", return_value=file_storage),
+    ):
+        result = await apps.push_files(
+            _context(),
+            {"apps/portal/pages/index.tsx": "export default function Index() {}"},
+            delete_missing_prefix="apps/portal",
+        )
+
+    assert "governed by active workspace-release-v1" in result.structured_content["error"]
+    assert guard.await_args.args[2] == ["apps/portal"]
+    file_storage.write_file.assert_not_awaited()
+    file_storage.delete_file.assert_not_awaited()
+    assert db.committed is False
 
 
 @pytest.mark.asyncio

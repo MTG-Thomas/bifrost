@@ -33,6 +33,11 @@ from src.services.mcp_server.tools.db import get_tool_db
 from src.models.orm.file_index import FileIndex
 from src.services.file_storage import FileStorageService
 from src.services.repo_storage import RepoStorage
+from src.services.workspace_release_files import (
+    WorkspaceReleaseFileView,
+    active_workspace_release_file_view,
+    reject_release_governed_paths,
+)
 from src.services.mcp_server.tool_result import (
     error_result,
     format_diff,
@@ -259,9 +264,22 @@ async def _read_from_s3(path: str) -> str | None:
         return None  # Binary file
 
 
+async def _active_workspace_release_view(
+    context: Any,
+    organization_id: str | None = None,
+) -> WorkspaceReleaseFileView | None:
+    """Resolve the platform-global immutable Live view for MCP source reads."""
+    scoped_org_id, denied = _resolve_org_scope(context, organization_id)
+    if denied:
+        raise ValueError("Not authorized to access the requested organization")
+    async with get_tool_db(context) as db:
+        return await active_workspace_release_file_view(db, scoped_org_id)
+
+
 async def _get_content_by_path(
     path: str,
     context: Any = None,
+    organization_id: str | None = None,
 ) -> tuple[str | None, dict[str, Any] | None, str | None]:
     """
     Get content for a file by path.
@@ -273,10 +291,22 @@ async def _get_content_by_path(
         - If successful: (content_str, {"path": ...}, None)
         - If error: (None, None, "error message")
     """
+    release_view = await _active_workspace_release_view(context, organization_id)
+    if release_view is not None and release_view.governs(path):
+        try:
+            content = (await release_view.read(path)).decode("utf-8")
+        except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
+            return None, None, f"Immutable Live Workspace read failed for {path}: {exc}"
+        return content, {
+            "path": path,
+            "source_authority": "workspace-release-v1",
+            "workspace_release_id": release_view.release.release_id,
+        }, None
+
     content = await _read_from_s3(path)
     if content is None:
         return None, None, f"File not found: {path}"
-    return content, {"path": path}, None
+    return content, {"path": path, "source_authority": "repo-v1"}, None
 
 
 @dataclass
@@ -311,6 +341,11 @@ async def _replace_workspace_file(
         WorkspaceWriteResult with created status and any pending deactivations
     """
     async with get_tool_db(context) as db:
+        await reject_release_governed_paths(
+            db,
+            _coerce_uuid(getattr(context, "org_id", None)),
+            [path],
+        )
         service = FileStorageService(db)
 
         # Check if file exists to determine created status
@@ -384,11 +419,26 @@ async def list_content(
 
     try:
         repo = RepoStorage()
-        paths = await repo.list(path_prefix or "")
+        repo_paths = await repo.list(path_prefix or "")
+        release_view = await _active_workspace_release_view(context, organization_id)
+        release_paths = await release_view.list(path_prefix or "") if release_view else []
+        paths = sorted(set(repo_paths) | set(release_paths))
         paths, denied = await _filter_paths_for_org_scope(context, paths, organization_id)
         if denied:
             return denied
-        files = [{"path": p} for p in sorted(paths)]
+        governed = set(release_paths)
+        files = [
+            {
+                "path": item,
+                "source_authority": "workspace-release-v1" if item in governed else "repo-v1",
+                "workspace_release_id": (
+                    release_view.release.release_id
+                    if release_view is not None and item in governed
+                    else None
+                ),
+            }
+            for item in sorted(paths)
+        ]
 
         if not files:
             display = "No files found"
@@ -436,6 +486,7 @@ async def search_content(
     matches: list[dict[str, Any]] = []
 
     try:
+        release_view = await _active_workspace_release_view(context, organization_id)
         async with get_tool_db(context) as db:
             denied_paths: set[str] = set()
             scoped_org_id, _ = _resolve_org_scope(context, organization_id)
@@ -458,16 +509,37 @@ async def search_content(
             result = await db.execute(query)
             all_files = result.all()
 
-            for row in all_files:
-                if row.path in denied_paths:
+            content_by_path = {
+                row.path: row.content
+                for row in all_files
+                if row.path not in denied_paths
+            }
+            if release_view is not None:
+                release_paths = (
+                    [path]
+                    if path is not None and release_view.governs(path)
+                    else await release_view.list()
+                )
+                release_paths = [
+                    item
+                    for item in release_paths
+                    if item not in denied_paths and (path is None or item == path)
+                ]
+                if release_paths:
+                    immutable = await release_view.read_many(release_paths)
+                    for release_path, raw in immutable.items():
+                        content_by_path[release_path] = raw.decode("utf-8")
+
+            for file_path, raw_content in sorted(content_by_path.items()):
+                if path is not None and file_path != path:
                     continue
-                content = _normalize_line_endings(row.content)
+                content = _normalize_line_endings(raw_content)
                 file_lines = content.split("\n")
                 for i, line in enumerate(file_lines):
                     if regex.search(line):
                         before, after = _get_lines_with_context(content, i + 1, context_lines)
                         matches.append({
-                            "path": row.path,
+                            "path": file_path,
                             "line_number": i + 1,
                             "match": line,
                             "context_before": before,
@@ -514,7 +586,9 @@ async def read_content_lines(
     if denied := await _ensure_workflow_path_in_scope(context, path, organization_id):
         return denied
 
-    content_result, metadata_result, error = await _get_content_by_path(path, context)
+    content_result, metadata_result, error = await _get_content_by_path(
+        path, context, organization_id
+    )
 
     if error:
         return error_result(error)
@@ -581,7 +655,9 @@ async def get_content(
     if denied := await _ensure_workflow_path_in_scope(context, path, organization_id):
         return denied
 
-    content_result, metadata_result, error = await _get_content_by_path(path, context)
+    content_result, metadata_result, error = await _get_content_by_path(
+        path, context, organization_id
+    )
 
     if error:
         return error_result(error)
@@ -671,7 +747,9 @@ async def patch_content(
     if denied := await _ensure_workflow_path_in_scope(context, path, organization_id):
         return denied
 
-    content_result, metadata_result, error = await _get_content_by_path(path, context)
+    content_result, metadata_result, error = await _get_content_by_path(
+        path, context, organization_id
+    )
 
     if error:
         return error_result(error)
@@ -841,6 +919,11 @@ async def delete_content(
 
     try:
         async with get_tool_db(context) as db:
+            await reject_release_governed_paths(
+                db,
+                _coerce_uuid(getattr(context, "org_id", None)),
+                [path],
+            )
             # Verify file exists in S3 before deleting
             repo = RepoStorage()
             if not await repo.exists(path):

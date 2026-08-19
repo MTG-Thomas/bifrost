@@ -1,4 +1,6 @@
+import sys
 from types import SimpleNamespace
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -6,7 +8,59 @@ import pytest
 from fastapi import HTTPException
 
 from src.models.enums import ConfigType
+from src.routers import integrations
 from src.routers.integrations import IntegrationsRepository
+from src.services.workspace_release_files import WorkspaceReleasePathGoverned
+
+
+@pytest.mark.asyncio
+async def test_generate_sdk_rejects_governed_module_before_any_mutation():
+    integration_id = uuid4()
+    repo = MagicMock()
+    repo.get_integration_by_id = AsyncMock(
+        return_value=SimpleNamespace(id=integration_id, name="Example")
+    )
+    repo.update_integration = AsyncMock()
+    generated = SimpleNamespace(
+        module_name="example_api",
+        code="reviewed = False",
+        class_name="ExampleApiClient",
+        endpoint_count=1,
+        schema_count=0,
+    )
+    storage = MagicMock()
+    storage.write_file = AsyncMock()
+    sdk_generator = ModuleType("src.services.sdk_generator")
+    sdk_generator.generate_sdk_from_url = MagicMock(return_value=generated)
+
+    with (
+        patch.object(integrations, "IntegrationsRepository", return_value=repo),
+        patch.dict(sys.modules, {"src.services.sdk_generator": sdk_generator}),
+        patch("src.services.file_storage.FileStorageService", return_value=storage),
+        patch(
+            "src.services.workspace_release_files.reject_release_governed_paths",
+            new=AsyncMock(
+                side_effect=WorkspaceReleasePathGoverned(
+                    "modules/example_api.py", "release-1"
+                )
+            ),
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await integrations.generate_sdk(
+                integration_id,
+                integrations.GenerateSDKRequest(
+                    spec_url="https://example.invalid/openapi.json",
+                    auth_type="bearer",
+                    module_name="example_api",
+                ),
+                ctx=SimpleNamespace(db=object(), org_id=uuid4()),
+                user=SimpleNamespace(user_id=uuid4()),
+            )
+
+    assert exc.value.status_code == 409
+    repo.update_integration.assert_not_awaited()
+    storage.write_file.assert_not_awaited()
 
 
 def _session() -> AsyncMock:

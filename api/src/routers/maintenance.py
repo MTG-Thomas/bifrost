@@ -35,6 +35,7 @@ from src.models.orm import (
 from src.models.orm.file_index import FileIndex
 from src.services.app_dependencies import parse_dependencies
 from src.services.notification_service import get_notification_service
+from src.services.workspace_release_files import active_workspace_release_file_view
 from src.services.workspace_release_registration_authority import (
     WorkspaceReleaseRegistrationGoverned,
     guard_workspace_registration_mutation,
@@ -508,19 +509,27 @@ async def run_preflight(
     # generational GC doesn't reclaim them promptly. Fix: process one file
     # at a time and `del` the tree + strings before the next iteration so
     # peak RSS is bounded to a single file's AST, not the whole workspace.
-    py_files = [f for f in all_files if f.path.endswith(".py")]
+    release_view = await active_workspace_release_file_view(db, None)
+    py_paths = {f.path for f in all_files if f.path.endswith(".py")}
+    if release_view is not None:
+        py_paths.update(
+            path for path in await release_view.list() if path.endswith(".py")
+        )
     decorator_names = {"workflow", "tool", "data_provider"}
-    for py_file in py_files:
+    for py_path in sorted(py_paths):
         # Parse → collect candidate function names → release AST. All of
         # this is synchronous so when the block exits the AST and content
         # are released before we hit any `await`. Previous shape held the
         # tree across the inner `await db.execute(...)` which kept it alive
         # for the full DB round trip per decorator.
         try:
-            content_result = await service.read_file(py_file.path)
-            content = content_result[0] if isinstance(content_result, tuple) else content_result
+            if release_view is not None and release_view.governs(py_path):
+                content = await release_view.read(py_path)
+            else:
+                content_result = await service.read_file(py_path)
+                content = content_result[0] if isinstance(content_result, tuple) else content_result
             content_str = content.decode("utf-8", errors="replace")
-            tree = ast.parse(content_str, filename=py_file.path)
+            tree = ast.parse(content_str, filename=py_path)
         except Exception:
             continue
 
@@ -547,7 +556,7 @@ async def run_preflight(
         for fn_name in candidates:
             result = await db.execute(
                 select(Workflow).where(
-                    Workflow.path == py_file.path,
+                    Workflow.path == py_path,
                     Workflow.function_name == fn_name,
                     Workflow.is_active.is_(True),
                 )
@@ -559,11 +568,11 @@ async def run_preflight(
                         category="unregistered_function",
                         detail=(
                             f"Decorated function '{fn_name}' in"
-                            f" {py_file.path} is not registered."
+                            f" {py_path} is not registered."
                             " Use POST /api/workflows/register to"
                             " register it."
                         ),
-                        path=py_file.path,
+                        path=py_path,
                     )
                 )
 

@@ -41,6 +41,11 @@ from src.routers.applications import ApplicationRepository
 from src.services.app_storage import AppStorageService
 from src.services.repo_storage import RepoStorage
 from src.services.file_storage.service import get_file_storage_service
+from src.services.workspace_release_files import (
+    WorkspaceReleaseFileView,
+    active_workspace_release_file_view,
+    reject_release_governed_paths,
+)
 from shared.app_authorization import require_platform_admin
 
 logger = logging.getLogger(__name__)
@@ -269,6 +274,17 @@ class FileMode(str, Enum):
     live = "live"
 
 
+async def _read_authoritative_source(
+    repo: RepoStorage,
+    release_view: WorkspaceReleaseFileView | None,
+    path: str,
+) -> str:
+    """Read immutable Live bytes when that release governs the source path."""
+    if release_view is not None and release_view.governs(path):
+        return (await release_view.read(path)).decode("utf-8")
+    return (await repo.read(path)).decode("utf-8", errors="replace")
+
+
 # =============================================================================
 # S3-backed App File Endpoints
 # =============================================================================
@@ -298,7 +314,10 @@ async def list_app_files(
 
     # List source files from S3 (source of truth)
     repo_prefix = app.repo_prefix
-    source_paths = await repo.list(repo_prefix)
+    release_view = await active_workspace_release_file_view(ctx.db, ctx.org_id)
+    source_paths = set(await repo.list(repo_prefix))
+    if release_view is not None:
+        source_paths.update(await release_view.list(repo_prefix))
 
     if not source_paths:
         return SimpleFileListResponse(files=[], total=0)
@@ -317,10 +336,14 @@ async def list_app_files(
             continue
 
         # Source from S3 (_repo/)
-        try:
-            source = (await repo.read(full_path)).decode("utf-8", errors="replace")
-        except Exception:
-            source = ""
+        if release_view is not None and release_view.governs(full_path):
+            # Authority verification failures must not fall back to stale _repo.
+            source = await _read_authoritative_source(repo, release_view, full_path)
+        else:
+            try:
+                source = await _read_authoritative_source(repo, release_view, full_path)
+            except Exception:
+                source = ""
 
         # Compiled from _apps/{app_id}/{mode}/
         compiled: str | None = None
@@ -363,10 +386,14 @@ async def read_app_file(
     # Source from S3 (_repo/)
     repo_path = f"{app.repo_prefix}{file_path}"
     repo = RepoStorage()
-    try:
-        source = (await repo.read(repo_path)).decode("utf-8", errors="replace")
-    except Exception:
-        source = None
+    release_view = await active_workspace_release_file_view(ctx.db, ctx.org_id)
+    if release_view is not None and release_view.governs(repo_path):
+        source = await _read_authoritative_source(repo, release_view, repo_path)
+    else:
+        try:
+            source = await _read_authoritative_source(repo, release_view, repo_path)
+        except Exception:
+            source = None
     if source is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -421,6 +448,8 @@ async def write_app_file(
     full_path = f"{prefix}{file_path}"
     source = data.source or ""
 
+    await reject_release_governed_paths(ctx.db, ctx.org_id, [full_path])
+
     storage = get_file_storage_service(ctx.db)
     await storage.write_file(
         path=full_path,
@@ -464,6 +493,8 @@ async def delete_app_file(
     await assert_entity_id_not_solution_managed(ctx.db, Application, app_id)
     prefix = app.repo_prefix
     full_path = f"{prefix}{file_path}"
+
+    await reject_release_governed_paths(ctx.db, ctx.org_id, [full_path])
 
     storage = get_file_storage_service(ctx.db)
     await storage.delete_file(full_path)

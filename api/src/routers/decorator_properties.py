@@ -25,6 +25,11 @@ from src.models import (
 )
 from src.services.decorator_property_service import DecoratorPropertyService
 from src.services.file_storage import FileStorageService
+from src.services.workspace_release_files import (
+    WorkspaceReleasePathGoverned,
+    active_workspace_release_file_view,
+    reject_release_governed_paths,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +64,12 @@ async def get_decorator_properties(
         )
 
     try:
-        storage = FileStorageService(db)
-        content, _ = await storage.read_file(path)
+        release_view = await active_workspace_release_file_view(db, ctx.org_id)
+        if release_view is not None and release_view.governs(path):
+            content = await release_view.read(path)
+        else:
+            storage = FileStorageService(db)
+            content, _ = await storage.read_file(path)
         content_str = content.decode("utf-8", errors="replace")
 
         service = DecoratorPropertyService()
@@ -124,6 +133,7 @@ async def update_decorator_properties(
         )
 
     try:
+        await reject_release_governed_paths(db, ctx.org_id, [request.path])
         storage = FileStorageService(db)
 
         # Read current content
@@ -187,6 +197,11 @@ async def update_decorator_properties(
             new_etag=new_etag,
         )
 
+    except WorkspaceReleasePathGoverned as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except HTTPException:
         raise
     except Exception as e:

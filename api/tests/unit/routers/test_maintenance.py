@@ -334,6 +334,36 @@ async def test_run_preflight_warns_for_unregistered_decorated_functions(monkeypa
     assert "missing_tool" in response.warnings[0].detail
     assert response.warnings[0].path == "workflows/missing.py"
 
+
+@pytest.mark.asyncio
+async def test_run_preflight_uses_release_only_immutable_source(monkeypatch) -> None:
+    service = SimpleNamespace(list_files=AsyncMock(return_value=[]))
+    view = SimpleNamespace(
+        list=AsyncMock(return_value=["workflows/live_only.py"]),
+        governs=lambda path: path == "workflows/live_only.py",
+        read=AsyncMock(
+            return_value=b"@workflow\nasync def immutable_workflow():\n    pass\n"
+        ),
+    )
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=_RowsResult([]))
+    monkeypatch.setattr(
+        "src.services.file_storage.FileStorageService",
+        lambda _db: service,
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "active_workspace_release_file_view",
+        AsyncMock(return_value=view),
+    )
+
+    response = await maintenance.run_preflight(user=None, db=db)
+
+    assert response.valid is True
+    assert response.warnings[0].path == "workflows/live_only.py"
+    assert "immutable_workflow" in response.warnings[0].detail
+    view.read.assert_awaited_once_with("workflows/live_only.py")
+
 @pytest.fixture(autouse=True)
 def bypass_live_registration_authority(monkeypatch):
     """Maintenance examples run without a Workspace Live fixture."""
@@ -341,4 +371,9 @@ def bypass_live_registration_authority(monkeypatch):
         maintenance,
         "guard_workspace_registration_mutation",
         AsyncMock(),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        "active_workspace_release_file_view",
+        AsyncMock(return_value=None),
     )
