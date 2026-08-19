@@ -9,6 +9,7 @@ import pytest
 
 from src.services.workspace_release_files import (
     WorkspaceReleaseFileView,
+    WorkspaceReleaseHybridFileView,
     WorkspaceReleasePathGoverned,
     active_workspace_release_file_view,
     global_active_workspace_release_descriptor,
@@ -28,6 +29,11 @@ class _Storage:
     async def read_many(self, paths: list[str], *, concurrency: int = 32):
         del concurrency
         return {path: self.files[path] for path in paths}
+
+
+class _Repo(_Storage):
+    async def list(self, prefix: str = "") -> list[str]:
+        return sorted(path for path in self.files if path.startswith(prefix))
 
 
 def _view(
@@ -99,6 +105,41 @@ async def test_immutable_view_exposes_only_cumulative_governed_paths() -> None:
     assert view.governs("modules/legacy.py") is False
     with pytest.raises(FileNotFoundError):
         await view.read("modules/legacy.py")
+
+
+@pytest.mark.asyncio
+async def test_hybrid_graph_view_overlays_live_and_retains_reverse_consumers() -> None:
+    view = _view({"modules/shared.py": b"VALUE = 'reviewed'\n"})
+    repo = _Repo(
+        {
+            "modules/shared.py": b"VALUE = 'stale'\n",
+            "features/consumer.py": b"from modules.shared import VALUE\n",
+        }
+    )
+    hybrid = WorkspaceReleaseHybridFileView(view, repo)
+
+    assert await hybrid.list() == ["features/consumer.py", "modules/shared.py"]
+    assert await hybrid.read("modules/shared.py") == b"VALUE = 'reviewed'\n"
+    assert await hybrid.read("features/consumer.py") == repo.files[
+        "features/consumer.py"
+    ]
+    assert await hybrid.read_many(await hybrid.list()) == {
+        "features/consumer.py": repo.files["features/consumer.py"],
+        "modules/shared.py": b"VALUE = 'reviewed'\n",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hybrid_graph_view_never_falls_back_for_corrupt_governed_bytes() -> None:
+    view = _view({"modules/shared.py": b"VALUE = 'reviewed'\n"})
+    view.storage.files["modules/shared.py"] = b"VALUE = 'corrupt'\n"
+    hybrid = WorkspaceReleaseHybridFileView(
+        view,
+        _Repo({"modules/shared.py": b"VALUE = 'stale'\n"}),
+    )
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="do not match"):
+        await hybrid.read("modules/shared.py")
 
 
 @pytest.mark.asyncio

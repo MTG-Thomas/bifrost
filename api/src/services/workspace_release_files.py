@@ -21,6 +21,7 @@ from src.services.workspace_release_runtime import (
     WorkspaceReleaseRuntimeError,
 )
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
+from src.services.repo_storage import RepoStorage
 
 
 class WorkspaceReleasePathGoverned(RuntimeError):
@@ -106,6 +107,40 @@ class WorkspaceReleaseFileView:
             for path in self.release.governed_paths
             if path.startswith(normalized)
         ]
+
+
+@dataclass(frozen=True)
+class WorkspaceReleaseHybridFileView:
+    """Current mutable Workspace overlaid by the verified global Live tree."""
+
+    release_view: WorkspaceReleaseFileView
+    repo: RepoStorage
+
+    async def list(self, prefix: str = "") -> list[str]:
+        return sorted(
+            set(await self.repo.list(prefix))
+            | set(await self.release_view.list(prefix))
+        )
+
+    async def read(self, path: str) -> bytes:
+        if self.release_view.governs(path):
+            return await self.release_view.read(path)
+        return await self.repo.read(path)
+
+    async def read_many(
+        self, paths: list[str], *, concurrency: int = 32
+    ) -> dict[str, bytes]:
+        governed = [path for path in paths if self.release_view.governs(path)]
+        governed_set = set(governed)
+        mutable = [path for path in paths if path not in governed_set]
+        result: dict[str, bytes] = {}
+        if mutable:
+            result.update(await self.repo.read_many(mutable, concurrency=concurrency))
+        if governed:
+            result.update(
+                await self.release_view.read_many(governed, concurrency=concurrency)
+            )
+        return result
 
 
 async def active_workspace_release_file_view(
@@ -201,6 +236,7 @@ async def reject_release_governed_prefixes(
 
 __all__ = [
     "WorkspaceReleaseFileView",
+    "WorkspaceReleaseHybridFileView",
     "WorkspaceReleasePathGoverned",
     "active_workspace_release_file_view",
     "governed_workspace_release_file_view",

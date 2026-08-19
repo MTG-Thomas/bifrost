@@ -1296,13 +1296,20 @@ async def preview_workspace_file_impact(
             WorkspaceFileImpactDiagnostic,
         )
         from src.services.workspace_release_files import (
+            WorkspaceReleaseHybridFileView,
             governed_workspace_release_file_view,
         )
+        from src.services.repo_storage import RepoStorage
 
         release_view = await governed_workspace_release_file_view(
             db, ctx.org_id, request.path
         )
-        result = await WorkspaceFileImpactService(repo=release_view).preview(request)
+        graph_repo = (
+            WorkspaceReleaseHybridFileView(release_view, RepoStorage())
+            if release_view is not None
+            else None
+        )
+        result = await WorkspaceFileImpactService(repo=graph_repo).preview(request)
         if release_view is not None:
             is_mutation = request.content is not None
             result.diagnostics.insert(

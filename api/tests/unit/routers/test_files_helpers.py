@@ -290,6 +290,23 @@ async def test_workspace_graph_uses_immutable_live_and_blocks_legacy_write(
             del concurrency
             return {path: immutable[path] for path in paths}
 
+    repo_files = {
+        "modules/vendor.py": b"VALUE = 'stale-repo'\n",
+        "workflows/report.py": b"VALUE = 'stale-no-import'\n",
+        "workflows/legacy_consumer.py": b"from modules.vendor import VALUE\n",
+    }
+
+    class Repo:
+        async def list(self, prefix=""):
+            return sorted(path for path in repo_files if path.startswith(prefix))
+
+        async def read(self, path):
+            return repo_files[path]
+
+        async def read_many(self, paths, *, concurrency=32):
+            del concurrency
+            return {path: repo_files[path] for path in paths}
+
     source_hashes = {
         path: hashlib.sha256(content).hexdigest()
         for path, content in immutable.items()
@@ -310,6 +327,7 @@ async def test_workspace_graph_uses_immutable_live_and_blocks_legacy_write(
         "src.services.workspace_release_files.governed_workspace_release_file_view",
         release_view,
     )
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", Repo)
 
     inspected = await files.preview_workspace_file_impact(
         WorkspaceFileImpactRequest(path="modules/vendor.py"),
@@ -330,6 +348,7 @@ async def test_workspace_graph_uses_immutable_live_and_blocks_legacy_write(
         immutable["modules/vendor.py"]
     ).hexdigest()
     assert [item.path for item in inspected.reverse_dependencies] == [
+        "workflows/legacy_consumer.py",
         "workflows/report.py"
     ]
     assert inspected.diagnostics[0].severity == "info"
