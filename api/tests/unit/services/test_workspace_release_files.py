@@ -12,6 +12,7 @@ from src.services.workspace_release_files import (
     WorkspaceReleasePathGoverned,
     active_workspace_release_file_view,
     global_active_workspace_release_descriptor,
+    reject_release_governed_prefixes,
     reject_release_governed_paths,
 )
 from src.services.workspace_release_runtime import WorkspaceReleaseRuntimeError
@@ -35,7 +36,7 @@ def _view(files: dict[str, bytes]) -> WorkspaceReleaseFileView:
         source_hashes={
             path: hashlib.sha256(content).hexdigest() for path, content in files.items()
         },
-        runtime_storage_prefix="immutable/",
+        runtime_storage_prefix="_workspace_releases/release/artifact/files/",
     )
     return WorkspaceReleaseFileView.from_release(
         release,
@@ -44,8 +45,25 @@ def _view(files: dict[str, bytes]) -> WorkspaceReleaseFileView:
 
 
 @pytest.mark.asyncio
-async def test_global_workspace_has_no_organization_release_overlay() -> None:
-    assert await active_workspace_release_file_view(SimpleNamespace(), None) is None
+async def test_global_workspace_release_overlay_is_not_organization_scoped(
+    monkeypatch,
+) -> None:
+    view = _view({"modules/vendor.py": b"VALUE = 1\n"})
+
+    async def global_release(_session):
+        return view.release
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.global_active_workspace_release_descriptor",
+        global_release,
+    )
+
+    assert (
+        await active_workspace_release_file_view(SimpleNamespace(), None)
+    ).release == view.release
+    assert (
+        await active_workspace_release_file_view(SimpleNamespace(), uuid4())
+    ).release == view.release
 
 
 @pytest.mark.asyncio
@@ -104,6 +122,34 @@ async def test_legacy_mutation_guard_names_promote_for_governed_path(
         ["workflows/unpromoted.py"],
     )
     assert acquire_lock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_recursive_legacy_mutation_rejects_governed_descendant(
+    monkeypatch,
+) -> None:
+    view = _view({"features/vendor/workflow.py": b"VALUE = 1\n"})
+
+    async def global_release(_session):
+        return view.release
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.global_active_workspace_release_descriptor",
+        global_release,
+    )
+    acquire_lock = AsyncMock()
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.acquire_workspace_release_lock",
+        acquire_lock,
+    )
+
+    with pytest.raises(WorkspaceReleasePathGoverned) as exc_info:
+        await reject_release_governed_prefixes(
+            SimpleNamespace(), uuid4(), ["features/vendor"]
+        )
+
+    assert exc_info.value.path == "features/vendor/workflow.py"
+    acquire_lock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

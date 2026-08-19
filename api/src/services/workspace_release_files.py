@@ -19,7 +19,6 @@ from src.models.orm.workspace_promotions import (
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
-    active_workspace_release,
 )
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
 
@@ -46,7 +45,7 @@ def normalize_release_path(path: str) -> str:
 
 @dataclass(frozen=True)
 class WorkspaceReleaseFileView:
-    """Verified immutable file view for one organization's active release."""
+    """Verified immutable file view for the platform-global active release."""
 
     release: WorkspaceReleaseDescriptor
     storage: WorkspaceReleaseStorage
@@ -113,9 +112,14 @@ async def active_workspace_release_file_view(
     session: AsyncSession,
     organization_id: UUID | None,
 ) -> WorkspaceReleaseFileView | None:
-    if organization_id is None:
-        return None
-    release = await active_workspace_release(session, organization_id)
+    """Resolve the one platform-global immutable Live Workspace tree.
+
+    ``organization_id`` remains in the signature for call-site compatibility,
+    but shared Workspace source is global.  Authorization may be org-scoped;
+    source authority must not be.
+    """
+    del organization_id
+    release = await global_active_workspace_release_descriptor(session)
     return (
         WorkspaceReleaseFileView.from_release(release) if release is not None else None
     )
@@ -173,6 +177,28 @@ async def reject_release_governed_paths(
             raise WorkspaceReleasePathGoverned(normalized, release.release_id)
 
 
+async def reject_release_governed_prefixes(
+    session: AsyncSession,
+    organization_id: UUID | None,
+    prefixes: Iterable[str],
+) -> None:
+    """Reject a legacy recursive mutation intersecting immutable Live source."""
+    from src.services.workspace_release_projection import (
+        acquire_workspace_release_lock,
+    )
+
+    await acquire_workspace_release_lock(session, organization_id)
+    release = await global_active_workspace_release_descriptor(session)
+    if release is None:
+        return
+    for prefix in prefixes:
+        normalized = normalize_release_path(prefix)
+        marker = normalized + "/"
+        for governed_path in release.source_hashes:
+            if governed_path == normalized or governed_path.startswith(marker):
+                raise WorkspaceReleasePathGoverned(governed_path, release.release_id)
+
+
 __all__ = [
     "WorkspaceReleaseFileView",
     "WorkspaceReleasePathGoverned",
@@ -181,4 +207,5 @@ __all__ = [
     "global_active_workspace_release_descriptor",
     "normalize_release_path",
     "reject_release_governed_paths",
+    "reject_release_governed_prefixes",
 ]

@@ -39,6 +39,9 @@ def _legacy_workspace_file_authority(monkeypatch):
         no_release_view,
     )
     monkeypatch.setattr(files, "_reject_release_governed_mutation", mutable)
+    monkeypatch.setattr(
+        files, "_reject_release_governed_prefix_mutations", mutable
+    )
 
 
 class _FakeDb:
@@ -471,6 +474,84 @@ async def test_workspace_write_reports_release_governance_conflict(monkeypatch):
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["reason"] == "workspace_release_governed_path"
     assert "promote" in exc_info.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_signed_workspace_get_targets_verified_immutable_live_object(
+    monkeypatch,
+):
+    immutable_key = "_workspace_releases/release/artifact/files/modules/vendor.py"
+    read_calls = []
+
+    class ReleaseView:
+        storage = SimpleNamespace(object_key=lambda path: immutable_key)
+
+        async def read(self, path):
+            read_calls.append(path)
+            return b"VALUE = 'immutable-live'\n"
+
+    class FakeStorage:
+        def __init__(self, _db):
+            pass
+
+        async def generate_presigned_download_url(self, *, path):
+            assert path == immutable_key
+            return "https://storage.example.test/immutable"
+
+    async def tiers(*_args, **_kwargs):
+        return [SimpleNamespace(scope="global", solution_id=None, organization_id=None)]
+
+    async def governed_view(*_args, **_kwargs):
+        return ReleaseView()
+
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", tiers)
+    monkeypatch.setattr(
+        files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None)
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.governed_workspace_release_file_view",
+        governed_view,
+    )
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+
+    response = await files._build_signed_url(
+        files.SignedUrlRequest(
+            path="modules/vendor.py",
+            method="GET",
+            location="workspace",
+        ),
+        _ctx(is_superuser=True),
+        SimpleNamespace(),
+    )
+
+    assert response.path == immutable_key
+    assert response.url == "https://storage.example.test/immutable"
+    assert read_calls == ["modules/vendor.py"]
+
+
+@pytest.mark.asyncio
+async def test_signed_workspace_put_fails_closed_before_url_generation(monkeypatch):
+    async def declared(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(files, "_require_declared_solution_file_location", declared)
+    monkeypatch.setattr(
+        files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None)
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files._build_signed_url(
+            files.SignedUrlRequest(
+                path="modules/new.py",
+                method="PUT",
+                location="workspace",
+            ),
+            _ctx(is_superuser=True),
+            SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["reason"] == "workspace_signed_put_unsupported"
 
 
 @pytest.mark.asyncio
@@ -1331,6 +1412,83 @@ async def test_list_files_editor_recursive_filters_excluded_paths(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_files_editor_overlays_global_immutable_live(monkeypatch):
+    class FakeRepoStorage:
+        async def list(self, prefix):
+            assert prefix == "modules/"
+            return ["modules/repo_only.py", "modules/vendor.py"]
+
+    class ReleaseView:
+        async def list(self, prefix):
+            assert prefix == "modules/"
+            return ["modules/vendor.py", "modules/live_only.py"]
+
+    async def active_view(*_args, **_kwargs):
+        return ReleaseView()
+
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepoStorage)
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.active_workspace_release_file_view",
+        active_view,
+    )
+
+    response = await files.list_files_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path="modules",
+        recursive=True,
+        db=SimpleNamespace(),
+    )
+
+    assert [item.path for item in response] == [
+        "modules/live_only.py",
+        "modules/repo_only.py",
+        "modules/vendor.py",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_files_editor_non_recursive_includes_live_only_children(
+    monkeypatch,
+):
+    class FakeRepoStorage:
+        async def list_directory(self, prefix):
+            assert prefix == ""
+            return ([], [])
+
+        async def list(self, folder_path):
+            assert folder_path == "features/"
+            return []
+
+    class ReleaseView:
+        async def list(self, prefix):
+            assert prefix == ""
+            return ["README.md", "features/vendor/workflow.py"]
+
+    async def active_view(*_args, **_kwargs):
+        return ReleaseView()
+
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepoStorage)
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.active_workspace_release_file_view",
+        active_view,
+    )
+
+    response = await files.list_files_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path=".",
+        recursive=False,
+        db=SimpleNamespace(),
+    )
+
+    assert [(item.path, item.type) for item in response] == [
+        ("features", files.FileType.FOLDER),
+        ("README.md", files.FileType.FILE),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_list_files_editor_non_recursive_skips_empty_folder_prefixes(monkeypatch):
     list_calls = []
 
@@ -1384,6 +1542,39 @@ async def test_get_file_content_editor_returns_text_with_md5_etag(monkeypatch):
     assert response.encoding == "utf-8"
     assert response.size == 5
     assert response.etag == hashlib.md5(b"hello").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_get_file_content_editor_reads_immutable_live_not_repo(monkeypatch):
+    immutable = b"VALUE = 'immutable-live'\n"
+
+    class ReleaseView:
+        async def read(self, path):
+            assert path == "modules/vendor.py"
+            return immutable
+
+    class FakeStorage:
+        def __init__(self, _db):
+            raise AssertionError("governed editor reads must not use mutable repo")
+
+    async def governed_view(*_args, **_kwargs):
+        return ReleaseView()
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.governed_workspace_release_file_view",
+        governed_view,
+    )
+
+    response = await files.get_file_content_editor(
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        path="modules/vendor.py",
+        db=SimpleNamespace(),
+    )
+
+    assert response.content == immutable.decode()
+    assert response.etag == hashlib.md5(immutable).hexdigest()
 
 
 @pytest.mark.asyncio
@@ -1587,6 +1778,76 @@ async def test_put_file_content_editor_returns_pending_deactivation_conflict(mon
     assert exc_info.value.detail["reason"] == "workflows_would_deactivate"
     assert exc_info.value.detail["pending_deactivations"][0]["function_name"] == "old_flow"
     assert exc_info.value.detail["available_replacements"][0]["function_name"] == "new_flow"
+
+
+@pytest.mark.asyncio
+async def test_editor_mutations_fail_closed_for_governed_live_paths(monkeypatch):
+    async def reject_exact(_db, _organization_id, path):
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": "workspace_release_governed_path", "path": path},
+        )
+
+    async def reject_prefix(_db, _organization_id, prefixes):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "workspace_release_governed_path",
+                "path": prefixes[0],
+            },
+        )
+
+    class FakeStorage:
+        def __init__(self, _db):
+            pass
+
+        async def write_file(self, *_args, **_kwargs):
+            raise AssertionError("governed editor write must not reach storage")
+
+        async def move_file(self, *_args, **_kwargs):
+            raise AssertionError("governed editor rename must not reach storage")
+
+    class FakeRepo:
+        async def list(self, _prefix):
+            raise AssertionError("governed recursive delete must stop before listing")
+
+    monkeypatch.setattr(files, "FileStorageService", FakeStorage)
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", FakeRepo)
+    monkeypatch.setattr(files, "_reject_release_governed_mutation", reject_exact)
+    monkeypatch.setattr(
+        files, "_reject_release_governed_prefix_mutations", reject_prefix
+    )
+    monkeypatch.setattr(
+        files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None)
+    )
+
+    with pytest.raises(HTTPException) as write_error:
+        await files.put_file_content_editor(
+            files.FileContentRequest(path="modules/vendor.py", content="bad"),
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID, email="admin@example.test"),
+            db=SimpleNamespace(),
+        )
+    assert write_error.value.status_code == 409
+
+    with pytest.raises(HTTPException) as delete_error:
+        await files.delete_file_editor(
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            path="modules",
+            db=SimpleNamespace(),
+        )
+    assert delete_error.value.status_code == 409
+
+    with pytest.raises(HTTPException) as rename_error:
+        await files.rename_file_editor(
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID),
+            old_path="modules/vendor.py",
+            new_path="modules/vendor_v2.py",
+            db=SimpleNamespace(),
+        )
+    assert rename_error.value.status_code == 409
 
 
 @pytest.mark.asyncio

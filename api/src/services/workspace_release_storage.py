@@ -48,6 +48,10 @@ class WorkspaceReleaseStorage(CreateOnlyArtifactStorage):
             raise ValueError("invalid Workspace release file path")
         return f"{self.runtime_prefix}{normalized}"
 
+    def object_key(self, path: str) -> str:
+        """Return the immutable object key for a verified relative file path."""
+        return self._key(path)
+
     async def read(self, path: str) -> bytes:
         async with self._client_factory() as client:
             response = await client.get_object(Bucket=self._bucket, Key=self._key(path))
