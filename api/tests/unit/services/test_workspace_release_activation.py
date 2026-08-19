@@ -60,6 +60,8 @@ def _prepared_rows():
         effective_manifest_id=manifest_id,
         runtime_storage_prefix=prefix,
         source_hashes={path: source_hash},
+        governed_paths=(path,),
+        governed_manifest_id=workspace_manifest_id({path: source_hash}),
         effective_registrations={},
         effective_registration_manifest_id="sha256:" + "2" * 64,
         source_commit_sha="3" * 40,
@@ -76,6 +78,8 @@ def _prepared_rows():
         "base_manifest_id": artifact.base_manifest_id,
         "effective_manifest_id": manifest_id,
         "effective_files": {path: source_hash},
+        "governed_paths": [path],
+        "governed_manifest_id": workspace_manifest_id({path: source_hash}),
         "runtime_storage_prefix": prefix,
         "file_count": 1,
         "total_bytes": 10,
@@ -87,6 +91,17 @@ def _prepared_rows():
             "function_callable": True,
             "source": "immutable_candidate_tree",
         },
+        "validation_smokes": [
+            {
+                "entry_path": path,
+                "entry_function": "demo",
+                "imported": True,
+                "function_callable": True,
+                "source": "immutable_candidate_tree",
+                "entity_type": "workflow",
+                "relation": "selected_entry",
+            }
+        ],
         "projection_paths": [
             {
                 "path": path,
@@ -194,7 +209,8 @@ def test_registration_fingerprint_captures_activation_surface() -> None:
     assert registration_state_fingerprint(workflow) != before
 
 
-def test_next_activation_waits_for_current_live_history_lock() -> None:
+@pytest.mark.asyncio
+async def test_next_activation_waits_for_current_live_history_lock() -> None:
     request = SimpleNamespace(expected_active_release_id="sha256:" + "1" * 64)
     artifact = SimpleNamespace(
         base_release_id="sha256:" + "1" * 64,
@@ -206,7 +222,8 @@ def test_next_activation_waits_for_current_live_history_lock() -> None:
     )
 
     with pytest.raises(WorkspaceReleaseActivationError, match="history-locked"):
-        WorkspaceReleaseActivationService._validate_base_cas(
+        await WorkspaceReleaseActivationService._validate_base_cas(
+            SimpleNamespace(),
             request,
             artifact,
             current,

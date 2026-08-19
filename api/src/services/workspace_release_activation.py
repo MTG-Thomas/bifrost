@@ -9,7 +9,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bifrost.workspace_release import canonical_digest, workspace_manifest_id
+from bifrost.promotion import sha256_bytes
+from bifrost.workspace_release import (
+    canonical_digest,
+    repo_v1_release_id,
+    workspace_manifest_id,
+)
 from src.models.contracts.workspace_promotions import (
     WorkspaceLiveStatusResponse,
     WorkspaceReleaseActivateRequest,
@@ -24,9 +29,15 @@ from src.models.orm.workspace_promotions import (
 )
 from src.models.orm.workflows import Workflow
 from src.services.audit import emit_audit
+from src.services.repo_storage import RepoStorage
 from src.services.workspace_draft_canary import (
     WorkspaceDraftCanaryError,
     draft_canary_attestation,
+)
+from src.services.workspace_promotions import (
+    WorkspacePromotionInvalid,
+    overlay_governed_base,
+    read_generation_stable_executable_snapshot,
 )
 from src.services.workspace_release_materialization import PREPARED_EVIDENCE_SCHEMA
 from src.services.workspace_release_runtime import (
@@ -34,6 +45,7 @@ from src.services.workspace_release_runtime import (
     WorkspaceReleaseRuntimeError,
 )
 from src.services.workspace_release_projection import acquire_workspace_release_lock
+from src.services.workspace_release_storage import WorkspaceReleaseStorage
 from src.services.workflow_registration import (
     WorkflowRegistrationConflict,
     apply_workspace_registration_plan,
@@ -69,11 +81,14 @@ def validate_prepared_release_evidence(
         "base_manifest_id",
         "effective_manifest_id",
         "effective_files",
+        "governed_paths",
+        "governed_manifest_id",
         "runtime_storage_prefix",
         "file_count",
         "total_bytes",
         "compile",
         "import_smoke",
+        "validation_smokes",
         "prepared_at",
         "projection_paths",
         "evidence_id",
@@ -98,6 +113,8 @@ def validate_prepared_release_evidence(
         "base_manifest_id": artifact.base_manifest_id,
         "effective_manifest_id": descriptor.effective_manifest_id,
         "effective_files": descriptor.source_hashes,
+        "governed_paths": list(descriptor.governed_paths),
+        "governed_manifest_id": descriptor.governed_manifest_id,
         "runtime_storage_prefix": descriptor.runtime_storage_prefix,
         "file_count": len(descriptor.source_hashes),
     }
@@ -107,6 +124,15 @@ def validate_prepared_release_evidence(
         )
     if workspace_manifest_id(evidence["effective_files"]) != descriptor.effective_manifest_id:
         raise WorkspaceReleaseActivationError("prepared manifest digest is invalid")
+    if workspace_manifest_id(
+        {
+            path: descriptor.source_hashes[path]
+            for path in descriptor.governed_paths
+        }
+    ) != evidence["governed_manifest_id"]:
+        raise WorkspaceReleaseActivationError(
+            "prepared governed manifest digest is invalid"
+        )
     if not isinstance(evidence.get("total_bytes"), int) or evidence["total_bytes"] <= 0:
         raise WorkspaceReleaseActivationError("prepared byte count is invalid")
     compile_evidence = evidence.get("compile")
@@ -357,7 +383,7 @@ class WorkspaceReleaseActivationService:
         if prepared["evidence_id"] != request.prepared_evidence_id:
             raise WorkspaceReleaseActivationError("prepared evidence CAS mismatch")
 
-        self._validate_base_cas(request, artifact, current)
+        await self._validate_base_cas(request, artifact, current)
         canary = await self._canary_attestation(request.canary_execution_id, artifact)
         applied = await self._apply_registration(artifact)
 
@@ -390,6 +416,8 @@ class WorkspaceReleaseActivationService:
                 "state": "coherent",
                 "runtime_storage_prefix": descriptor.runtime_storage_prefix,
                 "effective_manifest_id": descriptor.effective_manifest_id,
+                "governed_paths": list(descriptor.governed_paths),
+                "governed_manifest_id": descriptor.governed_manifest_id,
             },
             "history": {"state": "pending", "lock_state": release.lock_state},
             "activated_at": now.isoformat(),
@@ -610,12 +638,24 @@ class WorkspaceReleaseActivationService:
         if child is not None:
             raise WorkspaceReleaseActivationError("release artifact is superseded")
 
-    @staticmethod
-    def _validate_base_cas(
+    async def _validate_base_cas(
+        self,
         request: WorkspaceReleaseActivateRequest,
         artifact: WorkspacePromotionArtifact,
         current: tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact] | None,
     ) -> None:
+        from src.core.module_cache import get_workspace_generation
+
+        if current is not None and current[0].lock_state != "locked":
+            raise WorkspaceReleaseActivationError(
+                "current Live Workspace release is not history-locked"
+            )
+        try:
+            repo_files = await read_generation_stable_executable_snapshot(
+                RepoStorage(), get_workspace_generation
+            )
+        except (WorkspacePromotionInvalid, ValueError) as exc:
+            raise WorkspaceReleaseActivationError(str(exc)) from exc
         if current is None:
             if request.expected_active_release_id is not None or not str(
                 artifact.base_release_id
@@ -623,19 +663,51 @@ class WorkspaceReleaseActivationService:
                 raise WorkspaceReleaseActivationError(
                     "Live Workspace base changed after preview"
                 )
+            repo_hashes = {
+                path: sha256_bytes(raw) for path, raw in sorted(repo_files.items())
+            }
+            if (
+                repo_v1_release_id(repo_hashes) != artifact.base_release_id
+                or workspace_manifest_id(repo_hashes) != artifact.base_manifest_id
+            ):
+                raise WorkspaceReleaseActivationError(
+                    "durable Workspace base changed after preparation"
+                )
             return
-        if current[0].lock_state != "locked":
-            raise WorkspaceReleaseActivationError(
-                "current Live Workspace release is not history-locked"
-            )
         try:
             current_descriptor = WorkspaceReleaseDescriptor.from_rows(*current)
         except WorkspaceReleaseRuntimeError as exc:
             raise WorkspaceReleaseActivationError(str(exc)) from exc
+        try:
+            immutable = await WorkspaceReleaseStorage(
+                current_descriptor.runtime_storage_prefix
+            ).read_many(list(current_descriptor.governed_paths))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise WorkspaceReleaseActivationError(
+                "current Live governed bytes could not be read"
+            ) from exc
+        immutable_hashes = {
+            path: sha256_bytes(raw) for path, raw in sorted(immutable.items())
+        }
+        if immutable_hashes != current_descriptor.governed_source_hashes:
+            raise WorkspaceReleaseActivationError(
+                "current Live governed bytes failed immutable readback"
+            )
+        try:
+            hybrid = overlay_governed_base(
+                repo_files,
+                immutable,
+                current_descriptor.governed_paths,
+            )
+        except WorkspacePromotionInvalid as exc:
+            raise WorkspaceReleaseActivationError(str(exc)) from exc
+        hybrid_hashes = {
+            path: sha256_bytes(raw) for path, raw in sorted(hybrid.items())
+        }
         if (
             request.expected_active_release_id != current_descriptor.release_id
             or artifact.base_release_id != current_descriptor.release_id
-            or artifact.base_manifest_id != current_descriptor.effective_manifest_id
+            or artifact.base_manifest_id != workspace_manifest_id(hybrid_hashes)
         ):
             raise WorkspaceReleaseActivationError(
                 "Live Workspace base changed after preview"
