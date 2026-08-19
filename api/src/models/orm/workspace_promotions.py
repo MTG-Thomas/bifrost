@@ -203,7 +203,7 @@ class WorkspacePromotionRelease(Base):
         ),
         Index(
             "uq_workspace_promotion_release_live",
-            "organization_id",
+            "activation_state",
             unique=True,
             postgresql_where=text("activation_state = 'live'"),
         ),

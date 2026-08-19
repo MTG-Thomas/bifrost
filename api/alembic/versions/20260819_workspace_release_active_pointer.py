@@ -30,7 +30,7 @@ def upgrade() -> None:
     op.create_index(
         "uq_workspace_promotion_release_live",
         "workspace_promotion_releases",
-        ["organization_id"],
+        ["activation_state"],
         unique=True,
         postgresql_where=sa.text("activation_state = 'live'"),
     )

@@ -161,9 +161,9 @@ async def apply_workspace_registration_plan(
         if existing is not None:
             if action.get("action") == "reactivate":
                 existing.is_active = True
-                existing.name = action.get("name") or action["function_name"]
-                existing.type = action["type"]
-                await db.flush()
+            existing.name = action.get("name") or action["function_name"]
+            existing.type = action["type"]
+            await db.flush()
             applied.append({**action, "workflow_id": str(existing.id)})
             continue
 

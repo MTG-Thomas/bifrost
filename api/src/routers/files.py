@@ -159,19 +159,25 @@ class FileListMetadataItem(BaseModel):
     """File metadata item with path, etag, and last_modified."""
     path: str
     etag: str
-    last_modified: str  # ISO 8601
+    last_modified: str | None = None  # ISO 8601 when projected metadata exists
     updated_by: str | None = None
+    source_authority: str = "repo-v1"
+    workspace_release_id: str | None = None
 
 
 class FileListResponse(BaseModel):
     """Response for file listing."""
     files: list[str] = Field(default_factory=list, description="List of file/folder paths")
     files_metadata: list[FileListMetadataItem] = Field(default_factory=list, description="Per-file metadata (when include_metadata=true)")
+    source_authority: str = "repo-v1"
+    workspace_release_id: str | None = None
 
 
 class FileExistsResponse(BaseModel):
     """Response for file existence check."""
     exists: bool = Field(..., description="True if file exists")
+    source_authority: str = "repo-v1"
+    workspace_release_id: str | None = None
 
 
 class SignedUrlRequest(BaseModel):
@@ -1700,6 +1706,17 @@ async def list_files_simple(
         if not tiers:
             return FileListResponse(files=[])
         primary_tier = tiers[0]
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                active_workspace_release_file_view,
+            )
+
+            release_view = await active_workspace_release_file_view(db, ctx.org_id)
         directory_allowed = await _authorize_file_policy(
             ctx,
             action="list",
@@ -1721,10 +1738,15 @@ async def list_files_simple(
                 path: meta for path, meta in s3_metadata.items()
                 if not path.startswith(".git/")
             }
+            release_paths = (
+                await release_view.list(request.directory)
+                if release_view is not None
+                else []
+            )
             allowed_paths = set(
                 await _filter_listed_paths(
                     ctx,
-                    paths=list(s3_metadata.keys()),
+                    paths=sorted(set(s3_metadata) | set(release_paths)),
                     location=request.location,
                     scope=primary_tier.scope,
                     action="list",
@@ -1736,7 +1758,8 @@ async def list_files_simple(
                 path: meta for path, meta in s3_metadata.items()
                 if path in allowed_paths
             }
-            if not directory_allowed and not s3_metadata:
+            release_paths = [path for path in release_paths if path in allowed_paths]
+            if not directory_allowed and not s3_metadata and not release_paths:
                 await _deny_file_policy(
                     ctx,
                     action="list",
@@ -1756,16 +1779,40 @@ async def list_files_simple(
             author_lookup = {row.path: row.updated_by for row in fi_result.all()}
 
             return FileListResponse(
-                files=sorted(s3_metadata.keys()),
+                files=sorted(set(s3_metadata) | set(release_paths)),
                 files_metadata=[
                     FileListMetadataItem(
                         path=path,
-                        etag=meta.etag,
-                        last_modified=meta.last_modified.isoformat(),
+                        etag=(
+                            release_view.release.source_hashes[path]
+                            if release_view is not None and path in release_paths
+                            else s3_metadata[path].etag
+                        ),
+                        last_modified=(
+                            None
+                            if release_view is not None and path in release_paths
+                            else s3_metadata[path].last_modified.isoformat()
+                        ),
                         updated_by=author_lookup.get(path),
+                        source_authority=(
+                            "workspace-release-v1"
+                            if release_view is not None and path in release_paths
+                            else "repo-v1"
+                        ),
+                        workspace_release_id=(
+                            release_view.release.release_id
+                            if release_view is not None and path in release_paths
+                            else None
+                        ),
                     )
-                    for path, meta in sorted(s3_metadata.items())
+                    for path in sorted(set(s3_metadata) | set(release_paths))
                 ],
+                source_authority=(
+                    "workspace-release-v1" if release_view is not None else "repo-v1"
+                ),
+                workspace_release_id=(
+                    release_view.release.release_id if release_view is not None else None
+                ),
             )
 
         backend = get_backend(request.mode, db)
@@ -1811,6 +1858,20 @@ async def list_files_simple(
                     continue
                 seen.add(path)
                 files.append(path)
+        if release_view is not None:
+            release_paths = await _filter_listed_paths(
+                ctx,
+                paths=await release_view.list(request.directory),
+                location=request.location,
+                scope=primary_tier.scope,
+                action="list",
+                solution_id=primary_tier.solution_id,
+                organization_id=primary_tier.organization_id,
+            )
+            for path in release_paths:
+                if path not in seen:
+                    seen.add(path)
+                    files.append(path)
         if not any_directory_allowed and not files:
             await _deny_file_policy(
                 ctx,
@@ -1820,7 +1881,15 @@ async def list_files_simple(
                 scope=request.scope,
                 solution_id=primary_tier.solution_id,
             )
-        return FileListResponse(files=files)
+        return FileListResponse(
+            files=files,
+            source_authority=(
+                "workspace-release-v1" if release_view is not None else "repo-v1"
+            ),
+            workspace_release_id=(
+                release_view.release.release_id if release_view is not None else None
+            ),
+        )
 
     except ValueError as e:
         raise HTTPException(
@@ -1851,6 +1920,19 @@ async def file_exists(
             await file_read_tiers(db, ctx, request.location, request.scope),
             request.mode,
         )
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                governed_workspace_release_file_view,
+            )
+
+            release_view = await governed_workspace_release_file_view(
+                db, ctx.org_id, request.path
+            )
         backend = get_backend(request.mode, db)
         for tier in tiers:
             allowed = await _authorize_file_policy(
@@ -1864,6 +1946,13 @@ async def file_exists(
             )
             if not allowed:
                 continue
+            if release_view is not None:
+                await release_view.read(request.path)
+                return FileExistsResponse(
+                    exists=True,
+                    source_authority="workspace-release-v1",
+                    workspace_release_id=release_view.release.release_id,
+                )
             exists = await backend.exists(
                 request.path,
                 request.location,
@@ -2589,10 +2678,28 @@ async def search_file_contents(
     """
     Search file contents for text or regex patterns.
 
-    Searches database directly - workflows, modules, forms, and agents.
+    Immutable Live Workspace source overlays the mutable file index. Other
+    non-release files continue to come from the database projection.
     """
     try:
-        results = await search_files_db(db, request, root_path="")
+        from src.services.workspace_release_files import (
+            active_workspace_release_file_view,
+        )
+
+        release_view = await active_workspace_release_file_view(db, ctx.org_id)
+        immutable_overlay = None
+        release_id = None
+        if release_view is not None:
+            paths = await release_view.list()
+            immutable_overlay = await release_view.read_many(paths)
+            release_id = release_view.release.release_id
+        results = await search_files_db(
+            db,
+            request,
+            root_path="",
+            immutable_overlay=immutable_overlay,
+            workspace_release_id=release_id,
+        )
         return results
 
     except ValueError as e:
