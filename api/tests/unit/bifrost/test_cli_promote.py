@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -171,8 +172,10 @@ def test_reviewed_preview_uses_git_blob_not_dirty_worktree(
     monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
 
     assert promote.handle_promote(["preview", str(path), "-w", "demo"]) == 0
-    encoded = captured["payload"]["snapshot"]["closure"][0]["content_base64"]
-    assert base64.b64decode(encoded) == reviewed
+    closure = captured["payload"]["snapshot"]["closure"]
+    selected = next(item for item in closure if item["path"] == "features/demo.py")
+    assert selected["sha256"] == hashlib.sha256(reviewed).hexdigest()
+    assert "content_base64" not in selected
 
 
 def test_canary_uploads_exact_non_activatable_draft_then_executes(

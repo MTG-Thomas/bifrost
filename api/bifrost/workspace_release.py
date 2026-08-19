@@ -16,6 +16,21 @@ WORKSPACE_REGISTRATION_MANIFEST_SCHEMA = (
 )
 
 
+def _sha256_value(value: str) -> str:
+    """Canonicalize a file digest accepted with or without its algorithm prefix."""
+
+    normalized = value.removeprefix("sha256:").lower()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError(f"invalid SHA-256 digest: {value!r}")
+    return normalized
+
+
+def _file_hashes(files: Mapping[str, str]) -> dict[str, str]:
+    return {path: _sha256_value(value) for path, value in sorted(files.items())}
+
+
 def canonical_digest(payload: Any) -> str:
     raw = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -27,7 +42,7 @@ def workspace_manifest_id(files: Mapping[str, str]) -> str:
     return canonical_digest(
         {
             "schema": WORKSPACE_FILE_MANIFEST_SCHEMA,
-            "files": dict(sorted(files.items())),
+            "files": _file_hashes(files),
         }
     )
 
@@ -47,7 +62,7 @@ def workspace_registration_manifest_id(
 
 def repo_v1_release_id(files: Mapping[str, str]) -> str:
     digest = hashlib.sha256()
-    for path, value in sorted(files.items()):
+    for path, value in _file_hashes(files).items():
         digest.update(path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(value.encode("ascii"))
@@ -60,7 +75,7 @@ def workspace_closure_id(entry: Mapping[str, str], files: Mapping[str, str]) -> 
         {
             "schema": WORKSPACE_FORWARD_CLOSURE_SCHEMA,
             "entry": dict(entry),
-            "files": dict(sorted(files.items())),
+            "files": _file_hashes(files),
         }
     )
 

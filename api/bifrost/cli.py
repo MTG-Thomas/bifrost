@@ -1687,9 +1687,9 @@ def _run_direct(
         if promotion_evidence is not None and workflow_file is not None:
             from bifrost.promotion import (
                 build_promotion_bundle,
-                closure_id,
                 sha256_bytes,
             )
+            from bifrost.workspace_release import workspace_closure_id
 
             root = pathlib.Path.cwd().resolve()
             selected_path = pathlib.Path(workflow_file)
@@ -1708,10 +1708,15 @@ def _run_direct(
                 "activatable": False,
                 "succeeded": True,
                 "snapshot_id": bundle.snapshot_id,
-                "closure_id": closure_id(
-                    bundle.files,
-                    selected_path=selected_path.as_posix(),
-                    function_name=selected_workflow,
+                "closure_id": workspace_closure_id(
+                    {
+                        "path": selected_path.as_posix(),
+                        "function": selected_workflow,
+                    },
+                    {
+                        str(item["path"]): str(item["sha256"])
+                        for item in bundle.files
+                    },
                 ),
                 "entry": {
                     "path": selected_path.as_posix(),

@@ -73,32 +73,6 @@ def snapshot_id(snapshot_files: dict[str, str]) -> str:
     return f"sha256:{sha256_bytes(canonical)}"
 
 
-def closure_id(
-    files: Iterable[Mapping[str, str]],
-    *,
-    selected_path: str,
-    function_name: str,
-) -> str:
-    """Hash one workflow identity and its complete forward closure."""
-
-    canonical = json.dumps(
-        {
-            "schema": "bifrost.workspace-forward-closure/v1",
-            "entry": {
-                "path": normalize_workspace_path(selected_path),
-                "function": function_name,
-            },
-            "files": {
-                normalize_workspace_path(str(item["path"])): str(item["sha256"])
-                for item in sorted(files, key=lambda value: str(value["path"]))
-            },
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"sha256:{sha256_bytes(canonical)}"
-
-
 def discover_python_snapshot(
     root: pathlib.Path,
 ) -> tuple[dict[str, str], dict[str, bytes]]:
@@ -599,7 +573,6 @@ __all__ = [
     "ProtectedMainProvenance",
     "build_promotion_bundle",
     "build_reviewed_promotion_bundle",
-    "closure_id",
     "dependency_edges",
     "dependency_edges_for_file",
     "discover_git_python_snapshot",

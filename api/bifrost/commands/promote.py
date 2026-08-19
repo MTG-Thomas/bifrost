@@ -19,13 +19,13 @@ from bifrost.promotion import (
     PromotionBundleError,
     build_promotion_bundle,
     build_reviewed_promotion_bundle,
-    closure_id,
     discover_python_snapshot,
     normalize_workspace_path,
     sha256_bytes,
     snapshot_id,
     validate_submitted_bundle,
 )
+from bifrost.workspace_release import workspace_closure_id
 from bifrost.workspace_impact import (
     WorkspaceImpactAnalysis,
     analyze_workspace_impact,
@@ -44,6 +44,22 @@ REVIEWED_PROMOTION_SCHEMA = "bifrost.workspace-promotion-bundle/v2"
 DRAFT_SCHEMA = "bifrost.workspace-promotion-draft/v1"
 LOCAL_RUN_SCHEMA = "bifrost.workspace-local-run-evidence/v1"
 _SUBCOMMANDS = {"draft", "canary", "preview", "status"}
+
+
+def _closure_id(
+    bundle: PromotionBundle,
+    *,
+    selected_path: str,
+    function_name: str,
+) -> str:
+    """Use the runtime's canonical forward-closure identity."""
+
+    entry = {
+        "path": normalize_workspace_path(selected_path),
+        "function": function_name,
+    }
+    files = {str(item["path"]): str(item["sha256"]) for item in bundle.files}
+    return workspace_closure_id(entry, files)
 
 
 def _common_source_arguments(parser: argparse.ArgumentParser) -> None:
@@ -156,8 +172,8 @@ def _load_run_evidence(
         raise PromotionBundleError("run evidence must be explicitly local-only")
     if evidence.get("succeeded") is not True:
         raise PromotionBundleError("run evidence does not record a successful execution")
-    expected_closure_id = closure_id(
-        bundle.files,
+    expected_closure_id = _closure_id(
+        bundle,
         selected_path=selected_path,
         function_name=function_name,
     )
@@ -293,10 +309,15 @@ def _read_draft(value: str) -> dict[str, Any]:
             snapshot_files=snapshot["files"],
             files=snapshot["closure"],
         )
-        expected_closure_id = closure_id(
-            snapshot["closure"],
-            selected_path=entry["path"],
-            function_name=entry["function"],
+        expected_closure_id = workspace_closure_id(
+            {
+                "path": normalize_workspace_path(entry["path"]),
+                "function": entry["function"],
+            },
+            {
+                normalize_workspace_path(item["path"]): item["sha256"]
+                for item in snapshot["closure"]
+            },
         )
     except (KeyError, TypeError) as exc:
         raise PromotionBundleError("draft is missing immutable source evidence") from exc
@@ -335,8 +356,8 @@ def _handle_draft(options: argparse.Namespace) -> int:
         selected_path=selected_path,
         function_name=options.workflow,
     )
-    entry_closure_id = closure_id(
-        bundle.files,
+    entry_closure_id = _closure_id(
+        bundle,
         selected_path=selected_path,
         function_name=options.workflow,
     )
@@ -449,8 +470,8 @@ def _preview_payload(
         selected_path=selected_path,
         function_name=options.workflow,
     )
-    entry_closure_id = closure_id(
-        bundle.files,
+    entry_closure_id = _closure_id(
+        bundle,
         selected_path=selected_path,
         function_name=options.workflow,
     )

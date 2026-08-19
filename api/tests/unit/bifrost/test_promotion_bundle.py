@@ -12,13 +12,12 @@ from bifrost.promotion import (
     PromotionBundleError,
     build_promotion_bundle,
     build_reviewed_promotion_bundle,
-    closure_id,
     dependency_edges,
     protected_main_provenance,
     snapshot_id,
     validate_submitted_bundle,
 )
-from bifrost.workspace_release import workspace_manifest_id
+from bifrost.workspace_release import workspace_closure_id, workspace_manifest_id
 
 
 def test_effective_file_manifest_id_is_order_and_prefix_stable() -> None:
@@ -66,10 +65,9 @@ def test_bundle_contains_transitive_forward_closure_and_hash_inventory(
     }
     assert "features/unrelated.py" in bundle.snapshot_files
     assert bundle.snapshot_id == snapshot_id(bundle.snapshot_files)
-    assert closure_id(
-        bundle.files,
-        selected_path="features/demo/workflow.py",
-        function_name="demo",
+    assert workspace_closure_id(
+        {"path": "features/demo/workflow.py", "function": "demo"},
+        {item["path"]: item["sha256"] for item in bundle.files},
     ).startswith("sha256:")
 
 
