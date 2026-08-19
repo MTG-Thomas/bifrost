@@ -207,6 +207,7 @@ def test_canary_executes_only_an_existing_reviewed_artifact(
             return Response(
                 {
                     "execution_id": "execution-1",
+                    "artifact_id": "reviewed-artifact-id",
                 }
             )
 
@@ -243,9 +244,196 @@ def test_canary_has_no_local_draft_or_client_ttl_options(capsys) -> None:
     assert "unrecognized arguments: --ttl-seconds 300" in capsys.readouterr().err
 
 
-def test_status_is_not_advertised_without_a_server_route(capsys) -> None:
+def test_status_requires_exactly_one_status_target(capsys) -> None:
     assert promote.handle_promote(["status"]) == 2
-    assert "invalid choice: 'status'" in capsys.readouterr().err
+    assert "exactly one of RELEASE_ROW_ID or --live" in capsys.readouterr().err
+
+
+def test_prepare_polls_durable_job_and_preserves_exact_receipt(
+    monkeypatch, capsys
+) -> None:
+    artifact_id = "11111111-1111-1111-1111-111111111111"
+    candidate_id = "sha256:" + "a" * 64
+    release_row_id = "22222222-2222-2222-2222-222222222222"
+    job_id = "33333333-3333-3333-3333-333333333333"
+    captured = []
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class Client:
+        def post_sync(self, endpoint, **kwargs):
+            captured.append(("POST", endpoint, kwargs["json"]))
+            return Response({"job_id": job_id, "status": "queued", "reused": False})
+
+        def get_sync(self, endpoint):
+            captured.append(("GET", endpoint, None))
+            return Response(
+                {
+                    "id": job_id,
+                    "status": "succeeded",
+                    "result": {
+                        "release_row_id": release_row_id,
+                        "artifact_id": artifact_id,
+                        "candidate_id": candidate_id,
+                        "release_id": "sha256:" + "b" * 64,
+                        "prepared_evidence_id": "sha256:" + "c" * 64,
+                    },
+                }
+            )
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert promote.handle_promote(
+        ["prepare", artifact_id, "--candidate-id", candidate_id]
+    ) == 0
+    assert captured == [
+        (
+            "POST",
+            f"/api/workspace-promotions/artifacts/{artifact_id}/prepare",
+            {"candidate_id": candidate_id},
+        ),
+        ("GET", f"/api/platform-jobs/{job_id}", None),
+    ]
+    output = capsys.readouterr().out
+    assert f"Prepared release row: {release_row_id}" in output
+    assert "global Live pointer has not changed" in output
+
+
+def test_activate_sends_every_immutable_cas_and_canary_identity(
+    monkeypatch, capsys
+) -> None:
+    release_row_id = "11111111-1111-1111-1111-111111111111"
+    artifact_id = "22222222-2222-2222-2222-222222222222"
+    canary_id = "33333333-3333-3333-3333-333333333333"
+    candidate_id = "sha256:" + "a" * 64
+    release_id = "sha256:" + "b" * 64
+    evidence_id = "sha256:" + "c" * 64
+    captured = {}
+
+    class Response:
+        @staticmethod
+        def json():
+            return {
+                "release_row_id": release_row_id,
+                "artifact_id": artifact_id,
+                "candidate_id": candidate_id,
+                "release_id": release_id,
+                "activation_state": "live",
+                "is_live": True,
+                "runtime": {"state": "coherent"},
+                "history": {"state": "pending", "lock_state": "queued"},
+            }
+
+    class Client:
+        def post_sync(self, endpoint, **kwargs):
+            captured["endpoint"] = endpoint
+            captured["payload"] = kwargs["json"]
+            return Response()
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert promote.handle_promote(
+        [
+            "activate",
+            release_row_id,
+            "--artifact-id",
+            artifact_id,
+            "--candidate-id",
+            candidate_id,
+            "--workspace-release-id",
+            release_id,
+            "--expected-base-release-id",
+            "repo-v1:" + "d" * 64,
+            "--expect-no-active-release",
+            "--prepared-evidence-id",
+            evidence_id,
+            "--canary-execution-id",
+            canary_id,
+        ]
+    ) == 0
+    assert captured["endpoint"] == (
+        f"/api/workspace-promotions/releases/{release_row_id}/activate"
+    )
+    assert captured["payload"] == {
+        "artifact_id": artifact_id,
+        "candidate_id": candidate_id,
+        "workspace_release_id": release_id,
+        "expected_base_release_id": "repo-v1:" + "d" * 64,
+        "expected_active_release_id": None,
+        "prepared_evidence_id": evidence_id,
+        "canary_execution_id": canary_id,
+    }
+    assert "history projection may still be pending" in capsys.readouterr().out
+
+
+def test_activate_requires_an_explicit_matching_live_cas(capsys) -> None:
+    digest = "sha256:" + "a" * 64
+    assert promote.handle_promote(
+        [
+            "activate",
+            "11111111-1111-1111-1111-111111111111",
+            "--artifact-id",
+            "22222222-2222-2222-2222-222222222222",
+            "--candidate-id",
+            digest,
+            "--workspace-release-id",
+            digest,
+            "--expected-base-release-id",
+            digest,
+            "--prepared-evidence-id",
+            digest,
+            "--canary-execution-id",
+            "33333333-3333-3333-3333-333333333333",
+        ]
+    ) == 2
+    assert "one of the arguments --expected-active-release-id" in capsys.readouterr().err
+
+
+def test_status_uses_release_and_live_routes(monkeypatch, capsys) -> None:
+    release_row_id = "11111111-1111-1111-1111-111111111111"
+    requested = []
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class Client:
+        def get_sync(self, endpoint):
+            requested.append(endpoint)
+            if endpoint.endswith("/live"):
+                return Response({"active_release": None})
+            return Response(
+                {
+                    "release_row_id": release_row_id,
+                    "release_id": "sha256:" + "a" * 64,
+                    "candidate_id": "sha256:" + "b" * 64,
+                    "activation_state": "prepared",
+                    "is_live": False,
+                    "runtime": {"state": "prepared"},
+                    "history": {"state": "not_queued", "lock_state": "not_queued"},
+                }
+            )
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert promote.handle_promote(["status", release_row_id]) == 0
+    assert promote.handle_promote(["status", "--live"]) == 0
+    assert requested == [
+        f"/api/workspace-promotions/releases/{release_row_id}",
+        "/api/workspace-promotions/live",
+    ]
+    assert "Live Workspace release: none" in capsys.readouterr().out
 
 
 def test_successful_local_run_writes_snapshot_bound_evidence(

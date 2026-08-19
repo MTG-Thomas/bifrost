@@ -15,6 +15,8 @@ from src.models.contracts.workspace_promotions import (
     WorkspacePromotionCanaryRequest,
     WorkspacePromotionDraftRequest,
     WorkspacePromotionPreviewRequest,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleasePrepareRequest,
 )
 from src.routers.workspace_promotions import router
 
@@ -139,6 +141,114 @@ def test_canary_cli_uses_only_reviewed_artifact_route(monkeypatch) -> None:
     ) == captured["endpoint"]
     assert "/api/workspace-promotions/artifacts/{artifact_id}/canary" in _route_paths()
     assert WorkspacePromotionCanaryRequest.model_validate(captured["payload"])
+
+
+def test_prepare_cli_payload_and_route_match_server_contract(monkeypatch) -> None:
+    artifact_id = uuid4()
+    candidate_id = "sha256:" + "a" * 64
+    job_id = uuid4()
+    release_row_id = uuid4()
+    captured = {}
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    class Client:
+        def post_sync(self, endpoint, **kwargs):
+            captured["endpoint"] = endpoint
+            captured["payload"] = kwargs["json"]
+            return Response({"job_id": str(job_id), "status": "queued"})
+
+        def get_sync(self, _endpoint):
+            return Response(
+                {
+                    "status": "succeeded",
+                    "result": {
+                        "release_row_id": str(release_row_id),
+                        "artifact_id": str(artifact_id),
+                        "candidate_id": candidate_id,
+                        "release_id": "sha256:" + "b" * 64,
+                        "prepared_evidence_id": "sha256:" + "c" * 64,
+                    },
+                }
+            )
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert promote.handle_promote(
+        ["prepare", str(artifact_id), "--candidate-id", candidate_id, "--json"]
+    ) == 0
+    assert captured["endpoint"] == promote.PROMOTION_PREPARE_ENDPOINT.format(
+        artifact_id=artifact_id
+    )
+    assert WorkspaceReleasePrepareRequest.model_validate(captured["payload"])
+    assert "/api/workspace-promotions/artifacts/{artifact_id}/prepare" in _route_paths()
+
+
+def test_activate_cli_payload_and_routes_match_server_contract(monkeypatch) -> None:
+    release_row_id = uuid4()
+    artifact_id = uuid4()
+    canary_id = uuid4()
+    candidate_id = "sha256:" + "a" * 64
+    release_id = "sha256:" + "b" * 64
+    prepared_id = "sha256:" + "c" * 64
+    base_id = "sha256:" + "d" * 64
+    captured = {}
+
+    class Response:
+        @staticmethod
+        def json():
+            return {
+                "release_row_id": str(release_row_id),
+                "artifact_id": str(artifact_id),
+                "candidate_id": candidate_id,
+                "release_id": release_id,
+                "is_live": True,
+            }
+
+    class Client:
+        def post_sync(self, endpoint, **kwargs):
+            captured["endpoint"] = endpoint
+            captured["payload"] = kwargs["json"]
+            return Response()
+
+    monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
+    monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
+
+    assert promote.handle_promote(
+        [
+            "activate",
+            str(release_row_id),
+            "--artifact-id",
+            str(artifact_id),
+            "--candidate-id",
+            candidate_id,
+            "--workspace-release-id",
+            release_id,
+            "--expected-base-release-id",
+            base_id,
+            "--expected-active-release-id",
+            base_id,
+            "--prepared-evidence-id",
+            prepared_id,
+            "--canary-execution-id",
+            str(canary_id),
+            "--json",
+        ]
+    ) == 0
+    assert captured["endpoint"] == promote.PROMOTION_ACTIVATE_ENDPOINT.format(
+        release_id=release_row_id
+    )
+    parsed = WorkspaceReleaseActivateRequest.model_validate(captured["payload"])
+    assert parsed.canary_execution_id == canary_id
+    assert "/api/workspace-promotions/releases/{release_id}/activate" in _route_paths()
+    assert "/api/workspace-promotions/releases/{release_id}" in _route_paths()
+    assert "/api/workspace-promotions/live" in _route_paths()
 
 
 def test_promotion_capabilities_are_independently_default_off() -> None:

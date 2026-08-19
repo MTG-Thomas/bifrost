@@ -127,10 +127,31 @@ bifrost promote draft <path> -w <function> \
 bifrost promote preview <path> -w <function> \
   --run-evidence .promotion-run.json
 bifrost promote canary <reviewed-artifact-id>
+bifrost promote prepare <reviewed-artifact-id> \
+  --candidate-id <candidate-id>
+bifrost promote activate <prepared-release-row-id> \
+  --artifact-id <reviewed-artifact-id> \
+  --candidate-id <candidate-id> \
+  --workspace-release-id <workspace-release-id> \
+  --expected-base-release-id <current-live-release-id> \
+  --expected-active-release-id <current-live-release-id> \
+  --prepared-evidence-id <prepared-evidence-id> \
+  --canary-execution-id <successful-canary-execution-id>
+bifrost promote status --live
 ```
 
-Activation and status commands are intentionally not advertised until their
-server routes and atomic Live-pointer contracts ship together.
+For the first activation, where no immutable release owns Live yet, replace
+`--expected-active-release-id` with `--expect-no-active-release` and use the
+`repo-v1:...` base ID emitted by preview. The two forms are mutually exclusive:
+the operator must explicitly assert which CAS state is expected.
+
+`prepare` follows the durable platform job to completion and prints the exact
+release-row, release, artifact, candidate, and prepared-evidence IDs returned by
+the server. `activate` requires those identities plus the exact successful
+canary execution; it does not infer a candidate or canary from mutable "latest"
+state. `status <release-row-id>` reads one release, while `status --live` reads
+the global Live pointer. JSON mode returns the exact server response, including
+the complete platform-job receipt for `prepare`.
 
 Draft compilation:
 

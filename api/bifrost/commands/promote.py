@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 from typing import Any, Mapping
 
 from platformdirs import user_data_path
@@ -37,10 +38,30 @@ PROMOTION_PREVIEW_ENDPOINT = "/api/workspace-promotions/preview"
 PROMOTION_CANARY_ENDPOINT = (
     "/api/workspace-promotions/artifacts/{artifact_id}/canary"
 )
+PROMOTION_PREPARE_ENDPOINT = (
+    "/api/workspace-promotions/artifacts/{artifact_id}/prepare"
+)
+PROMOTION_ACTIVATE_ENDPOINT = (
+    "/api/workspace-promotions/releases/{release_id}/activate"
+)
+PROMOTION_RELEASE_STATUS_ENDPOINT = (
+    "/api/workspace-promotions/releases/{release_id}"
+)
+PROMOTION_LIVE_STATUS_ENDPOINT = "/api/workspace-promotions/live"
+PLATFORM_JOB_STATUS_ENDPOINT = "/api/platform-jobs/{job_id}"
+PREPARE_POLL_INTERVAL_SECONDS = 2.0
+PREPARE_POLL_TIMEOUT_SECONDS = 30 * 60
 REVIEWED_PROMOTION_SCHEMA = "bifrost.workspace-promotion-bundle/v2"
 DRAFT_SCHEMA = "bifrost.workspace-draft-upload/v1"
 LOCAL_RUN_SCHEMA = "bifrost.workspace-local-run-evidence/v1"
-_SUBCOMMANDS = {"draft", "canary", "preview", "activate", "status"}
+_SUBCOMMANDS = {
+    "draft",
+    "canary",
+    "preview",
+    "prepare",
+    "activate",
+    "status",
+}
 
 
 def _closure_id(
@@ -116,6 +137,53 @@ def _parser() -> argparse.ArgumentParser:
         "--expected-base-release-id",
         help="Optional active-release CAS observed before preview",
     )
+
+    prepare = subparsers.add_parser(
+        "prepare",
+        help="Materialize one exact reviewed artifact as an immutable release",
+    )
+    prepare.add_argument("artifact_id", help="Artifact ID emitted by `promote preview`")
+    prepare.add_argument(
+        "--candidate-id",
+        required=True,
+        help="Immutable candidate ID emitted by the same preview",
+    )
+    prepare.add_argument("--json", action="store_true", help="Emit machine JSON")
+
+    activate = subparsers.add_parser(
+        "activate",
+        help="Atomically move Live to an exact prepared, canary-proven release",
+    )
+    activate.add_argument("release_row_id", help="Release row ID emitted by prepare")
+    activate.add_argument("--artifact-id", required=True)
+    activate.add_argument("--candidate-id", required=True)
+    activate.add_argument("--workspace-release-id", required=True)
+    activate.add_argument("--expected-base-release-id", required=True)
+    active_cas = activate.add_mutually_exclusive_group(required=True)
+    active_cas.add_argument(
+        "--expected-active-release-id",
+        help="Exact release ID that must currently own Live",
+    )
+    active_cas.add_argument(
+        "--expect-no-active-release",
+        action="store_true",
+        help="Explicitly require that no immutable release currently owns Live",
+    )
+    activate.add_argument("--prepared-evidence-id", required=True)
+    activate.add_argument("--canary-execution-id", required=True)
+    activate.add_argument("--json", action="store_true", help="Emit machine JSON")
+
+    release_status = subparsers.add_parser(
+        "status",
+        help="Read one immutable release or the global Live pointer",
+    )
+    release_status.add_argument("release_row_id", nargs="?")
+    release_status.add_argument(
+        "--live",
+        action="store_true",
+        help="Read the global Live Workspace release",
+    )
+    release_status.add_argument("--json", action="store_true", help="Emit machine JSON")
 
     return parser
 
@@ -375,12 +443,216 @@ def _handle_canary(options: argparse.Namespace) -> int:
     result = canary_response.json()
     if not isinstance(result, dict) or not result.get("execution_id"):
         raise PromotionBundleError("canary did not return an execution ID")
+    if str(result.get("artifact_id")) != options.artifact_id:
+        raise PromotionBundleError("canary response belongs to a different artifact")
     if options.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print(f"Canary execution: {result['execution_id']}")
         print(f"Reviewed artifact: {options.artifact_id}")
         print("Canary only: no registration, trigger, or Live pointer change")
+    return 0
+
+
+def _poll_prepare_job(client: BifrostClient, job_id: str) -> dict[str, Any]:
+    started = time.monotonic()
+    last_phase: tuple[str | None, int, int | None] | None = None
+    while True:
+        response = client.get_sync(
+            PLATFORM_JOB_STATUS_ENDPOINT.format(job_id=job_id)
+        )
+        raise_for_status_with_detail(response)
+        body = response.json()
+        if not isinstance(body, dict):
+            raise PromotionBundleError("prepare job returned invalid status data")
+        job_status = body.get("status")
+        if job_status == "succeeded":
+            return body
+        if job_status in {"failed", "cancelled"}:
+            error = body.get("error") or {}
+            detail = error.get("message") if isinstance(error, dict) else None
+            raise PromotionBundleError(
+                f"release preparation {job_status} (job {job_id})"
+                + (f": {detail}" if detail else "")
+            )
+
+        progress = body.get("progress") or {}
+        phase = progress.get("phase") if isinstance(progress, dict) else None
+        current = int(progress.get("current") or 0) if isinstance(progress, dict) else 0
+        total = progress.get("total") if isinstance(progress, dict) else None
+        observed = (phase, current, total)
+        if observed != last_phase:
+            count = f" ({current}/{total})" if total is not None else ""
+            print(
+                f"Prepare {phase or job_status or 'in progress'}{count}",
+                file=sys.stderr,
+            )
+            last_phase = observed
+
+        if time.monotonic() - started >= PREPARE_POLL_TIMEOUT_SECONDS:
+            raise PromotionBundleError(
+                f"release preparation is still running after "
+                f"{PREPARE_POLL_TIMEOUT_SECONDS // 60} minutes (job {job_id}); "
+                "inspect that durable job before retrying"
+            )
+        time.sleep(PREPARE_POLL_INTERVAL_SECONDS)
+
+
+def _prepare_result(
+    job: Mapping[str, Any], *, artifact_id: str, candidate_id: str
+) -> Mapping[str, Any]:
+    result = job.get("result")
+    if not isinstance(result, dict):
+        raise PromotionBundleError("successful prepare job did not return release evidence")
+    required = {
+        "release_row_id",
+        "artifact_id",
+        "candidate_id",
+        "release_id",
+        "prepared_evidence_id",
+    }
+    missing = sorted(required - result.keys())
+    if missing:
+        raise PromotionBundleError(
+            "successful prepare job omitted required evidence: " + ", ".join(missing)
+        )
+    if str(result["artifact_id"]) != artifact_id:
+        raise PromotionBundleError("prepare response belongs to a different artifact")
+    if result["candidate_id"] != candidate_id:
+        raise PromotionBundleError("prepare response belongs to a different candidate")
+    return result
+
+
+def _handle_prepare(options: argparse.Namespace) -> int:
+    client = BifrostClient.get_instance(require_auth=True)
+    response = client.post_sync(
+        PROMOTION_PREPARE_ENDPOINT.format(artifact_id=options.artifact_id),
+        json={"candidate_id": options.candidate_id},
+    )
+    raise_for_status_with_detail(response)
+    accepted = response.json()
+    if not isinstance(accepted, dict) or not accepted.get("job_id"):
+        raise PromotionBundleError("prepare did not return a durable platform job ID")
+    job_id = str(accepted["job_id"])
+    completed = _poll_prepare_job(client, job_id)
+    result = _prepare_result(
+        completed,
+        artifact_id=options.artifact_id,
+        candidate_id=options.candidate_id,
+    )
+    if options.json:
+        print(json.dumps(completed, indent=2, sort_keys=True))
+    else:
+        print(f"Preparation job: {job_id}")
+        print(f"Prepared release row: {result['release_row_id']}")
+        print(f"Reviewed artifact: {result['artifact_id']}")
+        print(f"Candidate: {result['candidate_id']}")
+        print(f"Workspace release: {result['release_id']}")
+        print(f"Prepared evidence: {result['prepared_evidence_id']}")
+        print("Prepared only: the global Live pointer has not changed")
+    return 0
+
+
+def _activation_payload(options: argparse.Namespace) -> dict[str, Any]:
+    expected_active_release_id = options.expected_active_release_id
+    if options.expect_no_active_release:
+        if not options.expected_base_release_id.startswith("repo-v1:"):
+            raise PromotionBundleError(
+                "--expect-no-active-release requires a repo-v1 expected base"
+            )
+        expected_active_release_id = None
+    elif expected_active_release_id != options.expected_base_release_id:
+        raise PromotionBundleError(
+            "--expected-active-release-id must exactly equal "
+            "--expected-base-release-id"
+        )
+    return {
+        "artifact_id": options.artifact_id,
+        "candidate_id": options.candidate_id,
+        "workspace_release_id": options.workspace_release_id,
+        "expected_base_release_id": options.expected_base_release_id,
+        "expected_active_release_id": expected_active_release_id,
+        "prepared_evidence_id": options.prepared_evidence_id,
+        "canary_execution_id": options.canary_execution_id,
+    }
+
+
+def _render_release_status(result: Mapping[str, Any]) -> None:
+    print(f"Release row: {result.get('release_row_id')}")
+    print(f"Workspace release: {result.get('release_id')}")
+    print(f"Candidate: {result.get('candidate_id')}")
+    print(f"Activation: {result.get('activation_state')}")
+    print(f"Live: {'yes' if result.get('is_live') else 'no'}")
+    runtime = result.get("runtime") or {}
+    history = result.get("history") or {}
+    print(f"Runtime: {runtime.get('state')}")
+    print(f"History: {history.get('state')} ({history.get('lock_state')})")
+    if history.get("job_id"):
+        print(f"History projection job: {history['job_id']}")
+
+
+def _handle_activate(options: argparse.Namespace) -> int:
+    payload = _activation_payload(options)
+    client = BifrostClient.get_instance(require_auth=True)
+    response = client.post_sync(
+        PROMOTION_ACTIVATE_ENDPOINT.format(release_id=options.release_row_id),
+        json=payload,
+    )
+    raise_for_status_with_detail(response)
+    result = response.json()
+    if not isinstance(result, dict):
+        raise PromotionBundleError("activation returned invalid release status")
+    expected = {
+        "release_row_id": options.release_row_id,
+        "artifact_id": options.artifact_id,
+        "candidate_id": options.candidate_id,
+        "release_id": options.workspace_release_id,
+    }
+    for field, value in expected.items():
+        if str(result.get(field)) != value:
+            raise PromotionBundleError(
+                f"activation response {field} does not match the requested release"
+            )
+    if result.get("is_live") is not True:
+        raise PromotionBundleError("activation response did not prove the release is Live")
+    if options.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        _render_release_status(result)
+        print("Live activation is complete; signed-history projection may still be pending")
+    return 0
+
+
+def _handle_status(options: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if bool(options.release_row_id) == bool(options.live):
+        parser.error("status requires exactly one of RELEASE_ROW_ID or --live")
+    client = BifrostClient.get_instance(require_auth=True)
+    if options.live:
+        endpoint = PROMOTION_LIVE_STATUS_ENDPOINT
+    else:
+        endpoint = PROMOTION_RELEASE_STATUS_ENDPOINT.format(
+            release_id=options.release_row_id
+        )
+    response = client.get_sync(endpoint)
+    raise_for_status_with_detail(response)
+    result = response.json()
+    if not isinstance(result, dict):
+        raise PromotionBundleError("release status returned invalid data")
+    if options.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif options.live:
+        active = result.get("active_release")
+        if active is None:
+            print("Live Workspace release: none")
+        elif isinstance(active, dict):
+            print("Global Live Workspace release:")
+            _render_release_status(active)
+        else:
+            raise PromotionBundleError("Live status returned invalid active-release data")
+    else:
+        if str(result.get("release_row_id")) != options.release_row_id:
+            raise PromotionBundleError("status response belongs to a different release row")
+        _render_release_status(result)
     return 0
 
 
@@ -525,6 +797,12 @@ def handle_promote(args: list[str]) -> int:
             return _handle_canary(options)
         if options.command == "preview":
             return _handle_preview(options)
+        if options.command == "prepare":
+            return _handle_prepare(options)
+        if options.command == "activate":
+            return _handle_activate(options)
+        if options.command == "status":
+            return _handle_status(options, parser)
         raise PromotionBundleError(f"unsupported promotion command: {options.command}")
     except SystemExit as exc:
         return int(exc.code or 0)
@@ -537,6 +815,10 @@ __all__ = [
     "DRAFT_SCHEMA",
     "LOCAL_RUN_SCHEMA",
     "PROMOTION_CANARY_ENDPOINT",
+    "PROMOTION_PREPARE_ENDPOINT",
+    "PROMOTION_ACTIVATE_ENDPOINT",
+    "PROMOTION_RELEASE_STATUS_ENDPOINT",
+    "PROMOTION_LIVE_STATUS_ENDPOINT",
     "PROMOTION_PREVIEW_ENDPOINT",
     "REVIEWED_PROMOTION_SCHEMA",
     "handle_promote",
