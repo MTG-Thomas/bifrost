@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from src.core.principal import UserPrincipal
 from src.models.contracts.policies import FilePolicies
+from src.models.contracts.workspace_file_impact import WorkspaceFileImpactRequest
 from src.routers import files
 
 
@@ -19,6 +20,21 @@ ORG_A = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 ORG_B = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
 SOLUTION_ID = UUID("22222222-2222-2222-2222-222222222222")
+
+
+@pytest.fixture(autouse=True)
+def _legacy_workspace_file_authority(monkeypatch):
+    async def no_release_view(*_args, **_kwargs):
+        return None
+
+    async def mutable(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.governed_workspace_release_file_view",
+        no_release_view,
+    )
+    monkeypatch.setattr(files, "_reject_release_governed_mutation", mutable)
 
 
 class _FakeDb:
@@ -193,6 +209,166 @@ async def test_read_file_uses_first_allowed_existing_tier(monkeypatch):
     assert response.binary is False
     assert [call["scope"] for call in authorize_calls] == ["global", str(ORG_A)]
     assert read_calls == [("reports/q1.txt", "reports", str(ORG_A))]
+
+
+@pytest.mark.asyncio
+async def test_workspace_read_and_stat_use_immutable_live_when_repo_is_stale(
+    monkeypatch,
+):
+    immutable = b"VALUE = 'immutable-live'\n"
+    stale_repo = b"VALUE = 'stale-repo'\n"
+    read_calls = []
+
+    class ReleaseView:
+        async def read(self, path):
+            assert path == "modules/vendor.py"
+            return immutable
+
+    class FakeBackend:
+        async def read(self, path, location, *, scope):
+            read_calls.append((path, location, scope))
+            return stale_repo
+
+    async def release_view(*_args, **_kwargs):
+        return ReleaseView()
+
+    async def tiers(*_args, **_kwargs):
+        return [SimpleNamespace(scope="global", solution_id=None, organization_id=None)]
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.governed_workspace_release_file_view",
+        release_view,
+    )
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", tiers)
+    monkeypatch.setattr(
+        files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(True)
+    )
+    monkeypatch.setattr(files, "get_backend", lambda *_args: FakeBackend())
+
+    read = await files.read_file(
+        files.FileReadRequest(path="modules/vendor.py"),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+    stat = await files.file_stat(
+        files.FileReadRequest(path="modules/vendor.py"),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert read.content == immutable.decode()
+    assert stat.version == "sha256:" + hashlib.sha256(immutable).hexdigest()
+    assert stat.size == len(immutable)
+    assert read_calls == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_graph_uses_immutable_live_and_blocks_legacy_write(
+    monkeypatch,
+):
+    from src.services.workspace_release_files import WorkspaceReleaseFileView
+
+    immutable = {
+        "modules/vendor.py": b"VALUE = 'immutable-live'\n",
+        "workflows/report.py": b"from modules.vendor import VALUE\n",
+    }
+
+    class Storage:
+        async def read(self, path):
+            return immutable[path]
+
+        async def read_many(self, paths, *, concurrency=32):
+            del concurrency
+            return {path: immutable[path] for path in paths}
+
+    release = SimpleNamespace(
+        release_id="sha256:" + "a" * 64,
+        source_hashes={
+            path: hashlib.sha256(content).hexdigest()
+            for path, content in immutable.items()
+        },
+        runtime_storage_prefix="immutable/",
+    )
+    view = WorkspaceReleaseFileView.from_release(release, storage=Storage())
+
+    async def release_view(*_args, **_kwargs):
+        return view
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.governed_workspace_release_file_view",
+        release_view,
+    )
+
+    inspected = await files.preview_workspace_file_impact(
+        WorkspaceFileImpactRequest(path="modules/vendor.py"),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, is_superuser=True),
+        db=SimpleNamespace(),
+    )
+    proposed = await files.preview_workspace_file_impact(
+        WorkspaceFileImpactRequest(
+            path="modules/vendor.py", content="VALUE = 'proposed'\n"
+        ),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, is_superuser=True),
+        db=SimpleNamespace(),
+    )
+
+    assert inspected.current_sha256 == hashlib.sha256(
+        immutable["modules/vendor.py"]
+    ).hexdigest()
+    assert [item.path for item in inspected.reverse_dependencies] == [
+        "workflows/report.py"
+    ]
+    assert inspected.diagnostics[0].severity == "info"
+    assert proposed.ready_to_write is False
+    assert proposed.diagnostics[0].severity == "blocker"
+    assert "use `bifrost promote`" in proposed.diagnostics[0].message
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_reports_release_governance_conflict(monkeypatch):
+    async def governed(_db, _organization_id, path):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "workspace_release_governed_path",
+                "path": path,
+                "release_id": "sha256:" + "a" * 64,
+                "message": "use `bifrost promote`",
+            },
+        )
+
+    monkeypatch.setattr(files, "_reject_release_governed_mutation", governed)
+    monkeypatch.setattr(
+        files,
+        "_require_declared_solution_file_location",
+        lambda *_args, **_kwargs: _async_value(None),
+    )
+    monkeypatch.setattr(
+        files, "_require_file_policy", lambda *_args, **_kwargs: _async_value(None)
+    )
+    monkeypatch.setattr(
+        files, "_lock_file_mutation", lambda *_args, **_kwargs: _async_value(None)
+    )
+    monkeypatch.setattr(files, "get_backend", lambda *_args: SimpleNamespace())
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files.write_file(
+            files.FileWriteRequest(
+                path="modules/vendor.py",
+                content="VALUE = 'legacy-write'\n",
+            ),
+            _ctx(is_superuser=True),
+            SimpleNamespace(user_id=USER_ID, is_superuser=True),
+            db=SimpleNamespace(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["reason"] == "workspace_release_governed_path"
+    assert "promote" in exc_info.value.detail["message"]
 
 
 @pytest.mark.asyncio

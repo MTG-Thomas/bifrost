@@ -177,6 +177,35 @@ class TestWrite:
         assert body["content"] == "hello"
         assert body["binary"] is False
 
+    def test_release_governed_write_points_to_promote(self) -> None:
+        captured: dict = {}
+        request = httpx.Request("POST", "https://example.test/api/files/write")
+        conflict = httpx.Response(
+            409,
+            request=request,
+            json={
+                "detail": {
+                    "reason": "workspace_release_governed_path",
+                    "path": "modules/vendor.py",
+                    "release_id": "sha256:" + "a" * 64,
+                    "message": (
+                        "path 'modules/vendor.py' is governed by active "
+                        "workspace-release-v1; use `bifrost promote`"
+                    ),
+                }
+            },
+        )
+
+        result = _invoke(
+            ["write", "modules/vendor.py", "--content", "VALUE = 2"],
+            captured,
+            {"/api/files/write": conflict},
+        )
+
+        assert result.exit_code == 4
+        assert "use `bifrost promote`" in result.output
+        assert "merge the changes" not in result.output
+
     def test_writes_from_stdin_when_dash(self) -> None:
         captured: dict = {}
         runner = CliRunner()

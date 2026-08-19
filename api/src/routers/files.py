@@ -1143,6 +1143,19 @@ async def read_file(
             request.mode,
         )
         backend = get_backend(request.mode, db)
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                governed_workspace_release_file_view,
+            )
+
+            release_view = await governed_workspace_release_file_view(
+                db, ctx.org_id, request.path
+            )
         content: bytes | None = None
         had_allowed_tier = False
         for tier in tiers:
@@ -1158,10 +1171,14 @@ async def read_file(
                 continue
             had_allowed_tier = True
             try:
-                content = await backend.read(
-                    request.path,
-                    request.location,
-                    scope=tier.scope,
+                content = (
+                    await release_view.read(request.path)
+                    if release_view is not None
+                    else await backend.read(
+                        request.path,
+                        request.location,
+                        scope=tier.scope,
+                    )
                 )
                 break
             except FileNotFoundError:
@@ -1206,7 +1223,9 @@ async def read_file(
 )
 async def preview_workspace_file_impact(
     request: WorkspaceFileImpactRequest,
+    ctx: Context,
     user: CurrentSuperuser,
+    db: AsyncSession = Depends(get_db),
 ) -> WorkspaceFileImpactResponse:
     """Trace forward imports and transitive reverse consumers from durable bytes.
 
@@ -1222,7 +1241,36 @@ async def preview_workspace_file_impact(
     )
 
     try:
-        return await WorkspaceFileImpactService().preview(request)
+        from src.models.contracts.workspace_file_impact import (
+            WorkspaceFileImpactDiagnostic,
+        )
+        from src.services.workspace_release_files import (
+            governed_workspace_release_file_view,
+        )
+
+        release_view = await governed_workspace_release_file_view(
+            db, ctx.org_id, request.path
+        )
+        result = await WorkspaceFileImpactService(repo=release_view).preview(request)
+        if release_view is not None:
+            is_mutation = request.content is not None
+            result.diagnostics.insert(
+                0,
+                WorkspaceFileImpactDiagnostic(
+                    code="workspace_release_live_authority",
+                    severity="blocker" if is_mutation else "info",
+                    message=(
+                        f"active workspace-release-v1 {release_view.release.release_id} "
+                        "is the immutable Live authority; use `bifrost promote` "
+                        "for reviewed source changes"
+                    ),
+                    path=result.path,
+                ),
+            )
+            if is_mutation:
+                result.blocking_diagnostic_count += 1
+                result.ready_to_write = False
+        return result
     except WorkspaceFileImpactInvalid as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1268,6 +1316,12 @@ async def write_file(
             scope=effective_scope,
             path=request.path,
         )
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and solution_id is None
+        ):
+            await _reject_release_governed_mutation(db, ctx.org_id, request.path)
 
         current_stat = None
         if request.create_only or request.expected_version is not None:
@@ -1475,6 +1529,12 @@ async def delete_file(
             scope=effective_scope,
             path=request.path,
         )
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and solution_id is None
+        ):
+            await _reject_release_governed_mutation(db, ctx.org_id, request.path)
 
         if request.expected_version is not None:
             current_stat = await _get_file_stat(
@@ -1542,6 +1602,30 @@ async def delete_file(
 
 def _content_version(content: bytes) -> str:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+async def _reject_release_governed_mutation(
+    db: AsyncSession,
+    organization_id: UUID | None,
+    path: str,
+) -> None:
+    from src.services.workspace_release_files import (
+        WorkspaceReleasePathGoverned,
+        reject_release_governed_paths,
+    )
+
+    try:
+        await reject_release_governed_paths(db, organization_id, [path])
+    except WorkspaceReleasePathGoverned as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "workspace_release_governed_path",
+                "path": exc.path,
+                "release_id": exc.release_id,
+                "message": str(exc),
+            },
+        ) from exc
 
 
 async def _lock_file_mutation(
@@ -1817,6 +1901,19 @@ async def file_stat(
             await file_read_tiers(db, ctx, request.location, request.scope),
             request.mode,
         )
+        release_view = None
+        if (
+            request.location == "workspace"
+            and request.mode == "cloud"
+            and _ctx_solution_id(ctx, request.location) is None
+        ):
+            from src.services.workspace_release_files import (
+                governed_workspace_release_file_view,
+            )
+
+            release_view = await governed_workspace_release_file_view(
+                db, ctx.org_id, request.path
+            )
         for tier in tiers:
             allowed = await _authorize_file_policy(
                 ctx,
@@ -1829,13 +1926,22 @@ async def file_stat(
             )
             if not allowed:
                 continue
-            stat = await _get_file_stat(
-                db,
-                request.path,
-                request.location,
-                tier.scope,
-                request.mode,
-            )
+            if release_view is not None:
+                content = await release_view.read(request.path)
+                stat = FileStatResponse(
+                    path=request.path,
+                    exists=True,
+                    version=_content_version(content),
+                    size=len(content),
+                )
+            else:
+                stat = await _get_file_stat(
+                    db,
+                    request.path,
+                    request.location,
+                    tier.scope,
+                    request.mode,
+                )
             if stat.exists:
                 return stat
         return FileStatResponse(path=request.path, exists=False)
