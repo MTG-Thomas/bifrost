@@ -9,38 +9,69 @@ import io
 import json
 import re
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
-from uuid import UUID
+from typing import Any, Awaitable, Callable
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bifrost.promotion import (
+    MAX_CLOSURE_BYTES,
+    MAX_CLOSURE_FILES,
     MAX_SNAPSHOT_FILES,
-    PROMOTION_BUNDLE_SCHEMA,
-    dependency_edges,
+    PromotionBundleError,
+    normalize_workspace_path,
+    reject_path_collisions,
     sha256_bytes,
-    validate_submitted_bundle,
+    snapshot_id,
+)
+from bifrost.workspace_impact import (
+    WORKSPACE_IMPORT_ROOTS,
+    analyze_workspace_impact,
+    reverse_edges,
+    transitive_distances,
+)
+from bifrost.workspace_release import (
+    WORKSPACE_RELEASE_CONTENT_SCHEMA,
+    canonical_digest,
+    repo_v1_release_id,
+    workspace_closure_id,
+    workspace_content_id,
+    workspace_manifest_id,
+    workspace_registration_manifest_id,
+    workspace_release_id,
 )
 from src.models.contracts.workspace_promotions import (
     PromotionClosureMember,
     PromotionDiagnostic,
+    PromotionEntry,
+    PromotionRegistrationEvidence,
+    PromotionSourceEvidence,
+    WorkspacePromotionArtifactResponse,
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
 )
 from src.models.orm.workspace_promotions import WorkspacePromotionArtifact
 from src.models.orm.workflows import Workflow
-from src.services.repo_storage import RepoStorage
 from src.services.audit import emit_audit
+from src.services.platform_commit_writer import (
+    PlatformCommitError,
+    PlatformCommitWriter,
+)
+from src.services.repo_storage import RepoStorage
 from src.services.workflow_registration import (
     WorkspaceRegistrationCandidate,
     plan_workspace_registrations,
+    resolve_workflow_registration_id,
 )
 from src.services.workspace_promotion_storage import WorkspacePromotionArtifactStorage
 
-PROMOTION_PREVIEW_POLICY = "workspace-rapid-preview/2026-08-14"
+PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-19"
+PROMOTION_BUNDLE_SCHEMA_V2 = "bifrost.workspace-promotion-bundle/v2"
+PROMOTION_ARTIFACT_SCHEMA = "bifrost.workspace-release-artifact/v1"
 ARTIFACT_TTL = timedelta(days=7)
 R0_EFFECTS = {"bifrost.read", "integration.read"}
 REQUIRED_R0_BOUNDS = {
@@ -59,6 +90,48 @@ _SECRET_PATTERNS = (
 
 class WorkspacePromotionInvalid(ValueError):
     """Submitted bytes do not form one safe, coherent preview artifact."""
+
+
+@dataclass(frozen=True)
+class _BaseSnapshot:
+    release_id: str
+    manifest_id: str
+    files: dict[str, bytes]
+    hashes: dict[str, str]
+    registrations: dict[str, dict[str, Any]]
+
+
+def _digest(payload: Any) -> str:
+    return canonical_digest(payload)
+
+
+def _manifest_id(files: dict[str, str]) -> str:
+    return workspace_manifest_id(files)
+
+
+def _repo_v1_release_id(files: dict[str, str]) -> str:
+    return repo_v1_release_id(files)
+
+
+def _closure_id(entry: PromotionEntry, hashes: dict[str, str]) -> str:
+    return workspace_closure_id(entry.model_dump(), hashes)
+
+
+def _content_id(entry: PromotionEntry, closure_id: str) -> str:
+    return workspace_content_id(entry.model_dump(), closure_id)
+
+
+def _is_executable_python_path(path: str) -> bool:
+    return path.endswith(".py") and path.split("/", 1)[0] in WORKSPACE_IMPORT_ROOTS
+
+
+def _allocated_registration_id(
+    organization_id: UUID, path: str, function_name: str
+) -> UUID:
+    return uuid5(
+        NAMESPACE_URL,
+        f"bifrost-workspace:{organization_id}:{path}::{function_name}",
+    )
 
 
 def _is_r0_effect(effect: str) -> bool:
@@ -324,8 +397,149 @@ def _source_zip(files: dict[str, bytes]) -> bytes:
     return output.getvalue()
 
 
+def _validate_closure_files(
+    request: WorkspacePromotionPreviewRequest, files: dict[str, bytes]
+) -> dict[str, bytes]:
+    snapshot_files = {
+        normalize_workspace_path(path): digest
+        for path, digest in request.snapshot.files.items()
+    }
+    reject_path_collisions(snapshot_files)
+    if snapshot_id(snapshot_files) != request.snapshot.snapshot_id:
+        raise WorkspacePromotionInvalid(
+            "snapshot_id does not match the submitted path/hash manifest"
+        )
+    declared: dict[str, str] = {}
+    for item in request.snapshot.closure:
+        path = normalize_workspace_path(item.path)
+        if path in declared:
+            raise WorkspacePromotionInvalid(f"duplicate closure path: {path}")
+        declared[path] = item.sha256
+    if set(files) != set(declared):
+        raise WorkspacePromotionInvalid(
+            "protected source paths do not match the declared closure"
+        )
+    if (
+        len(files) > MAX_CLOSURE_FILES
+        or sum(map(len, files.values())) > MAX_CLOSURE_BYTES
+    ):
+        raise WorkspacePromotionInvalid("submitted closure exceeds promotion limits")
+    decoded: dict[str, bytes] = {}
+    for path, raw in files.items():
+        digest = sha256_bytes(raw)
+        if declared[path] != digest or snapshot_files.get(path) != digest:
+            raise WorkspacePromotionInvalid(f"content hash mismatch for {path}")
+        decoded[path] = raw
+    selected = normalize_workspace_path(request.entry.path)
+    if selected not in decoded:
+        raise WorkspacePromotionInvalid("selected workflow path is absent from closure")
+    return decoded
+
+
+def _canonical_impact_diagnostics(
+    *,
+    entry_path: str,
+    base_files: dict[str, bytes],
+    closure_files: dict[str, bytes],
+) -> tuple[list[PromotionDiagnostic], set[str]]:
+    effective_python = {
+        path: raw
+        for path, raw in {**base_files, **closure_files}.items()
+        if path.endswith(".py") and path.split("/", 1)[0] in WORKSPACE_IMPORT_ROOTS
+    }
+    try:
+        analysis = analyze_workspace_impact(effective_python)
+    except PromotionBundleError as exc:
+        raise WorkspacePromotionInvalid(str(exc)) from exc
+
+    forward = set(transitive_distances(entry_path, analysis.edges))
+    submitted = set(closure_files)
+    missing = forward - submitted
+    extras = submitted - forward
+    if missing:
+        raise WorkspacePromotionInvalid(
+            "dependency closure is missing " + ", ".join(sorted(missing))
+        )
+    if extras:
+        raise WorkspacePromotionInvalid(
+            "closure contains unrelated paths: " + ", ".join(sorted(extras))
+        )
+
+    changed = {
+        path
+        for path, raw in closure_files.items()
+        if base_files.get(path) != raw
+    }
+    reverse = reverse_edges(analysis.edges)
+    affected = set(forward)
+    for path in changed:
+        affected.update(transitive_distances(path, reverse))
+
+    diagnostics: list[PromotionDiagnostic] = []
+    for path in sorted(affected):
+        if unresolved := analysis.unresolved_imports.get(path):
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="unresolved_repo_import",
+                    severity="blocker",
+                    message="unresolved repo-local imports: " + ", ".join(unresolved),
+                    path=path,
+                )
+            )
+        if ambiguous := analysis.ambiguous_references.get(path):
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="ambiguous_workflow_reference",
+                    severity="blocker",
+                    message="workflow reference resolves ambiguously: "
+                    + ", ".join(ambiguous),
+                    path=path,
+                )
+            )
+        if path in analysis.dynamic_importers:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="dynamic_import_unresolved",
+                    severity="blocker",
+                    message="computed dynamic import prevents complete impact proof",
+                    path=path,
+                )
+            )
+        if path in analysis.dynamic_reference_importers:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="dynamic_workflow_reference_unresolved",
+                    severity="blocker",
+                    message=(
+                        "computed workflow reference prevents complete impact proof"
+                    ),
+                    path=path,
+                )
+            )
+
+    for changed_path in sorted(changed):
+        outside = sorted(
+            set(transitive_distances(changed_path, reverse))
+            - submitted
+            - {changed_path}
+        )
+        if outside:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="shared_dependency_outside_candidate",
+                    severity="blocker",
+                    message=(
+                        "changed source has reverse consumers outside the candidate: "
+                        + ", ".join(outside[:20])
+                    ),
+                    path=changed_path,
+                )
+            )
+    return diagnostics, forward
+
+
 class WorkspacePromotionPreviewService:
-    """Build and persist immutable previews; intentionally cannot activate them."""
+    """Build and persist immutable release artifacts without activating them."""
 
     def __init__(
         self,
@@ -333,29 +547,40 @@ class WorkspacePromotionPreviewService:
         organization_id: UUID,
         *,
         repo_storage: RepoStorage | None = None,
+        commit_writer: PlatformCommitWriter | None = None,
+        workspace_generation: Callable[[], Awaitable[str]] | None = None,
+        base_resolver: Callable[[], Awaitable[_BaseSnapshot]] | None = None,
     ):
         self.db = db
         self.organization_id = organization_id
         self.repo_storage = repo_storage or RepoStorage()
+        self.commit_writer = commit_writer
+        if workspace_generation is None:
+            from src.core.module_cache import get_workspace_generation
+
+            workspace_generation = get_workspace_generation
+        self.workspace_generation = workspace_generation
+        self.base_resolver = base_resolver
 
     async def preview(
         self, request: WorkspacePromotionPreviewRequest, user_id: UUID
     ) -> WorkspacePromotionPreviewResponse:
-        try:
-            files = validate_submitted_bundle(
-                selected_path=request.entry.path,
-                snapshot_id_value=request.snapshot.snapshot_id,
-                snapshot_files=request.snapshot.files,
-                files=[item.model_dump() for item in request.snapshot.closure],
-            )
-            metadata = _entry_metadata(
-                files[request.entry.path], request.entry.path, request.entry.function
-            )
-        except (ValueError, KeyError) as exc:
-            raise WorkspacePromotionInvalid(str(exc)) from exc
+        if normalize_workspace_path(request.entry.path) != request.entry.path:
+            raise WorkspacePromotionInvalid("entry path must be canonical POSIX form")
+        protected_source, source_files = await self._read_protected_source(request)
+        files = _validate_closure_files(request, source_files)
+        base = await self._resolve_base(request)
+        metadata = _entry_metadata(
+            files[request.entry.path], request.entry.path, request.entry.function
+        )
+        impact_diagnostics, _ = _canonical_impact_diagnostics(
+            entry_path=request.entry.path,
+            base_files=base.files,
+            closure_files=files,
+        )
 
         static_effects, diagnostics = _static_effects(files)
-        diagnostics.extend(await self._reverse_dependency_diagnostics(files))
+        diagnostics.extend(impact_diagnostics)
         if any(item.code == "secret_material_detected" for item in diagnostics):
             raise WorkspacePromotionInvalid(
                 "high-confidence secret material detected; no artifact was stored"
@@ -384,9 +609,32 @@ class WorkspacePromotionPreviewService:
                     path=item.get("path"),
                 )
             )
-        registration = action_list[0] if action_list else {}
+        for action in action_list:
+            if action.get("action") != "create" or action.get("requested_id"):
+                continue
+            allocated_id = _allocated_registration_id(
+                self.organization_id,
+                action["path"],
+                action["function_name"],
+            )
+            await resolve_workflow_registration_id(self.db, str(allocated_id), None)
+            action["requested_id"] = str(allocated_id)
+        registration_intent = action_list
         existing = await self._existing_workflow(
             request.entry.path, request.entry.function
+        )
+        registration_state = self._activation_state(existing)
+        registration_intent_fingerprint = _digest(
+            {
+                "schema": "bifrost.workspace-registration-intent/v1",
+                "actions": registration_intent,
+            }
+        )
+        registration_state_fingerprint = _digest(
+            {
+                "schema": "bifrost.workspace-registration-state/v1",
+                "state": registration_state,
+            }
         )
         if existing is not None and (
             existing.organization_id is None
@@ -401,7 +649,8 @@ class WorkspacePromotionPreviewService:
                     code="existing_activation_surface",
                     severity="blocker",
                     message=(
-                        "existing global, tool/provider, endpoint, API-key, or non-role-based "
+                        "existing global, tool/provider, endpoint, API-key, or "
+                        "non-role-based "
                         "registration is not eligible for rapid promotion"
                     ),
                     path=request.entry.path,
@@ -427,6 +676,11 @@ class WorkspacePromotionPreviewService:
                     + ", ".join(sorted(missing_bounds)),
                 )
             )
+        closure_hashes = {
+            path: sha256_bytes(raw) for path, raw in sorted(files.items())
+        }
+        closure_id = _closure_id(request.entry, closure_hashes)
+        content_id = _content_id(request.entry, closure_id)
         if request.local_run is None or not request.local_run.succeeded:
             diagnostics.append(
                 PromotionDiagnostic(
@@ -435,30 +689,19 @@ class WorkspacePromotionPreviewService:
                     message="a successful local run bound to this snapshot is required",
                 )
             )
-        diagnostics.extend(
-            [
+        elif request.local_run.closure_id != closure_id:
+            diagnostics.append(
                 PromotionDiagnostic(
-                    code="server_run_evidence_unavailable",
+                    code="local_run_evidence_mismatch",
                     severity="blocker",
-                    message="local evidence is not yet server-issued and verifiable",
-                ),
-                PromotionDiagnostic(
-                    code="production_loader_smoke_unavailable",
-                    severity="blocker",
-                    message="candidate-backed production loader smoke is not implemented yet",
-                ),
-                PromotionDiagnostic(
-                    code="preview_only_dark_launch",
-                    severity="blocker",
-                    message="rapid promotion activation is intentionally disabled",
-                ),
-            ]
-        )
+                    message="local run evidence is for a different forward closure",
+                )
+            )
         r2_diagnostic_codes = {
             "existing_activation_surface",
             "local_run_evidence_missing",
+            "local_run_evidence_mismatch",
             "registration_conflict",
-            "reverse_dependency_scan_failed",
             "shared_dependency_outside_candidate",
             "undeclared_static_effect",
             "unenforced_resource_bounds",
@@ -479,49 +722,127 @@ class WorkspacePromotionPreviewService:
             )
             for path, raw in sorted(files.items())
         ]
+        effective_files = dict(sorted({**base.hashes, **closure_hashes}.items()))
+        effective_manifest_id = _manifest_id(effective_files)
+        registration_key = f"{request.entry.path}::{request.entry.function}"
+        action = registration_intent[0] if registration_intent else {}
+        effective_registration = {
+            "path": request.entry.path,
+            "function": request.entry.function,
+            "workflow_id": (
+                action.get("requested_id")
+                or (registration_state or {}).get("workflow_id")
+            ),
+            "type": action.get("type", "workflow"),
+            "name": action.get("name", request.entry.function),
+            "organization_id": action.get("organization_id"),
+            "is_active": True,
+            "source_sha256": closure_hashes[request.entry.path],
+        }
+        effective_registrations = dict(sorted({
+            **base.registrations,
+            registration_key: effective_registration,
+        }.items()))
+        effective_registration_manifest_id = workspace_registration_manifest_id(
+            effective_registrations
+        )
+        release_payload = {
+            "organization_id": str(self.organization_id),
+            "base_release_id": base.release_id,
+            "base_manifest_id": base.manifest_id,
+            "effective_manifest_id": effective_manifest_id,
+            "effective_files": effective_files,
+            "effective_registration_manifest_id": (
+                effective_registration_manifest_id
+            ),
+            "effective_registrations": effective_registrations,
+            "entry": request.entry.model_dump(),
+            "registration_intent_fingerprint": registration_intent_fingerprint,
+            "protected_source": protected_source.model_dump(),
+        }
+        release_id = workspace_release_id(release_payload)
         candidate_payload = {
-            "schema_version": PROMOTION_BUNDLE_SCHEMA,
+            "schema_version": PROMOTION_ARTIFACT_SCHEMA,
             "organization_id": str(self.organization_id),
             "target": request.target,
             "entry": request.entry.model_dump(),
+            "content_id": content_id,
+            "closure_id": closure_id,
+            "release_id": release_id,
+            "base_release_id": base.release_id,
+            "base_manifest_id": base.manifest_id,
+            "effective_manifest_id": effective_manifest_id,
+            "effective_files": effective_files,
+            "effective_registration_manifest_id": (
+                effective_registration_manifest_id
+            ),
+            "effective_registrations": effective_registrations,
             "snapshot_id": request.snapshot.snapshot_id,
             "closure": [item.model_dump() for item in closure],
-            "source_revision": request.source_revision,
+            "protected_source": protected_source.model_dump(),
             "declared_effects": declared_effects,
             "static_effects": static_effects,
             "computed_effects": computed_effects,
             "bounds": metadata["bounds"],
             "requested_bounds": metadata["requested_bounds"],
-            "registration": registration,
-            "existing_activation": self._activation_state(existing),
+            "registration": {
+                "intent": registration_intent,
+                "intent_fingerprint": registration_intent_fingerprint,
+                "state": registration_state,
+                "state_fingerprint": registration_state_fingerprint,
+            },
             "local_run": request.local_run.model_dump(mode="json")
             if request.local_run
             else None,
             "client": request.client.model_dump(),
             "policy_version": PROMOTION_PREVIEW_POLICY,
+            "supersedes_candidate_id": request.supersedes_candidate_id,
         }
         candidate_id = _canonical_candidate(candidate_payload)
         expires_at = datetime.now(timezone.utc) + ARTIFACT_TTL
         artifact = await self._find_artifact(candidate_id)
         if artifact is None:
+            superseded = await self._resolve_superseded(
+                request.supersedes_candidate_id
+            )
             storage = WorkspacePromotionArtifactStorage(
-                self.organization_id, candidate_id
+                self.organization_id, content_id
             )
             manifest_bytes = json.dumps(
-                candidate_payload, sort_keys=True, separators=(",", ":")
+                {
+                    "schema": WORKSPACE_RELEASE_CONTENT_SCHEMA,
+                    "content_id": content_id,
+                    "closure_id": closure_id,
+                    "entry": request.entry.model_dump(),
+                    "files": closure_hashes,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
             ).encode("utf-8")
             source_key = await storage.write_source(_source_zip(files))
             manifest_key = await storage.write_manifest(manifest_bytes)
             artifact = WorkspacePromotionArtifact(
                 organization_id=self.organization_id,
                 candidate_id=candidate_id,
-                schema_version=PROMOTION_BUNDLE_SCHEMA,
+                content_id=content_id,
+                closure_id=closure_id,
+                release_id=release_id,
+                base_release_id=base.release_id,
+                base_manifest_id=base.manifest_id,
+                effective_manifest_id=effective_manifest_id,
+                effective_registration_manifest_id=(
+                    effective_registration_manifest_id
+                ),
+                registration_intent_fingerprint=registration_intent_fingerprint,
+                registration_state_fingerprint=registration_state_fingerprint,
+                schema_version=PROMOTION_BUNDLE_SCHEMA_V2,
                 target_kind="workspace",
                 entity_type="workflow",
                 entry_path=request.entry.path,
                 entry_function=request.entry.function,
                 snapshot_id=request.snapshot.snapshot_id,
-                source_revision=request.source_revision,
+                source_revision=protected_source.commit_sha,
+                source_tree_sha=protected_source.tree_sha,
                 source_artifact_key=source_key,
                 manifest_key=manifest_key,
                 manifest=candidate_payload,
@@ -531,6 +852,7 @@ class WorkspacePromotionPreviewService:
                 policy_version=PROMOTION_PREVIEW_POLICY,
                 created_by=user_id,
                 expires_at=expires_at,
+                supersedes_artifact_id=superseded.id if superseded else None,
             )
             self.db.add(artifact)
             await self.db.flush()
@@ -541,6 +863,8 @@ class WorkspacePromotionPreviewService:
             resource_id=artifact.id,
             details={
                 "candidate_id": candidate_id,
+                "content_id": content_id,
+                "release_id": release_id,
                 "snapshot_id": request.snapshot.snapshot_id,
                 "entry_path": request.entry.path,
                 "entry_function": request.entry.function,
@@ -554,10 +878,29 @@ class WorkspacePromotionPreviewService:
         )
         await self.db.commit()
         await self.db.refresh(artifact)
+        registration = PromotionRegistrationEvidence(
+            intent=registration_intent,
+            intent_fingerprint=registration_intent_fingerprint,
+            state=registration_state,
+            state_fingerprint=registration_state_fingerprint,
+        )
+        lifecycle = await self._lifecycle(artifact)
         return WorkspacePromotionPreviewResponse(
+            ready_to_activate=False,
             disposition="review_required",
             artifact_id=artifact.id,
             candidate_id=candidate_id,
+            content_id=content_id,
+            closure_id=closure_id,
+            release_id=release_id,
+            base_release_id=base.release_id,
+            base_manifest_id=base.manifest_id,
+            effective_manifest_id=effective_manifest_id,
+            effective_files=effective_files,
+            effective_registration_manifest_id=(
+                effective_registration_manifest_id
+            ),
+            effective_registrations=effective_registrations,
             snapshot_id=request.snapshot.snapshot_id,
             risk_class=risk,
             policy_version=PROMOTION_PREVIEW_POLICY,
@@ -568,6 +911,10 @@ class WorkspacePromotionPreviewService:
             bounds=metadata["bounds"],
             requested_bounds=metadata["requested_bounds"],
             registration=registration,
+            protected_source=protected_source,
+            lifecycle_status=lifecycle,
+            supersedes_candidate_id=request.supersedes_candidate_id,
+            source_artifact_key=artifact.source_artifact_key,
             diagnostics=diagnostics,
             expires_at=artifact.expires_at,
         )
@@ -588,67 +935,184 @@ class WorkspacePromotionPreviewService:
         )
         return result.scalar_one_or_none()
 
-    async def _reverse_dependency_diagnostics(
-        self, candidate_files: dict[str, bytes]
-    ) -> list[PromotionDiagnostic]:
-        """Fail closed when a changed path has an outside live importer."""
-        try:
-            live_paths = sorted(
-                path for path in await self.repo_storage.list() if path.endswith(".py")
+    async def _read_protected_source(
+        self, request: WorkspacePromotionPreviewRequest
+    ) -> tuple[PromotionSourceEvidence, dict[str, bytes]]:
+        if self.commit_writer is None:
+            raise WorkspacePromotionInvalid(
+                "reviewed production preview requires the protected Git source reader"
             )
-            if len(live_paths) > MAX_SNAPSHOT_FILES:
-                raise WorkspacePromotionInvalid(
-                    "live workspace is too large for reverse-dependency validation"
-                )
+        paths = tuple(
+            sorted(
+                normalize_workspace_path(item.path)
+                for item in request.snapshot.closure
+            )
+        )
+        if any(
+            normalize_workspace_path(item.path) != item.path
+            for item in request.snapshot.closure
+        ):
+            raise WorkspacePromotionInvalid(
+                "closure paths must use canonical POSIX form"
+            )
+        try:
+            source = await self.commit_writer.read_files(
+                paths,
+                ref=request.protected_source.commit_sha,
+                reachable_from="main",
+            )
+        except PlatformCommitError as exc:
+            raise WorkspacePromotionInvalid(str(exc)) from exc
+        if source.commit_sha != request.protected_source.commit_sha:
+            raise WorkspacePromotionInvalid(
+                "protected-main source SHA resolved to a different commit"
+            )
+        if source.tree_sha != request.protected_source.tree_sha:
+            raise WorkspacePromotionInvalid(
+                "protected-main tree SHA changed after local review"
+            )
+        return (
+            PromotionSourceEvidence(
+                commit_sha=source.commit_sha,
+                tree_sha=source.tree_sha,
+            ),
+            source.files,
+        )
+
+    async def _resolve_base(
+        self, request: WorkspacePromotionPreviewRequest
+    ) -> _BaseSnapshot:
+        base = (
+            await self.base_resolver()
+            if self.base_resolver is not None
+            else await self._repo_v1_base()
+        )
+        expected = request.expected_base_release_id
+        if expected is not None and expected != base.release_id:
+            raise WorkspacePromotionInvalid(
+                "active Workspace base changed after the caller selected it"
+            )
+        return base
+
+    async def _repo_v1_base(self) -> _BaseSnapshot:
+        before = await self.workspace_generation()
+        if before.startswith("updating:"):
+            raise WorkspacePromotionInvalid(
+                "workspace source update is in progress; retry preview"
+            )
+        paths = sorted(
+            path
+            for path in await self.repo_storage.list()
+            if _is_executable_python_path(path)
+        )
+        if len(paths) > MAX_SNAPSHOT_FILES:
+            raise WorkspacePromotionInvalid(
+                f"workspace base exceeds {MAX_SNAPSHOT_FILES} files"
+            )
+        reject_path_collisions(paths)
+        read_many = getattr(self.repo_storage, "read_many", None)
+        if read_many is not None:
+            files = await read_many(paths, concurrency=32)
+        else:
             semaphore = asyncio.Semaphore(32)
 
             async def read(path: str) -> tuple[str, bytes]:
                 async with semaphore:
                     return path, await self.repo_storage.read(path)
 
-            live_files = dict(
-                await asyncio.gather(*(read(path) for path in live_paths))
+            files = dict(await asyncio.gather(*(read(path) for path in paths)))
+        after = await self.workspace_generation()
+        if before != after or after.startswith("updating:"):
+            raise WorkspacePromotionInvalid(
+                "workspace source changed while resolving the release base"
             )
-            graph_files = {**live_files, **candidate_files}
-            edges = dependency_edges(graph_files)
-        except WorkspacePromotionInvalid:
-            raise
-        except Exception as exc:  # noqa: BLE001 - storage backends differ
-            return [
-                PromotionDiagnostic(
-                    code="reverse_dependency_scan_failed",
-                    severity="blocker",
-                    message=f"could not prove live reverse dependencies: {type(exc).__name__}",
-                )
-            ]
+        hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
+        return _BaseSnapshot(
+            release_id=_repo_v1_release_id(hashes),
+            manifest_id=_manifest_id(hashes),
+            files=files,
+            hashes=hashes,
+            registrations={},
+        )
 
-        closure = set(candidate_files)
-        changed = {
-            path
-            for path, raw in candidate_files.items()
-            if path not in live_files
-            or sha256_bytes(live_files[path]) != sha256_bytes(raw)
-        }
-        diagnostics: list[PromotionDiagnostic] = []
-        for changed_path in sorted(changed):
-            outside_importers = sorted(
-                importer
-                for importer, dependencies in edges.items()
-                if changed_path in dependencies and importer not in closure
+    async def _resolve_superseded(
+        self, candidate_id: str | None
+    ) -> WorkspacePromotionArtifact | None:
+        if candidate_id is None:
+            return None
+        artifact = await self._find_artifact(candidate_id)
+        if artifact is None:
+            raise WorkspacePromotionInvalid(
+                "superseded candidate does not exist in this organization"
             )
-            if outside_importers:
-                diagnostics.append(
-                    PromotionDiagnostic(
-                        code="shared_dependency_outside_candidate",
-                        severity="blocker",
-                        message=(
-                            "changed source has live reverse consumers outside the candidate: "
-                            + ", ".join(outside_importers[:20])
-                        ),
-                        path=changed_path,
-                    )
-                )
-        return diagnostics
+        if artifact.expires_at <= datetime.now(timezone.utc):
+            raise WorkspacePromotionInvalid("expired candidates cannot be superseded")
+        if artifact.artifact_state == "invalid":
+            raise WorkspacePromotionInvalid("invalid candidates cannot be superseded")
+        result = await self.db.execute(
+            select(WorkspacePromotionArtifact.id).where(
+                WorkspacePromotionArtifact.organization_id == self.organization_id,
+                WorkspacePromotionArtifact.supersedes_artifact_id == artifact.id,
+            )
+        )
+        if result.scalar_one_or_none() is not None:
+            raise WorkspacePromotionInvalid("candidate is already superseded")
+        return artifact
+
+    async def _lifecycle(self, artifact: WorkspacePromotionArtifact) -> str:
+        result = await self.db.execute(
+            select(WorkspacePromotionArtifact.id).where(
+                WorkspacePromotionArtifact.organization_id == self.organization_id,
+                WorkspacePromotionArtifact.supersedes_artifact_id == artifact.id,
+            )
+        )
+        if result.scalar_one_or_none() is not None:
+            return "superseded"
+        if artifact.expires_at <= datetime.now(timezone.utc):
+            return "expired"
+        return artifact.artifact_state
+
+    async def get_artifact(
+        self, artifact_id: UUID
+    ) -> WorkspacePromotionArtifactResponse:
+        result = await self.db.execute(
+            select(WorkspacePromotionArtifact).where(
+                WorkspacePromotionArtifact.id == artifact_id,
+                WorkspacePromotionArtifact.organization_id == self.organization_id,
+            )
+        )
+        artifact = result.scalar_one_or_none()
+        if artifact is None or artifact.schema_version != PROMOTION_BUNDLE_SCHEMA_V2:
+            raise KeyError(artifact_id)
+        manifest = artifact.manifest
+        return WorkspacePromotionArtifactResponse(
+            artifact_id=artifact.id,
+            candidate_id=artifact.candidate_id,
+            content_id=str(artifact.content_id),
+            closure_id=str(artifact.closure_id),
+            release_id=str(artifact.release_id),
+            base_release_id=str(artifact.base_release_id),
+            base_manifest_id=str(artifact.base_manifest_id),
+            effective_manifest_id=str(artifact.effective_manifest_id),
+            effective_files=manifest["effective_files"],
+            effective_registration_manifest_id=str(
+                artifact.effective_registration_manifest_id
+            ),
+            effective_registrations=manifest["effective_registrations"],
+            entry=manifest["entry"],
+            closure=manifest["closure"],
+            registration=manifest["registration"],
+            protected_source=manifest["protected_source"],
+            declared_effects=manifest["declared_effects"],
+            computed_effects=manifest["computed_effects"],
+            bounds=manifest["bounds"],
+            local_run=manifest.get("local_run"),
+            lifecycle_status=await self._lifecycle(artifact),
+            supersedes_candidate_id=manifest.get("supersedes_candidate_id"),
+            source_artifact_key=artifact.source_artifact_key,
+            expires_at=artifact.expires_at,
+            created_at=artifact.created_at,
+        )
 
     async def _find_artifact(
         self, candidate_id: str

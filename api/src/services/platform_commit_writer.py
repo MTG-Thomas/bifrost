@@ -13,6 +13,8 @@ from uuid import UUID
 import httpx
 import jwt
 
+from bifrost.promotion import MAX_CLOSURE_BYTES, MAX_CLOSURE_FILES
+
 _GITHUB_API_VERSION = "2022-11-28"
 _GRAPHQL_URL = "https://api.github.com/graphql"
 _REST_URL = "https://api.github.com"
@@ -97,6 +99,13 @@ class PlatformCommitSnapshot:
     signature_state: str | None = None
 
 
+@dataclass(frozen=True)
+class PlatformSourceSnapshot:
+    commit_sha: str
+    tree_sha: str
+    files: dict[str, bytes]
+
+
 class PlatformCommitWriter(Protocol):
     async def inspect(
         self,
@@ -108,6 +117,15 @@ class PlatformCommitWriter(Protocol):
         raise NotImplementedError
 
     async def write(self, request: PlatformCommitRequest) -> PlatformCommitResult:
+        raise NotImplementedError
+
+    async def read_files(
+        self,
+        paths: tuple[str, ...],
+        *,
+        ref: str,
+        reachable_from: str | None = None,
+    ) -> PlatformSourceSnapshot:
         raise NotImplementedError
 
 
@@ -196,6 +214,55 @@ class GitHubAppCommitWriter:
                 ref=ref,
                 reachable_from=reachable_from,
             )
+
+    async def read_files(
+        self,
+        paths: tuple[str, ...],
+        *,
+        ref: str,
+        reachable_from: str | None = None,
+    ) -> PlatformSourceSnapshot:
+        """Read exact bytes from one immutable, protected Git tree."""
+        normalized_paths = tuple(sorted(set(paths)))
+        if not normalized_paths:
+            raise PlatformCommitError("platform source read requires paths")
+        if len(normalized_paths) > MAX_CLOSURE_FILES:
+            raise PlatformCommitError("platform source read exceeds the file limit")
+        if self.client is not None:
+            return await self._read_files_with_client(
+                self.client,
+                normalized_paths,
+                ref=ref,
+                reachable_from=reachable_from,
+            )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await self._read_files_with_client(
+                client,
+                normalized_paths,
+                ref=ref,
+                reachable_from=reachable_from,
+            )
+
+    async def _read_files_with_client(
+        self,
+        client: httpx.AsyncClient,
+        paths: tuple[str, ...],
+        *,
+        ref: str,
+        reachable_from: str | None,
+    ) -> PlatformSourceSnapshot:
+        token = await self._installation_token(client)
+        commit = await self._commit_snapshot(client, token, ref)
+        if reachable_from is not None:
+            await self._verify_reachable_from(
+                client, token, commit["oid"], reachable_from
+            )
+        files = await self._file_contents(client, token, paths, commit["oid"])
+        return PlatformSourceSnapshot(
+            commit_sha=commit["oid"],
+            tree_sha=commit["tree_oid"],
+            files=files,
+        )
 
     async def _inspect_with_client(
         self,
@@ -423,6 +490,36 @@ class GitHubAppCommitWriter:
                     f"GitHub could not inspect file {path}: HTTP {response.status_code}"
                 )
             result[path] = hashlib.sha256(response.content).hexdigest()
+        return result
+
+    async def _file_contents(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        paths: tuple[str, ...],
+        ref: str,
+    ) -> dict[str, bytes]:
+        result: dict[str, bytes] = {}
+        total_bytes = 0
+        for path in paths:
+            encoded_path = urllib.parse.quote(path, safe="/")
+            response = await client.get(
+                f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
+                headers=self._headers(token, accept="application/vnd.github.raw+json"),
+                params={"ref": ref},
+            )
+            if response.status_code == 404:
+                raise PlatformCommitError(
+                    f"protected source does not contain required path {path}"
+                )
+            if response.is_error:
+                raise PlatformCommitError(
+                    f"GitHub could not read file {path}: HTTP {response.status_code}"
+                )
+            total_bytes += len(response.content)
+            if total_bytes > MAX_CLOSURE_BYTES:
+                raise PlatformCommitError("platform source read exceeds the byte limit")
+            result[path] = response.content
         return result
 
     async def _verify_commit(

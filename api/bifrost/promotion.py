@@ -22,7 +22,7 @@ from typing import Iterable, Mapping
 PROMOTION_BUNDLE_SCHEMA = "bifrost.workspace-promotion-bundle/v1"
 MAX_SNAPSHOT_FILES = 4_000
 MAX_CLOSURE_FILES = 200
-MAX_CLOSURE_BYTES = 4 * 1024 * 1024
+MAX_CLOSURE_BYTES = 32 * 1024 * 1024
 
 
 class PromotionBundleError(ValueError):

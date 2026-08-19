@@ -587,6 +587,53 @@ async def test_writer_inspects_exact_commit_bytes_without_mutation(private_key_p
 
 
 @pytest.mark.asyncio
+async def test_writer_reads_exact_protected_source_bytes(private_key_pem):
+    source_sha = "d" * 40
+    content = b"reviewed source\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token"})
+        if request.url.path == "/graphql":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "object": {
+                                "oid": source_sha,
+                                "tree": {"oid": "1" * 40},
+                            }
+                        }
+                    }
+                },
+            )
+        if "/compare/" in request.url.path:
+            return httpx.Response(200, json={"status": "identical"})
+        if request.url.path.endswith("/contents/workflows/example.py"):
+            assert request.url.params["ref"] == source_sha
+            return httpx.Response(200, content=content)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        writer = GitHubAppCommitWriter(
+            repo_url="https://github.com/MTG-Thomas/workspace",
+            branch="production-live",
+            app_id=123,
+            installation_id=456,
+            private_key=private_key_pem,
+            client=client,
+        )
+        snapshot = await writer.read_files(
+            ("workflows/example.py",), ref=source_sha, reachable_from="main"
+        )
+
+    assert snapshot.commit_sha == source_sha
+    assert snapshot.tree_sha == "1" * 40
+    assert snapshot.files == {"workflows/example.py": content}
+
+
+@pytest.mark.asyncio
 async def test_writer_inspects_verified_branch_head(private_key_pem):
     content = b"live source\n"
 

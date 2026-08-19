@@ -26,6 +26,23 @@ class WorkspacePromotionArtifact(Base):
         index=True,
     )
     candidate_id: Mapped[str] = mapped_column(String(71), nullable=False)
+    content_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    closure_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    release_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    base_release_id: Mapped[str | None] = mapped_column(String(72), nullable=True)
+    base_manifest_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    effective_manifest_id: Mapped[str | None] = mapped_column(
+        String(71), nullable=True
+    )
+    effective_registration_manifest_id: Mapped[str | None] = mapped_column(
+        String(71), nullable=True
+    )
+    registration_intent_fingerprint: Mapped[str | None] = mapped_column(
+        String(71), nullable=True
+    )
+    registration_state_fingerprint: Mapped[str | None] = mapped_column(
+        String(71), nullable=True
+    )
     schema_version: Mapped[str] = mapped_column(String(100), nullable=False)
     target_kind: Mapped[str] = mapped_column(
         String(20), nullable=False, default="workspace"
@@ -37,6 +54,7 @@ class WorkspacePromotionArtifact(Base):
     entry_function: Mapped[str] = mapped_column(String(255), nullable=False)
     snapshot_id: Mapped[str] = mapped_column(String(71), nullable=False)
     source_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_tree_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_artifact_key: Mapped[str] = mapped_column(String(1500), nullable=False)
     manifest_key: Mapped[str] = mapped_column(String(1500), nullable=False)
     manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -49,6 +67,11 @@ class WorkspacePromotionArtifact(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+    supersedes_artifact_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspace_promotion_artifacts.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -63,6 +86,22 @@ class WorkspacePromotionArtifact(Base):
             "organization_id",
             "candidate_id",
             unique=True,
+        ),
+        Index(
+            "ix_workspace_promotion_artifact_content",
+            "organization_id",
+            "content_id",
+        ),
+        Index(
+            "ix_workspace_promotion_artifact_release",
+            "organization_id",
+            "release_id",
+        ),
+        Index(
+            "uq_workspace_promotion_artifact_supersedes",
+            "supersedes_artifact_id",
+            unique=True,
+            postgresql_where=text("supersedes_artifact_id IS NOT NULL"),
         ),
         CheckConstraint(
             "artifact_state IN ('previewed', 'eligible', 'review_required', 'invalid')",
