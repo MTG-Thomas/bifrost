@@ -201,6 +201,7 @@ class WorkspacePromotionArtifactResponse(BaseModel):
     computed_effects: list[str]
     bounds: dict[str, int]
     local_run: PromotionRunEvidence | None = None
+    diagnostics: list[PromotionDiagnostic] = Field(default_factory=list)
     lifecycle_status: PromotionArtifactLifecycle
     supersedes_candidate_id: str | None = None
     source_artifact_key: str

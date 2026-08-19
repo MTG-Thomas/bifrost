@@ -90,6 +90,20 @@ def _cached_module_is_current(module: object, generation: str) -> bool:
     )
 
 
+def _cached_module_content_matches_hash(module: object) -> bool:
+    """Verify immutable cache bytes instead of trusting their hash label."""
+    if not isinstance(module, dict):
+        return False
+    content = module.get("content")
+    content_hash = module.get("hash")
+    return (
+        isinstance(content, str)
+        and isinstance(content_hash, str)
+        and hashlib.sha256(content.encode("utf-8")).hexdigest()
+        == content_hash.removeprefix("sha256:")
+    )
+
+
 def _decode_cached_module(data: object) -> dict[str, object] | None:
     if not data:
         return None
@@ -435,7 +449,11 @@ async def get_module(path: str) -> CachedModule | None:
         generation = None if immutable_module else await wait_for_workspace_generation()
         cached = _decode_cached_module(await redis.get(key))
         if cached is not None and (
-            immutable_module or _cached_module_is_current(cached, generation or "")
+            (
+                immutable_module
+                and _cached_module_content_matches_hash(cached)
+            )
+            or _cached_module_is_current(cached, generation or "")
         ):
             return cast(CachedModule, cached)
 

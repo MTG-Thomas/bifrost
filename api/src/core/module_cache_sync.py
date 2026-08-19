@@ -736,11 +736,20 @@ def _resolve_module_candidate(
     key = f"{MODULE_KEY_PREFIX}{storage_path}"
     data = client.get(key)
     if data:
-        module = json.loads(data)
-        if immutable_module or _cached_module_matches_generation(
+        try:
+            module = json.loads(data)
+        except (TypeError, json.JSONDecodeError):
+            module = None
+        if immutable_module and module is not None:
+            try:
+                _verify_immutable_module_hash(path, module)
+            except RuntimeError:
+                client.delete(key)
+            else:
+                return module
+        elif module is not None and _cached_module_matches_generation(
             module, expected_generation or ""
         ):
-            _verify_immutable_module_hash(path, module)
             return module
 
     api_module = _fetch_module_from_api(storage_path)
@@ -879,8 +888,14 @@ def _verify_immutable_module_hash(path: str, module: CachedModule) -> None:
         return
     if expected is None:
         raise RuntimeError(f"{label} source is absent from manifest: {path}")
-    actual = str(module.get("hash") or "").removeprefix("sha256:")
-    if actual != expected.removeprefix("sha256:"):
+    content = module.get("content")
+    labelled = str(module.get("hash") or "").removeprefix("sha256:")
+    actual = (
+        hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if isinstance(content, str)
+        else ""
+    )
+    if actual != labelled or actual != expected.removeprefix("sha256:"):
         raise RuntimeError(f"{label} import integrity mismatch: {path}")
 
 

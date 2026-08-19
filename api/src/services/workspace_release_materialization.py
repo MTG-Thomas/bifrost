@@ -409,6 +409,18 @@ class WorkspaceReleaseMaterializer:
             raise WorkspaceReleasePreparationError(
                 "only policy-classified R0 artifacts may be prepared"
             )
+        diagnostics = manifest.get("diagnostics")
+        if not isinstance(diagnostics, list) or any(
+            not isinstance(item, dict) or item.get("severity") == "blocker"
+            for item in diagnostics
+        ):
+            raise WorkspaceReleasePreparationError(
+                "artifact diagnostics do not prove a blocker-free release"
+            )
+        if manifest.get("computed_effects") != ["bifrost.read"]:
+            raise WorkspaceReleasePreparationError(
+                "release v1 currently permits only the bifrost.read effect"
+            )
 
     async def _base_files(
         self, artifact: WorkspacePromotionArtifact

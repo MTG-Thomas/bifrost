@@ -83,7 +83,7 @@ ARTIFACT_TTL = timedelta(days=7)
 DRAFT_ARTIFACT_TTL = timedelta(hours=24)
 DRAFT_UPLOAD_SCHEMA = "bifrost.workspace-draft-upload/v1"
 DRAFT_ARTIFACT_SCHEMA = "bifrost.workspace-draft-artifact/v1"
-R0_EFFECTS = {"bifrost.read", "integration.read"}
+R0_EFFECTS = {"bifrost.read"}
 REQUIRED_R0_BOUNDS = {
     "max_duration_seconds",
     "max_external_calls",
@@ -963,20 +963,11 @@ class WorkspacePromotionPreviewService:
                     message="local run evidence is for a different forward closure",
                 )
             )
-        r2_diagnostic_codes = {
-            "existing_activation_surface",
-            "local_run_evidence_missing",
-            "local_run_evidence_mismatch",
-            "registration_conflict",
-            "shared_dependency_outside_candidate",
-            "undeclared_static_effect",
-            "unenforced_resource_bounds",
-        }
         risk = (
             "R0"
             if computed_effects
             and all(_is_r0_effect(effect) for effect in computed_effects)
-            and not any(item.code in r2_diagnostic_codes for item in diagnostics)
+            and not any(item.severity == "blocker" for item in diagnostics)
             else "R2"
         )
         closure = [
@@ -1051,6 +1042,7 @@ class WorkspacePromotionPreviewService:
             "computed_effects": computed_effects,
             "bounds": metadata["bounds"],
             "requested_bounds": metadata["requested_bounds"],
+            "diagnostics": [item.model_dump() for item in diagnostics],
             "registration": {
                 "intent": registration_intent,
                 "intent_fingerprint": registration_intent_fingerprint,
@@ -1222,16 +1214,13 @@ class WorkspacePromotionPreviewService:
                 "closure paths must use canonical POSIX form"
             )
         try:
-            source = await self.commit_writer.read_files(
-                paths,
-                ref=request.protected_source.commit_sha,
-                reachable_from="main",
-            )
+            source = await self.commit_writer.read_files(paths, ref="main")
         except PlatformCommitError as exc:
             raise WorkspacePromotionInvalid(str(exc)) from exc
         if source.commit_sha != request.protected_source.commit_sha:
             raise WorkspacePromotionInvalid(
-                "protected-main source SHA resolved to a different commit"
+                "protected main advanced after local review; fetch origin/main and "
+                "rebuild the promotion preview from the current protected head"
             )
         if source.tree_sha != request.protected_source.tree_sha:
             raise WorkspacePromotionInvalid(
@@ -1424,6 +1413,7 @@ class WorkspacePromotionPreviewService:
             computed_effects=manifest["computed_effects"],
             bounds=manifest["bounds"],
             local_run=manifest.get("local_run"),
+            diagnostics=manifest.get("diagnostics", []),
             lifecycle_status=await self._lifecycle(artifact),
             supersedes_candidate_id=manifest.get("supersedes_candidate_id"),
             source_artifact_key=artifact.source_artifact_key,
