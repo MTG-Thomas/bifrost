@@ -148,6 +148,31 @@ class ProcessPoolAdmissionRejected(RuntimeError):
     """Raised when local process-pool capacity cannot admit an execution."""
 
 
+class WorkspaceDraftDurationLimitInvalid(ValueError):
+    """A draft canary lacks a valid immutable parent-process deadline."""
+
+
+def execution_timeout_from_context(
+    context: dict[str, Any], default_timeout: int
+) -> int:
+    """Resolve the parent-enforced deadline, failing closed for draft canaries."""
+    timeout = context.get("timeout_seconds", default_timeout)
+    if context.get("runtime_mode") != "workspace-draft-v1":
+        return timeout
+    hard_limit = context.get("draft_max_duration_seconds")
+    if (
+        not isinstance(hard_limit, int)
+        or isinstance(hard_limit, bool)
+        or hard_limit <= 0
+    ):
+        raise WorkspaceDraftDurationLimitInvalid(
+            "draft canary is missing its hard duration bound"
+        )
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+        raise WorkspaceDraftDurationLimitInvalid("draft canary timeout is invalid")
+    return min(timeout, hard_limit)
+
+
 @dataclass
 class ExecutionInfo:
     """
@@ -709,6 +734,11 @@ class ProcessPoolManager:
         self._admission_attempts += 1
         admission_started = time.monotonic()
 
+        # Validate immutable draft limits before writing context or forking.
+        timeout = execution_timeout_from_context(
+            context, self.execution_timeout_seconds
+        )
+
         # Write context to Redis
         await self._write_context_to_redis(execution_id, context)
 
@@ -755,9 +785,6 @@ class ProcessPoolManager:
             # _fork_process repeats the final template-alive validation and
             # returns a handle already in BUSY.
             handle = self._fork_process()
-
-        # Get timeout from context or use default
-        timeout = context.get("timeout_seconds", self.execution_timeout_seconds)
 
         handle.current_execution = ExecutionInfo(
             execution_id=execution_id,

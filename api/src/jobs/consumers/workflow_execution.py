@@ -588,8 +588,45 @@ class WorkflowExecutionConsumer(BaseConsumer):
             runtime_storage_prefix: str | None = None
             workspace_release_id: str | None = None
             workspace_release_source_hashes: dict[str, str] | None = None
+            draft_max_output_bytes: int | None = None
 
-            if not is_script and workflow_id:
+            if not is_script and runtime_mode == "workspace-draft-v1":
+                from src.models.orm.executions import Execution
+                from src.services.workspace_draft_canary import (
+                    WorkspaceDraftCanaryError,
+                    resolve_draft_runtime_evidence,
+                    workflow_data_from_draft_evidence,
+                )
+
+                try:
+                    async with get_db_context() as db:
+                        execution = await db.get(Execution, UUID(execution_id))
+                        if (
+                            execution is None
+                            or execution.workflow_id is not None
+                            or execution.runtime_mode != "workspace-draft-v1"
+                        ):
+                            raise WorkspaceDraftCanaryError(
+                                "draft canary is missing its durable execution pin"
+                            )
+                        evidence = await resolve_draft_runtime_evidence(
+                            db, pending.get("runtime_evidence"), execution
+                        )
+                    workflow_data = workflow_data_from_draft_evidence(evidence)
+                except WorkspaceDraftCanaryError as exc:
+                    raise RuntimeError(str(exc)) from exc
+                workflow_name = workflow_data["name"]
+                workflow_function_name = workflow_data["function_name"]
+                file_path = workflow_data["path"]
+                workflow_type = workflow_data["type"]
+                cache_ttl_seconds = workflow_data["cache_ttl_seconds"]
+                timeout_seconds = workflow_data["timeout_seconds"]
+                content_hash = workflow_data["content_hash"]
+                runtime_storage_prefix = workflow_data["runtime_storage_prefix"]
+                workspace_release_source_hashes = workflow_data["source_hashes"]
+                workspace_release_id = workflow_data["draft_runtime_id"]
+                draft_max_output_bytes = workflow_data["max_output_bytes"]
+            elif not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
 
                 try:
@@ -887,6 +924,11 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 ),
                 "workspace_release_source_hashes": workspace_release_source_hashes,
                 "workspace_generation": workspace_release_id,
+                "runtime_mode": runtime_mode,
+                "draft_max_duration_seconds": (
+                    timeout_seconds if runtime_mode == "workspace-draft-v1" else None
+                ),
+                "draft_max_output_bytes": draft_max_output_bytes,
                 "solution_global_repo_access": solution_global_repo_access,
                 # Pre-minted engine token: child writes directly to credentials file,
                 # no SECRET_KEY required in child env.

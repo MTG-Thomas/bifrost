@@ -1,4 +1,4 @@
-"""Preview-only rapid Workspace promotion HTTP surface."""
+"""Immutable Workspace promotion preview and draft-canary HTTP surface."""
 
 from uuid import UUID
 
@@ -8,9 +8,15 @@ from src.config import get_settings
 from src.core.auth import Context, CurrentSuperuser
 from src.core.db_deps import DbSession
 from src.models.contracts.workspace_promotions import (
+    WorkspaceDraftCanaryAccepted,
+    WorkspaceDraftCanaryRequest,
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
     WorkspacePromotionArtifactResponse,
+)
+from src.services.workspace_draft_canary import (
+    WorkspaceDraftCanaryError,
+    WorkspaceDraftCanaryService,
 )
 from src.services.workspace_promotions import (
     WorkspacePromotionInvalid,
@@ -19,7 +25,7 @@ from src.services.workspace_promotions import (
 
 router = APIRouter(
     prefix="/api/workspace-promotions",
-    tags=["Workspace rapid promotion (preview only)"],
+    tags=["Workspace rapid promotion"],
 )
 
 
@@ -99,3 +105,54 @@ async def get_workspace_promotion_artifact(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workspace release artifact not found",
         ) from exc
+
+
+@router.post(
+    "/artifacts/{artifact_id}/canary",
+    response_model=WorkspaceDraftCanaryAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def execute_workspace_draft_canary(
+    artifact_id: UUID,
+    request: WorkspaceDraftCanaryRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+):
+    settings = get_settings()
+    if not settings.workspace_rapid_promotion_preview_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="rapid Workspace promotion preview is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    service = WorkspaceDraftCanaryService(db, ctx.org_id)
+    try:
+        execution_id = await service.issue(
+            artifact_id,
+            request.parameters,
+            user_id=user.user_id,
+            user_name=user.name,
+            user_email=user.email,
+            is_platform_admin=user.is_platform_admin,
+            is_provider_org=user.is_provider_org,
+            is_external=user.is_external,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release artifact not found",
+        ) from exc
+    except WorkspaceDraftCanaryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return WorkspaceDraftCanaryAccepted(
+        execution_id=execution_id,
+        artifact_id=artifact_id,
+    )

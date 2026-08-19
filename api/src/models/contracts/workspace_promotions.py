@@ -1,7 +1,7 @@
 """Contracts for immutable Workspace release artifact previews."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -171,3 +171,17 @@ class WorkspacePromotionArtifactResponse(BaseModel):
     source_artifact_key: str
     expires_at: datetime
     created_at: datetime
+
+
+class WorkspaceDraftCanaryRequest(BaseModel):
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceDraftCanaryAccepted(BaseModel):
+    schema_version: Literal["bifrost.workspace-draft-canary/v1"] = (
+        "bifrost.workspace-draft-canary/v1"
+    )
+    execution_id: UUID
+    artifact_id: UUID
+    runtime_mode: Literal["workspace-draft-v1"] = "workspace-draft-v1"
+    status: Literal["Scheduled"] = "Scheduled"

@@ -33,6 +33,7 @@ from opentelemetry import trace
 # This must happen before any workspace imports (e.g., from shared import ...)
 # The hook intercepts imports and loads modules from Redis cache.
 from src.services.execution.virtual_import import install_virtual_import_hook
+from src.services.execution.draft_limits import enforce_draft_output_limit
 
 install_virtual_import_hook()
 
@@ -414,6 +415,10 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
 
         # Execute
         exec_result = await execute(request)
+
+        # A draft cannot report success with a payload larger than the bound
+        # captured in its immutable server-issued execution evidence.
+        enforce_draft_output_limit(context_data, exec_result.result)
 
         # Capture resource metrics after execution
         metrics = _capture_metrics(start_rss, start_utime, start_stime)
