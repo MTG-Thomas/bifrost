@@ -10,6 +10,8 @@ from uuid import uuid4
 import pytest
 
 from bifrost.workspace_release import canonical_digest, workspace_manifest_id
+from bifrost.promotion import sha256_bytes
+from src.services import workspace_release_activation as activation_module
 from src.services.workspace_release_activation import (
     PREPARED_EVIDENCE_SCHEMA,
     WorkspaceReleaseActivationError,
@@ -228,6 +230,118 @@ async def test_next_activation_waits_for_current_live_history_lock() -> None:
             artifact,
             current,
         )
+
+
+@pytest.mark.asyncio
+async def test_activation_rebuilds_hybrid_base_under_lock(monkeypatch) -> None:
+    governed_path = "modules/shared.py"
+    ungoverned_path = "workflows/legacy.py"
+    immutable_source = b"VALUE = 'reviewed'\n"
+    stale_repo_source = b"VALUE = 'stale'\n"
+    current_legacy_source = b"VALUE = 'current'\n"
+    release_id = "sha256:" + "1" * 64
+    governed_hash = sha256_bytes(immutable_source)
+    descriptor = SimpleNamespace(
+        release_id=release_id,
+        runtime_storage_prefix="_workspace_releases/org/release/files/",
+        governed_paths=(governed_path,),
+        governed_source_hashes={governed_path: governed_hash},
+    )
+    hybrid_hashes = {
+        governed_path: governed_hash,
+        ungoverned_path: sha256_bytes(current_legacy_source),
+    }
+    artifact = SimpleNamespace(
+        base_release_id=release_id,
+        base_manifest_id=workspace_manifest_id(hybrid_hashes),
+    )
+    request = SimpleNamespace(expected_active_release_id=release_id)
+    current = (SimpleNamespace(lock_state="locked"), SimpleNamespace())
+
+    monkeypatch.setattr(
+        activation_module,
+        "read_generation_stable_executable_snapshot",
+        AsyncMock(
+            return_value={
+                governed_path: stale_repo_source,
+                ungoverned_path: current_legacy_source,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        activation_module.WorkspaceReleaseDescriptor,
+        "from_rows",
+        lambda *_args: descriptor,
+    )
+    storage = SimpleNamespace(
+        read_many=AsyncMock(return_value={governed_path: immutable_source})
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "WorkspaceReleaseStorage",
+        lambda _prefix: storage,
+    )
+
+    await WorkspaceReleaseActivationService(
+        SimpleNamespace(), uuid4()
+    )._validate_base_cas(request, artifact, current)
+
+    storage.read_many.assert_awaited_once_with([governed_path])
+
+
+@pytest.mark.asyncio
+async def test_activation_rejects_changed_ungoverned_hybrid_base(monkeypatch) -> None:
+    governed_path = "modules/shared.py"
+    ungoverned_path = "workflows/legacy.py"
+    immutable_source = b"VALUE = 'reviewed'\n"
+    release_id = "sha256:" + "1" * 64
+    descriptor = SimpleNamespace(
+        release_id=release_id,
+        runtime_storage_prefix="_workspace_releases/org/release/files/",
+        governed_paths=(governed_path,),
+        governed_source_hashes={governed_path: sha256_bytes(immutable_source)},
+    )
+    artifact = SimpleNamespace(
+        base_release_id=release_id,
+        base_manifest_id=workspace_manifest_id(
+            {
+                governed_path: sha256_bytes(immutable_source),
+                ungoverned_path: sha256_bytes(b"VALUE = 'before'\n"),
+            }
+        ),
+    )
+    request = SimpleNamespace(expected_active_release_id=release_id)
+    current = (SimpleNamespace(lock_state="locked"), SimpleNamespace())
+    monkeypatch.setattr(
+        activation_module,
+        "read_generation_stable_executable_snapshot",
+        AsyncMock(
+            return_value={
+                governed_path: b"VALUE = 'stale'\n",
+                ungoverned_path: b"VALUE = 'changed after preview'\n",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        activation_module.WorkspaceReleaseDescriptor,
+        "from_rows",
+        lambda *_args: descriptor,
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "WorkspaceReleaseStorage",
+        lambda _prefix: SimpleNamespace(
+            read_many=AsyncMock(return_value={governed_path: immutable_source})
+        ),
+    )
+
+    with pytest.raises(
+        WorkspaceReleaseActivationError,
+        match="Live Workspace base changed after preview",
+    ):
+        await WorkspaceReleaseActivationService(
+            SimpleNamespace(), uuid4()
+        )._validate_base_cas(request, artifact, current)
 
 
 @pytest.mark.asyncio
