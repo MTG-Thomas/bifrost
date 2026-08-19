@@ -194,15 +194,30 @@ def _workspace_module_maps(
     module_index: set[str],
 ) -> tuple[set[str], dict[str, str]]:
     """Map cached workspace paths to import names and namespace prefixes."""
+    from src.core.module_cache_sync import get_workspace_release_context
+
+    release_ctx = get_workspace_release_context()
+    release_prefix = (
+        release_ctx.runtime_storage_prefix if release_ctx is not None else None
+    )
     workspace_names: set[str] = set()
     name_to_path: dict[str, str] = {}
     for path in module_index:
-        mod_name = path.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
+        logical_path = (
+            path[len(release_prefix) :]
+            if release_prefix and path.startswith(release_prefix)
+            else path
+        )
+        mod_name = (
+            logical_path.replace("/", ".")
+            .removesuffix(".py")
+            .removesuffix(".__init__")
+        )
         parts = mod_name.split(".")
         for i in range(1, len(parts) + 1):
             prefix = ".".join(parts[:i])
             workspace_names.add(prefix)
-        name_to_path[mod_name] = path
+        name_to_path[mod_name] = logical_path
     return workspace_names, name_to_path
 
 

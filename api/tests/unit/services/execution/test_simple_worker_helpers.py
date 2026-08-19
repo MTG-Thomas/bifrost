@@ -22,6 +22,28 @@ sys.modules.setdefault(
 from src.services.execution import simple_worker  # noqa: E402
 
 
+def test_workspace_module_maps_strip_immutable_release_prefix(monkeypatch):
+    prefix = "_workspace_releases/org/release/files/"
+    monkeypatch.setattr(
+        "src.core.module_cache_sync.get_workspace_release_context",
+        lambda: SimpleNamespace(runtime_storage_prefix=prefix),
+    )
+
+    names, paths = simple_worker._workspace_module_maps(
+        {
+            f"{prefix}modules/helper.py",
+            f"{prefix}features/demo/__init__.py",
+        }
+    )
+
+    assert "modules.helper" in names
+    assert "features.demo" in names
+    assert paths == {
+        "modules.helper": "modules/helper.py",
+        "features.demo": "features/demo/__init__.py",
+    }
+
+
 def test_parse_requirements_splits_packages_and_options():
     content = """
     # ignored
