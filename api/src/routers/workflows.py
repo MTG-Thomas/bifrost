@@ -1326,16 +1326,24 @@ async def register_workflow(
     from src.services.file_storage import FileStorageService
     from src.services.file_storage.indexers.workflow import WorkflowIndexer
 
+    if not request.path.endswith(".py"):
+        raise HTTPException(status_code=400, detail="Path must be a .py file")
+
     service = FileStorageService(db)
+
+    # Guard before reading mutable storage. Governed paths must never be
+    # parsed or registered from a stale `_repo` projection.
+    await _guard_workflow_registration_mutation(
+        db,
+        operation="register or reactivate workflow",
+        paths=(request.path,),
+    )
 
     # 1. Verify file exists
     try:
         content_tuple = await service.read_file(request.path)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {request.path}")
-
-    if not request.path.endswith(".py"):
-        raise HTTPException(status_code=400, detail="Path must be a .py file")
 
     # read_file returns tuple[bytes, None]
     content = content_tuple[0]
@@ -1374,7 +1382,7 @@ async def register_workflow(
             detail=f"No decorated function '{request.function_name}' found in {request.path}",
         )
 
-    # 3. Check if already registered (include inactive rows for reactivation)
+    # 3. Resolve the requested identity (including inactive reactivation rows).
     existing = await db.execute(
         select(WorkflowORM).where(
             WorkflowORM.path == request.path,
@@ -1382,11 +1390,9 @@ async def register_workflow(
         )
     )
     existing_wf = existing.scalar_one_or_none()
-
     await _guard_workflow_registration_mutation(
         db,
         operation="register or reactivate workflow",
-        paths=(request.path,),
         workflows=(existing_wf,) if existing_wf is not None else (),
     )
 
