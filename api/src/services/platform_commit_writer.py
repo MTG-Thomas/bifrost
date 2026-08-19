@@ -21,6 +21,8 @@ _REST_URL = "https://api.github.com"
 _CHANGESET_TRAILER = "Workspace-Changeset-ID"
 _CONVERGENCE_TRAILER = "Workspace-History-Convergence-Candidate"
 _RECONCILED_CHANGESET_TRAILER = "Workspace-Reconciled-Changeset-ID"
+_WORKSPACE_RELEASE_TRAILER = "Workspace-Release-ID"
+_WORKSPACE_RELEASE_ROW_TRAILER = "Workspace-Release-Row-ID"
 _REF_SETTLE_DELAYS_SECONDS = (0.0, 0.25, 0.75, 1.5, 3.0)
 
 
@@ -56,6 +58,8 @@ class PlatformCommitRequest:
     expected_head_sha: str | None = None
     convergence_candidate_id: str | None = None
     reconciled_changeset_ids: tuple[UUID, ...] = ()
+    workspace_release_id: str | None = None
+    workspace_release_row_id: UUID | None = None
 
     def github_message(self) -> tuple[str, str]:
         headline, separator, body = self.commit_message.partition("\n")
@@ -77,6 +81,14 @@ class PlatformCommitRequest:
             f"{_RECONCILED_CHANGESET_TRAILER}: {changeset_id}"
             for changeset_id in self.reconciled_changeset_ids
         )
+        if self.workspace_release_id:
+            provenance.append(
+                f"{_WORKSPACE_RELEASE_TRAILER}: {self.workspace_release_id}"
+            )
+        if self.workspace_release_row_id:
+            provenance.append(
+                f"{_WORKSPACE_RELEASE_ROW_TRAILER}: {self.workspace_release_row_id}"
+            )
         sections = []
         if separator and body.strip():
             sections.append(body.strip())

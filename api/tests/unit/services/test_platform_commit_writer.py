@@ -58,6 +58,20 @@ def graphql_payload(request: httpx.Request) -> dict:
     return json.loads(request.content.decode())
 
 
+def test_workspace_release_provenance_is_written_as_commit_trailers() -> None:
+    release_row_id = uuid4()
+    request = replace(
+        commit_request(changeset_id=release_row_id),
+        workspace_release_id="sha256:" + "a" * 64,
+        workspace_release_row_id=release_row_id,
+    )
+
+    _headline, body = request.github_message()
+
+    assert f"Workspace-Release-ID: {'sha256:' + 'a' * 64}" in body
+    assert f"Workspace-Release-Row-ID: {release_row_id}" in body
+
+
 def head_response(
     *, history=None, oid="a" * 40, signature_state="VALID"
 ) -> httpx.Response:
