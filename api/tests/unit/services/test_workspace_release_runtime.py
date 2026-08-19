@@ -43,6 +43,12 @@ def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
             "organization_id": str(organization_id),
             "is_active": True,
             "source_sha256": "b" * 64,
+            "runtime_bounds": {
+                "max_duration_seconds": 30,
+                "max_external_calls": 10,
+                "max_records_read": 100,
+                "max_output_bytes": 4096,
+            },
         }
     }
     now = datetime.now(timezone.utc)
@@ -159,7 +165,7 @@ def test_entry_source_must_be_a_member_of_same_release() -> None:
         "workflow_function_name": "run",
         "workflow_path": "features/demo.py",
         "workflow_source_hash": "c" * 64,
-        "workspace_release_bounds": {
+        "workflow_runtime_bounds": {
             "max_duration_seconds": 30,
             "max_external_calls": 10,
             "max_records_read": 100,
@@ -191,6 +197,7 @@ async def test_superseded_release_remains_valid_for_durable_queued_pin() -> None
         workflow_type="workflow",
         cache_ttl_seconds=0,
         organization_id=str(release_row.organization_id),
+        runtime_bounds=registration["runtime_bounds"],
     )
     evidence = pinned.queue_evidence()
     release_row.activation_state = "superseded"
