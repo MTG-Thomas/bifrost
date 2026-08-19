@@ -1,7 +1,8 @@
 # Rapid Workspace Promotion
 
-Status: immutable artifact and operator channels under implementation. The
-existing exact-path reviewed release remains the production fallback.
+Status: implemented behind default-off platform feature flags. The existing
+exact-path reviewed release remains authoritative for paths that have not yet
+entered an immutable Live release.
 
 ## Goal
 
@@ -53,7 +54,8 @@ bifrost files graph features/vendor/workflows/report.py --direction both
 bifrost files graph features/vendor/workflows/report.py \
   --from-file features/vendor/workflows/report.py
 
-# Preview, then write only the exact graph candidate the server re-verifies.
+# Preview, then write only an ungoverned legacy path using the exact graph
+# candidate the server re-verifies.
 bifrost files write features/vendor/workflows/report.py \
   --from-file features/vendor/workflows/report.py --check-impact
 ```
@@ -95,6 +97,9 @@ This is a development safety primitive, not promotion:
   executed automatically;
 - the checked-write lane is currently limited to platform-admin writes of
   instance Workspace Python in durable cloud storage;
+- once a path is governed by an immutable Live release, reads resolve the
+  release object and every legacy write/delete/editor/signed-URL path fails
+  closed with a direction to use `bifrost promote`;
 - Solution file storage remains policy-scoped application data. Solution
   workflow source continues through the Solution bundle/artifact model and
   will consume the same graph primitive when checked Solution source editing is
@@ -195,10 +200,14 @@ The server:
 
 - derives organization and authoritative active base from authenticated context;
 - verifies protected commit/tree and fetches exact blobs;
-- reconstructs the complete effective snapshot using content-addressed reuse;
+- reconstructs the complete hybrid base from a generation-stable RepoStorage
+  snapshot plus the current immutable governed overlay;
+- materializes a complete immutable effective snapshot while accumulating only
+  the selected forward closure as governed paths;
 - rejects missing, mixed, extra, ambiguous, or dynamically unprovable closure;
 - scans the effective snapshot for all reverse importers;
-- blocks a changed helper when a live consumer is outside the candidate;
+- binds every statically known affected reverse consumer as an immutable
+  validation target; unresolved, ambiguous, or dynamic edges remain blockers;
 - binds workflow create/reactivate/preserve intent and existing access/trigger
   state fingerprints, including registration-only candidates;
 - computes declared, static, and combined effects plus enforced bounds;
@@ -220,7 +229,11 @@ The model separates stable content from release evidence:
 
 - `closure_id` binds entry path/function plus exact forward path/hash members;
 - `content_id` binds the deployable behavior independent of evidence;
-- `effective_manifest_id` binds every path/hash in the resulting Workspace;
+- `effective_manifest_id` binds every path/hash in the resulting immutable
+  runtime snapshot;
+- `governed_manifest_id` binds the cumulative paths whose reads, imports,
+  mutations, cache, compatibility projection, and history are now owned by the
+  release system;
 - `candidate_id` also binds organization, protected source, active base,
   registration fingerprints, validation/effect evidence, and policy version;
 - `release_id` identifies the immutable activation target;
@@ -244,28 +257,30 @@ Forward closure answers which helpers the selected workflow requires. Reverse
 closure answers which already-live code can be affected by a helper change.
 Both are required.
 
-For the first R0 activation policy:
+For reviewed promotion:
 
 - a leaf workflow edit may qualify;
 - a new private helper may qualify when no live source imports it outside the
   candidate;
 - an unchanged live dependency may be included and verified;
-- any changed helper with a live importer outside the candidate is R2 and must
-  use reviewed promotion;
+- every statically known reverse consumer of a changed helper becomes a bound
+  validation target and is compile/import-checked from the same immutable
+  snapshot;
 - unresolved, ambiguous, dynamic, or failed graph analysis is never R0.
 
 This is the direct regression guard for the AutoTask incident where an
 unrelated release rolled `_ticket_lifecycle.py` back to an older parser. The
-test fixture changes the shared parser while leaving `ticket_webhook.py`
-outside the candidate and requires a fail-closed result.
+test fixture changes the shared parser and requires `ticket_webhook.py` to be
+bound as an affected validation target from the same protected source. Missing
+or ambiguous coverage fails closed.
 
 The Cove restoration incident is the corresponding multi-root case: a commit
 claiming one reviewed source revision rewrote 96 unrelated paths and rolled
 `helpers/autotask_ticket_migration.py` backward. A rapid candidate therefore
-binds one coherent snapshot, contains only the selected workflow's exact
-closure, and may not source a closure member from a different revision. Broad
-multi-root convergence remains a reviewed, ordered operation—not an implicit
-side effect of promoting one workflow.
+binds one coherent full snapshot and one exact selected forward closure, and
+may not source a closure member or affected consumer from a different
+revision. Broad multi-root convergence remains a reviewed operation—not an
+implicit mutable rewrite caused by promoting one workflow.
 
 ## Effect policy and activation authorization
 
@@ -276,8 +291,10 @@ excluded because other entities may invoke them automatically.
 Direct networking, subprocess execution, dynamic code/imports, writes, secrets,
 schedules, webhooks, public/API-key endpoints, access changes, global entities,
 and unknown behavior are R2. A declaration cannot weaken a static or observed
-lower bound. Runtime enforcement and server-issued run evidence are required
-before activation is introduced; decorator metadata alone is not enforcement.
+lower bound. The runtime enforces duration and output limits for reviewed
+canaries and Live release executions. External-call, record, and effect
+declarations remain classification evidence, not a generic sandbox claim;
+decorator metadata alone never proves that an effect was safely exercised.
 
 Every prepared release exposes a content-addressed activation challenge bound
 to the candidate, prepared evidence, effective and governed manifests,
@@ -293,8 +310,9 @@ were exercised safely.
 The activation route must remain feature-disabled in production until tests
 prove all of the following:
 
-- candidate-backed production loader smoke has no fallback to live or local
-  files and blocks top-level effects;
+- R0 credentialless import validation has no fallback to mutable Workspace
+  files, while R1/R2 preparation executes no candidate source and claims no
+  effect sandbox;
 - server-issued run evidence binds the same candidate and enforced budgets;
 - relevant reverse-graph and registry state are rechecked under activation CAS;
 - source/registry/current-artifact pointer switch is atomic and read back;
@@ -302,7 +320,9 @@ prove all of the following:
   release;
 - registration-only create/reactivate works without manufacturing a source
   change;
-- preserve-only exact live state returns `already_live` with no candidate/job;
+- registration-only and source-already-target releases still produce an
+  immutable candidate, atomic registration outcome, durable projection job,
+  and signed content-addressed release ledger without rewriting source bytes;
 - duplicate or competing activation is idempotent/fail-closed;
 - activation performs no Git or GitHub operation;
 - signed-history projection performs no activation, workflow execution,
