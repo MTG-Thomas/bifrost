@@ -194,6 +194,25 @@ def test_registration_fingerprint_captures_activation_surface() -> None:
     assert registration_state_fingerprint(workflow) != before
 
 
+def test_next_activation_waits_for_current_live_history_lock() -> None:
+    request = SimpleNamespace(expected_active_release_id="sha256:" + "1" * 64)
+    artifact = SimpleNamespace(
+        base_release_id="sha256:" + "1" * 64,
+        base_manifest_id="sha256:" + "2" * 64,
+    )
+    current = (
+        SimpleNamespace(lock_state="attention_required"),
+        SimpleNamespace(),
+    )
+
+    with pytest.raises(WorkspaceReleaseActivationError, match="history-locked"):
+        WorkspaceReleaseActivationService._validate_base_cas(
+            request,
+            artifact,
+            current,
+        )
+
+
 @pytest.mark.asyncio
 async def test_translated_activation_failure_rolls_back_partial_transaction() -> None:
     db = SimpleNamespace(rollback=AsyncMock())

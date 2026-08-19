@@ -302,9 +302,26 @@ async def activate_workspace_release(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="an organization context is required",
         )
+    service = WorkspaceReleaseActivationService(db, ctx.org_id)
     try:
-        service = WorkspaceReleaseActivationService(db, ctx.org_id)
-        await service.activate(release_id, request)
+        result = await service.activate(release_id, request)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release not found",
+        ) from exc
+    except WorkspaceReleaseActivationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    # Live is durable before compatibility/history projection begins. Only
+    # failures in this second phase may be reported as attention-required Live;
+    # unexpected activation failures must remain HTTP 500 errors.
+    if result.activation_state != "live":
+        raise RuntimeError("Workspace release activation did not produce Live")
+    try:
         result, job, _reused = await service.enqueue_projection(
             release_id,
             requested_by_user_id=user.user_id,
@@ -324,16 +341,6 @@ async def activate_workspace_release(
                 )
         await publish_platform_job_update(job)
         return result
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace release not found",
-        ) from exc
-    except WorkspaceReleaseActivationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(exc),
-        ) from exc
     except Exception as exc:
         logger.exception(
             "Workspace release is Live but history projection could not be queued",

@@ -70,6 +70,7 @@ async def test_activation_makes_live_durable_before_projection_is_queued(
 
         async def activate(self, _release_id, _request):
             events.append("live_committed")
+            return SimpleNamespace(activation_state="live")
 
         async def enqueue_projection(self, _release_id, **_operator):
             assert events == ["live_committed"]
@@ -119,6 +120,7 @@ async def test_projection_enqueue_failure_preserves_live_with_attention_evidence
 
         async def activate(self, _release_id, _request):
             events.append("live_committed")
+            return SimpleNamespace(activation_state="live")
 
         async def enqueue_projection(self, _release_id, **_operator):
             assert events == ["live_committed"]
@@ -153,3 +155,39 @@ async def test_projection_enqueue_failure_preserves_live_with_attention_evidence
     assert response.error_code == "workspace_release_lock_queue_failed"
     assert events == ["live_committed", "attention_recorded"]
     db.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_activation_failure_is_not_masked_as_projection_failure(
+    monkeypatch,
+) -> None:
+    class Service:
+        def __init__(self, _db, _organization_id):
+            pass
+
+        async def activate(self, _release_id, _request):
+            raise RuntimeError("activation transaction failed")
+
+        async def enqueue_projection(self, *_args, **_kwargs):
+            raise AssertionError("projection must not run")
+
+        async def mark_projection_queue_failed(self, *_args, **_kwargs):
+            raise AssertionError("prepared release must not be marked Live")
+
+    monkeypatch.setattr(
+        workspace_promotions,
+        "get_settings",
+        lambda: SimpleNamespace(workspace_release_activation_enabled=True),
+    )
+    monkeypatch.setattr(
+        workspace_promotions, "WorkspaceReleaseActivationService", Service
+    )
+
+    with pytest.raises(RuntimeError, match="activation transaction failed"):
+        await workspace_promotions.activate_workspace_release(
+            uuid4(),
+            SimpleNamespace(),
+            _ctx(),
+            SimpleNamespace(),
+            _user(),
+        )

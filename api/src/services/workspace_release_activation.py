@@ -465,12 +465,20 @@ class WorkspaceReleaseActivationService:
         if rows is None:
             raise KeyError(release_row_id)
         release, artifact = rows
-        if release.activation_state == "live":
-            release.lock_state = "attention_required"
-            release.error_code = "workspace_release_lock_queue_failed"
-            release.error_message = message[:2000]
-            await self.db.commit()
-            await self.db.refresh(release)
+        current = await self._current_live_any_organization(for_update=True)
+        if (
+            release.activation_state != "live"
+            or current is None
+            or current[0].id != release.id
+        ):
+            raise WorkspaceReleaseActivationError(
+                "projection queue failure cannot be attached to a non-Live release"
+            )
+        release.lock_state = "attention_required"
+        release.error_code = "workspace_release_lock_queue_failed"
+        release.error_message = message[:2000]
+        await self.db.commit()
+        await self.db.refresh(release)
         return release_status(release, artifact)
 
     async def get_live(self) -> WorkspaceLiveStatusResponse:
@@ -616,6 +624,10 @@ class WorkspaceReleaseActivationService:
                     "Live Workspace base changed after preview"
                 )
             return
+        if current[0].lock_state != "locked":
+            raise WorkspaceReleaseActivationError(
+                "current Live Workspace release is not history-locked"
+            )
         try:
             current_descriptor = WorkspaceReleaseDescriptor.from_rows(*current)
         except WorkspaceReleaseRuntimeError as exc:
