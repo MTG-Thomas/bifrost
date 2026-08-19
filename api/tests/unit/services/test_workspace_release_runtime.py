@@ -18,11 +18,59 @@ from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
     inspect_workspace_release_coherence,
+    pin_workspace_runtime,
     PinnedWorkspaceRuntime,
     resolve_pinned_workspace_runtime,
     verify_workspace_runtime_evidence,
     workflow_data_from_workspace_evidence,
 )
+
+
+class _PinSession:
+    def __init__(self, workflow: object, release: object, artifact: object):
+        self.workflow = workflow
+        self.release = release
+        self.artifact = artifact
+
+    async def get(self, _model, _identity):
+        return self.workflow
+
+    async def execute(self, _statement):
+        release = self.release
+        artifact = self.artifact
+
+        class Result:
+            def all(self):
+                return [(release, artifact)]
+
+        return Result()
+
+
+def _workflow_for_registration(
+    registration: dict[str, object],
+    *,
+    organization_id: UUID | None,
+    function_name: str = "run",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=UUID(str(registration["workflow_id"])),
+        is_active=True,
+        solution_id=None,
+        organization_id=organization_id,
+        path="features/demo.py",
+        function_name=function_name,
+        name="Demo",
+        type="workflow",
+        endpoint_enabled=False,
+        public_endpoint=False,
+        api_key_enabled=False,
+        access_level="role_based",
+        timeout_seconds=30,
+        time_saved=0,
+        value=0,
+        execution_mode="async",
+        cache_ttl_seconds=0,
+    )
 
 
 def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
@@ -181,6 +229,67 @@ def test_pinned_runtime_excludes_ungoverned_snapshot_members_from_imports() -> N
     assert "modules/unrelated.py" not in evidence["workspace_release_source_hashes"]
     assert evidence["workspace_release_source_hashes"] == (
         descriptor.governed_source_hashes
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_live_governed_path_rejects_other_org_workflow() -> None:
+    release, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    workflow = _workflow_for_registration(
+        registration,
+        organization_id=uuid4(),
+    )
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="does not match"):
+        await pin_workspace_runtime(
+            _PinSession(workflow, release, artifact), workflow.id
+        )
+
+
+@pytest.mark.asyncio
+async def test_global_live_governed_path_rejects_global_workflow_fallback() -> None:
+    release, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    workflow = _workflow_for_registration(registration, organization_id=None)
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="does not match"):
+        await pin_workspace_runtime(
+            _PinSession(workflow, release, artifact), workflow.id
+        )
+
+
+@pytest.mark.asyncio
+async def test_global_live_governed_path_requires_exact_registration() -> None:
+    release, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    workflow = _workflow_for_registration(
+        registration,
+        organization_id=release.organization_id,
+        function_name="other",
+    )
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="not bound"):
+        await pin_workspace_runtime(
+            _PinSession(workflow, release, artifact), workflow.id
+        )
+
+
+@pytest.mark.asyncio
+async def test_global_live_ungoverned_path_remains_repo_v1() -> None:
+    release, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    workflow = _workflow_for_registration(
+        registration,
+        organization_id=uuid4(),
+    )
+    workflow.path = "features/legacy.py"
+
+    assert (
+        await pin_workspace_runtime(
+            _PinSession(workflow, release, artifact), workflow.id
+        )
+        is None
     )
 
 

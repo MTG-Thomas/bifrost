@@ -58,6 +58,9 @@ from src.services.workflow_registration import (
     apply_workspace_registration_plan,
     find_workspace_workflow,
 )
+from src.services.workspace_release_registration_authority import (
+    WorkspaceRegistrationMutationAuthority,
+)
 
 ACTIVATION_EVIDENCE_SCHEMA = "bifrost.workspace-release-activation/v2"
 REGISTRATION_STATE_SCHEMA = "bifrost.workspace-registration-state/v1"
@@ -761,8 +764,9 @@ class WorkspaceReleaseActivationService:
             or artifact.risk_class not in {"R0", "R1", "R2"}
             or manifest.get("risk_class") != artifact.risk_class
             or not isinstance(effects, list)
-            or effects != sorted(set(effects))
             or not effects
+            or any(not isinstance(effect, str) or not effect for effect in effects)
+            or effects != sorted(set(effects))
         ):
             raise WorkspaceReleaseActivationError(
                 "artifact is not an unexpired canonical protected-source release"
@@ -973,7 +977,10 @@ class WorkspaceReleaseActivationService:
             )
         try:
             applied = await apply_workspace_registration_plan(
-                self.db, self.organization_id, intent
+                self.db,
+                self.organization_id,
+                intent,
+                authority=WorkspaceRegistrationMutationAuthority.RELEASE_ACTIVATION,
             )
         except WorkflowRegistrationConflict as exc:
             raise WorkspaceReleaseActivationError(str(exc)) from exc
@@ -1005,6 +1012,9 @@ class WorkspaceReleaseActivationService:
             != expected.get("organization_id")
             or workflow.is_active is not True
             or workflow.access_level != "role_based"
+            or workflow.endpoint_enabled
+            or workflow.public_endpoint
+            or workflow.api_key_enabled
         ):
             raise WorkspaceReleaseActivationError(
                 "registered workflow does not match the effective manifest"

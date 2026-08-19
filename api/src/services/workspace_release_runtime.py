@@ -352,6 +352,14 @@ class WorkspaceReleaseFileCoherence:
 async def active_workspace_release(
     session: AsyncSession, organization_id: UUID
 ) -> WorkspaceReleaseDescriptor | None:
+    """Resolve the single platform-global Live Workspace release.
+
+    The organization argument remains for compatibility with the original
+    caller contract. Shared Workspace source, ``_repo``, and production-live
+    history are platform-global, so organization scoping must never select a
+    different runtime authority.
+    """
+    del organization_id
     rows = (
         await session.execute(
             select(WorkspacePromotionRelease, WorkspacePromotionArtifact)
@@ -359,10 +367,7 @@ async def active_workspace_release(
                 WorkspacePromotionArtifact,
                 WorkspacePromotionArtifact.id == WorkspacePromotionRelease.artifact_id,
             )
-            .where(
-                WorkspacePromotionRelease.organization_id == organization_id,
-                WorkspacePromotionRelease.activation_state == "live",
-            )
+            .where(WorkspacePromotionRelease.activation_state == "live")
             .limit(2)
         )
     ).all()
@@ -370,7 +375,7 @@ async def active_workspace_release(
         return None
     if len(rows) != 1:
         raise WorkspaceReleaseRuntimeError(
-            "organization has more than one live Workspace release"
+            "platform has more than one global Live Workspace release"
         )
     release, artifact = rows[0]
     return WorkspaceReleaseDescriptor.from_rows(release, artifact)
@@ -379,19 +384,26 @@ async def active_workspace_release(
 async def pin_workspace_runtime(
     session: AsyncSession, workflow_id: UUID
 ) -> PinnedWorkspaceRuntime | None:
-    """Pin an eligible organization workflow; legacy/global/Solution stays explicit."""
+    """Pin governed Workspace source or leave an ungoverned path on repo-v1."""
     workflow = await session.get(Workflow, workflow_id)
     if workflow is None or not workflow.is_active:
         raise WorkspaceReleaseRuntimeError(f"workflow {workflow_id} is not executable")
-    if workflow.solution_id is not None or workflow.organization_id is None:
+    if workflow.solution_id is not None:
         return None
-    release = await active_workspace_release(session, workflow.organization_id)
+    release = await active_workspace_release(
+        session,
+        workflow.organization_id or UUID(int=0),
+    )
     if release is None:
         return None
     workflow_path = workflow.path.replace("\\", "/").lstrip("/")
+    if workflow_path not in release.governed_paths:
+        return None
     registration_key = f"{workflow_path}::{workflow.function_name}"
     if registration_key not in release.effective_registrations:
-        return None
+        raise WorkspaceReleaseRuntimeError(
+            "governed Workspace workflow is not bound to the Live release"
+        )
     return _pin_workflow_to_release(workflow, release)
 
 
@@ -408,8 +420,18 @@ def _pin_workflow_to_release(
     if (
         source_hash is None
         or registration.get("workflow_id") != str(workflow.id)
+        or registration.get("path") != path
+        or registration.get("function") != workflow.function_name
+        or registration.get("name") != workflow.name
+        or registration.get("type") != workflow.type
         or registration.get("source_sha256") != source_hash
-        or registration.get("organization_id") != str(workflow.organization_id)
+        or registration.get("organization_id")
+        != (str(workflow.organization_id) if workflow.organization_id else None)
+        or registration.get("is_active") is not True
+        or workflow.endpoint_enabled
+        or workflow.public_endpoint
+        or workflow.api_key_enabled
+        or workflow.access_level != "role_based"
     ):
         raise WorkspaceReleaseRuntimeError(
             "workflow registration does not match the live Workspace release"
