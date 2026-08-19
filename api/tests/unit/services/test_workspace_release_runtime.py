@@ -276,6 +276,83 @@ async def test_superseded_release_remains_valid_for_durable_queued_pin() -> None
 
 
 @pytest.mark.asyncio
+async def test_dequeue_rejects_bounds_not_bound_to_immutable_registration() -> None:
+    release_row, artifact = _rows()
+    descriptor = WorkspaceReleaseDescriptor.from_rows(release_row, artifact)
+    registration = next(iter(descriptor.effective_registrations.values()))
+    workflow_id = UUID(registration["workflow_id"])
+    pinned = PinnedWorkspaceRuntime(
+        workflow_id=workflow_id,
+        release=descriptor,
+        name="Demo",
+        function_name="run",
+        path="features/demo.py",
+        source_hash="b" * 64,
+        timeout_seconds=30,
+        time_saved=0,
+        value=0,
+        execution_mode="async",
+        workflow_type="workflow",
+        cache_ttl_seconds=0,
+        organization_id=str(release_row.organization_id),
+        runtime_bounds=registration["runtime_bounds"],
+    )
+    evidence = pinned.queue_evidence()
+    evidence["workflow_runtime_bounds"] = {
+        **evidence["workflow_runtime_bounds"],
+        "max_output_bytes": 8192,
+    }
+
+    class Result:
+        def one_or_none(self):
+            return release_row, artifact
+
+    class Session:
+        async def execute(self, _statement):
+            return Result()
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="runtime bounds"):
+        await resolve_pinned_workspace_runtime(Session(), evidence, workflow_id)
+
+
+@pytest.mark.asyncio
+async def test_dequeue_rejects_timeout_above_immutable_duration_bound() -> None:
+    release_row, artifact = _rows()
+    descriptor = WorkspaceReleaseDescriptor.from_rows(release_row, artifact)
+    registration = next(iter(descriptor.effective_registrations.values()))
+    workflow_id = UUID(registration["workflow_id"])
+    pinned = PinnedWorkspaceRuntime(
+        workflow_id=workflow_id,
+        release=descriptor,
+        name="Demo",
+        function_name="run",
+        path="features/demo.py",
+        source_hash="b" * 64,
+        timeout_seconds=30,
+        time_saved=0,
+        value=0,
+        execution_mode="async",
+        workflow_type="workflow",
+        cache_ttl_seconds=0,
+        organization_id=str(release_row.organization_id),
+        runtime_bounds=registration["runtime_bounds"],
+    )
+    evidence = pinned.queue_evidence()
+    evidence["workflow_timeout_seconds"] = 31
+
+    class Result:
+        def one_or_none(self):
+            return release_row, artifact
+
+    class Session:
+        async def execute(self, _statement):
+            return Result()
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="runtime bounds"):
+        await resolve_pinned_workspace_runtime(Session(), evidence, workflow_id)
+
+
+@pytest.mark.asyncio
 async def test_inspector_exposes_current_immutable_tree_and_stale_cache_and_repo(
     monkeypatch,
 ) -> None:

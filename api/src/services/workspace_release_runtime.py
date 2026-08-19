@@ -496,6 +496,22 @@ async def resolve_pinned_workspace_runtime(
             "queued Workspace release workflow source is invalid"
         )
     try:
+        registration_bounds = _runtime_bounds(
+            {"bounds": registration["runtime_bounds"]}
+        )
+        queued_bounds = _runtime_bounds(
+            {"bounds": evidence["workflow_runtime_bounds"]}
+        )
+        timeout_seconds = int(evidence["workflow_timeout_seconds"])
+        if (
+            queued_bounds != registration_bounds
+            or isinstance(evidence["workflow_timeout_seconds"], bool)
+            or timeout_seconds <= 0
+            or timeout_seconds > registration_bounds["max_duration_seconds"]
+        ):
+            raise WorkspaceReleaseRuntimeError(
+                "queued Workspace release runtime bounds are invalid"
+            )
         return PinnedWorkspaceRuntime(
             workflow_id=workflow_id,
             release=descriptor,
@@ -503,17 +519,17 @@ async def resolve_pinned_workspace_runtime(
             function_name=str(evidence["workflow_function_name"]),
             path=path,
             source_hash=source_hash,
-            timeout_seconds=int(evidence["workflow_timeout_seconds"]),
+            timeout_seconds=timeout_seconds,
             time_saved=int(evidence["workflow_time_saved"]),
             value=float(evidence["workflow_value"]),
             execution_mode=str(evidence["workflow_execution_mode"]),
             workflow_type=str(evidence["workflow_type"]),
             cache_ttl_seconds=int(evidence["workflow_cache_ttl_seconds"]),
             organization_id=str(descriptor.organization_id),
-            runtime_bounds=_runtime_bounds(
-                {"bounds": evidence["workflow_runtime_bounds"]}
-            ),
+            runtime_bounds=registration_bounds,
         )
+    except WorkspaceReleaseRuntimeError:
+        raise
     except (KeyError, TypeError, ValueError) as exc:
         raise WorkspaceReleaseRuntimeError(
             "queued Workspace release workflow metadata is invalid"
