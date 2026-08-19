@@ -51,6 +51,7 @@ from src.models.contracts.workspace_promotions import (
     PromotionEntry,
     PromotionRegistrationEvidence,
     PromotionSourceEvidence,
+    PromotionValidationTarget,
     WorkspacePromotionDraftRequest,
     WorkspacePromotionDraftResponse,
     WorkspacePromotionArtifactResponse,
@@ -162,6 +163,17 @@ def _allocated_registration_id(
 def _is_r0_effect(effect: str) -> bool:
     kind = effect.split(":", 1)[0]
     return kind in R0_EFFECTS
+
+
+def _risk_class_for_effects(effects: list[str]) -> str:
+    """Classify declared/computed effects without claiming runtime enforcement."""
+    if effects and all(_is_r0_effect(effect) for effect in effects):
+        return "R0"
+    if effects and all(
+        effect.split(":", 1)[0].endswith(".read") for effect in effects
+    ):
+        return "R1"
+    return "R2"
 
 
 def _literal_keyword(call: ast.Call, name: str, default: Any = None) -> Any:
@@ -358,6 +370,203 @@ def _entry_metadata(raw: bytes, path: str, function_name: str) -> dict[str, Any]
     }
 
 
+def _validation_targets(
+    files: dict[str, bytes],
+    affected_paths: set[str],
+    entry: PromotionEntry,
+) -> list[PromotionValidationTarget]:
+    """Bind every statically affected executable entity to prepare evidence."""
+    targets: list[PromotionValidationTarget] = []
+    selected_matches = 0
+    for path in sorted(affected_paths):
+        raw = files.get(path)
+        if raw is None:
+            raise WorkspacePromotionInvalid(
+                f"affected Workspace source is absent from snapshot: {path}"
+            )
+        try:
+            tree = ast.parse(raw.decode("utf-8"), filename=path)
+        except (SyntaxError, UnicodeDecodeError) as exc:
+            raise WorkspacePromotionInvalid(
+                f"cannot parse affected executable {path}: {exc}"
+            ) from exc
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorators = [
+                item
+                for item in node.decorator_list
+                if _decorator_name(item) in {"workflow", "tool", "data_provider"}
+            ]
+            if not decorators:
+                continue
+            if len(decorators) != 1 or not isinstance(decorators[0], ast.Call):
+                raise WorkspacePromotionInvalid(
+                    f"affected executable {path}::{node.name} has an ambiguous entity decorator"
+                )
+            entity_type = _decorator_name(decorators[0])
+            if entity_type not in {"workflow", "tool", "data_provider"}:
+                raise WorkspacePromotionInvalid(
+                    f"affected executable {path}::{node.name} has an unknown entity type"
+                )
+            selected = path == entry.path and node.name == entry.function
+            if selected:
+                selected_matches += 1
+            targets.append(
+                PromotionValidationTarget(
+                    path=path,
+                    function=node.name,
+                    entity_type=entity_type,
+                    relation=(
+                        "selected_entry" if selected else "affected_executable"
+                    ),
+                )
+            )
+    if selected_matches != 1:
+        raise WorkspacePromotionInvalid(
+            "selected entry is not bound exactly once as a validation target"
+        )
+    return sorted(targets, key=lambda item: (item.path, item.function))
+
+
+def _selected_effective_registration(
+    *,
+    entry: PromotionEntry,
+    action: dict[str, Any],
+    registration_state: dict[str, Any] | None,
+    source_sha256: str,
+    runtime_bounds: dict[str, int],
+) -> dict[str, Any]:
+    """Bind selected workflow identity, bytes, and its own enforced bounds."""
+    return {
+        "path": entry.path,
+        "function": entry.function,
+        "workflow_id": (
+            action.get("requested_id")
+            or (registration_state or {}).get("workflow_id")
+        ),
+        "type": action.get("type", "workflow"),
+        "name": action.get("name", entry.function),
+        "organization_id": action.get("organization_id"),
+        "is_active": True,
+        "source_sha256": source_sha256,
+        "runtime_bounds": dict(sorted(runtime_bounds.items())),
+    }
+
+
+def _registered_entity_metadata(
+    raw: bytes,
+    path: str,
+    function_name: str,
+) -> dict[str, Any]:
+    """Read the identity and enforced bounds for an already-bound entity."""
+    try:
+        tree = ast.parse(raw.decode("utf-8"), filename=path)
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        raise WorkspacePromotionInvalid(
+            f"cannot parse registered executable {path}: {exc}"
+        ) from exc
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == function_name
+    ]
+    if len(matches) != 1:
+        raise WorkspacePromotionInvalid(
+            f"expected one registered function {path}::{function_name}"
+        )
+    decorators = [
+        item
+        for item in matches[0].decorator_list
+        if _decorator_name(item) in {"workflow", "tool", "data_provider"}
+    ]
+    if len(decorators) != 1 or not isinstance(decorators[0], ast.Call):
+        raise WorkspacePromotionInvalid(
+            f"registered executable {path}::{function_name} has an ambiguous entity decorator"
+        )
+    decorator = decorators[0]
+    entity_type = _decorator_name(decorator)
+    name = _literal_keyword(decorator, "name", function_name)
+    if entity_type not in {"workflow", "tool", "data_provider"} or not isinstance(
+        name, str
+    ):
+        raise WorkspacePromotionInvalid(
+            f"registered executable {path}::{function_name} identity is invalid"
+        )
+    return {
+        "type": entity_type,
+        "name": name,
+        "bounds": _bounds_declaration(
+            _keyword_node(decorator, "enforced_bounds"),
+            "enforced_bounds",
+        ),
+    }
+
+
+def _refresh_effective_registrations(
+    *,
+    base_registrations: dict[str, dict[str, Any]],
+    closure_files: dict[str, bytes],
+    closure_hashes: dict[str, str],
+    selected_key: str,
+    selected_registration: dict[str, Any],
+    diagnostics: list[PromotionDiagnostic],
+) -> dict[str, dict[str, Any]]:
+    """Refresh every bound function sharing a source path replaced by closure."""
+    effective = {
+        key: dict(value) for key, value in sorted(base_registrations.items())
+    }
+    for key, registration in sorted(effective.items()):
+        path = registration.get("path")
+        function = registration.get("function")
+        if key == selected_key or path not in closure_hashes:
+            continue
+        if not isinstance(path, str) or not isinstance(function, str):
+            raise WorkspacePromotionInvalid(
+                "base effective registration identity is invalid"
+            )
+        metadata = _registered_entity_metadata(
+            closure_files[path],
+            path,
+            function,
+        )
+        drift = [
+            field
+            for field in ("name", "type")
+            if registration.get(field) != metadata[field]
+        ]
+        if drift:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="non_selected_registration_metadata_changed",
+                    severity="blocker",
+                    message=(
+                        "source changes registered metadata outside the selected entry: "
+                        + ", ".join(drift)
+                    ),
+                    path=path,
+                )
+            )
+        missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
+        if missing_bounds:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="non_selected_registration_bounds_missing",
+                    severity="blocker",
+                    message=(
+                        "registered executable sharing the changed file lacks enforced bounds: "
+                        + ", ".join(sorted(missing_bounds))
+                    ),
+                    path=path,
+                )
+            )
+        registration["source_sha256"] = closure_hashes[path]
+        registration["runtime_bounds"] = dict(sorted(metadata["bounds"].items()))
+    effective[selected_key] = selected_registration
+    return dict(sorted(effective.items()))
+
+
 def _static_effects(
     files: dict[str, bytes],
 ) -> tuple[list[str], list[PromotionDiagnostic]]:
@@ -522,7 +731,7 @@ def _canonical_impact_diagnostics(
     entry_path: str,
     base_files: dict[str, bytes],
     closure_files: dict[str, bytes],
-) -> tuple[list[PromotionDiagnostic], set[str]]:
+) -> tuple[list[PromotionDiagnostic], set[str], set[str]]:
     effective_python = {
         path: raw
         for path, raw in {**base_files, **closure_files}.items()
@@ -599,24 +808,20 @@ def _canonical_impact_diagnostics(
             )
 
     for changed_path in sorted(changed):
-        outside = sorted(
-            set(transitive_distances(changed_path, reverse))
-            - submitted
-            - {changed_path}
-        )
+        outside = sorted(set(transitive_distances(changed_path, reverse)) - submitted)
         if outside:
             diagnostics.append(
                 PromotionDiagnostic(
-                    code="shared_dependency_outside_candidate",
-                    severity="blocker",
+                    code="reverse_dependents_bound",
+                    severity="info",
                     message=(
-                        "changed source has reverse consumers outside the candidate: "
+                        "changed source reverse consumers are bound as validation targets: "
                         + ", ".join(outside[:20])
                     ),
                     path=changed_path,
                 )
             )
-    return diagnostics, forward
+    return diagnostics, forward, affected
 
 
 class WorkspacePromotionPreviewService:
@@ -662,7 +867,7 @@ class WorkspacePromotionPreviewService:
         metadata = _entry_metadata(
             files[request.entry.path], request.entry.path, request.entry.function
         )
-        graph_diagnostics, _ = _canonical_impact_diagnostics(
+        graph_diagnostics, _, _ = _canonical_impact_diagnostics(
             entry_path=request.entry.path,
             base_files=base.files,
             closure_files=files,
@@ -862,7 +1067,7 @@ class WorkspacePromotionPreviewService:
         metadata = _entry_metadata(
             files[request.entry.path], request.entry.path, request.entry.function
         )
-        impact_diagnostics, _ = _canonical_impact_diagnostics(
+        impact_diagnostics, _, affected_paths = _canonical_impact_diagnostics(
             entry_path=request.entry.path,
             base_files=base.files,
             closure_files=files,
@@ -970,6 +1175,12 @@ class WorkspacePromotionPreviewService:
         }
         closure_id = _closure_id(request.entry, closure_hashes)
         content_id = _content_id(request.entry, closure_id)
+        effective_source = dict(sorted({**base.files, **files}.items()))
+        validation_targets = _validation_targets(
+            effective_source,
+            affected_paths,
+            request.entry,
+        )
         if request.local_run is None or not request.local_run.succeeded:
             diagnostics.append(
                 PromotionDiagnostic(
@@ -986,13 +1197,16 @@ class WorkspacePromotionPreviewService:
                     message="local run evidence is for a different forward closure",
                 )
             )
-        risk = (
-            "R0"
-            if computed_effects
-            and all(_is_r0_effect(effect) for effect in computed_effects)
-            and not any(item.severity == "blocker" for item in diagnostics)
-            else "R2"
-        )
+        if not computed_effects:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="effects_not_declared",
+                    severity="blocker",
+                    message="reviewed releases require explicit workflow effects",
+                    path=request.entry.path,
+                )
+            )
+        risk = _risk_class_for_effects(computed_effects)
         closure = [
             PromotionClosureMember(
                 path=path,
@@ -1006,23 +1220,21 @@ class WorkspacePromotionPreviewService:
         effective_manifest_id = _manifest_id(effective_files)
         registration_key = f"{request.entry.path}::{request.entry.function}"
         action = registration_intent[0] if registration_intent else {}
-        effective_registration = {
-            "path": request.entry.path,
-            "function": request.entry.function,
-            "workflow_id": (
-                action.get("requested_id")
-                or (registration_state or {}).get("workflow_id")
-            ),
-            "type": action.get("type", "workflow"),
-            "name": action.get("name", request.entry.function),
-            "organization_id": action.get("organization_id"),
-            "is_active": True,
-            "source_sha256": closure_hashes[request.entry.path],
-        }
-        effective_registrations = dict(sorted({
-            **base.registrations,
-            registration_key: effective_registration,
-        }.items()))
+        effective_registration = _selected_effective_registration(
+            entry=request.entry,
+            action=action,
+            registration_state=registration_state,
+            source_sha256=closure_hashes[request.entry.path],
+            runtime_bounds=metadata["bounds"],
+        )
+        effective_registrations = _refresh_effective_registrations(
+            base_registrations=base.registrations,
+            closure_files=files,
+            closure_hashes=closure_hashes,
+            selected_key=registration_key,
+            selected_registration=effective_registration,
+            diagnostics=diagnostics,
+        )
         effective_registration_manifest_id = workspace_registration_manifest_id(
             effective_registrations
         )
@@ -1037,6 +1249,11 @@ class WorkspacePromotionPreviewService:
             ),
             "effective_registrations": effective_registrations,
             "entry": request.entry.model_dump(),
+            "validation_targets": [
+                item.model_dump() for item in validation_targets
+            ],
+            "risk_class": risk,
+            "computed_effects": computed_effects,
             "registration_intent_fingerprint": registration_intent_fingerprint,
             "protected_source": protected_source.model_dump(),
         }
@@ -1059,6 +1276,10 @@ class WorkspacePromotionPreviewService:
             "effective_registrations": effective_registrations,
             "snapshot_id": request.snapshot.snapshot_id,
             "closure": [item.model_dump() for item in closure],
+            "validation_targets": [
+                item.model_dump() for item in validation_targets
+            ],
+            "risk_class": risk,
             "protected_source": protected_source.model_dump(),
             "declared_effects": declared_effects,
             "static_effects": static_effects,
@@ -1187,6 +1408,7 @@ class WorkspacePromotionPreviewService:
             risk_class=risk,
             policy_version=PROMOTION_PREVIEW_POLICY,
             closure=closure,
+            validation_targets=validation_targets,
             declared_effects=declared_effects,
             static_effects=static_effects,
             computed_effects=computed_effects,
@@ -1427,11 +1649,16 @@ class WorkspacePromotionPreviewService:
             effective_registrations=manifest["effective_registrations"],
             entry=manifest["entry"],
             closure=manifest["closure"],
+            validation_targets=manifest["validation_targets"],
+            risk_class=artifact.risk_class,
+            policy_version=artifact.policy_version,
             registration=manifest["registration"],
             protected_source=manifest["protected_source"],
             declared_effects=manifest["declared_effects"],
+            static_effects=manifest["static_effects"],
             computed_effects=manifest["computed_effects"],
             bounds=manifest["bounds"],
+            requested_bounds=manifest["requested_bounds"],
             local_run=manifest.get("local_run"),
             diagnostics=manifest.get("diagnostics", []),
             lifecycle_status=await self._lifecycle(artifact),

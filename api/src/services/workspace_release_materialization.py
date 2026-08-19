@@ -42,6 +42,7 @@ from src.services.workspace_promotions import (
     PROMOTION_BUNDLE_SCHEMA_V2,
     _canonical_candidate,
     _is_executable_python_path,
+    _risk_class_for_effects,
 )
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
@@ -49,7 +50,7 @@ from src.services.workspace_release_runtime import (
 )
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
 
-PREPARED_EVIDENCE_SCHEMA = "bifrost.workspace-release-prepared/v1"
+PREPARED_EVIDENCE_SCHEMA = "bifrost.workspace-release-prepared/v2"
 SmokeRunner = Callable[[dict[str, bytes], str, str], Awaitable[dict[str, Any]]]
 ProgressReporter = Callable[[str, int, int | None, float | None], Awaitable[None]]
 
@@ -250,9 +251,38 @@ class WorkspaceReleaseMaterializer:
                 len(effective),
                 85,
             )
-        smoke = await self.smoke_runner(
-            readback, artifact.entry_path, artifact.entry_function
-        )
+        validation_smokes: list[dict[str, Any]] = []
+        selected_smoke: dict[str, Any] | None = None
+        for target in manifest["validation_targets"]:
+            smoke = await self.smoke_runner(
+                readback,
+                target["path"],
+                target["function"],
+            )
+            expected = {
+                "entry_path": target["path"],
+                "entry_function": target["function"],
+                "imported": True,
+                "function_callable": True,
+                "source": "immutable_candidate_tree",
+            }
+            if any(smoke.get(key) != value for key, value in expected.items()):
+                raise WorkspaceReleasePreparationError(
+                    "candidate import smoke did not prove affected executable "
+                    f"{target['path']}::{target['function']}"
+                )
+            bound_smoke = {
+                **smoke,
+                "entity_type": target["entity_type"],
+                "relation": target["relation"],
+            }
+            validation_smokes.append(bound_smoke)
+            if target["relation"] == "selected_entry":
+                selected_smoke = bound_smoke
+        if selected_smoke is None:
+            raise WorkspaceReleasePreparationError(
+                "candidate validation did not prove the selected entry"
+            )
         now = datetime.now(timezone.utc)
         evidence = {
             "schema_version": PREPARED_EVIDENCE_SCHEMA,
@@ -268,7 +298,8 @@ class WorkspaceReleaseMaterializer:
             "file_count": len(readback),
             "total_bytes": sum(map(len, readback.values())),
             "compile": {"succeeded": True, "file_count": len(readback)},
-            "import_smoke": smoke,
+            "import_smoke": selected_smoke,
+            "validation_smokes": validation_smokes,
             "projection_paths": projection_paths,
             "prepared_at": now.isoformat(),
         }
@@ -391,6 +422,9 @@ class WorkspaceReleaseMaterializer:
                 "effective_registration_manifest_id",
                 "effective_registrations",
                 "entry",
+                "validation_targets",
+                "risk_class",
+                "computed_effects",
                 "registration_intent_fingerprint",
                 "protected_source",
             )
@@ -415,9 +449,17 @@ class WorkspaceReleaseMaterializer:
             raise WorkspaceReleasePreparationError(
                 "artifact effective executable tree is invalid"
             )
-        if artifact.risk_class != "R0":
+        effects = manifest.get("computed_effects")
+        if (
+            artifact.risk_class not in {"R0", "R1", "R2"}
+            or manifest.get("risk_class") != artifact.risk_class
+            or not isinstance(effects, list)
+            or not effects
+            or any(not isinstance(effect, str) or not effect for effect in effects)
+            or _risk_class_for_effects(effects) != artifact.risk_class
+        ):
             raise WorkspaceReleasePreparationError(
-                "only policy-classified R0 artifacts may be prepared"
+                "artifact risk class does not match its explicit effects"
             )
         diagnostics = manifest.get("diagnostics")
         if not isinstance(diagnostics, list) or any(
@@ -427,9 +469,54 @@ class WorkspaceReleaseMaterializer:
             raise WorkspaceReleasePreparationError(
                 "artifact diagnostics do not prove a blocker-free release"
             )
-        if manifest.get("computed_effects") != ["bifrost.read"]:
+        validation_targets = manifest.get("validation_targets")
+        entry_key = (entry.get("path"), entry.get("function"))
+        if (
+            not isinstance(validation_targets, list)
+            or not validation_targets
+            or validation_targets
+            != sorted(
+                validation_targets,
+                key=lambda item: (
+                    item.get("path", "") if isinstance(item, dict) else "",
+                    item.get("function", "") if isinstance(item, dict) else "",
+                ),
+            )
+            or len(
+                {
+                    (item.get("path"), item.get("function"))
+                    for item in validation_targets
+                    if isinstance(item, dict)
+                }
+            )
+            != len(validation_targets)
+            or any(
+                not isinstance(item, dict)
+                or set(item)
+                != {"path", "function", "entity_type", "relation"}
+                or item.get("path") not in effective_files
+                or item.get("entity_type")
+                not in {"workflow", "tool", "data_provider"}
+                or item.get("relation")
+                not in {"selected_entry", "affected_executable"}
+                for item in validation_targets
+            )
+        ):
             raise WorkspaceReleasePreparationError(
-                "release v1 currently permits only the bifrost.read effect"
+                "artifact affected-executable validation targets are invalid"
+            )
+        selected = [
+            item
+            for item in validation_targets
+            if item.get("relation") == "selected_entry"
+        ]
+        if (
+            len(selected) != 1
+            or (selected[0].get("path"), selected[0].get("function")) != entry_key
+            or selected[0].get("entity_type") != "workflow"
+        ):
+            raise WorkspaceReleasePreparationError(
+                "artifact does not bind exactly one selected workflow entry"
             )
 
     async def _base_files(

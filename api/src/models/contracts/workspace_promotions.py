@@ -91,6 +91,15 @@ class PromotionDiagnostic(BaseModel):
     path: str | None = None
 
 
+class PromotionValidationTarget(BaseModel):
+    """One executable entity that must import from the immutable candidate tree."""
+
+    path: str = Field(min_length=1, max_length=1000)
+    function: str = Field(min_length=1, max_length=255)
+    entity_type: Literal["workflow", "tool", "data_provider"]
+    relation: Literal["selected_entry", "affected_executable"]
+
+
 class PromotionRegistrationEvidence(BaseModel):
     intent: list[dict] = Field(default_factory=list)
     intent_fingerprint: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -160,6 +169,7 @@ class WorkspacePromotionPreviewResponse(BaseModel):
     risk_class: Literal["R0", "R1", "R2"]
     policy_version: str
     closure: list[PromotionClosureMember]
+    validation_targets: list[PromotionValidationTarget]
     declared_effects: list[str]
     static_effects: list[str]
     computed_effects: list[str]
@@ -195,11 +205,16 @@ class WorkspacePromotionArtifactResponse(BaseModel):
     effective_registrations: dict[str, dict]
     entry: PromotionEntry
     closure: list[PromotionClosureMember]
+    validation_targets: list[PromotionValidationTarget]
+    risk_class: Literal["R0", "R1", "R2"]
+    policy_version: str
     registration: PromotionRegistrationEvidence
     protected_source: PromotionSourceEvidence
     declared_effects: list[str]
+    static_effects: list[str]
     computed_effects: list[str]
     bounds: dict[str, int]
+    requested_bounds: dict[str, int]
     local_run: PromotionRunEvidence | None = None
     diagnostics: list[PromotionDiagnostic] = Field(default_factory=list)
     lifecycle_status: PromotionArtifactLifecycle

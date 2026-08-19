@@ -36,8 +36,12 @@ from src.services.workspace_promotions import (
     _is_executable_python_path,
     _manifest_id,
     _repo_v1_release_id,
+    _risk_class_for_effects,
+    _refresh_effective_registrations,
+    _selected_effective_registration,
     _source_zip,
     _static_effects,
+    _validation_targets,
     _validate_draft_snapshot,
 )
 
@@ -142,7 +146,7 @@ def test_source_archive_is_byte_deterministic() -> None:
     assert _source_zip(files) == _source_zip(dict(reversed(list(files.items()))))
 
 
-async def test_autotask_shared_parser_regression_is_reverse_dependency_blocked() -> (
+async def test_autotask_shared_parser_reverse_dependents_become_validation_targets() -> (
     None
 ):
     fixed_helper = (
@@ -162,17 +166,261 @@ async def test_autotask_shared_parser_regression_is_reverse_dependency_blocked()
         "features/cove/restore.py": live["features/cove/restore.py"],
         "features/autotask/_ticket_lifecycle.py": stale_helper,
     }
-    diagnostics, closure = _canonical_impact_diagnostics(
+    diagnostics, closure, affected = _canonical_impact_diagnostics(
         entry_path="features/cove/restore.py",
         base_files=live,
         closure_files=candidate,
     )
 
     assert len(diagnostics) == 1
-    assert diagnostics[0].code == "shared_dependency_outside_candidate"
+    assert diagnostics[0].code == "reverse_dependents_bound"
+    assert diagnostics[0].severity == "info"
     assert diagnostics[0].path == "features/autotask/_ticket_lifecycle.py"
     assert "features/autotask/ticket_webhook.py" in diagnostics[0].message
     assert closure == set(candidate)
+    assert affected == set(live)
+
+
+def test_affected_executable_targets_are_canonical_and_entry_bound() -> None:
+    files = {
+        "modules/shared.py": b"VALUE = 1\n",
+        "workflows/entry.py": b"""
+from bifrost import workflow
+from modules.shared import VALUE
+@workflow(effects=[WorkflowEffect(kind="bifrost.read")])
+def entry(): return VALUE
+""",
+        "workflows/consumer.py": b"""
+from bifrost import workflow
+from modules.shared import VALUE
+@workflow(effects=[WorkflowEffect(kind="integration.write", target="halo")])
+def consumer(): return VALUE
+""",
+    }
+
+    targets = _validation_targets(
+        files,
+        set(files),
+        PromotionEntry(path="workflows/entry.py", function="entry"),
+    )
+
+    assert [item.model_dump() for item in targets] == [
+        {
+            "path": "workflows/consumer.py",
+            "function": "consumer",
+            "entity_type": "workflow",
+            "relation": "affected_executable",
+        },
+        {
+            "path": "workflows/entry.py",
+            "function": "entry",
+            "entity_type": "workflow",
+            "relation": "selected_entry",
+        },
+    ]
+
+
+def test_affected_graph_uncertainty_remains_fail_closed() -> None:
+    files = {
+        "modules/shared.py": b"VALUE = 1\n",
+        "workflows/one.py": b"@workflow(name='Child')\ndef one(): return 1\n",
+        "workflows/two.py": b"@workflow(name='Child')\ndef two(): return 2\n",
+        "workflows/parent.py": (
+            b"from importlib import import_module\n"
+            b"from modules.shared import VALUE\n"
+            b"from modules.missing import ABSENT\n"
+            b"async def parent(name):\n"
+            b"    import_module(name)\n"
+            b"    await sdk.workflows.execute(function_name=name)\n"
+            b"    return {'workflow_name': 'Child', 'value': VALUE}\n"
+        ),
+    }
+
+    diagnostics, _forward, _affected = _canonical_impact_diagnostics(
+        entry_path="workflows/parent.py",
+        base_files=files,
+        closure_files=files,
+    )
+
+    blockers = {
+        item.code for item in diagnostics if item.severity == "blocker"
+    }
+    assert {
+        "unresolved_repo_import",
+        "ambiguous_workflow_reference",
+        "dynamic_import_unresolved",
+        "dynamic_workflow_reference_unresolved",
+    } <= blockers
+
+
+def test_reviewed_risk_classes_keep_read_and_write_effects_explicit() -> None:
+    assert _risk_class_for_effects(["bifrost.read"]) == "R0"
+    assert _risk_class_for_effects(
+        ["bifrost.read", "integration.read:microsoft_graph"]
+    ) == "R1"
+    assert _risk_class_for_effects(["integration.write:halopsa"]) == "R2"
+
+
+def test_selected_registration_binds_its_own_runtime_bounds() -> None:
+    registration = _selected_effective_registration(
+        entry=PromotionEntry(path="workflows/demo.py", function="demo"),
+        action={
+            "requested_id": "11111111-1111-1111-1111-111111111111",
+            "type": "workflow",
+            "name": "Demo",
+            "organization_id": "22222222-2222-2222-2222-222222222222",
+        },
+        registration_state=None,
+        source_sha256="a" * 64,
+        runtime_bounds={
+            "max_records_read": 100,
+            "max_duration_seconds": 30,
+            "max_output_bytes": 1000,
+            "max_external_calls": 5,
+        },
+    )
+
+    assert registration["runtime_bounds"] == {
+        "max_duration_seconds": 30,
+        "max_external_calls": 5,
+        "max_output_bytes": 1000,
+        "max_records_read": 100,
+    }
+
+
+def test_changed_multi_entity_file_refreshes_every_effective_registration() -> None:
+    path = "workflows/shared.py"
+    raw = b"""
+from bifrost import workflow
+@workflow(
+    name="First",
+    effects=[WorkflowEffect(kind="bifrost.read")],
+    enforced_bounds={
+        "max_duration_seconds": 10,
+        "max_external_calls": 1,
+        "max_records_read": 20,
+        "max_output_bytes": 300,
+    },
+)
+def first(): return 1
+@workflow(
+    name="Second",
+    effects=[WorkflowEffect(kind="integration.write", target="halo")],
+    enforced_bounds={
+        "max_duration_seconds": 40,
+        "max_external_calls": 5,
+        "max_records_read": 60,
+        "max_output_bytes": 700,
+    },
+)
+def second(): return 2
+"""
+    new_hash = hashlib.sha256(raw).hexdigest()
+    first_key = f"{path}::first"
+    second_key = f"{path}::second"
+    base = {
+        first_key: {
+            "path": path,
+            "function": "first",
+            "workflow_id": str(uuid4()),
+            "type": "workflow",
+            "name": "First",
+            "organization_id": str(uuid4()),
+            "is_active": True,
+            "source_sha256": "a" * 64,
+            "runtime_bounds": {"max_duration_seconds": 1},
+        },
+        second_key: {
+            "path": path,
+            "function": "second",
+            "workflow_id": str(uuid4()),
+            "type": "workflow",
+            "name": "Second",
+            "organization_id": str(uuid4()),
+            "is_active": True,
+            "source_sha256": "a" * 64,
+            "runtime_bounds": {"max_duration_seconds": 1},
+        },
+    }
+    selected = {
+        **base[first_key],
+        "source_sha256": new_hash,
+        "runtime_bounds": {
+            "max_duration_seconds": 10,
+            "max_external_calls": 1,
+            "max_records_read": 20,
+            "max_output_bytes": 300,
+        },
+    }
+    diagnostics = []
+
+    result = _refresh_effective_registrations(
+        base_registrations=base,
+        closure_files={path: raw},
+        closure_hashes={path: new_hash},
+        selected_key=first_key,
+        selected_registration=selected,
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics == []
+    assert result[first_key]["source_sha256"] == new_hash
+    assert result[second_key]["source_sha256"] == new_hash
+    assert result[first_key]["runtime_bounds"]["max_duration_seconds"] == 10
+    assert result[second_key]["runtime_bounds"] == {
+        "max_duration_seconds": 40,
+        "max_external_calls": 5,
+        "max_output_bytes": 700,
+        "max_records_read": 60,
+    }
+    assert result[second_key]["workflow_id"] == base[second_key]["workflow_id"]
+
+
+def test_changed_multi_entity_file_blocks_non_selected_metadata_drift() -> None:
+    path = "workflows/shared.py"
+    raw = b"""
+from bifrost import workflow
+@workflow(
+    name="Renamed Outside Selection",
+    enforced_bounds={
+        "max_duration_seconds": 10,
+        "max_external_calls": 1,
+        "max_records_read": 20,
+        "max_output_bytes": 300,
+    },
+)
+def second(): return 2
+"""
+    key = f"{path}::second"
+    base = {
+        key: {
+            "path": path,
+            "function": "second",
+            "workflow_id": str(uuid4()),
+            "type": "workflow",
+            "name": "Second",
+            "organization_id": str(uuid4()),
+            "is_active": True,
+            "source_sha256": "a" * 64,
+            "runtime_bounds": {"max_duration_seconds": 1},
+        }
+    }
+    diagnostics = []
+
+    _refresh_effective_registrations(
+        base_registrations=base,
+        closure_files={path: raw},
+        closure_hashes={path: "b" * 64},
+        selected_key="workflows/other.py::selected",
+        selected_registration={"path": "workflows/other.py", "function": "selected"},
+        diagnostics=diagnostics,
+    )
+
+    assert [item.code for item in diagnostics] == [
+        "non_selected_registration_metadata_changed"
+    ]
+    assert diagnostics[0].severity == "blocker"
+    assert base[key]["name"] == "Second"
 
 
 def test_content_identity_is_independent_of_review_attestation() -> None:
