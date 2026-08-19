@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -24,6 +24,12 @@ from src.services.workspace_release_storage import normalize_workspace_release_p
 
 WORKSPACE_RELEASE_RUNTIME_SCHEMA = "bifrost.workspace-release-runtime/v1"
 WORKSPACE_RELEASE_ARTIFACT_SCHEMA = "bifrost.workspace-release-artifact/v1"
+REQUIRED_RUNTIME_BOUNDS = {
+    "max_duration_seconds",
+    "max_external_calls",
+    "max_records_read",
+    "max_output_bytes",
+}
 
 
 class WorkspaceReleaseRuntimeError(RuntimeError):
@@ -127,6 +133,27 @@ def _effective_registrations(
     return dict(sorted(result.items()))
 
 
+def _runtime_bounds(manifest: dict[str, Any]) -> dict[str, int]:
+    value = manifest.get("bounds")
+    if not isinstance(value, dict) or not REQUIRED_RUNTIME_BOUNDS.issubset(value):
+        raise WorkspaceReleaseRuntimeError(
+            "Workspace release is missing its enforced runtime bounds"
+        )
+    result: dict[str, int] = {}
+    for key, raw in value.items():
+        if (
+            not isinstance(key, str)
+            or not isinstance(raw, int)
+            or isinstance(raw, bool)
+            or raw <= 0
+        ):
+            raise WorkspaceReleaseRuntimeError(
+                "Workspace release runtime bounds are invalid"
+            )
+        result[key] = raw
+    return dict(sorted(result.items()))
+
+
 @dataclass(frozen=True)
 class WorkspaceReleaseDescriptor:
     release_row_id: UUID
@@ -141,6 +168,7 @@ class WorkspaceReleaseDescriptor:
     source_commit_sha: str
     source_tree_sha: str
     registration_state_fingerprint: str
+    bounds: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_rows(
@@ -187,6 +215,7 @@ class WorkspaceReleaseDescriptor:
             registration_state_fingerprint=_required_text(
                 registration, "state_fingerprint"
             ),
+            bounds=_runtime_bounds(manifest),
         )
 
 
@@ -235,6 +264,7 @@ class PinnedWorkspaceRuntime:
             "workspace_release_registration_state_fingerprint": (
                 self.release.registration_state_fingerprint
             ),
+            "workspace_release_bounds": self.release.bounds,
             "workflow_id": str(self.workflow_id),
             "workflow_name": self.name,
             "workflow_function_name": self.function_name,
@@ -350,7 +380,10 @@ def _pin_workflow_to_release(
         function_name=workflow.function_name,
         path=path,
         source_hash=source_hash,
-        timeout_seconds=workflow.timeout_seconds or 1800,
+        timeout_seconds=min(
+            workflow.timeout_seconds or 1800,
+            release.bounds["max_duration_seconds"],
+        ),
         time_saved=workflow.time_saved or 0,
         value=float(workflow.value or 0),
         execution_mode=workflow.execution_mode or "async",
@@ -475,6 +508,7 @@ def workflow_data_from_workspace_evidence(evidence: dict[str, Any]) -> dict[str,
         "workflow_function_name",
         "workflow_path",
         "workflow_source_hash",
+        "workspace_release_bounds",
     )
     if any(not evidence.get(key) for key in required):
         raise WorkspaceReleaseRuntimeError(
@@ -487,6 +521,18 @@ def workflow_data_from_workspace_evidence(evidence: dict[str, Any]) -> dict[str,
     ):
         raise WorkspaceReleaseRuntimeError(
             "Workspace release workflow hash is outside its effective manifest"
+        )
+    bounds = evidence["workspace_release_bounds"]
+    if (
+        not isinstance(bounds, dict)
+        or not REQUIRED_RUNTIME_BOUNDS.issubset(bounds)
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in bounds.values()
+        )
+    ):
+        raise WorkspaceReleaseRuntimeError(
+            "Workspace release runtime bounds are invalid"
         )
     return {
         "name": evidence["workflow_name"],
@@ -504,6 +550,8 @@ def workflow_data_from_workspace_evidence(evidence: dict[str, Any]) -> dict[str,
             "workspace_release_runtime_storage_prefix"
         ],
         "workspace_release_source_hashes": source_hashes,
+        "workspace_release_bounds": bounds,
+        "workspace_release_max_output_bytes": bounds["max_output_bytes"],
     }
 
 

@@ -7,17 +7,20 @@ from typing import Any
 
 
 class WorkspaceDraftOutputLimitExceeded(RuntimeError):
-    """A draft canary returned more serialized data than its immutable bound."""
+    """An immutable Workspace runtime exceeded its output bound."""
 
 
 def enforce_draft_output_limit(context_data: dict[str, Any], result: Any) -> None:
-    """Enforce draft output size before it crosses the worker boundary."""
-    if context_data.get("runtime_mode") != "workspace-canary-v1":
+    """Enforce output size before immutable results cross the worker boundary."""
+    runtime_mode = context_data.get("runtime_mode")
+    if runtime_mode not in {"workspace-canary-v1", "workspace-release-v1"}:
         return
-    limit = context_data.get("draft_max_output_bytes")
+    limit = context_data.get("runtime_max_output_bytes")
+    if limit is None and runtime_mode == "workspace-canary-v1":
+        limit = context_data.get("draft_max_output_bytes")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         raise WorkspaceDraftOutputLimitExceeded(
-            "draft canary is missing its hard output bound"
+            "immutable Workspace runtime is missing its hard output bound"
         )
     serialized = json.dumps(
         result,
@@ -26,5 +29,6 @@ def enforce_draft_output_limit(context_data: dict[str, Any], result: Any) -> Non
     ).encode("utf-8")
     if len(serialized) > limit:
         raise WorkspaceDraftOutputLimitExceeded(
-            f"draft canary output is {len(serialized)} bytes; limit is {limit}"
+            f"immutable Workspace runtime output is {len(serialized)} bytes; "
+            f"limit is {limit}"
         )

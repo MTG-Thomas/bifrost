@@ -73,6 +73,12 @@ def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
                 "tree_sha": "2" * 40,
             },
             "registration": {"state_fingerprint": "sha256:" + "f" * 64},
+            "bounds": {
+                "max_duration_seconds": 30,
+                "max_external_calls": 10,
+                "max_records_read": 100,
+                "max_output_bytes": 4096,
+            },
         },
         risk_class="R0",
         disposition="review_required",
@@ -153,6 +159,12 @@ def test_entry_source_must_be_a_member_of_same_release() -> None:
         "workflow_function_name": "run",
         "workflow_path": "features/demo.py",
         "workflow_source_hash": "c" * 64,
+        "workspace_release_bounds": {
+            "max_duration_seconds": 30,
+            "max_external_calls": 10,
+            "max_records_read": 100,
+            "max_output_bytes": 4096,
+        },
     }
 
     with pytest.raises(WorkspaceReleaseRuntimeError, match="outside its effective"):

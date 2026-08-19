@@ -148,28 +148,39 @@ class ProcessPoolAdmissionRejected(RuntimeError):
     """Raised when local process-pool capacity cannot admit an execution."""
 
 
-class WorkspaceDraftDurationLimitInvalid(ValueError):
-    """A draft canary lacks a valid immutable parent-process deadline."""
+class WorkspaceRuntimeDurationLimitInvalid(ValueError):
+    """An immutable Workspace runtime lacks a valid parent-process deadline."""
+
+
+# Backward-compatible import name for the pre-release canary tests/SDK surface.
+WorkspaceDraftDurationLimitInvalid = WorkspaceRuntimeDurationLimitInvalid
 
 
 def execution_timeout_from_context(
     context: dict[str, Any], default_timeout: int
 ) -> int:
-    """Resolve the parent-enforced deadline, failing closed for draft canaries."""
+    """Resolve the parent-enforced deadline for immutable Workspace runtimes."""
     timeout = context.get("timeout_seconds", default_timeout)
-    if context.get("runtime_mode") != "workspace-canary-v1":
+    if context.get("runtime_mode") not in {
+        "workspace-canary-v1",
+        "workspace-release-v1",
+    }:
         return timeout
-    hard_limit = context.get("draft_max_duration_seconds")
+    hard_limit = context.get("runtime_max_duration_seconds")
+    if hard_limit is None and context.get("runtime_mode") == "workspace-canary-v1":
+        hard_limit = context.get("draft_max_duration_seconds")
     if (
         not isinstance(hard_limit, int)
         or isinstance(hard_limit, bool)
         or hard_limit <= 0
     ):
-        raise WorkspaceDraftDurationLimitInvalid(
-            "draft canary is missing its hard duration bound"
+        raise WorkspaceRuntimeDurationLimitInvalid(
+            "immutable Workspace runtime is missing its hard duration bound"
         )
     if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
-        raise WorkspaceDraftDurationLimitInvalid("draft canary timeout is invalid")
+        raise WorkspaceRuntimeDurationLimitInvalid(
+            "immutable Workspace runtime timeout is invalid"
+        )
     return min(timeout, hard_limit)
 
 

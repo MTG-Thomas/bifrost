@@ -588,7 +588,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
             runtime_storage_prefix: str | None = None
             workspace_release_id: str | None = None
             workspace_release_source_hashes: dict[str, str] | None = None
-            draft_max_output_bytes: int | None = None
+            runtime_max_duration_seconds: int | None = None
+            runtime_max_output_bytes: int | None = None
 
             if not is_script and runtime_mode == "workspace-canary-v1":
                 from src.models.orm.executions import Execution
@@ -625,7 +626,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 runtime_storage_prefix = workflow_data["runtime_storage_prefix"]
                 workspace_release_source_hashes = workflow_data["source_hashes"]
                 workspace_release_id = workflow_data["draft_runtime_id"]
-                draft_max_output_bytes = workflow_data["max_output_bytes"]
+                runtime_max_duration_seconds = timeout_seconds
+                runtime_max_output_bytes = workflow_data["max_output_bytes"]
             elif not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
 
@@ -682,6 +684,10 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         ]
                         runtime_storage_prefix = workflow_data[
                             "workspace_release_runtime_storage_prefix"
+                        ]
+                        runtime_max_duration_seconds = timeout_seconds
+                        runtime_max_output_bytes = workflow_data[
+                            "workspace_release_max_output_bytes"
                         ]
                     elif solution_deployment_id:
                         from src.services.solutions.deployment_runtime import (
@@ -925,10 +931,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "workspace_release_source_hashes": workspace_release_source_hashes,
                 "workspace_generation": workspace_release_id,
                 "runtime_mode": runtime_mode,
-                "draft_max_duration_seconds": (
-                    timeout_seconds if runtime_mode == "workspace-canary-v1" else None
-                ),
-                "draft_max_output_bytes": draft_max_output_bytes,
+                "runtime_max_duration_seconds": runtime_max_duration_seconds,
+                "runtime_max_output_bytes": runtime_max_output_bytes,
                 "solution_global_repo_access": solution_global_repo_access,
                 # Pre-minted engine token: child writes directly to credentials file,
                 # no SECRET_KEY required in child env.

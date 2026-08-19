@@ -140,7 +140,7 @@ def test_local_only_draft_artifact_is_never_canary_eligible() -> None:
     artifact.target_kind = "draft"
     artifact.schema_version = "bifrost.workspace-draft-upload/v1"
 
-    with pytest.raises(WorkspaceDraftCanaryError, match="only reviewed"):
+    with pytest.raises(WorkspaceDraftCanaryError, match="reviewed protected-main"):
         build_draft_runtime_evidence(
             artifact,
             workspace_draft_runtime_prefix(
@@ -212,6 +212,15 @@ def test_process_pool_enforces_draft_deadline_from_immutable_context() -> None:
             {"runtime_mode": "workspace-canary-v1", "timeout_seconds": 30}, 300
         )
 
+    assert execution_timeout_from_context(
+        {
+            "runtime_mode": "workspace-release-v1",
+            "timeout_seconds": 30,
+            "runtime_max_duration_seconds": 5,
+        },
+        300,
+    ) == 5
+
 
 def test_worker_rejects_oversize_serialized_draft_output() -> None:
     context = {
@@ -223,7 +232,14 @@ def test_worker_rejects_oversize_serialized_draft_output() -> None:
     with pytest.raises(WorkspaceDraftOutputLimitExceeded, match="limit is 10"):
         enforce_draft_output_limit(context, {"message": "too large"})
 
-    # The new bound is intentionally isolated from registered/legacy execution.
+    release_context = {
+        "runtime_mode": "workspace-release-v1",
+        "runtime_max_output_bytes": 10,
+    }
+    with pytest.raises(WorkspaceDraftOutputLimitExceeded, match="limit is 10"):
+        enforce_draft_output_limit(release_context, {"message": "too large"})
+
+    # Legacy execution remains unaffected.
     enforce_draft_output_limit({"runtime_mode": "repo-v1"}, {"x": "x" * 1000})
 
 
