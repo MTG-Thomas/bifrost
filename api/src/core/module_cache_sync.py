@@ -730,6 +730,7 @@ def _resolve_module_candidate(
     immutable_module = storage_path.startswith(
         (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
     )
+    integrity_error: RuntimeError | None = None
     expected_generation = (
         None if immutable_module else workspace_generation_for_import()
     )
@@ -743,7 +744,8 @@ def _resolve_module_candidate(
         if immutable_module and module is not None:
             try:
                 _verify_immutable_module_hash(path, module)
-            except RuntimeError:
+            except RuntimeError as exc:
+                integrity_error = exc
                 client.delete(key)
             else:
                 return module
@@ -776,6 +778,8 @@ def _resolve_module_candidate(
         expected_generation=expected_generation,
     )
     if module is None:
+        if integrity_error is not None:
+            raise integrity_error
         return None
     _cache_sync_module(
         client,

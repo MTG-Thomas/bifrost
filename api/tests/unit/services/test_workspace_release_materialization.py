@@ -90,6 +90,7 @@ def _artifact(organization_id):
         "declared_effects": ["bifrost.read"],
         "static_effects": [],
         "computed_effects": ["bifrost.read"],
+        "diagnostics": [],
         "bounds": {
             "max_duration_seconds": 30,
             "max_external_calls": 1,
