@@ -1,4 +1,4 @@
-"""Enforce one idempotent active Workspace release pointer per organization.
+"""Enforce one idempotent Workspace release and one platform-global Live pointer.
 
 Revision ID: 20260819_workspace_release_active
 Revises: 20260819_workspace_release_artifact_v1
