@@ -2,25 +2,42 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+
+from bifrost.promotion import snapshot_id
 from bifrost.workspace_release import (
     workspace_registration_manifest_id,
     workspace_release_id,
 )
-from src.models.contracts.workspace_promotions import PromotionEntry
+from src.models.contracts.workspace_promotions import (
+    PromotionClientContract,
+    PromotionEntry,
+    PromotionFile,
+    PromotionSnapshot,
+    WorkspacePromotionDraftRequest,
+)
 from src.services.workspace_promotions import (
+    WorkspacePromotionInvalid,
+    WorkspacePromotionPreviewService,
+    _BaseSnapshot,
     _allocated_registration_id,
     _canonical_candidate,
     _canonical_impact_diagnostics,
     _closure_id,
     _content_id,
+    _decode_draft_closure,
     _entry_metadata,
     _is_executable_python_path,
     _manifest_id,
     _repo_v1_release_id,
     _source_zip,
     _static_effects,
+    _validate_draft_snapshot,
 )
 
 
@@ -158,9 +175,7 @@ def test_release_v1_executable_tree_excludes_generated_workspace_state() -> None
 def test_platform_allocated_registration_id_is_stable_and_path_scoped() -> None:
     organization_id = uuid4()
 
-    first = _allocated_registration_id(
-        organization_id, "workflows/demo.py", "demo"
-    )
+    first = _allocated_registration_id(organization_id, "workflows/demo.py", "demo")
 
     assert first == _allocated_registration_id(
         organization_id, "workflows/demo.py", "demo"
@@ -209,3 +224,194 @@ def test_registration_only_intent_changes_release_identity() -> None:
             "effective_registrations": create,
         }
     )
+
+
+def test_draft_upload_decodes_only_a_bounded_exact_closure() -> None:
+    source = b"def run():\n    return 1\n"
+    digest = hashlib.sha256(source).hexdigest()
+    files = {"workflows/demo.py": digest}
+    request = WorkspacePromotionDraftRequest(
+        schema_version="bifrost.workspace-draft-upload/v1",
+        entry={"path": "workflows/demo.py", "function": "run"},
+        snapshot={
+            "snapshot_id": snapshot_id(files),
+            "files": files,
+            "closure": [
+                {
+                    "path": "workflows/demo.py",
+                    "sha256": digest,
+                    "content_base64": base64.b64encode(source).decode(),
+                }
+            ],
+        },
+        client={"cli_version": "test", "sdk_version": "test", "contract_version": "2"},
+    )
+
+    assert _decode_draft_closure(request) == {"workflows/demo.py": source}
+
+    request.snapshot.closure[0].content_base64 = "not-base64"
+    with pytest.raises(WorkspacePromotionInvalid, match="valid base64"):
+        _decode_draft_closure(request)
+
+
+def test_draft_snapshot_must_equal_server_base_plus_uploaded_closure() -> None:
+    base_raw = b"VALUE = 'base'\n"
+    draft_raw = b"def run():\n    return 1\n"
+    base_hash = hashlib.sha256(base_raw).hexdigest()
+    draft_hash = hashlib.sha256(draft_raw).hexdigest()
+    files = {
+        "modules/base.py": base_hash,
+        "workflows/demo.py": draft_hash,
+    }
+    request = WorkspacePromotionDraftRequest(
+        schema_version="bifrost.workspace-draft-upload/v1",
+        entry=PromotionEntry(path="workflows/demo.py", function="run"),
+        snapshot=PromotionSnapshot(
+            snapshot_id=snapshot_id(files),
+            files=files,
+            closure=[
+                PromotionFile(
+                    path="workflows/demo.py",
+                    sha256=draft_hash,
+                    content_base64=base64.b64encode(draft_raw).decode(),
+                )
+            ],
+        ),
+        client=PromotionClientContract(
+            cli_version="test", sdk_version="test", contract_version="2"
+        ),
+    )
+    base = _BaseSnapshot(
+        release_id="repo-v1:" + "a" * 64,
+        manifest_id="sha256:" + "b" * 64,
+        files={"modules/base.py": base_raw},
+        hashes={"modules/base.py": base_hash},
+        registrations={},
+    )
+
+    _validate_draft_snapshot(request, base, {"workflows/demo.py": draft_raw})
+
+    request.snapshot.files["modules/base.py"] = "0" * 64
+    with pytest.raises(WorkspacePromotionInvalid, match="server base plus closure"):
+        _validate_draft_snapshot(request, base, {"workflows/demo.py": draft_raw})
+
+
+@pytest.mark.asyncio
+async def test_draft_artifact_is_local_only_expiring_and_content_reused(
+    monkeypatch,
+) -> None:
+    source = b"""
+from bifrost import workflow
+
+@workflow(
+    effects=[],
+    enforced_bounds={
+        "max_duration_seconds": 30,
+        "max_external_calls": 1,
+        "max_records_read": 1,
+        "max_output_bytes": 1000,
+    },
+)
+def run():
+    return 1
+"""
+    digest = hashlib.sha256(source).hexdigest()
+    files = {"workflows/demo.py": digest}
+    request = WorkspacePromotionDraftRequest(
+        schema_version="bifrost.workspace-draft-upload/v1",
+        entry={"path": "workflows/demo.py", "function": "run"},
+        snapshot={
+            "snapshot_id": snapshot_id(files),
+            "files": files,
+            "closure": [
+                {
+                    "path": "workflows/demo.py",
+                    "sha256": digest,
+                    "content_base64": base64.b64encode(source).decode(),
+                }
+            ],
+        },
+        client={"cli_version": "test", "sdk_version": "test", "contract_version": "2"},
+    )
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class Database:
+        def __init__(self):
+            self.artifact = None
+
+        async def execute(self, _statement):
+            return Result(self.artifact)
+
+        def add(self, value):
+            self.artifact = value
+
+        async def flush(self):
+            if self.artifact.id is None:
+                self.artifact.id = uuid4()
+            if self.artifact.created_at is None:
+                self.artifact.created_at = datetime.now(timezone.utc)
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _value):
+            return None
+
+    class Storage:
+        writes = 0
+
+        def __init__(self, organization_id, content_id):
+            self.source_artifact_key = (
+                f"draft/{organization_id}/{content_id}/source.zip"
+            )
+            self.manifest_key = f"draft/{organization_id}/{content_id}/manifest.json"
+
+        async def write_source(self, _content):
+            type(self).writes += 1
+            return self.source_artifact_key
+
+        async def write_manifest(self, _content):
+            return self.manifest_key
+
+    async def audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.WorkspacePromotionArtifactStorage",
+        Storage,
+    )
+    monkeypatch.setattr("src.services.workspace_promotions.emit_audit", audit)
+    db = Database()
+    base = _BaseSnapshot(
+        release_id="repo-v1:" + "a" * 64,
+        manifest_id="sha256:" + "b" * 64,
+        files={},
+        hashes={},
+        registrations={},
+    )
+    service = WorkspacePromotionPreviewService(
+        db, uuid4(), base_resolver=lambda: _async_value(base)
+    )
+
+    first = await service.upload_draft(request, uuid4())
+    second = await service.upload_draft(request, uuid4())
+
+    assert first.artifact_id == second.artifact_id
+    assert first.authority == "local_only"
+    assert first.activatable is False
+    assert first.expires_at > first.created_at
+    assert Storage.writes == 1
+    assert db.artifact.target_kind == "draft"
+    assert db.artifact.release_id is None
+    assert db.artifact.source_revision is None
+    assert db.artifact.registration_state_fingerprint is None
+
+
+async def _async_value(value):
+    return value

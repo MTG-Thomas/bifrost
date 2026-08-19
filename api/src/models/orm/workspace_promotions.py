@@ -158,6 +158,12 @@ class WorkspacePromotionRelease(Base):
     activation_evidence: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB, nullable=True
     )
+    prepared_evidence: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    prepared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     lock_evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -188,6 +194,12 @@ class WorkspacePromotionRelease(Base):
             "idempotency_key",
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "uq_workspace_promotion_release_artifact",
+            "organization_id",
+            "artifact_id",
+            unique=True,
         ),
         Index(
             "uq_workspace_promotion_release_live",

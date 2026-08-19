@@ -17,6 +17,7 @@ class PromotionFile(BaseModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     content_base64: str | None = Field(
         default=None,
+        max_length=44_739_244,
         description=(
             "Draft-only source bytes; reviewed production reads from protected Git."
         ),
@@ -64,6 +65,18 @@ class WorkspacePromotionPreviewRequest(BaseModel):
     local_run: PromotionRunEvidence | None = None
     client: PromotionClientContract
 
+
+class WorkspacePromotionDraftRequest(BaseModel):
+    """Local-only source upload that can never authorize a Live release."""
+
+    schema_version: Literal["bifrost.workspace-draft-upload/v1"]
+    target: Literal["draft"] = "draft"
+    entry: PromotionEntry
+    snapshot: PromotionSnapshot
+    local_run: PromotionRunEvidence | None = None
+    client: PromotionClientContract
+
+
 class PromotionClosureMember(BaseModel):
     path: str
     sha256: str
@@ -95,6 +108,32 @@ PromotionArtifactLifecycle = Literal[
 ]
 
 
+class WorkspacePromotionDraftResponse(BaseModel):
+    schema_version: Literal["bifrost.workspace-draft-artifact/v1"] = (
+        "bifrost.workspace-draft-artifact/v1"
+    )
+    artifact_id: UUID
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    content_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    closure_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    authority: Literal["local_only"] = "local_only"
+    activatable: Literal[False] = False
+    entry: PromotionEntry
+    snapshot_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    closure: list[PromotionClosureMember]
+    declared_effects: list[str]
+    computed_effects: list[str]
+    bounds: dict[str, int]
+    lifecycle_status: Literal["previewed", "expired"]
+    source_artifact_key: str
+    expires_at: datetime
+    created_at: datetime
+
+
+class WorkspaceReleasePrepareRequest(BaseModel):
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class WorkspacePromotionPreviewResponse(BaseModel):
     schema_version: Literal["bifrost.workspace-promotion-preview/v2"] = (
         "bifrost.workspace-promotion-preview/v2"
@@ -115,9 +154,7 @@ class WorkspacePromotionPreviewResponse(BaseModel):
             "Complete executable authored-Python path-to-SHA-256 tree for release v1."
         )
     )
-    effective_registration_manifest_id: str = Field(
-        pattern=r"^sha256:[0-9a-f]{64}$"
-    )
+    effective_registration_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     effective_registrations: dict[str, dict]
     snapshot_id: str
     risk_class: Literal["R0", "R1", "R2"]
@@ -154,9 +191,7 @@ class WorkspacePromotionArtifactResponse(BaseModel):
             "Complete executable authored-Python path-to-SHA-256 tree for release v1."
         )
     )
-    effective_registration_manifest_id: str = Field(
-        pattern=r"^sha256:[0-9a-f]{64}$"
-    )
+    effective_registration_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     effective_registrations: dict[str, dict]
     entry: PromotionEntry
     closure: list[PromotionClosureMember]

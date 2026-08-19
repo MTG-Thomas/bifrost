@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractAsyncContextManager
+from typing import Any, Callable
 
 from src.config import Settings, get_settings
+from src.services.solutions.deployment_storage import CreateOnlyArtifactStorage
 
 WORKSPACE_RELEASES_ROOT = "_workspace_releases"
 
@@ -23,24 +26,19 @@ def normalize_workspace_release_prefix(prefix: str) -> str:
     return value + "/"
 
 
-class WorkspaceReleaseStorage:
-    """Object reads scoped to one create-only Workspace release tree."""
+class WorkspaceReleaseStorage(CreateOnlyArtifactStorage):
+    """Create-only writes and reads scoped to one immutable release tree."""
 
-    def __init__(self, runtime_prefix: str, settings: Settings | None = None):
+    def __init__(
+        self,
+        runtime_prefix: str,
+        settings: Settings | None = None,
+        client_factory: Callable[[], AbstractAsyncContextManager[Any]] | None = None,
+    ):
         self.runtime_prefix = normalize_workspace_release_prefix(runtime_prefix)
-        self._settings = settings or get_settings()
-        if self._settings.object_storage_provider == "azure_blob":
-            from src.services.file_storage.azure_blob_client import (
-                AzureBlobStorageClient,
-            )
-
-            self._storage = AzureBlobStorageClient(self._settings)
-            self._bucket = self._settings.azure_blob_container or ""
-        else:
-            from src.services.file_storage.s3_client import S3StorageClient
-
-            self._storage = S3StorageClient(self._settings)
-            self._bucket = self._settings.s3_bucket or ""
+        super().__init__(
+            settings=settings or get_settings(), client_factory=client_factory
+        )
 
     def _key(self, path: str) -> str:
         normalized = path.replace("\\", "/").lstrip("/")
@@ -51,16 +49,42 @@ class WorkspaceReleaseStorage:
         return f"{self.runtime_prefix}{normalized}"
 
     async def read(self, path: str) -> bytes:
-        async with self._storage.get_client() as client:
+        async with self._client_factory() as client:
             response = await client.get_object(Bucket=self._bucket, Key=self._key(path))
             return await response["Body"].read()
+
+    async def write(self, path: str, content: bytes) -> str:
+        """Create one release file, accepting only byte-identical retries."""
+        key = self._key(path)
+        await self._create(
+            key,
+            content,
+            "text/x-python" if path.endswith(".py") else "application/octet-stream",
+            idempotent=True,
+        )
+        return key
+
+    async def write_many(
+        self, files: dict[str, bytes], *, concurrency: int = 16
+    ) -> dict[str, str]:
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def write_one(path: str, content: bytes) -> tuple[str, str]:
+            async with semaphore:
+                return path, await self.write(path, content)
+
+        return dict(
+            await asyncio.gather(
+                *(write_one(path, content) for path, content in sorted(files.items()))
+            )
+        )
 
     async def read_many(
         self, paths: list[str], *, concurrency: int = 32
     ) -> dict[str, bytes]:
         """Read a bounded set of release files through one storage client."""
         semaphore = asyncio.Semaphore(concurrency)
-        async with self._storage.get_client() as client:
+        async with self._client_factory() as client:
 
             async def read_one(path: str) -> tuple[str, bytes]:
                 async with semaphore:

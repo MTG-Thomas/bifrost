@@ -1,8 +1,9 @@
-"""Immutable Workspace promotion preview and draft-canary HTTP surface."""
+"""Immutable rapid Workspace artifact, preparation, and canary HTTP surface."""
 
+import logging
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 
 from src.config import get_settings
 from src.core.auth import Context, CurrentSuperuser
@@ -13,6 +14,19 @@ from src.models.contracts.workspace_promotions import (
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
     WorkspacePromotionArtifactResponse,
+    WorkspacePromotionDraftRequest,
+    WorkspacePromotionDraftResponse,
+    WorkspaceReleasePrepareRequest,
+)
+from src.models.contracts.platform_jobs import PlatformJobAccepted
+from src.jobs.platform.workspace_release_prepare import (
+    WORKSPACE_RELEASE_PREPARE_DEFINITION,
+    WorkspaceReleasePreparePayload,
+)
+from src.services.platform_jobs import (
+    enqueue_platform_job,
+    ensure_platform_job_notification,
+    publish_platform_job_update,
 )
 from src.services.workspace_draft_canary import (
     WorkspaceDraftCanaryError,
@@ -27,6 +41,7 @@ router = APIRouter(
     prefix="/api/workspace-promotions",
     tags=["Workspace rapid promotion"],
 )
+logger = logging.getLogger(__name__)
 
 
 async def _service(
@@ -77,6 +92,39 @@ async def preview_workspace_promotion(
         )
     try:
         return await (await _service(db, ctx.org_id)).preview(request, user.user_id)
+    except WorkspacePromotionInvalid as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/drafts",
+    response_model=WorkspacePromotionDraftResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_workspace_promotion_draft(
+    request: WorkspacePromotionDraftRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspacePromotionDraftResponse:
+    settings = get_settings()
+    if not settings.workspace_rapid_promotion_preview_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="rapid Workspace promotion preview is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await (await _service(db, ctx.org_id)).upload_draft(
+            request, user.user_id
+        )
     except WorkspacePromotionInvalid as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -155,4 +203,72 @@ async def execute_workspace_draft_canary(
     return WorkspaceDraftCanaryAccepted(
         execution_id=execution_id,
         artifact_id=artifact_id,
+    )
+
+
+@router.post(
+    "/artifacts/{artifact_id}/prepare",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def prepare_workspace_release(
+    artifact_id: UUID,
+    request: WorkspaceReleasePrepareRequest,
+    response: Response,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> PlatformJobAccepted:
+    settings = get_settings()
+    if not settings.workspace_rapid_promotion_preview_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="rapid Workspace promotion preview is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    job, reused = await enqueue_platform_job(
+        db,
+        WORKSPACE_RELEASE_PREPARE_DEFINITION,
+        WorkspaceReleasePreparePayload(
+            artifact_id=artifact_id,
+            candidate_id=request.candidate_id,
+        ),
+        dedupe_key=f"{artifact_id}:{request.candidate_id}",
+        resource_lock_key=f"workspace-release:{ctx.org_id}",
+        organization_id=ctx.org_id,
+        requested_by_user_id=user.user_id,
+        requested_by_email=user.email,
+        requested_by_name=user.name or user.email or "Unknown",
+        resource_type="workspace_promotion_artifact",
+        resource_id=str(artifact_id),
+        title="Preparing immutable Workspace release",
+        action_url=None,
+    )
+    if reused and job.requested_by_user_id != str(user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Workspace release preparation is already in progress",
+        )
+    if job.notification_id is None:
+        try:
+            await ensure_platform_job_notification(db, job)
+        except Exception:
+            logger.warning(
+                "Workspace release preparation queued without notification",
+                extra={"platform_job_id": str(job.id)},
+                exc_info=True,
+            )
+    await db.commit()
+    await db.refresh(job)
+    await publish_platform_job_update(job)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        notification_id=job.notification_id,
+        status=job.status,
+        reused=reused,
     )

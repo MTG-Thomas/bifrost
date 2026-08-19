@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import base64
+import binascii
 import hashlib
 import io
 import json
@@ -50,11 +52,16 @@ from src.models.contracts.workspace_promotions import (
     PromotionEntry,
     PromotionRegistrationEvidence,
     PromotionSourceEvidence,
+    WorkspacePromotionDraftRequest,
+    WorkspacePromotionDraftResponse,
     WorkspacePromotionArtifactResponse,
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
 )
-from src.models.orm.workspace_promotions import WorkspacePromotionArtifact
+from src.models.orm.workspace_promotions import (
+    WorkspacePromotionArtifact,
+    WorkspacePromotionRelease,
+)
 from src.models.orm.workflows import Workflow
 from src.services.audit import emit_audit
 from src.services.platform_commit_writer import (
@@ -73,6 +80,9 @@ PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-19"
 PROMOTION_BUNDLE_SCHEMA_V2 = "bifrost.workspace-promotion-bundle/v2"
 PROMOTION_ARTIFACT_SCHEMA = "bifrost.workspace-release-artifact/v1"
 ARTIFACT_TTL = timedelta(days=7)
+DRAFT_ARTIFACT_TTL = timedelta(hours=24)
+DRAFT_UPLOAD_SCHEMA = "bifrost.workspace-draft-upload/v1"
+DRAFT_ARTIFACT_SCHEMA = "bifrost.workspace-draft-artifact/v1"
 R0_EFFECTS = {"bifrost.read", "integration.read"}
 REQUIRED_R0_BOUNDS = {
     "max_duration_seconds",
@@ -398,7 +408,8 @@ def _source_zip(files: dict[str, bytes]) -> bytes:
 
 
 def _validate_closure_files(
-    request: WorkspacePromotionPreviewRequest, files: dict[str, bytes]
+    request: WorkspacePromotionPreviewRequest | WorkspacePromotionDraftRequest,
+    files: dict[str, bytes],
 ) -> dict[str, bytes]:
     snapshot_files = {
         normalize_workspace_path(path): digest
@@ -434,6 +445,61 @@ def _validate_closure_files(
     if selected not in decoded:
         raise WorkspacePromotionInvalid("selected workflow path is absent from closure")
     return decoded
+
+
+def _decode_draft_closure(
+    request: WorkspacePromotionDraftRequest,
+) -> dict[str, bytes]:
+    """Decode a bounded upload before any immutable object is written."""
+    if len(request.snapshot.closure) > MAX_CLOSURE_FILES:
+        raise WorkspacePromotionInvalid("submitted closure exceeds promotion limits")
+    decoded: dict[str, bytes] = {}
+    total = 0
+    for item in request.snapshot.closure:
+        path = normalize_workspace_path(item.path)
+        if path in decoded:
+            raise WorkspacePromotionInvalid(f"duplicate closure path: {path}")
+        if item.content_base64 is None:
+            raise WorkspacePromotionInvalid(
+                f"draft closure content is required for {path}"
+            )
+        try:
+            raw = base64.b64decode(item.content_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise WorkspacePromotionInvalid(
+                f"draft closure content is not valid base64 for {path}"
+            ) from exc
+        total += len(raw)
+        if total > MAX_CLOSURE_BYTES:
+            raise WorkspacePromotionInvalid(
+                "submitted closure exceeds promotion limits"
+            )
+        decoded[path] = raw
+    return _validate_closure_files(request, decoded)
+
+
+def _validate_draft_snapshot(
+    request: WorkspacePromotionDraftRequest,
+    base: _BaseSnapshot,
+    closure_files: dict[str, bytes],
+) -> None:
+    """Prove graph analysis used the caller's complete executable source tree."""
+    submitted = {
+        normalize_workspace_path(path): digest
+        for path, digest in request.snapshot.files.items()
+    }
+    if any(not _is_executable_python_path(path) for path in submitted):
+        raise WorkspacePromotionInvalid(
+            "draft snapshot may contain only executable authored Python source"
+        )
+    closure_hashes = {
+        path: sha256_bytes(raw) for path, raw in sorted(closure_files.items())
+    }
+    effective = dict(sorted({**base.hashes, **closure_hashes}.items()))
+    if submitted != effective:
+        raise WorkspacePromotionInvalid(
+            "draft snapshot does not match the current server base plus closure"
+        )
 
 
 def _canonical_impact_diagnostics(
@@ -561,6 +627,206 @@ class WorkspacePromotionPreviewService:
             workspace_generation = get_workspace_generation
         self.workspace_generation = workspace_generation
         self.base_resolver = base_resolver
+
+    async def upload_draft(
+        self, request: WorkspacePromotionDraftRequest, user_id: UUID
+    ) -> WorkspacePromotionDraftResponse:
+        """Persist safe local bytes with no provenance or Live authority."""
+        if normalize_workspace_path(request.entry.path) != request.entry.path:
+            raise WorkspacePromotionInvalid("entry path must be canonical POSIX form")
+        files = _decode_draft_closure(request)
+        base = await self._active_or_repo_base()
+        _validate_draft_snapshot(request, base, files)
+        metadata = _entry_metadata(
+            files[request.entry.path], request.entry.path, request.entry.function
+        )
+        graph_diagnostics, _ = _canonical_impact_diagnostics(
+            entry_path=request.entry.path,
+            base_files=base.files,
+            closure_files=files,
+        )
+        static_effects, diagnostics = _static_effects(files)
+        diagnostics.extend(graph_diagnostics)
+        if any(item.code == "secret_material_detected" for item in diagnostics):
+            raise WorkspacePromotionInvalid(
+                "high-confidence secret material detected; no artifact was stored"
+            )
+        declared_effects = metadata["effects"]
+        computed_effects = sorted(set(declared_effects) | set(static_effects))
+        undeclared = set(static_effects) - set(declared_effects)
+        if undeclared:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="undeclared_static_effect",
+                    severity="blocker",
+                    message="source implies undeclared effects: "
+                    + ", ".join(sorted(undeclared)),
+                )
+            )
+        non_r0 = [effect for effect in computed_effects if not _is_r0_effect(effect)]
+        if non_r0:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="draft_effect_not_allowed",
+                    severity="blocker",
+                    message="local-only drafts permit only R0 effects: "
+                    + ", ".join(non_r0),
+                )
+            )
+        missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
+        if missing_bounds:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="unenforced_resource_bounds",
+                    severity="blocker",
+                    message="missing enforced bounds: "
+                    + ", ".join(sorted(missing_bounds)),
+                )
+            )
+        closure_hashes = {
+            path: sha256_bytes(raw) for path, raw in sorted(files.items())
+        }
+        closure_id = _closure_id(request.entry, closure_hashes)
+        content_id = _content_id(request.entry, closure_id)
+        if request.local_run is not None and (
+            not request.local_run.succeeded
+            or request.local_run.closure_id != closure_id
+        ):
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="local_run_evidence_mismatch",
+                    severity="blocker",
+                    message="local run evidence is not successful for this closure",
+                )
+            )
+        blockers = [item for item in diagnostics if item.severity == "blocker"]
+        if blockers:
+            raise WorkspacePromotionInvalid(
+                "draft validation failed: "
+                + "; ".join(f"{item.code}: {item.message}" for item in blockers)
+            )
+        closure = [
+            PromotionClosureMember(
+                path=path,
+                sha256=closure_hashes[path],
+                size=len(raw),
+                relation="selected" if path == request.entry.path else "dependency",
+            )
+            for path, raw in sorted(files.items())
+        ]
+        candidate_payload = {
+            "schema_version": DRAFT_ARTIFACT_SCHEMA,
+            "organization_id": str(self.organization_id),
+            "target": "draft",
+            "authority": "local_only",
+            "activatable": False,
+            "entry": request.entry.model_dump(),
+            "content_id": content_id,
+            "closure_id": closure_id,
+            "snapshot_id": request.snapshot.snapshot_id,
+            "closure": [item.model_dump() for item in closure],
+            "declared_effects": declared_effects,
+            "static_effects": static_effects,
+            "computed_effects": computed_effects,
+            "bounds": metadata["bounds"],
+            "requested_bounds": metadata["requested_bounds"],
+            "local_run": request.local_run.model_dump(mode="json")
+            if request.local_run
+            else None,
+            "client": request.client.model_dump(),
+            "policy_version": PROMOTION_PREVIEW_POLICY,
+        }
+        candidate_id = _canonical_candidate(candidate_payload)
+        expires_at = datetime.now(timezone.utc) + DRAFT_ARTIFACT_TTL
+        artifact = await self._find_artifact(candidate_id)
+        if artifact is None:
+            storage = WorkspacePromotionArtifactStorage(
+                self.organization_id, content_id
+            )
+            manifest_bytes = json.dumps(
+                {
+                    "schema": WORKSPACE_RELEASE_CONTENT_SCHEMA,
+                    "content_id": content_id,
+                    "closure_id": closure_id,
+                    "entry": request.entry.model_dump(),
+                    "files": closure_hashes,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            source_key = await storage.write_source(_source_zip(files))
+            manifest_key = await storage.write_manifest(manifest_bytes)
+            artifact = WorkspacePromotionArtifact(
+                organization_id=self.organization_id,
+                candidate_id=candidate_id,
+                content_id=content_id,
+                closure_id=closure_id,
+                release_id=None,
+                base_release_id=None,
+                base_manifest_id=None,
+                effective_manifest_id=None,
+                effective_registration_manifest_id=None,
+                registration_intent_fingerprint=None,
+                registration_state_fingerprint=None,
+                schema_version=DRAFT_UPLOAD_SCHEMA,
+                target_kind="draft",
+                entity_type="workflow",
+                entry_path=request.entry.path,
+                entry_function=request.entry.function,
+                snapshot_id=request.snapshot.snapshot_id,
+                source_revision=None,
+                source_tree_sha=None,
+                source_artifact_key=source_key,
+                manifest_key=manifest_key,
+                manifest=candidate_payload,
+                risk_class="R0",
+                disposition="review_required",
+                artifact_state="previewed",
+                policy_version=PROMOTION_PREVIEW_POLICY,
+                created_by=user_id,
+                expires_at=expires_at,
+            )
+            self.db.add(artifact)
+            await self.db.flush()
+        await emit_audit(
+            self.db,
+            "workspace_promotion.draft_uploaded",
+            resource_type="workspace_promotion_artifact",
+            resource_id=artifact.id,
+            details={
+                "candidate_id": candidate_id,
+                "content_id": content_id,
+                "closure_id": closure_id,
+                "authority": "local_only",
+                "activatable": False,
+                "entry_path": request.entry.path,
+                "entry_function": request.entry.function,
+            },
+            strict=True,
+        )
+        await self.db.commit()
+        await self.db.refresh(artifact)
+        lifecycle = (
+            "expired"
+            if artifact.expires_at <= datetime.now(timezone.utc)
+            else "previewed"
+        )
+        return WorkspacePromotionDraftResponse(
+            artifact_id=artifact.id,
+            candidate_id=candidate_id,
+            content_id=content_id,
+            closure_id=closure_id,
+            entry=request.entry,
+            snapshot_id=request.snapshot.snapshot_id,
+            closure=closure,
+            declared_effects=declared_effects,
+            computed_effects=computed_effects,
+            bounds=metadata["bounds"],
+            lifecycle_status=lifecycle,
+            source_artifact_key=artifact.source_artifact_key,
+            expires_at=artifact.expires_at,
+            created_at=artifact.created_at,
+        )
 
     async def preview(
         self, request: WorkspacePromotionPreviewRequest, user_id: UUID
@@ -982,17 +1248,68 @@ class WorkspacePromotionPreviewService:
     async def _resolve_base(
         self, request: WorkspacePromotionPreviewRequest
     ) -> _BaseSnapshot:
-        base = (
-            await self.base_resolver()
-            if self.base_resolver is not None
-            else await self._repo_v1_base()
-        )
+        base = await self._active_or_repo_base()
         expected = request.expected_base_release_id
         if expected is not None and expected != base.release_id:
             raise WorkspacePromotionInvalid(
                 "active Workspace base changed after the caller selected it"
             )
         return base
+
+    async def _active_or_repo_base(self) -> _BaseSnapshot:
+        if self.base_resolver is not None:
+            return await self.base_resolver()
+        rows = (
+            await self.db.execute(
+                select(WorkspacePromotionRelease, WorkspacePromotionArtifact)
+                .join(
+                    WorkspacePromotionArtifact,
+                    WorkspacePromotionArtifact.id
+                    == WorkspacePromotionRelease.artifact_id,
+                )
+                .where(
+                    WorkspacePromotionRelease.organization_id == self.organization_id,
+                    WorkspacePromotionRelease.activation_state == "live",
+                )
+                .limit(2)
+            )
+        ).all()
+        if len(rows) > 1:
+            raise WorkspacePromotionInvalid(
+                "organization has more than one active Workspace release"
+            )
+        if not rows:
+            return await self._repo_v1_base()
+        from src.services.workspace_release_runtime import (
+            WorkspaceReleaseDescriptor,
+        )
+        from src.services.workspace_release_storage import WorkspaceReleaseStorage
+
+        release, artifact = rows[0]
+        try:
+            descriptor = WorkspaceReleaseDescriptor.from_rows(release, artifact)
+            files = await WorkspaceReleaseStorage(
+                descriptor.runtime_storage_prefix
+            ).read_many(sorted(descriptor.source_hashes))
+        except Exception as exc:  # noqa: BLE001 - storage backends vary
+            raise WorkspacePromotionInvalid(
+                "active Workspace release base is not readable"
+            ) from exc
+        hashes = {path: sha256_bytes(raw) for path, raw in sorted(files.items())}
+        if (
+            hashes != descriptor.source_hashes
+            or _manifest_id(hashes) != descriptor.effective_manifest_id
+        ):
+            raise WorkspacePromotionInvalid(
+                "active Workspace release base failed immutable readback"
+            )
+        return _BaseSnapshot(
+            release_id=descriptor.release_id,
+            manifest_id=descriptor.effective_manifest_id,
+            files=files,
+            hashes=hashes,
+            registrations=descriptor.effective_registrations,
+        )
 
     async def _repo_v1_base(self) -> _BaseSnapshot:
         before = await self.workspace_generation()
