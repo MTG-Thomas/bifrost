@@ -89,7 +89,7 @@ class _ReleaseSuperseded(RuntimeError):
 
 
 async def acquire_workspace_release_lock(
-    db: AsyncSession, organization_id: UUID
+    db: AsyncSession, organization_id: UUID | None
 ) -> None:
     """Serialize activation and projection for the one global Workspace Live."""
     del organization_id  # The compatibility _repo and production-live are global.

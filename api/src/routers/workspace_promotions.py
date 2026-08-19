@@ -303,9 +303,27 @@ async def activate_workspace_release(
             detail="an organization context is required",
         )
     try:
-        return await WorkspaceReleaseActivationService(db, ctx.org_id).activate(
-            release_id, request
+        service = WorkspaceReleaseActivationService(db, ctx.org_id)
+        await service.activate(release_id, request)
+        result, job, _reused = await service.enqueue_projection(
+            release_id,
+            requested_by_user_id=user.user_id,
+            requested_by_email=user.email,
+            requested_by_name=user.name or user.email or "Unknown",
         )
+        if job.notification_id is None:
+            try:
+                await ensure_platform_job_notification(db, job)
+                await db.commit()
+                await db.refresh(job)
+            except Exception:
+                logger.warning(
+                    "Workspace release lock-in queued without notification",
+                    extra={"platform_job_id": str(job.id)},
+                    exc_info=True,
+                )
+        await publish_platform_job_update(job)
+        return result
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -316,6 +334,15 @@ async def activate_workspace_release(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
+    except Exception as exc:
+        logger.exception(
+            "Workspace release is Live but history projection could not be queued",
+            extra={"workspace_release_row_id": str(release_id)},
+        )
+        await db.rollback()
+        return await WorkspaceReleaseActivationService(
+            db, ctx.org_id
+        ).mark_projection_queue_failed(release_id, str(exc))
 
 
 @router.get("/live", response_model=WorkspaceLiveStatusResponse)

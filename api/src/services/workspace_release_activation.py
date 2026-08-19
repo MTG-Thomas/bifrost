@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bifrost.workspace_release import canonical_digest, workspace_manifest_id
@@ -33,6 +33,7 @@ from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
 )
+from src.services.workspace_release_projection import acquire_workspace_release_lock
 from src.services.workflow_registration import (
     WorkflowRegistrationConflict,
     apply_workspace_registration_plan,
@@ -325,12 +326,7 @@ class WorkspaceReleaseActivationService:
         release_row_id: UUID,
         request: WorkspaceReleaseActivateRequest,
     ) -> WorkspaceReleaseStatusResponse:
-        await self.db.execute(
-            text(
-                "SELECT pg_advisory_xact_lock("
-                "hashtext('bifrost:workspace-release'))"
-            )
-        )
+        await acquire_workspace_release_lock(self.db, self.organization_id)
         target = await self._release_rows(release_row_id, for_update=True)
         if target is None:
             raise KeyError(release_row_id)
@@ -430,6 +426,52 @@ class WorkspaceReleaseActivationService:
         if rows is None:
             raise KeyError(release_row_id)
         return release_status(*rows)
+
+    async def enqueue_projection(
+        self,
+        release_row_id: UUID,
+        *,
+        requested_by_user_id: UUID,
+        requested_by_email: str,
+        requested_by_name: str,
+    ) -> tuple[WorkspaceReleaseStatusResponse, Any, bool]:
+        """Queue compatibility/history projection after Live is durable."""
+        from src.jobs.platform.workspace_release_lock import (
+            enqueue_workspace_release_lock,
+        )
+
+        rows = await self._release_rows(release_row_id, for_update=True)
+        if rows is None:
+            raise KeyError(release_row_id)
+        release, artifact = rows
+        job, reused = await enqueue_workspace_release_lock(
+            self.db,
+            release=release,
+            artifact=artifact,
+            requested_by_user_id=requested_by_user_id,
+            requested_by_email=requested_by_email,
+            requested_by_name=requested_by_name,
+        )
+        await self.db.commit()
+        await self.db.refresh(release)
+        return release_status(release, artifact), job, reused
+
+    async def mark_projection_queue_failed(
+        self, release_row_id: UUID, message: str
+    ) -> WorkspaceReleaseStatusResponse:
+        """Preserve Live while exposing a projection queue failure."""
+        await acquire_workspace_release_lock(self.db, self.organization_id)
+        rows = await self._release_rows(release_row_id, for_update=True)
+        if rows is None:
+            raise KeyError(release_row_id)
+        release, artifact = rows
+        if release.activation_state == "live":
+            release.lock_state = "attention_required"
+            release.error_code = "workspace_release_lock_queue_failed"
+            release.error_message = message[:2000]
+            await self.db.commit()
+            await self.db.refresh(release)
+        return release_status(release, artifact)
 
     async def get_live(self) -> WorkspaceLiveStatusResponse:
         rows = await self._current_live()

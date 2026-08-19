@@ -8,7 +8,13 @@ from pathlib import PurePosixPath
 from typing import Iterable
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.models.orm.workspace_promotions import (
+    WorkspacePromotionArtifact,
+    WorkspacePromotionRelease,
+)
 
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
@@ -115,6 +121,30 @@ async def active_workspace_release_file_view(
     )
 
 
+async def global_active_workspace_release_descriptor(
+    session: AsyncSession,
+) -> WorkspaceReleaseDescriptor | None:
+    """Resolve the single platform-global Live pointer used by shared projections."""
+    rows = (
+        await session.execute(
+            select(WorkspacePromotionRelease, WorkspacePromotionArtifact)
+            .join(
+                WorkspacePromotionArtifact,
+                WorkspacePromotionArtifact.id == WorkspacePromotionRelease.artifact_id,
+            )
+            .where(WorkspacePromotionRelease.activation_state == "live")
+            .limit(2)
+        )
+    ).all()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise WorkspaceReleaseRuntimeError(
+            "platform has more than one global Live Workspace release"
+        )
+    return WorkspaceReleaseDescriptor.from_rows(*rows[0])
+
+
 async def governed_workspace_release_file_view(
     session: AsyncSession,
     organization_id: UUID | None,
@@ -129,13 +159,18 @@ async def reject_release_governed_paths(
     organization_id: UUID | None,
     paths: Iterable[str],
 ) -> None:
-    view = await active_workspace_release_file_view(session, organization_id)
-    if view is None:
+    from src.services.workspace_release_projection import (
+        acquire_workspace_release_lock,
+    )
+
+    await acquire_workspace_release_lock(session, organization_id)
+    release = await global_active_workspace_release_descriptor(session)
+    if release is None:
         return
     for path in paths:
         normalized = normalize_release_path(path)
-        if normalized in view.release.source_hashes:
-            raise WorkspaceReleasePathGoverned(normalized, view.release.release_id)
+        if normalized in release.source_hashes:
+            raise WorkspaceReleasePathGoverned(normalized, release.release_id)
 
 
 __all__ = [
@@ -143,6 +178,7 @@ __all__ = [
     "WorkspaceReleasePathGoverned",
     "active_workspace_release_file_view",
     "governed_workspace_release_file_view",
+    "global_active_workspace_release_descriptor",
     "normalize_release_path",
     "reject_release_governed_paths",
 ]
