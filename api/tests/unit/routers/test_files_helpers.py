@@ -290,12 +290,15 @@ async def test_workspace_graph_uses_immutable_live_and_blocks_legacy_write(
             del concurrency
             return {path: immutable[path] for path in paths}
 
+    source_hashes = {
+        path: hashlib.sha256(content).hexdigest()
+        for path, content in immutable.items()
+    }
     release = SimpleNamespace(
         release_id="sha256:" + "a" * 64,
-        source_hashes={
-            path: hashlib.sha256(content).hexdigest()
-            for path, content in immutable.items()
-        },
+        source_hashes=source_hashes,
+        governed_paths=tuple(sorted(source_hashes)),
+        governed_source_hashes=source_hashes,
         runtime_storage_prefix="immutable/",
     )
     view = WorkspaceReleaseFileView.from_release(release, storage=Storage())
@@ -359,6 +362,8 @@ async def test_workspace_list_metadata_and_exists_report_immutable_live_authorit
         SimpleNamespace(
             release_id=release_id,
             source_hashes={path: immutable_hash},
+            governed_paths=(path,),
+            governed_source_hashes={path: immutable_hash},
             runtime_storage_prefix="immutable/",
         ),
         storage=Storage(),
