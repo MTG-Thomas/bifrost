@@ -114,10 +114,10 @@ class WorkspaceReleaseStorage(CreateOnlyArtifactStorage):
                 if continuation_token:
                     kwargs["ContinuationToken"] = continuation_token
                 response = await client.list_objects_v2(**kwargs)
-                paths.extend(
-                    item["Key"][len(self.runtime_prefix) :]
-                    for item in response.get("Contents", [])
-                )
+                for item in response.get("Contents", []):
+                    key = item.get("Key")
+                    if isinstance(key, str):
+                        paths.append(key[len(self.runtime_prefix) :])
                 if not response.get("IsTruncated"):
                     break
                 continuation_token = response.get("NextContinuationToken")

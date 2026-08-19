@@ -1,7 +1,7 @@
 """Enforce one idempotent Workspace release and one platform-global Live pointer.
 
-Revision ID: 20260819_workspace_release_active
-Revises: 20260819_workspace_release_artifact_v1
+Revision ID: 20260819_ws_release_active
+Revises: 20260819_ws_release_artifact
 """
 
 from collections.abc import Sequence
@@ -9,8 +9,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20260819_workspace_release_active"
-down_revision: str | None = "20260819_workspace_release_artifact_v1"
+revision: str = "20260819_ws_release_active"
+down_revision: str | None = "20260819_ws_release_artifact"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

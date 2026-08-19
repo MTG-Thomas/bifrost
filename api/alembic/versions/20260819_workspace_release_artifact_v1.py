@@ -1,6 +1,6 @@
 """Bind immutable Workspace release artifact identity and provenance.
 
-Revision ID: 20260819_workspace_release_artifact_v1
+Revision ID: 20260819_ws_release_artifact
 Revises: 20260812_private_memory
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "20260819_workspace_release_artifact_v1"
+revision: str = "20260819_ws_release_artifact"
 down_revision: str = "20260812_private_memory"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

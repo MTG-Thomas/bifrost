@@ -648,7 +648,11 @@ class WorkspaceReleaseActivationService:
         )
         if for_update:
             statement = statement.with_for_update()
-        return (await self.db.execute(statement)).one_or_none()
+        row = (await self.db.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        release, artifact = row
+        return release, artifact
 
     async def _current_live(
         self, *, for_update: bool = False
@@ -672,7 +676,10 @@ class WorkspaceReleaseActivationService:
             raise WorkspaceReleaseActivationError(
                 "organization has more than one Live Workspace release"
             )
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        release, artifact = rows[0]
+        return release, artifact
 
     async def _current_live_any_organization(
         self, *, for_update: bool = False
@@ -693,7 +700,10 @@ class WorkspaceReleaseActivationService:
             raise WorkspaceReleaseActivationError(
                 "platform has more than one global Live Workspace release"
             )
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        release, artifact = rows[0]
+        return release, artifact
 
     @staticmethod
     def _validate_request(

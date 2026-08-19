@@ -89,5 +89,6 @@ async def test_prepare_job_returns_exact_risk_authorization_challenge(
     assert result["risk_class"] == "R2"
     assert result["effect_execution"] == "not_performed"
     challenge = result["activation_authorization"]
+    assert isinstance(challenge, dict)
     assert challenge["governed_manifest_id"] == evidence["governed_manifest_id"]
     assert challenge["required_authorization"] == "risk_acknowledgement"

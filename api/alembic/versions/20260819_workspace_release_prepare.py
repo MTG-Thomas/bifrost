@@ -1,7 +1,7 @@
 """Record immutable Workspace release preparation evidence.
 
-Revision ID: 20260819_workspace_release_prepare
-Revises: 20260819_workspace_release_active
+Revision ID: 20260819_ws_release_prepare
+Revises: 20260819_ws_release_active
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "20260819_workspace_release_prepare"
-down_revision: str | None = "20260819_workspace_release_active"
+revision: str = "20260819_ws_release_prepare"
+down_revision: str | None = "20260819_ws_release_active"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
