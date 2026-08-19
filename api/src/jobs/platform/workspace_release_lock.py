@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
@@ -128,6 +129,23 @@ async def enqueue_workspace_release_lock(
     await acquire_workspace_release_lock(db, release.organization_id)
     if release.activation_state != "live":
         raise ValueError("only the current Live Workspace release can be locked")
+    if release.lock_state in {"queued", "in_progress", "locked"}:
+        if release.lock_in_job_id is None:
+            raise ValueError(
+                "Workspace release lock state is missing its durable platform job"
+            )
+        existing = await db.scalar(
+            select(PlatformJob).where(PlatformJob.id == release.lock_in_job_id)
+        )
+        if existing is None:
+            raise ValueError(
+                "Workspace release lock state references a missing platform job"
+            )
+        return existing, True
+    if release.lock_state not in {"not_queued", "attention_required"}:
+        raise ValueError(
+            f"Workspace release lock state {release.lock_state!r} cannot be queued"
+        )
     descriptor = WorkspaceReleaseDescriptor.from_rows(release, artifact)
     job, reused = await enqueue_platform_job(
         db,

@@ -72,3 +72,69 @@ async def test_enqueue_uses_global_resource_fence_and_binds_release_digest(
     assert kwargs["dedupe_key"] == f"{release.id}:sha256:{'a' * 64}"
     assert release.lock_state == "queued"
     assert release.lock_in_job_id == job.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock_state", ["queued", "in_progress", "locked"])
+async def test_enqueue_reuses_existing_durable_lock_job(
+    monkeypatch, lock_state: str
+) -> None:
+    job = SimpleNamespace(id=uuid4())
+    release = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        activation_state="live",
+        lock_state=lock_state,
+        lock_in_job_id=job.id,
+    )
+    enqueue = AsyncMock(side_effect=AssertionError("must not enqueue twice"))
+    monkeypatch.setattr(
+        "src.jobs.platform.workspace_release_lock.enqueue_platform_job", enqueue
+    )
+
+    class Database:
+        async def execute(self, _statement, _parameters=None):
+            return None
+
+        async def scalar(self, _statement):
+            return job
+
+    observed, reused = await enqueue_workspace_release_lock(
+        Database(),
+        release=release,
+        artifact=SimpleNamespace(),
+        requested_by_user_id=uuid4(),
+        requested_by_email="operator@example.com",
+        requested_by_name="Operator",
+    )
+
+    assert observed is job
+    assert reused is True
+    assert release.lock_state == lock_state
+    enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_fails_closed_when_lock_state_lost_its_job(monkeypatch) -> None:
+    release = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        activation_state="live",
+        lock_state="locked",
+        lock_in_job_id=None,
+    )
+    lock = AsyncMock()
+    monkeypatch.setattr(
+        "src.jobs.platform.workspace_release_lock.acquire_workspace_release_lock",
+        lock,
+    )
+
+    with pytest.raises(ValueError, match="missing its durable platform job"):
+        await enqueue_workspace_release_lock(
+            SimpleNamespace(),
+            release=release,
+            artifact=SimpleNamespace(),
+            requested_by_user_id=uuid4(),
+            requested_by_email="operator@example.com",
+            requested_by_name="Operator",
+        )
