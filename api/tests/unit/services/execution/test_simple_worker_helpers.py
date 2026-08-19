@@ -3,7 +3,9 @@ from __future__ import annotations
 import subprocess
 import sys
 import types
+from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Iterator
 
 import pytest
 
@@ -20,6 +22,42 @@ sys.modules.setdefault(
 )
 
 from src.services.execution import simple_worker  # noqa: E402
+
+
+@contextmanager
+def _preserve_virtual_import_state() -> Iterator[None]:
+    from src.services.execution import virtual_import
+
+    original_meta_path = list(sys.meta_path)
+    original_finder = virtual_import.get_virtual_finder()
+    try:
+        yield
+    finally:
+        virtual_import.remove_virtual_import_hook()
+        sys.meta_path[:] = original_meta_path
+        virtual_import._finder = original_finder  # noqa: SLF001
+
+
+@pytest.fixture(autouse=True)
+def preserve_virtual_import_state():
+    """Worker imports must not leak their process-global finder into other tests."""
+    with _preserve_virtual_import_state():
+        yield
+
+
+def test_virtual_import_state_guard_restores_global_finder() -> None:
+    from src.services.execution import virtual_import
+
+    original_meta_path = list(sys.meta_path)
+    original_finder = virtual_import.get_virtual_finder()
+
+    with _preserve_virtual_import_state():
+        installed = virtual_import.install_virtual_import_hook()
+        assert virtual_import.get_virtual_finder() is installed
+        assert sys.meta_path[0] is installed
+
+    assert sys.meta_path == original_meta_path
+    assert virtual_import.get_virtual_finder() is original_finder
 
 
 def test_workspace_module_maps_strip_immutable_release_prefix(monkeypatch):

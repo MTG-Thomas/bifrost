@@ -2,10 +2,26 @@
 
 import hashlib
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+
+@pytest.fixture(autouse=True)
+def preserve_virtual_import_state():
+    """Importing the worker must not leak its global finder across unit tests."""
+    from src.services.execution import virtual_import
+
+    original_meta_path = list(sys.meta_path)
+    original_finder = virtual_import.get_virtual_finder()
+    try:
+        yield
+    finally:
+        virtual_import.remove_virtual_import_hook()
+        sys.meta_path[:] = original_meta_path
+        virtual_import._finder = original_finder  # noqa: SLF001
 
 
 class TestGetModuleSyncFromCache:
