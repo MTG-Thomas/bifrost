@@ -697,12 +697,19 @@ async def _insert_scheduled_execution(
 
     exec_id = execution_id or uuid4()
     from src.services.solutions.deployment_runtime import pin_workflow_runtime
+    from src.services.workspace_release_runtime import pin_workspace_runtime
 
     pinned_runtime = await pin_workflow_runtime(db, workflow_id)
+    if pinned_runtime is None:
+        pinned_runtime = await pin_workspace_runtime(db, workflow_id)
     runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
 
-    runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
+    runtime_mode = (
+        pinned_runtime.runtime_mode
+        if pinned_runtime is not None and hasattr(pinned_runtime, "runtime_mode")
+        else ("deployment-v1" if pinned_runtime else "repo-v1")
+    )
     execution_context: dict[str, object] = {
         "is_platform_admin": is_platform_admin,
         "is_provider_org": is_provider_org,
@@ -723,7 +730,11 @@ async def _insert_scheduled_execution(
             executed_by_name=executed_by_name,
             form_id=form_id,
             api_key_id=None,
-            solution_deployment_id=pinned_runtime.deployment_id if pinned_runtime else None,
+            solution_deployment_id=(
+                getattr(pinned_runtime, "deployment_id", None)
+                if pinned_runtime
+                else None
+            ),
             runtime_mode=runtime_mode,
             runtime_evidence=runtime_evidence,
             runtime_evidence_hash=(

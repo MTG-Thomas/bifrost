@@ -586,6 +586,8 @@ class WorkflowExecutionConsumer(BaseConsumer):
             solution_deployment_id = pending.get("solution_deployment_id")
             runtime_mode = pending.get("runtime_mode") or "legacy"
             runtime_storage_prefix: str | None = None
+            workspace_release_id: str | None = None
+            workspace_release_source_hashes: dict[str, str] | None = None
 
             if not is_script and workflow_id:
                 from src.services.execution.service import get_workflow_for_execution, WorkflowNotFoundError
@@ -593,7 +595,58 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 try:
                     # Get workflow metadata (no code — worker loads via Redis→S3)
                     # Brief DB session for metadata read
-                    if solution_deployment_id:
+                    if runtime_mode == "workspace-release-v1":
+                        from src.models.orm.executions import Execution
+                        from src.services.workspace_release_runtime import (
+                            WorkspaceReleaseRuntimeError,
+                            resolve_pinned_workspace_runtime,
+                            verify_workspace_runtime_evidence,
+                            workflow_data_from_workspace_evidence,
+                        )
+
+                        try:
+                            queued_evidence = pending.get("runtime_evidence")
+                            release_id = (
+                                queued_evidence.get("workspace_release_id")
+                                if isinstance(queued_evidence, dict)
+                                else None
+                            )
+                            if not isinstance(release_id, str) or not release_id:
+                                raise WorkspaceReleaseRuntimeError(
+                                    "queued execution is missing its Workspace release id"
+                                )
+                            async with get_db_context() as db:
+                                execution = await db.get(Execution, UUID(execution_id))
+                                if (
+                                    execution is None
+                                    or execution.runtime_mode != "workspace-release-v1"
+                                ):
+                                    raise WorkspaceReleaseRuntimeError(
+                                        "Workspace release execution is missing durable pin evidence"
+                                    )
+                                pinned = await resolve_pinned_workspace_runtime(
+                                    db, queued_evidence, UUID(str(workflow_id))
+                                )
+                            authoritative_evidence = pinned.queue_evidence()
+                            verify_workspace_runtime_evidence(
+                                queued_evidence,
+                                execution.runtime_evidence,
+                                execution.runtime_evidence_hash,
+                                authoritative_evidence,
+                            )
+                            workflow_data = workflow_data_from_workspace_evidence(
+                                authoritative_evidence
+                            )
+                        except WorkspaceReleaseRuntimeError as exc:
+                            raise WorkflowNotFoundError(str(exc)) from exc
+                        workspace_release_id = workflow_data["workspace_release_id"]
+                        workspace_release_source_hashes = workflow_data[
+                            "workspace_release_source_hashes"
+                        ]
+                        runtime_storage_prefix = workflow_data[
+                            "workspace_release_runtime_storage_prefix"
+                        ]
+                    elif solution_deployment_id:
                         from src.services.solutions.deployment_runtime import (
                             DeploymentRuntimeError,
                             resolve_pinned_workflow_runtime,
@@ -828,6 +881,12 @@ class WorkflowExecutionConsumer(BaseConsumer):
                 "deployment_source_hashes": (
                     pending.get("runtime_evidence") or {}
                 ).get("deployment_source_hashes"),
+                "workspace_release_id": workspace_release_id,
+                "workspace_release_runtime_storage_prefix": (
+                    runtime_storage_prefix if workspace_release_id else None
+                ),
+                "workspace_release_source_hashes": workspace_release_source_hashes,
+                "workspace_generation": workspace_release_id,
                 "solution_global_repo_access": solution_global_repo_access,
                 # Pre-minted engine token: child writes directly to credentials file,
                 # no SECRET_KEY required in child env.

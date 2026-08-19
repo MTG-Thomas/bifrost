@@ -217,20 +217,38 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
     # execution never inherits a stale root. See module_cache_sync.
     from src.core.module_cache_sync import (
         clear_solution_context,
+        clear_workspace_release_context,
         clear_workspace_generation_context,
         set_solution_context,
+        set_workspace_release_context,
         set_workspace_generation_context,
     )
 
     set_workspace_generation_context(context_data.get("workspace_generation"))
 
     _exec_solution_id = context_data.get("solution_id")
+    _workspace_release_id = context_data.get("workspace_release_id")
+    if _exec_solution_id and _workspace_release_id:
+        raise RuntimeError(
+            "execution cannot pin a Solution and Workspace release together"
+        )
     if _exec_solution_id:
         set_solution_context(
             _exec_solution_id,
             global_repo_access=bool(context_data.get("solution_global_repo_access", False)),
             runtime_storage_prefix=context_data.get("runtime_storage_prefix"),
             source_hashes=context_data.get("deployment_source_hashes"),
+        )
+
+    if _workspace_release_id:
+        set_workspace_release_context(
+            _workspace_release_id,
+            runtime_storage_prefix=str(
+                context_data.get("workspace_release_runtime_storage_prefix") or ""
+            ),
+            source_hashes=dict(
+                context_data.get("workspace_release_source_hashes") or {}
+            ),
         )
 
     span_attributes = {
@@ -452,6 +470,7 @@ async def _run_execution(execution_id: str, context_data: dict[str, Any]) -> dic
         # Always clear the solution import root — a forked worker is reused for
         # later executions and must not inherit this one's root.
         clear_solution_context()
+        clear_workspace_release_context()
         clear_workspace_generation_context()
 
 

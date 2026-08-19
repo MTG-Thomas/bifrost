@@ -48,6 +48,7 @@ MODULE_CACHE_TTL = 86400
 
 REPO_PREFIX = "_repo/"
 SOLUTIONS_ROOT = "_solutions"
+WORKSPACE_RELEASES_ROOT = "_workspace_releases"
 
 
 # ── Per-execution Solution import root ───────────────────────────────────────
@@ -61,6 +62,7 @@ SOLUTIONS_ROOT = "_solutions"
 # thread-local correctly scopes the root to exactly one execution with no
 # cross-execution bleed. No active context == unchanged _repo/ behavior.
 _solution_ctx = threading.local()
+_workspace_release_ctx = threading.local()
 _workspace_generation_ctx = threading.local()
 
 
@@ -72,6 +74,15 @@ class SolutionContext:
     global_repo_access: bool
     runtime_storage_prefix: str | None = None
     source_hashes: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class WorkspaceReleaseContext:
+    """Immutable Workspace source tree pinned to one execution."""
+
+    release_id: str
+    runtime_storage_prefix: str
+    source_hashes: dict[str, str]
 
 
 def set_solution_context(
@@ -102,6 +113,53 @@ def get_solution_context() -> SolutionContext | None:
     return getattr(_solution_ctx, "value", None)
 
 
+def set_workspace_release_context(
+    release_id: str,
+    *,
+    runtime_storage_prefix: str,
+    source_hashes: dict[str, str],
+) -> None:
+    """Pin all global Workspace imports to one immutable release tree."""
+    normalized_prefix = runtime_storage_prefix.rstrip("/") + "/"
+    if not normalized_prefix.startswith(f"{WORKSPACE_RELEASES_ROOT}/"):
+        raise ValueError("workspace release runtime prefix is outside its storage root")
+    release_digest = release_id.removeprefix("sha256:")
+    if (
+        not release_id.startswith("sha256:")
+        or len(release_digest) != 64
+        or any(char not in "0123456789abcdef" for char in release_digest)
+        or not source_hashes
+    ):
+        raise ValueError("workspace release context requires an id and source manifest")
+    if any(
+        not isinstance(path, str)
+        or not path
+        or not isinstance(digest, str)
+        or len(digest.removeprefix("sha256:")) != 64
+        or any(
+            char not in "0123456789abcdef"
+            for char in digest.removeprefix("sha256:")
+        )
+        for path, digest in source_hashes.items()
+    ):
+        raise ValueError("workspace release source manifest is invalid")
+    _workspace_release_ctx.value = WorkspaceReleaseContext(
+        release_id=release_id,
+        runtime_storage_prefix=normalized_prefix,
+        source_hashes=dict(source_hashes),
+    )
+
+
+def clear_workspace_release_context() -> None:
+    """Remove the immutable Workspace release pin for this execution."""
+    _workspace_release_ctx.value = None
+
+
+def get_workspace_release_context() -> WorkspaceReleaseContext | None:
+    """Return the immutable Workspace release pin for this execution."""
+    return getattr(_workspace_release_ctx, "value", None)
+
+
 def set_workspace_generation_context(generation: str | None) -> None:
     """Pin lazy imports to the generation selected at execution start."""
     _workspace_generation_ctx.value = generation
@@ -129,6 +187,11 @@ def _candidate_storage_paths(path: str) -> list[str]:
     _repo/ prefix; a path already under ``_solutions/`` is read verbatim.
     """
     ctx = get_solution_context()
+    release_ctx = get_workspace_release_context()
+    if ctx is not None and release_ctx is not None:
+        raise RuntimeError("solution and Workspace release import roots cannot overlap")
+    if release_ctx is not None:
+        return [f"{release_ctx.runtime_storage_prefix}{path.lstrip('/')}"]
     if ctx is None:
         return [path]
     root = ctx.runtime_storage_prefix or f"{SOLUTIONS_ROOT}/{ctx.solution_id}/"
@@ -153,6 +216,11 @@ def candidate_index_prefixes(base_path: str) -> list[str]:
     """
     base = base_path.rstrip("/")
     ctx = get_solution_context()
+    release_ctx = get_workspace_release_context()
+    if ctx is not None and release_ctx is not None:
+        raise RuntimeError("solution and Workspace release import roots cannot overlap")
+    if release_ctx is not None:
+        return [f"{release_ctx.runtime_storage_prefix}{base}/"]
     if ctx is None:
         return [f"{base}/"]
     root = ctx.runtime_storage_prefix or f"{SOLUTIONS_ROOT}/{ctx.solution_id}/"
@@ -217,6 +285,9 @@ def _decode_ready_generation(value: str | bytes) -> str:
 
 def get_workspace_generation_sync() -> str:
     """Return the shared workspace generation, initializing a cold Redis key."""
+    release_ctx = get_workspace_release_context()
+    if release_ctx is not None:
+        return release_ctx.release_id
     try:
         client = _get_sync_redis()
         value = client.get(WORKSPACE_GENERATION_KEY)
@@ -259,7 +330,12 @@ def assert_workspace_generation(expected: str | None) -> str:
         raise WorkspaceGenerationMissingError(
             "workspace source generation was not pinned before execution loading"
         )
-    current = get_workspace_generation_sync()
+    release_ctx = get_workspace_release_context()
+    current = (
+        release_ctx.release_id
+        if release_ctx is not None
+        else get_workspace_generation_sync()
+    )
     if current != expected:
         raise WorkspaceGenerationChangedError(
             "workspace source generation changed while the execution was loading; "
@@ -479,7 +555,9 @@ def _storage_path_to_s3_key(storage_path: str) -> str:
     A bare relative path lives under the _repo/ prefix; a path already rooted at
     ``_solutions/`` is used verbatim (it already carries its full prefix).
     """
-    if storage_path.startswith(f"{SOLUTIONS_ROOT}/"):
+    if storage_path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    ):
         return storage_path
     return f"{REPO_PREFIX}{storage_path}"
 
@@ -649,21 +727,25 @@ def _object_storage_cached_module(
 def _resolve_module_candidate(
     client: Any, *, path: str, storage_path: str
 ) -> CachedModule | None:
-    solution_module = storage_path.startswith(f"{SOLUTIONS_ROOT}/")
-    expected_generation = None if solution_module else workspace_generation_for_import()
+    immutable_module = storage_path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    )
+    expected_generation = (
+        None if immutable_module else workspace_generation_for_import()
+    )
     key = f"{MODULE_KEY_PREFIX}{storage_path}"
     data = client.get(key)
     if data:
         module = json.loads(data)
-        if solution_module or _cached_module_matches_generation(
+        if immutable_module or _cached_module_matches_generation(
             module, expected_generation or ""
         ):
-            _verify_deployment_module_hash(path, module)
+            _verify_immutable_module_hash(path, module)
             return module
 
     api_module = _fetch_module_from_api(storage_path)
     if api_module is not None:
-        if not solution_module and not _cached_module_matches_generation(
+        if not immutable_module and not _cached_module_matches_generation(
             api_module, expected_generation or ""
         ):
             raise WorkspaceGenerationChangedError(
@@ -676,7 +758,7 @@ def _resolve_module_candidate(
             module=api_module,
             source="API",
         )
-        _verify_deployment_module_hash(path, api_module)
+        _verify_immutable_module_hash(path, api_module)
         return api_module
 
     module = _object_storage_cached_module(
@@ -693,7 +775,7 @@ def _resolve_module_candidate(
         module=module,
         source="object storage",
     )
-    _verify_deployment_module_hash(path, module)
+    _verify_immutable_module_hash(path, module)
     _require_workspace_generation(
         expected_generation,
         message="workspace source generation changed during module fallback",
@@ -767,10 +849,10 @@ def get_modules_sync(paths: list[str]) -> dict[str, CachedModule | None]:
                 continue
             module = json.loads(data)
             if not storage_path.startswith(
-                f"{SOLUTIONS_ROOT}/"
+                (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
             ) and not _cached_module_matches_generation(module, expected_generation):
                 continue
-            _verify_deployment_module_hash(path, module)
+            _verify_immutable_module_hash(path, module)
             resolved[path] = module
 
         for path in ordered_paths:
@@ -782,16 +864,24 @@ def get_modules_sync(paths: list[str]) -> dict[str, CachedModule | None]:
         return {path: get_module_sync(path) for path in ordered_paths}
 
 
-def _verify_deployment_module_hash(path: str, module: CachedModule) -> None:
+def _verify_immutable_module_hash(path: str, module: CachedModule) -> None:
     ctx = get_solution_context()
-    if ctx is None or not ctx.runtime_storage_prefix:
+    release_ctx = get_workspace_release_context()
+    if ctx is not None and release_ctx is not None:
+        raise RuntimeError("solution and Workspace release import roots cannot overlap")
+    if release_ctx is not None:
+        expected = release_ctx.source_hashes.get(path.lstrip("/"))
+        label = "workspace release"
+    elif ctx is not None and ctx.runtime_storage_prefix:
+        expected = (ctx.source_hashes or {}).get(path.lstrip("/"))
+        label = "deployment"
+    else:
         return
-    expected = (ctx.source_hashes or {}).get(path.lstrip("/"))
     if expected is None:
-        raise RuntimeError(f"deployment source is absent from manifest: {path}")
+        raise RuntimeError(f"{label} source is absent from manifest: {path}")
     actual = str(module.get("hash") or "").removeprefix("sha256:")
     if actual != expected.removeprefix("sha256:"):
-        raise RuntimeError(f"deployment import integrity mismatch: {path}")
+        raise RuntimeError(f"{label} import integrity mismatch: {path}")
 
 
 def _cached_module_matches_generation(module: object, generation: str) -> bool:
@@ -874,6 +964,16 @@ def get_module_index_sync() -> set[str]:
     On any successful fallback hit, Redis is repopulated so subsequent calls
     take the fast path.
     """
+    release_ctx = get_workspace_release_context()
+    if release_ctx is not None:
+        # The immutable manifest is authoritative. Never merge a mutable Redis
+        # or _repo listing into a release-pinned execution.
+        return {
+            f"{release_ctx.runtime_storage_prefix}{path.lstrip('/')}"
+            for path in release_ctx.source_hashes
+            if path.endswith(".py")
+        }
+
     try:
         client = _get_sync_redis()
         generation = workspace_generation_for_import()

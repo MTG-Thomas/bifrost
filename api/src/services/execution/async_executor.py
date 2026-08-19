@@ -47,6 +47,7 @@ async def _persist_execution_pin(
     from src.models.orm.executions import Execution
     from src.services.solutions.deployment_manifest import canonical_json, sha256_digest
     from src.services.solutions.deployment_runtime import pin_workflow_runtime
+    from src.services.workspace_release_runtime import pin_workspace_runtime
 
     async with get_db_context() as db:
         caller_deployment_id = (
@@ -57,8 +58,15 @@ async def _persist_execution_pin(
         pinned_runtime = await pin_workflow_runtime(
             db, uuid.UUID(workflow_id), caller_deployment_id=caller_deployment_id
         )
+        if pinned_runtime is None:
+            pinned_runtime = await pin_workspace_runtime(db, uuid.UUID(workflow_id))
         runtime_evidence = pinned_runtime.queue_evidence() if pinned_runtime else None
-        runtime_mode = "deployment-v1" if pinned_runtime else "repo-v1"
+        runtime_mode = (
+            pinned_runtime.runtime_mode
+            if pinned_runtime is not None
+            and hasattr(pinned_runtime, "runtime_mode")
+            else ("deployment-v1" if pinned_runtime else "repo-v1")
+        )
         # A caller-supplied execution identity is also the canonical
         # idempotency boundary for workflow dispatch. Serialize contenders on
         # that identity before checking/inserting the durable execution row.
@@ -87,7 +95,9 @@ async def _persist_execution_pin(
                 workflow_name=pinned_runtime.name if pinned_runtime else "pending",
                 workflow_id=uuid.UUID(workflow_id),
                 solution_deployment_id=(
-                    pinned_runtime.deployment_id if pinned_runtime else None
+                    getattr(pinned_runtime, "deployment_id", None)
+                    if pinned_runtime
+                    else None
                 ),
                 runtime_mode=runtime_mode,
                 runtime_evidence=runtime_evidence,
@@ -283,7 +293,12 @@ async def enqueue_workflow_execution_once(
             org_id_override,
         )
     )
-    solution_deployment_id = str(pinned_runtime.deployment_id) if pinned_runtime else None
+    pinned_deployment_id = (
+        getattr(pinned_runtime, "deployment_id", None) if pinned_runtime else None
+    )
+    solution_deployment_id = (
+        str(pinned_deployment_id) if pinned_deployment_id is not None else None
+    )
 
     # Serialize event context for cross-process transit. EventContext is a
     # dataclass with primitive fields, so dict serialization is lossless and

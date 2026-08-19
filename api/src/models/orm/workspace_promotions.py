@@ -133,6 +133,7 @@ class WorkspacePromotionRelease(Base):
         ForeignKey("workspace_promotion_artifacts.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     previous_release_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("workspace_promotion_releases.id", ondelete="SET NULL"),
@@ -181,6 +182,19 @@ class WorkspacePromotionRelease(Base):
     )
 
     __table_args__ = (
+        Index(
+            "uq_workspace_promotion_release_idempotency",
+            "organization_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "uq_workspace_promotion_release_live",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("activation_state = 'live'"),
+        ),
         CheckConstraint(
             "activation_state IN ('prepared', 'activating', 'live', "
             "'activation_failed', 'recovery_required', 'rolled_back', 'superseded')",

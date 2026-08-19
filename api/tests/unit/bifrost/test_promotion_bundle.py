@@ -15,6 +15,20 @@ from bifrost.promotion import (
     snapshot_id,
     validate_submitted_bundle,
 )
+from bifrost.workspace_release import workspace_manifest_id
+
+
+def test_effective_file_manifest_id_is_order_and_prefix_stable() -> None:
+    first = {
+        "modules/a.py": "sha256:" + "a" * 64,
+        "features/run.py": "b" * 64,
+    }
+    second = {
+        "features/run.py": "b" * 64,
+        "modules/a.py": "a" * 64,
+    }
+
+    assert workspace_manifest_id(first) == workspace_manifest_id(second)
 
 
 def _git_workspace(tmp_path: Path, files: dict[str, str]) -> Path:
