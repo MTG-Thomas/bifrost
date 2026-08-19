@@ -40,6 +40,10 @@ def _no_active_workspace_release(monkeypatch):
         "src.services.workspace_repo_changesets.reject_release_governed_paths",
         mutable,
     )
+    monkeypatch.setattr(
+        "src.services.workflow_registration.guard_workspace_registration_mutation",
+        mutable,
+    )
 
 
 class MemoryRepo:
