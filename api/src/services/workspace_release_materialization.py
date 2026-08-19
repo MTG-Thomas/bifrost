@@ -281,7 +281,6 @@ class WorkspaceReleaseMaterializer:
                     WorkspacePromotionArtifact.id == artifact_id,
                     WorkspacePromotionArtifact.organization_id == self.organization_id,
                 )
-                .with_for_update()
             )
         ).scalar_one_or_none()
         if artifact is None:
