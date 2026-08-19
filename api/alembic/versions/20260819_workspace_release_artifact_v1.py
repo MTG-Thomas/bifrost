@@ -75,9 +75,11 @@ def upgrade() -> None:
         "fk_workspace_promotion_artifact_supersedes",
         "workspace_promotion_artifacts",
         "workspace_promotion_artifacts",
-        ["supersedes_artifact_id"],
-        ["id"],
-        ondelete="RESTRICT",
+        ["organization_id", "supersedes_artifact_id"],
+        ["organization_id", "id"],
+        ondelete="CASCADE",
+        deferrable=True,
+        initially="DEFERRED",
     )
     op.create_index(
         "ix_workspace_promotion_artifact_content",

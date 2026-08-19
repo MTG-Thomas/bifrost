@@ -34,9 +34,21 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("activation_state = 'live'"),
     )
+    op.create_check_constraint(
+        "ck_workspace_promotion_release_live_has_lock_job",
+        "workspace_promotion_releases",
+        "activation_state <> 'live' OR ("
+        "lock_state IN ('queued', 'in_progress', 'locked', 'attention_required') "
+        "AND lock_in_job_id IS NOT NULL)",
+    )
 
 
 def downgrade() -> None:
+    op.drop_constraint(
+        "ck_workspace_promotion_release_live_has_lock_job",
+        "workspace_promotion_releases",
+        type_="check",
+    )
     op.drop_index(
         "uq_workspace_promotion_release_live",
         table_name="workspace_promotion_releases",

@@ -4,7 +4,17 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,9 +41,7 @@ class WorkspacePromotionArtifact(Base):
     release_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
     base_release_id: Mapped[str | None] = mapped_column(String(72), nullable=True)
     base_manifest_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
-    effective_manifest_id: Mapped[str | None] = mapped_column(
-        String(71), nullable=True
-    )
+    effective_manifest_id: Mapped[str | None] = mapped_column(String(71), nullable=True)
     effective_registration_manifest_id: Mapped[str | None] = mapped_column(
         String(71), nullable=True
     )
@@ -70,7 +78,6 @@ class WorkspacePromotionArtifact(Base):
     )
     supersedes_artifact_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("workspace_promotion_artifacts.id", ondelete="RESTRICT"),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -81,6 +88,22 @@ class WorkspacePromotionArtifact(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            name="uq_workspace_promotion_artifact_org_id",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "supersedes_artifact_id"],
+            [
+                "workspace_promotion_artifacts.organization_id",
+                "workspace_promotion_artifacts.id",
+            ],
+            name="fk_workspace_promotion_artifact_supersedes",
+            ondelete="CASCADE",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         Index(
             "uq_workspace_promotion_artifact_candidate",
             "organization_id",
@@ -135,13 +158,11 @@ class WorkspacePromotionRelease(Base):
     )
     artifact_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("workspace_promotion_artifacts.id", ondelete="RESTRICT"),
         nullable=False,
     )
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     previous_release_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("workspace_promotion_releases.id", ondelete="SET NULL"),
         nullable=True,
     )
     activation_state: Mapped[str] = mapped_column(
@@ -193,6 +214,33 @@ class WorkspacePromotionRelease(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            name="uq_workspace_promotion_release_org_id",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "artifact_id"],
+            [
+                "workspace_promotion_artifacts.organization_id",
+                "workspace_promotion_artifacts.id",
+            ],
+            name="fk_workspace_promotion_release_artifact_org",
+            ondelete="CASCADE",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "previous_release_id"],
+            [
+                "workspace_promotion_releases.organization_id",
+                "workspace_promotion_releases.id",
+            ],
+            name="fk_workspace_promotion_release_previous_org",
+            ondelete="CASCADE",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         Index(
             "uq_workspace_promotion_release_idempotency",
             "organization_id",
@@ -202,7 +250,6 @@ class WorkspacePromotionRelease(Base):
         ),
         Index(
             "uq_workspace_promotion_release_artifact",
-            "organization_id",
             "artifact_id",
             unique=True,
         ),
@@ -221,5 +268,11 @@ class WorkspacePromotionRelease(Base):
             "lock_state IN ('not_queued', 'queued', 'in_progress', 'locked', "
             "'attention_required', 'superseded')",
             name="ck_workspace_promotion_release_lock_state",
+        ),
+        CheckConstraint(
+            "activation_state <> 'live' OR ("
+            "lock_state IN ('queued', 'in_progress', 'locked', 'attention_required') "
+            "AND lock_in_job_id IS NOT NULL)",
+            name="ck_workspace_promotion_release_live_has_lock_job",
         ),
     )

@@ -26,7 +26,7 @@ def upgrade() -> None:
     op.create_index(
         "uq_workspace_promotion_release_artifact",
         "workspace_promotion_releases",
-        ["organization_id", "artifact_id"],
+        ["artifact_id"],
         unique=True,
     )
     op.add_column(
