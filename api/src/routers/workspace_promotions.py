@@ -292,10 +292,10 @@ async def activate_workspace_release(
     db: DbSession,
     user: CurrentSuperuser,
 ) -> WorkspaceReleaseStatusResponse:
-    if not get_settings().workspace_rapid_promotion_preview_enabled:
+    if not get_settings().workspace_release_activation_enabled:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="rapid Workspace promotion is not enabled",
+            detail="Workspace release activation is not enabled",
         )
     if ctx.org_id is None:
         raise HTTPException(
