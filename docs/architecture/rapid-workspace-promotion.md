@@ -13,9 +13,11 @@ laptop or mutable cache to become production authority:
 3. Execute and iterate locally with `bifrost run`; local uploads remain inert.
 4. Merge the proven bytes through protected Git.
 5. Preview the exact current protected commit/tree and complete effective snapshot.
-6. Optionally execute that reviewed artifact as a bounded canary with no
-   registration or trigger/public surface.
-7. Atomically activate by candidate ID, then prove one release ID across
+6. Prepare the immutable release and receive its exact activation challenge.
+7. For R0, execute that exact reviewed artifact as a bounded canary. For R1/R2,
+   explicitly acknowledge the exact classified effects without claiming a
+   canary or effect-execution sandbox.
+8. Atomically activate by candidate ID, then prove one release ID across
    runtime, source reads, registration, and history.
 
 Local evidence is useful but never activatable. Production activation never
@@ -126,9 +128,10 @@ bifrost promote draft <path> -w <function> \
 # branch, PR, CI, protected main
 bifrost promote preview <path> -w <function> \
   --run-evidence .promotion-run.json
-bifrost promote canary <reviewed-artifact-id>
 bifrost promote prepare <reviewed-artifact-id> \
   --candidate-id <candidate-id>
+# R0 only
+bifrost promote canary <reviewed-artifact-id>
 bifrost promote activate <prepared-release-row-id> \
   --artifact-id <reviewed-artifact-id> \
   --candidate-id <candidate-id> \
@@ -137,6 +140,10 @@ bifrost promote activate <prepared-release-row-id> \
   --expected-active-release-id <current-live-release-id> \
   --prepared-evidence-id <prepared-evidence-id> \
   --canary-execution-id <successful-canary-execution-id>
+# R1/R2 instead use the exact class printed by prepare
+bifrost promote activate <prepared-release-row-id> \
+  <same immutable IDs and base CAS> \
+  --acknowledge-risk R2
 bifrost promote status --live
 ```
 
@@ -146,12 +153,15 @@ For the first activation, where no immutable release owns Live yet, replace
 the operator must explicitly assert which CAS state is expected.
 
 `prepare` follows the durable platform job to completion and prints the exact
-release-row, release, artifact, candidate, and prepared-evidence IDs returned by
-the server. `activate` requires those identities plus the exact successful
-canary execution; it does not infer a candidate or canary from mutable "latest"
-state. `status <release-row-id>` reads one release, while `status --live` reads
-the global Live pointer. JSON mode returns the exact server response, including
-the complete platform-job receipt for `prepare`.
+release-row, release, artifact, candidate, prepared-evidence, protected-main,
+risk, computed-effect, and activation-challenge identities returned by the
+server. `activate` reads and revalidates that challenge. R0 requires a successful
+exact reviewed canary. R1/R2 require `--acknowledge-risk` matching the prepared
+class and record the decision `activate_without_canary_or_effect_execution`.
+They never reuse or claim the canary lane. `status <release-row-id>` reads one
+release, while `status --live` reads the global Live pointer. JSON mode returns
+the exact server response, including the complete platform-job receipt for
+`prepare`.
 
 Draft compilation:
 
@@ -257,7 +267,7 @@ closure, and may not source a closure member from a different revision. Broad
 multi-root convergence remains a reviewed, ordered operation—not an implicit
 side effect of promoting one workflow.
 
-## Effect policy
+## Effect policy and activation authorization
 
 R0 starts narrowly: manually invoked `@workflow` only, with explicit effects
 and platform-recognized positive integer bounds. Tools and data providers are
@@ -268,6 +278,15 @@ schedules, webhooks, public/API-key endpoints, access changes, global entities,
 and unknown behavior are R2. A declaration cannot weaken a static or observed
 lower bound. Runtime enforcement and server-issued run evidence are required
 before activation is introduced; decorator metadata alone is not enforcement.
+
+Every prepared release exposes a content-addressed activation challenge bound
+to the candidate, prepared evidence, effective and governed manifests,
+registration manifest, protected commit/tree, policy, risk class, and canonical
+computed-effect digest. R0 accepts only a successful exact reviewed-canary
+attestation. R1/R2 accept only a canonical explicit risk acknowledgement for
+that challenge. Preparation reports their effect execution as `not_performed`;
+compile/import-integrity checks are not evidence that vendor or platform effects
+were exercised safely.
 
 ## Activation rollout prerequisites
 

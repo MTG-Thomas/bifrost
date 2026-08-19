@@ -31,6 +31,10 @@ from bifrost.workspace_release import (
     workspace_manifest_id,
     workspace_release_id,
 )
+from bifrost.workspace_release_authorization import (
+    activation_challenge,
+    computed_effects_id,
+)
 from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
@@ -52,13 +56,34 @@ from src.services.workspace_release_runtime import (
 )
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
 
-PREPARED_EVIDENCE_SCHEMA = "bifrost.workspace-release-prepared/v2"
+PREPARED_EVIDENCE_SCHEMA = "bifrost.workspace-release-prepared/v3"
 SmokeRunner = Callable[[dict[str, bytes], str, str], Awaitable[dict[str, Any]]]
 ProgressReporter = Callable[[str, int, int | None, float | None], Awaitable[None]]
 
 
 class WorkspaceReleasePreparationError(RuntimeError):
     """A reviewed candidate could not be proven safe to materialize."""
+
+
+def prepared_activation_challenge(
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Rebuild the exact authorization challenge from durable prepared proof."""
+    return activation_challenge(
+        artifact_id=str(evidence["artifact_id"]),
+        candidate_id=str(evidence["candidate_id"]),
+        workspace_release_id=str(evidence["release_id"]),
+        prepared_evidence_id=str(evidence["evidence_id"]),
+        effective_manifest_id=str(evidence["effective_manifest_id"]),
+        governed_manifest_id=str(evidence["governed_manifest_id"]),
+        effective_registration_manifest_id=str(
+            evidence["effective_registration_manifest_id"]
+        ),
+        risk_class=str(evidence["risk_class"]),
+        computed_effects=evidence["computed_effects"],
+        policy_version=str(evidence["policy_version"]),
+        protected_source=evidence["protected_source"],
+    )
 
 
 def _runtime_prefix(organization_id: UUID, release_id: str) -> str:
@@ -252,46 +277,61 @@ class WorkspaceReleaseMaterializer:
         await release_storage.write_many(effective)
         readback = await release_storage.read_many(sorted(effective))
         self._validate_effective(manifest, readback)
-        if report:
-            await report(
-                "Running candidate-backed import smoke",
-                len(effective),
-                len(effective),
-                85,
-            )
+        risk_class = str(manifest["risk_class"])
         validation_smokes: list[dict[str, Any]] = []
-        selected_smoke: dict[str, Any] | None = None
-        for target in manifest["validation_targets"]:
-            smoke = await self.smoke_runner(
-                readback,
-                target["path"],
-                target["function"],
-            )
-            expected = {
-                "entry_path": target["path"],
-                "entry_function": target["function"],
-                "imported": True,
-                "function_callable": True,
-                "source": "immutable_candidate_tree",
-            }
-            if any(smoke.get(key) != value for key, value in expected.items()):
-                raise WorkspaceReleasePreparationError(
-                    "candidate import smoke did not prove affected executable "
-                    f"{target['path']}::{target['function']}"
+        if risk_class == "R0":
+            if report:
+                await report(
+                    "Running candidate-backed import integrity checks",
+                    len(effective),
+                    len(effective),
+                    85,
                 )
-            bound_smoke = {
-                **smoke,
-                "entity_type": target["entity_type"],
-                "relation": target["relation"],
+            selected_smoke: dict[str, Any] | None = None
+            for target in manifest["validation_targets"]:
+                smoke = await self.smoke_runner(
+                    readback,
+                    target["path"],
+                    target["function"],
+                )
+                expected = {
+                    "entry_path": target["path"],
+                    "entry_function": target["function"],
+                    "imported": True,
+                    "function_callable": True,
+                    "source": "immutable_candidate_tree",
+                }
+                if any(smoke.get(key) != value for key, value in expected.items()):
+                    raise WorkspaceReleasePreparationError(
+                        "candidate import integrity check did not prove affected "
+                        f"executable {target['path']}::{target['function']}"
+                    )
+                bound_smoke = {
+                    **smoke,
+                    "entity_type": target["entity_type"],
+                    "relation": target["relation"],
+                }
+                validation_smokes.append(bound_smoke)
+                if target["relation"] == "selected_entry":
+                    selected_smoke = bound_smoke
+            if selected_smoke is None:
+                raise WorkspaceReleasePreparationError(
+                    "candidate validation did not prove the selected entry"
+                )
+            import_validation = {
+                "state": "succeeded",
+                "selected": selected_smoke,
+                "targets": validation_smokes,
             }
-            validation_smokes.append(bound_smoke)
-            if target["relation"] == "selected_entry":
-                selected_smoke = bound_smoke
-        if selected_smoke is None:
-            raise WorkspaceReleasePreparationError(
-                "candidate validation did not prove the selected entry"
-            )
+            effect_execution = "reviewed_canary_required"
+        else:
+            import_validation = {
+                "state": "not_performed",
+                "reason": "non_r0_source_is_not_executed_during_prepare",
+            }
+            effect_execution = "not_performed"
         now = datetime.now(timezone.utc)
+        effects = list(manifest["computed_effects"])
         evidence = {
             "schema_version": PREPARED_EVIDENCE_SCHEMA,
             "artifact_id": str(artifact.id),
@@ -304,12 +344,20 @@ class WorkspaceReleaseMaterializer:
             "effective_files": manifest["effective_files"],
             "governed_paths": manifest["governed_paths"],
             "governed_manifest_id": manifest["governed_manifest_id"],
+            "effective_registration_manifest_id": manifest[
+                "effective_registration_manifest_id"
+            ],
+            "risk_class": risk_class,
+            "policy_version": str(manifest["policy_version"]),
+            "computed_effects": effects,
+            "computed_effects_id": computed_effects_id(effects),
+            "protected_source": manifest["protected_source"],
             "runtime_storage_prefix": runtime_prefix,
             "file_count": len(readback),
             "total_bytes": sum(map(len, readback.values())),
             "compile": {"succeeded": True, "file_count": len(readback)},
-            "import_smoke": selected_smoke,
-            "validation_smokes": validation_smokes,
+            "import_validation": import_validation,
+            "effect_execution": effect_execution,
             "projection_paths": projection_paths,
             "prepared_at": now.isoformat(),
         }
@@ -328,8 +376,7 @@ class WorkspaceReleaseMaterializer:
     ) -> WorkspacePromotionArtifact:
         artifact = (
             await self.db.execute(
-                select(WorkspacePromotionArtifact)
-                .where(
+                select(WorkspacePromotionArtifact).where(
                     WorkspacePromotionArtifact.id == artifact_id,
                     WorkspacePromotionArtifact.organization_id == self.organization_id,
                 )
@@ -493,6 +540,7 @@ class WorkspaceReleaseMaterializer:
             or not isinstance(effects, list)
             or not effects
             or any(not isinstance(effect, str) or not effect for effect in effects)
+            or effects != sorted(set(effects))
             or _risk_class_for_effects(effects) != artifact.risk_class
         ):
             raise WorkspaceReleasePreparationError(
@@ -529,13 +577,10 @@ class WorkspaceReleaseMaterializer:
             != len(validation_targets)
             or any(
                 not isinstance(item, dict)
-                or set(item)
-                != {"path", "function", "entity_type", "relation"}
+                or set(item) != {"path", "function", "entity_type", "relation"}
                 or item.get("path") not in effective_files
-                or item.get("entity_type")
-                not in {"workflow", "tool", "data_provider"}
-                or item.get("relation")
-                not in {"selected_entry", "affected_executable"}
+                or item.get("entity_type") not in {"workflow", "tool", "data_provider"}
+                or item.get("relation") not in {"selected_entry", "affected_executable"}
                 for item in validation_targets
             )
         ):
@@ -593,8 +638,7 @@ class WorkspaceReleaseMaterializer:
                 descriptor.runtime_storage_prefix
             ).read_many(sorted(descriptor.source_hashes))
             immutable_hashes = {
-                path: sha256_bytes(raw)
-                for path, raw in sorted(immutable_files.items())
+                path: sha256_bytes(raw) for path, raw in sorted(immutable_files.items())
             }
             if (
                 immutable_hashes != descriptor.source_hashes

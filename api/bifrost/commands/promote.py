@@ -27,6 +27,10 @@ from bifrost.promotion import (
     snapshot_id,
 )
 from bifrost.workspace_release import workspace_closure_id
+from bifrost.workspace_release_authorization import (
+    risk_acknowledgement,
+    validate_activation_challenge,
+)
 from bifrost.workspace_impact import (
     WorkspaceImpactAnalysis,
     analyze_workspace_impact,
@@ -35,18 +39,10 @@ from bifrost.workspace_impact import (
 )
 
 PROMOTION_PREVIEW_ENDPOINT = "/api/workspace-promotions/preview"
-PROMOTION_CANARY_ENDPOINT = (
-    "/api/workspace-promotions/artifacts/{artifact_id}/canary"
-)
-PROMOTION_PREPARE_ENDPOINT = (
-    "/api/workspace-promotions/artifacts/{artifact_id}/prepare"
-)
-PROMOTION_ACTIVATE_ENDPOINT = (
-    "/api/workspace-promotions/releases/{release_id}/activate"
-)
-PROMOTION_RELEASE_STATUS_ENDPOINT = (
-    "/api/workspace-promotions/releases/{release_id}"
-)
+PROMOTION_CANARY_ENDPOINT = "/api/workspace-promotions/artifacts/{artifact_id}/canary"
+PROMOTION_PREPARE_ENDPOINT = "/api/workspace-promotions/artifacts/{artifact_id}/prepare"
+PROMOTION_ACTIVATE_ENDPOINT = "/api/workspace-promotions/releases/{release_id}/activate"
+PROMOTION_RELEASE_STATUS_ENDPOINT = "/api/workspace-promotions/releases/{release_id}"
 PROMOTION_LIVE_STATUS_ENDPOINT = "/api/workspace-promotions/live"
 PLATFORM_JOB_STATUS_ENDPOINT = "/api/platform-jobs/{job_id}"
 PREPARE_POLL_INTERVAL_SECONDS = 2.0
@@ -152,7 +148,7 @@ def _parser() -> argparse.ArgumentParser:
 
     activate = subparsers.add_parser(
         "activate",
-        help="Atomically move Live to an exact prepared, canary-proven release",
+        help="Authorize and atomically move Live to one exact prepared release",
     )
     activate.add_argument("release_row_id", help="Release row ID emitted by prepare")
     activate.add_argument("--artifact-id", required=True)
@@ -170,7 +166,19 @@ def _parser() -> argparse.ArgumentParser:
         help="Explicitly require that no immutable release currently owns Live",
     )
     activate.add_argument("--prepared-evidence-id", required=True)
-    activate.add_argument("--canary-execution-id", required=True)
+    authorization = activate.add_mutually_exclusive_group(required=True)
+    authorization.add_argument(
+        "--canary-execution-id",
+        help="Successful exact reviewed canary for an R0 release",
+    )
+    authorization.add_argument(
+        "--acknowledge-risk",
+        choices=("R1", "R2"),
+        help=(
+            "Explicitly acknowledge activation without canary or effect "
+            "execution for the exact risk class"
+        ),
+    )
     activate.add_argument("--json", action="store_true", help="Emit machine JSON")
 
     release_status = subparsers.add_parser(
@@ -216,10 +224,15 @@ def _load_run_evidence(
         raise PromotionBundleError(
             "run evidence uses an unsupported schema; rerun with the current CLI"
         )
-    if evidence.get("authority") != "local_only" or evidence.get("activatable") is not False:
+    if (
+        evidence.get("authority") != "local_only"
+        or evidence.get("activatable") is not False
+    ):
         raise PromotionBundleError("run evidence must be explicitly local-only")
     if evidence.get("succeeded") is not True:
-        raise PromotionBundleError("run evidence does not record a successful execution")
+        raise PromotionBundleError(
+            "run evidence does not record a successful execution"
+        )
     expected_closure_id = _closure_id(
         bundle,
         selected_path=selected_path,
@@ -246,7 +259,9 @@ def _graph_diagnostics(
 
     def add(path: str, code: str, message: str) -> None:
         item = {"path": path, "code": code, "message": message}
-        (blockers if path == selected_path or path in forward_paths else warnings).append(item)
+        (
+            blockers if path == selected_path or path in forward_paths else warnings
+        ).append(item)
 
     for path in sorted(relevant_paths):
         if values := analysis.unresolved_imports.get(path):
@@ -254,7 +269,11 @@ def _graph_diagnostics(
         if values := analysis.ambiguous_references.get(path):
             add(path, "ambiguous_workflow_reference", ", ".join(values))
         if path in analysis.dynamic_importers:
-            add(path, "dynamic_import_unresolved", "computed import cannot be proven statically")
+            add(
+                path,
+                "dynamic_import_unresolved",
+                "computed import cannot be proven statically",
+            )
         if path in analysis.dynamic_reference_importers:
             add(
                 path,
@@ -264,10 +283,14 @@ def _graph_diagnostics(
     return warnings, blockers
 
 
-def _local_graph(root: pathlib.Path, selected_path: str, bundle: PromotionBundle) -> dict[str, Any]:
+def _local_graph(
+    root: pathlib.Path, selected_path: str, bundle: PromotionBundle
+) -> dict[str, Any]:
     hashes, contents = discover_python_snapshot(root)
     if snapshot_id(hashes) != bundle.snapshot_id:
-        raise PromotionBundleError("workspace changed while complete graph evidence was built")
+        raise PromotionBundleError(
+            "workspace changed while complete graph evidence was built"
+        )
     analysis = analyze_workspace_impact(contents)
     forward = transitive_distances(selected_path, analysis.edges)
     reverse = transitive_distances(selected_path, reverse_edges(analysis.edges))
@@ -325,7 +348,9 @@ def _draft_id(payload: Mapping[str, Any]) -> str:
         "snapshot_id": payload["snapshot"]["snapshot_id"],
         "closure_id": payload["snapshot"]["closure_id"],
     }
-    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
     return f"sha256:{sha256_bytes(encoded)}"
 
 
@@ -431,7 +456,9 @@ def _handle_canary(options: argparse.Namespace) -> int:
     try:
         parameters = json.loads(options.params)
     except json.JSONDecodeError as exc:
-        raise PromotionBundleError(f"canary parameters are not valid JSON: {exc}") from exc
+        raise PromotionBundleError(
+            f"canary parameters are not valid JSON: {exc}"
+        ) from exc
     if not isinstance(parameters, dict):
         raise PromotionBundleError("canary parameters must be a JSON object")
     client = BifrostClient.get_instance(require_auth=True)
@@ -458,9 +485,7 @@ def _poll_prepare_job(client: BifrostClient, job_id: str) -> dict[str, Any]:
     started = time.monotonic()
     last_phase: tuple[str | None, int, int | None] | None = None
     while True:
-        response = client.get_sync(
-            PLATFORM_JOB_STATUS_ENDPOINT.format(job_id=job_id)
-        )
+        response = client.get_sync(PLATFORM_JOB_STATUS_ENDPOINT.format(job_id=job_id))
         raise_for_status_with_detail(response)
         body = response.json()
         if not isinstance(body, dict):
@@ -503,13 +528,21 @@ def _prepare_result(
 ) -> Mapping[str, Any]:
     result = job.get("result")
     if not isinstance(result, dict):
-        raise PromotionBundleError("successful prepare job did not return release evidence")
+        raise PromotionBundleError(
+            "successful prepare job did not return release evidence"
+        )
     required = {
         "release_row_id",
         "artifact_id",
         "candidate_id",
         "release_id",
         "prepared_evidence_id",
+        "risk_class",
+        "computed_effects",
+        "computed_effects_id",
+        "protected_source",
+        "effect_execution",
+        "activation_authorization",
     }
     missing = sorted(required - result.keys())
     if missing:
@@ -520,6 +553,34 @@ def _prepare_result(
         raise PromotionBundleError("prepare response belongs to a different artifact")
     if result["candidate_id"] != candidate_id:
         raise PromotionBundleError("prepare response belongs to a different candidate")
+    try:
+        challenge = validate_activation_challenge(result["activation_authorization"])
+    except (TypeError, ValueError) as exc:
+        raise PromotionBundleError(
+            "prepare response contains an invalid activation challenge"
+        ) from exc
+    if (
+        challenge["artifact_id"] != artifact_id
+        or challenge["candidate_id"] != candidate_id
+        or challenge["workspace_release_id"] != result["release_id"]
+        or challenge["prepared_evidence_id"] != result["prepared_evidence_id"]
+        or challenge["risk_class"] != result["risk_class"]
+        or challenge["computed_effects"] != result["computed_effects"]
+        or challenge["computed_effects_id"] != result["computed_effects_id"]
+        or challenge["protected_source"] != result["protected_source"]
+    ):
+        raise PromotionBundleError(
+            "prepare response activation challenge does not match its evidence"
+        )
+    expected_effect_execution = (
+        "reviewed_canary_required"
+        if challenge["risk_class"] == "R0"
+        else "not_performed"
+    )
+    if result["effect_execution"] != expected_effect_execution:
+        raise PromotionBundleError(
+            "prepare response makes an invalid effect-execution claim for its risk class"
+        )
     return result
 
 
@@ -549,11 +610,41 @@ def _handle_prepare(options: argparse.Namespace) -> int:
         print(f"Candidate: {result['candidate_id']}")
         print(f"Workspace release: {result['release_id']}")
         print(f"Prepared evidence: {result['prepared_evidence_id']}")
+        print(f"Risk: {result['risk_class']}")
+        print(f"Protected main: {result['protected_source']['commit_sha']}")
+        print("Computed effects:")
+        for effect in result["computed_effects"]:
+            print(f"  {effect}")
+        print(f"Effect execution: {result['effect_execution'].replace('_', ' ')}")
+        challenge = result["activation_authorization"]
+        print(f"Authorization required: {challenge['required_authorization']}")
+        print(f"Authorization challenge: {challenge['challenge_id']}")
         print("Prepared only: the global Live pointer has not changed")
     return 0
 
 
-def _activation_payload(options: argparse.Namespace) -> dict[str, Any]:
+def _activation_payload(
+    options: argparse.Namespace, challenge: Mapping[str, Any]
+) -> dict[str, Any]:
+    try:
+        verified_challenge = validate_activation_challenge(challenge)
+    except (TypeError, ValueError) as exc:
+        raise PromotionBundleError(
+            "release status has an invalid activation challenge"
+        ) from exc
+    expected_challenge = {
+        "artifact_id": options.artifact_id,
+        "candidate_id": options.candidate_id,
+        "workspace_release_id": options.workspace_release_id,
+        "prepared_evidence_id": options.prepared_evidence_id,
+    }
+    if any(
+        str(verified_challenge.get(key)) != value
+        for key, value in expected_challenge.items()
+    ):
+        raise PromotionBundleError(
+            "activation challenge belongs to different immutable release evidence"
+        )
     expected_active_release_id = options.expected_active_release_id
     if options.expect_no_active_release:
         if not options.expected_base_release_id.startswith("repo-v1:"):
@@ -563,9 +654,30 @@ def _activation_payload(options: argparse.Namespace) -> dict[str, Any]:
         expected_active_release_id = None
     elif expected_active_release_id != options.expected_base_release_id:
         raise PromotionBundleError(
-            "--expected-active-release-id must exactly equal "
-            "--expected-base-release-id"
+            "--expected-active-release-id must exactly equal --expected-base-release-id"
         )
+    if options.canary_execution_id is not None:
+        if verified_challenge["required_authorization"] != "reviewed_canary":
+            raise PromotionBundleError(
+                "R1/R2 releases cannot use or claim a reviewed canary"
+            )
+        authorization = {
+            "kind": "reviewed_canary",
+            "challenge_id": verified_challenge["challenge_id"],
+            "canary_execution_id": options.canary_execution_id,
+        }
+    else:
+        if (
+            verified_challenge["required_authorization"] != "risk_acknowledgement"
+            or options.acknowledge_risk != verified_challenge["risk_class"]
+        ):
+            raise PromotionBundleError(
+                "--acknowledge-risk must exactly match the prepared R1/R2 release"
+            )
+        authorization = {
+            "kind": "risk_acknowledgement",
+            "acknowledgement": risk_acknowledgement(verified_challenge),
+        }
     return {
         "artifact_id": options.artifact_id,
         "candidate_id": options.candidate_id,
@@ -573,7 +685,7 @@ def _activation_payload(options: argparse.Namespace) -> dict[str, Any]:
         "expected_base_release_id": options.expected_base_release_id,
         "expected_active_release_id": expected_active_release_id,
         "prepared_evidence_id": options.prepared_evidence_id,
-        "canary_execution_id": options.canary_execution_id,
+        "authorization": authorization,
     }
 
 
@@ -592,8 +704,31 @@ def _render_release_status(result: Mapping[str, Any]) -> None:
 
 
 def _handle_activate(options: argparse.Namespace) -> int:
-    payload = _activation_payload(options)
     client = BifrostClient.get_instance(require_auth=True)
+    status_response = client.get_sync(
+        PROMOTION_RELEASE_STATUS_ENDPOINT.format(release_id=options.release_row_id)
+    )
+    raise_for_status_with_detail(status_response)
+    release_status = status_response.json()
+    runtime = (
+        release_status.get("runtime") if isinstance(release_status, dict) else None
+    )
+    challenge = (
+        runtime.get("activation_authorization") if isinstance(runtime, dict) else None
+    )
+    if not isinstance(challenge, dict):
+        raise PromotionBundleError(
+            "prepared release status did not return an activation challenge"
+        )
+    payload = _activation_payload(options, challenge)
+    if options.acknowledge_risk is not None and not options.json:
+        print(f"Risk acknowledgement: {challenge['risk_class']}")
+        print(f"Protected main: {challenge['protected_source']['commit_sha']}")
+        print("Computed effects:")
+        for effect in challenge["computed_effects"]:
+            print(f"  {effect}")
+        print("Effect execution: not performed")
+        print(f"Authorization challenge: {challenge['challenge_id']}")
     response = client.post_sync(
         PROMOTION_ACTIVATE_ENDPOINT.format(release_id=options.release_row_id),
         json=payload,
@@ -614,12 +749,16 @@ def _handle_activate(options: argparse.Namespace) -> int:
                 f"activation response {field} does not match the requested release"
             )
     if result.get("is_live") is not True:
-        raise PromotionBundleError("activation response did not prove the release is Live")
+        raise PromotionBundleError(
+            "activation response did not prove the release is Live"
+        )
     if options.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         _render_release_status(result)
-        print("Live activation is complete; signed-history projection may still be pending")
+        print(
+            "Live activation is complete; signed-history projection may still be pending"
+        )
     return 0
 
 
@@ -648,10 +787,14 @@ def _handle_status(options: argparse.Namespace, parser: argparse.ArgumentParser)
             print("Global Live Workspace release:")
             _render_release_status(active)
         else:
-            raise PromotionBundleError("Live status returned invalid active-release data")
+            raise PromotionBundleError(
+                "Live status returned invalid active-release data"
+            )
     else:
         if str(result.get("release_row_id")) != options.release_row_id:
-            raise PromotionBundleError("status response belongs to a different release row")
+            raise PromotionBundleError(
+                "status response belongs to a different release row"
+            )
         _render_release_status(result)
     return 0
 
@@ -662,9 +805,7 @@ def _preview_payload(
     root = pathlib.Path.cwd().resolve()
     selected_path = _normalize_selected(root, options.path)
     refresh_protected_main(root)
-    bundle, provenance = build_reviewed_promotion_bundle(
-        root, selected_path
-    )
+    bundle, provenance = build_reviewed_promotion_bundle(root, selected_path)
     local_run = _load_run_evidence(
         options.run_evidence,
         bundle=bundle,
@@ -752,7 +893,9 @@ def _render_preview(
             severity = item.get("severity", "info")
             purpose = "MUTATION BLOCKER" if severity == "blocker" else "ANALYSIS"
             location = f" ({item['path']})" if item.get("path") else ""
-            print(f"  [{purpose}/{severity}] {item.get('code')}{location}: {item.get('message')}")
+            print(
+                f"  [{purpose}/{severity}] {item.get('code')}{location}: {item.get('message')}"
+            )
     ready = bool(result.get("ready_to_activate"))
     print(f"Ready to activate: {'yes' if ready else 'no'}")
     print("No source bytes were activated by this preview.")

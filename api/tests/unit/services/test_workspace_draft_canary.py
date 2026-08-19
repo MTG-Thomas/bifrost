@@ -58,6 +58,8 @@ def _artifact(*, effects: list[str] | None = None):
         "closure": [{"path": path, "sha256": digest}],
         "declared_effects": effect_list,
         "computed_effects": effect_list,
+        "risk_class": "R0",
+        "diagnostics": [],
         "bounds": {
             "max_duration_seconds": 15,
             "max_output_bytes": 128,
@@ -83,6 +85,7 @@ def _artifact(*, effects: list[str] | None = None):
             f"{content_id.removeprefix('sha256:')}/source.zip"
         ),
         artifact_state="review_required",
+        risk_class="R0",
         manifest=manifest,
     ), {path: source}
 
@@ -110,9 +113,9 @@ def test_archive_must_match_every_immutable_closure_byte() -> None:
         workspace_draft_runtime_prefix(artifact.organization_id, artifact.content_id),
     )
 
-    assert extract_verified_draft_source(
-        _zip(files), evidence["source_hashes"]
-    ) == files
+    assert (
+        extract_verified_draft_source(_zip(files), evidence["source_hashes"]) == files
+    )
 
     stale = {next(iter(files)): b"stale\n"}
     with pytest.raises(WorkspaceDraftCanaryError, match="integrity mismatch"):
@@ -131,8 +134,23 @@ def test_archive_must_match_every_immutable_closure_byte() -> None:
 def test_first_canary_policy_allows_only_bifrost_read(effects: list[str]) -> None:
     artifact, _ = _artifact(effects=effects)
 
-    with pytest.raises(WorkspaceDraftCanaryError, match="exactly bifrost.read"):
+    with pytest.raises(WorkspaceDraftCanaryError, match="exact R0|not canonical"):
         build_draft_runtime_evidence(artifact, "_workspace_releases/o/d/x/files/")
+
+
+def test_server_canary_rejects_r1_r2_before_runtime_materialization() -> None:
+    artifact, _ = _artifact(effects=["integration.read:microsoft_graph"])
+    artifact.risk_class = "R1"
+    artifact.manifest["risk_class"] = "R1"
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+
+    with pytest.raises(WorkspaceDraftCanaryError, match="exact R0"):
+        build_draft_runtime_evidence(
+            artifact,
+            workspace_draft_runtime_prefix(
+                artifact.organization_id, artifact.content_id
+            ),
+        )
 
 
 def test_local_only_draft_artifact_is_never_canary_eligible() -> None:
@@ -173,9 +191,10 @@ def test_queue_and_durable_draft_evidence_must_be_identical() -> None:
     )
     evidence_hash = sha256_digest(canonical_json(evidence))
 
-    assert verify_draft_runtime_evidence(
-        evidence, evidence, evidence_hash, artifact
-    ) == evidence
+    assert (
+        verify_draft_runtime_evidence(evidence, evidence, evidence_hash, artifact)
+        == evidence
+    )
 
     tampered = {**evidence, "source_hashes": {"workflows/read_only.py": "f" * 64}}
     with pytest.raises(WorkspaceDraftCanaryError, match="pins differ"):
@@ -198,28 +217,34 @@ def test_draft_workflow_data_is_derived_only_from_pin() -> None:
 
 
 def test_process_pool_enforces_draft_deadline_from_immutable_context() -> None:
-    assert execution_timeout_from_context(
-        {
-            "runtime_mode": "workspace-canary-v1",
-            "timeout_seconds": 30,
-            "draft_max_duration_seconds": 7,
-        },
-        300,
-    ) == 7
+    assert (
+        execution_timeout_from_context(
+            {
+                "runtime_mode": "workspace-canary-v1",
+                "timeout_seconds": 30,
+                "draft_max_duration_seconds": 7,
+            },
+            300,
+        )
+        == 7
+    )
 
     with pytest.raises(WorkspaceDraftDurationLimitInvalid, match="hard duration"):
         execution_timeout_from_context(
             {"runtime_mode": "workspace-canary-v1", "timeout_seconds": 30}, 300
         )
 
-    assert execution_timeout_from_context(
-        {
-            "runtime_mode": "workspace-release-v1",
-            "timeout_seconds": 30,
-            "runtime_max_duration_seconds": 5,
-        },
-        300,
-    ) == 5
+    assert (
+        execution_timeout_from_context(
+            {
+                "runtime_mode": "workspace-release-v1",
+                "timeout_seconds": 30,
+                "runtime_max_duration_seconds": 5,
+            },
+            300,
+        )
+        == 5
+    )
 
 
 def test_worker_rejects_oversize_serialized_draft_output() -> None:

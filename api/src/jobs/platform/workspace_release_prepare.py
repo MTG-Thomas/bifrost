@@ -16,6 +16,7 @@ from src.jobs.platform.base import (
 from src.services.workspace_release_materialization import (
     WorkspaceReleaseMaterializer,
     WorkspaceReleasePreparationError,
+    prepared_activation_challenge,
 )
 
 WORKSPACE_RELEASE_PREPARE_JOB_TYPE = "workspace.release.prepare"
@@ -51,6 +52,7 @@ async def run_workspace_release_prepare(
             "workspace_release_prepared",
             f"Workspace release {evidence['release_id']} prepared from immutable source",
         )
+        challenge = prepared_activation_challenge(evidence)
         return {
             "release_row_id": str(release.id),
             "artifact_id": str(payload.artifact_id),
@@ -60,6 +62,12 @@ async def run_workspace_release_prepare(
             "runtime_storage_prefix": str(evidence["runtime_storage_prefix"]),
             "file_count": int(evidence["file_count"]),
             "total_bytes": int(evidence["total_bytes"]),
+            "risk_class": str(evidence["risk_class"]),
+            "computed_effects": list(evidence["computed_effects"]),
+            "computed_effects_id": str(evidence["computed_effects_id"]),
+            "protected_source": dict(evidence["protected_source"]),
+            "effect_execution": str(evidence["effect_execution"]),
+            "activation_authorization": challenge,
         }
     except WorkspaceReleasePreparationError as exc:
         raise PlatformJobFailure(

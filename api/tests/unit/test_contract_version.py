@@ -80,6 +80,10 @@ from src.models.contracts.workspace_promotions import (  # noqa: E402
     WorkspacePromotionArtifactResponse,
     WorkspacePromotionPreviewRequest,
     WorkspacePromotionPreviewResponse,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseStatusResponse,
+    WorkspaceLiveStatusResponse,
 )
 
 import inspect  # noqa: E402
@@ -133,6 +137,10 @@ _COMMAND_DTOS: list[type] = [
     WorkspacePromotionArtifactResponse,
     WorkspacePromotionCanaryRequest,
     WorkspacePromotionCanaryAccepted,
+    WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleaseStatusResponse,
+    WorkspaceLiveStatusResponse,
 ]
 
 #: Every request/response DTO the in-workflow SDK sends/parses against
@@ -231,8 +239,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # release, effective file, and registration identities. CONTRACT_VERSION
     # bumped to 11 because v1 clients cannot safely interpret or activate v2.
     # The same unreleased v11 contract includes reviewed-artifact-only canary
-    # request/acceptance DTOs; local draft uploads are not executable.
-    "5d254009f575a618ffd68e5d09009457124d13d5eacfd06e47a773221d987d67"
+    # request/acceptance DTOs, immutable preparation proof, and tagged
+    # canary/risk-acknowledgement activation authorization; local draft uploads
+    # are not executable.
+    "516622686c6566e796dc0e3869de325068bd3cad5088b38b77e97c4b8854ffea"
 )
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from bifrost.commands import promote
+from bifrost.workspace_release_authorization import activation_challenge
 from src.config import Settings
 from src.models.contracts.workspace_promotions import (
     WorkspacePromotionCanaryAccepted,
@@ -28,9 +29,7 @@ def _workspace(tmp_path: Path) -> Path:
         cwd=tmp_path,
         check=True,
     )
-    subprocess.run(
-        ["git", "config", "user.name", "Test"], cwd=tmp_path, check=True
-    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     source = tmp_path / "workflows/demo.py"
     source.parent.mkdir(parents=True)
     source.write_text(
@@ -66,6 +65,30 @@ def _route_paths() -> set[str]:
     return {route.path for route in router.routes}
 
 
+def _activation_challenge(
+    artifact_id,
+    candidate_id,
+    release_id,
+    prepared_id,
+    *,
+    risk_class="R0",
+    effects=None,
+):
+    return activation_challenge(
+        artifact_id=str(artifact_id),
+        candidate_id=candidate_id,
+        workspace_release_id=release_id,
+        prepared_evidence_id=prepared_id,
+        effective_manifest_id="sha256:" + "e" * 64,
+        governed_manifest_id="sha256:" + "f" * 64,
+        effective_registration_manifest_id="sha256:" + "0" * 64,
+        risk_class=risk_class,
+        computed_effects=effects or ["bifrost.read"],
+        policy_version="test",
+        protected_source={"commit_sha": "1" * 40, "tree_sha": "2" * 40},
+    )
+
+
 def test_reviewed_preview_payload_validates_against_server_dto(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -96,9 +119,12 @@ def test_local_draft_file_validates_as_inert_upload_contract(
     output = tmp_path / "draft.json"
     monkeypatch.chdir(tmp_path)
 
-    assert promote.handle_promote(
-        ["draft", str(source), "--workflow", "demo", "--out", str(output)]
-    ) == 0
+    assert (
+        promote.handle_promote(
+            ["draft", str(source), "--workflow", "demo", "--out", str(output)]
+        )
+        == 0
+    )
     payload = json.loads(output.read_text(encoding="utf-8"))
     parsed = WorkspacePromotionDraftRequest.model_validate(payload)
 
@@ -130,15 +156,19 @@ def test_canary_cli_uses_only_reviewed_artifact_route(monkeypatch) -> None:
     monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
     monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
 
-    assert promote.handle_promote(
-        ["canary", str(artifact_id), "--params", '{"limit": 1}', "--json"]
-    ) == 0
+    assert (
+        promote.handle_promote(
+            ["canary", str(artifact_id), "--params", '{"limit": 1}', "--json"]
+        )
+        == 0
+    )
     assert captured["endpoint"] == (
         f"/api/workspace-promotions/artifacts/{artifact_id}/canary"
     )
-    assert promote.PROMOTION_CANARY_ENDPOINT.replace(
-        "{artifact_id}", str(artifact_id)
-    ) == captured["endpoint"]
+    assert (
+        promote.PROMOTION_CANARY_ENDPOINT.replace("{artifact_id}", str(artifact_id))
+        == captured["endpoint"]
+    )
     assert "/api/workspace-promotions/artifacts/{artifact_id}/canary" in _route_paths()
     assert WorkspacePromotionCanaryRequest.model_validate(captured["payload"])
 
@@ -148,6 +178,11 @@ def test_prepare_cli_payload_and_route_match_server_contract(monkeypatch) -> Non
     candidate_id = "sha256:" + "a" * 64
     job_id = uuid4()
     release_row_id = uuid4()
+    release_id = "sha256:" + "b" * 64
+    prepared_id = "sha256:" + "c" * 64
+    challenge = _activation_challenge(
+        artifact_id, candidate_id, release_id, prepared_id
+    )
     captured = {}
 
     class Response:
@@ -171,8 +206,14 @@ def test_prepare_cli_payload_and_route_match_server_contract(monkeypatch) -> Non
                         "release_row_id": str(release_row_id),
                         "artifact_id": str(artifact_id),
                         "candidate_id": candidate_id,
-                        "release_id": "sha256:" + "b" * 64,
-                        "prepared_evidence_id": "sha256:" + "c" * 64,
+                        "release_id": release_id,
+                        "prepared_evidence_id": prepared_id,
+                        "risk_class": "R0",
+                        "computed_effects": ["bifrost.read"],
+                        "computed_effects_id": challenge["computed_effects_id"],
+                        "protected_source": challenge["protected_source"],
+                        "effect_execution": "reviewed_canary_required",
+                        "activation_authorization": challenge,
                     },
                 }
             )
@@ -180,9 +221,12 @@ def test_prepare_cli_payload_and_route_match_server_contract(monkeypatch) -> Non
     monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
     monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
 
-    assert promote.handle_promote(
-        ["prepare", str(artifact_id), "--candidate-id", candidate_id, "--json"]
-    ) == 0
+    assert (
+        promote.handle_promote(
+            ["prepare", str(artifact_id), "--candidate-id", candidate_id, "--json"]
+        )
+        == 0
+    )
     assert captured["endpoint"] == promote.PROMOTION_PREPARE_ENDPOINT.format(
         artifact_id=artifact_id
     )
@@ -199,6 +243,9 @@ def test_activate_cli_payload_and_routes_match_server_contract(monkeypatch) -> N
     prepared_id = "sha256:" + "c" * 64
     base_id = "sha256:" + "d" * 64
     captured = {}
+    challenge = _activation_challenge(
+        artifact_id, candidate_id, release_id, prepared_id
+    )
 
     class Response:
         @staticmethod
@@ -212,40 +259,54 @@ def test_activate_cli_payload_and_routes_match_server_contract(monkeypatch) -> N
             }
 
     class Client:
+        def get_sync(self, _endpoint):
+            return SimpleResponse({"runtime": {"activation_authorization": challenge}})
+
         def post_sync(self, endpoint, **kwargs):
             captured["endpoint"] = endpoint
             captured["payload"] = kwargs["json"]
             return Response()
 
+    class SimpleResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
     monkeypatch.setattr(promote.BifrostClient, "get_instance", lambda **_kw: Client())
     monkeypatch.setattr(promote, "raise_for_status_with_detail", lambda _response: None)
 
-    assert promote.handle_promote(
-        [
-            "activate",
-            str(release_row_id),
-            "--artifact-id",
-            str(artifact_id),
-            "--candidate-id",
-            candidate_id,
-            "--workspace-release-id",
-            release_id,
-            "--expected-base-release-id",
-            base_id,
-            "--expected-active-release-id",
-            base_id,
-            "--prepared-evidence-id",
-            prepared_id,
-            "--canary-execution-id",
-            str(canary_id),
-            "--json",
-        ]
-    ) == 0
+    assert (
+        promote.handle_promote(
+            [
+                "activate",
+                str(release_row_id),
+                "--artifact-id",
+                str(artifact_id),
+                "--candidate-id",
+                candidate_id,
+                "--workspace-release-id",
+                release_id,
+                "--expected-base-release-id",
+                base_id,
+                "--expected-active-release-id",
+                base_id,
+                "--prepared-evidence-id",
+                prepared_id,
+                "--canary-execution-id",
+                str(canary_id),
+                "--json",
+            ]
+        )
+        == 0
+    )
     assert captured["endpoint"] == promote.PROMOTION_ACTIVATE_ENDPOINT.format(
         release_id=release_row_id
     )
     parsed = WorkspaceReleaseActivateRequest.model_validate(captured["payload"])
-    assert parsed.canary_execution_id == canary_id
+    assert parsed.authorization.kind == "reviewed_canary"
+    assert parsed.authorization.canary_execution_id == canary_id
     assert "/api/workspace-promotions/releases/{release_id}/activate" in _route_paths()
     assert "/api/workspace-promotions/releases/{release_id}" in _route_paths()
     assert "/api/workspace-promotions/live" in _route_paths()

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bifrost.workspace_release import workspace_closure_id, workspace_content_id
+from bifrost.workspace_release_authorization import computed_effects_id
 from src.models.enums import ExecutionStatus
 from src.models.orm.executions import Execution
 from src.models.orm.workspace_promotions import WorkspacePromotionArtifact
@@ -25,9 +26,7 @@ from src.services.workspace_promotion_storage import (
 
 DRAFT_RUNTIME_MODE = "workspace-canary-v1"
 DRAFT_RUNTIME_SCHEMA = "bifrost.workspace-reviewed-canary-runtime/v1"
-DRAFT_CANARY_ATTESTATION_SCHEMA = (
-    "bifrost.workspace-reviewed-canary-attestation/v1"
-)
+DRAFT_CANARY_ATTESTATION_SCHEMA = "bifrost.workspace-reviewed-canary-attestation/v1"
 ALLOWED_CANARY_EFFECTS = {"bifrost.read"}
 MAX_CANARY_DURATION_SECONDS = 60
 MAX_CANARY_OUTPUT_BYTES = 1_048_576
@@ -63,6 +62,28 @@ def validate_reviewed_canary_artifact(
     if sha256_digest(canonical_json(manifest)) != artifact.candidate_id:
         raise WorkspaceDraftCanaryError(
             "reviewed canary artifact candidate identity is invalid"
+        )
+    effects = manifest.get("computed_effects") if isinstance(manifest, dict) else None
+    diagnostics = manifest.get("diagnostics") if isinstance(manifest, dict) else None
+    try:
+        effects_id = computed_effects_id(effects or [])
+    except ValueError as exc:
+        raise WorkspaceDraftCanaryError(
+            "reviewed canary effects are not canonical"
+        ) from exc
+    if (
+        artifact.risk_class != "R0"
+        or manifest.get("risk_class") != "R0"
+        or set(effects or []) != ALLOWED_CANARY_EFFECTS
+        or not effects_id.startswith("sha256:")
+        or not isinstance(diagnostics, list)
+        or any(
+            not isinstance(item, dict) or item.get("severity") == "blocker"
+            for item in diagnostics
+        )
+    ):
+        raise WorkspaceDraftCanaryError(
+            "reviewed canaries require a blocker-free exact R0 artifact"
         )
 
 
@@ -189,9 +210,9 @@ def build_draft_runtime_evidence(
         "entry": {
             "path": entry_path,
             "function": entry_function,
-            "name": (manifest.get("effective_registrations") or {}).get(
-                f"{entry_path}::{entry_function}", {}
-            ).get("name", entry_function),
+            "name": (manifest.get("effective_registrations") or {})
+            .get(f"{entry_path}::{entry_function}", {})
+            .get("name", entry_function),
             "source_sha256": closure[entry_path],
         },
         "source_hashes": closure,
@@ -318,8 +339,7 @@ async def find_successful_draft_canary_attestation(
             Execution.runtime_mode == DRAFT_RUNTIME_MODE,
             Execution.status == ExecutionStatus.SUCCESS,
             Execution.workflow_id.is_(None),
-            Execution.runtime_evidence["artifact_id"].as_string()
-            == str(artifact.id),
+            Execution.runtime_evidence["artifact_id"].as_string() == str(artifact.id),
         )
         .order_by(Execution.completed_at.desc())
         .limit(20)
@@ -338,10 +358,12 @@ class WorkspaceDraftCanaryService:
         db: AsyncSession,
         organization_id: UUID,
         *,
-        artifact_storage_factory: Callable[..., WorkspacePromotionArtifactStorage]
-        = WorkspacePromotionArtifactStorage,
-        runtime_storage_factory: Callable[..., WorkspaceDraftRuntimeStorage]
-        = WorkspaceDraftRuntimeStorage,
+        artifact_storage_factory: Callable[
+            ..., WorkspacePromotionArtifactStorage
+        ] = WorkspacePromotionArtifactStorage,
+        runtime_storage_factory: Callable[
+            ..., WorkspaceDraftRuntimeStorage
+        ] = WorkspaceDraftRuntimeStorage,
         publisher: Callable[..., Awaitable[bool]] | None = None,
     ):
         self.db = db

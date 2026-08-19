@@ -1,10 +1,10 @@
 """Contracts for immutable Workspace release artifact previews."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PromotionEntry(BaseModel):
@@ -250,18 +250,77 @@ class WorkspacePromotionCanaryAccepted(BaseModel):
     artifact_id: UUID
     runtime_mode: Literal["workspace-canary-v1"] = "workspace-canary-v1"
     status: Literal["Pending"] = "Pending"
-class WorkspaceReleaseActivateRequest(BaseModel):
+
+
+class WorkspaceReleaseActivationChallenge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["bifrost.workspace-release-activation-challenge/v1"]
     artifact_id: UUID
     candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     workspace_release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    expected_base_release_id: str = Field(
-        pattern=r"^(?:sha256|repo-v1):[0-9a-f]{64}$"
-    )
+    prepared_evidence_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    effective_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    governed_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    effective_registration_manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    risk_class: Literal["R0", "R1", "R2"]
+    computed_effects: list[str] = Field(min_length=1)
+    computed_effects_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    policy_version: str = Field(min_length=1)
+    protected_source: PromotionSourceEvidence
+    required_authorization: Literal["reviewed_canary", "risk_acknowledgement"]
+    challenge_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class WorkspaceReviewedCanaryAuthorization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["reviewed_canary"]
+    challenge_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    canary_execution_id: UUID
+
+
+class WorkspaceReleaseRiskAcknowledgement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["bifrost.workspace-release-risk-acknowledgement/v1"]
+    challenge_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    workspace_release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    prepared_evidence_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    risk_class: Literal["R1", "R2"]
+    computed_effects: list[str] = Field(min_length=1)
+    computed_effects_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    protected_source: PromotionSourceEvidence
+    decision: Literal["activate_without_canary_or_effect_execution"]
+    acknowledgement_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class WorkspaceRiskAcknowledgementAuthorization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["risk_acknowledgement"]
+    acknowledgement: WorkspaceReleaseRiskAcknowledgement
+
+
+WorkspaceReleaseAuthorization = Annotated[
+    WorkspaceReviewedCanaryAuthorization | WorkspaceRiskAcknowledgementAuthorization,
+    Field(discriminator="kind"),
+]
+
+
+class WorkspaceReleaseActivateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: UUID
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    workspace_release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    expected_base_release_id: str = Field(pattern=r"^(?:sha256|repo-v1):[0-9a-f]{64}$")
     expected_active_release_id: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$"
     )
     prepared_evidence_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    canary_execution_id: UUID
+    authorization: WorkspaceReleaseAuthorization
 
 
 class WorkspaceReleaseRuntimeStatus(BaseModel):
@@ -270,7 +329,13 @@ class WorkspaceReleaseRuntimeStatus(BaseModel):
     prepared_evidence_id: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$"
     )
+    activation_authorization: WorkspaceReleaseActivationChallenge | None = None
+    authorization_kind: Literal["reviewed_canary", "risk_acknowledgement"] | None = None
+    authorization_id: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     canary_execution_id: UUID | None = None
+    risk_acknowledgement_id: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
 
 
 class WorkspaceReleaseHistoryStatus(BaseModel):

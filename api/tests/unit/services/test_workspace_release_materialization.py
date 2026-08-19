@@ -31,6 +31,7 @@ from src.services.workspace_release_materialization import (
     _compile_files,
     _read_closure_zip,
     isolated_candidate_import_smoke,
+    prepared_activation_challenge,
 )
 
 
@@ -57,8 +58,7 @@ def _artifact(
     base_files = {"modules/base.py": b"VALUE = 41\n"}
     if include_affected_target:
         base_files["workflows/dependent.py"] = (
-            b"from modules.base import VALUE\n"
-            b"def dependent():\n    return VALUE\n"
+            b"from modules.base import VALUE\ndef dependent():\n    return VALUE\n"
         )
     closure_files = {
         "workflows/demo.py": (
@@ -226,9 +226,7 @@ def test_prepare_manifest_rejects_blockers_for_every_risk_class() -> None:
         WorkspaceReleasePreparationError,
         match="blocker-free release",
     ):
-        WorkspaceReleaseMaterializer._validate_manifest(
-            artifact, artifact.manifest
-        )
+        WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 
 
 @pytest.mark.asyncio
@@ -348,20 +346,27 @@ async def test_prepare_materializes_and_verifies_complete_effective_tree() -> No
     assert evidence["schema_version"] == PREPARED_EVIDENCE_SCHEMA
     assert evidence["effective_files"] == artifact.manifest["effective_files"]
     assert evidence["governed_paths"] == ["workflows/demo.py"]
-    assert evidence["governed_manifest_id"] == artifact.manifest[
-        "governed_manifest_id"
-    ]
+    assert evidence["governed_manifest_id"] == artifact.manifest["governed_manifest_id"]
     assert [item["path"] for item in evidence["projection_paths"]] == [
         "workflows/demo.py"
     ]
-    assert evidence["import_smoke"]["relation"] == "selected_entry"
-    assert len(evidence["validation_smokes"]) == 1
+    assert evidence["import_validation"]["state"] == "succeeded"
+    assert evidence["import_validation"]["selected"]["relation"] == "selected_entry"
+    assert len(evidence["import_validation"]["targets"]) == 1
+    assert evidence["risk_class"] == "R0"
+    assert evidence["computed_effects"] == ["bifrost.read"]
+    assert evidence["computed_effects_id"].startswith("sha256:")
+    assert evidence["effect_execution"] == "reviewed_canary_required"
+    challenge = prepared_activation_challenge(evidence)
+    assert challenge["prepared_evidence_id"] == evidence["evidence_id"]
+    assert challenge["governed_manifest_id"] == evidence["governed_manifest_id"]
+    assert challenge["required_authorization"] == "reviewed_canary"
     assert release_storage.files == {**base_files, **closure_files}
     assert db.added is release
 
 
 @pytest.mark.asyncio
-async def test_prepare_r2_smokes_every_bound_affected_executable() -> None:
+async def test_prepare_r2_never_executes_or_claims_effect_validation() -> None:
     organization_id = uuid4()
     artifact, base_files, closure_files = _artifact(
         organization_id,
@@ -445,15 +450,16 @@ async def test_prepare_r2_smokes_every_bound_affected_executable() -> None:
         workspace_generation=_stable_generation,
     ).prepare(artifact.id, artifact.candidate_id, uuid4())
 
-    assert smoke_calls == [
-        ("workflows/demo.py", "run"),
-        ("workflows/dependent.py", "dependent"),
-    ]
-    assert [item["relation"] for item in evidence["validation_smokes"]] == [
-        "selected_entry",
-        "affected_executable",
-    ]
-    assert evidence["import_smoke"] == evidence["validation_smokes"][0]
+    assert smoke_calls == []
+    assert evidence["import_validation"] == {
+        "state": "not_performed",
+        "reason": "non_r0_source_is_not_executed_during_prepare",
+    }
+    assert evidence["effect_execution"] == "not_performed"
+    assert evidence["risk_class"] == "R2"
+    assert evidence["computed_effects"] == ["integration.write:halopsa"]
+    challenge = prepared_activation_challenge(evidence)
+    assert challenge["required_authorization"] == "risk_acknowledgement"
 
 
 @pytest.mark.asyncio
@@ -481,10 +487,7 @@ async def test_active_base_is_current_repo_with_only_governed_live_overlay() -> 
     target_artifact = SimpleNamespace(
         base_release_id=base_artifact.release_id,
         base_manifest_id=workspace_manifest_id(
-            {
-                path: sha256_bytes(raw)
-                for path, raw in sorted(expected_hybrid.items())
-            }
+            {path: sha256_bytes(raw) for path, raw in sorted(expected_hybrid.items())}
         ),
     )
 
