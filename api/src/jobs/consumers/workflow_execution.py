@@ -685,7 +685,9 @@ class WorkflowExecutionConsumer(BaseConsumer):
                         runtime_storage_prefix = workflow_data[
                             "workspace_release_runtime_storage_prefix"
                         ]
-                        runtime_max_duration_seconds = timeout_seconds
+                        runtime_max_duration_seconds = workflow_data[
+                            "workflow_runtime_bounds"
+                        ]["max_duration_seconds"]
                         runtime_max_output_bytes = workflow_data[
                             "workspace_release_max_output_bytes"
                         ]
