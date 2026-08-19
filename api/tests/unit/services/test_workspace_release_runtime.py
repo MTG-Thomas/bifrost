@@ -187,19 +187,14 @@ async def test_superseded_release_remains_valid_for_durable_queued_pin() -> None
         def one_or_none(self):
             return release_row, artifact
 
-    workflow = SimpleNamespace(
-        id=workflow_id,
-        is_active=True,
-        solution_id=None,
-        organization_id=release_row.organization_id,
-    )
-
     class Session:
         async def execute(self, _statement):
             return Result()
 
         async def get(self, _model, _identity):
-            return workflow
+            raise AssertionError(
+                "a durable queued pin must not consult mutable Workflow state"
+            )
 
     resolved = await resolve_pinned_workspace_runtime(
         Session(), evidence, workflow_id

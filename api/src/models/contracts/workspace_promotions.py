@@ -221,3 +221,58 @@ class WorkspaceDraftCanaryAccepted(BaseModel):
     artifact_id: UUID
     runtime_mode: Literal["workspace-draft-v1"] = "workspace-draft-v1"
     status: Literal["Pending"] = "Pending"
+class WorkspaceReleaseActivateRequest(BaseModel):
+    artifact_id: UUID
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    workspace_release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    expected_base_release_id: str = Field(
+        pattern=r"^(?:sha256|repo-v1):[0-9a-f]{64}$"
+    )
+    expected_active_release_id: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    prepared_evidence_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    canary_execution_id: UUID
+
+
+class WorkspaceReleaseRuntimeStatus(BaseModel):
+    state: Literal["coherent", "prepared", "not_prepared"]
+    immutable_release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    prepared_evidence_id: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    canary_execution_id: UUID | None = None
+
+
+class WorkspaceReleaseHistoryStatus(BaseModel):
+    state: Literal[
+        "pending", "locked", "attention_required", "superseded", "not_queued"
+    ]
+    lock_state: str
+    job_id: UUID | None = None
+
+
+class WorkspaceReleaseStatusResponse(BaseModel):
+    schema_version: Literal["bifrost.workspace-release-status/v1"] = (
+        "bifrost.workspace-release-status/v1"
+    )
+    release_row_id: UUID
+    artifact_id: UUID
+    organization_id: UUID
+    candidate_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    base_release_id: str = Field(pattern=r"^(?:sha256|repo-v1):[0-9a-f]{64}$")
+    activation_state: str
+    is_live: bool
+    previous_release_row_id: UUID | None = None
+    runtime: WorkspaceReleaseRuntimeStatus
+    history: WorkspaceReleaseHistoryStatus
+    activated_at: datetime | None = None
+
+
+class WorkspaceLiveStatusResponse(BaseModel):
+    schema_version: Literal["bifrost.workspace-live-status/v1"] = (
+        "bifrost.workspace-live-status/v1"
+    )
+    organization_id: UUID
+    active_release: WorkspaceReleaseStatusResponse | None = None

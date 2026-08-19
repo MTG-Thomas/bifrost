@@ -12,11 +12,22 @@ from src.services.workflow_registration import (
     WorkflowRegistrationConflict,
     apply_workspace_registration_plan,
     plan_workspace_registrations,
+    workspace_workflow_lookup_statement,
 )
 
 
 def _result(value):
     return SimpleNamespace(scalar_one_or_none=lambda: value)
+
+
+def test_lookup_prefers_org_override_before_same_key_global_registration():
+    statement = workspace_workflow_lookup_statement(
+        uuid4(), "features/demo.py", "run"
+    )
+    sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+
+    assert "organization_id IS NULL ASC" in sql
+    assert "LIMIT 1" in sql
 
 
 @pytest.mark.asyncio

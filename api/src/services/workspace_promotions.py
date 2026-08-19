@@ -16,9 +16,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from bifrost.promotion import (
     MAX_CLOSURE_BYTES,
@@ -71,6 +70,7 @@ from src.services.platform_commit_writer import (
 from src.services.repo_storage import RepoStorage
 from src.services.workflow_registration import (
     WorkspaceRegistrationCandidate,
+    find_workspace_workflow,
     plan_workspace_registrations,
     resolve_workflow_registration_id,
 )
@@ -1178,20 +1178,12 @@ class WorkspacePromotionPreviewService:
         )
 
     async def _existing_workflow(self, path: str, function: str) -> Workflow | None:
-        result = await self.db.execute(
-            select(Workflow)
-            .where(
-                Workflow.path == path,
-                Workflow.function_name == function,
-                Workflow.solution_id.is_(None),
-                or_(
-                    Workflow.organization_id == self.organization_id,
-                    Workflow.organization_id.is_(None),
-                ),
-            )
-            .options(selectinload(Workflow.roles))
+        return await find_workspace_workflow(
+            self.db,
+            self.organization_id,
+            path,
+            function,
         )
-        return result.scalar_one_or_none()
 
     async def _read_protected_source(
         self, request: WorkspacePromotionPreviewRequest

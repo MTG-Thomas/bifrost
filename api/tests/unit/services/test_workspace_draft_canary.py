@@ -22,6 +22,7 @@ from src.services.workspace_draft_canary import (
     verify_draft_runtime_evidence,
     workflow_data_from_draft_evidence,
 )
+from src.services.workspace_promotions import _canonical_candidate
 from src.services.workspace_promotion_storage import workspace_draft_runtime_prefix
 from src.services.execution.process_pool import (
     WorkspaceDraftDurationLimitInvalid,
@@ -51,29 +52,54 @@ def _artifact(*, effects: list[str] | None = None):
     entry = {"path": path, "function": "inspect_workspace"}
     closure_id = workspace_closure_id(entry, {path: digest})
     content_id = workspace_content_id(entry, closure_id)
+    manifest = {
+        "entry": entry,
+        "closure": [{"path": path, "sha256": digest}],
+        "declared_effects": effect_list,
+        "computed_effects": effect_list,
+        "bounds": {
+            "max_duration_seconds": 15,
+            "max_output_bytes": 128,
+        },
+        "effective_registrations": {},
+        "protected_source": {"commit_sha": "2" * 40, "tree_sha": "3" * 40},
+    }
     return SimpleNamespace(
         id=artifact_id,
         organization_id=organization_id,
-        candidate_id="sha256:" + "1" * 64,
+        candidate_id=_canonical_candidate(manifest),
         content_id=content_id,
         closure_id=closure_id,
+        release_id="sha256:" + "4" * 64,
+        base_release_id="repo-v1:" + "5" * 64,
+        effective_manifest_id="sha256:" + "6" * 64,
+        source_revision="2" * 40,
+        source_tree_sha="3" * 40,
+        schema_version="bifrost.workspace-promotion-bundle/v2",
+        target_kind="workspace",
         source_artifact_key=(
             f"_workspace_promotion_artifacts/{organization_id}/"
             f"{content_id.removeprefix('sha256:')}/source.zip"
         ),
         artifact_state="review_required",
-        manifest={
-            "entry": entry,
-            "closure": [{"path": path, "sha256": digest}],
-            "declared_effects": effect_list,
-            "computed_effects": effect_list,
-            "bounds": {
-                "max_duration_seconds": 15,
-                "max_output_bytes": 128,
-            },
-            "effective_registrations": {},
-        },
+        manifest=manifest,
     ), {path: source}
+
+
+def test_server_canary_rejects_local_only_draft() -> None:
+    artifact, _ = _artifact()
+    artifact.target_kind = "draft"
+    artifact.schema_version = "bifrost.workspace-draft-upload/v1"
+    artifact.source_revision = None
+    artifact.source_tree_sha = None
+
+    with pytest.raises(WorkspaceDraftCanaryError, match="local-only drafts"):
+        build_draft_runtime_evidence(
+            artifact,
+            workspace_draft_runtime_prefix(
+                artifact.organization_id, artifact.content_id
+            ),
+        )
 
 
 def test_archive_must_match_every_immutable_closure_byte() -> None:

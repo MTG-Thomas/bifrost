@@ -16,7 +16,10 @@ from src.models.contracts.workspace_promotions import (
     WorkspacePromotionArtifactResponse,
     WorkspacePromotionDraftRequest,
     WorkspacePromotionDraftResponse,
+    WorkspaceLiveStatusResponse,
+    WorkspaceReleaseActivateRequest,
     WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseStatusResponse,
 )
 from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.jobs.platform.workspace_release_prepare import (
@@ -31,6 +34,10 @@ from src.services.platform_jobs import (
 from src.services.workspace_draft_canary import (
     WorkspaceDraftCanaryError,
     WorkspaceDraftCanaryService,
+)
+from src.services.workspace_release_activation import (
+    WorkspaceReleaseActivationError,
+    WorkspaceReleaseActivationService,
 )
 from src.services.workspace_promotions import (
     WorkspacePromotionInvalid,
@@ -272,3 +279,79 @@ async def prepare_workspace_release(
         status=job.status,
         reused=reused,
     )
+
+
+@router.post(
+    "/releases/{release_id}/activate",
+    response_model=WorkspaceReleaseStatusResponse,
+)
+async def activate_workspace_release(
+    release_id: UUID,
+    request: WorkspaceReleaseActivateRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceReleaseStatusResponse:
+    if not get_settings().workspace_rapid_promotion_preview_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="rapid Workspace promotion is not enabled",
+        )
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceReleaseActivationService(db, ctx.org_id).activate(
+            release_id, request
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release not found",
+        ) from exc
+    except WorkspaceReleaseActivationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/live", response_model=WorkspaceLiveStatusResponse)
+async def get_live_workspace_release(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceLiveStatusResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    return await WorkspaceReleaseActivationService(db, ctx.org_id).get_live()
+
+
+@router.get(
+    "/releases/{release_id}", response_model=WorkspaceReleaseStatusResponse
+)
+async def get_workspace_release_status(
+    release_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceReleaseStatusResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceReleaseActivationService(db, ctx.org_id).get_release(
+            release_id
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace release not found",
+        ) from exc

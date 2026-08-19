@@ -399,20 +399,11 @@ async def resolve_pinned_workspace_runtime(
     descriptor = WorkspaceReleaseDescriptor.from_rows(release_row, artifact)
     if descriptor.release_id != release_id:
         raise WorkspaceReleaseRuntimeError("queued Workspace release id is invalid")
-    workflow = await session.get(Workflow, workflow_id)
-    if (
-        workflow is None
-        or not workflow.is_active
-        or workflow.solution_id is not None
-        or workflow.organization_id != descriptor.organization_id
-    ):
-        raise WorkspaceReleaseRuntimeError(
-            "queued Workspace release workflow identity is invalid"
-        )
     path = str(evidence.get("workflow_path") or "").replace("\\", "/").lstrip("/")
+    function_name = str(evidence.get("workflow_function_name") or "")
     source_hash = descriptor.source_hashes.get(path)
     registration = descriptor.effective_registrations.get(
-        f"{path}::{evidence.get('workflow_function_name')}"
+        f"{path}::{function_name}"
     )
     if (
         evidence.get("workflow_id") != str(workflow_id)
@@ -422,6 +413,9 @@ async def resolve_pinned_workspace_runtime(
         or registration.get("workflow_id") != str(workflow_id)
         or registration.get("source_sha256") != source_hash
         or registration.get("organization_id") != str(descriptor.organization_id)
+        or registration.get("is_active") is not True
+        or evidence.get("workflow_name") != registration.get("name")
+        or evidence.get("workflow_type") != registration.get("type")
     ):
         raise WorkspaceReleaseRuntimeError(
             "queued Workspace release workflow source is invalid"

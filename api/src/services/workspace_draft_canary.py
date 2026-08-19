@@ -29,10 +29,39 @@ DRAFT_CANARY_ATTESTATION_SCHEMA = "bifrost.workspace-draft-canary-attestation/v1
 ALLOWED_CANARY_EFFECTS = {"bifrost.read"}
 MAX_CANARY_DURATION_SECONDS = 60
 MAX_CANARY_OUTPUT_BYTES = 1_048_576
+PROMOTION_BUNDLE_SCHEMA_V2 = "bifrost.workspace-promotion-bundle/v2"
 
 
 class WorkspaceDraftCanaryError(ValueError):
     """A draft artifact cannot be safely executed as a server canary."""
+
+
+def validate_reviewed_canary_artifact(
+    artifact: WorkspacePromotionArtifact,
+) -> None:
+    """Reject local uploads; the credentialed worker is not a draft sandbox."""
+    manifest = artifact.manifest
+    protected = manifest.get("protected_source") if isinstance(manifest, dict) else None
+    if (
+        artifact.target_kind != "workspace"
+        or artifact.schema_version != PROMOTION_BUNDLE_SCHEMA_V2
+        or not isinstance(protected, dict)
+        or not artifact.source_revision
+        or protected.get("commit_sha") != artifact.source_revision
+        or not artifact.source_tree_sha
+        or protected.get("tree_sha") != artifact.source_tree_sha
+        or not artifact.release_id
+        or not artifact.base_release_id
+        or not artifact.effective_manifest_id
+    ):
+        raise WorkspaceDraftCanaryError(
+            "server canaries require a reviewed protected-main Workspace artifact; "
+            "local-only drafts must run on the operator machine"
+        )
+    if sha256_digest(canonical_json(manifest)) != artifact.candidate_id:
+        raise WorkspaceDraftCanaryError(
+            "reviewed canary artifact candidate identity is invalid"
+        )
 
 
 def _artifact_closure(artifact: WorkspacePromotionArtifact) -> dict[str, str]:
@@ -105,6 +134,7 @@ def build_draft_runtime_evidence(
     artifact: WorkspacePromotionArtifact,
     runtime_prefix: str,
 ) -> dict[str, Any]:
+    validate_reviewed_canary_artifact(artifact)
     manifest = artifact.manifest
     declared = set(manifest.get("declared_effects") or [])
     computed = set(manifest.get("computed_effects") or [])
@@ -166,6 +196,7 @@ def verify_draft_runtime_evidence(
     durable_hash: str | None,
     artifact: WorkspacePromotionArtifact,
 ) -> dict[str, Any]:
+    validate_reviewed_canary_artifact(artifact)
     if not isinstance(queued, dict) or not isinstance(durable, dict):
         raise WorkspaceDraftCanaryError("draft execution is missing runtime evidence")
     if queued != durable:
@@ -322,6 +353,7 @@ class WorkspaceDraftCanaryService:
         is_external: bool,
     ) -> UUID:
         artifact = await self._artifact(artifact_id)
+        validate_reviewed_canary_artifact(artifact)
         if artifact.expires_at <= datetime.now(timezone.utc):
             raise WorkspaceDraftCanaryError("draft artifact has expired")
         if artifact.artifact_state == "invalid":

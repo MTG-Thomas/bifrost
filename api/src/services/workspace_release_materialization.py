@@ -219,6 +219,16 @@ class WorkspaceReleaseMaterializer:
         closure_files = _read_closure_zip(
             await content_storage.read_source(), closure_hashes
         )
+        projection_paths = [
+            {
+                "path": path,
+                "base_sha256": (
+                    sha256_bytes(base_files[path]) if path in base_files else None
+                ),
+                "target_sha256": closure_hashes[path],
+            }
+            for path in sorted(closure_hashes)
+        ]
         effective = dict(sorted({**base_files, **closure_files}.items()))
         self._validate_effective(manifest, effective)
         if report:
@@ -259,6 +269,7 @@ class WorkspaceReleaseMaterializer:
             "total_bytes": sum(map(len, readback.values())),
             "compile": {"succeeded": True, "file_count": len(readback)},
             "import_smoke": smoke,
+            "projection_paths": projection_paths,
             "prepared_at": now.isoformat(),
         }
         evidence["evidence_id"] = canonical_digest(evidence)
