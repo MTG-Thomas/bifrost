@@ -507,7 +507,9 @@ async def set_module(
     redis = get_redis_client()
     key = f"{MODULE_KEY_PREFIX}{path}"
 
-    if not path.startswith(f"{SOLUTIONS_ROOT}/") and generation is None:
+    if not path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    ) and generation is None:
         generation = _ready_generation_value(await get_workspace_generation())
     cached = CachedModule(
         content=content,

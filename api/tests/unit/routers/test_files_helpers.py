@@ -34,6 +34,10 @@ def _legacy_workspace_file_authority(monkeypatch):
         "src.services.workspace_release_files.governed_workspace_release_file_view",
         no_release_view,
     )
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.active_workspace_release_file_view",
+        no_release_view,
+    )
     monkeypatch.setattr(files, "_reject_release_governed_mutation", mutable)
 
 
@@ -326,6 +330,104 @@ async def test_workspace_graph_uses_immutable_live_and_blocks_legacy_write(
     assert proposed.ready_to_write is False
     assert proposed.diagnostics[0].severity == "blocker"
     assert "use `bifrost promote`" in proposed.diagnostics[0].message
+
+
+@pytest.mark.asyncio
+async def test_workspace_list_metadata_and_exists_report_immutable_live_authority(
+    monkeypatch,
+):
+    from src.services.workspace_release_files import WorkspaceReleaseFileView
+
+    path = "modules/vendor.py"
+    immutable = b"VALUE = 'immutable-live'\n"
+    immutable_hash = hashlib.sha256(immutable).hexdigest()
+    release_id = "sha256:" + "a" * 64
+
+    class Storage:
+        async def read(self, requested_path):
+            assert requested_path == path
+            return immutable
+
+        async def read_many(self, requested_paths, *, concurrency=32):
+            del concurrency
+            return {requested_path: immutable for requested_path in requested_paths}
+
+    view = WorkspaceReleaseFileView.from_release(
+        SimpleNamespace(
+            release_id=release_id,
+            source_hashes={path: immutable_hash},
+            runtime_storage_prefix="immutable/",
+        ),
+        storage=Storage(),
+    )
+
+    async def active_view(*_args, **_kwargs):
+        return view
+
+    async def governed_view(*_args, **_kwargs):
+        return view
+
+    async def tiers(*_args, **_kwargs):
+        return [SimpleNamespace(scope="global", solution_id=None, organization_id=None)]
+
+    class Repo:
+        async def list_with_metadata(self, _directory):
+            return {
+                path: SimpleNamespace(
+                    etag="stale-repo-hash",
+                    last_modified=datetime(2026, 1, 1, tzinfo=UTC),
+                )
+            }
+
+    class Db:
+        async def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [])
+
+    class Backend:
+        async def exists(self, *_args, **_kwargs):
+            raise AssertionError("immutable Live existence must not consult repo-v1")
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.active_workspace_release_file_view",
+        active_view,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.governed_workspace_release_file_view",
+        governed_view,
+    )
+    monkeypatch.setattr("src.services.solution_scope.file_read_tiers", tiers)
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", Repo)
+    monkeypatch.setattr(
+        files, "_authorize_file_policy", lambda *_args, **_kwargs: _async_value(True)
+    )
+    monkeypatch.setattr(
+        files,
+        "_filter_listed_paths",
+        lambda _ctx, *, paths, **_kwargs: _async_value(paths),
+    )
+    monkeypatch.setattr(files, "get_backend", lambda *_args: Backend())
+
+    listing = await files.list_files_simple(
+        files.FileListRequest(directory="modules/", include_metadata=True),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=Db(),
+    )
+    exists = await files.file_exists(
+        files.FileExistsRequest(path=path),
+        _ctx(),
+        SimpleNamespace(user_id=USER_ID),
+        db=Db(),
+    )
+
+    assert listing.files == [path]
+    assert listing.source_authority == "workspace-release-v1"
+    assert listing.workspace_release_id == release_id
+    assert listing.files_metadata[0].etag == immutable_hash
+    assert listing.files_metadata[0].source_authority == "workspace-release-v1"
+    assert exists.exists is True
+    assert exists.source_authority == "workspace-release-v1"
+    assert exists.workspace_release_id == release_id
 
 
 @pytest.mark.asyncio
@@ -1664,8 +1766,23 @@ async def test_search_file_contents_delegates_and_maps_bad_request(monkeypatch):
     expected = SimpleNamespace(results=[{"path": "a.py"}])
     calls = []
 
-    async def fake_search_files_db(db, request_arg, *, root_path):
-        calls.append((db, request_arg, root_path))
+    async def fake_search_files_db(
+        db,
+        request_arg,
+        *,
+        root_path,
+        immutable_overlay=None,
+        workspace_release_id=None,
+    ):
+        calls.append(
+            (
+                db,
+                request_arg,
+                root_path,
+                immutable_overlay,
+                workspace_release_id,
+            )
+        )
         return expected
 
     monkeypatch.setattr(files, "search_files_db", fake_search_files_db)
@@ -1678,7 +1795,7 @@ async def test_search_file_contents_delegates_and_maps_bad_request(monkeypatch):
     )
 
     assert response is expected
-    assert calls == [("db", request, "")]
+    assert calls == [("db", request, "", None, None)]
 
     async def failing_search_files_db(*_args, **_kwargs):
         raise ValueError("bad regex")
@@ -1695,6 +1812,65 @@ async def test_search_file_contents_delegates_and_maps_bad_request(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "bad regex"
+
+
+@pytest.mark.asyncio
+async def test_search_file_contents_overlays_verified_live_bytes(monkeypatch):
+    release_id = "sha256:" + "a" * 64
+    live = {"modules/vendor.py": b"VALUE = 'immutable-live'\n"}
+    captured = {}
+
+    class ReleaseView:
+        release = SimpleNamespace(release_id=release_id)
+
+        async def list(self):
+            return list(live)
+
+        async def read_many(self, paths):
+            assert paths == list(live)
+            return live
+
+    async def active_view(*_args, **_kwargs):
+        return ReleaseView()
+
+    async def search(
+        _db,
+        _request,
+        *,
+        root_path,
+        immutable_overlay,
+        workspace_release_id,
+    ):
+        captured.update(
+            root_path=root_path,
+            immutable_overlay=immutable_overlay,
+            workspace_release_id=workspace_release_id,
+        )
+        return SimpleNamespace(
+            source_authority="workspace-release-v1",
+            workspace_release_id=workspace_release_id,
+        )
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.active_workspace_release_file_view",
+        active_view,
+    )
+    monkeypatch.setattr(files, "search_files_db", search)
+
+    response = await files.search_file_contents(
+        SimpleNamespace(query="immutable-live"),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID),
+        db=SimpleNamespace(),
+    )
+
+    assert captured == {
+        "root_path": "",
+        "immutable_overlay": live,
+        "workspace_release_id": release_id,
+    }
+    assert response.source_authority == "workspace-release-v1"
+    assert response.workspace_release_id == release_id
 
 
 @pytest.mark.asyncio

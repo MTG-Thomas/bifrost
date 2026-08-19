@@ -340,6 +340,53 @@ def test_workspace_release_cache_hit_must_match_manifest(monkeypatch):
         module_cache_sync.clear_workspace_release_context()
 
 
+def test_workspace_release_corrupt_cache_label_is_deleted_and_refetched(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    reviewed = "VALUE = 'reviewed'\n"
+    reviewed_hash = hashlib.sha256(reviewed.encode()).hexdigest()
+    storage_path = (
+        "_workspace_releases/org-1/release-1/files/modules/a.py"
+    )
+    redis_client = MagicMock()
+    redis_client.get.return_value = json.dumps(
+        {
+            "content": "VALUE = 'corrupt'\n",
+            "path": "modules/a.py",
+            # The label alone is not evidence that these are reviewed bytes.
+            "hash": reviewed_hash,
+        }
+    )
+    fetch_api = MagicMock(
+        return_value={
+            "content": reviewed,
+            "path": "modules/a.py",
+            "hash": reviewed_hash,
+        }
+    )
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    monkeypatch.setattr(module_cache_sync, "_fetch_module_from_api", fetch_api)
+    module_cache_sync.set_workspace_release_context(
+        "sha256:" + "a" * 64,
+        runtime_storage_prefix="_workspace_releases/org-1/release-1/files/",
+        source_hashes={"modules/a.py": reviewed_hash},
+    )
+    try:
+        result = module_cache_sync.get_module_sync("modules/a.py")
+    finally:
+        module_cache_sync.clear_workspace_release_context()
+
+    assert result == {
+        "content": reviewed,
+        "path": "modules/a.py",
+        "hash": reviewed_hash,
+    }
+    redis_client.delete.assert_called_once_with(
+        f"{module_cache_sync.MODULE_KEY_PREFIX}{storage_path}"
+    )
+    fetch_api.assert_called_once_with(storage_path)
+    redis_client.setex.assert_called_once()
+
+
 def test_workspace_release_generation_is_not_mutable_repo_generation(monkeypatch):
     module_cache_sync = _module_cache_sync()
     redis_client = MagicMock()
