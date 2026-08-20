@@ -77,7 +77,7 @@ from src.services.workflow_registration import (
 )
 from src.services.workspace_promotion_storage import WorkspacePromotionArtifactStorage
 
-PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-19"
+PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-20"
 PROMOTION_BUNDLE_SCHEMA_V2 = "bifrost.workspace-promotion-bundle/v2"
 PROMOTION_ARTIFACT_SCHEMA = "bifrost.workspace-release-artifact/v1"
 ARTIFACT_TTL = timedelta(days=7)
@@ -231,23 +231,67 @@ def _risk_class_for_effects(effects: list[str]) -> str:
     """Classify declared/computed effects without claiming runtime enforcement."""
     if effects and all(_is_r0_effect(effect) for effect in effects):
         return "R0"
-    if effects and all(
-        effect.split(":", 1)[0].endswith(".read") for effect in effects
-    ):
+    if effects and all(effect.split(":", 1)[0].endswith(".read") for effect in effects):
         return "R1"
     return "R2"
 
 
 def _existing_registration_is_rapid_eligible(existing: Workflow | None) -> bool:
-    """Allow manual role-based registrations, including the global form."""
+    """Allow workflow source promotion without changing its exposure state."""
 
-    return existing is None or (
-        existing.type == "workflow"
-        and not existing.endpoint_enabled
-        and not existing.public_endpoint
-        and not existing.api_key_enabled
-        and existing.access_level == "role_based"
+    if existing is None:
+        return True
+    if existing.type != "workflow":
+        return False
+    exposure = _registration_exposure(_registration_state(existing))
+    reactivates_exposure = not existing.is_active and (
+        exposure["access_level"] != "role_based"
+        or exposure["endpoint_enabled"]
+        or exposure["public_endpoint"]
+        or exposure["api_key_enabled"]
     )
+    return not reactivates_exposure
+
+
+def _registration_state(existing: Workflow) -> dict[str, Any]:
+    return {
+        "access_level": existing.access_level,
+        "role_ids": [str(role.id) for role in existing.roles],
+        "endpoint_enabled": existing.endpoint_enabled,
+        "public_endpoint": existing.public_endpoint,
+        "api_key_enabled": existing.api_key_enabled,
+    }
+
+
+def _registration_exposure(
+    registration_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the exact activation surface bound to one registration."""
+
+    state = registration_state or {}
+    return {
+        "access_level": state.get("access_level", "role_based"),
+        "role_ids": sorted(str(value) for value in state.get("role_ids", [])),
+        "endpoint_enabled": bool(state.get("endpoint_enabled", False)),
+        "public_endpoint": bool(state.get("public_endpoint", False)),
+        "api_key_enabled": bool(state.get("api_key_enabled", False)),
+    }
+
+
+def _promotion_risk_class(
+    effects: list[str], registration_state: dict[str, Any] | None
+) -> str:
+    """Classify source effects and any preserved external activation surface."""
+
+    exposure = _registration_exposure(registration_state)
+    if (
+        exposure["access_level"] != "role_based"
+        or exposure["endpoint_enabled"]
+        or exposure["public_endpoint"]
+        or exposure["api_key_enabled"]
+    ):
+        return "R2"
+    return _risk_class_for_effects(effects)
 
 
 def _literal_keyword(call: ast.Call, name: str, default: Any = None) -> Any:
@@ -491,9 +535,7 @@ def _validation_targets(
                     path=path,
                     function=node.name,
                     entity_type=entity_type,
-                    relation=(
-                        "selected_entry" if selected else "affected_executable"
-                    ),
+                    relation=("selected_entry" if selected else "affected_executable"),
                 )
             )
     if selected_matches != 1:
@@ -516,8 +558,7 @@ def _selected_effective_registration(
         "path": entry.path,
         "function": entry.function,
         "workflow_id": (
-            action.get("requested_id")
-            or (registration_state or {}).get("workflow_id")
+            action.get("requested_id") or (registration_state or {}).get("workflow_id")
         ),
         "type": action.get("type", "workflow"),
         "name": action.get("name", entry.function),
@@ -525,6 +566,7 @@ def _selected_effective_registration(
         "is_active": True,
         "source_sha256": source_sha256,
         "runtime_bounds": dict(sorted(runtime_bounds.items())),
+        **_registration_exposure(registration_state),
     }
 
 
@@ -588,9 +630,10 @@ def _refresh_effective_registrations(
     diagnostics: list[PromotionDiagnostic],
 ) -> dict[str, dict[str, Any]]:
     """Refresh every bound function sharing a source path replaced by closure."""
-    effective = {
-        key: dict(value) for key, value in sorted(base_registrations.items())
-    }
+    effective = {key: dict(value) for key, value in sorted(base_registrations.items())}
+    for registration in effective.values():
+        for field, value in _registration_exposure(registration).items():
+            registration.setdefault(field, value)
     for key, registration in sorted(effective.items()):
         path = registration.get("path")
         function = registration.get("function")
@@ -847,9 +890,7 @@ def _canonical_impact_diagnostics(
         )
 
     changed = {
-        path
-        for path, raw in closure_files.items()
-        if base_files.get(path) != raw
+        path for path, raw in closure_files.items() if base_files.get(path) != raw
     }
     reverse = reverse_edges(analysis.edges)
     affected = set(forward)
@@ -942,9 +983,7 @@ class WorkspacePromotionPreviewService:
     async def _lock_artifact_creation(self) -> None:
         """Serialize immutable candidate creation and supersession per org."""
 
-        await acquire_workspace_promotion_artifact_lock(
-            self.db, self.organization_id
-        )
+        await acquire_workspace_promotion_artifact_lock(self.db, self.organization_id)
 
     async def upload_draft(
         self, request: WorkspacePromotionDraftRequest, user_id: UUID
@@ -1230,8 +1269,8 @@ class WorkspacePromotionPreviewService:
                     code="existing_activation_surface",
                     severity="blocker",
                     message=(
-                        "existing tool/provider, endpoint, API-key, or non-role-based "
-                        "registration is not eligible for rapid promotion"
+                        "existing tool or data-provider registration is not eligible "
+                        "for workflow source promotion"
                     ),
                     path=request.entry.path,
                 )
@@ -1291,7 +1330,7 @@ class WorkspacePromotionPreviewService:
                     path=request.entry.path,
                 )
             )
-        risk = _risk_class_for_effects(computed_effects)
+        risk = _promotion_risk_class(computed_effects, registration_state)
         closure = [
             PromotionClosureMember(
                 path=path,
@@ -1302,9 +1341,7 @@ class WorkspacePromotionPreviewService:
             for path, raw in sorted(files.items())
         ]
         effective_files = dict(sorted({**base.hashes, **closure_hashes}.items()))
-        governed_paths = _cumulative_governed_paths(
-            base.governed_paths, closure_hashes
-        )
+        governed_paths = _cumulative_governed_paths(base.governed_paths, closure_hashes)
         governed_manifest_id = _manifest_id(
             {path: effective_files[path] for path in governed_paths}
         )
@@ -1337,14 +1374,10 @@ class WorkspacePromotionPreviewService:
             "effective_files": effective_files,
             "governed_paths": governed_paths,
             "governed_manifest_id": governed_manifest_id,
-            "effective_registration_manifest_id": (
-                effective_registration_manifest_id
-            ),
+            "effective_registration_manifest_id": (effective_registration_manifest_id),
             "effective_registrations": effective_registrations,
             "entry": request.entry.model_dump(),
-            "validation_targets": [
-                item.model_dump() for item in validation_targets
-            ],
+            "validation_targets": [item.model_dump() for item in validation_targets],
             "risk_class": risk,
             "computed_effects": computed_effects,
             "registration_intent_fingerprint": registration_intent_fingerprint,
@@ -1365,15 +1398,11 @@ class WorkspacePromotionPreviewService:
             "effective_files": effective_files,
             "governed_paths": governed_paths,
             "governed_manifest_id": governed_manifest_id,
-            "effective_registration_manifest_id": (
-                effective_registration_manifest_id
-            ),
+            "effective_registration_manifest_id": (effective_registration_manifest_id),
             "effective_registrations": effective_registrations,
             "snapshot_id": request.snapshot.snapshot_id,
             "closure": [item.model_dump() for item in closure],
-            "validation_targets": [
-                item.model_dump() for item in validation_targets
-            ],
+            "validation_targets": [item.model_dump() for item in validation_targets],
             "risk_class": risk,
             "protected_source": protected_source.model_dump(),
             "declared_effects": declared_effects,
@@ -1400,9 +1429,7 @@ class WorkspacePromotionPreviewService:
         await self._lock_artifact_creation()
         artifact = await self._find_artifact(candidate_id)
         if artifact is None:
-            superseded = await self._resolve_superseded(
-                request.supersedes_candidate_id
-            )
+            superseded = await self._resolve_superseded(request.supersedes_candidate_id)
             storage = WorkspacePromotionArtifactStorage(
                 self.organization_id, content_id
             )
@@ -1428,9 +1455,7 @@ class WorkspacePromotionPreviewService:
                 base_release_id=base.release_id,
                 base_manifest_id=base.manifest_id,
                 effective_manifest_id=effective_manifest_id,
-                effective_registration_manifest_id=(
-                    effective_registration_manifest_id
-                ),
+                effective_registration_manifest_id=(effective_registration_manifest_id),
                 registration_intent_fingerprint=registration_intent_fingerprint,
                 registration_state_fingerprint=registration_state_fingerprint,
                 schema_version=PROMOTION_BUNDLE_SCHEMA_V2,
@@ -1497,9 +1522,7 @@ class WorkspacePromotionPreviewService:
             effective_files=effective_files,
             governed_paths=governed_paths,
             governed_manifest_id=governed_manifest_id,
-            effective_registration_manifest_id=(
-                effective_registration_manifest_id
-            ),
+            effective_registration_manifest_id=(effective_registration_manifest_id),
             effective_registrations=effective_registrations,
             snapshot_id=request.snapshot.snapshot_id,
             risk_class=risk,
@@ -1537,8 +1560,7 @@ class WorkspacePromotionPreviewService:
             )
         paths = tuple(
             sorted(
-                normalize_workspace_path(item.path)
-                for item in request.snapshot.closure
+                normalize_workspace_path(item.path) for item in request.snapshot.closure
             )
         )
         if any(

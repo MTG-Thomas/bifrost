@@ -254,6 +254,32 @@ def test_prepare_manifest_rejects_blockers_for_every_risk_class() -> None:
         WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 
 
+def test_prepare_accepts_preserved_endpoint_as_r2_source_promotion() -> None:
+    artifact, _base, _closure = _artifact(
+        uuid4(),
+        risk_class="R2",
+        computed_effects=["bifrost.read"],
+    )
+    state = {
+        "workflow_id": str(uuid4()),
+        "organization_id": None,
+        "type": "workflow",
+        "is_active": True,
+        "endpoint_enabled": True,
+        "public_endpoint": True,
+        "api_key_enabled": False,
+        "access_level": "authenticated",
+        "role_ids": [],
+    }
+    state_fingerprint = "sha256:" + "6" * 64
+    artifact.manifest["registration"]["state"] = state
+    artifact.manifest["registration"]["state_fingerprint"] = state_fingerprint
+    artifact.registration_state_fingerprint = state_fingerprint
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
 @pytest.mark.asyncio
 async def test_import_smoke_uses_only_candidate_tree(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

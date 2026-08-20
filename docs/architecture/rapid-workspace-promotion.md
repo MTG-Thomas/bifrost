@@ -30,8 +30,8 @@ and idempotency guards.
 - The CLI stores local-only drafts, displays complete graph evidence, and reads
   reviewed source directly from exact Git objects for production preview.
 - The API verifies protected source, reconstructs the complete effective
-  snapshot, computes forward/reverse impact, classifies effects, binds
-  registry/access state, and creates the immutable candidate.
+  snapshot, computes forward/reverse impact, classifies effects, binds exact
+  registry and exposure state, and creates the immutable candidate.
 - The Workspace repository owns authored source, effect declarations, focused
   tests, and protected-main provenance before Live activation.
 - Infrastructure owns feature enablement, migration-before-rollout, encrypted
@@ -289,12 +289,22 @@ and platform-recognized positive integer bounds. Tools and data providers are
 excluded because other entities may invoke them automatically.
 
 Direct networking, subprocess execution, dynamic code/imports, writes, secrets,
-schedules, webhooks, public/API-key endpoints, access changes, global entities,
-and unknown behavior are R2. A declaration cannot weaken a static or observed
-lower bound. The runtime enforces duration and output limits for reviewed
-canaries and Live release executions. External-call, record, and effect
-declarations remain classification evidence, not a generic sandbox claim;
-decorator metadata alone never proves that an effect was safely exercised.
+schedules, webhooks, public/API-key endpoints, broad access, global entities,
+and unknown behavior are R2. R2 describes what an invocation may do. It does
+not force reviewed source bytes back through the mutable exact-path lane.
+Preparation compiles R2 source without invoking the workflow or claiming that
+its effects ran. Activation requires the exact R2 acknowledgement.
+
+An immutable source release may preserve an existing access level, role set,
+endpoint, public endpoint, and API-key state. Preview binds those values into
+the registration manifest, activation CAS-checks them, and runtime pinning
+rejects any mismatch. The release cannot create or widen those exposure values.
+Operators change exposure through its separate reviewed control-plane path.
+A declaration cannot weaken a static or observed lower bound. The runtime
+enforces duration and output limits for reviewed canaries and Live release
+executions. External-call, record, and effect declarations remain
+classification evidence, not a generic sandbox claim. Decorator metadata alone
+never proves that an effect was safely exercised.
 
 Every prepared release exposes a content-addressed activation challenge bound
 to the candidate, prepared evidence, effective and governed manifests,

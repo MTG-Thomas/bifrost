@@ -46,7 +46,7 @@ from src.services.workspace_promotions import (
     PROMOTION_BUNDLE_SCHEMA_V2,
     _canonical_candidate,
     _is_executable_python_path,
-    _risk_class_for_effects,
+    _promotion_risk_class,
     overlay_governed_base,
     read_generation_stable_executable_snapshot,
 )
@@ -547,6 +547,10 @@ class WorkspaceReleaseMaterializer:
                 "artifact registration is outside its governed paths"
             )
         effects = manifest.get("computed_effects")
+        registration = manifest.get("registration")
+        registration_state = (
+            registration.get("state") if isinstance(registration, dict) else None
+        )
         if (
             artifact.risk_class not in {"R0", "R1", "R2"}
             or manifest.get("risk_class") != artifact.risk_class
@@ -554,7 +558,7 @@ class WorkspaceReleaseMaterializer:
             or not effects
             or any(not isinstance(effect, str) or not effect for effect in effects)
             or effects != sorted(set(effects))
-            or _risk_class_for_effects(effects) != artifact.risk_class
+            or _promotion_risk_class(effects, registration_state) != artifact.risk_class
         ):
             raise WorkspaceReleasePreparationError(
                 "artifact risk class does not match its explicit effects"

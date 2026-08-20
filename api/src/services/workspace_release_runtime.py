@@ -107,7 +107,7 @@ def _effective_registrations(
             "Workspace release is missing its effective registration manifest"
         )
     result: dict[str, dict[str, Any]] = {}
-    required = {
+    legacy_required = {
         "path",
         "function",
         "workflow_id",
@@ -118,11 +118,22 @@ def _effective_registrations(
         "source_sha256",
         "runtime_bounds",
     }
+    exposure_fields = {
+        "access_level",
+        "role_ids",
+        "endpoint_enabled",
+        "public_endpoint",
+        "api_key_enabled",
+    }
     for key, raw in value.items():
         if (
             not isinstance(key, str)
             or not isinstance(raw, dict)
-            or set(raw) != required
+            or frozenset(raw)
+            not in {
+                frozenset(legacy_required),
+                frozenset(legacy_required | exposure_fields),
+            }
         ):
             raise WorkspaceReleaseRuntimeError(
                 "Workspace release effective registration manifest is invalid"
@@ -150,6 +161,26 @@ def _effective_registrations(
                 "Workspace release effective registration binding is invalid"
             )
         _runtime_bounds({"bounds": raw.get("runtime_bounds")})
+        if set(raw) == legacy_required | exposure_fields:
+            role_ids = raw.get("role_ids")
+            if (
+                raw.get("access_level")
+                not in {"role_based", "authenticated", "everyone"}
+                or not isinstance(role_ids, list)
+                or any(not isinstance(value, str) for value in role_ids)
+                or role_ids != sorted(set(role_ids))
+                or any(
+                    not isinstance(raw.get(field), bool)
+                    for field in (
+                        "endpoint_enabled",
+                        "public_endpoint",
+                        "api_key_enabled",
+                    )
+                )
+            ):
+                raise WorkspaceReleaseRuntimeError(
+                    "Workspace release registration exposure is invalid"
+                )
         result[key] = dict(raw)
     expected_id = _required_text(manifest, "effective_registration_manifest_id")
     if workspace_registration_manifest_id(result) != expected_id:
@@ -435,10 +466,13 @@ def _pin_workflow_to_release(
         or registration.get("organization_id")
         != (str(workflow.organization_id) if workflow.organization_id else None)
         or registration.get("is_active") is not True
-        or workflow.endpoint_enabled
-        or workflow.public_endpoint
-        or workflow.api_key_enabled
-        or workflow.access_level != "role_based"
+        or registration.get("endpoint_enabled", False)
+        != bool(workflow.endpoint_enabled)
+        or registration.get("public_endpoint", False) != bool(workflow.public_endpoint)
+        or registration.get("api_key_enabled", False) != bool(workflow.api_key_enabled)
+        or registration.get("access_level", "role_based") != workflow.access_level
+        or registration.get("role_ids", [])
+        != sorted(str(role.id) for role in workflow.roles)
     ):
         raise WorkspaceReleaseRuntimeError(
             "workflow registration does not match the live Workspace release"
