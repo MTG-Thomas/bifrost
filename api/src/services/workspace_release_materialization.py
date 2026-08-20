@@ -107,8 +107,11 @@ def _compile_files(files: dict[str, bytes]) -> None:
 async def isolated_candidate_import_smoke(
     files: dict[str, bytes], entry_path: str, entry_function: str
 ) -> dict[str, Any]:
-    """Import from a temporary exact tree; no `_repo` reader is installed."""
+    """Import from an exact tree plus the trusted SDK; no `_repo` path exists."""
     smoke_script = Path(__file__).with_name("workspace_release_smoke.py")
+    platform_root = Path(__file__).resolve().parents[2]
+    sdk_package = platform_root / "bifrost"
+    effects_contract = platform_root / "_bifrost_workspace_effects.py"
     with tempfile.TemporaryDirectory(prefix="bifrost-workspace-release-") as temp:
         root = Path(temp)
         for path, raw in sorted(files.items()):
@@ -127,6 +130,8 @@ async def isolated_candidate_import_smoke(
             str(root),
             entry_path,
             entry_function,
+            str(sdk_package),
+            str(effects_contract),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,

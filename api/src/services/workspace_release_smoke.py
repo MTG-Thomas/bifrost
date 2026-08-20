@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import sys
 from pathlib import Path, PurePosixPath
@@ -26,8 +27,66 @@ def _module_name(path: str) -> str:
     return ".".join(parts)
 
 
-def run_smoke(root: Path, entry_path: str, entry_function: str) -> dict[str, object]:
-    """Import only from the supplied tree for every Workspace-owned root."""
+def _load_module_from_path(
+    name: str,
+    path: Path,
+    *,
+    package_locations: list[str] | None = None,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        name,
+        path,
+        submodule_search_locations=package_locations,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"trusted SDK module {name!r} could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+
+
+def _load_trusted_sdk(sdk_package: Path, effects_contract: Path) -> None:
+    sdk_package = sdk_package.resolve(strict=True)
+    effects_contract = effects_contract.resolve(strict=True)
+    sdk_init = sdk_package / "__init__.py"
+    if (
+        sdk_package.name != "bifrost"
+        or not sdk_init.is_file()
+        or effects_contract.name != "_bifrost_workspace_effects.py"
+        or effects_contract.parent != sdk_package.parent
+    ):
+        raise RuntimeError("trusted SDK paths do not identify the bundled SDK")
+
+    for name in list(sys.modules):
+        if (
+            name == "bifrost"
+            or name.startswith("bifrost.")
+            or name == "_bifrost_workspace_effects"
+        ):
+            del sys.modules[name]
+
+    _load_module_from_path("_bifrost_workspace_effects", effects_contract)
+    _load_module_from_path(
+        "bifrost",
+        sdk_init,
+        package_locations=[str(sdk_package)],
+    )
+
+
+def run_smoke(
+    root: Path,
+    entry_path: str,
+    entry_function: str,
+    sdk_package: Path,
+    effects_contract: Path,
+) -> dict[str, object]:
+    """Import from the immutable tree with only the bundled SDK preloaded."""
+    if not sys.flags.isolated:
+        raise RuntimeError("candidate import smoke requires isolated Python mode")
     root = root.resolve(strict=True)
     for workspace_root in WORKSPACE_ROOTS:
         directory = root / workspace_root
@@ -40,6 +99,7 @@ def run_smoke(root: Path, entry_path: str, entry_function: str) -> dict[str, obj
     for name in list(sys.modules):
         if name.split(".", 1)[0] in WORKSPACE_ROOTS:
             del sys.modules[name]
+    _load_trusted_sdk(sdk_package, effects_contract)
     sys.path.insert(0, str(root))
     module_name = _module_name(entry_path)
     if not module_name:
@@ -57,10 +117,23 @@ def run_smoke(root: Path, entry_path: str, entry_function: str) -> dict[str, obj
         "imported": True,
         "function_callable": True,
         "workspace_source_root": str(root),
+        "sdk_source": "trusted_bundled_sdk",
     }
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: workspace_release_smoke ROOT PATH FUNCTION")
-    print(json.dumps(run_smoke(Path(sys.argv[1]), sys.argv[2], sys.argv[3])))
+    if len(sys.argv) != 6:
+        raise SystemExit(
+            "usage: workspace_release_smoke ROOT PATH FUNCTION SDK EFFECTS"
+        )
+    print(
+        json.dumps(
+            run_smoke(
+                Path(sys.argv[1]),
+                sys.argv[2],
+                sys.argv[3],
+                Path(sys.argv[4]),
+                Path(sys.argv[5]),
+            )
+        )
+    )

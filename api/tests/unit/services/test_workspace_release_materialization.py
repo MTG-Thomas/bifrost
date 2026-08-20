@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -254,7 +255,9 @@ def test_prepare_manifest_rejects_blockers_for_every_risk_class() -> None:
 
 
 @pytest.mark.asyncio
-async def test_import_smoke_uses_only_candidate_tree() -> None:
+async def test_import_smoke_uses_only_candidate_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     files = {
         "modules/base.py": b"VALUE = 41\n",
         "workflows/demo.py": (
@@ -267,6 +270,11 @@ async def test_import_smoke_uses_only_candidate_tree() -> None:
     assert result["source"] == "immutable_candidate_tree"
     assert result["function_callable"] is True
 
+    ambient = tmp_path / "ambient"
+    (ambient / "modules").mkdir(parents=True)
+    (ambient / "modules" / "absent.py").write_text("VALUE = 99\n")
+    monkeypatch.setenv("PYTHONPATH", str(ambient))
+
     with pytest.raises(
         WorkspaceReleasePreparationError, match="without `_repo` fallback"
     ):
@@ -277,6 +285,41 @@ async def test_import_smoke_uses_only_candidate_tree() -> None:
             "workflows/demo.py",
             "run",
         )
+
+    with pytest.raises(
+        WorkspaceReleasePreparationError, match="without `_repo` fallback"
+    ):
+        await isolated_candidate_import_smoke(
+            {
+                "workflows/demo.py": (
+                    b"from src.services import repo_storage\n"
+                    b"def run(): return repo_storage\n"
+                )
+            },
+            "workflows/demo.py",
+            "run",
+        )
+
+
+@pytest.mark.asyncio
+async def test_import_smoke_preloads_trusted_bundled_sdk() -> None:
+    result = await isolated_candidate_import_smoke(
+        {
+            "bifrost/__init__.py": b"raise RuntimeError('candidate SDK loaded')\n",
+            "workflows/demo.py": (
+                b"from bifrost import workflow\n"
+                b"@workflow(name='Smoke: Trusted SDK')\n"
+                b"async def run():\n"
+                b"    return {'success': True}\n"
+            ),
+        },
+        "workflows/demo.py",
+        "run",
+    )
+
+    assert result["source"] == "immutable_candidate_tree"
+    assert result["sdk_source"] == "trusted_bundled_sdk"
+    assert result["function_callable"] is True
 
 
 @pytest.mark.asyncio
