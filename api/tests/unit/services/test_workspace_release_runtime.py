@@ -98,6 +98,11 @@ def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
                 "max_records_read": 100,
                 "max_output_bytes": 4096,
             },
+            "access_level": "role_based",
+            "role_ids": [],
+            "endpoint_enabled": False,
+            "public_endpoint": False,
+            "api_key_enabled": False,
         }
     }
     now = datetime.now(timezone.utc)
@@ -140,7 +145,7 @@ def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
         risk_class="R0",
         disposition="review_required",
         artifact_state="eligible",
-        policy_version="test",
+        policy_version="workspace-release-artifact/2026-08-20",
         created_by=uuid4(),
         expires_at=now + timedelta(hours=1),
         created_at=now,
@@ -166,6 +171,74 @@ def test_descriptor_binds_release_id_to_complete_effective_manifest() -> None:
     assert descriptor.runtime_storage_prefix == (
         f"_workspace_releases/{release.organization_id}/{'a' * 64}/files/"
     )
+
+
+def test_legacy_live_descriptor_uses_safe_exposure_defaults() -> None:
+    release, artifact = _rows()
+    registrations = {
+        key: {
+            field: value
+            for field, value in registration.items()
+            if field
+            not in {
+                "access_level",
+                "role_ids",
+                "endpoint_enabled",
+                "public_endpoint",
+                "api_key_enabled",
+            }
+        }
+        for key, registration in artifact.manifest["effective_registrations"].items()
+    }
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_registrations": registrations,
+        "effective_registration_manifest_id": workspace_registration_manifest_id(
+            registrations
+        ),
+    }
+    artifact.policy_version = "workspace-release-artifact/2026-08-19"
+
+    descriptor = WorkspaceReleaseDescriptor.from_rows(release, artifact)
+    registration = next(iter(descriptor.effective_registrations.values()))
+
+    assert registration["access_level"] == "role_based"
+    assert registration["role_ids"] == []
+    assert registration["endpoint_enabled"] is False
+    assert registration["public_endpoint"] is False
+    assert registration["api_key_enabled"] is False
+
+
+def test_current_policy_rejects_missing_exposure_evidence() -> None:
+    release, artifact = _rows()
+    registrations = {
+        key: {
+            field: value
+            for field, value in registration.items()
+            if field
+            not in {
+                "access_level",
+                "role_ids",
+                "endpoint_enabled",
+                "public_endpoint",
+                "api_key_enabled",
+            }
+        }
+        for key, registration in artifact.manifest["effective_registrations"].items()
+    }
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_registrations": registrations,
+        "effective_registration_manifest_id": workspace_registration_manifest_id(
+            registrations
+        ),
+    }
+
+    with pytest.raises(
+        WorkspaceReleaseRuntimeError,
+        match="effective registration manifest is invalid",
+    ):
+        WorkspaceReleaseDescriptor.from_rows(release, artifact)
 
 
 def test_descriptor_rejects_manifest_digest_drift() -> None:

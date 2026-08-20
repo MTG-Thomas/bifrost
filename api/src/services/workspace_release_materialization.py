@@ -547,10 +547,7 @@ class WorkspaceReleaseMaterializer:
                 "artifact registration is outside its governed paths"
             )
         effects = manifest.get("computed_effects")
-        registration = manifest.get("registration")
-        registration_state = (
-            registration.get("state") if isinstance(registration, dict) else None
-        )
+        effective_registrations = manifest.get("effective_registrations")
         if (
             artifact.risk_class not in {"R0", "R1", "R2"}
             or manifest.get("risk_class") != artifact.risk_class
@@ -558,7 +555,9 @@ class WorkspaceReleaseMaterializer:
             or not effects
             or any(not isinstance(effect, str) or not effect for effect in effects)
             or effects != sorted(set(effects))
-            or _promotion_risk_class(effects, registration_state) != artifact.risk_class
+            or not isinstance(effective_registrations, dict)
+            or _promotion_risk_class(effects, effective_registrations.values())
+            != artifact.risk_class
         ):
             raise WorkspaceReleasePreparationError(
                 "artifact risk class does not match its explicit effects"

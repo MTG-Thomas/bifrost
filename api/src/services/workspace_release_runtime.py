@@ -100,6 +100,8 @@ def _effective_registrations(
     manifest: dict[str, Any],
     source_hashes: dict[str, str],
     governed_paths: tuple[str, ...],
+    *,
+    allow_legacy_exposure: bool,
 ) -> dict[str, dict[str, Any]]:
     value = manifest.get("effective_registrations")
     if not isinstance(value, dict):
@@ -126,6 +128,11 @@ def _effective_registrations(
         "api_key_enabled",
     }
     for key, raw in value.items():
+        legacy = (
+            frozenset(raw) == frozenset(legacy_required)
+            if isinstance(raw, dict)
+            else False
+        )
         if (
             not isinstance(key, str)
             or not isinstance(raw, dict)
@@ -134,6 +141,7 @@ def _effective_registrations(
                 frozenset(legacy_required),
                 frozenset(legacy_required | exposure_fields),
             }
+            or (legacy and not allow_legacy_exposure)
         ):
             raise WorkspaceReleaseRuntimeError(
                 "Workspace release effective registration manifest is invalid"
@@ -187,6 +195,18 @@ def _effective_registrations(
         raise WorkspaceReleaseRuntimeError(
             "Workspace release effective registration manifest digest does not match"
         )
+    if allow_legacy_exposure:
+        for registration in result.values():
+            if set(registration) == legacy_required:
+                registration.update(
+                    {
+                        "access_level": "role_based",
+                        "role_ids": [],
+                        "endpoint_enabled": False,
+                        "public_endpoint": False,
+                        "api_key_enabled": False,
+                    }
+                )
     return dict(sorted(result.items()))
 
 
@@ -255,7 +275,12 @@ class WorkspaceReleaseDescriptor:
                 "Workspace release governed manifest digest does not match"
             )
         effective_registrations = _effective_registrations(
-            manifest, source_hashes, governed_paths
+            manifest,
+            source_hashes,
+            governed_paths,
+            allow_legacy_exposure=(
+                artifact.policy_version == "workspace-release-artifact/2026-08-19"
+            ),
         )
         release_digest = release_id.removeprefix("sha256:")
         runtime_prefix = normalize_workspace_release_prefix(
@@ -466,13 +491,11 @@ def _pin_workflow_to_release(
         or registration.get("organization_id")
         != (str(workflow.organization_id) if workflow.organization_id else None)
         or registration.get("is_active") is not True
-        or registration.get("endpoint_enabled", False)
-        != bool(workflow.endpoint_enabled)
-        or registration.get("public_endpoint", False) != bool(workflow.public_endpoint)
-        or registration.get("api_key_enabled", False) != bool(workflow.api_key_enabled)
-        or registration.get("access_level", "role_based") != workflow.access_level
-        or registration.get("role_ids", [])
-        != sorted(str(role.id) for role in workflow.roles)
+        or registration["endpoint_enabled"] != bool(workflow.endpoint_enabled)
+        or registration["public_endpoint"] != bool(workflow.public_endpoint)
+        or registration["api_key_enabled"] != bool(workflow.api_key_enabled)
+        or registration["access_level"] != workflow.access_level
+        or registration["role_ids"] != sorted(str(role.id) for role in workflow.roles)
     ):
         raise WorkspaceReleaseRuntimeError(
             "workflow registration does not match the live Workspace release"

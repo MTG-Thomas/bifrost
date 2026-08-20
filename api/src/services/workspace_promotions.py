@@ -11,6 +11,7 @@ import io
 import json
 import re
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -279,18 +280,19 @@ def _registration_exposure(
 
 
 def _promotion_risk_class(
-    effects: list[str], registration_state: dict[str, Any] | None
+    effects: list[str], registrations: Iterable[dict[str, Any]]
 ) -> str:
-    """Classify source effects and any preserved external activation surface."""
+    """Classify source effects and every preserved activation surface."""
 
-    exposure = _registration_exposure(registration_state)
-    if (
-        exposure["access_level"] != "role_based"
-        or exposure["endpoint_enabled"]
-        or exposure["public_endpoint"]
-        or exposure["api_key_enabled"]
-    ):
-        return "R2"
+    for registration in registrations:
+        exposure = _registration_exposure(registration)
+        if (
+            exposure["access_level"] != "role_based"
+            or exposure["endpoint_enabled"]
+            or exposure["public_endpoint"]
+            or exposure["api_key_enabled"]
+        ):
+            return "R2"
     return _risk_class_for_effects(effects)
 
 
@@ -631,9 +633,6 @@ def _refresh_effective_registrations(
 ) -> dict[str, dict[str, Any]]:
     """Refresh every bound function sharing a source path replaced by closure."""
     effective = {key: dict(value) for key, value in sorted(base_registrations.items())}
-    for registration in effective.values():
-        for field, value in _registration_exposure(registration).items():
-            registration.setdefault(field, value)
     for key, registration in sorted(effective.items()):
         path = registration.get("path")
         function = registration.get("function")
@@ -1330,7 +1329,6 @@ class WorkspacePromotionPreviewService:
                     path=request.entry.path,
                 )
             )
-        risk = _promotion_risk_class(computed_effects, registration_state)
         closure = [
             PromotionClosureMember(
                 path=path,
@@ -1363,6 +1361,7 @@ class WorkspacePromotionPreviewService:
             selected_registration=effective_registration,
             diagnostics=diagnostics,
         )
+        risk = _promotion_risk_class(computed_effects, effective_registrations.values())
         effective_registration_manifest_id = workspace_registration_manifest_id(
             effective_registrations
         )
@@ -1662,9 +1661,45 @@ class WorkspacePromotionPreviewService:
             manifest_id=_manifest_id(hashes),
             files=files,
             hashes=hashes,
-            registrations=descriptor.effective_registrations,
+            registrations=await self._current_registration_snapshot(descriptor),
             governed_paths=descriptor.governed_paths,
         )
+
+    async def _current_registration_snapshot(
+        self, descriptor: Any
+    ) -> dict[str, dict[str, Any]]:
+        """Bind inherited registrations to exact current exposure state."""
+
+        registrations: dict[str, dict[str, Any]] = {}
+        for key, inherited in sorted(descriptor.effective_registrations.items()):
+            current = await find_workspace_workflow(
+                self.db,
+                self.organization_id,
+                str(inherited["path"]),
+                str(inherited["function"]),
+            )
+            if (
+                current is None
+                or str(current.id) != inherited.get("workflow_id")
+                or current.name != inherited.get("name")
+                or current.type != inherited.get("type")
+                or current.is_active is not True
+            ):
+                raise WorkspacePromotionInvalid(
+                    f"Live registration changed outside its release: {key}"
+                )
+            current_exposure = _registration_exposure(self._activation_state(current))
+            inherited_exposure = {
+                field: inherited[field]
+                for field in current_exposure
+                if field in inherited
+            }
+            if inherited_exposure and inherited_exposure != current_exposure:
+                raise WorkspacePromotionInvalid(
+                    f"Live registration exposure changed outside its release: {key}"
+                )
+            registrations[key] = {**inherited, **current_exposure}
+        return registrations
 
     async def _repo_v1_base(self) -> _BaseSnapshot:
         files = await read_generation_stable_executable_snapshot(

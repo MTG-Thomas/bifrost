@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 
+import src.services.workspace_promotions as workspace_promotions
 from bifrost.promotion import snapshot_id
 from bifrost.workspace_release import (
     workspace_registration_manifest_id,
@@ -123,8 +124,151 @@ def test_preserved_activation_surface_forces_r2_without_blocking_source() -> Non
     }
 
     assert _registration_exposure(state) == state
-    assert _promotion_risk_class(["bifrost.read"], state) == "R2"
-    assert _promotion_risk_class(["bifrost.read"], None) == "R0"
+    assert _promotion_risk_class(["bifrost.read"], [state]) == "R2"
+    assert _promotion_risk_class(["bifrost.read"], []) == "R0"
+
+
+def test_shared_source_file_uses_highest_registration_risk() -> None:
+    registrations = [
+        {
+            "path": "workflows/shared.py",
+            "function": "selected",
+            "access_level": "role_based",
+            "role_ids": [],
+            "endpoint_enabled": False,
+            "public_endpoint": False,
+            "api_key_enabled": False,
+        },
+        {
+            "path": "workflows/shared.py",
+            "function": "existing_endpoint",
+            "access_level": "authenticated",
+            "role_ids": [],
+            "endpoint_enabled": True,
+            "public_endpoint": False,
+            "api_key_enabled": False,
+        },
+    ]
+
+    assert _promotion_risk_class(["bifrost.read"], registrations) == "R2"
+
+
+@pytest.mark.asyncio
+async def test_live_base_enriches_legacy_registration_with_current_exposure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    role_id = uuid4()
+    descriptor = SimpleNamespace(
+        effective_registrations={
+            "workflows/shared.py::run": {
+                "path": "workflows/shared.py",
+                "function": "run",
+                "workflow_id": str(workflow_id),
+                "type": "workflow",
+                "name": "Shared",
+                "organization_id": str(organization_id),
+                "is_active": True,
+                "source_sha256": "a" * 64,
+                "runtime_bounds": {"max_duration_seconds": 30},
+            }
+        }
+    )
+    current = SimpleNamespace(
+        id=workflow_id,
+        name="Shared",
+        type="workflow",
+        is_active=True,
+        organization_id=organization_id,
+        endpoint_enabled=True,
+        public_endpoint=False,
+        api_key_enabled=True,
+        access_level="authenticated",
+        roles=[SimpleNamespace(id=role_id)],
+    )
+
+    async def find_current(*_args, **_kwargs):
+        return current
+
+    monkeypatch.setattr(
+        workspace_promotions,
+        "find_workspace_workflow",
+        find_current,
+    )
+    service = WorkspacePromotionPreviewService(
+        SimpleNamespace(),
+        organization_id,
+        repo_storage=SimpleNamespace(),
+    )
+
+    registrations = await service._current_registration_snapshot(descriptor)
+
+    assert registrations["workflows/shared.py::run"] == {
+        **descriptor.effective_registrations["workflows/shared.py::run"],
+        "access_level": "authenticated",
+        "role_ids": [str(role_id)],
+        "endpoint_enabled": True,
+        "public_endpoint": False,
+        "api_key_enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_base_rejects_exposure_drift_from_explicit_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    descriptor = SimpleNamespace(
+        effective_registrations={
+            "workflows/shared.py::run": {
+                "path": "workflows/shared.py",
+                "function": "run",
+                "workflow_id": str(workflow_id),
+                "type": "workflow",
+                "name": "Shared",
+                "organization_id": str(organization_id),
+                "is_active": True,
+                "source_sha256": "a" * 64,
+                "runtime_bounds": {"max_duration_seconds": 30},
+                "access_level": "role_based",
+                "role_ids": [],
+                "endpoint_enabled": False,
+                "public_endpoint": False,
+                "api_key_enabled": False,
+            }
+        }
+    )
+    current = SimpleNamespace(
+        id=workflow_id,
+        name="Shared",
+        type="workflow",
+        is_active=True,
+        organization_id=organization_id,
+        endpoint_enabled=True,
+        public_endpoint=False,
+        api_key_enabled=False,
+        access_level="authenticated",
+        roles=[],
+    )
+
+    async def find_current(*_args, **_kwargs):
+        return current
+
+    monkeypatch.setattr(
+        workspace_promotions,
+        "find_workspace_workflow",
+        find_current,
+    )
+    service = WorkspacePromotionPreviewService(
+        SimpleNamespace(),
+        organization_id,
+        repo_storage=SimpleNamespace(),
+    )
+
+    with pytest.raises(WorkspacePromotionInvalid, match="exposure changed"):
+        await service._current_registration_snapshot(descriptor)
 
 
 @pytest.mark.asyncio
