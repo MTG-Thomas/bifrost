@@ -57,11 +57,6 @@ def upgrade() -> None:
             ["organization_id"], ["organizations.id"], ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "organization_id",
-            "id",
-            name="uq_workspace_promotion_artifact_org_id",
-        ),
     )
     op.create_index(
         "ix_workspace_promotion_artifacts_organization_id",
@@ -121,15 +116,7 @@ def upgrade() -> None:
             name="ck_workspace_promotion_release_lock_state",
         ),
         sa.ForeignKeyConstraint(
-            ["organization_id", "artifact_id"],
-            [
-                "workspace_promotion_artifacts.organization_id",
-                "workspace_promotion_artifacts.id",
-            ],
-            name="fk_workspace_promotion_release_artifact_org",
-            ondelete="CASCADE",
-            deferrable=True,
-            initially="DEFERRED",
+            ["artifact_id"], ["workspace_promotion_artifacts.id"], ondelete="RESTRICT"
         ),
         sa.ForeignKeyConstraint(["created_by"], ["users.id"]),
         sa.ForeignKeyConstraint(
@@ -139,15 +126,9 @@ def upgrade() -> None:
             ["organization_id"], ["organizations.id"], ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(
-            ["organization_id", "previous_release_id"],
-            [
-                "workspace_promotion_releases.organization_id",
-                "workspace_promotion_releases.id",
-            ],
-            name="fk_workspace_promotion_release_previous_org",
-            ondelete="CASCADE",
-            deferrable=True,
-            initially="DEFERRED",
+            ["previous_release_id"],
+            ["workspace_promotion_releases.id"],
+            ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
             ["workspace_changeset_id"],
@@ -155,11 +136,6 @@ def upgrade() -> None:
             ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "organization_id",
-            "id",
-            name="uq_workspace_promotion_release_org_id",
-        ),
     )
     op.create_index(
         "ix_workspace_promotion_releases_organization_id",

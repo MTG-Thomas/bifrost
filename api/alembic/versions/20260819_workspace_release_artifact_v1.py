@@ -71,6 +71,50 @@ def upgrade() -> None:
             "supersedes_artifact_id", postgresql.UUID(as_uuid=True), nullable=True
         ),
     )
+    # The promotion tables were deployed before organization-bound ownership
+    # was introduced.  Transform that already-applied schema here rather than
+    # changing the historical table-creation migration: production must gain
+    # the referenced unique keys before any composite foreign key is added.
+    op.create_unique_constraint(
+        "uq_workspace_promotion_artifact_org_id",
+        "workspace_promotion_artifacts",
+        ["organization_id", "id"],
+    )
+    op.create_unique_constraint(
+        "uq_workspace_promotion_release_org_id",
+        "workspace_promotion_releases",
+        ["organization_id", "id"],
+    )
+    op.drop_constraint(
+        "workspace_promotion_releases_artifact_id_fkey",
+        "workspace_promotion_releases",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "workspace_promotion_releases_previous_release_id_fkey",
+        "workspace_promotion_releases",
+        type_="foreignkey",
+    )
+    op.create_foreign_key(
+        "fk_workspace_promotion_release_artifact_org",
+        "workspace_promotion_releases",
+        "workspace_promotion_artifacts",
+        ["organization_id", "artifact_id"],
+        ["organization_id", "id"],
+        ondelete="CASCADE",
+        deferrable=True,
+        initially="DEFERRED",
+    )
+    op.create_foreign_key(
+        "fk_workspace_promotion_release_previous_org",
+        "workspace_promotion_releases",
+        "workspace_promotion_releases",
+        ["organization_id", "previous_release_id"],
+        ["organization_id", "id"],
+        ondelete="CASCADE",
+        deferrable=True,
+        initially="DEFERRED",
+    )
     op.create_foreign_key(
         "fk_workspace_promotion_artifact_supersedes",
         "workspace_promotion_artifacts",
@@ -165,6 +209,42 @@ def downgrade() -> None:
         "fk_workspace_promotion_artifact_supersedes",
         "workspace_promotion_artifacts",
         type_="foreignkey",
+    )
+    op.drop_constraint(
+        "fk_workspace_promotion_release_previous_org",
+        "workspace_promotion_releases",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "fk_workspace_promotion_release_artifact_org",
+        "workspace_promotion_releases",
+        type_="foreignkey",
+    )
+    op.create_foreign_key(
+        "workspace_promotion_releases_artifact_id_fkey",
+        "workspace_promotion_releases",
+        "workspace_promotion_artifacts",
+        ["artifact_id"],
+        ["id"],
+        ondelete="RESTRICT",
+    )
+    op.create_foreign_key(
+        "workspace_promotion_releases_previous_release_id_fkey",
+        "workspace_promotion_releases",
+        "workspace_promotion_releases",
+        ["previous_release_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    op.drop_constraint(
+        "uq_workspace_promotion_release_org_id",
+        "workspace_promotion_releases",
+        type_="unique",
+    )
+    op.drop_constraint(
+        "uq_workspace_promotion_artifact_org_id",
+        "workspace_promotion_artifacts",
+        type_="unique",
     )
     for column in (
         "supersedes_artifact_id",
