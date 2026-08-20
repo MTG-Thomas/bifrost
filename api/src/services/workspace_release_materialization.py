@@ -433,12 +433,18 @@ class WorkspaceReleaseMaterializer:
             )
         protected_source = manifest.get("protected_source")
         registration = manifest.get("registration")
+        registration_intent_fingerprint = (
+            registration.get("intent_fingerprint")
+            if isinstance(registration, dict)
+            else None
+        )
         if (
             not isinstance(protected_source, dict)
             or protected_source.get("commit_sha") != artifact.source_revision
             or protected_source.get("tree_sha") != artifact.source_tree_sha
             or not isinstance(registration, dict)
-            or registration.get("intent_fingerprint")
+            or not isinstance(registration_intent_fingerprint, str)
+            or registration_intent_fingerprint
             != artifact.registration_intent_fingerprint
             or registration.get("state_fingerprint")
             != artifact.registration_state_fingerprint
@@ -484,10 +490,12 @@ class WorkspaceReleaseMaterializer:
                 "validation_targets",
                 "risk_class",
                 "computed_effects",
-                "registration_intent_fingerprint",
                 "protected_source",
             )
         }
+        release_payload["registration_intent_fingerprint"] = (
+            registration_intent_fingerprint
+        )
         if workspace_release_id(release_payload) != artifact.release_id:
             raise WorkspaceReleasePreparationError("artifact release_id is invalid")
         effective_files = manifest.get("effective_files")

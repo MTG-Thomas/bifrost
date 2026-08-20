@@ -122,7 +122,7 @@ def _artifact(
         **{
             key: value
             for key, value in release_payload.items()
-            if key != "organization_id"
+            if key not in {"organization_id", "registration_intent_fingerprint"}
         },
         "snapshot_id": "sha256:" + "4" * 64,
         "closure": [
@@ -204,6 +204,30 @@ def test_compile_and_archive_readback_fail_closed() -> None:
     content = {"workflows/demo.py": b"def run(): return 1\n"}
     with pytest.raises(WorkspaceReleasePreparationError, match="hash mismatch"):
         _read_closure_zip(_zip(content), {"workflows/demo.py": "0" * 64})
+
+
+def test_prepare_reconstructs_release_identity_from_nested_registration() -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+
+    assert "registration_intent_fingerprint" not in artifact.manifest
+    assert (
+        artifact.manifest["registration"]["intent_fingerprint"]
+        == artifact.registration_intent_fingerprint
+    )
+
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_rejects_missing_nested_registration_identity_cleanly() -> None:
+    artifact, _base, _closure = _artifact(uuid4())
+    del artifact.manifest["registration"]["intent_fingerprint"]
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+
+    with pytest.raises(
+        WorkspaceReleasePreparationError,
+        match="provenance or registration binding is invalid",
+    ):
+        WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 
 
 def test_prepare_manifest_rejects_blockers_for_every_risk_class() -> None:
