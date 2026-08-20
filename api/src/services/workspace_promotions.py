@@ -677,6 +677,23 @@ def _static_effects(
     return sorted(effects), diagnostics
 
 
+def _reconcile_effects(
+    declared_effects: list[str], static_effects: list[str]
+) -> tuple[list[str], list[str]]:
+    """Prefer a precise declaration over an ambiguous static network signal."""
+    declared = set(declared_effects)
+    remaining_static = set(static_effects)
+    if "network.unknown" in remaining_static and any(
+        effect.split(":", 1)[0].startswith(("integration.", "network."))
+        for effect in declared
+    ):
+        remaining_static.remove("network.unknown")
+
+    computed = sorted(declared | remaining_static)
+    undeclared = sorted(remaining_static - declared)
+    return computed, undeclared
+
+
 def _canonical_candidate(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
@@ -941,8 +958,9 @@ class WorkspacePromotionPreviewService:
                 "high-confidence secret material detected; no artifact was stored"
             )
         declared_effects = metadata["effects"]
-        computed_effects = sorted(set(declared_effects) | set(static_effects))
-        undeclared = set(static_effects) - set(declared_effects)
+        computed_effects, undeclared = _reconcile_effects(
+            declared_effects, static_effects
+        )
         if undeclared:
             diagnostics.append(
                 PromotionDiagnostic(
@@ -1142,7 +1160,9 @@ class WorkspacePromotionPreviewService:
                 "high-confidence secret material detected; no artifact was stored"
             )
         declared_effects = metadata["effects"]
-        computed_effects = sorted(set(declared_effects) | set(static_effects))
+        computed_effects, undeclared = _reconcile_effects(
+            declared_effects, static_effects
+        )
         action_list, registry_diagnostics = await plan_workspace_registrations(
             self.db,
             self.organization_id,
@@ -1212,7 +1232,6 @@ class WorkspacePromotionPreviewService:
                     path=request.entry.path,
                 )
             )
-        undeclared = set(static_effects) - set(declared_effects)
         if undeclared:
             diagnostics.append(
                 PromotionDiagnostic(
