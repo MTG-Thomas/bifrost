@@ -10,7 +10,6 @@ from uuid import uuid4
 
 import pytest
 
-import src.services.workspace_promotions as workspace_promotions
 from bifrost.promotion import snapshot_id
 from bifrost.workspace_release import (
     workspace_registration_manifest_id,
@@ -192,8 +191,7 @@ async def test_live_base_enriches_legacy_registration_with_current_exposure(
         return current
 
     monkeypatch.setattr(
-        workspace_promotions,
-        "find_workspace_workflow",
+        "src.services.workspace_promotions.find_workspace_workflow",
         find_current,
     )
     service = WorkspacePromotionPreviewService(
@@ -257,8 +255,7 @@ async def test_live_base_rejects_exposure_drift_from_explicit_manifest(
         return current
 
     monkeypatch.setattr(
-        workspace_promotions,
-        "find_workspace_workflow",
+        "src.services.workspace_promotions.find_workspace_workflow",
         find_current,
     )
     service = WorkspacePromotionPreviewService(
