@@ -37,6 +37,8 @@ from src.services.workspace_promotions import (
     _existing_registration_is_rapid_eligible,
     _is_executable_python_path,
     _manifest_id,
+    _promotion_risk_class,
+    _registration_exposure,
     _repo_v1_release_id,
     _reconcile_effects,
     _risk_class_for_effects,
@@ -64,32 +66,22 @@ def test_candidate_hash_is_canonical_and_org_sensitive() -> None:
     assert first != other_org
 
 
-def test_manual_global_registration_is_eligible_for_rapid_promotion() -> None:
+def test_existing_workflow_can_preserve_exposure() -> None:
     registration = SimpleNamespace(
         organization_id=None,
         type="workflow",
-        endpoint_enabled=False,
-        public_endpoint=False,
-        api_key_enabled=False,
-        access_level="role_based",
+        endpoint_enabled=True,
+        public_endpoint=True,
+        api_key_enabled=True,
+        access_level="authenticated",
+        is_active=True,
+        roles=[],
     )
 
     assert _existing_registration_is_rapid_eligible(registration) is True
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("type", "tool"),
-        ("endpoint_enabled", True),
-        ("public_endpoint", True),
-        ("api_key_enabled", True),
-        ("access_level", "authenticated"),
-    ],
-)
-def test_exposed_registration_remains_ineligible_for_rapid_promotion(
-    field: str, value: object
-) -> None:
+def test_non_workflow_registration_remains_ineligible_for_rapid_promotion() -> None:
     registration = SimpleNamespace(
         organization_id=None,
         type="workflow",
@@ -97,10 +89,183 @@ def test_exposed_registration_remains_ineligible_for_rapid_promotion(
         public_endpoint=False,
         api_key_enabled=False,
         access_level="role_based",
+        is_active=True,
+        roles=[],
     )
-    setattr(registration, field, value)
+    registration.type = "tool"
 
     assert _existing_registration_is_rapid_eligible(registration) is False
+
+
+def test_inactive_exposed_registration_cannot_be_reactivated_by_source_release() -> (
+    None
+):
+    registration = SimpleNamespace(
+        type="workflow",
+        endpoint_enabled=True,
+        public_endpoint=True,
+        api_key_enabled=False,
+        access_level="authenticated",
+        is_active=False,
+        roles=[],
+    )
+
+    assert _existing_registration_is_rapid_eligible(registration) is False
+
+
+def test_preserved_activation_surface_forces_r2_without_blocking_source() -> None:
+    state = {
+        "access_level": "authenticated",
+        "role_ids": [],
+        "endpoint_enabled": True,
+        "public_endpoint": False,
+        "api_key_enabled": True,
+    }
+
+    assert _registration_exposure(state) == state
+    assert _promotion_risk_class(["bifrost.read"], [state]) == "R2"
+    assert _promotion_risk_class(["bifrost.read"], []) == "R0"
+
+
+def test_shared_source_file_uses_highest_registration_risk() -> None:
+    registrations = [
+        {
+            "path": "workflows/shared.py",
+            "function": "selected",
+            "access_level": "role_based",
+            "role_ids": [],
+            "endpoint_enabled": False,
+            "public_endpoint": False,
+            "api_key_enabled": False,
+        },
+        {
+            "path": "workflows/shared.py",
+            "function": "existing_endpoint",
+            "access_level": "authenticated",
+            "role_ids": [],
+            "endpoint_enabled": True,
+            "public_endpoint": False,
+            "api_key_enabled": False,
+        },
+    ]
+
+    assert _promotion_risk_class(["bifrost.read"], registrations) == "R2"
+
+
+@pytest.mark.asyncio
+async def test_live_base_enriches_legacy_registration_with_current_exposure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    role_id = uuid4()
+    descriptor = SimpleNamespace(
+        effective_registrations={
+            "workflows/shared.py::run": {
+                "path": "workflows/shared.py",
+                "function": "run",
+                "workflow_id": str(workflow_id),
+                "type": "workflow",
+                "name": "Shared",
+                "organization_id": str(organization_id),
+                "is_active": True,
+                "source_sha256": "a" * 64,
+                "runtime_bounds": {"max_duration_seconds": 30},
+            }
+        }
+    )
+    current = SimpleNamespace(
+        id=workflow_id,
+        name="Shared",
+        type="workflow",
+        is_active=True,
+        organization_id=organization_id,
+        endpoint_enabled=True,
+        public_endpoint=False,
+        api_key_enabled=True,
+        access_level="authenticated",
+        roles=[SimpleNamespace(id=role_id)],
+    )
+
+    async def find_current(*_args, **_kwargs):
+        return current
+
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.find_workspace_workflow",
+        find_current,
+    )
+    service = WorkspacePromotionPreviewService(
+        SimpleNamespace(),
+        organization_id,
+        repo_storage=SimpleNamespace(),
+    )
+
+    registrations = await service._current_registration_snapshot(descriptor)
+
+    assert registrations["workflows/shared.py::run"] == {
+        **descriptor.effective_registrations["workflows/shared.py::run"],
+        "access_level": "authenticated",
+        "role_ids": [str(role_id)],
+        "endpoint_enabled": True,
+        "public_endpoint": False,
+        "api_key_enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_base_rejects_exposure_drift_from_explicit_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    descriptor = SimpleNamespace(
+        effective_registrations={
+            "workflows/shared.py::run": {
+                "path": "workflows/shared.py",
+                "function": "run",
+                "workflow_id": str(workflow_id),
+                "type": "workflow",
+                "name": "Shared",
+                "organization_id": str(organization_id),
+                "is_active": True,
+                "source_sha256": "a" * 64,
+                "runtime_bounds": {"max_duration_seconds": 30},
+                "access_level": "role_based",
+                "role_ids": [],
+                "endpoint_enabled": False,
+                "public_endpoint": False,
+                "api_key_enabled": False,
+            }
+        }
+    )
+    current = SimpleNamespace(
+        id=workflow_id,
+        name="Shared",
+        type="workflow",
+        is_active=True,
+        organization_id=organization_id,
+        endpoint_enabled=True,
+        public_endpoint=False,
+        api_key_enabled=False,
+        access_level="authenticated",
+        roles=[],
+    )
+
+    async def find_current(*_args, **_kwargs):
+        return current
+
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.find_workspace_workflow",
+        find_current,
+    )
+    service = WorkspacePromotionPreviewService(
+        SimpleNamespace(),
+        organization_id,
+        repo_storage=SimpleNamespace(),
+    )
+
+    with pytest.raises(WorkspacePromotionInvalid, match="exposure changed"):
+        await service._current_registration_snapshot(descriptor)
 
 
 @pytest.mark.asyncio
@@ -342,9 +507,7 @@ def test_affected_graph_uncertainty_remains_fail_closed() -> None:
         closure_files=files,
     )
 
-    blockers = {
-        item.code for item in diagnostics if item.severity == "blocker"
-    }
+    blockers = {item.code for item in diagnostics if item.severity == "blocker"}
     assert {
         "unresolved_repo_import",
         "ambiguous_workflow_reference",
@@ -355,9 +518,10 @@ def test_affected_graph_uncertainty_remains_fail_closed() -> None:
 
 def test_reviewed_risk_classes_keep_read_and_write_effects_explicit() -> None:
     assert _risk_class_for_effects(["bifrost.read"]) == "R0"
-    assert _risk_class_for_effects(
-        ["bifrost.read", "integration.read:microsoft_graph"]
-    ) == "R1"
+    assert (
+        _risk_class_for_effects(["bifrost.read", "integration.read:microsoft_graph"])
+        == "R1"
+    )
     assert _risk_class_for_effects(["integration.write:halopsa"]) == "R2"
 
 
@@ -386,6 +550,11 @@ def test_selected_registration_binds_its_own_runtime_bounds() -> None:
         "max_output_bytes": 1000,
         "max_records_read": 100,
     }
+    assert registration["access_level"] == "role_based"
+    assert registration["role_ids"] == []
+    assert registration["endpoint_enabled"] is False
+    assert registration["public_endpoint"] is False
+    assert registration["api_key_enabled"] is False
 
 
 def test_changed_multi_entity_file_refreshes_every_effective_registration() -> None:
@@ -552,9 +721,7 @@ def test_first_release_governs_only_closure_and_later_release_accumulates() -> N
     first = _cumulative_governed_paths(
         (), {"workflows/leaf.py": "a" * 64, "modules/leaf_dep.py": "b" * 64}
     )
-    second = _cumulative_governed_paths(
-        tuple(first), {"workflows/second.py": "c" * 64}
-    )
+    second = _cumulative_governed_paths(tuple(first), {"workflows/second.py": "c" * 64})
 
     assert first == ["modules/leaf_dep.py", "workflows/leaf.py"]
     assert second == [
@@ -574,9 +741,7 @@ def test_hybrid_base_keeps_current_legacy_bytes_and_overlays_live_governed() -> 
         "modules/legacy.py": b"old snapshot only\n",
     }
 
-    hybrid = overlay_governed_base(
-        repo, immutable, ("modules/governed.py",)
-    )
+    hybrid = overlay_governed_base(repo, immutable, ("modules/governed.py",))
 
     assert hybrid == {
         "modules/governed.py": b"immutable live\n",

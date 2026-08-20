@@ -921,6 +921,17 @@ def _render_preview(
         print(f"Registration intent fingerprint: {fingerprint}")
     if fingerprint := registration.get("state_fingerprint"):
         print(f"Registration state fingerprint: {fingerprint}")
+    state = registration.get("state")
+    if isinstance(state, Mapping):
+        role_ids = state.get("role_ids") or []
+        print(
+            "Preserved activation surface: "
+            f"access={state.get('access_level')} "
+            f"roles={len(role_ids)} "
+            f"endpoint={bool(state.get('endpoint_enabled'))} "
+            f"public={bool(state.get('public_endpoint'))} "
+            f"api_key={bool(state.get('api_key_enabled'))}"
+        )
     print("Reviewed closure:")
     closure = result.get("closure") or payload["snapshot"]["closure"]
     for item in closure:

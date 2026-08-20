@@ -772,6 +772,13 @@ def test_preview_surfaces_dma_registration_only_intent(capsys) -> None:
             ],
             "intent_fingerprint": "sha256:" + "7" * 64,
             "state_fingerprint": "sha256:" + "8" * 64,
+            "state": {
+                "access_level": "authenticated",
+                "role_ids": ["11111111-1111-1111-1111-111111111111"],
+                "endpoint_enabled": True,
+                "public_endpoint": True,
+                "api_key_enabled": False,
+            },
         },
         "closure": [
             {
@@ -794,4 +801,8 @@ def test_preview_surfaces_dma_registration_only_intent(capsys) -> None:
     assert "Registration intent:" in output
     assert "create" in output
     assert "features/dmarc/ingest.py::ingest_dmarc" in output
+    assert (
+        "Preserved activation surface: access=authenticated roles=1 "
+        "endpoint=True public=True api_key=False"
+    ) in output
     assert "Ready to activate: yes" in output

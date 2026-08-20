@@ -70,6 +70,7 @@ def _workflow_for_registration(
         value=0,
         execution_mode="async",
         cache_ttl_seconds=0,
+        roles=[],
     )
 
 
@@ -97,6 +98,11 @@ def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
                 "max_records_read": 100,
                 "max_output_bytes": 4096,
             },
+            "access_level": "role_based",
+            "role_ids": [],
+            "endpoint_enabled": False,
+            "public_endpoint": False,
+            "api_key_enabled": False,
         }
     }
     now = datetime.now(timezone.utc)
@@ -139,7 +145,7 @@ def _rows() -> tuple[WorkspacePromotionRelease, WorkspacePromotionArtifact]:
         risk_class="R0",
         disposition="review_required",
         artifact_state="eligible",
-        policy_version="test",
+        policy_version="workspace-release-artifact/2026-08-20",
         created_by=uuid4(),
         expires_at=now + timedelta(hours=1),
         created_at=now,
@@ -167,6 +173,74 @@ def test_descriptor_binds_release_id_to_complete_effective_manifest() -> None:
     )
 
 
+def test_legacy_live_descriptor_uses_safe_exposure_defaults() -> None:
+    release, artifact = _rows()
+    registrations = {
+        key: {
+            field: value
+            for field, value in registration.items()
+            if field
+            not in {
+                "access_level",
+                "role_ids",
+                "endpoint_enabled",
+                "public_endpoint",
+                "api_key_enabled",
+            }
+        }
+        for key, registration in artifact.manifest["effective_registrations"].items()
+    }
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_registrations": registrations,
+        "effective_registration_manifest_id": workspace_registration_manifest_id(
+            registrations
+        ),
+    }
+    artifact.policy_version = "workspace-release-artifact/2026-08-19"
+
+    descriptor = WorkspaceReleaseDescriptor.from_rows(release, artifact)
+    registration = next(iter(descriptor.effective_registrations.values()))
+
+    assert registration["access_level"] == "role_based"
+    assert registration["role_ids"] == []
+    assert registration["endpoint_enabled"] is False
+    assert registration["public_endpoint"] is False
+    assert registration["api_key_enabled"] is False
+
+
+def test_current_policy_rejects_missing_exposure_evidence() -> None:
+    release, artifact = _rows()
+    registrations = {
+        key: {
+            field: value
+            for field, value in registration.items()
+            if field
+            not in {
+                "access_level",
+                "role_ids",
+                "endpoint_enabled",
+                "public_endpoint",
+                "api_key_enabled",
+            }
+        }
+        for key, registration in artifact.manifest["effective_registrations"].items()
+    }
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_registrations": registrations,
+        "effective_registration_manifest_id": workspace_registration_manifest_id(
+            registrations
+        ),
+    }
+
+    with pytest.raises(
+        WorkspaceReleaseRuntimeError,
+        match="effective registration manifest is invalid",
+    ):
+        WorkspaceReleaseDescriptor.from_rows(release, artifact)
+
+
 def test_descriptor_rejects_manifest_digest_drift() -> None:
     release, artifact = _rows()
     artifact.manifest = {
@@ -187,7 +261,11 @@ def test_descriptor_rejects_registration_outside_governed_paths() -> None:
         **artifact.manifest,
         "governed_paths": ["modules/helper.py"],
         "governed_manifest_id": workspace_manifest_id(
-            {"modules/helper.py": artifact.manifest["effective_files"]["modules/helper.py"]}
+            {
+                "modules/helper.py": artifact.manifest["effective_files"][
+                    "modules/helper.py"
+                ]
+            }
         ),
     }
 
@@ -267,6 +345,57 @@ async def test_global_live_governed_path_pins_exact_global_registration() -> Non
     assert pinned is not None
     assert pinned.organization_id is None
     assert pinned.queue_evidence()["workflow_organization_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_global_live_pins_exact_preserved_endpoint_exposure() -> None:
+    release, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    registration.update(
+        {
+            "access_level": "authenticated",
+            "role_ids": [],
+            "endpoint_enabled": True,
+            "public_endpoint": True,
+            "api_key_enabled": True,
+        }
+    )
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_registration_manifest_id": workspace_registration_manifest_id(
+            artifact.manifest["effective_registrations"]
+        ),
+    }
+    workflow = _workflow_for_registration(
+        registration,
+        organization_id=release.organization_id,
+    )
+    workflow.access_level = "authenticated"
+    workflow.endpoint_enabled = True
+    workflow.public_endpoint = True
+    workflow.api_key_enabled = True
+
+    pinned = await pin_workspace_runtime(
+        _PinSession(workflow, release, artifact), workflow.id
+    )
+
+    assert pinned is not None
+
+
+@pytest.mark.asyncio
+async def test_global_live_rejects_exposure_drift_after_activation() -> None:
+    release, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    workflow = _workflow_for_registration(
+        registration,
+        organization_id=release.organization_id,
+    )
+    workflow.endpoint_enabled = True
+
+    with pytest.raises(WorkspaceReleaseRuntimeError, match="does not match"):
+        await pin_workspace_runtime(
+            _PinSession(workflow, release, artifact), workflow.id
+        )
 
 
 @pytest.mark.asyncio
@@ -387,9 +516,7 @@ async def test_superseded_release_remains_valid_for_durable_queued_pin() -> None
                 "a durable queued pin must not consult mutable Workflow state"
             )
 
-    resolved = await resolve_pinned_workspace_runtime(
-        Session(), evidence, workflow_id
-    )
+    resolved = await resolve_pinned_workspace_runtime(Session(), evidence, workflow_id)
 
     assert resolved.queue_evidence() == evidence
 
@@ -421,9 +548,7 @@ async def test_global_registration_remains_valid_for_durable_queued_pin() -> Non
         async def execute(self, _statement):
             return Result()
 
-    resolved = await resolve_pinned_workspace_runtime(
-        Session(), evidence, workflow_id
-    )
+    resolved = await resolve_pinned_workspace_runtime(Session(), evidence, workflow_id)
 
     assert resolved.queue_evidence() == evidence
 
@@ -554,6 +679,7 @@ async def test_inspector_exposes_current_immutable_tree_and_stale_cache_and_repo
         ReleaseStorage,
     )
     monkeypatch.setattr("src.services.repo_storage.RepoStorage", Repo)
+
     async def get_redis():
         return redis
 

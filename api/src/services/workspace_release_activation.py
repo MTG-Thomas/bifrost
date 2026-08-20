@@ -1014,10 +1014,12 @@ class WorkspaceReleaseActivationService:
             or (str(workflow.organization_id) if workflow.organization_id else None)
             != expected.get("organization_id")
             or workflow.is_active is not True
-            or workflow.access_level != "role_based"
-            or workflow.endpoint_enabled
-            or workflow.public_endpoint
-            or workflow.api_key_enabled
+            or workflow.access_level != expected.get("access_level")
+            or sorted(str(role.id) for role in workflow.roles)
+            != expected.get("role_ids")
+            or bool(workflow.endpoint_enabled) != expected.get("endpoint_enabled")
+            or bool(workflow.public_endpoint) != expected.get("public_endpoint")
+            or bool(workflow.api_key_enabled) != expected.get("api_key_enabled")
         ):
             raise WorkspaceReleaseActivationError(
                 "registered workflow does not match the effective manifest"

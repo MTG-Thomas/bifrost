@@ -54,6 +54,7 @@ def _artifact(
     risk_class="R0",
     computed_effects=None,
     include_affected_target=False,
+    registration_state=None,
 ):
     computed_effects = computed_effects or ["bifrost.read"]
     base_files = {"modules/base.py": b"VALUE = 41\n"}
@@ -91,7 +92,31 @@ def _artifact(
         validation_targets.sort(key=lambda item: (item["path"], item["function"]))
     closure_id = workspace_closure_id(entry, closure_hashes)
     content_id = workspace_content_id(entry, closure_id)
-    registration_id = workspace_registration_manifest_id({})
+    effective_registrations = {}
+    if registration_state is not None:
+        registration_key = "workflows/demo.py::run"
+        effective_registrations[registration_key] = {
+            "path": "workflows/demo.py",
+            "function": "run",
+            "workflow_id": str(registration_state["workflow_id"]),
+            "type": "workflow",
+            "name": "Demo",
+            "organization_id": registration_state["organization_id"],
+            "is_active": True,
+            "source_sha256": closure_hashes["workflows/demo.py"],
+            "runtime_bounds": {
+                "max_duration_seconds": 30,
+                "max_external_calls": 1,
+                "max_records_read": 1,
+                "max_output_bytes": 1000,
+            },
+            "access_level": registration_state["access_level"],
+            "role_ids": registration_state["role_ids"],
+            "endpoint_enabled": registration_state["endpoint_enabled"],
+            "public_endpoint": registration_state["public_endpoint"],
+            "api_key_enabled": registration_state["api_key_enabled"],
+        }
+    registration_id = workspace_registration_manifest_id(effective_registrations)
     release_payload = {
         "organization_id": str(organization_id),
         "base_release_id": repo_v1_release_id(base_hashes),
@@ -103,7 +128,7 @@ def _artifact(
             {path: effective_hashes[path] for path in governed_paths}
         ),
         "effective_registration_manifest_id": registration_id,
-        "effective_registrations": {},
+        "effective_registrations": effective_registrations,
         "entry": entry,
         "validation_targets": validation_targets,
         "risk_class": risk_class,
@@ -252,6 +277,33 @@ def test_prepare_manifest_rejects_blockers_for_every_risk_class() -> None:
         match="blocker-free release",
     ):
         WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_accepts_preserved_endpoint_as_r2_source_promotion() -> None:
+    state = {
+        "workflow_id": str(uuid4()),
+        "organization_id": None,
+        "type": "workflow",
+        "is_active": True,
+        "endpoint_enabled": True,
+        "public_endpoint": True,
+        "api_key_enabled": False,
+        "access_level": "authenticated",
+        "role_ids": [],
+    }
+    artifact, _base, _closure = _artifact(
+        uuid4(),
+        risk_class="R2",
+        computed_effects=["bifrost.read"],
+        registration_state=state,
+    )
+    state_fingerprint = "sha256:" + "6" * 64
+    artifact.manifest["registration"]["state"] = state
+    artifact.manifest["registration"]["state_fingerprint"] = state_fingerprint
+    artifact.registration_state_fingerprint = state_fingerprint
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
 
 
 @pytest.mark.asyncio

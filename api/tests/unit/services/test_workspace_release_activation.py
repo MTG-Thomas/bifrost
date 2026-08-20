@@ -338,6 +338,209 @@ def test_registration_fingerprint_captures_activation_surface() -> None:
 
 
 @pytest.mark.asyncio
+async def test_registration_activation_preserves_exact_existing_exposure(
+    monkeypatch,
+) -> None:
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    role = SimpleNamespace(id=uuid4())
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        organization_id=organization_id,
+        path="workflows/webhook.py",
+        function_name="receive",
+        name="Receive webhook",
+        type="workflow",
+        is_active=True,
+        endpoint_enabled=True,
+        public_endpoint=True,
+        api_key_enabled=False,
+        access_level="authenticated",
+        roles=[role],
+    )
+    intent = [
+        {
+            "action": "preserve",
+            "path": workflow.path,
+            "function_name": workflow.function_name,
+            "requested_id": str(workflow_id),
+            "type": "workflow",
+            "name": workflow.name,
+            "organization_id": str(organization_id),
+        }
+    ]
+    intent_fingerprint = canonical_digest(
+        {"schema": activation_module.REGISTRATION_INTENT_SCHEMA, "actions": intent}
+    )
+    state = activation_module._activation_state(workflow)
+    state_fingerprint = registration_state_fingerprint(workflow)
+    expected = {
+        "path": workflow.path,
+        "function": workflow.function_name,
+        "workflow_id": str(workflow_id),
+        "type": workflow.type,
+        "name": workflow.name,
+        "organization_id": str(organization_id),
+        "is_active": True,
+        "source_sha256": "a" * 64,
+        "runtime_bounds": {
+            "max_duration_seconds": 30,
+            "max_external_calls": 10,
+            "max_records_read": 100,
+            "max_output_bytes": 4096,
+        },
+        "access_level": "authenticated",
+        "role_ids": [str(role.id)],
+        "endpoint_enabled": True,
+        "public_endpoint": True,
+        "api_key_enabled": False,
+    }
+    artifact = SimpleNamespace(
+        registration_intent_fingerprint=intent_fingerprint,
+        registration_state_fingerprint=state_fingerprint,
+        manifest={
+            "entry": {"path": workflow.path, "function": workflow.function_name},
+            "registration": {
+                "intent": intent,
+                "intent_fingerprint": intent_fingerprint,
+                "state": state,
+                "state_fingerprint": state_fingerprint,
+            },
+            "effective_registrations": {
+                f"{workflow.path}::{workflow.function_name}": expected
+            },
+        },
+    )
+
+    class Database:
+        async def get(self, _model, _identity):
+            return workflow
+
+        async def flush(self):
+            return None
+
+    monkeypatch.setattr(
+        activation_module,
+        "find_workspace_workflow",
+        AsyncMock(return_value=workflow),
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "apply_workspace_registration_plan",
+        AsyncMock(return_value=[{"workflow_id": str(workflow_id)}]),
+    )
+    service = WorkspaceReleaseActivationService(Database(), organization_id)
+
+    applied = await service._apply_registration(artifact)
+
+    assert applied == [{"workflow_id": str(workflow_id)}]
+
+
+@pytest.mark.asyncio
+async def test_registration_activation_rejects_exposure_change_during_apply(
+    monkeypatch,
+) -> None:
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        organization_id=organization_id,
+        path="workflows/webhook.py",
+        function_name="receive",
+        name="Receive webhook",
+        type="workflow",
+        is_active=True,
+        endpoint_enabled=True,
+        public_endpoint=False,
+        api_key_enabled=True,
+        access_level="authenticated",
+        roles=[],
+    )
+    intent = [
+        {
+            "action": "preserve",
+            "path": workflow.path,
+            "function_name": workflow.function_name,
+            "requested_id": str(workflow_id),
+            "type": "workflow",
+            "name": workflow.name,
+            "organization_id": str(organization_id),
+        }
+    ]
+    intent_fingerprint = canonical_digest(
+        {"schema": activation_module.REGISTRATION_INTENT_SCHEMA, "actions": intent}
+    )
+    state = activation_module._activation_state(workflow)
+    state_fingerprint = registration_state_fingerprint(workflow)
+    expected = {
+        "path": workflow.path,
+        "function": workflow.function_name,
+        "workflow_id": str(workflow_id),
+        "type": workflow.type,
+        "name": workflow.name,
+        "organization_id": str(organization_id),
+        "is_active": True,
+        "source_sha256": "a" * 64,
+        "runtime_bounds": {
+            "max_duration_seconds": 30,
+            "max_external_calls": 10,
+            "max_records_read": 100,
+            "max_output_bytes": 4096,
+        },
+        "access_level": "authenticated",
+        "role_ids": [],
+        "endpoint_enabled": True,
+        "public_endpoint": False,
+        "api_key_enabled": True,
+    }
+    artifact = SimpleNamespace(
+        registration_intent_fingerprint=intent_fingerprint,
+        registration_state_fingerprint=state_fingerprint,
+        manifest={
+            "entry": {"path": workflow.path, "function": workflow.function_name},
+            "registration": {
+                "intent": intent,
+                "intent_fingerprint": intent_fingerprint,
+                "state": state,
+                "state_fingerprint": state_fingerprint,
+            },
+            "effective_registrations": {
+                f"{workflow.path}::{workflow.function_name}": expected
+            },
+        },
+    )
+
+    class Database:
+        async def get(self, _model, _identity):
+            return workflow
+
+        async def flush(self):
+            return None
+
+    async def mutate_exposure(*_args, **_kwargs):
+        workflow.public_endpoint = True
+        return [{"workflow_id": str(workflow_id)}]
+
+    monkeypatch.setattr(
+        activation_module,
+        "find_workspace_workflow",
+        AsyncMock(return_value=workflow),
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "apply_workspace_registration_plan",
+        mutate_exposure,
+    )
+    service = WorkspaceReleaseActivationService(Database(), organization_id)
+
+    with pytest.raises(
+        WorkspaceReleaseActivationError,
+        match="does not match the effective manifest",
+    ):
+        await service._apply_registration(artifact)
+
+
+@pytest.mark.asyncio
 async def test_r0_authorization_binds_exact_reviewed_canary_and_actor() -> None:
     release, artifact, _descriptor = _prepared_rows()
     challenge = prepared_activation_challenge(release.prepared_evidence)
