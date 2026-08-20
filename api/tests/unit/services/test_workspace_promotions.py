@@ -37,6 +37,7 @@ from src.services.workspace_promotions import (
     _is_executable_python_path,
     _manifest_id,
     _repo_v1_release_id,
+    _reconcile_effects,
     _risk_class_for_effects,
     _refresh_effective_registrations,
     _selected_effective_registration,
@@ -142,6 +143,62 @@ def test_static_classifier_finds_process_dynamic_network_and_secrets() -> None:
 
     assert effects == ["dynamic_code.execute", "network.unknown", "process.execute"]
     assert [item.code for item in diagnostics] == ["secret_material_detected"]
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        (["integration.read:ninjaone"], ["integration.read:ninjaone"]),
+        (["integration.write:halopsa"], ["integration.write:halopsa"]),
+        (["network.read"], ["network.read"]),
+        (["network.write"], ["network.write"]),
+    ],
+)
+def test_precise_external_effect_covers_ambiguous_network_import(
+    declared: list[str], expected: list[str]
+) -> None:
+    computed, undeclared = _reconcile_effects(declared, ["network.unknown"])
+
+    assert computed == expected
+    assert undeclared == []
+
+
+def test_ambiguous_network_import_without_external_declaration_stays_blocked() -> None:
+    computed, undeclared = _reconcile_effects(["bifrost.read"], ["network.unknown"])
+
+    assert computed == ["bifrost.read", "network.unknown"]
+    assert undeclared == ["network.unknown"]
+
+
+def test_integration_declaration_does_not_cover_other_static_effects() -> None:
+    computed, undeclared = _reconcile_effects(
+        ["integration.read:ninjaone"],
+        ["network.unknown", "process.execute"],
+    )
+
+    assert computed == ["integration.read:ninjaone", "process.execute"]
+    assert undeclared == ["process.execute"]
+
+
+def test_ninja_dependency_network_import_is_covered_by_integration_read() -> None:
+    static_effects, diagnostics = _static_effects(
+        {
+            "features/ninjaone/workflows/inventory.py": (
+                b"from modules.ninjaone import NinjaOneClient\n"
+            ),
+            "modules/ninjaone/api.py": b"import requests\n",
+        }
+    )
+
+    computed, undeclared = _reconcile_effects(
+        ["integration.read:ninjaone"], static_effects
+    )
+
+    assert diagnostics == []
+    assert static_effects == ["network.unknown"]
+    assert computed == ["integration.read:ninjaone"]
+    assert undeclared == []
+    assert _risk_class_for_effects(computed) == "R1"
 
 
 def test_source_archive_is_byte_deterministic() -> None:
