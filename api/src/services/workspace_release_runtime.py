@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from bifrost.workspace_release import (
     canonical_digest,
@@ -448,7 +449,11 @@ async def pin_workspace_runtime(
     session: AsyncSession, workflow_id: UUID
 ) -> PinnedWorkspaceRuntime | None:
     """Pin governed Workspace source or leave an ungoverned path on repo-v1."""
-    workflow = await session.get(Workflow, workflow_id)
+    workflow = await session.get(
+        Workflow,
+        workflow_id,
+        options=(selectinload(Workflow.roles),),
+    )
     if workflow is None or not workflow.is_active:
         raise WorkspaceReleaseRuntimeError(f"workflow {workflow_id} is not executable")
     if workflow.solution_id is not None:

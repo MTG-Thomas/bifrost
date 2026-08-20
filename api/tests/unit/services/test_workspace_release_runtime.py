@@ -14,6 +14,7 @@ from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
 )
+from src.models.orm.workflows import Workflow
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
@@ -31,8 +32,10 @@ class _PinSession:
         self.workflow = workflow
         self.release = release
         self.artifact = artifact
+        self.get_options = None
 
-    async def get(self, _model, _identity):
+    async def get(self, _model, _identity, *, options=None):
+        self.get_options = options
         return self.workflow
 
     async def execute(self, _statement):
@@ -345,6 +348,24 @@ async def test_global_live_governed_path_pins_exact_global_registration() -> Non
     assert pinned is not None
     assert pinned.organization_id is None
     assert pinned.queue_evidence()["workflow_organization_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_pin_eager_loads_registration_roles_before_sync_validation() -> None:
+    release, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    workflow = _workflow_for_registration(
+        registration,
+        organization_id=release.organization_id,
+    )
+    session = _PinSession(workflow, release, artifact)
+
+    pinned = await pin_workspace_runtime(session, workflow.id)
+
+    assert pinned is not None
+    assert session.get_options is not None
+    assert len(session.get_options) == 1
+    assert list(session.get_options[0].path)[1] is Workflow.roles.property
 
 
 @pytest.mark.asyncio
