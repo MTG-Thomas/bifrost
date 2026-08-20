@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import DBAPIError
 
 from src.models.orm.workspace_promotions import (
@@ -49,11 +49,12 @@ async def test_workspace_release_artifact_rejects_update_and_delete(
     )
     db_session.add(artifact)
     await db_session.commit()
+    artifact_id = artifact.id
 
     with pytest.raises(DBAPIError, match="append-only"):
         await db_session.execute(
             update(WorkspacePromotionArtifact)
-            .where(WorkspacePromotionArtifact.id == artifact.id)
+            .where(WorkspacePromotionArtifact.id == artifact_id)
             .values(artifact_state="invalid")
         )
     await db_session.rollback()
@@ -61,7 +62,7 @@ async def test_workspace_release_artifact_rejects_update_and_delete(
     with pytest.raises(DBAPIError, match="append-only"):
         await db_session.execute(
             delete(WorkspacePromotionArtifact).where(
-                WorkspacePromotionArtifact.id == artifact.id
+                WorkspacePromotionArtifact.id == artifact_id
             )
         )
     await db_session.rollback()
@@ -201,9 +202,22 @@ async def test_organization_delete_can_cascade_reviewed_artifacts(
     await db_session.delete(organization)
     await db_session.commit()
 
-    assert await db_session.get(WorkspacePromotionArtifact, artifact_id) is None
-    assert await db_session.get(WorkspacePromotionArtifact, successor_id) is None
-    assert await db_session.get(WorkspacePromotionRelease, release_id) is None
+    remaining_artifacts = (
+        await db_session.execute(
+            select(WorkspacePromotionArtifact.id).where(
+                WorkspacePromotionArtifact.id.in_([artifact_id, successor_id])
+            )
+        )
+    ).all()
+    remaining_releases = (
+        await db_session.execute(
+            select(WorkspacePromotionRelease.id).where(
+                WorkspacePromotionRelease.id == release_id
+            )
+        )
+    ).all()
+    assert remaining_artifacts == []
+    assert remaining_releases == []
 
 
 @pytest.mark.e2e

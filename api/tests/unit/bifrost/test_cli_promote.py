@@ -176,6 +176,40 @@ def test_draft_is_private_local_only_and_includes_complete_graph(
     assert "use `bifrost run` locally" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("escaped", ["../outside.json", "nested/../../outside.json"])
+def test_draft_output_rejects_workspace_traversal(
+    tmp_path: Path, monkeypatch, capsys, escaped: str
+) -> None:
+    path = _workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    assert (
+        promote.handle_promote(["draft", str(path), "-w", "demo", "--out", escaped])
+        == 1
+    )
+    assert "draft output must remain" in capsys.readouterr().err
+
+
+def test_draft_output_rejects_symlink_escape(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = _workspace(workspace)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / "escaped").symlink_to(outside, target_is_directory=True)
+    monkeypatch.chdir(workspace)
+
+    assert (
+        promote.handle_promote(
+            ["draft", str(path), "-w", "demo", "--out", "escaped/draft.json"]
+        )
+        == 1
+    )
+    assert "draft output must remain" in capsys.readouterr().err
+
+
 def test_reviewed_preview_uses_git_blob_not_dirty_worktree(
     tmp_path: Path, monkeypatch
 ) -> None:

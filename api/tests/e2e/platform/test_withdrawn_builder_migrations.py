@@ -1,6 +1,10 @@
 """Regression coverage for the withdrawn unfinished Builder migrations."""
 
+from pathlib import Path
+
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,10 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 async def test_fresh_database_does_not_install_withdrawn_builder_schema(
     db_session: AsyncSession,
 ) -> None:
+    api_root = Path(__file__).resolve().parents[3]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "alembic"))
+    expected_head = ScriptDirectory.from_config(config).get_current_head()
     revision = (
         await db_session.execute(text("SELECT version_num FROM alembic_version"))
     ).scalar_one()
-    assert revision == "20260812_private_memory"
+    assert revision == expected_head
 
     catalog_revision = (
         await db_session.execute(
@@ -27,9 +35,10 @@ async def test_fresh_database_does_not_install_withdrawn_builder_schema(
     assert catalog_revision >= 0
 
     builder_tables = (
-        await db_session.execute(
-            text(
-                """
+        (
+            await db_session.execute(
+                text(
+                    """
                 SELECT table_name
                 FROM information_schema.tables
                 WHERE table_schema = 'public'
@@ -42,15 +51,19 @@ async def test_fresh_database_does_not_install_withdrawn_builder_schema(
                   )
                 ORDER BY table_name
                 """
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert builder_tables == []
 
     builder_roles = (
-        await db_session.execute(
-            text(
-                """
+        (
+            await db_session.execute(
+                text(
+                    """
                 SELECT id
                 FROM roles
                 WHERE id IN (
@@ -58,7 +71,10 @@ async def test_fresh_database_does_not_install_withdrawn_builder_schema(
                     '00000000-0000-0000-0000-000000000004'
                 )
                 """
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert builder_roles == []

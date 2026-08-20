@@ -97,7 +97,9 @@ def _governed_paths(
 
 
 def _effective_registrations(
-    manifest: dict[str, Any], source_hashes: dict[str, str], governed_paths: tuple[str, ...]
+    manifest: dict[str, Any],
+    source_hashes: dict[str, str],
+    governed_paths: tuple[str, ...],
 ) -> dict[str, dict[str, Any]]:
     value = manifest.get("effective_registrations")
     if not isinstance(value, dict):
@@ -117,7 +119,11 @@ def _effective_registrations(
         "runtime_bounds",
     }
     for key, raw in value.items():
-        if not isinstance(key, str) or not isinstance(raw, dict) or set(raw) != required:
+        if (
+            not isinstance(key, str)
+            or not isinstance(raw, dict)
+            or set(raw) != required
+        ):
             raise WorkspaceReleaseRuntimeError(
                 "Workspace release effective registration manifest is invalid"
             )
@@ -208,9 +214,12 @@ class WorkspaceReleaseDescriptor:
         source_hashes = _source_hashes(manifest)
         governed_paths = _governed_paths(manifest, source_hashes)
         governed_manifest_id = _required_text(manifest, "governed_manifest_id")
-        if workspace_manifest_id(
-            {path: source_hashes[path] for path in governed_paths}
-        ) != governed_manifest_id:
+        if (
+            workspace_manifest_id(
+                {path: source_hashes[path] for path in governed_paths}
+            )
+            != governed_manifest_id
+        ):
             raise WorkspaceReleaseRuntimeError(
                 "Workspace release governed manifest digest does not match"
             )
@@ -223,9 +232,7 @@ class WorkspaceReleaseDescriptor:
         )
         protected_source = manifest.get("protected_source")
         registration = manifest.get("registration")
-        if not isinstance(protected_source, dict) or not isinstance(
-            registration, dict
-        ):
+        if not isinstance(protected_source, dict) or not isinstance(registration, dict):
             raise WorkspaceReleaseRuntimeError(
                 "Workspace release provenance or registration evidence is missing"
             )
@@ -436,6 +443,9 @@ def _pin_workflow_to_release(
         raise WorkspaceReleaseRuntimeError(
             "workflow registration does not match the live Workspace release"
         )
+    configured_timeout = (
+        workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800
+    )
     return PinnedWorkspaceRuntime(
         workflow_id=workflow.id,
         release=release,
@@ -444,7 +454,7 @@ def _pin_workflow_to_release(
         path=path,
         source_hash=source_hash,
         timeout_seconds=min(
-            workflow.timeout_seconds or 1800,
+            configured_timeout,
             int(registration["runtime_bounds"]["max_duration_seconds"]),
         ),
         time_saved=workflow.time_saved or 0,
@@ -485,9 +495,7 @@ async def resolve_pinned_workspace_runtime(
         )
     ).one_or_none()
     if row is None:
-        raise WorkspaceReleaseRuntimeError(
-            "queued Workspace release is missing"
-        )
+        raise WorkspaceReleaseRuntimeError("queued Workspace release is missing")
     release_row, artifact = row
     if release_row.activation_state not in {"live", "superseded"}:
         raise WorkspaceReleaseRuntimeError(
@@ -499,9 +507,7 @@ async def resolve_pinned_workspace_runtime(
     path = str(evidence.get("workflow_path") or "").replace("\\", "/").lstrip("/")
     function_name = str(evidence.get("workflow_function_name") or "")
     source_hash = descriptor.source_hashes.get(path)
-    registration = descriptor.effective_registrations.get(
-        f"{path}::{function_name}"
-    )
+    registration = descriptor.effective_registrations.get(f"{path}::{function_name}")
     if (
         evidence.get("workflow_id") != str(workflow_id)
         or source_hash is None
@@ -521,9 +527,7 @@ async def resolve_pinned_workspace_runtime(
         registration_bounds = _runtime_bounds(
             {"bounds": registration["runtime_bounds"]}
         )
-        queued_bounds = _runtime_bounds(
-            {"bounds": evidence["workflow_runtime_bounds"]}
-        )
+        queued_bounds = _runtime_bounds({"bounds": evidence["workflow_runtime_bounds"]})
         timeout_seconds = int(evidence["workflow_timeout_seconds"])
         if (
             queued_bounds != registration_bounds

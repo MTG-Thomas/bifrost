@@ -697,6 +697,7 @@ class TestBifrostMCPServer:
         server = BifrostMCPServer(org_user_context)
         assert server.context == org_user_context
 
+
 # ==================== get_system_tool_ids Tests ====================
 
 
@@ -1026,7 +1027,9 @@ class TestRegisterWorkflow:
         """register_workflow MCP tool rejects missing function_name."""
         from src.services.mcp_server.tools.workflow import register_workflow
 
-        result = await register_workflow(platform_admin_context, "workflows/test.py", "")
+        result = await register_workflow(
+            platform_admin_context, "workflows/test.py", ""
+        )
         data = result.structured_content
         assert "error" in data
         assert "function_name is required" in data["error"]
@@ -1036,7 +1039,9 @@ class TestRegisterWorkflow:
         """register_workflow MCP tool rejects non-.py files."""
         from src.services.mcp_server.tools.workflow import register_workflow
 
-        result = await register_workflow(platform_admin_context, "workflows/test.yaml", "my_function")
+        result = await register_workflow(
+            platform_admin_context, "workflows/test.yaml", "my_function"
+        )
         data = result.structured_content
         assert "error" in data
         assert "path must be a .py file" in data["error"]
@@ -1051,12 +1056,23 @@ class TestRegisterWorkflow:
             mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("src.services.file_storage.FileStorageService") as mock_svc_cls:
+            with (
+                patch(
+                    "src.services.mcp_server.tools.workflow."
+                    "active_workspace_release_file_view",
+                    AsyncMock(return_value=None),
+                ),
+                patch("src.services.file_storage.FileStorageService") as mock_svc_cls,
+            ):
                 mock_svc = MagicMock()
-                mock_svc.read_file = AsyncMock(side_effect=FileNotFoundError("not found"))
+                mock_svc.read_file = AsyncMock(
+                    side_effect=FileNotFoundError("not found")
+                )
                 mock_svc_cls.return_value = mock_svc
 
-                result = await register_workflow(platform_admin_context, "workflows/missing.py", "my_func")
+                result = await register_workflow(
+                    platform_admin_context, "workflows/missing.py", "my_func"
+                )
 
         data = result.structured_content
         assert "error" in data
@@ -1075,12 +1091,21 @@ class TestRegisterWorkflow:
             mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("src.services.file_storage.FileStorageService") as mock_svc_cls:
+            with (
+                patch(
+                    "src.services.mcp_server.tools.workflow."
+                    "active_workspace_release_file_view",
+                    AsyncMock(return_value=None),
+                ),
+                patch("src.services.file_storage.FileStorageService") as mock_svc_cls,
+            ):
                 mock_svc = MagicMock()
                 mock_svc.read_file = AsyncMock(return_value=(code, None))
                 mock_svc_cls.return_value = mock_svc
 
-                result = await register_workflow(platform_admin_context, "workflows/test.py", "my_func")
+                result = await register_workflow(
+                    platform_admin_context, "workflows/test.py", "my_func"
+                )
 
         data = result.structured_content
         assert "error" in data
@@ -1263,4 +1288,7 @@ class TestMCPAgentPrivilegeBoundary:
         )
 
         assert result.structured_content is not None
-        assert "Only platform admins can create global agents" in result.structured_content["error"]
+        assert (
+            "Only platform admins can create global agents"
+            in result.structured_content["error"]
+        )

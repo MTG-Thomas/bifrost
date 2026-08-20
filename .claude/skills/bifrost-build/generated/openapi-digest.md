@@ -535,7 +535,14 @@
 | GET | `/api/workflows/{workflow_id}/roles` |
 | POST | `/api/workflows/{workflow_id}/roles` |
 | DELETE | `/api/workflows/{workflow_id}/roles/{role_id}` |
+| GET | `/api/workspace-promotions/artifacts/{artifact_id}` |
+| POST | `/api/workspace-promotions/artifacts/{artifact_id}/canary` |
+| POST | `/api/workspace-promotions/artifacts/{artifact_id}/prepare` |
+| POST | `/api/workspace-promotions/drafts` |
+| GET | `/api/workspace-promotions/live` |
 | POST | `/api/workspace-promotions/preview` |
+| GET | `/api/workspace-promotions/releases/{release_id}` |
+| POST | `/api/workspace-promotions/releases/{release_id}/activate` |
 | POST | `/api/workspace-repo-changesets` |
 | POST | `/api/workspace-repo-changesets/git-convergence/apply` |
 | POST | `/api/workspace-repo-changesets/git-convergence/preview` |

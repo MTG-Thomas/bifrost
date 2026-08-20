@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import time
 from typing import Any, Mapping
 
@@ -359,18 +360,57 @@ def _default_draft_path(draft_id: str) -> pathlib.Path:
     return directory / f"{draft_id.removeprefix('sha256:')}.json"
 
 
-def _write_private_json(path: pathlib.Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _validated_draft_output_path(
+    path: pathlib.Path, *, workspace_root: pathlib.Path
+) -> pathlib.Path:
+    """Resolve a draft output beneath an explicit private authority root."""
+    workspace_root = workspace_root.resolve()
+    private_root = (
+        user_data_path("bifrost", appauthor=False) / "workspace-promotions"
+    ).resolve()
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace_root / candidate
+    candidate = candidate.resolve(strict=False)
+    if not any(
+        candidate.is_relative_to(allowed_root)
+        for allowed_root in (workspace_root, private_root)
+    ):
+        raise PromotionBundleError(
+            "draft output must remain inside the current workspace or the private "
+            "Bifrost workspace-promotions directory"
+        )
+    return candidate
+
+
+def _write_private_json(
+    path: pathlib.Path,
+    payload: Mapping[str, Any],
+    *,
+    workspace_root: pathlib.Path,
+) -> pathlib.Path:
+    destination = _validated_draft_output_path(path, workspace_root=workspace_root)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Re-resolve after directory creation so an existing symlinked parent cannot
+    # move the write outside either explicit authority root.
+    destination = _validated_draft_output_path(
+        destination, workspace_root=workspace_root
+    )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary = pathlib.Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    temporary.replace(path)
+    return destination
 
 
 def _render_closure(bundle: PromotionBundle) -> None:
@@ -411,8 +451,8 @@ def _handle_draft(options: argparse.Namespace) -> int:
         "client": _client_contract(),
     }
     payload["draft_id"] = _draft_id(payload)
-    output_path = options.out or _default_draft_path(payload["draft_id"])
-    _write_private_json(output_path, payload)
+    requested_output = options.out or _default_draft_path(payload["draft_id"])
+    output_path = _write_private_json(requested_output, payload, workspace_root=root)
     if options.json:
         result = {
             "schema_version": DRAFT_SCHEMA,

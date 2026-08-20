@@ -117,11 +117,11 @@ def upgrade() -> None:
                 IF OLD.target_kind = 'draft' AND OLD.expires_at <= NOW() THEN
                     RETURN OLD;
                 END IF;
-                -- Preserve the organizations.id ON DELETE CASCADE contract.
-                -- At this point the parent row has already left the table.
-                IF NOT EXISTS (
-                    SELECT 1 FROM organizations WHERE id = OLD.organization_id
-                ) THEN
+                -- An organizations.id ON DELETE CASCADE reaches this row from
+                -- PostgreSQL's parent FK trigger while the parent is still
+                -- visible to the statement. Its nested trigger depth is the
+                -- reliable distinction from a direct artifact DELETE.
+                IF pg_trigger_depth() > 1 THEN
                     RETURN OLD;
                 END IF;
             END IF;
