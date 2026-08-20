@@ -425,6 +425,12 @@ class WorkspaceReleaseProjectionService:
         projection_by_path = {item.path: item for item in projection_paths}
         governed_hashes = descriptor.governed_source_hashes
         paths = descriptor.governed_paths
+        previous_governed_paths = await self._previous_governed_paths(release)
+        newly_governed_paths = (
+            frozenset(paths) - previous_governed_paths
+            if release.previous_release_id is not None
+            else frozenset()
+        )
         ledger_path, ledger_content, ledger_sha256 = _release_ledger(
             release, artifact, descriptor
         )
@@ -512,17 +518,25 @@ class WorkspaceReleaseProjectionService:
         ] + [
             f"history:{item.path}"
             for item in history_states
-            if item.disposition == "other"
+            if item.disposition == "other" and item.path not in newly_governed_paths
+        ]
+        history_adoptions = [
+            asdict(item)
+            for item in history_states
+            if item.disposition == "other" and item.path in newly_governed_paths
         ]
         if ledger_state.disposition == "other":
             divergent.append(f"history:{ledger_path}")
         classification_evidence = {
+            "previous_governed_paths": sorted(previous_governed_paths),
+            "newly_governed_paths": sorted(newly_governed_paths),
             "repo_paths": [asdict(item) for item in repo_states],
             "history_before": {
                 "commit_sha": history_before.commit_sha,
                 "tree_sha": history_before.tree_sha,
                 "signature_state": history_before.signature_state,
                 "paths": [asdict(item) for item in history_states],
+                "adoptions": history_adoptions,
                 "ledger": asdict(ledger_state),
             },
         }
@@ -614,13 +628,17 @@ class WorkspaceReleaseProjectionService:
         history_writes = [
             item
             for item in history_states
-            if item.path in projection_by_path and item.disposition == "base"
+            if item.path in projection_by_path
+            and (
+                item.disposition == "base"
+                or (item.disposition == "other" and item.path in newly_governed_paths)
+            )
         ]
         commit_files = [
             PlatformCommitFile(
                 path=item.path,
                 content_base64=base64.b64encode(immutable[item.path]).decode("ascii"),
-                expected_before_sha256=item.base_sha256,
+                expected_before_sha256=item.observed_sha256,
                 expected_sha256=item.target_sha256,
             )
             for item in history_writes
@@ -778,6 +796,40 @@ class WorkspaceReleaseProjectionService:
                 "Workspace release does not exist in this organization.",
             )
         return row[0], row[1]
+
+    async def _previous_governed_paths(
+        self, release: WorkspacePromotionRelease
+    ) -> frozenset[str]:
+        """Return the immutable predecessor boundary for guarded history adoption."""
+        if release.previous_release_id is None:
+            return frozenset()
+        row = (
+            await self.db.execute(
+                select(WorkspacePromotionRelease, WorkspacePromotionArtifact)
+                .join(
+                    WorkspacePromotionArtifact,
+                    WorkspacePromotionArtifact.id
+                    == WorkspacePromotionRelease.artifact_id,
+                )
+                .where(
+                    WorkspacePromotionRelease.id == release.previous_release_id,
+                    WorkspacePromotionRelease.organization_id == self.organization_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            raise WorkspaceReleaseProjectionError(
+                "workspace_release_projection_invalid",
+                "Workspace release predecessor evidence is missing.",
+            )
+        try:
+            descriptor = WorkspaceReleaseDescriptor.from_rows(row[0], row[1])
+        except WorkspaceReleaseRuntimeError as exc:
+            raise WorkspaceReleaseProjectionError(
+                "workspace_release_projection_invalid",
+                "Workspace release predecessor evidence is invalid.",
+            ) from exc
+        return frozenset(descriptor.governed_paths)
 
     @staticmethod
     def _descriptor(

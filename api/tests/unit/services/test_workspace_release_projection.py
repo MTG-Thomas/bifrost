@@ -429,7 +429,9 @@ async def test_lock_projects_only_base_paths_and_records_signed_readback(
 
 
 @pytest.mark.asyncio
-async def test_ungoverned_snapshot_mismatch_is_not_projected_or_claimed(monkeypatch) -> None:
+async def test_ungoverned_snapshot_mismatch_is_not_projected_or_claimed(
+    monkeypatch,
+) -> None:
     release, artifact, paths = _rows()
     inherited_path, inherited_content = _add_inherited_path(release, artifact, paths)
     target_files = {path: target for path, (_base, target) in paths.items()}
@@ -571,6 +573,105 @@ async def test_divergence_fails_before_any_external_write(monkeypatch) -> None:
     assert file_writer.writes == []
     assert history.requests == []
     assert release.activation_state == "live"
+    assert release.lock_state == "attention_required"
+    assert release.error_code == "workspace_release_projection_diverged"
+
+
+@pytest.mark.asyncio
+async def test_newly_governed_history_adopts_observed_legacy_hash(monkeypatch) -> None:
+    release, artifact, paths = _rows()
+    first, second = paths
+    legacy_history = b"VALUE = 'legacy-history'\n"
+    target_files = {path: target for path, (_base, target) in paths.items()}
+    repo = Repo(target_files)
+    history = HistoryWriter(
+        {first: _hash(legacy_history), second: _hash(target_files[second])}
+    )
+    file_writer = FileWriter(repo)
+    release.previous_release_id = uuid4()
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.acquire_workspace_release_lock",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.workspace_source_update",
+        _source_update,
+    )
+    service = WorkspaceReleaseProjectionService(
+        Database(),
+        release.organization_id,
+        commit_writer=history,
+        repo_storage=repo,
+        release_storage_factory=lambda _prefix: ReleaseStorage(target_files),
+        file_storage_factory=lambda _db: file_writer,
+        coherence_inspector=_coherent,
+    )
+    service._load_release = AsyncMock(return_value=(release, artifact))
+    service._previous_governed_paths = AsyncMock(return_value=frozenset({second}))
+    service._ensure_still_live = AsyncMock()
+
+    evidence = await service.lock_release(
+        release.id, artifact.release_id, operator="operator@example.com"
+    )
+
+    assert release.lock_state == "locked"
+    assert file_writer.writes == []
+    source_write = history.requests[0].files[0]
+    assert source_write.path == first
+    assert source_write.expected_before_sha256 == _hash(legacy_history)
+    assert source_write.expected_sha256 == _hash(target_files[first])
+    assert evidence["newly_governed_paths"] == [first]
+    assert evidence["history_before"]["adoptions"] == [
+        {
+            "path": first,
+            "base_sha256": _hash(paths[first][0]),
+            "target_sha256": _hash(target_files[first]),
+            "observed_sha256": _hash(legacy_history),
+            "disposition": "other",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_previous_release", [False, True])
+async def test_bootstrap_or_inherited_history_divergence_still_fails_closed(
+    monkeypatch, has_previous_release
+) -> None:
+    release, artifact, paths = _rows()
+    first, second = paths
+    target_files = {path: target for path, (_base, target) in paths.items()}
+    repo = Repo(target_files)
+    history = HistoryWriter(
+        {first: _hash(b"VALUE = 'unreviewed'\n"), second: _hash(target_files[second])}
+    )
+    file_writer = FileWriter(repo)
+    if has_previous_release:
+        release.previous_release_id = uuid4()
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.acquire_workspace_release_lock",
+        AsyncMock(),
+    )
+    service = WorkspaceReleaseProjectionService(
+        Database(),
+        release.organization_id,
+        commit_writer=history,
+        repo_storage=repo,
+        release_storage_factory=lambda _prefix: ReleaseStorage(target_files),
+        file_storage_factory=lambda _db: file_writer,
+        coherence_inspector=_coherent,
+    )
+    service._load_release = AsyncMock(return_value=(release, artifact))
+    if has_previous_release:
+        service._previous_governed_paths = AsyncMock(return_value=frozenset(paths))
+    service._ensure_still_live = AsyncMock()
+
+    with pytest.raises(WorkspaceReleaseProjectionError, match=f"history:{first}"):
+        await service.lock_release(
+            release.id, artifact.release_id, operator="operator@example.com"
+        )
+
+    assert file_writer.writes == []
+    assert history.requests == []
     assert release.lock_state == "attention_required"
     assert release.error_code == "workspace_release_projection_diverged"
 
