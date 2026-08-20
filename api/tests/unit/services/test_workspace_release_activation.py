@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -175,9 +176,7 @@ def _prepared_rows():
     return release, artifact, descriptor
 
 
-def _as_risk_release(
-    release, artifact, risk_class: str, effects: list[str]
-) -> None:
+def _as_risk_release(release, artifact, risk_class: str, effects: list[str]) -> None:
     artifact.risk_class = risk_class
     artifact.manifest["risk_class"] = risk_class
     artifact.manifest["computed_effects"] = effects
@@ -225,6 +224,59 @@ def test_prepared_projection_member_from_wrong_release_fails_closed() -> None:
 
     with pytest.raises(WorkspaceReleaseActivationError, match="projection path hash"):
         validate_prepared_release_evidence(release, artifact, descriptor)
+
+
+def test_prepared_projection_accepts_exact_inherited_governed_path() -> None:
+    release, artifact, descriptor = _prepared_rows()
+    inherited_path = "workflows/inherited.py"
+    inherited_hash = "7" * 64
+    source_hashes = {**descriptor.source_hashes, inherited_path: inherited_hash}
+    governed_paths = tuple(sorted((*descriptor.governed_paths, inherited_path)))
+    descriptor = replace(
+        descriptor,
+        source_hashes=source_hashes,
+        governed_paths=governed_paths,
+        effective_manifest_id=workspace_manifest_id(source_hashes),
+        governed_manifest_id=workspace_manifest_id(
+            {path: source_hashes[path] for path in governed_paths}
+        ),
+    )
+    artifact.effective_manifest_id = descriptor.effective_manifest_id
+    evidence = {
+        **release.prepared_evidence,
+        "effective_manifest_id": descriptor.effective_manifest_id,
+        "effective_files": descriptor.source_hashes,
+        "governed_paths": list(descriptor.governed_paths),
+        "governed_manifest_id": descriptor.governed_manifest_id,
+        "file_count": len(descriptor.source_hashes),
+        "compile": {
+            "succeeded": True,
+            "file_count": len(descriptor.source_hashes),
+        },
+        "projection_paths": sorted(
+            [
+                *release.prepared_evidence["projection_paths"],
+                {
+                    "path": inherited_path,
+                    "base_sha256": inherited_hash,
+                    "target_sha256": inherited_hash,
+                },
+            ],
+            key=lambda item: item["path"],
+        ),
+    }
+    artifact.base_manifest_id = workspace_manifest_id({inherited_path: inherited_hash})
+    evidence["base_manifest_id"] = artifact.base_manifest_id
+    evidence.pop("evidence_id")
+    evidence["evidence_id"] = canonical_digest(evidence)
+    release.prepared_evidence = evidence
+
+    validated = validate_prepared_release_evidence(release, artifact, descriptor)
+
+    assert [item["path"] for item in validated["projection_paths"]] == [
+        "workflows/demo.py",
+        inherited_path,
+    ]
 
 
 def test_prepared_projection_must_reconstruct_exact_base_manifest() -> None:
@@ -358,9 +410,7 @@ async def test_r2_authorization_requires_exact_nonexecution_acknowledgement() ->
 @pytest.mark.asyncio
 async def test_r2_rejects_canary_authorization_before_execution() -> None:
     release, artifact, _descriptor = _prepared_rows()
-    _as_risk_release(
-        release, artifact, "R2", ["integration.write:halopsa"]
-    )
+    _as_risk_release(release, artifact, "R2", ["integration.write:halopsa"])
     challenge = prepared_activation_challenge(release.prepared_evidence)
     request = SimpleNamespace(
         authorization=WorkspaceReviewedCanaryAuthorization(
