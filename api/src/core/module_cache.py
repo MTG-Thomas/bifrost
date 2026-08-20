@@ -37,6 +37,7 @@ WORKSPACE_UPDATE_LOCK_SECONDS = 300
 WORKSPACE_UPDATE_LOCK_WAIT_SECONDS = 10
 WORKSPACE_UPDATE_LOCK_RENEW_SECONDS = WORKSPACE_UPDATE_LOCK_SECONDS / 3
 SOLUTIONS_ROOT = "_solutions"
+WORKSPACE_RELEASES_ROOT = "_workspace_releases"
 _workspace_update_depth: ContextVar[int] = ContextVar(
     "workspace_update_depth", default=0
 )
@@ -86,6 +87,20 @@ def _cached_module_is_current(module: object, generation: str) -> bool:
         and isinstance(content_hash, str)
         and module.get("generation") == generation
         and hashlib.sha256(content.encode("utf-8")).hexdigest() == content_hash
+    )
+
+
+def _cached_module_content_matches_hash(module: object) -> bool:
+    """Verify immutable cache bytes instead of trusting their hash label."""
+    if not isinstance(module, dict):
+        return False
+    content = module.get("content")
+    content_hash = module.get("hash")
+    return (
+        isinstance(content, str)
+        and isinstance(content_hash, str)
+        and hashlib.sha256(content.encode("utf-8")).hexdigest()
+        == content_hash.removeprefix("sha256:")
     )
 
 
@@ -394,6 +409,15 @@ async def _read_module_from_storage(path: str) -> bytes:
         solution_id, relative_path = parts[1], parts[2]
         return await SolutionStorage(solution_id).read(relative_path)
 
+    if path.startswith(f"{WORKSPACE_RELEASES_ROOT}/"):
+        from src.services.workspace_release_storage import (
+            WorkspaceReleaseStorage,
+            split_workspace_release_storage_path,
+        )
+
+        runtime_prefix, relative_path = split_workspace_release_storage_path(path)
+        return await WorkspaceReleaseStorage(runtime_prefix).read(relative_path)
+
     return await RepoStorage().read(path)
 
 
@@ -414,16 +438,22 @@ async def get_module(path: str) -> CachedModule | None:
     """
     redis = get_redis_client()
     key = f"{MODULE_KEY_PREFIX}{path}"
-    solution_module = path.startswith(f"{SOLUTIONS_ROOT}/")
+    immutable_module = path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    )
 
     # A generation is captured before object-storage fallback and rechecked
     # afterwards. A cold read that overlaps a source update can therefore never
     # repopulate Redis with old bytes labelled as the new generation.
     for _attempt in range(3):
-        generation = None if solution_module else await wait_for_workspace_generation()
+        generation = None if immutable_module else await wait_for_workspace_generation()
         cached = _decode_cached_module(await redis.get(key))
         if cached is not None and (
-            solution_module or _cached_module_is_current(cached, generation or "")
+            (
+                immutable_module
+                and _cached_module_content_matches_hash(cached)
+            )
+            or _cached_module_is_current(cached, generation or "")
         ):
             return cast(CachedModule, cached)
 
@@ -433,7 +463,7 @@ async def get_module(path: str) -> CachedModule | None:
             logger.debug(f"Module not in cache or S3: {log_safe(path)}")
             return None
 
-        if not solution_module and await wait_for_workspace_generation() != generation:
+        if not immutable_module and await wait_for_workspace_generation() != generation:
             continue
         module = _module_from_bytes(
             path=path, content=content_bytes, generation=generation
@@ -451,7 +481,7 @@ async def get_module(path: str) -> CachedModule | None:
             logger.warning(
                 "Failed to re-cache object-storage module: %s", log_safe(exc)
             )
-        if solution_module or await wait_for_workspace_generation() == generation:
+        if immutable_module or await wait_for_workspace_generation() == generation:
             return module
 
     raise RuntimeError("workspace generation did not stabilize during module read")
@@ -477,7 +507,9 @@ async def set_module(
     redis = get_redis_client()
     key = f"{MODULE_KEY_PREFIX}{path}"
 
-    if not path.startswith(f"{SOLUTIONS_ROOT}/") and generation is None:
+    if not path.startswith(
+        (f"{SOLUTIONS_ROOT}/", f"{WORKSPACE_RELEASES_ROOT}/")
+    ) and generation is None:
         generation = _ready_generation_value(await get_workspace_generation())
     cached = CachedModule(
         content=content,

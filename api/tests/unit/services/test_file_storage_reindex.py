@@ -13,6 +13,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 
+@pytest.fixture(autouse=True)
+def bypass_live_registration_authority(monkeypatch):
+    """Legacy reindex examples run without a Workspace Live fixture."""
+    from src.services import workspace_release_registration_authority as authority
+
+    monkeypatch.setattr(
+        authority,
+        "guard_workspace_registration_mutation",
+        AsyncMock(),
+    )
+
+
 class _FakeS3Body:
     def __init__(self, content: bytes) -> None:
         self._content = content

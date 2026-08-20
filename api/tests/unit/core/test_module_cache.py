@@ -91,6 +91,45 @@ class TestModuleCacheAsync:
             # Verify re-cached to Redis
             mock_client.setex.assert_called_once()
 
+    async def test_immutable_cache_rejects_corrupt_content_with_trusted_hash_label(
+        self, mock_redis_client
+    ):
+        """A manifest-looking label cannot make different cached bytes trusted."""
+        mock_client, _ = mock_redis_client
+        reviewed = b"VALUE = 'reviewed'\n"
+        expected_hash = hashlib.sha256(reviewed).hexdigest()
+        storage_path = (
+            "_workspace_releases/org-1/release-1/files/modules/vendor.py"
+        )
+        mock_client.get.return_value = json.dumps(
+            {
+                "content": "VALUE = 'corrupt'\n",
+                "path": storage_path,
+                # Simulate a corrupt cache entry retaining the trusted label.
+                "hash": expected_hash,
+            }
+        )
+
+        with (
+            patch("src.core.module_cache.get_redis_client", return_value=mock_client),
+            patch(
+                "src.core.module_cache._read_module_from_storage",
+                new=AsyncMock(return_value=reviewed),
+            ) as read_storage,
+        ):
+            from src.core.module_cache import get_module
+
+            result = await get_module(storage_path)
+
+        assert result == {
+            "content": reviewed.decode(),
+            "path": storage_path,
+            "hash": expected_hash,
+        }
+        read_storage.assert_awaited_once_with(storage_path)
+        stored = json.loads(mock_client.setex.await_args.args[2])
+        assert stored == result
+
     async def test_get_module_rejects_stale_runtime_from_current_durable_source(
         self, mock_redis_client
     ):

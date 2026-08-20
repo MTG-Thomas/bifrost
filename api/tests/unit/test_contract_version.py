@@ -74,6 +74,17 @@ from src.models.contracts.policy_rule import PolicyRuleCreate, PolicyRuleUpdate 
 from src.models.contracts.tables import TableCreate, TableUpdate  # noqa: E402
 from src.models.contracts.users import RoleCreate, RoleUpdate  # noqa: E402
 from src.models.contracts.workflows import WorkflowUpdateRequest  # noqa: E402
+from src.models.contracts.workspace_promotions import (  # noqa: E402
+    WorkspacePromotionCanaryAccepted,
+    WorkspacePromotionCanaryRequest,
+    WorkspacePromotionArtifactResponse,
+    WorkspacePromotionPreviewRequest,
+    WorkspacePromotionPreviewResponse,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseStatusResponse,
+    WorkspaceLiveStatusResponse,
+)
 
 import inspect  # noqa: E402
 
@@ -121,6 +132,15 @@ _COMMAND_DTOS: list[type] = [
     SolutionDeployJobStatus,
     PolicyRuleCreate,
     PolicyRuleUpdate,
+    WorkspacePromotionPreviewRequest,
+    WorkspacePromotionPreviewResponse,
+    WorkspacePromotionArtifactResponse,
+    WorkspacePromotionCanaryRequest,
+    WorkspacePromotionCanaryAccepted,
+    WorkspaceReleasePrepareRequest,
+    WorkspaceReleaseActivateRequest,
+    WorkspaceReleaseStatusResponse,
+    WorkspaceLiveStatusResponse,
 ]
 
 #: Every request/response DTO the in-workflow SDK sends/parses against
@@ -212,7 +232,17 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Solution deploy enqueue now requires candidate_id (2026-08-12), binding
     # an accepted asynchronous job to the exact reviewed bundle. CONTRACT_VERSION
     # bumped to 10 because a stale CLI cannot verify that invariant.
-    "442b426ffffe716ea112403b96c5bea094169e5ce7f320cfd756954c0c51b588"
+    #
+    # Workspace promotion preview moved to immutable artifact v2 (2026-08-19):
+    # reviewed production source is named by protected Git commit/tree, closure
+    # bytes are server-fetched, and the response binds content, candidate,
+    # release, effective file, and registration identities. CONTRACT_VERSION
+    # bumped to 11 because v1 clients cannot safely interpret or activate v2.
+    # The same unreleased v11 contract includes reviewed-artifact-only canary
+    # request/acceptance DTOs, immutable preparation proof, and tagged
+    # canary/risk-acknowledgement activation authorization; local draft uploads
+    # are not executable.
+    "516622686c6566e796dc0e3869de325068bd3cad5088b38b77e97c4b8854ffea"
 )
 
 

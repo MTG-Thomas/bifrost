@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import unicodedata
 from collections import deque
@@ -22,7 +23,23 @@ from typing import Iterable, Mapping
 PROMOTION_BUNDLE_SCHEMA = "bifrost.workspace-promotion-bundle/v1"
 MAX_SNAPSHOT_FILES = 4_000
 MAX_CLOSURE_FILES = 200
-MAX_CLOSURE_BYTES = 4 * 1024 * 1024
+# Real Workspace vendor clients such as modules/meraki.py legitimately exceed
+# 4 MiB. This remains a strict decoded-byte budget shared by local compilation
+# and server validation; production activation can reuse/fetch reviewed blobs
+# instead of accepting an unbounded request body.
+MAX_CLOSURE_BYTES = 32 * 1024 * 1024
+WORKSPACE_EXECUTABLE_ROOTS = frozenset(
+    {
+        "agents",
+        "apps",
+        "features",
+        "helpers",
+        "integrations",
+        "modules",
+        "shared",
+        "workflows",
+    }
+)
 
 
 class PromotionBundleError(ValueError):
@@ -36,6 +53,15 @@ class PromotionBundle:
     files: tuple[dict[str, str], ...]
 
 
+@dataclass(frozen=True)
+class ProtectedMainProvenance:
+    """Exact reviewed Git source submitted with a production preview."""
+
+    repository: str
+    commit_sha: str
+    tree_sha: str
+
+
 def normalize_workspace_path(value: str) -> str:
     path = pathlib.PurePosixPath(value.replace("\\", "/").strip("/"))
     if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
@@ -45,6 +71,16 @@ def normalize_workspace_path(value: str) -> str:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def is_executable_workspace_path(path: str) -> bool:
+    """Return whether a path belongs to the executable release-v1 tree."""
+
+    normalized = normalize_workspace_path(path)
+    return (
+        normalized.endswith(".py")
+        and normalized.split("/", 1)[0] in WORKSPACE_EXECUTABLE_ROOTS
+    )
 
 
 def snapshot_id(snapshot_files: dict[str, str]) -> str:
@@ -87,7 +123,7 @@ def discover_python_snapshot(
             {
                 normalize_workspace_path(line)
                 for line in result.stdout.splitlines()
-                if line
+                if line and is_executable_workspace_path(line)
             }
         )
 
@@ -117,6 +153,147 @@ def discover_python_snapshot(
             "workspace changed while promotion snapshot was read"
         )
     return first_hashes, second
+
+
+def _run_git_bytes(root: pathlib.Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            input=input_bytes,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise PromotionBundleError(
+            f"could not read reviewed Git source with git {' '.join(args)}"
+        ) from exc
+    return result.stdout
+
+
+def _git_hex(root: pathlib.Path, revision: str) -> str:
+    value = _run_git_bytes(root, "rev-parse", "--verify", revision).decode().strip().lower()
+    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+        raise PromotionBundleError(f"Git revision did not resolve to a full SHA: {revision}")
+    return value
+
+
+def _github_repository(remote_url: str) -> str:
+    value = remote_url.strip()
+    patterns = (
+        r"^https://github\.com/(?P<name>[^/]+/[^/]+?)(?:\.git)?$",
+        r"^ssh://git@github\.com/(?P<name>[^/]+/[^/]+?)(?:\.git)?$",
+        r"^git@github\.com:(?P<name>[^/]+/[^/]+?)(?:\.git)?$",
+    )
+    for pattern in patterns:
+        if match := re.match(pattern, value, flags=re.IGNORECASE):
+            return match.group("name")
+    raise PromotionBundleError(
+        "origin must identify a GitHub owner/repository for protected-main promotion"
+    )
+
+
+def protected_main_provenance(
+    root: pathlib.Path,
+    *,
+    source_ref: str = "origin/main",
+) -> ProtectedMainProvenance:
+    """Resolve immutable reviewed provenance without reading working-tree bytes."""
+
+    root = root.resolve()
+    commit_sha = _git_hex(root, f"{source_ref}^{{commit}}")
+    tree_sha = _git_hex(root, f"{commit_sha}^{{tree}}")
+    remote_url = _run_git_bytes(root, "remote", "get-url", "origin").decode().strip()
+    return ProtectedMainProvenance(
+        repository=_github_repository(remote_url),
+        commit_sha=commit_sha,
+        tree_sha=tree_sha,
+    )
+
+
+def refresh_protected_main(root: pathlib.Path) -> ProtectedMainProvenance:
+    """Fetch the authoritative protected branch before compiling a preview."""
+
+    root = root.resolve()
+    # Validate that the configured origin is the GitHub repository whose
+    # protected branch the API will independently read. This happens before
+    # network access so an accidental fork/local remote fails with a useful
+    # diagnostic instead of producing misleading provenance.
+    remote_url = _run_git_bytes(root, "remote", "get-url", "origin").decode().strip()
+    _github_repository(remote_url)
+    try:
+        _run_git_bytes(
+            root,
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        )
+    except PromotionBundleError as exc:
+        raise PromotionBundleError(
+            "could not refresh authoritative origin/main; verify GitHub access and "
+            "run `git fetch origin main` before building a reviewed preview"
+        ) from exc
+    return protected_main_provenance(root)
+
+
+def discover_git_python_snapshot(
+    root: pathlib.Path,
+    *,
+    commit_sha: str,
+) -> tuple[dict[str, str], dict[str, bytes]]:
+    """Read tracked Python bytes directly from one immutable Git tree."""
+
+    root = root.resolve()
+    tree = _run_git_bytes(root, "ls-tree", "-r", "-z", commit_sha)
+    entries: list[tuple[str, str]] = []
+    for raw_entry in tree.split(b"\0"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, raw_path = raw_entry.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("ascii").split(" ")
+            path = normalize_workspace_path(raw_path.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise PromotionBundleError("reviewed Git tree contains an invalid entry") from exc
+        if not is_executable_workspace_path(path):
+            continue
+        if mode == "120000":
+            raise PromotionBundleError(f"symlinks are not eligible for promotion: {path}")
+        if object_type != "blob" or mode not in {"100644", "100755"}:
+            raise PromotionBundleError(f"unsupported reviewed Git object for {path}")
+        entries.append((path, object_id))
+    entries.sort()
+    if not entries or len(entries) > MAX_SNAPSHOT_FILES:
+        raise PromotionBundleError(
+            f"snapshot must contain 1-{MAX_SNAPSHOT_FILES} Python files"
+        )
+    reject_path_collisions(path for path, _object_id in entries)
+
+    batch_input = b"".join(object_id.encode("ascii") + b"\n" for _, object_id in entries)
+    batch = _run_git_bytes(root, "cat-file", "--batch", input_bytes=batch_input)
+    offset = 0
+    contents: dict[str, bytes] = {}
+    for path, expected_object_id in entries:
+        newline = batch.find(b"\n", offset)
+        if newline < 0:
+            raise PromotionBundleError("Git stopped while reading reviewed source blobs")
+        header = batch[offset:newline].decode("ascii", errors="replace").split(" ")
+        if len(header) != 3 or header[0] != expected_object_id or header[1] != "blob":
+            raise PromotionBundleError(f"Git returned unexpected reviewed blob metadata for {path}")
+        try:
+            size = int(header[2])
+        except ValueError as exc:
+            raise PromotionBundleError(f"Git returned an invalid blob size for {path}") from exc
+        start = newline + 1
+        end = start + size
+        if end >= len(batch) or batch[end : end + 1] != b"\n":
+            raise PromotionBundleError(f"Git returned incomplete reviewed bytes for {path}")
+        contents[path] = batch[start:end]
+        offset = end + 1
+    hashes = {path: sha256_bytes(raw) for path, raw in contents.items()}
+    return hashes, contents
 
 
 def _module_name(path: str) -> str:
@@ -248,12 +425,16 @@ class WorkspaceImportResolver:
         return resolved
 
 
-def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionBundle:
+def _build_bundle_from_snapshot(
+    *,
+    selected_path: str,
+    snapshot_files: dict[str, str],
+    contents: dict[str, bytes],
+) -> PromotionBundle:
     selected_path = normalize_workspace_path(selected_path)
-    snapshot_files, contents = discover_python_snapshot(root)
     if selected_path not in snapshot_files:
         raise PromotionBundleError(
-            f"selected path is not in the Git workspace: {selected_path}"
+            f"selected path is not in the Workspace snapshot: {selected_path}"
         )
     modules = _module_index(snapshot_files)
     closure: set[str] = set()
@@ -275,7 +456,7 @@ def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionB
         raise PromotionBundleError(
             f"dependency closure exceeds {MAX_CLOSURE_BYTES} bytes; reviewed promotion is required"
         )
-    files = tuple(
+    files: tuple[dict[str, str], ...] = tuple(
         {
             "path": path,
             "sha256": snapshot_files[path],
@@ -287,6 +468,39 @@ def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionB
         snapshot_id=snapshot_id(snapshot_files),
         snapshot_files=snapshot_files,
         files=files,
+    )
+
+
+def build_promotion_bundle(root: pathlib.Path, selected_path: str) -> PromotionBundle:
+    """Build a non-authoritative candidate from one stable working tree."""
+
+    snapshot_files, contents = discover_python_snapshot(root)
+    return _build_bundle_from_snapshot(
+        selected_path=selected_path,
+        snapshot_files=snapshot_files,
+        contents=contents,
+    )
+
+
+def build_reviewed_promotion_bundle(
+    root: pathlib.Path,
+    selected_path: str,
+    *,
+    source_ref: str = "origin/main",
+) -> tuple[PromotionBundle, ProtectedMainProvenance]:
+    """Build a production candidate from exact protected Git objects only."""
+
+    provenance = protected_main_provenance(root, source_ref=source_ref)
+    snapshot_files, contents = discover_git_python_snapshot(
+        root, commit_sha=provenance.commit_sha
+    )
+    return (
+        _build_bundle_from_snapshot(
+            selected_path=selected_path,
+            snapshot_files=snapshot_files,
+            contents=contents,
+        ),
+        provenance,
     )
 
 
@@ -405,11 +619,17 @@ __all__ = [
     "PROMOTION_BUNDLE_SCHEMA",
     "PromotionBundle",
     "PromotionBundleError",
+    "ProtectedMainProvenance",
     "build_promotion_bundle",
+    "build_reviewed_promotion_bundle",
     "dependency_edges",
     "dependency_edges_for_file",
+    "discover_git_python_snapshot",
+    "is_executable_workspace_path",
+    "refresh_protected_main",
     "git_source_revision",
     "normalize_workspace_path",
+    "protected_main_provenance",
     "sha256_bytes",
     "snapshot_id",
     "validate_submitted_bundle",

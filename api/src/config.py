@@ -96,6 +96,24 @@ class Settings(BaseSettings):
             "This flag does not enable activation."
         ),
     )
+    workspace_rapid_promotion_draft_upload_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable inert, expiring local Workspace draft storage. Drafts cannot "
+            "be prepared, canaried, registered, or activated."
+        ),
+    )
+    workspace_release_prepare_canary_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable immutable reviewed-artifact preparation and bounded canaries. "
+            "This flag does not enable activation."
+        ),
+    )
+    workspace_release_activation_enabled: bool = Field(
+        default=False,
+        description="Enable atomic activation of prepared Workspace releases.",
+    )
     deferred_execution_promoter_interval_seconds: int = Field(
         default=60,
         ge=1,

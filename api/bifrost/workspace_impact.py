@@ -18,23 +18,13 @@ from typing import Iterable, Mapping
 
 from bifrost.promotion import (
     PromotionBundleError,
+    WORKSPACE_EXECUTABLE_ROOTS,
     WorkspaceImportResolver,
     normalize_workspace_path,
     reject_path_collisions,
 )
 
-WORKSPACE_IMPORT_ROOTS = frozenset(
-    {
-        "agents",
-        "apps",
-        "features",
-        "helpers",
-        "integrations",
-        "modules",
-        "shared",
-        "workflows",
-    }
-)
+WORKSPACE_IMPORT_ROOTS = WORKSPACE_EXECUTABLE_ROOTS
 REFERENCE_FIELDS = frozenset({"workflow_id", "workflow_name", "function_name"})
 ENTITY_DECORATORS = frozenset({"workflow", "tool", "data_provider"})
 UUID_RE = re.compile(

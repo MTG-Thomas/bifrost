@@ -32,7 +32,14 @@ or cosmetic changes do NOT bump it. The tripwire in
 #     stale CLIs cannot parse that enum value and must upgrade (2026-08-07)
 # v10: Solution deploy enqueue responses require candidate_id so the CLI can
 #      prove the accepted job is bound to the exact reviewed bundle (2026-08-12)
-CONTRACT_VERSION: int = 10
+# v11: Workspace promotion preview uses immutable artifact v2: production
+#      source is bound to protected Git commit/tree, the server fetches reviewed
+#      closure bytes, and response identities cover effective files and
+#      registrations; server canaries accept reviewed artifacts only; prepare
+#      emits an immutable authorization challenge, and activation accepts only
+#      its tagged canary or exact risk-acknowledgement authorization
+#      (2026-08-19)
+CONTRACT_VERSION: int = 11
 
 
 def get_contract_version() -> int:

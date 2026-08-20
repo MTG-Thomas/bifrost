@@ -2120,13 +2120,6 @@ async def generate_sdk(
             detail="Integration not found",
         )
 
-    # Auto-create config schema for auth type (base_url, token, etc.)
-    schema_items = _get_config_schema_for_auth_type(request.auth_type)
-    await repo.update_integration(
-        integration_id,
-        IntegrationUpdate(config_schema=schema_items),
-    )
-
     try:
         # Generate the SDK
         result = generate_sdk_from_url(
@@ -2138,13 +2131,32 @@ async def generate_sdk(
 
         # Write to S3 workspace
         from src.services.file_storage import FileStorageService
+        from src.services.workspace_release_files import (
+            WorkspaceReleasePathGoverned,
+            reject_release_governed_paths,
+        )
         storage = FileStorageService(ctx.db)
         module_path = f"modules/{result.module_name}.py"
-        await storage.write_file(
-            path=module_path,
-            content=result.code.encode("utf-8"),
-            updated_by=str(user.user_id),
-        )
+        try:
+            await reject_release_governed_paths(ctx.db, ctx.org_id, [module_path])
+
+            # Keep the integration row and generated module one guarded unit:
+            # a Live-governed module must fail before either mutation.
+            schema_items = _get_config_schema_for_auth_type(request.auth_type)
+            await repo.update_integration(
+                integration_id,
+                IntegrationUpdate(config_schema=schema_items),
+            )
+            await storage.write_file(
+                path=module_path,
+                content=result.code.encode("utf-8"),
+                updated_by=str(user.user_id),
+            )
+        except WorkspaceReleasePathGoverned as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            ) from e
 
         logger.info(
             f"Generated SDK for integration {log_safe(integration.name)}: "
@@ -2168,6 +2180,8 @@ print(result)'''
             usage_example=usage_example,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"SDK generation failed for integration {log_safe(integration_id)}")
         raise HTTPException(

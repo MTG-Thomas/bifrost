@@ -34,6 +34,9 @@ class _Client:
 
         return {"Body": _Body()}
 
+    async def delete_object(self, *, Key: str, **_kwargs) -> None:
+        self.objects.pop(Key, None)
+
 
 @asynccontextmanager
 async def _factory(client: _Client):
@@ -67,3 +70,20 @@ async def test_candidate_key_collision_with_different_bytes_fails_closed() -> No
 
     with pytest.raises(DeploymentArtifactIntegrityError, match="different bytes"):
         await storage.write_source(b"second")
+
+
+async def test_expired_draft_cleanup_deletes_only_exact_artifact_objects() -> None:
+    client = _Client()
+    storage = WorkspacePromotionArtifactStorage(
+        uuid4(),
+        "sha256:" + "c" * 64,
+        settings=SimpleNamespace(object_storage_provider="s3", s3_bucket="test"),
+        client_factory=lambda: _factory(client),
+    )
+    await storage.write_source(b"source")
+    await storage.write_manifest(b"manifest")
+    client.objects["unrelated"] = b"preserve"
+
+    await storage.delete_expired_draft()
+
+    assert client.objects == {"unrelated": b"preserve"}

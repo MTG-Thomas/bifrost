@@ -16,6 +16,12 @@ from src.jobs.platform.embedding_reindex import EMBEDDING_REINDEX_DEFINITION
 from src.jobs.platform.reimport import WORKSPACE_REIMPORT_DEFINITION
 from src.jobs.platform.git_operation import GIT_OPERATION_DEFINITION
 from src.jobs.platform.summary_backfill import SUMMARY_BACKFILL_DEFINITION
+from src.jobs.platform.workspace_release_prepare import (
+    WORKSPACE_RELEASE_PREPARE_DEFINITION,
+)
+from src.jobs.platform.workspace_release_lock import (
+    WORKSPACE_RELEASE_LOCK_DEFINITION,
+)
 
 _DEFINITIONS = {
     APPLICATION_PUBLISH_DEFINITION.job_type: APPLICATION_PUBLISH_DEFINITION,
@@ -29,6 +35,10 @@ _DEFINITIONS = {
     WORKSPACE_REIMPORT_DEFINITION.job_type: WORKSPACE_REIMPORT_DEFINITION,
     GIT_OPERATION_DEFINITION.job_type: GIT_OPERATION_DEFINITION,
     SUMMARY_BACKFILL_DEFINITION.job_type: SUMMARY_BACKFILL_DEFINITION,
+    WORKSPACE_RELEASE_PREPARE_DEFINITION.job_type: (
+        WORKSPACE_RELEASE_PREPARE_DEFINITION
+    ),
+    WORKSPACE_RELEASE_LOCK_DEFINITION.job_type: WORKSPACE_RELEASE_LOCK_DEFINITION,
 }
 
 

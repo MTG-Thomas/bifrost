@@ -50,7 +50,16 @@ def _allow_policy():
     """These tests exercise path resolution + S3 method dispatch, not the policy
     gate. Bypass the default-deny file-policy check so resolution is reached;
     policy enforcement has its own e2e coverage (test_file_policies_rest.py)."""
-    with patch("src.routers.files._require_file_policy", new=AsyncMock(return_value=None)):
+    with (
+        patch(
+            "src.routers.files._require_file_policy",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "src.services.workspace_release_files.reject_release_governed_paths",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
         yield
 
 
@@ -125,7 +134,9 @@ class TestPathResolution:
 
     @pytest.mark.asyncio
     @patch("src.routers.files.FileStorageService")
-    async def test_workspace_unscoped(self, mock_fss_class):
+    async def test_workspace_presigned_put_is_rejected(self, mock_fss_class):
+        from fastapi import HTTPException
+
         mock_fss = MagicMock()
         mock_fss.generate_presigned_upload_url = AsyncMock(
             return_value="https://s3/url"
@@ -136,8 +147,11 @@ class TestPathResolution:
         mock_fss_class.return_value = mock_fss
 
         req = SignedUrlRequest(path="report.pdf", location="workspace")
-        result = await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
-        assert result.path == "_repo/report.pdf"
+        with pytest.raises(HTTPException) as exc_info:
+            await get_signed_url(req, _ctx(), MagicMock(), AsyncMock())
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["reason"] == "workspace_signed_put_unsupported"
 
     @pytest.mark.asyncio
     @patch("src.routers.files.FileStorageService")

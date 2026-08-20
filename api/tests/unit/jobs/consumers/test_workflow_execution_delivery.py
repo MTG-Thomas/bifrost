@@ -385,6 +385,104 @@ async def test_process_message_retries_pool_admission_memory_pressure_without_de
 
 
 @pytest.mark.asyncio
+async def test_workspace_release_routes_with_verified_immutable_duration_bound() -> None:
+    consumer = make_consumer()
+    consumer._pool = AsyncMock()
+    execution_id = str(uuid4())
+    workflow_id = str(uuid4())
+    release_id = "sha256:" + "a" * 64
+    runtime_evidence = {"workspace_release_id": release_id}
+    pending = pending_context()
+    pending.update(
+        {
+            "runtime_mode": "workspace-release-v1",
+            "runtime_evidence": runtime_evidence,
+        }
+    )
+    consumer._redis_client.get_pending_execution.return_value = pending
+
+    durable_execution = SimpleNamespace(
+        runtime_mode="workspace-release-v1",
+        runtime_evidence=runtime_evidence,
+        runtime_evidence_hash="sha256:" + "b" * 64,
+    )
+    db = AsyncMock()
+    db.get.return_value = durable_execution
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    pinned = SimpleNamespace(queue_evidence=lambda: runtime_evidence)
+    workflow_data = {
+        "name": "Immutable release workflow",
+        "function_name": "run",
+        "path": "features/demo.py",
+        "type": "workflow",
+        "cache_ttl_seconds": 0,
+        "timeout_seconds": 11,
+        "time_saved": 0,
+        "value": 0,
+        "content_hash": "c" * 64,
+        "organization_id": None,
+        "workspace_release_id": release_id,
+        "workspace_release_source_hashes": {"features/demo.py": "c" * 64},
+        "workspace_release_runtime_storage_prefix": (
+            "_workspace_releases/org/release/files/"
+        ),
+        "workflow_runtime_bounds": {
+            "max_duration_seconds": 47,
+            "max_external_calls": 1,
+            "max_records_read": 10,
+            "max_output_bytes": 2048,
+        },
+        "workspace_release_max_output_bytes": 2048,
+    }
+
+    with (
+        patch(
+            "src.services.execution.queue_tracker.remove_from_queue",
+            new_callable=AsyncMock,
+        ),
+        patch("src.core.database.get_db_context", side_effect=db_context),
+        patch(
+            "src.services.workspace_release_runtime.resolve_pinned_workspace_runtime",
+            new=AsyncMock(return_value=pinned),
+        ),
+        patch(
+            "src.services.workspace_release_runtime.verify_workspace_runtime_evidence"
+        ),
+        patch(
+            "src.services.workspace_release_runtime.workflow_data_from_workspace_evidence",
+            return_value=workflow_data,
+        ),
+        patch(
+            "src.repositories.executions.create_execution", new_callable=AsyncMock
+        ),
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_execution_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "src.jobs.consumers.workflow_execution.publish_history_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "src.core.security.mint_engine_token",
+            return_value=("engine-token", "2099-01-01T00:00:00Z"),
+        ),
+    ):
+        await consumer.process_message(
+            {"execution_id": execution_id, "workflow_id": workflow_id}
+        )
+
+    routed_context = consumer._pool.route_execution.await_args.kwargs["context"]
+    assert routed_context["timeout_seconds"] == 11
+    assert routed_context["runtime_max_duration_seconds"] == 47
+    assert routed_context["runtime_max_output_bytes"] == 2048
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "released"),
     [

@@ -808,6 +808,10 @@ async def push_files(
         SOLUTION_MANAGED_MESSAGE,
         is_solution_managed,
     )
+    from src.services.workspace_release_files import (
+        reject_release_governed_paths,
+        reject_release_governed_prefixes,
+    )
 
     logger.info(f"MCP push_files called with {len(files)} file(s)")
 
@@ -833,6 +837,34 @@ async def push_files(
                 return error_result(
                     SOLUTION_MANAGED_MESSAGE,
                     {"blocked_paths": blocked},
+                )
+
+            # Preflight the complete batch before any legacy write. App assets
+            # remain mutable; only Python source can belong to immutable Live.
+            governed_candidates = [path for path in files if path.endswith(".py")]
+            if governed_candidates:
+                await reject_release_governed_paths(
+                    db,
+                    getattr(context, "org_id", None),
+                    governed_candidates,
+                )
+
+            delete_prefix: str | None = None
+            if delete_missing_prefix:
+                delete_prefix = delete_missing_prefix.rstrip("/")
+                prefix_marker = f"{delete_prefix}/"
+                if any(
+                    prefix_marker.startswith(managed) or managed.startswith(prefix_marker)
+                    for managed in managed_prefixes
+                ):
+                    return error_result(
+                        SOLUTION_MANAGED_MESSAGE,
+                        {"blocked_delete_prefix": delete_missing_prefix},
+                    )
+                await reject_release_governed_prefixes(
+                    db,
+                    getattr(context, "org_id", None),
+                    [delete_prefix],
                 )
 
             file_storage = FileStorageService(db)
@@ -870,25 +902,8 @@ async def push_files(
                 except Exception as e:
                     push_errors.append(f"{repo_path}: {str(e)}")
 
-            if delete_missing_prefix:
-                prefix = delete_missing_prefix
-                if not prefix.endswith("/"):
-                    prefix += "/"
-                # The delete-sweep is a separate write path from the files-key
-                # guard above: an empty/partial `files` dict slips past the key
-                # check, but the sweep would still delete _repo files under
-                # `prefix`. Refuse if the sweep would touch ANY solution-managed
-                # app's files — in either direction: the delete prefix is under a
-                # managed prefix (delete "apps/managed/sub"), OR contains/equals
-                # one (delete "apps/" which would sweep "apps/managed/...").
-                if any(
-                    prefix.startswith(managed) or managed.startswith(prefix)
-                    for managed in managed_prefixes
-                ):
-                    return error_result(
-                        SOLUTION_MANAGED_MESSAGE,
-                        {"blocked_delete_prefix": delete_missing_prefix},
-                    )
+            if delete_prefix:
+                prefix = f"{delete_prefix}/"
                 existing_files = await db.execute(
                     select(FileIndex.path).where(FileIndex.path.startswith(prefix))
                 )

@@ -169,7 +169,12 @@ async def test_assign_roles_404s_for_missing_role():
 async def test_remove_role_from_workflow_checks_guard_and_deletes_assignment():
     workflow_id = uuid4()
     role_id = uuid4()
-    db = _Db(_RowCountResult(1))
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        path="features/example.py",
+        function_name="example",
+    )
+    db = _Db(_ScalarResult(workflow), _RowCountResult(1))
 
     with patch.object(
         workflows,
@@ -185,7 +190,12 @@ async def test_remove_role_from_workflow_checks_guard_and_deletes_assignment():
 async def test_remove_role_from_workflow_404s_when_assignment_missing():
     workflow_id = uuid4()
     role_id = uuid4()
-    db = _Db(_RowCountResult(0))
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        path="features/example.py",
+        function_name="example",
+    )
+    db = _Db(_ScalarResult(workflow), _RowCountResult(0))
 
     with (
         patch.object(
@@ -335,3 +345,12 @@ async def test_delete_workflow_deactivates_when_source_file_is_missing():
         "status": "deleted",
         "detail": "Source file not found, workflow deactivated",
     }
+
+@pytest.fixture(autouse=True)
+def bypass_live_registration_authority(monkeypatch):
+    """Router examples isolate role behavior from Workspace Live state."""
+    monkeypatch.setattr(
+        workflows,
+        "_guard_workflow_registration_mutation",
+        AsyncMock(),
+    )

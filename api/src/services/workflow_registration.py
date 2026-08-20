@@ -8,8 +8,13 @@ from uuid import UUID, uuid4
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.models import Workflow as WorkflowORM
+from src.services.workspace_release_registration_authority import (
+    WorkspaceRegistrationMutationAuthority,
+    guard_workspace_registration_mutation,
+)
 
 
 @dataclass(frozen=True)
@@ -23,15 +28,17 @@ class WorkspaceRegistrationCandidate:
     requested_id: str | None = None
 
 
-async def _find_workspace_workflow(
-    db: AsyncSession,
+def workspace_workflow_lookup_statement(
     organization_id: UUID,
     path: str,
     function_name: str,
-) -> WorkflowORM | None:
-    """Find a caller-visible global or organization-scoped Workspace row."""
-    result = await db.execute(
-        select(WorkflowORM).where(
+    *,
+    for_update: bool = False,
+):
+    """Prefer the organization override over a same-key global registration."""
+    statement = (
+        select(WorkflowORM)
+        .where(
             WorkflowORM.path == path,
             WorkflowORM.function_name == function_name,
             WorkflowORM.solution_id.is_(None),
@@ -39,6 +46,26 @@ async def _find_workspace_workflow(
                 WorkflowORM.organization_id == organization_id,
                 WorkflowORM.organization_id.is_(None),
             ),
+        )
+        .order_by(WorkflowORM.organization_id.is_(None).asc(), WorkflowORM.id.asc())
+        .limit(1)
+        .options(selectinload(WorkflowORM.roles))
+    )
+    return statement.with_for_update() if for_update else statement
+
+
+async def find_workspace_workflow(
+    db: AsyncSession,
+    organization_id: UUID,
+    path: str,
+    function_name: str,
+    *,
+    for_update: bool = False,
+) -> WorkflowORM | None:
+    """Find a caller-visible global or organization-scoped Workspace row."""
+    result = await db.execute(
+        workspace_workflow_lookup_statement(
+            organization_id, path, function_name, for_update=for_update
         )
     )
     return result.scalar_one_or_none()
@@ -76,7 +103,7 @@ async def plan_workspace_registrations(
     for candidate in sorted(
         candidates, key=lambda item: (item.path, item.function_name)
     ):
-        existing = await _find_workspace_workflow(
+        existing = await find_workspace_workflow(
             db, organization_id, candidate.path, candidate.function_name
         )
         try:
@@ -113,6 +140,10 @@ async def apply_workspace_registration_plan(
     db: AsyncSession,
     organization_id: UUID,
     actions: list[dict],
+    *,
+    authority: WorkspaceRegistrationMutationAuthority = (
+        WorkspaceRegistrationMutationAuthority.EXTERNAL
+    ),
 ) -> list[dict]:
     """Create missing Workspace rows in the caller's activation transaction.
 
@@ -120,9 +151,15 @@ async def apply_workspace_registration_plan(
     activation does not depend on a source rewrite. A subsequent source write may
     still let ``WorkflowIndexer`` enrich the row from the activated file.
     """
+    await guard_workspace_registration_mutation(
+        db,
+        operation="apply workflow registration plan",
+        paths=(action["path"] for action in actions),
+        authority=authority,
+    )
     applied: list[dict] = []
     for action in actions:
-        existing = await _find_workspace_workflow(
+        existing = await find_workspace_workflow(
             db, organization_id, action["path"], action["function_name"]
         )
         _assert_registration_plan_current(action, existing)
@@ -138,9 +175,9 @@ async def apply_workspace_registration_plan(
         if existing is not None:
             if action.get("action") == "reactivate":
                 existing.is_active = True
-                existing.name = action.get("name") or action["function_name"]
-                existing.type = action["type"]
-                await db.flush()
+            existing.name = action.get("name") or action["function_name"]
+            existing.type = action["type"]
+            await db.flush()
             applied.append({**action, "workflow_id": str(existing.id)})
             continue
 

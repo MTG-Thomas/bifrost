@@ -194,15 +194,30 @@ def _workspace_module_maps(
     module_index: set[str],
 ) -> tuple[set[str], dict[str, str]]:
     """Map cached workspace paths to import names and namespace prefixes."""
+    from src.core.module_cache_sync import get_workspace_release_context
+
+    release_ctx = get_workspace_release_context()
+    release_prefix = (
+        release_ctx.runtime_storage_prefix if release_ctx is not None else None
+    )
     workspace_names: set[str] = set()
     name_to_path: dict[str, str] = {}
     for path in module_index:
-        mod_name = path.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
+        logical_path = (
+            path[len(release_prefix) :]
+            if release_prefix and path.startswith(release_prefix)
+            else path
+        )
+        mod_name = (
+            logical_path.replace("/", ".")
+            .removesuffix(".py")
+            .removesuffix(".__init__")
+        )
         parts = mod_name.split(".")
         for i in range(1, len(parts) + 1):
             prefix = ".".join(parts[:i])
             workspace_names.add(prefix)
-        name_to_path[mod_name] = path
+        name_to_path[mod_name] = logical_path
     return workspace_names, name_to_path
 
 
@@ -444,9 +459,19 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
     # install's same-name module could survive the hash check and shadow this
     # install's file, breaking multi-install isolation (Codex #9). This context is
     # temporary: _run_execution activates it again after credential bootstrap.
-    from src.core.module_cache_sync import clear_solution_context, set_solution_context
+    from src.core.module_cache_sync import (
+        clear_solution_context,
+        clear_workspace_release_context,
+        set_solution_context,
+        set_workspace_release_context,
+    )
 
     _exec_solution_id = context.get("solution_id")
+    _workspace_release_id = context.get("workspace_release_id")
+    if _exec_solution_id and _workspace_release_id:
+        raise RuntimeError(
+            "execution cannot pin a Solution and Workspace release together"
+        )
     if _exec_solution_id:
         context_options = {
             "runtime_storage_prefix": context.get("runtime_storage_prefix"),
@@ -463,12 +488,21 @@ async def _execute_async(execution_id: str, worker_id: str) -> dict[str, Any]:
                 _exec_solution_id,
                 global_repo_access=bool(context.get("solution_global_repo_access", False)),
             )
+    if _workspace_release_id:
+        set_workspace_release_context(
+            _workspace_release_id,
+            runtime_storage_prefix=str(
+                context.get("workspace_release_runtime_storage_prefix") or ""
+            ),
+            source_hashes=dict(context.get("workspace_release_source_hashes") or {}),
+        )
     try:
         workspace_refresh = _clear_workspace_modules()
     finally:
         # Credential backend imports must run without Solution namespace probing;
         # otherwise their own API credential lookup can recursively import them.
         clear_solution_context()
+        clear_workspace_release_context()
 
     context["workspace_generation"] = workspace_refresh.generation
 

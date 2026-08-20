@@ -13,12 +13,17 @@ from uuid import UUID
 import httpx
 import jwt
 
+from bifrost.promotion import MAX_CLOSURE_BYTES, MAX_CLOSURE_FILES
+
 _GITHUB_API_VERSION = "2022-11-28"
 _GRAPHQL_URL = "https://api.github.com/graphql"
 _REST_URL = "https://api.github.com"
 _CHANGESET_TRAILER = "Workspace-Changeset-ID"
 _CONVERGENCE_TRAILER = "Workspace-History-Convergence-Candidate"
 _RECONCILED_CHANGESET_TRAILER = "Workspace-Reconciled-Changeset-ID"
+_WORKSPACE_RELEASE_TRAILER = "Workspace-Release-ID"
+_WORKSPACE_RELEASE_ROW_TRAILER = "Workspace-Release-Row-ID"
+_WORKSPACE_RELEASE_LEDGER_TRAILER = "Workspace-Release-Ledger-SHA256"
 _REF_SETTLE_DELAYS_SECONDS = (0.0, 0.25, 0.75, 1.5, 3.0)
 
 
@@ -52,8 +57,12 @@ class PlatformCommitRequest:
     protected_main_source_sha: str | None = None
     candidate_commit_sha: str | None = None
     expected_head_sha: str | None = None
+    expected_head_tree_sha: str | None = None
     convergence_candidate_id: str | None = None
     reconciled_changeset_ids: tuple[UUID, ...] = ()
+    workspace_release_id: str | None = None
+    workspace_release_row_id: UUID | None = None
+    workspace_release_ledger_sha256: str | None = None
 
     def github_message(self) -> tuple[str, str]:
         headline, separator, body = self.commit_message.partition("\n")
@@ -75,6 +84,19 @@ class PlatformCommitRequest:
             f"{_RECONCILED_CHANGESET_TRAILER}: {changeset_id}"
             for changeset_id in self.reconciled_changeset_ids
         )
+        if self.workspace_release_id:
+            provenance.append(
+                f"{_WORKSPACE_RELEASE_TRAILER}: {self.workspace_release_id}"
+            )
+        if self.workspace_release_row_id:
+            provenance.append(
+                f"{_WORKSPACE_RELEASE_ROW_TRAILER}: {self.workspace_release_row_id}"
+            )
+        if self.workspace_release_ledger_sha256:
+            provenance.append(
+                f"{_WORKSPACE_RELEASE_LEDGER_TRAILER}: "
+                f"{self.workspace_release_ledger_sha256}"
+            )
         sections = []
         if separator and body.strip():
             sections.append(body.strip())
@@ -97,6 +119,13 @@ class PlatformCommitSnapshot:
     signature_state: str | None = None
 
 
+@dataclass(frozen=True)
+class PlatformSourceSnapshot:
+    commit_sha: str
+    tree_sha: str
+    files: dict[str, bytes]
+
+
 class PlatformCommitWriter(Protocol):
     async def inspect(
         self,
@@ -108,6 +137,15 @@ class PlatformCommitWriter(Protocol):
         raise NotImplementedError
 
     async def write(self, request: PlatformCommitRequest) -> PlatformCommitResult:
+        raise NotImplementedError
+
+    async def read_files(
+        self,
+        paths: tuple[str, ...],
+        *,
+        ref: str,
+        reachable_from: str | None = None,
+    ) -> PlatformSourceSnapshot:
         raise NotImplementedError
 
 
@@ -197,6 +235,55 @@ class GitHubAppCommitWriter:
                 reachable_from=reachable_from,
             )
 
+    async def read_files(
+        self,
+        paths: tuple[str, ...],
+        *,
+        ref: str,
+        reachable_from: str | None = None,
+    ) -> PlatformSourceSnapshot:
+        """Read exact bytes from one immutable, protected Git tree."""
+        normalized_paths = tuple(sorted(set(paths)))
+        if not normalized_paths:
+            raise PlatformCommitError("platform source read requires paths")
+        if len(normalized_paths) > MAX_CLOSURE_FILES:
+            raise PlatformCommitError("platform source read exceeds the file limit")
+        if self.client is not None:
+            return await self._read_files_with_client(
+                self.client,
+                normalized_paths,
+                ref=ref,
+                reachable_from=reachable_from,
+            )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await self._read_files_with_client(
+                client,
+                normalized_paths,
+                ref=ref,
+                reachable_from=reachable_from,
+            )
+
+    async def _read_files_with_client(
+        self,
+        client: httpx.AsyncClient,
+        paths: tuple[str, ...],
+        *,
+        ref: str,
+        reachable_from: str | None,
+    ) -> PlatformSourceSnapshot:
+        token = await self._installation_token(client)
+        commit = await self._commit_snapshot(client, token, ref)
+        if reachable_from is not None:
+            await self._verify_reachable_from(
+                client, token, commit["oid"], reachable_from
+            )
+        files = await self._file_contents(client, token, paths, commit["oid"])
+        return PlatformSourceSnapshot(
+            commit_sha=commit["oid"],
+            tree_sha=commit["tree_oid"],
+            files=files,
+        )
+
     async def _inspect_with_client(
         self,
         client: httpx.AsyncClient,
@@ -283,6 +370,13 @@ class GitHubAppCommitWriter:
         if request.expected_head_sha and head["oid"] != request.expected_head_sha:
             raise PlatformCommitError(
                 "GitHub branch head changed after the reviewed preview"
+            )
+        if (
+            request.expected_head_tree_sha
+            and head["tree_oid"] != request.expected_head_tree_sha
+        ):
+            raise PlatformCommitError(
+                "GitHub branch tree changed after the reviewed preview"
             )
 
         await self._verify_files(
@@ -423,6 +517,36 @@ class GitHubAppCommitWriter:
                     f"GitHub could not inspect file {path}: HTTP {response.status_code}"
                 )
             result[path] = hashlib.sha256(response.content).hexdigest()
+        return result
+
+    async def _file_contents(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        paths: tuple[str, ...],
+        ref: str,
+    ) -> dict[str, bytes]:
+        result: dict[str, bytes] = {}
+        total_bytes = 0
+        for path in paths:
+            encoded_path = urllib.parse.quote(path, safe="/")
+            response = await client.get(
+                f"{_REST_URL}/repos/{self.owner}/{self.repository}/contents/{encoded_path}",
+                headers=self._headers(token, accept="application/vnd.github.raw+json"),
+                params={"ref": ref},
+            )
+            if response.status_code == 404:
+                raise PlatformCommitError(
+                    f"protected source does not contain required path {path}"
+                )
+            if response.is_error:
+                raise PlatformCommitError(
+                    f"GitHub could not read file {path}: HTTP {response.status_code}"
+                )
+            total_bytes += len(response.content)
+            if total_bytes > MAX_CLOSURE_BYTES:
+                raise PlatformCommitError("platform source read exceeds the byte limit")
+            result[path] = response.content
         return result
 
     async def _verify_commit(

@@ -416,6 +416,24 @@ class Scheduler:
         except ImportError:
             logger.warning("Solution export artifact cleanup not available")
 
+        from src.jobs.schedulers.workspace_promotion_drafts import (
+            cleanup_expired_workspace_drafts,
+        )
+
+        scheduler.add_job(
+            self._run_scheduled_task,
+            IntervalTrigger(hours=1),
+            id="workspace_promotion_draft_cleanup",
+            name="Cleanup expired inert Workspace promotion drafts",
+            replace_existing=True,
+            args=[
+                "workspace_promotion_draft_cleanup",
+                cleanup_expired_workspace_drafts,
+            ],
+            **misfire_options,
+        )
+        logger.info("Workspace promotion draft cleanup scheduled (hourly)")
+
         # Replay payloads expire after seven days; the hashed at-most-once
         # tombstones remain permanently so cleanup can never enable redispatch.
         from src.jobs.schedulers.operation_receipts import (

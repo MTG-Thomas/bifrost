@@ -28,6 +28,9 @@ from src.core.log_safety import log_safe
 from src.models.orm.agents import Agent, AgentTool
 from src.models.orm.forms import Form, FormField
 from src.models.orm.workflows import Workflow
+from src.services.workspace_release_registration_authority import (
+    guard_workspace_registration_mutation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +264,12 @@ class WorkflowOrphanService:
             raise ValueError(f"Workflow {workflow_id} not found")
         if not wf.is_orphaned:
             raise ValueError(f"Workflow {workflow_id} is not orphaned")
+        await guard_workspace_registration_mutation(
+            self.db,
+            operation="replace orphaned workflow",
+            paths=(source_path,),
+            workflows=(wf,),
+        )
 
         # Validate file exists and contains the decorated function.
         code = await self._read_file(source_path)
@@ -356,6 +365,11 @@ class WorkflowOrphanService:
             raise ValueError(f"Workflow {workflow_id} not found")
         if not wf.is_orphaned:
             raise ValueError(f"Workflow {workflow_id} is not orphaned")
+        await guard_workspace_registration_mutation(
+            self.db,
+            operation="recreate orphaned workflow",
+            workflows=(wf,),
+        )
         if not wf.path:
             raise ValueError(
                 f"Workflow {workflow_id} is missing path for recreation"
@@ -396,6 +410,12 @@ class WorkflowOrphanService:
         wf = await self.db.get(Workflow, workflow_id)
         if not wf:
             raise ValueError(f"Workflow {workflow_id} not found")
+
+        await guard_workspace_registration_mutation(
+            self.db,
+            operation="deactivate orphaned workflow",
+            workflows=(wf,),
+        )
 
         # Get reference count before deactivating
         refs = await self._get_workflow_references(wf.id)

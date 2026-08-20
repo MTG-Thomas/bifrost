@@ -126,6 +126,7 @@ class ExecutionRepository:
             defer(ExecutionModel.result, raiseload=True),
             defer(ExecutionModel.variables, raiseload=True),
             defer(ExecutionModel.execution_context, raiseload=True),
+            defer(ExecutionModel.dispatch_evidence, raiseload=True),
         )
 
         # Organization scoping
@@ -589,8 +590,9 @@ class ExecutionRepository:
         """Convert SQLAlchemy model to the payload-free list model.
 
         Must only touch columns the list query loads — the payload columns
-        (parameters/result/variables/execution_context) are deferred with
-        raiseload=True so History never selects or serializes them.
+        (parameters/result/variables/execution_context/dispatch_evidence) are
+        deferred with raiseload=True so History never selects or serializes
+        them.
         """
         return ExecutionSummary(
             execution_id=str(execution.id),

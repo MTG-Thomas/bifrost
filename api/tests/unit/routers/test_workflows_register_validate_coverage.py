@@ -206,7 +206,14 @@ async def test_validate_workflow_returns_service_response_and_maps_errors() -> N
 async def test_register_workflow_reports_missing_file_and_non_python_path() -> None:
     missing_service = SimpleNamespace(read_file=AsyncMock(side_effect=FileNotFoundError()))
 
-    with patch("src.services.file_storage.FileStorageService", return_value=missing_service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=missing_service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/missing.py", function_name="run"),
@@ -218,7 +225,14 @@ async def test_register_workflow_reports_missing_file_and_non_python_path() -> N
     assert exc.value.detail == "File not found: workflows/missing.py"
 
     service = SimpleNamespace(read_file=AsyncMock(return_value=(b"def run(): pass", None)))
-    with patch("src.services.file_storage.FileStorageService", return_value=service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/plain.txt", function_name="run"),
@@ -234,7 +248,14 @@ async def test_register_workflow_reports_missing_file_and_non_python_path() -> N
 async def test_register_workflow_reports_syntax_and_missing_decorator() -> None:
     service = SimpleNamespace(read_file=AsyncMock(return_value=(b"def run(: pass", None)))
 
-    with patch("src.services.file_storage.FileStorageService", return_value=service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/bad.py", function_name="run"),
@@ -246,7 +267,14 @@ async def test_register_workflow_reports_syntax_and_missing_decorator() -> None:
     assert "Syntax error:" in exc.value.detail
 
     service = SimpleNamespace(read_file=AsyncMock(return_value=(b"def run(): pass", None)))
-    with patch("src.services.file_storage.FileStorageService", return_value=service):
+    with (
+        patch("src.services.file_storage.FileStorageService", return_value=service),
+        patch.object(
+            workflows,
+            "_guard_workflow_registration_mutation",
+            new=AsyncMock(),
+        ),
+    ):
         with pytest.raises(HTTPException) as exc:
             await workflows.register_workflow(
                 RegisterWorkflowRequest(path="workflows/plain.py", function_name="run"),
@@ -968,3 +996,12 @@ async def test_cancel_scheduled_execution_handles_success_and_race_conflict() ->
     assert exc.value.detail == "Execution is not Scheduled (current status: Pending)"
     assert conflict_db.committed is True
     assert conflict_db.refreshed is True
+
+@pytest.fixture(autouse=True)
+def bypass_live_registration_authority(monkeypatch):
+    """Router examples isolate request behavior from Workspace Live state."""
+    monkeypatch.setattr(
+        workflows,
+        "_guard_workflow_registration_mutation",
+        AsyncMock(),
+    )

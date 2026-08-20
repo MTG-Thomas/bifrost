@@ -170,6 +170,8 @@ def test_storage_path_to_object_key_handles_repo_and_solution_paths():
         module_cache_sync._storage_path_to_s3_key("_solutions/sol-1/modules/a.py")
         == "_solutions/sol-1/modules/a.py"
     )
+    release_path = "_workspace_releases/org-1/release-1/files/modules/a.py"
+    assert module_cache_sync._storage_path_to_s3_key(release_path) == release_path
 
 
 def test_list_blob_modules_returns_python_paths(monkeypatch):
@@ -274,6 +276,141 @@ def test_candidate_paths_respect_solution_context():
         ]
     finally:
         module_cache_sync.clear_solution_context()
+
+
+def test_candidate_paths_are_fail_closed_to_workspace_release_manifest():
+    module_cache_sync = _module_cache_sync()
+    prefix = "_workspace_releases/org-1/release-1/files/"
+    module_cache_sync.set_workspace_release_context(
+        "sha256:" + "a" * 64,
+        runtime_storage_prefix=prefix,
+        source_hashes={"modules/a.py": "b" * 64},
+    )
+    try:
+        assert module_cache_sync.candidate_module_paths("modules/a.py") == [
+            f"{prefix}modules/a.py"
+        ]
+        assert module_cache_sync.candidate_index_prefixes("modules") == [
+            f"{prefix}modules/"
+        ]
+        assert module_cache_sync.get_module_index_sync() == {
+            f"{prefix}modules/a.py"
+        }
+    finally:
+        module_cache_sync.clear_workspace_release_context()
+
+
+def test_workspace_release_context_rejects_solution_overlap():
+    module_cache_sync = _module_cache_sync()
+    module_cache_sync.set_solution_context(uuid4(), global_repo_access=False)
+    module_cache_sync.set_workspace_release_context(
+        "sha256:" + "a" * 64,
+        runtime_storage_prefix="_workspace_releases/org-1/release-1/files/",
+        source_hashes={"modules/a.py": "b" * 64},
+    )
+    try:
+        with pytest.raises(RuntimeError, match="cannot overlap"):
+            module_cache_sync.candidate_module_paths("modules/a.py")
+    finally:
+        module_cache_sync.clear_workspace_release_context()
+        module_cache_sync.clear_solution_context()
+
+
+def test_workspace_release_cache_hit_must_match_manifest(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    content = "VALUE = 'wrong release'"
+    redis_client = MagicMock()
+    redis_client.get.return_value = json.dumps(
+        {
+            "content": content,
+            "path": "modules/a.py",
+            "hash": hashlib.sha256(content.encode()).hexdigest(),
+        }
+    )
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    module_cache_sync.set_workspace_release_context(
+        "sha256:" + "a" * 64,
+        runtime_storage_prefix="_workspace_releases/org-1/release-1/files/",
+        source_hashes={"modules/a.py": "b" * 64},
+    )
+    try:
+        with pytest.raises(RuntimeError, match="import integrity mismatch"):
+            module_cache_sync.get_module_sync("modules/a.py")
+    finally:
+        module_cache_sync.clear_workspace_release_context()
+
+
+def test_workspace_release_corrupt_cache_label_is_deleted_and_refetched(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    reviewed = "VALUE = 'reviewed'\n"
+    reviewed_hash = hashlib.sha256(reviewed.encode()).hexdigest()
+    storage_path = (
+        "_workspace_releases/org-1/release-1/files/modules/a.py"
+    )
+    redis_client = MagicMock()
+    redis_client.get.return_value = json.dumps(
+        {
+            "content": "VALUE = 'corrupt'\n",
+            "path": "modules/a.py",
+            # The label alone is not evidence that these are reviewed bytes.
+            "hash": reviewed_hash,
+        }
+    )
+    fetch_api = MagicMock(
+        return_value={
+            "content": reviewed,
+            "path": "modules/a.py",
+            "hash": reviewed_hash,
+        }
+    )
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    monkeypatch.setattr(module_cache_sync, "_fetch_module_from_api", fetch_api)
+    module_cache_sync.set_workspace_release_context(
+        "sha256:" + "a" * 64,
+        runtime_storage_prefix="_workspace_releases/org-1/release-1/files/",
+        source_hashes={"modules/a.py": reviewed_hash},
+    )
+    try:
+        result = module_cache_sync.get_module_sync("modules/a.py")
+    finally:
+        module_cache_sync.clear_workspace_release_context()
+
+    assert result == {
+        "content": reviewed,
+        "path": "modules/a.py",
+        "hash": reviewed_hash,
+    }
+    redis_client.delete.assert_called_once_with(
+        f"{module_cache_sync.MODULE_KEY_PREFIX}{storage_path}"
+    )
+    fetch_api.assert_called_once_with(storage_path)
+    redis_client.setex.assert_called_once()
+
+
+def test_workspace_release_generation_is_not_mutable_repo_generation(monkeypatch):
+    module_cache_sync = _module_cache_sync()
+    redis_client = MagicMock()
+    redis_client.get.return_value = "repo-generation-that-must-not-win"
+    monkeypatch.setattr(module_cache_sync, "_get_sync_redis", lambda: redis_client)
+    release_id = "sha256:" + "a" * 64
+    module_cache_sync.set_workspace_release_context(
+        release_id,
+        runtime_storage_prefix="_workspace_releases/org-1/release-1/files/",
+        source_hashes={"modules/a.py": "b" * 64},
+    )
+    try:
+        assert module_cache_sync.get_workspace_generation_sync() == release_id
+        assert module_cache_sync.assert_workspace_generation(release_id) == release_id
+        with pytest.raises(
+            module_cache_sync.WorkspaceGenerationChangedError,
+            match="stale import closure was not executed",
+        ):
+            module_cache_sync.assert_workspace_generation(
+                "sha256:" + "c" * 64
+            )
+        redis_client.get.assert_not_called()
+    finally:
+        module_cache_sync.clear_workspace_release_context()
 
 
 def test_get_module_sync_returns_redis_hit_without_fallbacks(monkeypatch):
