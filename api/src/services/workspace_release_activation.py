@@ -144,14 +144,17 @@ def validate_prepared_release_evidence(
         raise WorkspaceReleaseActivationError(
             "prepared evidence does not match the immutable release"
         )
-    if workspace_manifest_id(evidence["effective_files"]) != descriptor.effective_manifest_id:
+    if (
+        workspace_manifest_id(evidence["effective_files"])
+        != descriptor.effective_manifest_id
+    ):
         raise WorkspaceReleaseActivationError("prepared manifest digest is invalid")
-    if workspace_manifest_id(
-        {
-            path: descriptor.source_hashes[path]
-            for path in descriptor.governed_paths
-        }
-    ) != evidence["governed_manifest_id"]:
+    if (
+        workspace_manifest_id(
+            {path: descriptor.source_hashes[path] for path in descriptor.governed_paths}
+        )
+        != evidence["governed_manifest_id"]
+    ):
         raise WorkspaceReleaseActivationError(
             "prepared governed manifest digest is invalid"
         )
@@ -216,16 +219,11 @@ def validate_prepared_release_evidence(
             "prepared evidence timestamp differs from the release row"
         )
     projection_paths = evidence.get("projection_paths")
-    closure = manifest.get("closure")
-    if not isinstance(projection_paths, list) or not isinstance(closure, list):
+    if not isinstance(projection_paths, list):
         raise WorkspaceReleaseActivationError("prepared projection paths are missing")
     expected_targets = {
-        item.get("path"): item.get("sha256")
-        for item in closure
-        if isinstance(item, dict)
+        path: descriptor.source_hashes[path] for path in descriptor.governed_paths
     }
-    if len(expected_targets) != len(closure):
-        raise WorkspaceReleaseActivationError("artifact closure is invalid")
     normalized_projection: list[dict[str, str | None]] = []
     for item in projection_paths:
         if not isinstance(item, dict) or set(item) != {
@@ -251,13 +249,11 @@ def validate_prepared_release_evidence(
         normalized_projection.append(
             {"path": path, "base_sha256": before, "target_sha256": target}
         )
-    if (
-        len(normalized_projection) != len(expected_targets)
-        or [item["path"] for item in normalized_projection]
-        != sorted(expected_targets)
-    ):
+    if len(normalized_projection) != len(expected_targets) or [
+        item["path"] for item in normalized_projection
+    ] != sorted(expected_targets):
         raise WorkspaceReleaseActivationError(
-            "prepared projection paths do not exactly match the artifact closure"
+            "prepared projection paths do not exactly match the governed manifest"
         )
     reconstructed_base = dict(descriptor.source_hashes)
     for item in normalized_projection:
@@ -285,9 +281,7 @@ def _optional_sha256(value: Any) -> bool:
 
 
 def projection_paths_id(paths: list[dict[str, Any]]) -> str:
-    return canonical_digest(
-        {"schema": PROJECTION_PATHS_SCHEMA, "paths": paths}
-    )
+    return canonical_digest({"schema": PROJECTION_PATHS_SCHEMA, "paths": paths})
 
 
 def _activation_state(existing: Workflow | None) -> dict[str, Any] | None:
@@ -314,7 +308,9 @@ def registration_state_fingerprint(existing: Workflow | None) -> str:
     )
 
 
-def _history_status(release: WorkspacePromotionRelease) -> WorkspaceReleaseHistoryStatus:
+def _history_status(
+    release: WorkspacePromotionRelease,
+) -> WorkspaceReleaseHistoryStatus:
     if release.activation_state == "superseded":
         state = "superseded"
     elif release.lock_state == "locked":
@@ -381,9 +377,7 @@ def release_status(
         previous_release_row_id=release.previous_release_id,
         runtime=WorkspaceReleaseRuntimeStatus(
             state=runtime_state,
-            immutable_release_id=str(
-                artifact.release_id or manifest.get("release_id")
-            ),
+            immutable_release_id=str(artifact.release_id or manifest.get("release_id")),
             prepared_evidence_id=(
                 str(prepared["evidence_id"])
                 if isinstance(prepared, dict) and prepared.get("evidence_id")
@@ -552,9 +546,7 @@ class WorkspaceReleaseActivationService:
                 "challenge_id": authorization["challenge_id"],
                 "risk_class": artifact.risk_class,
                 "computed_effects_id": prepared["computed_effects_id"],
-                "protected_source_commit": prepared["protected_source"][
-                    "commit_sha"
-                ],
+                "protected_source_commit": prepared["protected_source"]["commit_sha"],
                 "projection_job_id": str(projection_job.id),
                 "runtime_state": "coherent",
                 "history_state": "pending",
@@ -752,7 +744,10 @@ class WorkspaceReleaseActivationService:
                     and authorization.get("challenge_id")
                     == request_authorization.acknowledgement.challenge_id
                 )
-        if evidence.get("prepared_evidence_id") != request.prepared_evidence_id or not matches:
+        if (
+            evidence.get("prepared_evidence_id") != request.prepared_evidence_id
+            or not matches
+        ):
             raise WorkspaceReleaseActivationError(
                 "Live release activation evidence differs from this request"
             )
@@ -1016,9 +1011,7 @@ class WorkspaceReleaseActivationService:
             or workflow.function_name != expected.get("function")
             or workflow.name != expected.get("name")
             or workflow.type != expected.get("type")
-            or (
-                str(workflow.organization_id) if workflow.organization_id else None
-            )
+            or (str(workflow.organization_id) if workflow.organization_id else None)
             != expected.get("organization_id")
             or workflow.is_active is not True
             or workflow.access_level != "role_based"
