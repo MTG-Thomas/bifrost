@@ -7,8 +7,6 @@ from uuid import uuid4
 
 import pytest
 
-import src.services.workflow_registration as workflow_registration
-
 from src.services.workflow_registration import (
     WorkspaceRegistrationCandidate,
     WorkflowRegistrationConflict,
@@ -40,8 +38,7 @@ async def test_apply_defaults_to_external_live_authority(monkeypatch):
     blocked = RuntimeError("governed")
     guard = AsyncMock(side_effect=blocked)
     monkeypatch.setattr(
-        workflow_registration,
-        "guard_workspace_registration_mutation",
+        "src.services.workflow_registration.guard_workspace_registration_mutation",
         guard,
     )
     actions = [
