@@ -34,6 +34,7 @@ from src.services.workspace_promotions import (
     _content_id,
     _decode_draft_closure,
     _entry_metadata,
+    _existing_registration_is_rapid_eligible,
     _is_executable_python_path,
     _manifest_id,
     _repo_v1_release_id,
@@ -61,6 +62,45 @@ def test_candidate_hash_is_canonical_and_org_sensitive() -> None:
 
     assert first == reordered
     assert first != other_org
+
+
+def test_manual_global_registration_is_eligible_for_rapid_promotion() -> None:
+    registration = SimpleNamespace(
+        organization_id=None,
+        type="workflow",
+        endpoint_enabled=False,
+        public_endpoint=False,
+        api_key_enabled=False,
+        access_level="role_based",
+    )
+
+    assert _existing_registration_is_rapid_eligible(registration) is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("type", "tool"),
+        ("endpoint_enabled", True),
+        ("public_endpoint", True),
+        ("api_key_enabled", True),
+        ("access_level", "authenticated"),
+    ],
+)
+def test_exposed_registration_remains_ineligible_for_rapid_promotion(
+    field: str, value: object
+) -> None:
+    registration = SimpleNamespace(
+        organization_id=None,
+        type="workflow",
+        endpoint_enabled=False,
+        public_endpoint=False,
+        api_key_enabled=False,
+        access_level="role_based",
+    )
+    setattr(registration, field, value)
+
+    assert _existing_registration_is_rapid_eligible(registration) is False
 
 
 @pytest.mark.asyncio

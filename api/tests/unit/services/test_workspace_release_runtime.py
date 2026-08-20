@@ -248,15 +248,25 @@ async def test_global_live_governed_path_rejects_other_org_workflow() -> None:
 
 
 @pytest.mark.asyncio
-async def test_global_live_governed_path_rejects_global_workflow_fallback() -> None:
+async def test_global_live_governed_path_pins_exact_global_registration() -> None:
     release, artifact = _rows()
     registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    registration["organization_id"] = None
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_registration_manifest_id": workspace_registration_manifest_id(
+            artifact.manifest["effective_registrations"]
+        ),
+    }
     workflow = _workflow_for_registration(registration, organization_id=None)
 
-    with pytest.raises(WorkspaceReleaseRuntimeError, match="does not match"):
-        await pin_workspace_runtime(
-            _PinSession(workflow, release, artifact), workflow.id
-        )
+    pinned = await pin_workspace_runtime(
+        _PinSession(workflow, release, artifact), workflow.id
+    )
+
+    assert pinned is not None
+    assert pinned.organization_id is None
+    assert pinned.queue_evidence()["workflow_organization_id"] is None
 
 
 @pytest.mark.asyncio
@@ -376,6 +386,40 @@ async def test_superseded_release_remains_valid_for_durable_queued_pin() -> None
             raise AssertionError(
                 "a durable queued pin must not consult mutable Workflow state"
             )
+
+    resolved = await resolve_pinned_workspace_runtime(
+        Session(), evidence, workflow_id
+    )
+
+    assert resolved.queue_evidence() == evidence
+
+
+@pytest.mark.asyncio
+async def test_global_registration_remains_valid_for_durable_queued_pin() -> None:
+    release_row, artifact = _rows()
+    registration = next(iter(artifact.manifest["effective_registrations"].values()))
+    registration["organization_id"] = None
+    artifact.manifest = {
+        **artifact.manifest,
+        "effective_registration_manifest_id": workspace_registration_manifest_id(
+            artifact.manifest["effective_registrations"]
+        ),
+    }
+    workflow_id = UUID(registration["workflow_id"])
+    workflow = _workflow_for_registration(registration, organization_id=None)
+    pinned = await pin_workspace_runtime(
+        _PinSession(workflow, release_row, artifact), workflow_id
+    )
+    assert pinned is not None
+    evidence = pinned.queue_evidence()
+
+    class Result:
+        def one_or_none(self):
+            return release_row, artifact
+
+    class Session:
+        async def execute(self, _statement):
+            return Result()
 
     resolved = await resolve_pinned_workspace_runtime(
         Session(), evidence, workflow_id
