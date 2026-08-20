@@ -238,6 +238,18 @@ def _risk_class_for_effects(effects: list[str]) -> str:
     return "R2"
 
 
+def _existing_registration_is_rapid_eligible(existing: Workflow | None) -> bool:
+    """Allow manual role-based registrations, including the global form."""
+
+    return existing is None or (
+        existing.type == "workflow"
+        and not existing.endpoint_enabled
+        and not existing.public_endpoint
+        and not existing.api_key_enabled
+        and existing.access_level == "role_based"
+    )
+
+
 def _literal_keyword(call: ast.Call, name: str, default: Any = None) -> Any:
     for keyword in call.keywords:
         if keyword.arg == name:
@@ -1212,21 +1224,13 @@ class WorkspacePromotionPreviewService:
                 "state": registration_state,
             }
         )
-        if existing is not None and (
-            existing.organization_id is None
-            or existing.type != "workflow"
-            or existing.endpoint_enabled
-            or existing.public_endpoint
-            or existing.api_key_enabled
-            or existing.access_level != "role_based"
-        ):
+        if not _existing_registration_is_rapid_eligible(existing):
             diagnostics.append(
                 PromotionDiagnostic(
                     code="existing_activation_surface",
                     severity="blocker",
                     message=(
-                        "existing global, tool/provider, endpoint, API-key, or "
-                        "non-role-based "
+                        "existing tool/provider, endpoint, API-key, or non-role-based "
                         "registration is not eligible for rapid promotion"
                     ),
                     path=request.entry.path,

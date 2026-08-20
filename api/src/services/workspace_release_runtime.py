@@ -277,7 +277,7 @@ class PinnedWorkspaceRuntime:
     execution_mode: str
     workflow_type: str
     cache_ttl_seconds: int
-    organization_id: str
+    organization_id: str | None
     runtime_bounds: dict[str, int]
 
     @property
@@ -462,7 +462,9 @@ def _pin_workflow_to_release(
         execution_mode=workflow.execution_mode or "async",
         workflow_type=workflow.type or "workflow",
         cache_ttl_seconds=workflow.cache_ttl_seconds or 0,
-        organization_id=str(workflow.organization_id),
+        organization_id=(
+            str(workflow.organization_id) if workflow.organization_id else None
+        ),
         runtime_bounds=dict(registration["runtime_bounds"]),
     )
 
@@ -515,7 +517,8 @@ async def resolve_pinned_workspace_runtime(
         or registration is None
         or registration.get("workflow_id") != str(workflow_id)
         or registration.get("source_sha256") != source_hash
-        or registration.get("organization_id") != str(descriptor.organization_id)
+        or evidence.get("workflow_organization_id")
+        != registration.get("organization_id")
         or registration.get("is_active") is not True
         or evidence.get("workflow_name") != registration.get("name")
         or evidence.get("workflow_type") != registration.get("type")
@@ -551,7 +554,7 @@ async def resolve_pinned_workspace_runtime(
             execution_mode=str(evidence["workflow_execution_mode"]),
             workflow_type=str(evidence["workflow_type"]),
             cache_ttl_seconds=int(evidence["workflow_cache_ttl_seconds"]),
-            organization_id=str(descriptor.organization_id),
+            organization_id=registration.get("organization_id"),
             runtime_bounds=registration_bounds,
         )
     except WorkspaceReleaseRuntimeError:
