@@ -117,12 +117,42 @@ def test_migrations_match_the_organization_ownership_contract() -> None:
     prepare = PREPARE_MIGRATION_PATH.read_text()
     active = MIGRATION_PATH.read_text()
 
-    assert 'name="fk_workspace_promotion_release_artifact_org"' in initial
-    assert '["organization_id", "artifact_id"]' in initial
-    assert 'name="fk_workspace_promotion_release_previous_org"' in initial
-    assert '["organization_id", "previous_release_id"]' in initial
+    assert "uq_workspace_promotion_artifact_org_id" not in initial
+    assert "uq_workspace_promotion_release_org_id" not in initial
+    assert "fk_workspace_promotion_release_artifact_org" not in initial
+    assert "fk_workspace_promotion_release_previous_org" not in initial
+    assert '["artifact_id"], ["workspace_promotion_artifacts.id"]' in initial
+    assert '["previous_release_id"]' in initial
+    assert '["workspace_promotion_releases.id"]' in initial
+    upgrade, downgrade = artifact.split("\ndef downgrade() -> None:\n", 1)
+    artifact_unique = artifact.index('"uq_workspace_promotion_artifact_org_id"')
+    release_unique = artifact.index('"uq_workspace_promotion_release_org_id"')
+    artifact_fk = artifact.index('"fk_workspace_promotion_release_artifact_org"')
+    previous_fk = artifact.index('"fk_workspace_promotion_release_previous_org"')
+    supersedes_fk = artifact.index('"fk_workspace_promotion_artifact_supersedes"')
+    old_artifact_fk_drop = upgrade.index(
+        '"workspace_promotion_releases_artifact_id_fkey"'
+    )
+    old_previous_fk_drop = upgrade.index(
+        '"workspace_promotion_releases_previous_release_id_fkey"'
+    )
+    assert artifact_unique < artifact_fk
+    assert release_unique < artifact_fk
+    assert old_artifact_fk_drop < artifact_fk
+    assert old_previous_fk_drop < previous_fk
+    assert artifact_unique < previous_fk
+    assert release_unique < previous_fk
+    assert artifact_unique < supersedes_fk
+    assert '"workspace_promotion_releases_artifact_id_fkey"' in artifact
+    assert '"workspace_promotion_releases_previous_release_id_fkey"' in artifact
+    assert '["organization_id", "artifact_id"]' in artifact
+    assert '["organization_id", "previous_release_id"]' in artifact
     assert '["organization_id", "supersedes_artifact_id"]' in artifact
     assert 'ondelete="CASCADE"' in artifact
+    assert '"workspace_promotion_releases_artifact_id_fkey"' in downgrade
+    assert '"workspace_promotion_releases_previous_release_id_fkey"' in downgrade
+    assert 'ondelete="RESTRICT"' in downgrade
+    assert 'ondelete="SET NULL"' in downgrade
     release_index = prepare[prepare.index('"uq_workspace_promotion_release_artifact"') :]
     release_index = release_index[: release_index.index("\n    )")]
     assert '["artifact_id"]' in release_index
