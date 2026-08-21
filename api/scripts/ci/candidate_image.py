@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -305,7 +306,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 github_output=args.github_output,
             )
     except CandidateImageError as exc:
-        _parser().error(str(exc))
+        print(f"candidate-image: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

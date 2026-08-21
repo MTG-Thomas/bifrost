@@ -122,7 +122,7 @@ jobs:
     name: Build candidate ${{ matrix.component }} image
     permissions:
       attestations: write
-      artifact-metadata: write
+      artifact-metadata: write # actions/attest storage record for registry attestations
       contents: read
       id-token: write
       packages: write
@@ -213,9 +213,15 @@ jobs:
       - name: Sign immutable candidate
         env:
           COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ matrix.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "Candidate image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest candidate build provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
@@ -226,14 +232,19 @@ jobs:
 
       - name: Verify candidate identity and signature
         env:
+          EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          IMAGE: ghcr.io/${{ matrix.image }}
+          TREE_SHA: ${{ steps.identity.outputs.tree_sha }}
+          VERSION: ${{ steps.identity.outputs.version }}
         run: |
+          set -euo pipefail
           python3 api/scripts/ci/candidate_image.py verify \
-            --image ghcr.io/${{ matrix.image }} \
-            --tree-sha "${{ steps.identity.outputs.tree_sha }}" \
-            --version "${{ steps.identity.outputs.version }}" \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
             --source-sha "$HEAD_SHA" \
-            --expected-digest "${{ steps.build.outputs.digest }}"
+            --expected-digest "$EXPECTED_DIGEST"
 
   candidate-images:
     if: >-
@@ -854,7 +865,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Build Dev Images
     permissions:
-      artifact-metadata: write
+      artifact-metadata: write # actions/attest storage record for registry attestations
       contents: read
       packages: write
       id-token: write # OIDC for keyless cosign signing
@@ -870,6 +881,10 @@ jobs:
         id: version
         run: |
           set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+            echo "Publication checkout does not match the triggering commit." >&2
+            exit 1
+          fi
           version="$(./scripts/compute-dev-version.sh)"
           tree_sha="$(git rev-parse "${GITHUB_SHA}^{tree}")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -916,16 +931,22 @@ jobs:
       - name: Promote tested API candidate
         if: github.repository == 'MTG-Thomas/bifrost'
         id: promote-api
+        env:
+          IMAGE: ghcr.io/${{ env.API_IMAGE }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          TREE_SHA: ${{ steps.version.outputs.tree_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           python3 api/scripts/ci/candidate_image.py promote \
             --component api \
-            --image ghcr.io/${{ env.API_IMAGE }} \
-            --tree-sha "${{ steps.version.outputs.tree_sha }}" \
-            --version "${{ steps.version.outputs.version }}" \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
             --main-source-sha "$GITHUB_SHA" \
-            --tag "${{ steps.version.outputs.version }}" \
+            --tag "$VERSION" \
             --tag dev \
-            --tag "sha-${{ steps.version.outputs.short_sha }}" \
+            --tag "sha-${SHORT_SHA}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Build and push API dev image
@@ -954,10 +975,15 @@ jobs:
       - name: Sign API dev image
         env:
           COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ env.API_IMAGE }}
           IMAGE_DIGEST: ${{ steps.promote-api.outputs.digest || steps.build-api.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.API_IMAGE }}@${IMAGE_DIGEST}
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "API image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest API dev image provenance
         if: github.repository != 'MTG-Thomas/bifrost'
@@ -980,16 +1006,22 @@ jobs:
       - name: Promote tested worker candidate
         if: github.repository == 'MTG-Thomas/bifrost'
         id: promote-worker
+        env:
+          IMAGE: ghcr.io/${{ env.WORKER_IMAGE }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          TREE_SHA: ${{ steps.version.outputs.tree_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           python3 api/scripts/ci/candidate_image.py promote \
             --component worker \
-            --image ghcr.io/${{ env.WORKER_IMAGE }} \
-            --tree-sha "${{ steps.version.outputs.tree_sha }}" \
-            --version "${{ steps.version.outputs.version }}" \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
             --main-source-sha "$GITHUB_SHA" \
-            --tag "${{ steps.version.outputs.version }}" \
+            --tag "$VERSION" \
             --tag dev \
-            --tag "sha-${{ steps.version.outputs.short_sha }}" \
+            --tag "sha-${SHORT_SHA}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Build and push worker dev image
@@ -1018,10 +1050,15 @@ jobs:
       - name: Sign worker dev image
         env:
           COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ env.WORKER_IMAGE }}
           IMAGE_DIGEST: ${{ steps.promote-worker.outputs.digest || steps.build-worker.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.WORKER_IMAGE }}@${IMAGE_DIGEST}
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "Worker image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest worker dev image provenance
         if: github.repository != 'MTG-Thomas/bifrost'
@@ -1044,16 +1081,22 @@ jobs:
       - name: Promote tested client candidate
         if: github.repository == 'MTG-Thomas/bifrost'
         id: promote-client
+        env:
+          IMAGE: ghcr.io/${{ env.CLIENT_IMAGE }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          TREE_SHA: ${{ steps.version.outputs.tree_sha }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           python3 api/scripts/ci/candidate_image.py promote \
             --component client \
-            --image ghcr.io/${{ env.CLIENT_IMAGE }} \
-            --tree-sha "${{ steps.version.outputs.tree_sha }}" \
-            --version "${{ steps.version.outputs.version }}" \
+            --image "$IMAGE" \
+            --tree-sha "$TREE_SHA" \
+            --version "$VERSION" \
             --main-source-sha "$GITHUB_SHA" \
-            --tag "${{ steps.version.outputs.version }}" \
+            --tag "$VERSION" \
             --tag dev \
-            --tag "sha-${{ steps.version.outputs.short_sha }}" \
+            --tag "sha-${SHORT_SHA}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Build and push client dev image
@@ -1083,10 +1126,15 @@ jobs:
       - name: Sign client dev image
         env:
           COSIGN_EXPERIMENTAL: "true"
+          IMAGE: ghcr.io/${{ env.CLIENT_IMAGE }}
           IMAGE_DIGEST: ${{ steps.promote-client.outputs.digest || steps.build-client.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ghcr.io/${{ env.CLIENT_IMAGE }}@${IMAGE_DIGEST}
+          set -euo pipefail
+          if [ -z "$IMAGE_DIGEST" ]; then
+            echo "Client image digest is required." >&2
+            exit 1
+          fi
+          cosign sign --yes "${IMAGE}@${IMAGE_DIGEST}"
 
       - name: Attest client dev image provenance
         if: github.repository != 'MTG-Thomas/bifrost'

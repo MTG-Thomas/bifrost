@@ -238,3 +238,33 @@ def test_promote_requires_runner_owned_temporary_directory(monkeypatch) -> None:
             main_source_sha=MAIN_SHA,
             tags=("dev",),
         )
+
+
+def test_main_reports_candidate_failure_without_argparse_usage(
+    monkeypatch, capsys
+) -> None:
+    def fail_verification(**_kwargs) -> None:
+        raise candidate_image.CandidateImageError("candidate is stale")
+
+    monkeypatch.setattr(candidate_image, "verify_candidate", fail_verification)
+
+    result = candidate_image.main(
+        [
+            "verify",
+            "--image",
+            IMAGE,
+            "--tree-sha",
+            TREE_SHA,
+            "--version",
+            VERSION,
+            "--source-sha",
+            SOURCE_SHA,
+            "--expected-digest",
+            DIGEST,
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err == "candidate-image: candidate is stale\n"
