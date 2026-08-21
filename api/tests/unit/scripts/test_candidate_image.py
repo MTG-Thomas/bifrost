@@ -89,6 +89,25 @@ def test_verify_candidate_rejects_a_tree_label_mismatch(monkeypatch) -> None:
     assert not any(command[0] == "cosign" for command in fake.commands)
 
 
+def test_candidate_identifiers_remain_ascii_only() -> None:
+    with pytest.raises(candidate_image.CandidateImageError, match="version"):
+        candidate_image.verify_candidate(
+            image=IMAGE,
+            tree_sha=TREE_SHA,
+            version="1.1.1-dev.٤٢",
+        )
+
+    with pytest.raises(candidate_image.CandidateImageError, match="tag"):
+        candidate_image.promote_candidate(
+            component="api",
+            image=IMAGE,
+            tree_sha=TREE_SHA,
+            version=VERSION,
+            main_source_sha=MAIN_SHA,
+            tags=("dévelop",),
+        )
+
+
 def test_verify_candidate_rejects_a_tag_that_moved_after_build(monkeypatch) -> None:
     fake = FakeCommands()
     monkeypatch.setattr(candidate_image.subprocess, "run", fake)

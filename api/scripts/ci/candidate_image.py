@@ -15,9 +15,9 @@ from typing import Any, Sequence
 
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$")
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+-dev\.\d+$", re.ASCII)
 IMAGE_RE = re.compile(r"^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+$")
-TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+TAG_RE = re.compile(r"^\w[\w.-]{0,127}$", re.ASCII)
 WORKFLOW_IDENTITY_RE = (
     r"^https://github\.com/MTG-Thomas/bifrost/\.github/workflows/ci\.yml@refs/.*$"
 )
