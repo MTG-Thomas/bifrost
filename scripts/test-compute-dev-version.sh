@@ -38,6 +38,36 @@ run_test() {
   fi
 }
 
+# run_test_args <name> <setup_block> <arguments> <expected_stdout> <expected_exit>
+run_test_args() {
+  local name="$1" setup="$2" args="$3" want_stdout="$4" want_exit="$5"
+  local tmp got_stdout got_exit
+  tmp=$(mktemp -d)
+  (
+    cd "$tmp"
+    git init -q
+    git config user.email t@t && git config user.name t
+    eval "$setup"
+  )
+  local -a argv
+  read -r -a argv <<< "$args"
+  set +e
+  got_stdout=$(cd "$tmp" && "$COMPUTE" "${argv[@]}" 2>/dev/null)
+  got_exit=$?
+  set -e
+  rm -rf "$tmp"
+
+  if [[ "$got_stdout" == "$want_stdout" && "$got_exit" == "$want_exit" ]]; then
+    echo "PASS: $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: $name"
+    echo "  want stdout='$want_stdout' exit=$want_exit"
+    echo "  got  stdout='$got_stdout' exit=$got_exit"
+    fail=$((fail + 1))
+  fi
+}
+
 run_test "tag at HEAD, no commits ahead" \
   'git commit --allow-empty -m init -q && git tag -a v0.8.0 -m v0.8.0' \
   '0.8.1-dev.0' 0
@@ -85,6 +115,16 @@ run_test "lightweight release tag is accepted" \
 run_test "latest lightweight tag beats older annotated tag" \
   'git commit --allow-empty -m init -q && git tag -a v1.0.0 -m v1.0.0 && git commit --allow-empty -m c1 -q && git tag v1.1.0 && git commit --allow-empty -m c2 -q' \
   '1.1.1-dev.1' 0
+
+run_test_args "candidate version predicts one squash commit after base" \
+  'git commit --allow-empty -m init -q && git tag v1.0.0 && git branch candidate-base && git commit --allow-empty -m c1 -q && git commit --allow-empty -m c2 -q' \
+  '--next-after candidate-base' \
+  '1.0.1-dev.1' 0
+
+run_test_args "candidate version rejects an unknown base" \
+  'git commit --allow-empty -m init -q' \
+  '--next-after does-not-exist' \
+  '' 2
 
 echo
 echo "$pass passed, $fail failed"

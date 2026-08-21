@@ -3,6 +3,7 @@
     {"context": "Lint & Type Check", "app_id": 15368},
     {"context": "Unit Tests", "app_id": 15368},
     {"context": "E2E Tests", "app_id": 15368},
+    {"context": "Candidate Images", "app_id": 15368},
     {"context": "Analyze (python)", "app_id": 15368},
     {"context": "Analyze (javascript-typescript)", "app_id": 15368},
     {"context": "CodeRabbit", "app_id": null},

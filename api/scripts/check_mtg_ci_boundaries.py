@@ -18,6 +18,7 @@ EXPECTED_DEPLOY_DRY_RUN_IF = (
     "&& github.event_name == 'workflow_dispatch'"
 )
 REQUIRED_CI_JOB_NAMES = {
+    "candidate-images": "Candidate Images",
     "lint": "Lint & Type Check",
     "test-client-unit": "Client Unit Tests",
     "test-unit": "Unit Tests",
