@@ -22,6 +22,7 @@ WORKFLOW_IDENTITY_RE = (
     r"^https://github\.com/MTG-Thomas/bifrost/\.github/workflows/ci\.yml@refs/.*$"
 )
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+ALLOWED_EXECUTABLES = frozenset({"cosign", "docker"})
 
 
 class CandidateImageError(RuntimeError):
@@ -39,7 +40,26 @@ class CandidateImage:
 
 
 def _run(command: Sequence[str]) -> str:
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    command = tuple(command)
+    if not command or command[0] not in ALLOWED_EXECUTABLES:
+        raise CandidateImageError("candidate image command is not allowlisted")
+    if any(
+        not isinstance(argument, str)
+        or not argument
+        or any(character in argument for character in ("\x00", "\r", "\n"))
+        for argument in command
+    ):
+        raise CandidateImageError(
+            "candidate image command contains an invalid argument"
+        )
+    # The argv is allowlisted above and never interpreted by a shell.
+    result = subprocess.run(  # NOSONAR
+        command,
+        text=True,
+        capture_output=True,
+        check=False,
+        shell=False,
+    )
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or "no command output"
         raise CandidateImageError(f"{' '.join(command[:3])} failed: {detail}")
@@ -165,7 +185,10 @@ def _write_output(path: Path | None, values: dict[str, str]) -> None:
 
 
 def _predicate_path(component: str) -> Path:
-    runner_temp = Path(os.environ.get("RUNNER_TEMP", "/tmp"))
+    runner_temp_value = os.environ.get("RUNNER_TEMP")
+    if not runner_temp_value:
+        raise CandidateImageError("RUNNER_TEMP is required for promotion evidence")
+    runner_temp = Path(runner_temp_value)
     return runner_temp / f"bifrost-{component}-image-promotion.json"
 
 

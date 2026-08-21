@@ -32,10 +32,11 @@ class FakeCommands:
         self.labels = labels or _labels()
         self.commands: list[list[str]] = []
 
-    def __call__(self, command, *, text, capture_output, check):
+    def __call__(self, command, *, text, capture_output, check, shell):
         assert text is True
         assert capture_output is True
         assert check is False
+        assert shell is False
         command = list(command)
         self.commands.append(command)
         if command[:4] == ["docker", "buildx", "imagetools", "inspect"]:
@@ -104,6 +105,18 @@ def test_verify_candidate_rejects_a_tag_that_moved_after_build(monkeypatch) -> N
     assert not any(command[0] == "cosign" for command in fake.commands)
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bash", "-c", "exit 0"],
+        ["docker", "buildx\nmalicious"],
+    ],
+)
+def test_run_rejects_non_allowlisted_or_control_character_commands(command) -> None:
+    with pytest.raises(candidate_image.CandidateImageError):
+        candidate_image._run(command)
+
+
 def test_promote_retags_exact_digest_and_writes_main_attestation(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -150,13 +163,21 @@ def test_promote_retags_exact_digest_and_writes_main_attestation(
 
 def test_promote_fails_when_a_stable_tag_does_not_keep_the_candidate_digest(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     fake = FakeCommands()
     inspect_count = 0
 
-    def mismatched_tag(command, *, text, capture_output, check):
+    def mismatched_tag(command, *, text, capture_output, check, shell):
         nonlocal inspect_count
-        result = fake(command, text=text, capture_output=capture_output, check=check)
+        command = list(command)
+        result = fake(
+            command,
+            text=text,
+            capture_output=capture_output,
+            check=check,
+            shell=shell,
+        )
         if command[:4] == ["docker", "buildx", "imagetools", "inspect"]:
             inspect_count += 1
             if inspect_count == 3:
@@ -169,10 +190,27 @@ def test_promote_fails_when_a_stable_tag_does_not_keep_the_candidate_digest(
         return result
 
     monkeypatch.setattr(candidate_image.subprocess, "run", mismatched_tag)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
 
     with pytest.raises(
         candidate_image.CandidateImageError, match="tested candidate digest"
     ):
+        candidate_image.promote_candidate(
+            component="api",
+            image=IMAGE,
+            tree_sha=TREE_SHA,
+            version=VERSION,
+            main_source_sha=MAIN_SHA,
+            tags=("dev",),
+        )
+
+
+def test_promote_requires_runner_owned_temporary_directory(monkeypatch) -> None:
+    fake = FakeCommands()
+    monkeypatch.setattr(candidate_image.subprocess, "run", fake)
+    monkeypatch.delenv("RUNNER_TEMP", raising=False)
+
+    with pytest.raises(candidate_image.CandidateImageError, match="RUNNER_TEMP"):
         candidate_image.promote_candidate(
             component="api",
             image=IMAGE,
