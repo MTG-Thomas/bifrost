@@ -35,6 +35,7 @@ def knowledge_cleanup(
     e2e_client,
     platform_admin,
     org1,
+    org2,
 ) -> Generator[None, None, None]:
     """
     Clean up any knowledge entries after test.
@@ -53,27 +54,28 @@ def knowledge_cleanup(
         "e2e-dedup",
     ]
 
-    for ns in namespaces_to_clean:
-        try:
-            e2e_client.delete(
-                f"/api/sdk/knowledge/namespace/{ns}",
-                headers=platform_admin.headers,
-            )
-        except Exception:
-            pass  # Ignore if no namespace exists
+    # Also issue an unscoped delete for the caller's own organization. The
+    # seeded platform admin belongs to the provider org in the complete suite,
+    # which is distinct from org1 and org2.
+    scopes_to_clean = [None, "global", org1["id"], org2["id"]]
+
+    def clean() -> None:
+        for ns in namespaces_to_clean:
+            for scope in scopes_to_clean:
+                params = {"scope": scope} if scope is not None else None
+                response = e2e_client.delete(
+                    f"/api/sdk/knowledge/namespace/{ns}",
+                    headers=platform_admin.headers,
+                    params=params,
+                )
+                response.raise_for_status()
+
+    clean()
 
     yield
 
     # Clean up after test
-    for ns in namespaces_to_clean:
-        try:
-            e2e_client.delete(
-                f"/api/sdk/knowledge/namespace/{ns}",
-                headers=platform_admin.headers,
-            )
-            logger.info(f"Cleaned up knowledge namespace: {ns}")
-        except Exception:
-            pass  # Ignore cleanup failures
+    clean()
 
 
 @pytest.fixture(scope="function")

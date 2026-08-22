@@ -87,6 +87,19 @@ router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 # =============================================================================
 
 
+def _should_publish_request_execution_update(status: ExecutionStatus) -> bool:
+    """The request owns initial state; the worker owns terminal fan-out."""
+    return status in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING)
+
+
+def _is_uuid_workflow_ref(identifier: str) -> bool:
+    try:
+        UUID(identifier)
+    except ValueError:
+        return False
+    return True
+
+
 def _convert_workflow_orm_to_schema(workflow: WorkflowORM, used_by_count: int = 0) -> WorkflowMetadata:
     """Convert ORM model to Pydantic schema for API response."""
     from typing import Literal
@@ -729,6 +742,7 @@ async def execute_workflow(
     from uuid import uuid4
     from src.sdk.context import ExecutionContext as SharedContext, Organization
     from src.services.execution.service import (
+        get_workflow_for_execution,
         run_workflow,
         run_code,
         WorkflowNotFoundError,
@@ -813,16 +827,18 @@ async def execute_workflow(
                 detail="Inline code execution requires platform admin access",
             )
     elif request.workflow_id:
-        # Workflow execution - check access via repository cascade scoping
-        # resolve() already checked scoping; use can_access with the resolved UUID
+        # UUID resolution already goes through repository.get(), including its
+        # org and role access checks. Portable name/path refs use specialized
+        # resolution and still need the explicit access assertion below.
         assert workflow is not None  # guaranteed by resolve() + 404 above
-        try:
-            await workflow_repo.can_access(id=workflow.id)
-        except AccessDeniedError:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied to execute this workflow",
-            )
+        if not _is_uuid_workflow_ref(request.workflow_id):
+            try:
+                await workflow_repo.can_access(id=workflow.id)
+            except AccessDeniedError:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied to execute this workflow",
+                )
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -965,6 +981,14 @@ async def execute_workflow(
                         is_transient=True,
                     )
 
+            # Reuse one hardened dispatch snapshot for the queue boundary. It
+            # includes the active-Solution gate and global-repo policy, so the
+            # worker does not repeat this query after RabbitMQ delivery.
+            dispatch_metadata = await get_workflow_for_execution(
+                str(workflow.id),
+                db=db,
+            )
+
             # Data providers always run sync (small payloads, no UI poll flow),
             # but honor the caller's transient flag: dropdown-options pass
             # transient=True for the fast path, the manual Execute page passes
@@ -975,6 +999,7 @@ async def execute_workflow(
                 input_data=request.input_data,
                 transient=request.transient,
                 sync=True,
+                dispatch_metadata=dispatch_metadata,
             )
             return WorkflowExecutionResponse(
                 execution_id=result.execution_id,
@@ -986,6 +1011,10 @@ async def execute_workflow(
             )
         elif workflow:
             # Execute workflow by ID
+            dispatch_metadata = await get_workflow_for_execution(
+                str(workflow.id),
+                db=db,
+            )
             result = await run_workflow(
                 context=shared_ctx,
                 workflow_id=str(workflow.id),
@@ -993,6 +1022,7 @@ async def execute_workflow(
                 form_id=request.form_id,
                 transient=request.transient,
                 sync=request.sync or False,
+                dispatch_metadata=dispatch_metadata,
             )
         else:
             # This shouldn't happen due to earlier validation
@@ -1006,8 +1036,15 @@ async def execute_workflow(
         if result.status and result.status not in (ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
             result.is_transient = True
 
-        # Publish execution update via WebSocket
-        if not request.transient and result.execution_id:
+        # Publish only the immediate non-terminal state here. The worker pushes
+        # a sync result before publishing its terminal execution/history events,
+        # so repeating terminal fan-out in this request adds latency and emits
+        # duplicate WebSocket events.
+        if (
+            not request.transient
+            and result.execution_id
+            and _should_publish_request_execution_update(result.status)
+        ):
             await publish_execution_update(
                 execution_id=result.execution_id,
                 status=result.status.value,

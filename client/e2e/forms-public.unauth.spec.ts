@@ -494,9 +494,10 @@ test.describe.serial("Public form iframe", () => {
 		await clickVisibleControl(
 			frame.getByRole("combobox", { name: "Company size" }),
 		);
-		await expect(
-			frame.getByRole("option", { name: "1–10 people" }),
-		).toBeVisible();
+		const companySizeOption = frame.getByRole("option", {
+			name: "1–10 people",
+		});
+		await expect(companySizeOption).toBeVisible();
 		await expectParentToRemainFixed();
 		await page.keyboard.press("Escape");
 		await expect(

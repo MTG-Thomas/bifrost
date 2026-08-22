@@ -47,6 +47,8 @@ async def _publish_pending(
     is_platform_admin: bool,
     file_path: str | None,
     event: dict[str, Any] | None = None,
+    execution_record_exists: bool = False,
+    dispatch_metadata: dict[str, Any] | None = None,
     artifact_workspace_id: str | None = None,
 ) -> None:
     """
@@ -79,15 +81,21 @@ async def _publish_pending(
         artifact_workspace_id=artifact_workspace_id,
     )
 
-    # Add to queue tracking (publishes position updates to all queued executions)
-    await add_to_queue(execution_id)
+    # Sync callers wait on their private result list and cannot consume queue
+    # position events. RabbitMQ and the worker pool still provide admission and
+    # resource protection; avoid the extra sorted-set write and N broadcasts.
+    if not sync:
+        await add_to_queue(execution_id)
 
-    # Prepare queue message (minimal - worker reads full context from Redis)
+    # Prepare queue message (the consumer reads full context from Redis)
     message: dict[str, Any] = {
         "execution_id": execution_id,
         "workflow_id": workflow_id,
         "sync": sync,
+        "execution_record_exists": execution_record_exists,
     }
+    if dispatch_metadata is not None:
+        message["dispatch_metadata"] = dispatch_metadata
 
     # Include file_path for fast direct loading (avoids filesystem scan)
     if file_path:
@@ -106,6 +114,7 @@ async def enqueue_workflow_execution(
     sync: bool = False,
     api_key_id: str | None = None,
     file_path: str | None = None,
+    dispatch_metadata: dict[str, Any] | None = None,
 ) -> str:
     """
     Enqueue a workflow for async execution.
@@ -155,6 +164,7 @@ async def enqueue_workflow_execution(
         is_platform_admin=context.is_platform_admin,
         file_path=file_path,
         event=event_payload,
+        dispatch_metadata=dispatch_metadata,
         artifact_workspace_id=context.artifact_workspace_id,
     )
 

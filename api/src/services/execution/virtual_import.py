@@ -25,17 +25,13 @@ import logging
 import sys
 import threading
 from importlib.abc import Loader, MetaPathFinder
-from importlib.machinery import ModuleSpec
+from importlib.machinery import ModuleSpec, PathFinder
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 from src.core.module_cache_sync import (
-    candidate_index_prefixes,
-    candidate_module_paths,
-    get_module_index_sync,
-    get_module_sync,
-    solution_has_submodules,
+    resolve_module_sync,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,7 +156,18 @@ STDLIB_PREFIXES = frozenset([
     "fastapi",
     "uvicorn",
     "pytest",
+    # Bifrost runtime packages are platform code, not workspace import roots.
+    # Let PathFinder resolve them without asking the module API first.
+    "bifrost",
+    "src",
 ])
+
+_APP_ROOT = Path(__file__).resolve().parents[3]
+_BIFROST_SOURCE_ROOTS = (
+    _APP_ROOT / "src",
+    _APP_ROOT / "shared",
+    _APP_ROOT / "bifrost",
+)
 
 
 
@@ -211,7 +218,14 @@ class VirtualModuleLoader(Loader):
     setting __file__ to the relative path for meaningful tracebacks.
     """
 
-    def __init__(self, path: str, content: str, is_package: bool = False, content_hash: str = ""):
+    def __init__(
+        self,
+        path: str,
+        content: str,
+        is_package: bool = False,
+        content_hash: str = "",
+        storage_path: str | None = None,
+    ):
         """
         Initialize loader with module content.
 
@@ -220,11 +234,13 @@ class VirtualModuleLoader(Loader):
             content: Python source code
             is_package: True if this is a package (__init__.py)
             content_hash: SHA-256 hash of content for change detection
+            storage_path: Exact Solution or global repository cache path
         """
         self.path = path
         self.content = content
         self.is_package = is_package
         self.content_hash = content_hash
+        self.storage_path = storage_path or path
 
     def create_module(self, spec: ModuleSpec) -> ModuleType | None:
         """Return None to use default module creation semantics."""
@@ -237,6 +253,7 @@ class VirtualModuleLoader(Loader):
         module.__file__ = self.path
         module.__loader__ = self
         module.__content_hash__ = self.content_hash
+        module.__storage_path__ = self.storage_path
 
         if self.is_package:
             # Packages need __path__ for submodule imports
@@ -259,11 +276,13 @@ class VirtualModuleFinder(MetaPathFinder):
     """
     Meta path finder that loads workspace modules from Redis cache.
 
-    Converts Python module names to file paths, confirms they are workspace
-    modules via the module index, then fetches the source from Redis/API/S3.
+    Converts Python module names to file paths and asks the API-backed targeted
+    resolver whether the name is a workspace module, package, namespace, or miss.
 
     Key design points:
-    - Module index is the source of truth for workspace module ownership
+    - Installed dependencies get first refusal through PathFinder
+    - Workspace code still wins over accidental same-named platform source files
+    - The targeted resolver is the source of truth for workspace ownership
     - Non-workspace third-party imports fall through to normal import handling
     - Supports both modules (.py) and packages (__init__.py)
     """
@@ -310,114 +329,75 @@ class VirtualModuleFinder(MetaPathFinder):
         # Set recursion guard
         _thread_local.in_find_spec = True
         try:
-            return self._find_spec_impl(fullname)
+            return self._find_spec_impl(fullname, path)
         finally:
             _thread_local.in_find_spec = False
 
-    def _find_spec_impl(self, fullname: str) -> ModuleSpec | None:
+    def _find_spec_impl(self, fullname: str, path: Any | None = None) -> ModuleSpec | None:
         """
         Internal implementation of find_spec.
 
         Separated from find_spec to keep the recursion guard clean.
 
-        The module index determines whether a name belongs to workspace code
-        before we attempt any module fetch. This avoids probing third-party
-        dependency imports through Redis/API/S3 during import resolution.
+        Installed dependencies are allowed to resolve before workspace code.
+        A source file merely present on Bifrost's application path does not get
+        that privilege: the targeted resolver must first be allowed to claim a
+        same-named workspace package, preserving the collision fix from #419.
         """
-        possible_paths = self._module_name_to_paths(fullname)
-        module_index = get_module_index_sync()
+        local_spec = PathFinder.find_spec(fullname, path)
+        if local_spec is not None and not _is_bifrost_source_spec(local_spec):
+            return None
 
-        for file_path, is_package in possible_paths:
-            if not self._module_path_is_indexed(file_path, module_index):
-                continue
-
-            cached = get_module_sync(file_path)
-            if not cached:
-                continue
-
-            # Create loader and spec
-            loader = VirtualModuleLoader(file_path, cached["content"], is_package, cached.get("hash", ""))
+        resolution = resolve_module_sync(fullname)
+        if resolution.kind in {"module", "package"} and resolution.content is not None:
+            is_package = resolution.kind == "package"
+            loader = VirtualModuleLoader(
+                resolution.path,
+                resolution.content,
+                is_package,
+                resolution.hash,
+                resolution.storage_path,
+            )
             spec = ModuleSpec(
                 fullname,
                 loader,
                 is_package=is_package,
-                origin=file_path,  # Use relative path directly
+                origin=resolution.path,
             )
-
-            logger.debug(f"Virtual import: {fullname} -> {file_path}")
+            logger.debug(f"Virtual import: {fullname} -> {resolution.path}")
             return spec
 
-        # Check for namespace package (directory with submodules but no __init__.py)
-        # This enables `from modules.foo import bar` without requiring modules/__init__.py
-        # PEP 420: https://peps.python.org/pep-0420/
-        base_path = "/".join(fullname.split("."))
-
-        # Scan the module index for submodules under the candidate prefixes.
-        # When a Solution is active these are _solutions/{id}/-rooted (with the
-        # bare prefix only if global_repo_access is on), so a solution's
-        # namespace packages are detected without colliding with _repo/.
-        prefixes = candidate_index_prefixes(base_path)
-        has_submodules = any(
-            entry.startswith(p) for entry in module_index for p in prefixes
-        )
-        # The index only knows a solution module once it has been loaded, but a
-        # parent package must resolve as a namespace BEFORE its first submodule
-        # can load. Fall back to a direct S3 check under the solution prefix.
-        if not has_submodules:
-            has_submodules = solution_has_submodules(base_path)
-
-        if has_submodules:
-            # Create a namespace package spec (empty module with __path__)
-            loader = NamespacePackageLoader(base_path)
+        if resolution.kind == "namespace":
+            loader = NamespacePackageLoader(resolution.path)
             spec = ModuleSpec(
                 fullname,
                 loader,
                 is_package=True,
-                origin=None,  # Namespace packages have no origin
+                origin=None,
             )
-            spec.submodule_search_locations = [base_path]
-            logger.debug(f"Virtual namespace package: {fullname} -> {base_path}/")
+            spec.submodule_search_locations = [resolution.path]
+            logger.debug(f"Virtual namespace package: {fullname} -> {resolution.path}/")
             return spec
 
-        # Not in our cache - let filesystem finder handle it
         return None
 
-    def _module_path_is_indexed(self, file_path: str, module_index: set[str]) -> bool:
-        """Return True when the module index says this concrete file is workspace code."""
-        return any(path in module_index for path in candidate_module_paths(file_path))
 
-    def _module_name_to_paths(self, fullname: str) -> list[tuple[str, bool]]:
-        """
-        Convert module name to potential file paths.
+def _is_bifrost_source_spec(spec: ModuleSpec) -> bool:
+    """Return whether a PathFinder result came from Bifrost application source.
 
-        Examples:
-            "shared.halopsa" -> [
-                ("shared/halopsa.py", False),
-                ("shared/halopsa/__init__.py", True)
-            ]
-            "shared" -> [
-                ("shared.py", False),
-                ("shared/__init__.py", True)
-            ]
-
-        Args:
-            fullname: Fully qualified module name
-
-        Returns:
-            List of (path, is_package) tuples to try
-        """
-        parts = fullname.split(".")
-        base_path = "/".join(parts)
-
-        return [
-            (f"{base_path}.py", False),  # Module file
-            (f"{base_path}/__init__.py", True),  # Package __init__
-        ]
-
-    def invalidate_index(self) -> None:
-        """No-op for API compatibility. Index reads are delegated to module_cache_sync."""
-        pass
-
+    Installed dependencies, including packages with unusual install layouts,
+    retain normal Python precedence. Only modules found inside Bifrost's own
+    source roots defer to the targeted workspace resolver so an accidental
+    platform-name collision cannot shadow Solution/workspace code.
+    """
+    locations = [spec.origin or "", *(spec.submodule_search_locations or ())]
+    for location in locations:
+        if not location or location in {"built-in", "frozen"}:
+            continue
+        resolved = Path(location).resolve()
+        if any(resolved.is_relative_to(root) for root in _BIFROST_SOURCE_ROOTS):
+            return True
+    return False
 
 # Global finder instance (for invalidation access)
 _finder: VirtualModuleFinder | None = None
@@ -449,10 +429,15 @@ def install_virtual_import_hook() -> VirtualModuleFinder:
     # might try to fetch from Redis before Redis can even connect.
     _preload_required_modules()
 
-    # Create finder and install the hook before filesystem resolution so
-    # workspace packages cannot be shadowed by platform modules on sys.path.
+    # BuiltinImporter and FrozenImporter keep their normal precedence. Install
+    # immediately before PathFinder so workspace packages can still override an
+    # accidental same-named Bifrost source module.
     _finder = VirtualModuleFinder()
-    sys.meta_path.insert(0, _finder)
+    path_finder_index = next(
+        (index for index, finder in enumerate(sys.meta_path) if finder is PathFinder),
+        len(sys.meta_path),
+    )
+    sys.meta_path.insert(path_finder_index, _finder)
 
     logger.info("Virtual import hook installed")
     return _finder
@@ -495,6 +480,20 @@ def _preload_required_modules() -> None:
         # Stdlib module — should never fail
         logger.debug(f"codecs preload failed: {e}")
 
+    # Build the scope-neutral HTTP client before the finder is active. httpx
+    # and httpcore load some optional transports lazily while constructing the
+    # client; if that happens after hook installation, a missing optional
+    # package (for example trio) can recursively enter the workspace resolver.
+    # The client carries no auth or Solution state — those are supplied per
+    # request — so it is safe to retain across context activation in this
+    # one-shot child.
+    try:
+        from src.core.module_cache_sync import _get_http_client
+
+        _get_http_client()
+    except Exception as e:
+        logger.debug(f"module resolver HTTP client preload failed: {e}")
+
 
 def remove_virtual_import_hook() -> None:
     """
@@ -507,19 +506,10 @@ def remove_virtual_import_hook() -> None:
     if _finder is not None:
         sys.meta_path = [f for f in sys.meta_path if f is not _finder]
         _finder = None
+        from src.core.module_cache_sync import _close_http_client
+
+        _close_http_client()
         logger.info("Virtual import hook removed")
-
-
-def invalidate_module_index() -> None:
-    """
-    Force the finder to refresh its module index.
-
-    Call this after modules are added/removed from cache
-    to ensure the finder picks up the changes.
-    """
-    if _finder is not None:
-        _finder.invalidate_index()
-        logger.debug("Module index invalidated")
 
 
 def get_virtual_finder() -> VirtualModuleFinder | None:

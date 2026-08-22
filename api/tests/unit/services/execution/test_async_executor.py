@@ -42,7 +42,12 @@ async def test_publish_pending_writes_redis_then_publishes():
     pub.assert_awaited_once()
     queue_name, message = pub.await_args.args
     assert queue_name == "workflow-executions"
-    assert message == {"execution_id": "e1", "workflow_id": "wf", "sync": False}
+    assert message == {
+        "execution_id": "e1",
+        "workflow_id": "wf",
+        "sync": False,
+        "execution_record_exists": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -50,7 +55,7 @@ async def test_publish_pending_includes_file_path_when_present():
     redis = AsyncMock()
     with (
         patch("src.services.execution.async_executor.get_redis_client", return_value=redis),
-        patch("src.services.execution.async_executor.add_to_queue", new=AsyncMock()),
+        patch("src.services.execution.async_executor.add_to_queue", new=AsyncMock()) as q,
         patch("src.services.execution.async_executor.publish_message", new=AsyncMock()) as pub,
     ):
         await _publish_pending(
@@ -71,5 +76,60 @@ async def test_publish_pending_includes_file_path_when_present():
             file_path="workflows/foo.py",
         )
     _, message = pub.await_args.args
+    q.assert_not_awaited()
     assert message["file_path"] == "workflows/foo.py"
     assert message["sync"] is True
+
+
+@pytest.mark.asyncio
+async def test_publish_pending_carries_authorized_dispatch_metadata():
+    redis = AsyncMock()
+    dispatch_metadata = {
+        "name": "solution_workflow",
+        "function_name": "run",
+        "path": "functions/run.py",
+        "timeout_seconds": 60,
+        "time_saved": 0,
+        "value": 0.0,
+        "execution_mode": "sync",
+        "organization_id": None,
+        "solution_id": "solution-1",
+        "can_access_global_repo": True,
+        "type": "workflow",
+        "cache_ttl_seconds": 0,
+    }
+    with (
+        patch(
+            "src.services.execution.async_executor.get_redis_client",
+            return_value=redis,
+        ),
+        patch(
+            "src.services.execution.async_executor.add_to_queue",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.services.execution.async_executor.publish_message",
+            new=AsyncMock(),
+        ) as publish,
+    ):
+        await _publish_pending(
+            execution_id="e1",
+            workflow_id="wf",
+            parameters={},
+            org_id="org",
+            user_id="u",
+            user_name="n",
+            user_email="",
+            form_id=None,
+            startup=None,
+            form_inputs={},
+            embed={},
+            api_key_id=None,
+            sync=True,
+            is_platform_admin=False,
+            file_path=None,
+            dispatch_metadata=dispatch_metadata,
+        )
+
+    _, message = publish.await_args.args
+    assert message["dispatch_metadata"] == dispatch_metadata
