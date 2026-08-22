@@ -789,7 +789,7 @@ const routeElements = (
 		<Route path="/" element={<ContentLayout />}>
 			{/* Chat - All authenticated users */}
 			<Route
-				path="chat"
+				path="chat/:conversationId?"
 				element={
 					<ProtectedRoute>
 						<Chat />
@@ -801,14 +801,6 @@ const routeElements = (
 				element={
 					<ProtectedRoute>
 						<ChatArtifacts />
-					</ProtectedRoute>
-				}
-			/>
-			<Route
-				path="chat/:conversationId"
-				element={
-					<ProtectedRoute>
-						<Chat />
 					</ProtectedRoute>
 				}
 			/>
