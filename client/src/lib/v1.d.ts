@@ -28660,15 +28660,20 @@ export interface components {
             declaration_actor: "github_actions_oidc" | "platform_admin" | "legacy_unattributed";
             /** Producer Oidc Commit Sha */
             producer_oidc_commit_sha?: string | null;
-            /**
-             * Producer Event Name
-             * @enum {string}
-             */
-            producer_event_name?: "push" | "workflow_run" | null;
+            /** Producer Event Name */
+            producer_event_name?: ("push" | "workflow_run" | "workflow_dispatch") | null;
             /** Producer Run Id */
             producer_run_id?: string | null;
             /** Producer Triggering Workflow Run Id */
             producer_triggering_workflow_run_id?: string | null;
+            /** Producer Triggering Workflow Run Attempt */
+            producer_triggering_workflow_run_attempt?: number | null;
+            /** Producer Declaration Digest */
+            producer_declaration_digest?: string | null;
+            /** Producer Actor */
+            producer_actor?: string | null;
+            /** Producer Actor Id */
+            producer_actor_id?: string | null;
             /**
              * Disposition
              * @enum {string}

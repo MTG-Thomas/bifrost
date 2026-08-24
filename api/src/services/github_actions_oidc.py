@@ -15,10 +15,18 @@ from src.config import Settings
 GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_ACTIONS_JWKS_URL = f"{GITHUB_ACTIONS_ISSUER}/.well-known/jwks"
 WORKSPACE_SOURCE_RELEASE_AUDIENCE = "bifrost-workspace-source-release"
-WORKSPACE_SOURCE_RELEASE_EVENTS = frozenset({"push", "workflow_run"})
+GITHUB_ACTIONS_BOT_ACTOR_ID = 41898282
+WORKSPACE_SOURCE_RELEASE_EVENTS = frozenset(
+    {"push", "workflow_run", "workflow_dispatch"}
+)
 _WORKFLOW_RUN_AUDIENCE = re.compile(
     rf"^{WORKSPACE_SOURCE_RELEASE_AUDIENCE}:workflow_run:"
     r"(?P<run_id>[1-9][0-9]*):(?P<source_sha>[0-9a-f]{40})$"
+)
+_WORKFLOW_DISPATCH_AUDIENCE = re.compile(
+    rf"^{WORKSPACE_SOURCE_RELEASE_AUDIENCE}:workflow_dispatch:"
+    r"(?P<run_id>[1-9][0-9]*):(?P<run_attempt>[1-9][0-9]*):"
+    r"(?P<source_sha>[0-9a-f]{40}):(?P<declaration_digest>[0-9a-f]{64})$"
 )
 _WORKSPACE_SOURCE_RELEASE_SETTING_NAMES = (
     "workspace_source_release_oidc_repository",
@@ -43,6 +51,10 @@ class WorkspaceSourceReleaseProducer:
     run_id: str
     event_name: str
     triggering_workflow_run_id: str | None
+    triggering_workflow_run_attempt: int | None = None
+    declaration_digest: str | None = None
+    actor: str | None = None
+    actor_id: str | None = None
 
 
 def workspace_source_release_producer_configured(settings: Settings) -> bool:
@@ -81,7 +93,7 @@ async def authenticate_workspace_source_release_producer(
     settings: Settings,
     jwks: dict[str, Any] | None = None,
 ) -> WorkspaceSourceReleaseProducer:
-    """Verify one push-to-main producer token against immutable GitHub claims."""
+    """Verify one protected-main producer token against immutable GitHub claims."""
     repository = _required_setting(
         settings.workspace_source_release_oidc_repository,
         "BIFROST_WORKSPACE_SOURCE_RELEASE_OIDC_REPOSITORY",
@@ -131,9 +143,11 @@ async def authenticate_workspace_source_release_producer(
             "GitHub Actions OIDC token has an invalid source-release audience"
         )
     workflow_run_audience = _WORKFLOW_RUN_AUDIENCE.fullmatch(token_audience)
+    workflow_dispatch_audience = _WORKFLOW_DISPATCH_AUDIENCE.fullmatch(token_audience)
     if (
         token_audience != WORKSPACE_SOURCE_RELEASE_AUDIENCE
         and workflow_run_audience is None
+        and workflow_dispatch_audience is None
     ):
         raise GitHubActionsOIDCError(
             "GitHub Actions OIDC token has an invalid source-release audience"
@@ -237,14 +251,44 @@ async def authenticate_workspace_source_release_producer(
             )
         source_commit_sha = oidc_commit_sha
         triggering_workflow_run_id = None
+        triggering_workflow_run_attempt = None
+        declaration_digest = None
     else:
-        if workflow_run_audience is None:
+        bound_audience = (
+            workflow_run_audience
+            if event_name == "workflow_run"
+            else workflow_dispatch_audience
+        )
+        if bound_audience is None:
             raise GitHubActionsOIDCError(
-                "workflow_run producer must bind its triggering run and head SHA "
-                "in the source-release audience"
+                f"{event_name} producer must use its matching exact-bound "
+                "source-release audience"
             )
-        source_commit_sha = workflow_run_audience.group("source_sha")
-        triggering_workflow_run_id = workflow_run_audience.group("run_id")
+        source_commit_sha = bound_audience.group("source_sha")
+        triggering_workflow_run_id = bound_audience.group("run_id")
+        triggering_workflow_run_attempt = (
+            int(bound_audience.group("run_attempt"))
+            if event_name == "workflow_dispatch"
+            else None
+        )
+        declaration_digest = (
+            bound_audience.group("declaration_digest")
+            if event_name == "workflow_dispatch"
+            else None
+        )
+    actor = str(claims["actor"]) if claims.get("actor") is not None else None
+    actor_id = str(claims["actor_id"]) if claims.get("actor_id") is not None else None
+    if event_name == "workflow_dispatch":
+        actor_mismatches = []
+        if actor != "github-actions[bot]":
+            actor_mismatches.append("actor")
+        if actor_id != str(GITHUB_ACTIONS_BOT_ACTOR_ID):
+            actor_mismatches.append("actor_id")
+        if actor_mismatches:
+            raise GitHubActionsOIDCError(
+                "GitHub Actions OIDC token is outside the source-release trust "
+                "policy: " + ", ".join(actor_mismatches)
+            )
     return WorkspaceSourceReleaseProducer(
         organization_id=organization_id,
         source_commit_sha=source_commit_sha,
@@ -254,4 +298,8 @@ async def authenticate_workspace_source_release_producer(
         run_id=str(claims["run_id"]),
         event_name=str(event_name),
         triggering_workflow_run_id=triggering_workflow_run_id,
+        triggering_workflow_run_attempt=triggering_workflow_run_attempt,
+        declaration_digest=declaration_digest,
+        actor=actor,
+        actor_id=actor_id,
     )

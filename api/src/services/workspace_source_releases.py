@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -60,6 +62,24 @@ def _normalize_paths(paths: dict[str, str | None]) -> dict[str, str | None]:
     return dict(sorted(normalized.items()))
 
 
+def source_release_declaration_digest(
+    request: WorkspaceSourceReleaseDeclareRequest,
+) -> str:
+    """Hash the canonical declaration JSON shared with the Workspace producer.
+
+    Canonical JSON omits null fields, sorts keys recursively, uses compact
+    separators, and preserves non-ASCII text as raw UTF-8 before SHA-256.
+    """
+    payload = request.model_dump(mode="json", exclude_none=True)
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def source_release_response(
     record: WorkspaceSourceRelease,
     *,
@@ -84,6 +104,12 @@ def source_release_response(
         producer_triggering_workflow_run_id=(
             record.producer_triggering_workflow_run_id
         ),
+        producer_triggering_workflow_run_attempt=(
+            record.producer_triggering_workflow_run_attempt
+        ),
+        producer_declaration_digest=record.producer_declaration_digest,
+        producer_actor=record.producer_actor,
+        producer_actor_id=record.producer_actor_id,
         disposition=record.disposition,
         reason=record.reason,
         release_row_id=record.release_row_id,
@@ -118,6 +144,14 @@ class WorkspaceSourceReleaseService:
                 raise ValueError(
                     "authenticated producer source commit does not match the declaration"
                 )
+            if (
+                producer.declaration_digest is not None
+                and producer.declaration_digest
+                != source_release_declaration_digest(request)
+            ):
+                raise ValueError(
+                    "authenticated producer declaration digest does not match the request"
+                )
         paths = _normalize_paths(request.paths)
         existing = await self.db.scalar(
             select(WorkspaceSourceRelease).where(
@@ -147,6 +181,16 @@ class WorkspaceSourceReleaseService:
             producer_triggering_workflow_run_id=(
                 producer.triggering_workflow_run_id if producer is not None else None
             ),
+            producer_triggering_workflow_run_attempt=(
+                producer.triggering_workflow_run_attempt
+                if producer is not None
+                else None
+            ),
+            producer_declaration_digest=(
+                producer.declaration_digest if producer is not None else None
+            ),
+            producer_actor=(producer.actor if producer is not None else None),
+            producer_actor_id=(producer.actor_id if producer is not None else None),
             disposition=disposition,
             declared_disposition=disposition,
             reason=request.reason,
@@ -444,6 +488,7 @@ __all__ = [
     "WorkspaceSourceReleaseService",
     "mark_source_release_attention",
     "reconcile_source_releases_after_lock",
+    "source_release_declaration_digest",
     "source_release_response",
     "sweep_overdue_workspace_releases",
 ]

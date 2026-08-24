@@ -1,5 +1,6 @@
 """Accountability contracts for reviewed Workspace source commits."""
 
+import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +22,7 @@ from src.services.workspace_source_releases import (
     WorkspaceSourceReleaseConflict,
     WorkspaceSourceReleaseService,
     reconcile_source_releases_after_lock,
+    source_release_declaration_digest,
     source_release_response,
     sweep_overdue_workspace_releases,
 )
@@ -139,6 +141,10 @@ def _source_record(
         producer_event_name=None,
         producer_run_id=None,
         producer_triggering_workflow_run_id=None,
+        producer_triggering_workflow_run_attempt=None,
+        producer_declaration_digest=None,
+        producer_actor=None,
+        producer_actor_id=None,
         disposition=disposition,
         declared_disposition=declared_disposition,
         due_at=due_at,
@@ -156,6 +162,19 @@ def test_pending_declaration_requires_exact_paths() -> None:
             paths={},
             disposition="pending",
         )
+
+
+def test_declaration_digest_matches_cross_repository_canonical_vector() -> None:
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        disposition="pending",
+    )
+
+    assert source_release_declaration_digest(request) == (
+        "847184822972fce93fe6dad984a72d5889c54980f539435db7b3b1c54cbf3292"
+    )
 
 
 def test_non_production_declaration_requires_reason() -> None:
@@ -225,8 +244,12 @@ async def test_github_declaration_persists_authenticated_producer_provenance() -
         repository="MTG-Thomas/bifrost-workspace",
         workflow_ref="trusted",
         run_id="123",
-        event_name="workflow_run",
+        event_name="workflow_dispatch",
         triggering_workflow_run_id="456",
+        triggering_workflow_run_attempt=2,
+        declaration_digest=source_release_declaration_digest(request),
+        actor="github-actions[bot]",
+        actor_id="41898282",
     )
 
     response = await WorkspaceSourceReleaseService(database, organization_id).declare(
@@ -235,9 +258,15 @@ async def test_github_declaration_persists_authenticated_producer_provenance() -
 
     assert response.declaration_actor == "github_actions_oidc"
     assert response.producer_oidc_commit_sha == "d" * 40
-    assert response.producer_event_name == "workflow_run"
+    assert response.producer_event_name == "workflow_dispatch"
     assert response.producer_run_id == "123"
     assert response.producer_triggering_workflow_run_id == "456"
+    assert response.producer_triggering_workflow_run_attempt == 2
+    assert response.producer_declaration_digest == source_release_declaration_digest(
+        request
+    )
+    assert response.producer_actor == "github-actions[bot]"
+    assert response.producer_actor_id == "41898282"
 
 
 @pytest.mark.asyncio
@@ -260,6 +289,10 @@ async def test_admin_declaration_has_explicit_actor_without_oidc_provenance() ->
     assert response.producer_event_name is None
     assert response.producer_run_id is None
     assert response.producer_triggering_workflow_run_id is None
+    assert response.producer_triggering_workflow_run_attempt is None
+    assert response.producer_declaration_digest is None
+    assert response.producer_actor is None
+    assert response.producer_actor_id is None
 
 
 @pytest.mark.asyncio
@@ -283,6 +316,34 @@ async def test_declaration_rejects_producer_source_mismatch() -> None:
     )
 
     with pytest.raises(ValueError, match="source commit"):
+        await WorkspaceSourceReleaseService(
+            _InsertDeclareDatabase(), organization_id
+        ).declare(request, created_by=uuid4(), producer=producer)
+
+
+@pytest.mark.asyncio
+async def test_declaration_rejects_producer_body_digest_mismatch() -> None:
+    organization_id = uuid4()
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha="a" * 40,
+        source_tree_sha="b" * 40,
+        paths={"features/example.py": "c" * 64},
+        disposition="pending",
+    )
+    producer = WorkspaceSourceReleaseProducer(
+        organization_id=organization_id,
+        source_commit_sha=request.source_commit_sha,
+        oidc_commit_sha="e" * 40,
+        repository="MTG-Thomas/bifrost-workspace",
+        workflow_ref="trusted",
+        run_id="123",
+        event_name="workflow_dispatch",
+        triggering_workflow_run_id="456",
+        triggering_workflow_run_attempt=2,
+        declaration_digest="f" * 64,
+    )
+
+    with pytest.raises(ValueError, match="declaration digest"):
         await WorkspaceSourceReleaseService(
             _InsertDeclareDatabase(), organization_id
         ).declare(request, created_by=uuid4(), producer=producer)
@@ -530,6 +591,78 @@ def test_source_release_provenance_has_database_enforced_actor_contract() -> Non
         "producer_triggering_workflow_run_id IS NOT NULL"
         in constraints["ck_workspace_source_release_triggering_run"]
     )
+    assert (
+        "producer_triggering_workflow_run_attempt > 0"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "producer_declaration_digest ~ '^[0-9a-f]{64}$'"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "producer_actor = 'github-actions[bot]'"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "producer_actor_id = '41898282'"
+        in constraints["ck_workspace_source_release_triggering_run"]
+    )
+    assert (
+        "workflow_dispatch"
+        in constraints["ck_workspace_source_release_producer_provenance"]
+    )
     assert "legacy_unattributed" in migration
     assert "producer_oidc_commit_sha" in migration
     assert 'down_revision: str | None = "20260824_ws_source_releases"' in migration
+
+
+def test_workflow_dispatch_provenance_migration_replaces_checks() -> None:
+    migration = (
+        Path(__file__).resolve().parents[3]
+        / "alembic"
+        / "versions"
+        / "20260824_workspace_source_release_workflow_dispatch.py"
+    ).read_text()
+
+    assert 'down_revision: str | None = "20260824_ws_source_provenance"' in migration
+    assert "workflow_dispatch" in migration
+    assert "producer_triggering_workflow_run_attempt" in migration
+    assert "producer_declaration_digest" in migration
+    assert "producer_actor" in migration
+    assert "producer_actor_id" in migration
+    migration_constraints: dict[str, str] = {}
+    tree = ast.parse(migration)
+    upgrade = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
+    )
+    for statement in upgrade.body:
+        if not isinstance(statement, ast.Expr) or not isinstance(
+            statement.value, ast.Call
+        ):
+            continue
+        function = statement.value.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and function.attr == "create_check_constraint"
+        ):
+            continue
+        name, _, sqltext = statement.value.args
+        migration_constraints[ast.literal_eval(name)] = ast.literal_eval(sqltext)
+
+    model_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in WorkspaceSourceRelease.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    for name in (
+        "ck_workspace_source_release_producer_provenance",
+        "ck_workspace_source_release_triggering_run",
+    ):
+        assert " ".join(migration_constraints[name].split()) == " ".join(
+            model_constraints[name].split()
+        )
+
+    assert "declaration_actor = 'legacy_unattributed'" in migration
+    assert "WHERE producer_event_name = 'workflow_dispatch'" in migration
