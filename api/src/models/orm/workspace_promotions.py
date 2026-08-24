@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -304,6 +305,14 @@ class WorkspaceSourceRelease(Base):
     producer_triggering_workflow_run_id: Mapped[str | None] = mapped_column(
         String(30), nullable=True
     )
+    producer_triggering_workflow_run_attempt: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    producer_declaration_digest: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    producer_actor: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    producer_actor_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
     disposition: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending"
     )
@@ -379,20 +388,33 @@ class WorkspaceSourceRelease(Base):
         CheckConstraint(
             "(declaration_actor = 'github_actions_oidc' AND "
             "producer_oidc_commit_sha IS NOT NULL AND "
-            "producer_event_name IN ('push', 'workflow_run') AND "
+            "producer_event_name IN ('push', 'workflow_run', 'workflow_dispatch') AND "
             "producer_run_id IS NOT NULL) OR "
             "(declaration_actor <> 'github_actions_oidc' AND "
             "producer_oidc_commit_sha IS NULL AND "
             "producer_event_name IS NULL AND producer_run_id IS NULL AND "
-            "producer_triggering_workflow_run_id IS NULL)",
+            "producer_triggering_workflow_run_id IS NULL AND "
+            "producer_triggering_workflow_run_attempt IS NULL AND "
+            "producer_declaration_digest IS NULL AND producer_actor IS NULL AND "
+            "producer_actor_id IS NULL)",
             name="ck_workspace_source_release_producer_provenance",
         ),
         CheckConstraint(
             "producer_event_name IS NULL OR "
             "(producer_event_name = 'push' AND "
-            "producer_triggering_workflow_run_id IS NULL) OR "
+            "producer_triggering_workflow_run_id IS NULL AND "
+            "producer_triggering_workflow_run_attempt IS NULL AND "
+            "producer_declaration_digest IS NULL) OR "
             "(producer_event_name = 'workflow_run' AND "
-            "producer_triggering_workflow_run_id IS NOT NULL)",
+            "producer_triggering_workflow_run_id IS NOT NULL AND "
+            "producer_triggering_workflow_run_attempt IS NULL AND "
+            "producer_declaration_digest IS NULL) OR "
+            "(producer_event_name = 'workflow_dispatch' AND "
+            "producer_triggering_workflow_run_id IS NOT NULL AND "
+            "producer_triggering_workflow_run_attempt > 0 AND "
+            "producer_declaration_digest ~ '^[0-9a-f]{64}$' AND "
+            "producer_actor = 'github-actions[bot]' AND "
+            "producer_actor_id = '41898282')",
             name="ck_workspace_source_release_triggering_run",
         ),
         CheckConstraint(
