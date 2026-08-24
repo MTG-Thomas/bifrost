@@ -14,6 +14,13 @@ from src.config import Settings
 GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_ACTIONS_JWKS_URL = f"{GITHUB_ACTIONS_ISSUER}/.well-known/jwks"
 WORKSPACE_SOURCE_RELEASE_AUDIENCE = "bifrost-workspace-source-release"
+_WORKSPACE_SOURCE_RELEASE_SETTING_NAMES = (
+    "workspace_source_release_oidc_repository",
+    "workspace_source_release_oidc_repository_id",
+    "workspace_source_release_oidc_repository_owner_id",
+    "workspace_source_release_oidc_workflow_ref",
+    "workspace_source_release_oidc_organization_id",
+)
 
 
 class GitHubActionsOIDCError(ValueError):
@@ -27,6 +34,28 @@ class WorkspaceSourceReleaseProducer:
     repository: str
     workflow_ref: str
     run_id: str
+
+
+def workspace_source_release_producer_configured(settings: Settings) -> bool:
+    """Return whether every setting required by the trusted producer is present."""
+    return all(
+        value is not None and str(value).strip() != ""
+        for value in (
+            getattr(settings, name, None)
+            for name in _WORKSPACE_SOURCE_RELEASE_SETTING_NAMES
+        )
+    )
+
+
+def workspace_source_release_tracking_expected(settings: Settings) -> bool:
+    """Fail closed once an operator starts configuring the trusted producer."""
+    return any(
+        value is not None and str(value).strip() != ""
+        for value in (
+            getattr(settings, name, None)
+            for name in _WORKSPACE_SOURCE_RELEASE_SETTING_NAMES
+        )
+    )
 
 
 def _required_setting(value: str | int | None, name: str) -> str:

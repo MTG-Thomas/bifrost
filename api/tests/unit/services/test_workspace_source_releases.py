@@ -1,10 +1,12 @@
 """Accountability contracts for reviewed Workspace source commits."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint
 from sqlalchemy.exc import IntegrityError
 
 from src.models.contracts.workspace_promotions import (
@@ -34,8 +36,10 @@ class _Database:
     def __init__(self, scalar_batches):
         self._scalar_batches = list(scalar_batches)
         self.flushes = 0
+        self.locked_entities = []
 
-    async def scalars(self, _statement):
+    async def scalars(self, statement):
+        self.locked_entities.append(statement.column_descriptions[0].get("entity"))
         return _Scalars(self._scalar_batches.pop(0))
 
     async def flush(self):
@@ -151,6 +155,19 @@ async def test_list_counts_full_backlog_not_only_bounded_records() -> None:
 
 
 @pytest.mark.asyncio
+async def test_configured_tracking_is_active_before_first_declaration() -> None:
+    organization_id = uuid4()
+    service = WorkspaceSourceReleaseService(
+        _ListDatabase([], [], [0, 0]), organization_id
+    )
+
+    response = await service.list(tracking_expected=True)
+
+    assert response.total == 0
+    assert response.tracking_state == "active"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_exact_declaration_is_idempotent() -> None:
     record = _source_record()
     database = _RacingDeclareDatabase(record)
@@ -221,7 +238,7 @@ async def test_sweep_marks_source_and_unmirrored_live_release_attention() -> Non
         lock_in_job_id=uuid4(),
         created_by=uuid4(),
     )
-    database = _Database([[source], [release]])
+    database = _Database([[release], [source]])
 
     result = await sweep_overdue_workspace_releases(database, now=now)
 
@@ -233,4 +250,50 @@ async def test_sweep_marks_source_and_unmirrored_live_release_attention() -> Non
     assert "not reached verified production" in source.reason
     assert release.lock_state == "attention_required"
     assert release.error_code == "workspace_release_history_overdue"
+    assert database.locked_entities == [
+        WorkspacePromotionRelease,
+        WorkspaceSourceRelease,
+    ]
     assert database.flushes == 1
+
+
+def test_released_source_evidence_has_same_org_deferred_release_fk() -> None:
+    foreign_key = next(
+        constraint
+        for constraint in WorkspaceSourceRelease.__table__.foreign_key_constraints
+        if constraint.name == "fk_workspace_source_release_release_org"
+    )
+    released_check = next(
+        constraint
+        for constraint in WorkspaceSourceRelease.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_workspace_source_release_released_evidence"
+    )
+
+    assert isinstance(foreign_key, ForeignKeyConstraint)
+    assert foreign_key.column_keys == ["organization_id", "release_row_id"]
+    assert [element.target_fullname for element in foreign_key.elements] == [
+        "workspace_promotion_releases.organization_id",
+        "workspace_promotion_releases.id",
+    ]
+    assert foreign_key.ondelete is None
+    assert foreign_key.deferrable is True
+    assert foreign_key.initially == "DEFERRED"
+    assert "release_row_id IS NOT NULL" in str(released_check.sqltext)
+
+
+def test_source_release_migration_matches_release_evidence_fk_contract() -> None:
+    migration = (
+        Path(__file__).resolve().parents[3]
+        / "alembic"
+        / "versions"
+        / "20260824_workspace_source_releases.py"
+    ).read_text()
+
+    assert '"fk_workspace_source_release_release_org"' in migration
+    assert '["organization_id", "release_row_id"]' in migration
+    assert '"workspace_promotion_releases.organization_id"' in migration
+    assert '"workspace_promotion_releases.id"' in migration
+    assert 'ondelete="SET NULL"' not in migration
+    assert "deferrable=True" in migration
+    assert 'initially="DEFERRED"' in migration

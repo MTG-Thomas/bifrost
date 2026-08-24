@@ -38,12 +38,13 @@ fail its GitHub Actions job when declaration fails. This removes operator
 memory from record creation while retaining an exact audit trail.
 
 `GET /api/workspace-promotions/source-releases` returns
-`tracking_state=not_configured` until the first declaration arrives. Operators
-and monitors must treat that state as missing coverage, not an empty backlog.
-Before that first declaration, existing installations may still activate a
-release so a platform rollout does not deadlock its producer bootstrap. Once
-tracking becomes active for an organization, activation fails closed for any
-protected source commit without a matching declaration.
+`tracking_state=not_configured` until the producer configuration begins or the
+first declaration arrives. Operators and monitors must treat that state as
+missing coverage, not an empty backlog. Existing installations may still
+activate a release only while every producer setting remains absent. Once an
+operator supplies any producer setting, partial configuration and a missing
+first declaration both fail closed. This prevents a failed first producer run
+from leaving activation open indefinitely.
 
 ## Completion
 

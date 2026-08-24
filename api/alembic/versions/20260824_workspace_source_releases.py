@@ -71,9 +71,14 @@ def upgrade() -> None:
             ["organization_id"], ["organizations.id"], ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(
-            ["release_row_id"],
-            ["workspace_promotion_releases.id"],
-            ondelete="SET NULL",
+            ["organization_id", "release_row_id"],
+            [
+                "workspace_promotion_releases.organization_id",
+                "workspace_promotion_releases.id",
+            ],
+            name="fk_workspace_source_release_release_org",
+            deferrable=True,
+            initially="DEFERRED",
         ),
         sa.ForeignKeyConstraint(["created_by"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),

@@ -176,7 +176,12 @@ class WorkspaceSourceReleaseService:
         await self.db.refresh(record)
         return source_release_response(record)
 
-    async def list(self, *, limit: int = 100) -> WorkspaceSourceReleaseListResponse:
+    async def list(
+        self,
+        *,
+        limit: int = 100,
+        tracking_expected: bool = False,
+    ) -> WorkspaceSourceReleaseListResponse:
         records = list(
             (
                 await self.db.scalars(
@@ -237,7 +242,9 @@ class WorkspaceSourceReleaseService:
             pending=counts.get("pending", 0),
             attention_required=(counts.get("attention_required", 0) + overdue_pending),
             overdue=overdue,
-            tracking_state="active" if total else "not_configured",
+            tracking_state=(
+                "active" if total or tracking_expected else "not_configured"
+            ),
             last_observed_source_commit_sha=(
                 responses[0].source_commit_sha if responses else None
             ),
@@ -360,23 +367,9 @@ async def sweep_overdue_workspace_releases(
 ) -> dict[str, list[str]]:
     """Turn missed source and history deadlines into durable attention state."""
     now = now or _utc_now()
-    source_records = list(
-        (
-            await db.scalars(
-                select(WorkspaceSourceRelease)
-                .where(
-                    WorkspaceSourceRelease.disposition == "pending",
-                    WorkspaceSourceRelease.due_at.is_not(None),
-                    WorkspaceSourceRelease.due_at <= now,
-                )
-                .with_for_update(skip_locked=True)
-            )
-        ).all()
-    )
-    for record in source_records:
-        record.disposition = "attention_required"
-        record.reason = "reviewed Workspace source has not reached verified production"
-
+    # Projection takes the Live release row before source-accountability rows.
+    # Keep the scheduler in the same order so the two transactions cannot
+    # deadlock while a history lock completes at the attention deadline.
     live_releases = list(
         (
             await db.scalars(
@@ -398,6 +391,23 @@ async def sweep_overdue_workspace_releases(
             "Live runtime has not reached verified production-live history "
             "before its accountability deadline"
         )
+
+    source_records = list(
+        (
+            await db.scalars(
+                select(WorkspaceSourceRelease)
+                .where(
+                    WorkspaceSourceRelease.disposition == "pending",
+                    WorkspaceSourceRelease.due_at.is_not(None),
+                    WorkspaceSourceRelease.due_at <= now,
+                )
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+    )
+    for record in source_records:
+        record.disposition = "attention_required"
+        record.reason = "reviewed Workspace source has not reached verified production"
     await db.flush()
     return {
         "source_release_ids": [str(record.id) for record in source_records],

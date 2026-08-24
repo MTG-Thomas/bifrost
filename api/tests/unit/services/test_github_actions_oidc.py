@@ -12,6 +12,8 @@ from src.services.github_actions_oidc import (
     WORKSPACE_SOURCE_RELEASE_AUDIENCE,
     GitHubActionsOIDCError,
     authenticate_workspace_source_release_producer,
+    workspace_source_release_producer_configured,
+    workspace_source_release_tracking_expected,
 )
 
 REPOSITORY = "MTG-Thomas/bifrost-workspace"
@@ -31,6 +33,20 @@ def _settings():
         workspace_source_release_oidc_workflow_ref=WORKFLOW_REF,
         workspace_source_release_oidc_organization_id=ORGANIZATION_ID,
     )
+
+
+def test_configuration_state_distinguishes_absent_partial_and_ready() -> None:
+    assert workspace_source_release_tracking_expected(SimpleNamespace()) is False
+    assert workspace_source_release_producer_configured(SimpleNamespace()) is False
+
+    partial = SimpleNamespace(
+        workspace_source_release_oidc_repository=REPOSITORY,
+    )
+    assert workspace_source_release_tracking_expected(partial) is True
+    assert workspace_source_release_producer_configured(partial) is False
+
+    assert workspace_source_release_tracking_expected(_settings()) is True
+    assert workspace_source_release_producer_configured(_settings()) is True
 
 
 def _token(*, overrides: dict[str, object] | None = None):

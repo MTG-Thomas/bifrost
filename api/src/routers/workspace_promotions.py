@@ -58,6 +58,8 @@ from src.services.github_actions_oidc import (
     GitHubActionsOIDCError,
     WorkspaceSourceReleaseProducer,
     authenticate_workspace_source_release_producer,
+    workspace_source_release_producer_configured,
+    workspace_source_release_tracking_expected,
 )
 
 router = APIRouter(
@@ -76,16 +78,7 @@ async def _github_source_release_producer(
             detail="GitHub Actions OIDC bearer token is required",
         )
     settings = get_settings()
-    configured = all(
-        (
-            settings.workspace_source_release_oidc_repository,
-            settings.workspace_source_release_oidc_repository_id,
-            settings.workspace_source_release_oidc_repository_owner_id,
-            settings.workspace_source_release_oidc_workflow_ref,
-            settings.workspace_source_release_oidc_organization_id,
-        )
-    )
-    if not configured:
+    if not workspace_source_release_producer_configured(settings):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Workspace source-release OIDC producer is not configured",
@@ -125,9 +118,7 @@ async def _service(
             installation_id=settings.github_app_installation_id,
             private_key=settings.github_app_private_key.get_secret_value(),
         )
-    return WorkspacePromotionPreviewService(
-        db, organization_id, commit_writer=writer
-    )
+    return WorkspacePromotionPreviewService(db, organization_id, commit_writer=writer)
 
 
 @router.post("/preview", response_model=WorkspacePromotionPreviewResponse)
@@ -422,9 +413,7 @@ async def get_live_workspace_release(
     return await WorkspaceReleaseActivationService(db, ctx.org_id).get_live()
 
 
-@router.get(
-    "/releases/{release_id}", response_model=WorkspaceReleaseStatusResponse
-)
+@router.get("/releases/{release_id}", response_model=WorkspaceReleaseStatusResponse)
 async def get_workspace_release_status(
     release_id: UUID,
     ctx: Context,
@@ -530,7 +519,10 @@ async def list_workspace_source_releases(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="an organization context is required",
         )
-    return await WorkspaceSourceReleaseService(db, ctx.org_id).list(limit=limit)
+    return await WorkspaceSourceReleaseService(db, ctx.org_id).list(
+        limit=limit,
+        tracking_expected=workspace_source_release_tracking_expected(get_settings()),
+    )
 
 
 @router.get(

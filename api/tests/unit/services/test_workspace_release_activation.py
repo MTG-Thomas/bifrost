@@ -373,6 +373,39 @@ async def test_activation_requires_matching_source_release_declaration() -> None
 
 
 @pytest.mark.asyncio
+async def test_configured_producer_requires_first_source_declaration(
+    monkeypatch,
+) -> None:
+    organization_id = uuid4()
+    artifact = SimpleNamespace(
+        source_revision="a" * 40,
+        source_tree_sha="b" * 40,
+    )
+    service = WorkspaceReleaseActivationService(
+        SimpleNamespace(scalar=AsyncMock(return_value=None)), organization_id
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            workspace_source_release_oidc_repository=("MTG-Thomas/bifrost-workspace"),
+            workspace_source_release_oidc_repository_id=1197464564,
+            workspace_source_release_oidc_repository_owner_id=87775189,
+            workspace_source_release_oidc_workflow_ref=(
+                "MTG-Thomas/bifrost-workspace/.github/workflows/"
+                "declare-workspace-source-release.yml@refs/heads/main"
+            ),
+            workspace_source_release_oidc_organization_id=str(organization_id),
+        ),
+    )
+
+    with pytest.raises(
+        WorkspaceReleaseActivationError, match="no durable release declaration"
+    ):
+        await service._validate_source_release_accountability(artifact)
+
+
+@pytest.mark.asyncio
 async def test_nonproduction_head_can_promote_an_older_reviewed_registration() -> None:
     record = SimpleNamespace(
         source_tree_sha="b" * 40,

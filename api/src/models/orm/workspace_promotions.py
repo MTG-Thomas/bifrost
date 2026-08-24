@@ -301,7 +301,6 @@ class WorkspaceSourceRelease(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     release_row_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
-        ForeignKey("workspace_promotion_releases.id", ondelete="SET NULL"),
         nullable=True,
     )
     completion_evidence: Mapped[dict[str, Any] | None] = mapped_column(
@@ -335,6 +334,16 @@ class WorkspaceSourceRelease(Base):
             "organization_id",
             "source_commit_sha",
             name="uq_workspace_source_release_commit",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "release_row_id"],
+            [
+                "workspace_promotion_releases.organization_id",
+                "workspace_promotion_releases.id",
+            ],
+            name="fk_workspace_source_release_release_org",
+            deferrable=True,
+            initially="DEFERRED",
         ),
         Index(
             "ix_workspace_source_release_attention",

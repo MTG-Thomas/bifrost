@@ -19,6 +19,7 @@ from bifrost.workspace_release_authorization import (
     AUTHORIZATION_EVIDENCE_SCHEMA,
     validate_risk_acknowledgement,
 )
+from src.config import get_settings
 from src.models.contracts.workspace_promotions import (
     WorkspaceLiveStatusResponse,
     WorkspaceReleaseActivateRequest,
@@ -34,6 +35,9 @@ from src.models.orm.workspace_promotions import (
 )
 from src.models.orm.workflows import Workflow
 from src.services.audit import emit_audit
+from src.services.github_actions_oidc import (
+    workspace_source_release_tracking_expected,
+)
 from src.services.repo_storage import RepoStorage
 from src.services.workspace_draft_canary import (
     WorkspaceDraftCanaryError,
@@ -814,6 +818,10 @@ class WorkspaceReleaseActivationService:
             .with_for_update()
         )
         if record is None:
+            if workspace_source_release_tracking_expected(get_settings()):
+                raise WorkspaceReleaseActivationError(
+                    "protected source commit has no durable release declaration"
+                )
             tracking_active = await self.db.scalar(
                 select(WorkspaceSourceRelease.id)
                 .where(WorkspaceSourceRelease.organization_id == self.organization_id)
@@ -821,9 +829,8 @@ class WorkspaceReleaseActivationService:
             )
             if tracking_active is None:
                 # Deployment bootstrap: existing installations remain usable but
-                # expose tracking_state=not_configured until the first automatic
-                # protected-main declaration arrives. From that point onward the
-                # gate is fail-closed for every source commit.
+                # expose tracking_state=not_configured until the producer is
+                # configured or the first source declaration arrives.
                 return
             raise WorkspaceReleaseActivationError(
                 "protected source commit has no durable release declaration"
