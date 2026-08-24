@@ -126,7 +126,7 @@ class WorkspaceSourceReleaseService:
             paths=paths,
             disposition=disposition,
             reason=request.reason,
-            due_at=(request.due_at or now + DEFAULT_RELEASE_DUE_AFTER)
+            due_at=(now + DEFAULT_RELEASE_DUE_AFTER)
             if disposition in {"pending", "attention_required"}
             else None,
             resolved_at=now if disposition == "non_production" else None,

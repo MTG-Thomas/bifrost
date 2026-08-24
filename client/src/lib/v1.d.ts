@@ -28586,8 +28586,6 @@ export interface components {
             disposition: "pending" | "attention_required" | "non_production";
             /** Reason */
             reason?: string | null;
-            /** Due At */
-            due_at?: string | null;
         };
         /** WorkspaceSourceReleaseDispositionRequest */
         WorkspaceSourceReleaseDispositionRequest: {

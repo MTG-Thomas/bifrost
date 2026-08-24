@@ -390,7 +390,6 @@ class WorkspaceSourceReleaseDeclareRequest(BaseModel):
     paths: dict[str, str | None] = Field(default_factory=dict, max_length=4000)
     disposition: Literal["pending", "attention_required", "non_production"]
     reason: str | None = Field(default=None, min_length=1, max_length=2000)
-    due_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_disposition(self):
@@ -400,8 +399,6 @@ class WorkspaceSourceReleaseDeclareRequest(BaseModel):
             raise ValueError("non-production disposition requires a reason")
         if self.disposition == "attention_required" and not self.reason:
             raise ValueError("attention-required disposition requires a reason")
-        if self.due_at is not None and self.due_at.utcoffset() is None:
-            raise ValueError("source release deadline must include a timezone")
         invalid_hashes = [
             path
             for path, digest in self.paths.items()
