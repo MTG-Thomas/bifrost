@@ -21425,6 +21425,12 @@ export interface components {
         PlatformJobListResponse: {
             /** Jobs */
             jobs: components["schemas"]["PlatformJobPublic"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
         };
         /** PlatformJobProgress */
         PlatformJobProgress: {
@@ -21492,6 +21498,8 @@ export interface components {
             error?: components["schemas"]["PlatformJobError"] | null;
             /** Notification Id */
             notification_id?: string | null;
+            /** Memory Required Bytes */
+            memory_required_bytes?: number | null;
             /** Memory Start Bytes */
             memory_start_bytes?: number | null;
             /** Memory Peak Bytes */
@@ -33436,6 +33444,9 @@ export interface operations {
             query?: {
                 active_only?: boolean;
                 limit?: number;
+                offset?: number;
+                status?: components["schemas"]["PlatformJobStatus"] | null;
+                search?: string | null;
             };
             header?: never;
             path?: never;

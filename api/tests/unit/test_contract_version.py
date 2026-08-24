@@ -215,6 +215,9 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # SDK AI completion requests gained optional file inputs (2026-08-15).
     # ADDITIVE: old SDK clients omit the field and keep text-only behavior.
     #
+    # PlatformJobPublic gained optional memory_required_bytes (2026-08-23).
+    # ADDITIVE: old clients ignore the scheduler admission detail.
+    #
     # Agent create/update replaced the raw llm_model field with llm_profile_id
     # (2026-08-22). BREAKING: older CLIs cannot express reusable model profiles,
     # and SDK AI model info no longer reports the removed profile max_tokens
@@ -222,7 +225,7 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     #
     # SDK AI completion requests gained optional `profile` (2026-08-23).
     # ADDITIVE: older SDKs omit it and continue using the Primary assignment.
-    "88a3b3adc1ab0b7940729212336f928a49c0372b25937df939c074990ce8cf48"
+    "e778c8be971f09d27e2600a19c152726f0b64b2c0d0785a86853aaef2da711b5"
 )
 
 
