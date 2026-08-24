@@ -30,6 +30,17 @@ DEFAULT_RUN_TIMEOUT = 1800  # 30 minutes
 CANCEL_CHECK_INTERVAL = 2  # seconds between cancel flag checks
 
 
+async def _publish_sync_result(run_id: str, result: dict) -> None:
+    """Release a synchronous caller waiting on this run."""
+    result_key = f"{REDIS_PREFIX}:{run_id}:result"
+    async with get_redis() as redis:
+        await redis.lpush(  # pyright: ignore[reportGeneralTypeIssues]
+            result_key,
+            json.dumps(result),
+        )
+        await redis.expire(result_key, 300)
+
+
 class AgentRunConsumer(BaseConsumer):
     def __init__(self):
         settings = get_settings()
@@ -59,6 +70,15 @@ class AgentRunConsumer(BaseConsumer):
                 run_id,
                 durable_status or "missing",
             )
+            if sync:
+                await _publish_sync_result(
+                    run_id,
+                    {
+                        "output": None,
+                        "status": "failed",
+                        "error": "Agent run context was unavailable",
+                    },
+                )
             return
 
         context = json.loads(context_raw)
@@ -87,15 +107,19 @@ class AgentRunConsumer(BaseConsumer):
                 agent_run.started_at = datetime.now(timezone.utc)
                 agent_run.completed_at = datetime.now(timezone.utc)
                 await db.commit()
+            if sync:
+                await _publish_sync_result(
+                    run_id,
+                    {"output": None, "status": "cancelled", "error": None},
+                )
             return
-
         start_time = time.time()
         agent_run: AgentRun | None = None
         agent: Agent | None = None
         executor = None
 
         try:
-            # Load agent with relationships (brief DB session)
+            # Load agent with relationships after claiming the durable run.
             async with self._session_factory() as db:
                 result = await db.execute(
                     select(Agent)
@@ -117,6 +141,15 @@ class AgentRunConsumer(BaseConsumer):
                         missing_run.error = f"Agent {agent_id} not found"
                         missing_run.completed_at = datetime.now(timezone.utc)
                         await db.commit()
+                if sync:
+                    await _publish_sync_result(
+                        run_id,
+                        {
+                            "output": None,
+                            "status": "failed",
+                            "error": "Agent no longer exists",
+                        },
+                    )
                 return
 
             # Create AgentRun record (brief DB session)
@@ -286,18 +319,17 @@ class AgentRunConsumer(BaseConsumer):
 
             # If sync, push result for BLPOP waiter
             if sync:
-                result_key = f"{REDIS_PREFIX}:{run_id}:result"
-                async with get_redis() as r:
-                    # redis-py 7.x stubs type lpush as -> int, but it's async at runtime
-                    await r.lpush(result_key, json.dumps({  # pyright: ignore[reportGeneralTypeIssues]
+                await _publish_sync_result(
+                    run_id,
+                    {
                         "output": run_result.get("output"),
                         "status": run_result.get("status", "completed"),
                         "error": run_result.get("error"),
                         "iterations_used": run_result.get("iterations_used", 0),
                         "tokens_used": run_result.get("tokens_used", 0),
                         "llm_model": run_result.get("llm_model"),
-                    }))
-                    await r.expire(result_key, 300)
+                    },
+                )
 
         except Exception as e:
             logger.exception(f"Agent run {run_id} failed: {e}")
@@ -337,14 +369,14 @@ class AgentRunConsumer(BaseConsumer):
                     logger.debug(f"failed to publish agent_run failure update for {run_id}: {pub_err}")
 
             if sync:
-                result_key = f"{REDIS_PREFIX}:{run_id}:result"
-                async with get_redis() as r:
-                    await r.lpush(result_key, json.dumps({  # pyright: ignore[reportGeneralTypeIssues]
+                await _publish_sync_result(
+                    run_id,
+                    {
                         "output": None,
                         "status": "failed",
                         "error": str(e),
-                    }))
-                    await r.expire(result_key, 300)
+                    },
+                )
 
         finally:
             try:

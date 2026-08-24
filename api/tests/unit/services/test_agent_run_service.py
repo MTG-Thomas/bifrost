@@ -54,22 +54,21 @@ class TestEnqueueAgentRun:
 
         assert run_id is not None
         mock_publish.assert_called_once()
-
-        # Verify queue name
-        call_args = mock_publish.call_args
-        assert call_args[0][0] == "agent-runs"
+        assert mock_publish.call_args[0][0] == "agent-runs"
 
     @pytest.mark.asyncio
     @patch("src.services.execution.agent_run_service.publish_message")
     @patch("src.services.execution.agent_run_service.get_redis")
-    async def test_enqueue_stores_context_in_redis(self, mock_get_redis, mock_publish):
-        mock_redis = AsyncMock()
+    async def test_enqueue_stores_context_in_redis(
+        self, mock_get_redis, _mock_publish
+    ):
+        redis = AsyncMock()
         mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_redis)
+        mock_ctx.__aenter__ = AsyncMock(return_value=redis)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_get_redis.return_value = mock_ctx
-
         org_id = str(uuid4())
+
         await enqueue_agent_run(
             agent_id=str(uuid4()),
             trigger_type="sdk",
@@ -79,21 +78,23 @@ class TestEnqueueAgentRun:
             caller_user_id=str(uuid4()),
         )
 
-        mock_redis.set.assert_called_once()
-        context = json.loads(mock_redis.set.call_args.args[1])
+        redis.set.assert_awaited_once()
+        context = json.loads(redis.set.call_args.args[1])
         assert context["caller"]["organization_id"] == org_id
 
     @pytest.mark.asyncio
     @patch("src.services.execution.agent_run_service.publish_message")
     @patch("src.services.execution.agent_run_service.get_redis")
-    async def test_enqueue_uses_provided_run_id(self, mock_get_redis, mock_publish):
+    async def test_enqueue_uses_provided_run_id(
+        self, mock_get_redis, _mock_publish
+    ):
         mock_redis = AsyncMock()
         mock_ctx = AsyncMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_redis)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_get_redis.return_value = mock_ctx
-
         expected_run_id = str(uuid4())
+
         run_id = await enqueue_agent_run(
             agent_id=str(uuid4()),
             trigger_type="sdk",
@@ -105,7 +106,9 @@ class TestEnqueueAgentRun:
     @pytest.mark.asyncio
     @patch("src.services.execution.agent_run_service.publish_message")
     @patch("src.services.execution.agent_run_service.get_redis")
-    async def test_enqueue_message_contains_sync_flag(self, mock_get_redis, mock_publish):
+    async def test_enqueue_message_contains_sync_flag(
+        self, mock_get_redis, mock_publish
+    ):
         mock_redis = AsyncMock()
         mock_ctx = AsyncMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_redis)
