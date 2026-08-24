@@ -80,6 +80,8 @@ def _token(*, overrides: dict[str, object] | None = None):
         "sha": SOURCE_SHA,
         "workflow_ref": WORKFLOW_REF,
         "run_id": "123456",
+        "actor": "MTG-Thomas",
+        "actor_id": "87775189",
     }
     claims.update(overrides or {})
     token = jwt.encode(
@@ -116,8 +118,8 @@ async def test_accepts_exact_protected_main_push_identity() -> None:
     assert producer.run_id == "123456"
     assert producer.event_name == "push"
     assert producer.triggering_workflow_run_id is None
-    assert producer.actor is None
-    assert producer.actor_id is None
+    assert producer.actor == "MTG-Thomas"
+    assert producer.actor_id == "87775189"
 
 
 @pytest.mark.asyncio
@@ -141,8 +143,8 @@ async def test_accepts_workflow_run_bound_to_triggering_ci_head_sha() -> None:
     assert producer.workflow_ref == WORKFLOW_REF
     assert producer.event_name == "workflow_run"
     assert producer.triggering_workflow_run_id == TRIGGERING_RUN_ID
-    assert producer.actor is None
-    assert producer.actor_id is None
+    assert producer.actor == "MTG-Thomas"
+    assert producer.actor_id == "87775189"
 
 
 @pytest.mark.asyncio
@@ -177,9 +179,9 @@ async def test_accepts_workflow_dispatch_bound_to_successful_ci_head_sha() -> No
 @pytest.mark.parametrize(
     "overrides",
     [
-        {},
-        {"actor_id": "41898282"},
-        {"actor": "github-actions[bot]"},
+        {"actor": None, "actor_id": None},
+        {"actor": None},
+        {"actor_id": None},
         {"actor": "MTG-Thomas", "actor_id": "87775189"},
         {"actor": "github-actions[bot]", "actor_id": "87775189"},
     ],

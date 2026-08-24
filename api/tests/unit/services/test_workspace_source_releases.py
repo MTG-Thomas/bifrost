@@ -1,5 +1,6 @@
 """Accountability contracts for reviewed Workspace source commits."""
 
+import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -629,5 +630,39 @@ def test_workflow_dispatch_provenance_migration_replaces_checks() -> None:
     assert "producer_declaration_digest" in migration
     assert "producer_actor" in migration
     assert "producer_actor_id" in migration
-    assert '"ck_workspace_source_release_producer_provenance"' in migration
-    assert '"ck_workspace_source_release_triggering_run"' in migration
+    migration_constraints: dict[str, str] = {}
+    tree = ast.parse(migration)
+    upgrade = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
+    )
+    for statement in upgrade.body:
+        if not isinstance(statement, ast.Expr) or not isinstance(
+            statement.value, ast.Call
+        ):
+            continue
+        function = statement.value.func
+        if not (
+            isinstance(function, ast.Attribute)
+            and function.attr == "create_check_constraint"
+        ):
+            continue
+        name, _, sqltext = statement.value.args
+        migration_constraints[ast.literal_eval(name)] = ast.literal_eval(sqltext)
+
+    model_constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in WorkspaceSourceRelease.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    for name in (
+        "ck_workspace_source_release_producer_provenance",
+        "ck_workspace_source_release_triggering_run",
+    ):
+        assert " ".join(migration_constraints[name].split()) == " ".join(
+            model_constraints[name].split()
+        )
+
+    assert "declaration_actor = 'legacy_unattributed'" in migration
+    assert "WHERE producer_event_name = 'workflow_dispatch'" in migration

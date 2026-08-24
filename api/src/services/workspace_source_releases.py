@@ -65,6 +65,11 @@ def _normalize_paths(paths: dict[str, str | None]) -> dict[str, str | None]:
 def source_release_declaration_digest(
     request: WorkspaceSourceReleaseDeclareRequest,
 ) -> str:
+    """Hash the canonical declaration JSON shared with the Workspace producer.
+
+    Canonical JSON omits null fields, sorts keys recursively, uses compact
+    separators, and preserves non-ASCII text as raw UTF-8 before SHA-256.
+    """
     payload = request.model_dump(mode="json", exclude_none=True)
     canonical = json.dumps(
         payload,

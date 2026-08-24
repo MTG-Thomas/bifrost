@@ -93,6 +93,19 @@ def downgrade() -> None:
         "workspace_source_releases",
         type_="check",
     )
+    op.execute(
+        "UPDATE workspace_source_releases SET "
+        "declaration_actor = 'legacy_unattributed', "
+        "producer_oidc_commit_sha = NULL, "
+        "producer_event_name = NULL, "
+        "producer_run_id = NULL, "
+        "producer_triggering_workflow_run_id = NULL, "
+        "producer_triggering_workflow_run_attempt = NULL, "
+        "producer_declaration_digest = NULL, "
+        "producer_actor = NULL, "
+        "producer_actor_id = NULL "
+        "WHERE producer_event_name = 'workflow_dispatch'"
+    )
     op.create_check_constraint(
         "ck_workspace_source_release_producer_provenance",
         "workspace_source_releases",
