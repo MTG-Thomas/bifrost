@@ -353,7 +353,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check GitHub Action pins
-        run: python3 api/scripts/check_github_action_pins.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 api/scripts/check_github_action_pins.py --verify-versions
 
       - name: Check MTG CI boundaries
         run: python3 api/scripts/check_mtg_ci_boundaries.py
@@ -636,6 +638,7 @@ jobs:
         if: needs.affected-test-plan.outputs.mcp_conformance_mode != 'skip'
         env:
           BIFROST_SKIP_BUILD: "1"
+          BIFROST_TEST_USE_CLEAN_BOOT: "1"
         run: |
           chmod +x test.sh
           ./test.sh stack up

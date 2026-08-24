@@ -48,32 +48,37 @@ def _dispatch_request_identity(
     api_key_id: str | None,
     file_path: str | None,
     org_id_override: str | None,
+    dispatch_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     event = dataclasses.asdict(context.event) if context.event is not None else None
-    return jsonable_encoder(
-        {
-            "schema_version": PENDING_DISPATCH_SCHEMA,
-            "execution_id": execution_id,
-            "workflow_id": workflow_id,
-            "parameters": parameters,
-            "org_id": org_id_override or context.org_id,
-            "user_id": context.user_id,
-            "user_name": context.name,
-            "user_email": context.email,
-            "form_id": form_id,
-            "startup": context.startup,
-            "form_inputs": context.form_inputs,
-            "embed": context.embed,
-            "api_key_id": api_key_id,
-            "sync": sync,
-            "is_platform_admin": context.is_platform_admin,
-            "is_provider_org": getattr(context, "is_provider_org", False),
-            "is_external": getattr(context, "is_external", False),
-            "file_path": file_path,
-            "event": event,
-            "caller_solution_deployment_id": context.solution_deployment_id,
-        }
-    )
+    identity: dict[str, Any] = {
+        "schema_version": PENDING_DISPATCH_SCHEMA,
+        "execution_id": execution_id,
+        "workflow_id": workflow_id,
+        "parameters": parameters,
+        "org_id": org_id_override or context.org_id,
+        "user_id": context.user_id,
+        "user_name": context.name,
+        "user_email": context.email,
+        "form_id": form_id,
+        "startup": context.startup,
+        "form_inputs": context.form_inputs,
+        "embed": context.embed,
+        "api_key_id": api_key_id,
+        "sync": sync,
+        "is_platform_admin": context.is_platform_admin,
+        "is_provider_org": getattr(context, "is_provider_org", False),
+        "is_external": getattr(context, "is_external", False),
+        "file_path": file_path,
+        "event": event,
+        "caller_solution_deployment_id": context.solution_deployment_id,
+    }
+    if dispatch_metadata is not None:
+        identity["dispatch_metadata"] = dispatch_metadata
+    artifact_workspace_id = getattr(context, "artifact_workspace_id", None)
+    if artifact_workspace_id is not None:
+        identity["artifact_workspace_id"] = artifact_workspace_id
+    return jsonable_encoder(identity)
 
 
 def _pending_dispatch_envelope(
@@ -99,6 +104,7 @@ def _pending_dispatch_envelope(
             "solution_deployment_id": solution_deployment_id,
             "runtime_evidence": runtime_evidence,
             "runtime_mode": runtime_mode,
+            "execution_record_exists": True,
         }
     )
     return {
@@ -176,6 +182,7 @@ async def _persist_execution_pin(
     sync: bool,
     api_key_id: str | None,
     file_path: str | None,
+    dispatch_metadata: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Persist immutable runtime evidence before anything enters the queue."""
     from src.core.database import get_db_context
@@ -196,6 +203,7 @@ async def _persist_execution_pin(
             api_key_id=api_key_id,
             file_path=file_path,
             org_id_override=org_id_override,
+            dispatch_metadata=dispatch_metadata,
         )
         # A caller-supplied execution identity is also the canonical
         # idempotency boundary for workflow dispatch. Serialize contenders on
@@ -339,6 +347,9 @@ async def _publish_pending(
     solution_deployment_id: str | None = None,
     runtime_evidence: dict[str, Any] | None = None,
     runtime_mode: str = "legacy",
+    execution_record_exists: bool = False,
+    dispatch_metadata: dict[str, Any] | None = None,
+    artifact_workspace_id: str | None = None,
 ) -> None:
     """
     Write a pending-execution blob to Redis, register with the queue tracker,
@@ -391,17 +402,23 @@ async def _publish_pending(
                 solution_deployment_id=solution_deployment_id,
                 runtime_evidence=runtime_evidence,
                 runtime_mode=runtime_mode,
+                artifact_workspace_id=artifact_workspace_id,
             )
 
-            # Add to queue tracking (publishes position updates to all queued executions)
-            await add_to_queue(execution_id)
+            # Sync callers wait on a private result list and cannot consume
+            # queue-position events. RabbitMQ still provides admission control.
+            if not sync:
+                await add_to_queue(execution_id)
 
             # Prepare queue message (minimal - worker reads full context from Redis)
             message: dict[str, Any] = {
                 "execution_id": execution_id,
                 "workflow_id": workflow_id,
                 "sync": sync,
+                "execution_record_exists": execution_record_exists,
             }
+            if dispatch_metadata is not None:
+                message["dispatch_metadata"] = dispatch_metadata
             if solution_deployment_id is not None:
                 message["solution_deployment_id"] = solution_deployment_id
 
@@ -428,6 +445,7 @@ async def enqueue_workflow_execution_once(
     api_key_id: str | None = None,
     file_path: str | None = None,
     org_id_override: str | None = None,
+    dispatch_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
     """
     Enqueue a workflow for async execution.
@@ -462,6 +480,7 @@ async def enqueue_workflow_execution_once(
         sync=sync,
         api_key_id=api_key_id,
         file_path=file_path,
+        dispatch_metadata=dispatch_metadata,
     )
 
     await _publish_scheduled_once(
@@ -491,6 +510,7 @@ async def enqueue_workflow_execution(
     api_key_id: str | None = None,
     file_path: str | None = None,
     org_id_override: str | None = None,
+    dispatch_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Compatibility wrapper returning only the canonical execution ID."""
     queued_id, _reused = await enqueue_workflow_execution_once(
@@ -503,6 +523,7 @@ async def enqueue_workflow_execution(
         api_key_id=api_key_id,
         file_path=file_path,
         org_id_override=org_id_override,
+        dispatch_metadata=dispatch_metadata,
     )
     return queued_id
 

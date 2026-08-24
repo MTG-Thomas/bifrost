@@ -52,24 +52,6 @@ def test_is_downgrade_only_blocks_ordered_pep440_versions(new, current, expected
     assert deploy._is_downgrade(new, current) is expected
 
 
-def test_decode_logo_handles_absent_png_and_invalid_content_type():
-    assert deploy._decode_logo("app", None, None) == (None, None)
-
-    data, content_type = deploy._decode_logo("app", "aGVsbG8=", "image/png")
-    assert data == b"hello"
-    assert content_type == "image/png"
-
-    with pytest.raises(deploy.SolutionDeployConflict, match="not allowed"):
-        deploy._decode_logo("app", "aGVsbG8=", "text/html")
-
-
-def test_decode_logo_rejects_oversized_logo(monkeypatch):
-    monkeypatch.setattr(deploy, "_LOGO_MAX_SIZE", 2)
-
-    with pytest.raises(deploy.SolutionDeployConflict, match="exceeds"):
-        deploy._decode_logo("app", "aGVsbG8=", "image/png")
-
-
 @pytest.mark.asyncio
 async def test_retry_idempotent_retries_then_succeeds(monkeypatch):
     attempts = 0

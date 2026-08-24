@@ -64,6 +64,7 @@ class PlatformJobPublic(BaseModel):
     result: dict[str, Any] | None = None
     error: PlatformJobError | None = None
     notification_id: UUID | None = None
+    memory_required_bytes: int | None = None
     memory_start_bytes: int | None = None
     memory_peak_bytes: int | None = None
     memory_limit_bytes: int | None = None
@@ -77,6 +78,9 @@ class PlatformJobPublic(BaseModel):
 
 class PlatformJobListResponse(BaseModel):
     jobs: list[PlatformJobPublic]
+    total: int
+    limit: int
+    offset: int
 
 
 class PlatformJobCancelResponse(BaseModel):

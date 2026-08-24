@@ -60,7 +60,7 @@ Platform work runs in **Docker on a Linux host** (shared `pve-t340` dev guest or
    cd /tmp/bifrost-cli-<name>
    python3 -m venv .venv
    .venv/bin/pip install --quiet --upgrade pip
-   .venv/bin/pip install --quiet "<API_URL>/api/cli/download"
+   .venv/bin/pip install --quiet "<API_URL>/api/cli/download/bifrost-cli.tar.gz"
    ```
    The download endpoint serves the build matching the running API; installing this version avoids the version-mismatch warning that otherwise short-circuits subcommand output.
 
@@ -206,7 +206,7 @@ Entity mutations have three parallel surfaces: **CLI** (`bifrost <entity> ...`),
 1. Run the DTO-parity test: `./test.sh tests/unit/test_dto_flags.py`. If it fails, either add the new field to the appropriate CLI command / MCP tool, or add it to `DTO_EXCLUDES` in `api/bifrost/dto_flags.py` with a one-line comment explaining why (UI-managed, out-of-scope, etc.).
 2. If the field should round-trip in portable exports, update `api/bifrost/manifest.py` (`ManifestXxx` pydantic models) and the scrub rules in `api/bifrost/portable.py`.
 3. If the field changes a command or tool, regenerate the skill appendices via `python api/scripts/skill-truth/generate.py` (CI enforces freshness).
-4. **Run the contract-version tripwire: `./test.sh tests/unit/test_contract_version.py`.** It fingerprints every CLI/SDK-consumed DTO (command DTOs + all `src.models.contracts.cli` SDK DTOs, pulled in programmatically). If one changed, the test fails and forces a decision: if the change is **breaking** (field removed/renamed/retyped, a response shape the CLI parses), bump `CONTRACT_VERSION` in **both** `api/shared/contract_version.py` and `api/bifrost/contract_version.py`, then refresh `EXPECTED_CONTRACT_FINGERPRINT`. If it's **cosmetic/additive**, just refresh the fingerprint. This keeps a missed bump from shipping a CLI that silently breaks against the server — the CLI's runtime gate hard-blocks on a contract mismatch. (Pure route renames aren't gated — they 404 loudly rather than corrupt; the DTO layer catches the silent breakages.)
+4. **Run the CLI-contract tripwire: `./test.sh tests/unit/test_contract_version.py`.** It fingerprints every CLI/SDK-consumed DTO (command DTOs + all `src.models.contracts.cli` SDK DTOs, pulled in programmatically). If one changed, the test forces a decision: for a **CLI-impacting/breaking** change (field removed/renamed/retyped, a response shape the CLI parses), raise `MIN_CLI_VERSION` in `api/shared/version.py` to the release containing the compatible CLI, then refresh `EXPECTED_CONTRACT_FINGERPRINT`; for a **compatible additive/cosmetic** change, refresh only the fingerprint. The runtime hard gate is the server-provided minimum CLI version. `CONTRACT_VERSION = 10` is a frozen one-release bridge for older CLIs that shipped while minimum gating was absent; do not continue bumping it. (Pure route renames aren't fingerprinted — they 404 loudly rather than corrupt; the DTO layer catches silent shape breakages.)
 
 **When renaming or reassigning an entity (workflow, table, config):** grep the codebase before committing. Workflows are referenced by `path::func` in forms; tables are referenced by name in workflow SDK calls (`sdk.tables.get("...")`); configs are referenced by key. `bifrost tables update --name` warns on renames but does not block — the author is responsible for a full-workspace search (`rg -n '\b<old-name>\b' apps/ workflows/`) before pushing.
 
@@ -317,7 +317,7 @@ export async function getDataProviders() {
 ./test.sh                                          # Unit tests only (fast default)
 ./test.sh unit                                     # Same
 ./test.sh e2e                                      # Backend e2e
-./test.sh all                                      # Unit + e2e (mirrors CI)
+./test.sh all                                      # All backend tests, including slow tests
 ./test.sh tests/unit/test_foo.py::test_bar -v      # Passthrough to pytest
 
 # Client tests
@@ -327,6 +327,7 @@ export async function getDataProviders() {
 ./test.sh client e2e e2e/auth.unauth.spec.ts       # Passthrough to Playwright
 
 # CI (one-shot: boot → all tests → tear down)
+./test.sh pre-pr                         # Required clean-commit gate before opening/queueing a PR
 ./test.sh ci
 
 # Type Generation (requires dev stack running via ./debug.sh)
@@ -389,7 +390,9 @@ Before marking work complete, select verification from the actual change surface
 (cd client && npm run generate:types)
 ```
 
-The selected tests must cover the changed behavior, known consumers, and contract tripwires. Do not run `./test.sh all`, the full Vitest suite, or the full Playwright suite by default; use them when explicitly requested, when reproducing a broad CI failure, or when no honest bounded selection exists for a cross-cutting change.
+The selected tests must cover the changed behavior, known consumers, and contract tripwires. During iteration, do not run `./test.sh all`, the full Vitest suite, or the full Playwright suite by default; use targeted coverage to get fast, relevant feedback.
+
+Before opening or queueing a PR, the worktree must be clean and based on current `origin/main`, and `./test.sh pre-pr` must pass for the exact `HEAD`. This is separate from scoped completion verification: it runs every locally reproducible required PR/merge-queue check, including the full backend E2E and critical browser-smoke suites. GitHub still owns non-local boundaries such as the synthetic merge ref, registry publication, signing, and attestation.
 
 In the final handoff, list the exact checks and tests run, state which broader suites were not run, and disclose any known failure. A known out-of-scope failure must be permanently fixed in the current change or split into a dedicated blocking repair change; it cannot be waived as flaky or left as an unowned follow-up.
 

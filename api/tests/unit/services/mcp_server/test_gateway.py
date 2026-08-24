@@ -2,6 +2,7 @@
 import json
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -274,6 +275,18 @@ def test_exact_tool_hydration_includes_only_the_selected_live_schema():
     assert found_tool["tool_ref"] == tool.tool_ref
     assert found_tool["schema_included"] is True
     assert found_tool["input_schema"] == tool.definition.parameters
+    assert found_tool["supports_async"] is True
+    assert found_tool["default_async"] is False
+
+
+def test_delegation_capability_declares_async_default():
+    tool = replace(_resolved_tool(), source="delegation")
+
+    compact = tool.compact()
+
+    assert compact["source"] == "delegation"
+    assert compact["supports_async"] is True
+    assert compact["default_async"] is True
 
 
 def test_execution_result_pages_large_values_without_invalid_json_truncation():
@@ -306,6 +319,28 @@ def test_execution_result_path_can_hydrate_an_omitted_value():
     assert result == [10, 11, 12, 13, 14]
     assert page["next_offset"] == 15
     assert page["has_more"] is True
+
+
+@pytest.mark.parametrize(
+    ("agent_status", "gateway_status"),
+    [
+        ("queued", "Pending"),
+        ("running", "Running"),
+        ("completed", "Success"),
+        ("failed", "Failed"),
+        ("timeout", "Timeout"),
+        ("cancelled", "Cancelled"),
+        ("budget_exceeded", "BudgetExceeded"),
+    ],
+)
+def test_agent_run_status_uses_gateway_execution_vocabulary(
+    agent_status,
+    gateway_status,
+):
+    assert (
+        MCPAgentGatewayService._agent_run_gateway_status(agent_status)
+        == gateway_status
+    )
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ import re
 
 import yaml
 
+
 def _find_compose() -> pathlib.Path:
     """Locate docker-compose.test.yml in-container (mounted at /app) or on host.
 
@@ -107,6 +108,21 @@ def test_api_shares_fixture_subdir_for_install_from_repo():
     )
 
 
+def test_stack_up_reconciles_running_containers_with_current_compose_config():
+    """A healthy long-lived stack may still have stale mounts or environment."""
+    script = _find_repo_file("test.sh").read_text()
+    already_running = script.split(
+        'if stack_is_up "$COMPOSE_PROJECT_NAME" "$COMPOSE_FILE"; then', 1
+    )[1].split('echo "Stack already up."', 1)[0]
+
+    assert (
+        'docker compose -f "$COMPOSE_FILE" --profile e2e up -d --no-build'
+        in already_running
+    ), "stack up must reconcile healthy containers before returning"
+    assert 'expected_fixture_source="$LOG_DIR/solution-repo-fixtures"' in already_running
+    assert "--force-recreate api" in already_running
+
+
 def test_test_runner_mounts_pyright_inputs():
     """The Dockerized quality lane needs the same API config CI uses."""
     compose = yaml.safe_load(_COMPOSE.read_text())
@@ -114,6 +130,15 @@ def test_test_runner_mounts_pyright_inputs():
     assert "./api/pyrightconfig.json:/app/pyrightconfig.json:ro" in volumes
     assert "./test.sh:/app/test.sh:ro" in volumes
     assert "./api/Dockerfile.dev:/app/api/Dockerfile.dev:ro" in volumes
+
+
+def test_hardened_test_runner_writes_coverage_to_results_mount():
+    """pytest-cov data must be writable by the uid-1000 test runner."""
+    compose = yaml.safe_load(_COMPOSE.read_text())
+    runner = compose["services"]["test-runner"]
+
+    assert runner["environment"]["COVERAGE_FILE"] == "/tmp/bifrost/.coverage"
+    assert all("/coverage" not in str(volume) for volume in runner["volumes"])
 
 
 def test_dev_image_installs_pyright_from_hash_pinned_lock():

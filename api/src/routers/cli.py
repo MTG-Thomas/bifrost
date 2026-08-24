@@ -42,17 +42,21 @@ Note: File operations have been moved to /api/files router.
 """
 
 import asyncio
-import io
 import json
 import logging
-import tarfile
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, cast
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import (
+    FileResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -102,20 +106,38 @@ from src.models.contracts.cli import (
     SDKTableListRequest,
     SDKTableInfo,
 )
-from src.core.pubsub import publish_cli_session_update, publish_execution_log, publish_execution_update, publish_history_update
+from src.models.contracts.artifacts import (
+    ArtifactDownloadResponse,
+    ArtifactRef,
+    DocumentArtifactSpec,
+    ImageArtifactSpec,
+    SpreadsheetArtifactSpec,
+    TextArtifactSpec,
+    VideoArtifactSpec,
+)
+from src.models.contracts.platform_jobs import PlatformJobAccepted
+from src.core.pubsub import (
+    publish_cli_session_update,
+    publish_execution_log,
+    publish_execution_update,
+    publish_history_update,
+)
 from src.repositories.cli_sessions import CLISessionRepository
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sdk", tags=["SDK"])
 
-# /api/cli/download is the permanent home for the CLI install
-# endpoint. It lives at /api/cli/ (not /api/sdk/) because users type
-# the URL — `pip install <SERVER_URL>/api/cli/download` — so the path
-# is intentionally "the CLI." Not a legacy shim; not a compat carve-out.
+# /api/cli/download/bifrost-cli.tar.gz is the permanent, installer-compatible
+# home for the CLI install endpoint. The extensionless /api/cli/download path
+# remains a compatibility redirect for clients that actually make the request.
+# These live at /api/cli/ (not /api/sdk/) because users type the URL.
 # The rest of /api/cli/* moved to /api/sdk/* in the 2026-05 overhaul
 # because those endpoints are the SDK execution surface, not the CLI.
 install_router = APIRouter(prefix="/api/cli", tags=["CLI Install"])
+
+CLI_DOWNLOAD_ALIAS = "bifrost-cli.tar.gz"
+CLI_ARTIFACT_DIR = Path(os.environ.get("BIFROST_CLI_ARTIFACT_DIR", "/app/artifacts"))
 
 
 # =============================================================================
@@ -211,8 +233,12 @@ class DeveloperContextResponse(BaseModel):
 
     user: dict = Field(description="User information")
     organization: dict | None = Field(description="Default organization")
-    default_parameters: dict = Field(default={}, description="Default workflow parameters")
-    track_executions: bool = Field(default=True, description="Whether to track executions in history")
+    default_parameters: dict = Field(
+        default={}, description="Default workflow parameters"
+    )
+    track_executions: bool = Field(
+        default=True, description="Whether to track executions in history"
+    )
 
 
 # =============================================================================
@@ -231,24 +257,32 @@ def _session_to_response(
     # Use SQLAlchemy inspect to check if executions were eagerly loaded
     # This avoids triggering a lazy load which would fail in async context
     state = sa_inspect(session)
-    if 'executions' in state.dict and state.dict['executions']:
-        for ex in sorted(state.dict['executions'], key=lambda e: e.created_at, reverse=True)[:10]:
-            executions.append(CLISessionExecutionSummary(
-                id=str(ex.id),
-                workflow_name=ex.workflow_name,
-                status=ex.status.value if hasattr(ex.status, 'value') else str(ex.status),
-                created_at=ex.created_at,
-                duration_ms=ex.duration_ms,
-            ))
+    if "executions" in state.dict and state.dict["executions"]:
+        for ex in sorted(
+            state.dict["executions"], key=lambda e: e.created_at, reverse=True
+        )[:10]:
+            executions.append(
+                CLISessionExecutionSummary(
+                    id=str(ex.id),
+                    workflow_name=ex.workflow_name,
+                    status=ex.status.value
+                    if hasattr(ex.status, "value")
+                    else str(ex.status),
+                    created_at=ex.created_at,
+                    duration_ms=ex.duration_ms,
+                )
+            )
 
     workflows = []
     if session.workflows:
         for w in session.workflows:
-            workflows.append(CLIRegisteredWorkflow(
-                name=w.get("name", ""),
-                description=w.get("description", ""),
-                parameters=w.get("parameters", []),
-            ))
+            workflows.append(
+                CLIRegisteredWorkflow(
+                    name=w.get("name", ""),
+                    description=w.get("description", ""),
+                    parameters=w.get("parameters", []),
+                )
+            )
 
     return CLISessionResponse(
         id=str(session.id),
@@ -500,6 +534,7 @@ async def cli_get_config(
 
     if config_type == "secret" and raw_value:
         from src.core.security import decrypt_secret
+
         try:
             raw_value = decrypt_secret(raw_value)
         except Exception:
@@ -509,15 +544,23 @@ async def cli_get_config(
             raw_value = json.loads(raw_value)
         except json.JSONDecodeError as e:
             # Stored value is not valid JSON — return raw string as fallback
-            logger.debug(f"config {log_safe(request.key)} stored as json but failed to parse, returning raw: {log_safe(e)}")
+            logger.debug(
+                f"config {log_safe(request.key)} stored as json but failed to parse, returning raw: {log_safe(e)}"
+            )
     elif config_type == "bool":
-        raw_value = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
+        raw_value = (
+            str(raw_value).lower() == "true"
+            if isinstance(raw_value, str)
+            else bool(raw_value)
+        )
     elif config_type == "int":
         try:
             raw_value = int(raw_value)
         except (ValueError, TypeError) as e:
             # Stored value isn't coercible to int — return raw value
-            logger.debug(f"config {log_safe(request.key)} stored as int but failed to coerce, returning raw: {log_safe(e)}")
+            logger.debug(
+                f"config {log_safe(request.key)} stored as int but failed to coerce, returning raw: {log_safe(e)}"
+            )
 
     return CLIConfigValue(
         key=request.key,
@@ -546,6 +589,7 @@ async def cli_set_config(
 
     if request.is_secret:
         from src.core.security import encrypt_secret
+
         config_type = ConfigTypeEnum.SECRET
         stored_value = await asyncio.to_thread(encrypt_secret, str(request.value))
     elif isinstance(request.value, dict) or isinstance(request.value, list):
@@ -591,6 +635,7 @@ async def cli_set_config(
 
     try:
         from src.core.cache import upsert_config
+
         config_type_str = config_type.value
         await upsert_config(org_id, request.key, stored_value, config_type_str)
     except ImportError as e:
@@ -635,7 +680,11 @@ async def cli_list_config(
             except json.JSONDecodeError:
                 config_dict[config_key] = raw_value
         elif config_type == "bool":
-            config_dict[config_key] = str(raw_value).lower() == "true" if isinstance(raw_value, str) else bool(raw_value)
+            config_dict[config_key] = (
+                str(raw_value).lower() == "true"
+                if isinstance(raw_value, str)
+                else bool(raw_value)
+            )
         elif config_type == "int":
             try:
                 config_dict[config_key] = int(raw_value)
@@ -677,12 +726,15 @@ async def cli_delete_config(
 
     try:
         from src.core.cache import invalidate_config
+
         await invalidate_config(org_id, request.key)
     except ImportError as e:
         # cache module is optional; DB delete already committed
         logger.debug(f"cache module unavailable, skipping config cache invalidate: {e}")
 
-    logger.info(f"CLI deleted config {log_safe(request.key)} for user {current_user.email}")
+    logger.info(
+        f"CLI deleted config {log_safe(request.key)} for user {current_user.email}"
+    )
     return True
 
 
@@ -691,7 +743,9 @@ async def cli_delete_config(
 # =============================================================================
 
 
-async def _connection_is_declared(db: AsyncSession, solution_id: str, name: str) -> bool:
+async def _connection_is_declared(
+    db: AsyncSession, solution_id: str, name: str
+) -> bool:
     """True if ``solution_id`` declares an integration named ``name`` via a
     SolutionConnectionSchema row. Drives the RequiredConnectionUnset 424."""
     from src.models.orm.solution_connection_schema import SolutionConnectionSchema
@@ -757,9 +811,15 @@ async def sdk_integrations_get(
                 **config_kwargs,
             )
             integration = mapping.integration
-            entity_id = mapping.entity_id or (integration.default_entity_id if integration else None)
+            entity_id = mapping.entity_id or (
+                integration.default_entity_id if integration else None
+            )
 
-            secret_keys = [s.key for s in integration.config_schema if s.type == "secret"] if integration else []
+            secret_keys = (
+                [s.key for s in integration.config_schema if s.type == "secret"]
+                if integration
+                else []
+            )
             response_data: dict[str, Any] = {
                 "integration_id": str(mapping.integration_id),
                 "entity_id": entity_id,
@@ -786,13 +846,19 @@ async def sdk_integrations_get(
                         integration.oauth_provider.id
                     )
                 response_data["oauth"] = await _build_oauth_data(
-                    integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
+                    integration.oauth_provider,
+                    token,
+                    entity_id,
+                    resolve_url_template,
+                    decrypt_secret,
                     oauth_scope=request.oauth_scope,
                     db=db,
                     org_uuid=org_uuid,
                 )
 
-            logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (org mapping) for user {current_user.email}")
+            logger.info(
+                f"SDK retrieved integration '{log_safe(request.name)}' (org mapping) for user {current_user.email}"
+            )
             return SDKIntegrationsGetResponse(**response_data)
 
         # Fall back to integration defaults
@@ -845,13 +911,19 @@ async def sdk_integrations_get(
                 integration.oauth_provider.id
             )
             response_data["oauth"] = await _build_oauth_data(
-                integration.oauth_provider, token, entity_id, resolve_url_template, decrypt_secret,
+                integration.oauth_provider,
+                token,
+                entity_id,
+                resolve_url_template,
+                decrypt_secret,
                 oauth_scope=request.oauth_scope,
                 db=db,
                 org_uuid=org_uuid,
             )
 
-        logger.info(f"SDK retrieved integration '{log_safe(request.name)}' (defaults) for user {current_user.email}")
+        logger.info(
+            f"SDK retrieved integration '{log_safe(request.name)}' (defaults) for user {current_user.email}"
+        )
         return SDKIntegrationsGetResponse(**response_data)
 
     except HTTPException:
@@ -958,10 +1030,14 @@ async def _build_oauth_data(
                     await db.commit()
                 logger.info("Auto-refresh token successful")
             else:
-                error_msg = result.get("error_description", result.get("error", "Unknown error"))
+                error_msg = result.get(
+                    "error_description", result.get("error", "Unknown error")
+                )
                 logger.error(f"Auto-refresh token failed: {log_safe(error_msg)}")
         else:
-            logger.warning("Cannot auto-refresh: missing client_secret or resolved_token_url")
+            logger.warning(
+                "Cannot auto-refresh: missing client_secret or resolved_token_url"
+            )
     elif token:
         # Use stored token (existing behavior)
         if token.encrypted_access_token:
@@ -1016,7 +1092,9 @@ async def sdk_integrations_list_mappings(
         integration = await repo.get_integration_by_name(request.name)
 
         if not integration:
-            logger.warning(f"SDK integrations.list_mappings: integration '{log_safe(request.name)}' not found")
+            logger.warning(
+                f"SDK integrations.list_mappings: integration '{log_safe(request.name)}' not found"
+            )
             return None
 
         # Apply the C2 gate: explicit ``scope`` (UUID or "global") requires
@@ -1035,7 +1113,9 @@ async def sdk_integrations_list_mappings(
         else:
             resolved_org_uuid = UUID(resolved_org_id)
             org_row = await db.execute(
-                select(Organization.is_provider).where(Organization.id == resolved_org_uuid)
+                select(Organization.is_provider).where(
+                    Organization.id == resolved_org_uuid
+                )
             )
             if bool(org_row.scalar_one_or_none()):
                 mappings = await repo.list_mappings(integration.id)
@@ -1044,7 +1124,9 @@ async def sdk_integrations_list_mappings(
                     integration.id, organization_id=resolved_org_uuid
                 )
 
-        logger.info(f"SDK listed {len(mappings)} mappings for integration '{log_safe(request.name)}' for user {current_user.email}")
+        logger.info(
+            f"SDK listed {len(mappings)} mappings for integration '{log_safe(request.name)}' for user {current_user.email}"
+        )
 
         is_external = await _is_external_user_db(current_user, db)
         include_default_secrets = not is_external and not current_user.is_superuser
@@ -1057,17 +1139,21 @@ async def sdk_integrations_list_mappings(
                 include_default_secrets=include_default_secrets,
                 external=is_external,
             )
-            items.append({
-                "id": str(mapping.id),
-                "integration_id": str(mapping.integration_id),
-                "organization_id": str(mapping.organization_id),
-                "entity_id": mapping.entity_id,
-                "entity_name": mapping.entity_name,
-                "oauth_token_id": str(mapping.oauth_token_id) if mapping.oauth_token_id else None,
-                "config": config,
-                "created_at": mapping.created_at.isoformat(),
-                "updated_at": mapping.updated_at.isoformat(),
-            })
+            items.append(
+                {
+                    "id": str(mapping.id),
+                    "integration_id": str(mapping.integration_id),
+                    "organization_id": str(mapping.organization_id),
+                    "entity_id": mapping.entity_id,
+                    "entity_name": mapping.entity_name,
+                    "oauth_token_id": str(mapping.oauth_token_id)
+                    if mapping.oauth_token_id
+                    else None,
+                    "config": config,
+                    "created_at": mapping.created_at.isoformat(),
+                    "updated_at": mapping.updated_at.isoformat(),
+                }
+            )
 
         return SDKIntegrationsListMappingsResponse(items=items)
 
@@ -1100,7 +1186,9 @@ async def sdk_integrations_get_mapping(
         integration = await repo.get_integration_by_name(request.name)
 
         if not integration:
-            logger.warning(f"SDK integrations.get_mapping: integration '{log_safe(request.name)}' not found")
+            logger.warning(
+                f"SDK integrations.get_mapping: integration '{log_safe(request.name)}' not found"
+            )
             return None
 
         # Apply the C2 gate. Non-bypass callers can only target their own
@@ -1123,7 +1211,9 @@ async def sdk_integrations_get_mapping(
             external=is_external,
         )
 
-        logger.info(f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}")
+        logger.info(
+            f"SDK retrieved mapping for integration '{log_safe(request.name)}' for user {current_user.email}"
+        )
 
         return SDKIntegrationsMappingItem(
             id=str(mapping.id),
@@ -1131,7 +1221,9 @@ async def sdk_integrations_get_mapping(
             organization_id=str(mapping.organization_id),
             entity_id=mapping.entity_id,
             entity_name=mapping.entity_name,
-            oauth_token_id=str(mapping.oauth_token_id) if mapping.oauth_token_id else None,
+            oauth_token_id=str(mapping.oauth_token_id)
+            if mapping.oauth_token_id
+            else None,
             config=config,
             created_at=mapping.created_at.isoformat(),
             updated_at=mapping.updated_at.isoformat(),
@@ -1178,7 +1270,10 @@ async def sdk_integrations_upsert_mapping(
 ) -> SDKIntegrationsMappingItem:
     """Create or update an integration mapping for an organization via SDK."""
     from src.repositories.integrations import IntegrationsRepository
-    from src.models.contracts.integrations import IntegrationMappingCreate, IntegrationMappingUpdate
+    from src.models.contracts.integrations import (
+        IntegrationMappingCreate,
+        IntegrationMappingUpdate,
+    )
 
     try:
         repo = IntegrationsRepository(db)
@@ -1219,7 +1314,9 @@ async def sdk_integrations_upsert_mapping(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to update mapping",
                 )
-            logger.info(f"SDK updated mapping for integration '{log_safe(request.name)}', org '{log_safe(request.scope)}' by {current_user.email}")
+            logger.info(
+                f"SDK updated mapping for integration '{log_safe(request.name)}', org '{log_safe(request.scope)}' by {current_user.email}"
+            )
         else:
             # Create new mapping
             create_data = IntegrationMappingCreate(
@@ -1233,7 +1330,9 @@ async def sdk_integrations_upsert_mapping(
                 create_data,
                 updated_by=current_user.email,
             )
-            logger.info(f"SDK created mapping for integration '{log_safe(request.name)}', org '{log_safe(request.scope)}' by {current_user.email}")
+            logger.info(
+                f"SDK created mapping for integration '{log_safe(request.name)}', org '{log_safe(request.scope)}' by {current_user.email}"
+            )
 
         await db.commit()
 
@@ -1250,7 +1349,9 @@ async def sdk_integrations_upsert_mapping(
             organization_id=str(mapping.organization_id),
             entity_id=mapping.entity_id,
             entity_name=mapping.entity_name,
-            oauth_token_id=str(mapping.oauth_token_id) if mapping.oauth_token_id else None,
+            oauth_token_id=str(mapping.oauth_token_id)
+            if mapping.oauth_token_id
+            else None,
             config=config,
             created_at=mapping.created_at.isoformat(),
             updated_at=mapping.updated_at.isoformat(),
@@ -1283,7 +1384,9 @@ async def sdk_integrations_delete_mapping(
         integration = await repo.get_integration_by_name(request.name)
 
         if not integration:
-            logger.warning(f"SDK integrations.delete_mapping: integration '{log_safe(request.name)}' not found")
+            logger.warning(
+                f"SDK integrations.delete_mapping: integration '{log_safe(request.name)}' not found"
+            )
             return {"deleted": False}
 
         # Apply the C2 gate before touching another org's mapping row.
@@ -1296,14 +1399,18 @@ async def sdk_integrations_delete_mapping(
         mapping = await repo.get_mapping_by_org(integration.id, org_uuid)
 
         if not mapping:
-            logger.warning(f"SDK integrations.delete_mapping: mapping not found for org '{log_safe(request.scope)}'")
+            logger.warning(
+                f"SDK integrations.delete_mapping: mapping not found for org '{log_safe(request.scope)}'"
+            )
             return {"deleted": False}
 
         # Delete the mapping
         deleted = await repo.delete_mapping(mapping.id)
         await db.commit()
 
-        logger.info(f"SDK deleted mapping for integration '{log_safe(request.name)}', org '{log_safe(request.scope)}' by {current_user.email}")
+        logger.info(
+            f"SDK deleted mapping for integration '{log_safe(request.name)}', org '{log_safe(request.scope)}' by {current_user.email}"
+        )
 
         return {"deleted": deleted}
 
@@ -1451,7 +1558,9 @@ async def sdk_integrations_refresh_token(
                 provider_id=provider.id,
                 encrypted_access_token=outcome["encrypted_access_token"],
                 encrypted_refresh_token=outcome.get("encrypted_refresh_token"),
-                expires_at=expires_at_dt if expires_at_dt and hasattr(expires_at_dt, "isoformat") else None,
+                expires_at=expires_at_dt
+                if expires_at_dt and hasattr(expires_at_dt, "isoformat")
+                else None,
                 scopes=provider.scopes or [],
             )
             db.add(new_token)
@@ -1510,7 +1619,9 @@ async def register_cli_session(
         {
             "name": w.name,
             "description": w.description,
-            "parameters": [p.model_dump() if hasattr(p, 'model_dump') else p for p in w.parameters],
+            "parameters": [
+                p.model_dump() if hasattr(p, "model_dump") else p for p in w.parameters
+            ],
         }
         for w in request.workflows
     ]
@@ -1532,7 +1643,9 @@ async def register_cli_session(
     response = _session_to_response(session, is_connected=True)
 
     # Broadcast state update via websocket
-    await publish_cli_session_update(str(current_user.user_id), request.session_id, response.model_dump(mode="json"))
+    await publish_cli_session_update(
+        str(current_user.user_id), request.session_id, response.model_dump(mode="json")
+    )
 
     return response
 
@@ -1552,8 +1665,7 @@ async def list_cli_sessions(
 
     return CLISessionListResponse(
         sessions=[
-            _session_to_response(s, is_connected=repo.is_connected(s))
-            for s in sessions
+            _session_to_response(s, is_connected=repo.is_connected(s)) for s in sessions
         ]
     )
 
@@ -1622,7 +1734,9 @@ async def delete_cli_session(
     await repo.delete(session)
     await db.commit()
 
-    logger.info(f"CLI session deleted: {log_safe(session_id)} for user {current_user.email}")
+    logger.info(
+        f"CLI session deleted: {log_safe(session_id)} for user {current_user.email}"
+    )
 
 
 @router.post(
@@ -1674,6 +1788,7 @@ async def continue_cli_session(
 
     # Resolve workflow ID from name
     from src.models.orm.workflows import Workflow as WorkflowORM
+
     wf_result = await db.execute(
         select(WorkflowORM.id).where(WorkflowORM.name == request.workflow_name).limit(1)
     )
@@ -1688,7 +1803,9 @@ async def continue_cli_session(
         execution_id=execution_id,
         workflow_name=request.workflow_name,
         parameters=request.params,
-        org_id=str(current_user.organization_id) if current_user.organization_id else None,
+        org_id=str(current_user.organization_id)
+        if current_user.organization_id
+        else None,
         user_id=str(current_user.user_id),
         user_name=current_user.name or current_user.email,
         status=ExecutionStatus.PENDING,
@@ -1698,6 +1815,7 @@ async def continue_cli_session(
 
     # Link execution to session
     from src.models.orm import Execution
+
     stmt = select(Execution).where(Execution.id == UUID(execution_id))
     result = await db.execute(stmt)
     execution = result.scalar_one_or_none()
@@ -1721,8 +1839,12 @@ async def continue_cli_session(
     # Broadcast state update via websocket
     updated_session = await repo.get_session_with_executions(session_uuid)
     if updated_session:
-        response_data = _session_to_response(updated_session, is_connected=repo.is_connected(updated_session))
-        await publish_cli_session_update(str(current_user.user_id), session_id, response_data.model_dump(mode="json"))
+        response_data = _session_to_response(
+            updated_session, is_connected=repo.is_connected(updated_session)
+        )
+        await publish_cli_session_update(
+            str(current_user.user_id), session_id, response_data.model_dump(mode="json")
+        )
 
     return CLISessionContinueResponse(
         status="pending",
@@ -1774,10 +1896,16 @@ async def get_pending_execution(
 
     # Find the most recent pending execution for this session
     from src.models.orm import Execution
-    stmt = select(Execution).where(
-        Execution.session_id == session_uuid,
-        Execution.status == ExecutionStatus.PENDING,
-    ).order_by(Execution.created_at.desc()).limit(1)
+
+    stmt = (
+        select(Execution)
+        .where(
+            Execution.session_id == session_uuid,
+            Execution.status == ExecutionStatus.PENDING,
+        )
+        .order_by(Execution.created_at.desc())
+        .limit(1)
+    )
     result = await db.execute(stmt)
     execution = result.scalar_one_or_none()
 
@@ -1810,13 +1938,19 @@ async def get_pending_execution(
         started_at=execution.started_at,
     )
 
-    logger.info(f"CLI session pending picked up: workflow={log_safe(workflow_name)}, execution_id={execution_id}, session_id={log_safe(session_id)}")
+    logger.info(
+        f"CLI session pending picked up: workflow={log_safe(workflow_name)}, execution_id={execution_id}, session_id={log_safe(session_id)}"
+    )
 
     # Broadcast session state update
     updated_session = await repo.get_session_with_executions(session_uuid)
     if updated_session:
-        response_data = _session_to_response(updated_session, is_connected=repo.is_connected(updated_session))
-        await publish_cli_session_update(str(current_user.user_id), session_id, response_data.model_dump(mode="json"))
+        response_data = _session_to_response(
+            updated_session, is_connected=repo.is_connected(updated_session)
+        )
+        await publish_cli_session_update(
+            str(current_user.user_id), session_id, response_data.model_dump(mode="json")
+        )
 
     return CLISessionPendingResponse(
         execution_id=execution_id,
@@ -1914,7 +2048,9 @@ async def post_cli_log(
             timestamp=timestamp,
         )
     except ImportError:
-        logger.warning(f"Log streaming not available, log skipped: {log_safe(request.message)}")
+        logger.warning(
+            f"Log streaming not available, log skipped: {log_safe(request.message)}"
+        )
 
 
 @router.post(
@@ -2012,7 +2148,9 @@ async def post_cli_result(
         if logs_to_insert:
             db.add_all(logs_to_insert)
             logs_persisted = len(logs_to_insert)
-            logger.debug(f"Persisted {logs_persisted} logs directly for CLI execution {log_safe(execution_id)}")
+            logger.debug(
+                f"Persisted {logs_persisted} logs directly for CLI execution {log_safe(execution_id)}"
+            )
 
     await db.commit()
 
@@ -2021,9 +2159,12 @@ async def post_cli_result(
     if not request.logs:
         try:
             from bifrost._logging import flush_logs_to_postgres
+
             logs_flushed = await flush_logs_to_postgres(execution_id)
             if logs_flushed > 0:
-                logger.debug(f"Flushed {logs_flushed} logs from stream for CLI execution {log_safe(execution_id)}")
+                logger.debug(
+                    f"Flushed {logs_flushed} logs from stream for CLI execution {log_safe(execution_id)}"
+                )
         except ImportError as e:
             # bifrost._logging optional (CLI bundle may not include it) — skip stream flush
             logger.debug(f"bifrost._logging not available, skipping stream flush: {e}")
@@ -2059,8 +2200,12 @@ async def post_cli_result(
     session_repo = CLISessionRepository(db)
     updated_session = await session_repo.get_session_with_executions(session_uuid)
     if updated_session:
-        response_data = _session_to_response(updated_session, is_connected=session_repo.is_connected(updated_session))
-        await publish_cli_session_update(str(current_user.user_id), session_id, response_data.model_dump(mode="json"))
+        response_data = _session_to_response(
+            updated_session, is_connected=session_repo.is_connected(updated_session)
+        )
+        await publish_cli_session_update(
+            str(current_user.user_id), session_id, response_data.model_dump(mode="json")
+        )
 
     total_logs = logs_persisted + logs_flushed
     logger.info(
@@ -2081,6 +2226,332 @@ async def post_cli_result(
 # =============================================================================
 
 
+@router.post("/artifacts")
+async def sdk_store_artifact(
+    current_user: CurrentUser,
+    file: UploadFile = File(...),
+    workspace_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactRef:
+    """Validate and store workflow-produced bytes behind an opaque identity."""
+    from shared.artifact_generation import validate_artifact_content
+    from src.services.artifacts import ArtifactService, artifact_ref
+
+    filename = file.filename or "Artifact"
+    content_type = file.content_type or "application/octet-stream"
+    content = await file.read()
+    validate_artifact_content(
+        filename=filename,
+        content_type=content_type,
+        content=content,
+    )
+    artifact = await ArtifactService(db).store(
+        filename=filename,
+        content_type=content_type,
+        content=content,
+        created_by_user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
+        workspace_id=workspace_id,
+        logical_path=filename,
+    )
+    return artifact_ref(artifact)
+
+
+@router.get("/artifacts", response_model=list[ArtifactRef])
+async def sdk_list_artifacts(
+    current_user: CurrentUser,
+    workspace_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> list[ArtifactRef]:
+    """List the latest logical files in one authorized execution workspace."""
+    from src.services.artifacts import ArtifactService, artifact_ref
+
+    stored = await ArtifactService(db).list_workspace(
+        workspace_id,
+        user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
+        is_platform_admin=current_user.is_platform_admin,
+    )
+    return [artifact_ref(item) for item in stored]
+
+
+@router.post("/artifacts/document")
+async def sdk_render_document_artifact(
+    request: DocumentArtifactSpec,
+    current_user: CurrentUser,
+    workspace_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactRef:
+    """Render and store a trusted PDF or DOCX artifact."""
+
+    from shared.artifact_generation import (
+        generate_document,
+        generate_document_with_images,
+    )
+    from src.services.artifacts import ArtifactService, artifact_ref
+
+    service = ArtifactService(db)
+    image_content: dict[str, bytes] = {}
+    if workspace_id is not None:
+        for image in (
+            image for section in request.sections for image in section.images
+        ):
+            stored_image = await service.resolve_workspace_path(
+                workspace_id,
+                image.path,
+                user_id=current_user.user_id,
+                organization_id=current_user.organization_id,
+                is_platform_admin=current_user.is_platform_admin,
+            )
+            if not stored_image.content_type.startswith("image/"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"{image.path} is not an image artifact.",
+                )
+            image_content[image.path] = await service.read(stored_image)
+    generated = await asyncio.to_thread(
+        generate_document_with_images if image_content else generate_document,
+        request,
+        *([image_content] if image_content else []),
+    )
+    artifact = await service.store(
+        filename=generated.filename,
+        content_type=generated.content_type,
+        content=generated.content,
+        created_by_user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
+        workspace_id=workspace_id,
+        logical_path=generated.filename,
+    )
+    return artifact_ref(artifact)
+
+
+@router.post("/artifacts/spreadsheet")
+async def sdk_render_spreadsheet_artifact(
+    request: SpreadsheetArtifactSpec,
+    current_user: CurrentUser,
+    workspace_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactRef:
+    """Render and store a trusted XLSX artifact."""
+
+    from shared.artifact_generation import generate_spreadsheet
+    from src.services.artifacts import ArtifactService, artifact_ref
+
+    generated = await asyncio.to_thread(generate_spreadsheet, request)
+    artifact = await ArtifactService(db).store(
+        filename=generated.filename,
+        content_type=generated.content_type,
+        content=generated.content,
+        created_by_user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
+        workspace_id=workspace_id,
+        logical_path=generated.filename,
+    )
+    return artifact_ref(artifact)
+
+
+@router.post("/artifacts/text")
+async def sdk_render_text_artifact(
+    request: TextArtifactSpec,
+    current_user: CurrentUser,
+    workspace_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactRef:
+    """Render and store a trusted text-family artifact."""
+
+    from shared.artifact_generation import generate_text
+    from src.services.artifacts import ArtifactService, artifact_ref
+
+    generated = await asyncio.to_thread(generate_text, request)
+    artifact = await ArtifactService(db).store(
+        filename=generated.filename,
+        content_type=generated.content_type,
+        content=generated.content,
+        created_by_user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
+        workspace_id=workspace_id,
+        logical_path=generated.filename,
+    )
+    return artifact_ref(artifact)
+
+
+@router.post("/artifacts/image")
+async def sdk_generate_image_artifact(
+    request: ImageArtifactSpec,
+    current_user: CurrentUser,
+    workspace_id: UUID | None = None,
+    execution_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactRef:
+    """Generate and store an image with the configured provider."""
+
+    from src.services.artifacts import ArtifactService, artifact_ref
+    from src.services.media_generation import generate_image, record_media_usage
+
+    generated = await generate_image(
+        db,
+        filename=request.filename,
+        prompt=request.prompt,
+    )
+    artifact = await ArtifactService(db).store(
+        filename=generated.filename,
+        content_type=generated.content_type,
+        content=generated.content,
+        created_by_user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
+        workspace_id=workspace_id,
+        logical_path=generated.filename,
+    )
+    await record_media_usage(
+        db,
+        generated,
+        execution_id=execution_id,
+        organization_id=current_user.organization_id,
+        user_id=current_user.user_id,
+    )
+    return artifact_ref(artifact)
+
+
+@router.post(
+    "/artifacts/video",
+    response_model=PlatformJobAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sdk_generate_video_artifact(
+    request: VideoArtifactSpec,
+    current_user: CurrentUser,
+    response: Response,
+    workspace_id: UUID | None = None,
+    execution_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> PlatformJobAccepted:
+    """Queue durable video generation into canonical artifact storage."""
+    from src.jobs.platform.video_generation import (
+        SDK_VIDEO_GENERATION_DEFINITION,
+        SDKVideoGenerationPayload,
+    )
+    from src.services.platform_jobs import (
+        enqueue_platform_job,
+        ensure_platform_job_notification,
+        publish_platform_job_update,
+    )
+
+    job, reused = await enqueue_platform_job(
+        db,
+        SDK_VIDEO_GENERATION_DEFINITION,
+        SDKVideoGenerationPayload(
+            filename=request.filename,
+            prompt=request.prompt,
+            workspace_id=workspace_id,
+            execution_id=execution_id,
+        ),
+        dedupe_key=None,
+        organization_id=current_user.organization_id,
+        requested_by_user_id=current_user.user_id,
+        requested_by_email=current_user.email,
+        requested_by_name=current_user.name or current_user.email,
+        resource_type="artifact",
+        resource_id=request.filename,
+        title=f"Generating {request.filename}",
+        action_url=None,
+    )
+    try:
+        await ensure_platform_job_notification(db, job)
+    except Exception:
+        logger.warning(
+            "SDK video generation queued without a progress notification",
+            extra={"platform_job_id": str(job.id)},
+            exc_info=True,
+        )
+    await db.commit()
+    await db.refresh(job)
+    await publish_platform_job_update(job)
+    response.headers["Location"] = f"/api/platform-jobs/{job.id}"
+    return PlatformJobAccepted(
+        job_id=job.id,
+        notification_id=job.notification_id,
+        status=job.status,
+        reused=reused,
+    )
+
+
+@router.get("/artifacts/{artifact_id}/content")
+async def sdk_read_artifact(
+    artifact_id: UUID,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    preview: bool = False,
+) -> Response:
+    """Read an opaque artifact after enforcing caller scope."""
+    from src.services.artifacts import ArtifactAccessError, ArtifactService
+
+    service = ArtifactService(db)
+    try:
+        artifact = await service.get_authorized(
+            artifact_id,
+            user_id=current_user.user_id,
+            organization_id=current_user.organization_id,
+            is_platform_admin=current_user.is_platform_admin,
+        )
+    except ArtifactAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    content = await service.read(artifact)
+    if preview:
+        from shared.artifact_preview import preview_office_artifact
+
+        preview_html = await asyncio.to_thread(
+            preview_office_artifact,
+            content,
+            artifact.content_type,
+        )
+        if preview_html is not None:
+            return Response(
+                content=preview_html,
+                media_type="text/html",
+                headers={
+                    "Content-Security-Policy": (
+                        "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+                    ),
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+    return Response(
+        content=content,
+        media_type=artifact.content_type,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.get("/artifacts/{artifact_id}/download-url")
+async def sdk_artifact_download_url(
+    artifact_id: UUID,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> ArtifactDownloadResponse:
+    """Create a short-lived download URL for an opaque artifact."""
+    from src.services.artifacts import ArtifactAccessError, ArtifactService
+    from src.services.file_storage.service import get_file_storage_service
+
+    try:
+        artifact = await ArtifactService(db).get_authorized(
+            artifact_id,
+            user_id=current_user.user_id,
+            organization_id=current_user.organization_id,
+            is_platform_admin=current_user.is_platform_admin,
+        )
+    except ArtifactAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    url = await get_file_storage_service(db).generate_presigned_download_url(
+        artifact.s3_key
+    )
+    return ArtifactDownloadResponse(url=url)
+
+
 @router.post(
     "/ai/complete",
     summary="Generate AI completion",
@@ -2092,16 +2563,37 @@ async def cli_ai_complete(
 ) -> "CLIAICompleteResponse":
     """Generate an AI completion using platform-configured LLM."""
     from src.models.contracts.cli import CLIAICompleteResponse
-    from src.services.llm import get_llm_client, LLMMessage
+    import base64
+
+    from src.services.llm import LLMInputFile, LLMMessage, get_llm_client
 
     try:
-        client = await get_llm_client(db)
+        client = await get_llm_client(db, profile_name=request.profile)
 
         # Convert to LLMMessage objects
         llm_messages = [
             LLMMessage(role=msg["role"], content=msg["content"])  # type: ignore[arg-type]
             for msg in request.messages
         ]
+        if request.input_files:
+            user_message = next(
+                (
+                    message
+                    for message in reversed(llm_messages)
+                    if message.role == "user"
+                ),
+                None,
+            )
+            if user_message is None:
+                raise ValueError("AI file inputs require a user message.")
+            user_message.input_files = [
+                LLMInputFile(
+                    filename=item.filename,
+                    media_type=item.content_type,
+                    data=base64.b64decode(item.data_base64, validate=True),
+                )
+                for item in request.input_files
+            ]
 
         response = await client.complete(
             messages=llm_messages,
@@ -2109,7 +2601,9 @@ async def cli_ai_complete(
             model=request.model,
         )
 
-        logger.info(f"CLI AI complete: model={log_safe(response.model)}, tokens={response.input_tokens}/{response.output_tokens}")
+        logger.info(
+            f"CLI AI complete: model={log_safe(response.model)}, tokens={response.input_tokens}/{response.output_tokens}"
+        )
 
         # Record AI usage
         try:
@@ -2125,7 +2619,12 @@ async def cli_ai_complete(
                 model=response.model or client.model_name,
                 input_tokens=response.input_tokens or 0,
                 output_tokens=response.output_tokens or 0,
-                execution_id=UUID(request.execution_id) if request.execution_id else None,
+                cache_read_tokens=response.cache_read_tokens,
+                cache_write_tokens=response.cache_write_tokens,
+                provider_cost=response.provider_cost,
+                execution_id=UUID(request.execution_id)
+                if request.execution_id
+                else None,
                 organization_id=UUID(org_id) if org_id else None,
                 user_id=current_user.user_id,
             )
@@ -2147,9 +2646,14 @@ async def cli_ai_complete(
         # Check for authentication errors from LLM providers
         error_type = type(e).__name__
         error_module = type(e).__module__
-        if error_type == "AuthenticationError" and error_module in ("anthropic", "openai"):
+        if error_type == "AuthenticationError" and error_module in (
+            "anthropic",
+            "openai",
+        ):
             provider = "Anthropic" if error_module == "anthropic" else "OpenAI"
-            logger.error(f"CLI AI complete failed: {provider} authentication error - invalid API key")
+            logger.error(
+                f"CLI AI complete failed: {provider} authentication error - invalid API key"
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"{provider} API key is invalid or expired. Please update the API key in System Settings > AI Configuration.",
@@ -2171,7 +2675,9 @@ async def cli_ai_stream(
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Generate a streaming AI completion using SSE."""
-    from src.services.llm import get_llm_client, LLMMessage
+    import base64
+
+    from src.services.llm import LLMInputFile, LLMMessage, get_llm_client
 
     # Capture context for usage recording. Resolve scope upfront against
     # the authenticated user so the streaming closure doesn't have to
@@ -2189,6 +2695,25 @@ async def cli_ai_stream(
                 LLMMessage(role=msg["role"], content=msg["content"])  # type: ignore[arg-type]
                 for msg in request.messages
             ]
+            if request.input_files:
+                user_message = next(
+                    (
+                        message
+                        for message in reversed(llm_messages)
+                        if message.role == "user"
+                    ),
+                    None,
+                )
+                if user_message is None:
+                    raise ValueError("AI file inputs require a user message.")
+                user_message.input_files = [
+                    LLMInputFile(
+                        filename=item.filename,
+                        media_type=item.content_type,
+                        data=base64.b64decode(item.data_base64, validate=True),
+                    )
+                    for item in request.input_files
+                ]
 
             async for chunk in client.stream(
                 messages=llm_messages,
@@ -2214,8 +2739,15 @@ async def cli_ai_stream(
                             model=client.model_name,
                             input_tokens=chunk.input_tokens or 0,
                             output_tokens=chunk.output_tokens or 0,
-                            execution_id=UUID(execution_id_str) if execution_id_str else None,
-                            organization_id=UUID(resolved_org_id) if resolved_org_id else None,
+                            cache_read_tokens=chunk.cache_read_tokens,
+                            cache_write_tokens=chunk.cache_write_tokens,
+                            provider_cost=chunk.provider_cost,
+                            execution_id=UUID(execution_id_str)
+                            if execution_id_str
+                            else None,
+                            organization_id=UUID(resolved_org_id)
+                            if resolved_org_id
+                            else None,
                             user_id=user_id,
                         )
                     except Exception as e:
@@ -2230,9 +2762,14 @@ async def cli_ai_stream(
             # Check for authentication errors from LLM providers
             error_type = type(e).__name__
             error_module = type(e).__module__
-            if error_type == "AuthenticationError" and error_module in ("anthropic", "openai"):
+            if error_type == "AuthenticationError" and error_module in (
+                "anthropic",
+                "openai",
+            ):
                 provider = "Anthropic" if error_module == "anthropic" else "OpenAI"
-                logger.error(f"CLI AI stream failed: {provider} authentication error - invalid API key")
+                logger.error(
+                    f"CLI AI stream failed: {provider} authentication error - invalid API key"
+                )
                 yield f"data: {json.dumps({'error': f'{provider} API key is invalid or expired. Please update the API key in System Settings > AI Configuration.'})}\n\n"
             else:
                 logger.error(f"CLI AI stream failed: {log_safe(e)}")
@@ -2245,7 +2782,7 @@ async def cli_ai_stream(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
-        }
+        },
     )
 
 
@@ -2267,7 +2804,6 @@ async def cli_ai_info(
         return CLIAIInfoResponse(
             provider=config.provider,
             model=config.model,
-            max_tokens=config.max_tokens,
         )
     except ValueError as e:
         raise HTTPException(
@@ -2334,7 +2870,9 @@ async def cli_knowledge_store(
 
         await db.commit()
 
-        logger.info(f"CLI knowledge store: namespace={log_safe(request.namespace)}, key={log_safe(request.key)}, doc_id={doc_id}")
+        logger.info(
+            f"CLI knowledge store: namespace={log_safe(request.namespace)}, key={log_safe(request.key)}, doc_id={doc_id}"
+        )
 
         return {"id": doc_id}
     except ValueError as e:
@@ -2393,7 +2931,9 @@ async def cli_knowledge_store_many(
 
         await db.commit()
 
-        logger.info(f"CLI knowledge store-many: namespace={log_safe(request.namespace)}, count={len(doc_ids)}")
+        logger.info(
+            f"CLI knowledge store-many: namespace={log_safe(request.namespace)}, count={len(doc_ids)}"
+        )
 
         return {"ids": doc_ids}
     except ValueError as e:
@@ -2456,7 +2996,9 @@ async def cli_knowledge_search(
             fallback=request.fallback,
         )
 
-        logger.info(f"CLI knowledge search: query={log_safe(request.query[:50])}..., results={len(results)}")
+        logger.info(
+            f"CLI knowledge search: query={log_safe(request.query[:50])}..., results={len(results)}"
+        )
 
         return [
             CLIKnowledgeDocumentResponse(
@@ -2515,7 +3057,9 @@ async def cli_knowledge_delete(
 
         await db.commit()
 
-        logger.info(f"CLI knowledge delete: namespace={log_safe(request.namespace)}, key={log_safe(request.key)}, deleted={deleted}")
+        logger.info(
+            f"CLI knowledge delete: namespace={log_safe(request.namespace)}, key={log_safe(request.key)}, deleted={deleted}"
+        )
 
         return {"deleted": deleted}
     except HTTPException:
@@ -2562,7 +3106,9 @@ async def cli_knowledge_delete_namespace(
 
         await db.commit()
 
-        logger.info(f"CLI knowledge delete namespace: namespace={log_safe(namespace)}, deleted_count={deleted_count}")
+        logger.info(
+            f"CLI knowledge delete namespace: namespace={log_safe(namespace)}, deleted_count={deleted_count}"
+        )
 
         return {"deleted_count": deleted_count}
     except HTTPException:
@@ -2685,158 +3231,65 @@ async def cli_knowledge_get(
 # =============================================================================
 
 
-def _to_pep440(version: str) -> str:
-    """Coerce `git describe --tags --always --dirty` output to a PEP 440 version.
-
-    Examples:
-        "v0.6-219-g24b8acb9-dirty" -> "0.6.post219+g24b8acb9.dirty"
-        "v1.2.3"                   -> "1.2.3"
-        "v1.2.3-dirty"             -> "1.2.3+dirty"
-        "abc1234"                  -> "0.0.0+gabc1234"   (no-tag fallback)
-        "unknown"                  -> "0.0.0"
-    """
-    import re as _re
-
-    if not version or version == "unknown":
-        return "0.0.0"
-
-    # Strip leading 'v' from tag prefix
-    v = version[1:] if version.startswith("v") else version
-
-    dirty = v.endswith("-dirty")
-    if dirty:
-        v = v[: -len("-dirty")]
-
-    # Bifrost release tags use a semver-ish dev release shape
-    # (e.g. "1.0.8-dev.11"). Preserve the actual release instead of treating it
-    # as a no-tag git hash fallback, which makes package tools report
-    # "0.0.0+g1.0.8.dev.11".
-    m = _re.match(r"^(\d+(?:\.\d+)*)-dev\.(\d+)$", v)
-    if m:
-        base, n = m.group(1), m.group(2)
-        pep = f"{base}.dev{n}"
-        return f"{pep}+dirty" if dirty else pep
-
-    # Shape: <tag>-<N>-g<sha>
-    m = _re.match(r"^(.+)-(\d+)-(g[0-9a-f]+)$", v)
-    if m:
-        tag, n, sha = m.group(1), m.group(2), m.group(3)
-        local = f"{sha}.dirty" if dirty else sha
-        return f"{tag}.post{n}+{local}"
-
-    # Clean tag (e.g. "1.2.3")
-    if _re.match(r"^\d+(\.\d+)*$", v):
-        return f"{v}+dirty" if dirty else v
-
-    # No-tag fallback: bare sha from `git describe --always`
-    local = f"g{v}.dirty" if dirty else f"g{v}"
-    return f"0.0.0+{local}"
+@install_router.get(
+    "/download",
+    summary="Legacy CLI download URL",
+    description="Redirect to the installer-compatible CLI download URL",
+)
+async def download_cli() -> RedirectResponse:
+    """Preserve the historical URL for HTTP clients that follow redirects."""
+    return RedirectResponse(
+        url=f"/api/cli/download/{CLI_DOWNLOAD_ALIAS}",
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
 
 
 @install_router.get(
-    "/download",
+    f"/download/{CLI_DOWNLOAD_ALIAS}",
     summary="Download CLI package",
-    description="Download the Bifrost CLI as a pip-installable tarball",
+    description="Redirect to the versioned, pip-installable CLI artifact",
 )
-async def download_cli() -> Response:
-    """
-    Serve CLI as installable package.
-
-    Returns a tarball that can be installed with:
-    pip install https://your-bifrost-instance.com/api/cli/download
-    """
+async def download_cli_alias() -> RedirectResponse:
+    """Give uv/pipx a suffix-bearing URL before any network request occurs."""
+    from shared.cli_artifact import cli_artifact_filename
     from shared.version import get_version
 
-    package_dir = Path(__file__).parent.parent.parent / "bifrost"
+    filename = cli_artifact_filename(get_version())
+    return RedirectResponse(
+        url=f"/api/cli/artifacts/{filename}",
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+    )
 
-    if not package_dir.exists():
+
+@install_router.get(
+    "/artifacts/{filename}",
+    summary="Serve a versioned CLI artifact",
+    description="Serve the immutable CLI artifact bundled into the API image",
+)
+async def download_cli_artifact(filename: str) -> FileResponse:
+    """Serve only the artifact matching this API build."""
+    from shared.cli_artifact import cli_artifact_filename
+    from shared.version import get_version
+
+    expected_filename = cli_artifact_filename(get_version())
+    if filename != expected_filename:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="CLI package not found",
+            detail="CLI artifact not found",
         )
 
-    buffer = io.BytesIO()
+    artifact_path = CLI_ARTIFACT_DIR / expected_filename
+    if not artifact_path.is_file():
+        logger.error("Bundled CLI artifact is missing: %s", artifact_path)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CLI artifact unavailable",
+        )
 
-    # Files to exclude (platform-only internal files)
-    exclude_files = {
-        "_internal.py",     # Platform-only permission checks
-        "_write_buffer.py", # Platform-only, requires Redis
-        "_logging.py",      # Platform-only logging
-        "_sync.py",         # Platform-only sync utilities
-    }
-
-    def _generate_tarball():
-        """Generate tarball synchronously in thread."""
-        import re as _re
-        import io as _io
-        live_version = get_version()
-        pep440_version = _to_pep440(live_version)
-
-        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-            # workspace_effects.py imports this neutral module so platform and
-            # installed SDK use identical value classes without an import cycle.
-            effect_contract_path = package_dir.parent / "_bifrost_workspace_effects.py"
-            tar.add(effect_contract_path, arcname="_bifrost_workspace_effects.py")
-
-            # Add pyproject.toml at root level with PEP 440 version stamped
-            # (setuptools validates project.version against PEP 440; git describe
-            # output like "v0.6-219-gabc1234-dirty" must be coerced first)
-            pyproject_path = package_dir / "pyproject.toml"
-            if pyproject_path.exists():
-                content = pyproject_path.read_text()
-                content = _re.sub(
-                    r'^version\s*=\s*"[^"]*"',
-                    f'version = "{pep440_version}"',
-                    content,
-                    flags=_re.MULTILINE,
-                )
-                data = content.encode()
-                info = tarfile.TarInfo(name="pyproject.toml")
-                info.size = len(data)
-                tar.addfile(info, fileobj=_io.BytesIO(data))
-
-            # Add all Python files from bifrost/
-            for file_path in package_dir.rglob("*"):
-                if not file_path.is_file():
-                    continue
-                if "__pycache__" in str(file_path):
-                    continue
-                if file_path.name in exclude_files:
-                    continue
-                if file_path.suffix not in (".py", ".toml", ".json"):
-                    continue
-                if file_path.name == "pyproject.toml":
-                    continue  # Already added above
-
-                arcname = f"bifrost/{file_path.relative_to(package_dir)}"
-
-                # Stamp __version__ in __init__.py
-                if file_path.name == "__init__.py" and file_path.parent == package_dir:
-                    content = file_path.read_text()
-                    content = _re.sub(
-                        r"^__version__\s*=\s*_compute_version\(\)",
-                        f'__version__ = "{live_version}"',
-                        content,
-                        flags=_re.MULTILINE,
-                    )
-                    data = content.encode()
-                    info = tarfile.TarInfo(name=arcname)
-                    info.size = len(data)
-                    tar.addfile(info, fileobj=_io.BytesIO(data))
-                else:
-                    tar.add(file_path, arcname=arcname)
-
-    await asyncio.to_thread(_generate_tarball)
-
-    # Get the complete tarball content after it's fully finalized
-    tarball_content = buffer.getvalue()
-
-    return Response(
-        content=tarball_content,
+    return FileResponse(
+        path=artifact_path,
         media_type="application/gzip",
-        headers={
-            "Content-Disposition": f"attachment; filename=bifrost-cli-{get_version()}.tar.gz",
-        },
+        filename=expected_filename,
     )
 
 
@@ -2844,18 +3297,18 @@ async def download_cli() -> Response:
     "/download",
     summary="Download the bifrost web SDK package",
     description=(
-        "Serve the `bifrost` web SDK as an npm-installable tarball. A "
-        "standalone_v2 app declares `\"bifrost\": \"<instance>/api/sdk/download\"` "
-        "and resolves it identically on a dev laptop (`npm run dev`) and in the "
-        "platform's server-side build."
+        "Serve the `bifrost` web SDK as an npm-installable tarball. The Solution "
+        "CLI installs it transiently from the selected instance for local "
+        "development; the platform vendors its local SDK into server-side builds."
     ),
 )
 async def download_sdk() -> Response:
     """Build + serve the installable ``bifrost`` SDK package (npm tarball).
 
-    Mirrors ``/api/cli/download`` (the Python CLI tarball): the package is built
-    on the fly from the SDK source shipped in the api image and version-stamped
-    to the running instance, so dev and deploy use one resolution mechanism.
+    Like ``/api/cli/download/bifrost-cli.tar.gz`` (the Python CLI tarball), this
+    package is tied to the API build. The web SDK remains bundled on demand from
+    source shipped in the image, while the Python CLI artifact is built into the
+    image ahead of time.
     """
     from shared.version import get_version
     from src.services.sdk_package import build_sdk_tarball
@@ -2936,7 +3389,9 @@ async def cli_create_table(
     await db.commit()
     await db.refresh(table)
 
-    logger.info(f"CLI created table '{log_safe(request.name)}' for user {current_user.email}")
+    logger.info(
+        f"CLI created table '{log_safe(request.name)}' for user {current_user.email}"
+    )
 
     return SDKTableInfo(
         id=str(table.id),

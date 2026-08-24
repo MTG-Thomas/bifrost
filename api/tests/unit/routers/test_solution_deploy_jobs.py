@@ -30,7 +30,7 @@ async def test_deploy_job_is_staged_as_encrypted_central_job(
     tmp_path,
     monkeypatch,
 ):
-    sol = Solution(slug="demo", name="Demo")
+    sol = Solution(slug="demo-memory-profile", name="Demo memory profile")
     db_session.add(sol)
     await db_session.flush()
     path = tmp_path / "deploy.zip"

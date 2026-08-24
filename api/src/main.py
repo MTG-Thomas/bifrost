@@ -67,6 +67,7 @@ from src.routers import (
     agents_router,
     chat_router,
     llm_config_router,
+    ai_models_router,
     integrations_router,
     decorator_properties_router,
     maintenance_router,
@@ -473,6 +474,11 @@ def create_app() -> FastAPI:
     # Restrict embed tokens to app-rendering endpoints only
     app.add_middleware(EmbedScopeMiddleware)
 
+    # Return allocator arenas after large table JSON requests have fully sent.
+    # This prevents request bursts from becoming permanent pod RSS high-water.
+    from src.core.allocation_trim import AllocationTrimMiddleware
+    app.add_middleware(AllocationTrimMiddleware)
+
     # Set request-scoped ContextVars for user attribution and session tracking
     from src.core.request_context import RequestUser, set_request_user, set_request_session_id
     from src.core.rate_limit import get_client_ip
@@ -590,6 +596,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_tuning_router)
     app.include_router(chat_router)
     app.include_router(llm_config_router)
+    app.include_router(ai_models_router)
     app.include_router(integrations_router)
     app.include_router(decorator_properties_router)
     app.include_router(maintenance_router)

@@ -218,7 +218,7 @@ async def list_agents(context: Any) -> ToolResult:
                     "description": agent.description,
                     "channels": agent.channels,
                     "is_active": agent.is_active,
-                    "llm_model": agent.llm_model,
+                    "llm_profile_id": str(agent.llm_profile_id) if agent.llm_profile_id else None,
                 }
                 for agent in agents
             ]
@@ -291,7 +291,7 @@ async def get_agent(
                 "role_ids": [str(r.id) for r in agent.roles] if agent.roles else [],
                 "knowledge_sources": agent.knowledge_sources or [],
                 "system_tools": agent.system_tools or [],
-                "llm_model": agent.llm_model,
+                "llm_profile_id": str(agent.llm_profile_id) if agent.llm_profile_id else None,
                 "llm_max_tokens": agent.llm_max_tokens,
             }
 
@@ -315,7 +315,7 @@ async def create_agent(
     system_tools: list[str] | None = None,
     scope: str = "organization",
     organization_id: str | None = None,
-    llm_model: str | None = None,
+    llm_profile_id: str | None = None,
     llm_max_tokens: int | None = None,
 ) -> ToolResult:
     """Create a new agent.
@@ -332,6 +332,7 @@ async def create_agent(
         system_tools: List of system tool names enabled for this agent
         scope: 'global' (visible to all orgs) or 'organization' (default)
         organization_id: Override context.org_id when scope='organization'
+        llm_profile_id: Optional model profile UUID for this agent
 
     Returns:
         ToolResult with created agent details
@@ -340,7 +341,7 @@ async def create_agent(
     from sqlalchemy.orm import selectinload
 
     from src.models.enums import AgentAccessLevel
-    from src.models.orm import Agent, AgentDelegation, AgentTool, Workflow
+    from src.models.orm import Agent, AgentDelegation, AgentTool, AIModelProfile, Workflow
 
     logger.info(f"MCP create_agent called: name={name}, scope={scope}")
 
@@ -384,6 +385,13 @@ async def create_agent(
     else:
         channels = ["chat"]
 
+    profile_uuid: UUID | None = None
+    if llm_profile_id:
+        try:
+            profile_uuid = UUID(llm_profile_id)
+        except ValueError:
+            return error_result(f"llm_profile_id '{llm_profile_id}' is not a valid UUID")
+
     # Determine effective organization_id based on scope
     effective_org_id: UUID | None = None
     if scope == "global":
@@ -403,6 +411,13 @@ async def create_agent(
 
     try:
         async with get_tool_db(context) as db:
+            if profile_uuid is not None:
+                profile_exists = await db.scalar(
+                    select(AIModelProfile.id).where(AIModelProfile.id == profile_uuid)
+                )
+                if profile_exists is None:
+                    return error_result(f"llm_profile_id '{llm_profile_id}' does not reference an existing model profile")
+
             agent_id = uuid4()
             now = datetime.now(timezone.utc)
 
@@ -418,7 +433,7 @@ async def create_agent(
                 is_active=True,
                 knowledge_sources=knowledge_sources or [],
                 system_tools=system_tools or [],
-                llm_model=llm_model,
+                llm_profile_id=profile_uuid,
                 llm_max_tokens=llm_max_tokens,
                 created_by=context.user_email,
                 created_at=now,
@@ -528,7 +543,7 @@ async def update_agent(
     delegated_agent_ids: list[str] | None = None,
     knowledge_sources: list[str] | None = None,
     system_tools: list[str] | None = None,
-    llm_model: str | None = None,
+    llm_profile_id: str | None = None,
     llm_max_tokens: int | None = None,
 ) -> ToolResult:
     """Update an existing agent.
@@ -545,6 +560,7 @@ async def update_agent(
         delegated_agent_ids: New list of delegated agent IDs (replaces existing)
         knowledge_sources: New list of knowledge namespaces
         system_tools: New list of system tool names
+        llm_profile_id: New model profile UUID
 
     Returns:
         ToolResult with update confirmation
@@ -552,7 +568,7 @@ async def update_agent(
     from sqlalchemy import delete, select
     from sqlalchemy.orm import selectinload
 
-    from src.models.orm import Agent, AgentDelegation, AgentTool, Workflow
+    from src.models.orm import Agent, AgentDelegation, AgentTool, AIModelProfile, Workflow
 
     logger.info(f"MCP update_agent called: agent_id={agent_id}")
 
@@ -571,6 +587,15 @@ async def update_agent(
         invalid_channels = set(channels) - valid_channels
         if invalid_channels:
             return error_result(f"Invalid channels: {list(invalid_channels)}. Valid options: {list(valid_channels)}")
+
+    profile_uuid: UUID | None = None
+    if llm_profile_id:
+        try:
+            profile_uuid = UUID(llm_profile_id)
+        except ValueError:
+            return error_result(
+                f"llm_profile_id '{llm_profile_id}' is not a valid UUID"
+            )
 
     privilege_error = _ensure_can_manage_agent_privileges(
         context,
@@ -646,9 +671,17 @@ async def update_agent(
                 agent.system_tools = system_tools
                 updates_made.append("system_tools")
 
-            if llm_model is not None:
-                agent.llm_model = llm_model if llm_model else None
-                updates_made.append("llm_model")
+            if llm_profile_id is not None:
+                if profile_uuid is None:
+                    agent.llm_profile_id = None
+                else:
+                    profile_exists = await db.scalar(
+                        select(AIModelProfile.id).where(AIModelProfile.id == profile_uuid)
+                    )
+                    if profile_exists is None:
+                        return error_result(f"llm_profile_id '{llm_profile_id}' does not reference an existing model profile")
+                    agent.llm_profile_id = profile_uuid
+                updates_made.append("llm_profile_id")
 
             if llm_max_tokens is not None:
                 agent.llm_max_tokens = llm_max_tokens if llm_max_tokens > 0 else None

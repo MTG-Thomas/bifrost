@@ -155,6 +155,20 @@ class TestMCPAgentGateway:
         assert register_response.status_code == 201, register_response.text
         workflow_id = register_response.json()["id"]
 
+        delegated_agent_name = f"Gateway Delegate {suffix}"
+        delegated_agent_response = requests.post(
+            f"{TEST_API_URL}/api/agents",
+            headers=headers,
+            json={
+                "name": delegated_agent_name,
+                "description": "Agent used to prove async MCP delegation.",
+                "system_prompt": "Return a concise result without using tools.",
+                "channels": ["chat"],
+            },
+        )
+        assert delegated_agent_response.status_code == 201, delegated_agent_response.text
+        delegated_agent_id = delegated_agent_response.json()["id"]
+
         agent_name = f"Gateway Proof {suffix}"
         prompt = f"Live gateway instructions {suffix}"
         agent_response = requests.post(
@@ -167,6 +181,7 @@ class TestMCPAgentGateway:
                 "channels": ["chat"],
                 "tool_ids": [workflow_id],
                 "system_tools": ["get_docs"],
+                "delegated_agent_ids": [delegated_agent_id],
             },
         )
         assert agent_response.status_code == 201, agent_response.text
@@ -187,6 +202,10 @@ class TestMCPAgentGateway:
 
         requests.delete(
             f"{TEST_API_URL}/api/agents/{agent_id}",
+            headers=headers,
+        )
+        requests.delete(
+            f"{TEST_API_URL}/api/agents/{delegated_agent_id}",
             headers=headers,
         )
         requests.delete(

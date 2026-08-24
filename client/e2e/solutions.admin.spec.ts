@@ -5,9 +5,7 @@
  *
  *   1. `/solutions` renders the list page (heading + "Install Solution" action)
  *      and the whole-page dropzone is present.
- *   2. The empty state is shown when no installs exist (a clean test stack has
- *      none), inviting a drag-and-drop install.
- *   3. The Install button opens the file picker affordance (hidden input
+ *   2. The Install button opens the file picker affordance (hidden input
  *      present + accept=".zip").
  *
  * Full "drag a real .zip → preview → pick scope → install → see it in the list

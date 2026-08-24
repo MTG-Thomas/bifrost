@@ -93,6 +93,7 @@ from .tables import tables
 from .users import users
 from .workflows import workflows
 from .agents import agents
+from .artifacts import artifacts
 
 # SDK Models (single source of truth)
 from .models import (
@@ -108,6 +109,8 @@ from .models import (
     ConfigData,
     AIResponse,
     AIStreamChunk,
+    AIInputFile,
+    ArtifactRef,
     KnowledgeDocument,
     NamespaceInfo,
     TableInfo,
@@ -242,6 +245,7 @@ def __getattr__(name: str):
 __all__ = [
     # SDK Modules
     'agents',
+    'artifacts',
     'api',
     'ai',
     'config',
@@ -269,6 +273,8 @@ __all__ = [
     'ConfigData',
     'AIResponse',
     'AIStreamChunk',
+    'AIInputFile',
+    'ArtifactRef',
     'KnowledgeDocument',
     'NamespaceInfo',
     'TableInfo',
