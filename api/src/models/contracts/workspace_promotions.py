@@ -59,11 +59,18 @@ class WorkspacePromotionPreviewRequest(BaseModel):
         default=None, pattern=r"^(?:sha256|repo-v1):[0-9a-f]{64}$"
     )
     protected_source: PromotionProtectedSource
+    cohort_paths: list[str] = Field(default_factory=list, max_length=200)
     supersedes_candidate_id: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$"
     )
     local_run: PromotionRunEvidence | None = None
     client: PromotionClientContract
+
+    @model_validator(mode="after")
+    def validate_cohort_paths(self):
+        if self.cohort_paths != sorted(set(self.cohort_paths)):
+            raise ValueError("cohort_paths must be sorted and unique")
+        return self
 
 
 class WorkspacePromotionDraftRequest(BaseModel):
@@ -183,6 +190,8 @@ class WorkspacePromotionPreviewResponse(BaseModel):
     requested_bounds: dict[str, int]
     registration: PromotionRegistrationEvidence
     protected_source: PromotionSourceEvidence
+    source_release_id: UUID | None = None
+    cohort_paths: list[str] = Field(default_factory=list)
     lifecycle_status: PromotionArtifactLifecycle
     supersedes_candidate_id: str | None = None
     source_artifact_key: str | None = None
@@ -222,6 +231,8 @@ class WorkspacePromotionArtifactResponse(BaseModel):
     policy_version: str
     registration: PromotionRegistrationEvidence
     protected_source: PromotionSourceEvidence
+    source_release_id: UUID | None = None
+    cohort_paths: list[str] = Field(default_factory=list)
     declared_effects: list[str]
     static_effects: list[str]
     computed_effects: list[str]

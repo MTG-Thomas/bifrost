@@ -841,6 +841,33 @@ class WorkspaceReleaseActivationService:
             raise WorkspaceReleaseActivationError(
                 "source release declaration tree does not match the artifact"
             )
+        manifest = artifact.manifest or {}
+        cohort_paths = manifest.get("cohort_paths") or []
+        if cohort_paths:
+            if str(record.id) != manifest.get("source_release_id"):
+                raise WorkspaceReleaseActivationError(
+                    "source release declaration identity changed after preview"
+                )
+            overdue_attention = (
+                record.disposition == "attention_required"
+                and record.reason
+                == "reviewed Workspace source has not reached verified production"
+            )
+            if record.declared_disposition != "pending" or not (
+                record.disposition == "pending" or overdue_attention
+            ):
+                raise WorkspaceReleaseActivationError(
+                    "source release declaration is no longer eligible for activation"
+                )
+            expected_paths = manifest.get("source_release_paths")
+            if (
+                not isinstance(expected_paths, dict)
+                or dict(sorted(record.paths.items())) != expected_paths
+                or sorted(record.paths) != cohort_paths
+            ):
+                raise WorkspaceReleaseActivationError(
+                    "source release declaration paths changed after preview"
+                )
 
     async def _validate_base_cas(
         self,

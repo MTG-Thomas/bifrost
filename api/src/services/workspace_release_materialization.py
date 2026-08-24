@@ -27,6 +27,7 @@ from bifrost.workspace_release import (
     canonical_digest,
     repo_v1_release_id,
     workspace_closure_id,
+    workspace_cohort_closure_id,
     workspace_content_id,
     workspace_manifest_id,
     workspace_release_id,
@@ -470,9 +471,15 @@ class WorkspaceReleaseMaterializer:
             for item in closure
             if isinstance(item, dict)
         }
+        cohort_paths = manifest.get("cohort_paths") or []
+        expected_closure_id = (
+            workspace_cohort_closure_id(entry, closure_hashes, cohort_paths)
+            if cohort_paths
+            else workspace_closure_id(entry, closure_hashes)
+        )
         if (
             len(closure_hashes) != len(closure)
-            or workspace_closure_id(entry, closure_hashes) != artifact.closure_id
+            or expected_closure_id != artifact.closure_id
             or workspace_content_id(entry, str(artifact.closure_id))
             != artifact.content_id
         ):
@@ -501,6 +508,14 @@ class WorkspaceReleaseMaterializer:
         release_payload["registration_intent_fingerprint"] = (
             registration_intent_fingerprint
         )
+        if cohort_paths:
+            release_payload.update(
+                {
+                    "source_release_id": manifest.get("source_release_id"),
+                    "source_release_paths": manifest.get("source_release_paths"),
+                    "cohort_paths": cohort_paths,
+                }
+            )
         if workspace_release_id(release_payload) != artifact.release_id:
             raise WorkspaceReleasePreparationError("artifact release_id is invalid")
         effective_files = manifest.get("effective_files")

@@ -9,11 +9,10 @@ from typing import Any
 
 WORKSPACE_FILE_MANIFEST_SCHEMA = "bifrost.workspace-file-manifest/v1"
 WORKSPACE_FORWARD_CLOSURE_SCHEMA = "bifrost.workspace-forward-closure/v1"
+WORKSPACE_COHORT_CLOSURE_SCHEMA = "bifrost.workspace-cohort-closure/v1"
 WORKSPACE_RELEASE_CONTENT_SCHEMA = "bifrost.workspace-release-content/v1"
 WORKSPACE_RELEASE_SCHEMA = "bifrost.workspace-release/v1"
-WORKSPACE_REGISTRATION_MANIFEST_SCHEMA = (
-    "bifrost.workspace-registration-manifest/v1"
-)
+WORKSPACE_REGISTRATION_MANIFEST_SCHEMA = "bifrost.workspace-registration-manifest/v1"
 
 
 def _sha256_value(value: str) -> str:
@@ -80,6 +79,21 @@ def workspace_closure_id(entry: Mapping[str, str], files: Mapping[str, str]) -> 
     )
 
 
+def workspace_cohort_closure_id(
+    entry: Mapping[str, str],
+    files: Mapping[str, str],
+    cohort_paths: list[str],
+) -> str:
+    return canonical_digest(
+        {
+            "schema": WORKSPACE_COHORT_CLOSURE_SCHEMA,
+            "entry": dict(entry),
+            "cohort_paths": sorted(cohort_paths),
+            "files": _file_hashes(files),
+        }
+    )
+
+
 def workspace_content_id(entry: Mapping[str, str], closure_id: str) -> str:
     return canonical_digest(
         {
@@ -97,12 +111,14 @@ def workspace_release_id(payload: Mapping[str, Any]) -> str:
 __all__ = [
     "WORKSPACE_FILE_MANIFEST_SCHEMA",
     "WORKSPACE_FORWARD_CLOSURE_SCHEMA",
+    "WORKSPACE_COHORT_CLOSURE_SCHEMA",
     "WORKSPACE_RELEASE_CONTENT_SCHEMA",
     "WORKSPACE_RELEASE_SCHEMA",
     "WORKSPACE_REGISTRATION_MANIFEST_SCHEMA",
     "canonical_digest",
     "repo_v1_release_id",
     "workspace_closure_id",
+    "workspace_cohort_closure_id",
     "workspace_content_id",
     "workspace_manifest_id",
     "workspace_registration_manifest_id",
