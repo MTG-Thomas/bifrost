@@ -430,6 +430,17 @@ class WorkspaceSourceReleaseResponse(BaseModel):
     source_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     source_tree_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     paths: dict[str, str | None]
+    declaration_actor: Literal[
+        "github_actions_oidc", "platform_admin", "legacy_unattributed"
+    ]
+    producer_oidc_commit_sha: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{40}$"
+    )
+    producer_event_name: Literal["push", "workflow_run"] | None = None
+    producer_run_id: str | None = Field(default=None, pattern=r"^[1-9][0-9]*$")
+    producer_triggering_workflow_run_id: str | None = Field(
+        default=None, pattern=r"^[1-9][0-9]*$"
+    )
     disposition: WorkspaceSourceDisposition
     reason: str | None = None
     release_row_id: UUID | None = None

@@ -20,11 +20,12 @@ from bifrost.workspace_release import (
     workspace_registration_manifest_id,
     workspace_release_id,
 )
+from bifrost.workspace_release_authorization import risk_acknowledgement
 from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
 )
-from src.services.workspace_promotions import _canonical_candidate
+from src.services.workspace_promotions import UNDECLARED_EFFECT, _canonical_candidate
 from src.services.workspace_release_materialization import (
     PREPARED_EVIDENCE_SCHEMA,
     WorkspaceReleaseMaterializer,
@@ -485,14 +486,31 @@ async def test_prepare_materializes_and_verifies_complete_effective_tree() -> No
 
 
 @pytest.mark.asyncio
-async def test_prepare_r2_never_executes_or_claims_effect_validation() -> None:
+@pytest.mark.parametrize(
+    "computed_effects",
+    [["integration.write:halopsa"], [UNDECLARED_EFFECT]],
+)
+async def test_prepare_r2_never_executes_or_claims_effect_validation(
+    computed_effects: list[str],
+) -> None:
     organization_id = uuid4()
     artifact, base_files, closure_files = _artifact(
         organization_id,
         risk_class="R2",
-        computed_effects=["integration.write:halopsa"],
+        computed_effects=computed_effects,
         include_affected_target=True,
     )
+    if computed_effects == [UNDECLARED_EFFECT]:
+        artifact.manifest["declared_effects"] = []
+        artifact.manifest["diagnostics"] = [
+            {
+                "code": "effects_undeclared",
+                "severity": "warning",
+                "message": "workflow effects are undeclared",
+                "path": "workflows/demo.py",
+            }
+        ]
+        artifact.candidate_id = _canonical_candidate(artifact.manifest)
 
     class Result:
         def __init__(self, *, scalar=None, rows=None):
@@ -576,9 +594,12 @@ async def test_prepare_r2_never_executes_or_claims_effect_validation() -> None:
     }
     assert evidence["effect_execution"] == "not_performed"
     assert evidence["risk_class"] == "R2"
-    assert evidence["computed_effects"] == ["integration.write:halopsa"]
+    assert evidence["computed_effects"] == computed_effects
     challenge = prepared_activation_challenge(evidence)
     assert challenge["required_authorization"] == "risk_acknowledgement"
+    assert challenge["computed_effects"] == computed_effects
+    acknowledgement = risk_acknowledgement(challenge)
+    assert acknowledgement["computed_effects"] == computed_effects
 
 
 @pytest.mark.asyncio

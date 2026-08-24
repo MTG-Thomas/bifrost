@@ -28654,6 +28654,22 @@ export interface components {
                 [key: string]: string | null;
             };
             /**
+             * Declaration Actor
+             * @enum {string}
+             */
+            declaration_actor: "github_actions_oidc" | "platform_admin" | "legacy_unattributed";
+            /** Producer Oidc Commit Sha */
+            producer_oidc_commit_sha?: string | null;
+            /**
+             * Producer Event Name
+             * @enum {string}
+             */
+            producer_event_name?: "push" | "workflow_run" | null;
+            /** Producer Run Id */
+            producer_run_id?: string | null;
+            /** Producer Triggering Workflow Run Id */
+            producer_triggering_workflow_run_id?: string | null;
+            /**
              * Disposition
              * @enum {string}
              */

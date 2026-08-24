@@ -23,6 +23,11 @@ WORKFLOW_REF = (
 )
 ORGANIZATION_ID = "9f65129e-0e8a-4a3b-a56a-27d831bd7ab1"
 SOURCE_SHA = "a" * 40
+PRODUCER_SHA = "b" * 40
+TRIGGERING_RUN_ID = "987654"
+WORKFLOW_RUN_AUDIENCE = (
+    f"{WORKSPACE_SOURCE_RELEASE_AUDIENCE}:workflow_run:{TRIGGERING_RUN_ID}:{SOURCE_SHA}"
+)
 
 
 def _settings():
@@ -98,9 +103,79 @@ async def test_accepts_exact_protected_main_push_identity() -> None:
 
     assert str(producer.organization_id) == ORGANIZATION_ID
     assert producer.source_commit_sha == SOURCE_SHA
+    assert producer.oidc_commit_sha == SOURCE_SHA
     assert producer.repository == REPOSITORY
     assert producer.workflow_ref == WORKFLOW_REF
     assert producer.run_id == "123456"
+    assert producer.event_name == "push"
+    assert producer.triggering_workflow_run_id is None
+
+
+@pytest.mark.asyncio
+async def test_accepts_workflow_run_bound_to_triggering_ci_head_sha() -> None:
+    token, jwks = _token(
+        overrides={
+            "aud": WORKFLOW_RUN_AUDIENCE,
+            "event_name": "workflow_run",
+            "sha": PRODUCER_SHA,
+        }
+    )
+
+    producer = await authenticate_workspace_source_release_producer(
+        token,
+        settings=_settings(),
+        jwks=jwks,
+    )
+
+    assert producer.source_commit_sha == SOURCE_SHA
+    assert producer.oidc_commit_sha == PRODUCER_SHA
+    assert producer.workflow_ref == WORKFLOW_REF
+    assert producer.event_name == "workflow_run"
+    assert producer.triggering_workflow_run_id == TRIGGERING_RUN_ID
+
+
+@pytest.mark.asyncio
+async def test_rejects_workflow_run_with_unbound_fixed_audience() -> None:
+    token, jwks = _token(overrides={"event_name": "workflow_run"})
+
+    with pytest.raises(GitHubActionsOIDCError, match="bind its triggering run"):
+        await authenticate_workspace_source_release_producer(
+            token,
+            settings=_settings(),
+            jwks=jwks,
+        )
+
+
+@pytest.mark.asyncio
+async def test_rejects_push_with_workflow_run_audience() -> None:
+    token, jwks = _token(overrides={"aud": WORKFLOW_RUN_AUDIENCE})
+
+    with pytest.raises(GitHubActionsOIDCError, match="push producer"):
+        await authenticate_workspace_source_release_producer(
+            token,
+            settings=_settings(),
+            jwks=jwks,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "audience",
+    [
+        f"{WORKSPACE_SOURCE_RELEASE_AUDIENCE}:workflow_run:0:{SOURCE_SHA}",
+        f"{WORKSPACE_SOURCE_RELEASE_AUDIENCE}:workflow_run:123:{SOURCE_SHA.upper()}",
+        f"{WORKSPACE_SOURCE_RELEASE_AUDIENCE}:workflow_run:123",
+    ],
+)
+async def test_rejects_malformed_workflow_run_audience(audience: str) -> None:
+    token, jwks = _token(overrides={"aud": audience, "event_name": "workflow_run"})
+
+    with pytest.raises(GitHubActionsOIDCError, match="invalid source-release audience"):
+        await authenticate_workspace_source_release_producer(
+            token,
+            settings=_settings(),
+            jwks=jwks,
+        )
 
 
 @pytest.mark.asyncio
@@ -111,6 +186,7 @@ async def test_accepts_exact_protected_main_push_identity() -> None:
         ("repository_owner_id", "999"),
         ("ref", "refs/heads/feature"),
         ("event_name", "pull_request"),
+        ("event_name", "workflow_dispatch"),
         ("workflow_ref", f"{REPOSITORY}/.github/workflows/other.yml@refs/heads/main"),
     ],
 )
@@ -129,7 +205,7 @@ async def test_rejects_identity_outside_pinned_policy(claim: str, value: str) ->
 async def test_rejects_wrong_audience() -> None:
     token, jwks = _token(overrides={"aud": "not-bifrost"})
 
-    with pytest.raises(GitHubActionsOIDCError, match="signature or claim"):
+    with pytest.raises(GitHubActionsOIDCError, match="invalid source-release audience"):
         await authenticate_workspace_source_release_producer(
             token,
             settings=_settings(),

@@ -492,6 +492,7 @@ async def declare_workspace_source_release_from_github(
         ).declare(
             request,
             created_by=SYSTEM_USER_UUID,
+            producer=producer,
         )
     except WorkspaceSourceReleaseConflict as exc:
         raise HTTPException(

@@ -295,6 +295,15 @@ class WorkspaceSourceRelease(Base):
     source_commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
     source_tree_sha: Mapped[str] = mapped_column(String(40), nullable=False)
     paths: Mapped[dict[str, str | None]] = mapped_column(JSONB, nullable=False)
+    declaration_actor: Mapped[str] = mapped_column(String(30), nullable=False)
+    producer_oidc_commit_sha: Mapped[str | None] = mapped_column(
+        String(40), nullable=True
+    )
+    producer_event_name: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    producer_run_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    producer_triggering_workflow_run_id: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )
     disposition: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending"
     )
@@ -361,6 +370,30 @@ class WorkspaceSourceRelease(Base):
             "declared_disposition IN "
             "('pending', 'attention_required', 'non_production')",
             name="ck_workspace_source_release_declared_disposition",
+        ),
+        CheckConstraint(
+            "declaration_actor IN "
+            "('github_actions_oidc', 'platform_admin', 'legacy_unattributed')",
+            name="ck_workspace_source_release_declaration_actor",
+        ),
+        CheckConstraint(
+            "(declaration_actor = 'github_actions_oidc' AND "
+            "producer_oidc_commit_sha IS NOT NULL AND "
+            "producer_event_name IN ('push', 'workflow_run') AND "
+            "producer_run_id IS NOT NULL) OR "
+            "(declaration_actor <> 'github_actions_oidc' AND "
+            "producer_oidc_commit_sha IS NULL AND "
+            "producer_event_name IS NULL AND producer_run_id IS NULL AND "
+            "producer_triggering_workflow_run_id IS NULL)",
+            name="ck_workspace_source_release_producer_provenance",
+        ),
+        CheckConstraint(
+            "producer_event_name IS NULL OR "
+            "(producer_event_name = 'push' AND "
+            "producer_triggering_workflow_run_id IS NULL) OR "
+            "(producer_event_name = 'workflow_run' AND "
+            "producer_triggering_workflow_run_id IS NOT NULL)",
+            name="ck_workspace_source_release_triggering_run",
         ),
         CheckConstraint(
             "disposition <> 'released' OR "

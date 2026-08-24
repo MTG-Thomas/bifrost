@@ -35,6 +35,7 @@ from src.services.workspace_release_runtime import WorkspaceReleaseDescriptor
 from src.services.workspace_release_materialization import (
     prepared_activation_challenge,
 )
+from src.services.workspace_promotions import UNDECLARED_EFFECT
 
 
 def _prepared_rows():
@@ -675,9 +676,14 @@ async def test_r0_authorization_binds_exact_reviewed_canary_and_actor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_r2_authorization_requires_exact_nonexecution_acknowledgement() -> None:
+@pytest.mark.parametrize(
+    "effects",
+    [["integration.write:halopsa"], [UNDECLARED_EFFECT]],
+)
+async def test_r2_authorization_requires_exact_nonexecution_acknowledgement(
+    effects: list[str],
+) -> None:
     release, artifact, _descriptor = _prepared_rows()
-    effects = ["integration.write:halopsa"]
     _as_risk_release(release, artifact, "R2", effects)
     challenge = prepared_activation_challenge(release.prepared_evidence)
     acknowledgement = risk_acknowledgement(challenge)
@@ -704,6 +710,7 @@ async def test_r2_authorization_requires_exact_nonexecution_acknowledgement() ->
 
     assert evidence["kind"] == "risk_acknowledgement"
     assert evidence["acknowledgement"] == acknowledgement
+    assert evidence["acknowledgement"]["computed_effects"] == effects
     service._canary_attestation.assert_not_awaited()
 
 

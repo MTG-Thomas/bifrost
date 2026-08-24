@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -14,6 +15,11 @@ from src.config import Settings
 GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_ACTIONS_JWKS_URL = f"{GITHUB_ACTIONS_ISSUER}/.well-known/jwks"
 WORKSPACE_SOURCE_RELEASE_AUDIENCE = "bifrost-workspace-source-release"
+WORKSPACE_SOURCE_RELEASE_EVENTS = frozenset({"push", "workflow_run"})
+_WORKFLOW_RUN_AUDIENCE = re.compile(
+    rf"^{WORKSPACE_SOURCE_RELEASE_AUDIENCE}:workflow_run:"
+    r"(?P<run_id>[1-9][0-9]*):(?P<source_sha>[0-9a-f]{40})$"
+)
 _WORKSPACE_SOURCE_RELEASE_SETTING_NAMES = (
     "workspace_source_release_oidc_repository",
     "workspace_source_release_oidc_repository_id",
@@ -31,9 +37,12 @@ class GitHubActionsOIDCError(ValueError):
 class WorkspaceSourceReleaseProducer:
     organization_id: UUID
     source_commit_sha: str
+    oidc_commit_sha: str
     repository: str
     workflow_ref: str
     run_id: str
+    event_name: str
+    triggering_workflow_run_id: str | None
 
 
 def workspace_source_release_producer_configured(settings: Settings) -> bool:
@@ -109,6 +118,27 @@ async def authenticate_workspace_source_release_producer(
             "GitHub Actions OIDC token must use RS256 with a key identifier"
         )
 
+    try:
+        unverified_claims = jwt.decode(
+            token,
+            options={"verify_signature": False},
+        )
+    except jwt.InvalidTokenError as exc:
+        raise GitHubActionsOIDCError("GitHub Actions OIDC token is malformed") from exc
+    token_audience = unverified_claims.get("aud")
+    if not isinstance(token_audience, str):
+        raise GitHubActionsOIDCError(
+            "GitHub Actions OIDC token has an invalid source-release audience"
+        )
+    workflow_run_audience = _WORKFLOW_RUN_AUDIENCE.fullmatch(token_audience)
+    if (
+        token_audience != WORKSPACE_SOURCE_RELEASE_AUDIENCE
+        and workflow_run_audience is None
+    ):
+        raise GitHubActionsOIDCError(
+            "GitHub Actions OIDC token has an invalid source-release audience"
+        )
+
     if jwks is None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -142,7 +172,7 @@ async def authenticate_workspace_source_release_producer(
             token,
             signing_key,
             algorithms=["RS256"],
-            audience=WORKSPACE_SOURCE_RELEASE_AUDIENCE,
+            audience=token_audience,
             issuer=GITHUB_ACTIONS_ISSUER,
             options={
                 "require": [
@@ -175,7 +205,6 @@ async def authenticate_workspace_source_release_producer(
         "repository_owner_id": owner_id,
         "ref": "refs/heads/main",
         "ref_type": "branch",
-        "event_name": "push",
         "workflow_ref": workflow_ref,
     }
     mismatches = [
@@ -188,17 +217,41 @@ async def authenticate_workspace_source_release_producer(
             "GitHub Actions OIDC token is outside the source-release trust policy: "
             + ", ".join(sorted(mismatches))
         )
-    source_commit_sha = str(claims["sha"])
-    if len(source_commit_sha) != 40 or any(
-        char not in "0123456789abcdef" for char in source_commit_sha
+    event_name = claims.get("event_name")
+    if event_name not in WORKSPACE_SOURCE_RELEASE_EVENTS:
+        raise GitHubActionsOIDCError(
+            "GitHub Actions OIDC token is outside the source-release trust policy: "
+            "event_name"
+        )
+    oidc_commit_sha = str(claims["sha"])
+    if len(oidc_commit_sha) != 40 or any(
+        char not in "0123456789abcdef" for char in oidc_commit_sha
     ):
         raise GitHubActionsOIDCError(
             "GitHub Actions OIDC token has an invalid source commit SHA"
         )
+    if event_name == "push":
+        if token_audience != WORKSPACE_SOURCE_RELEASE_AUDIENCE:
+            raise GitHubActionsOIDCError(
+                "push producer must use the fixed source-release audience"
+            )
+        source_commit_sha = oidc_commit_sha
+        triggering_workflow_run_id = None
+    else:
+        if workflow_run_audience is None:
+            raise GitHubActionsOIDCError(
+                "workflow_run producer must bind its triggering run and head SHA "
+                "in the source-release audience"
+            )
+        source_commit_sha = workflow_run_audience.group("source_sha")
+        triggering_workflow_run_id = workflow_run_audience.group("run_id")
     return WorkspaceSourceReleaseProducer(
         organization_id=organization_id,
         source_commit_sha=source_commit_sha,
+        oidc_commit_sha=oidc_commit_sha,
         repository=repository,
         workflow_ref=workflow_ref,
         run_id=str(claims["run_id"]),
+        event_name=str(event_name),
+        triggering_workflow_run_id=triggering_workflow_run_id,
     )

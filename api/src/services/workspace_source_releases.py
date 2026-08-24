@@ -21,6 +21,7 @@ from src.models.orm.workspace_promotions import (
     WorkspacePromotionRelease,
     WorkspaceSourceRelease,
 )
+from src.services.github_actions_oidc import WorkspaceSourceReleaseProducer
 
 DEFAULT_RELEASE_DUE_AFTER = timedelta(minutes=30)
 COMPLETION_EVIDENCE_SCHEMA = "bifrost.workspace-source-release-completion/v1"
@@ -76,6 +77,13 @@ def source_release_response(
         source_commit_sha=record.source_commit_sha,
         source_tree_sha=record.source_tree_sha,
         paths=dict(record.paths or {}),
+        declaration_actor=record.declaration_actor,
+        producer_oidc_commit_sha=record.producer_oidc_commit_sha,
+        producer_event_name=record.producer_event_name,
+        producer_run_id=record.producer_run_id,
+        producer_triggering_workflow_run_id=(
+            record.producer_triggering_workflow_run_id
+        ),
         disposition=record.disposition,
         reason=record.reason,
         release_row_id=record.release_row_id,
@@ -99,7 +107,17 @@ class WorkspaceSourceReleaseService:
         request: WorkspaceSourceReleaseDeclareRequest,
         *,
         created_by: UUID,
+        producer: WorkspaceSourceReleaseProducer | None = None,
     ) -> WorkspaceSourceReleaseResponse:
+        if producer is not None:
+            if producer.organization_id != self.organization_id:
+                raise ValueError(
+                    "authenticated producer organization does not match the service"
+                )
+            if producer.source_commit_sha != request.source_commit_sha:
+                raise ValueError(
+                    "authenticated producer source commit does not match the declaration"
+                )
         paths = _normalize_paths(request.paths)
         existing = await self.db.scalar(
             select(WorkspaceSourceRelease).where(
@@ -118,6 +136,17 @@ class WorkspaceSourceReleaseService:
             source_commit_sha=request.source_commit_sha,
             source_tree_sha=request.source_tree_sha,
             paths=paths,
+            declaration_actor=(
+                "github_actions_oidc" if producer is not None else "platform_admin"
+            ),
+            producer_oidc_commit_sha=(
+                producer.oidc_commit_sha if producer is not None else None
+            ),
+            producer_event_name=(producer.event_name if producer is not None else None),
+            producer_run_id=(producer.run_id if producer is not None else None),
+            producer_triggering_workflow_run_id=(
+                producer.triggering_workflow_run_id if producer is not None else None
+            ),
             disposition=disposition,
             declared_disposition=disposition,
             reason=request.reason,
