@@ -21,8 +21,11 @@ from src.models.contracts.workspace_promotions import (
     PromotionFile,
     PromotionSnapshot,
     WorkspacePromotionDraftRequest,
+    WorkspacePromotionPreviewRequest,
 )
 from src.services.workspace_promotions import (
+    R2_POLICY_DEFAULT_BOUNDS,
+    UNDECLARED_EFFECT,
     WorkspacePromotionInvalid,
     WorkspacePromotionPreviewService,
     _BaseSnapshot,
@@ -51,6 +54,13 @@ from src.services.workspace_promotions import (
     read_generation_stable_executable_snapshot,
     _validate_draft_snapshot,
 )
+
+REQUIRED_R2_DEFAULT_KEYS = {
+    "max_duration_seconds",
+    "max_external_calls",
+    "max_records_read",
+    "max_output_bytes",
+}
 
 
 def test_candidate_hash_is_canonical_and_org_sensitive() -> None:
@@ -334,6 +344,184 @@ def read_things():
         "integration.read:microsoft_graph",
     ]
     assert metadata["bounds"]["max_external_calls"] == 10
+
+
+def test_legacy_undeclared_effects_are_bound_as_conservative_r2() -> None:
+    metadata = _entry_metadata(
+        b"""
+from bifrost import workflow
+
+@workflow(name="Legacy webhook")
+async def legacy_webhook(payload=None):
+    return payload
+""",
+        "features/legacy.py",
+        "legacy_webhook",
+    )
+
+    computed, undeclared = _reconcile_effects(
+        metadata["effects"],
+        [],
+        effects_declared=metadata["effects_declared"],
+    )
+
+    assert metadata["effects"] == []
+    assert metadata["effects_declared"] is False
+    assert computed == [UNDECLARED_EFFECT]
+    assert undeclared == []
+    assert _risk_class_for_effects(computed) == "R2"
+    assert REQUIRED_R2_DEFAULT_KEYS == set(R2_POLICY_DEFAULT_BOUNDS)
+
+
+def test_explicit_effects_cannot_be_downgraded_by_undeclared_classification() -> None:
+    r0, _ = _reconcile_effects(["bifrost.read"], [], effects_declared=True)
+    r1, _ = _reconcile_effects(["integration.read:meraki"], [], effects_declared=True)
+
+    assert UNDECLARED_EFFECT not in r0
+    assert UNDECLARED_EFFECT not in r1
+    assert _risk_class_for_effects(r0) == "R0"
+    assert _risk_class_for_effects(r1) == "R1"
+
+
+@pytest.mark.asyncio
+async def test_reviewed_preview_accepts_legacy_undeclared_r2_without_local_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = b"""
+from bifrost import workflow
+
+@workflow(name="Legacy webhook")
+async def legacy_webhook(payload=None):
+    return payload
+"""
+    path = "features/legacy.py"
+    source_hash = hashlib.sha256(source).hexdigest()
+    commit_sha = "1" * 40
+    tree_sha = "2" * 40
+    organization_id = uuid4()
+
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.added = None
+
+        async def execute(self, _statement, _parameters=None):
+            return Result()
+
+        def add(self, value):
+            self.added = value
+
+        async def flush(self):
+            if self.added.id is None:
+                self.added.id = uuid4()
+
+        async def commit(self):
+            pass
+
+        async def refresh(self, _value):
+            pass
+
+    class CommitWriter:
+        async def read_files(self, paths, *, ref):
+            assert paths == (path,)
+            assert ref == "main"
+            return SimpleNamespace(
+                commit_sha=commit_sha,
+                tree_sha=tree_sha,
+                files={path: source},
+            )
+
+    class Storage:
+        def __init__(self, _organization_id, _content_id):
+            self.source_artifact_key = "source.zip"
+            self.manifest_key = "manifest.json"
+
+        async def write_source(self, _raw):
+            return self.source_artifact_key
+
+        async def write_manifest(self, _raw):
+            return self.manifest_key
+
+    async def base_resolver():
+        return _BaseSnapshot(
+            release_id=_repo_v1_release_id({}),
+            manifest_id=_manifest_id({}),
+            files={},
+            hashes={},
+            registrations={},
+        )
+
+    async def plan_registrations(*_args, **_kwargs):
+        return (
+            [
+                {
+                    "action": "create",
+                    "path": path,
+                    "function_name": "legacy_webhook",
+                    "type": "workflow",
+                    "name": "Legacy webhook",
+                    "requested_id": str(uuid4()),
+                    "organization_id": str(organization_id),
+                }
+            ],
+            [],
+        )
+
+    async def no_existing(*_args, **_kwargs):
+        return None
+
+    async def no_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.plan_workspace_registrations",
+        plan_registrations,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.find_workspace_workflow",
+        no_existing,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.emit_audit",
+        no_audit,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.WorkspacePromotionArtifactStorage",
+        Storage,
+    )
+    request = WorkspacePromotionPreviewRequest(
+        schema_version="bifrost.workspace-promotion-bundle/v2",
+        entry={"path": path, "function": "legacy_webhook"},
+        snapshot={
+            "snapshot_id": snapshot_id({path: source_hash}),
+            "files": {path: source_hash},
+            "closure": [{"path": path, "sha256": source_hash}],
+        },
+        protected_source={"commit_sha": commit_sha, "tree_sha": tree_sha},
+        client={"cli_version": "test", "sdk_version": "test", "contract_version": "2"},
+    )
+
+    response = await WorkspacePromotionPreviewService(
+        Database(),
+        organization_id,
+        commit_writer=CommitWriter(),
+        base_resolver=base_resolver,
+    ).preview(request, uuid4())
+
+    assert response.risk_class == "R2"
+    assert response.declared_effects == []
+    assert response.computed_effects == [UNDECLARED_EFFECT]
+    assert response.bounds == {}
+    registration = response.effective_registrations[f"{path}::legacy_webhook"]
+    assert registration["runtime_bounds"] == R2_POLICY_DEFAULT_BOUNDS
+    diagnostics = {item.code: item for item in response.diagnostics}
+    assert diagnostics["effects_undeclared"].severity == "warning"
+    assert diagnostics["local_run_evidence_missing"].severity == "warning"
+    assert diagnostics["r2_policy_default_runtime_bounds"].severity == "warning"
+    assert all(item.severity != "blocker" for item in response.diagnostics)
 
 
 def test_static_classifier_finds_process_dynamic_network_and_secrets() -> None:
@@ -629,6 +817,7 @@ def second(): return 2
         closure_hashes={path: new_hash},
         selected_key=first_key,
         selected_registration=selected,
+        risk_class="R0",
         diagnostics=diagnostics,
     )
 
@@ -682,6 +871,7 @@ def second(): return 2
         closure_hashes={path: "b" * 64},
         selected_key="workflows/other.py::selected",
         selected_registration={"path": "workflows/other.py", "function": "selected"},
+        risk_class="R0",
         diagnostics=diagnostics,
     )
 
@@ -690,6 +880,55 @@ def second(): return 2
     ]
     assert diagnostics[0].severity == "blocker"
     assert base[key]["name"] == "Second"
+
+
+def test_r2_multi_workflow_file_defaults_legacy_sibling_bounds() -> None:
+    path = "features/meraki/workflows/alerts.py"
+    raw = b"""
+from bifrost import workflow
+@workflow(name="Selected")
+async def selected(payload=None): return payload
+@workflow(name="Legacy sibling")
+async def sibling(payload=None): return payload
+"""
+    source_hash = hashlib.sha256(raw).hexdigest()
+    sibling_key = f"{path}::sibling"
+    sibling_id = str(uuid4())
+    diagnostics = []
+
+    result = _refresh_effective_registrations(
+        base_registrations={
+            sibling_key: {
+                "path": path,
+                "function": "sibling",
+                "workflow_id": sibling_id,
+                "type": "workflow",
+                "name": "Legacy sibling",
+                "organization_id": str(uuid4()),
+                "is_active": True,
+                "source_sha256": "a" * 64,
+                "runtime_bounds": {},
+            }
+        },
+        closure_files={path: raw},
+        closure_hashes={path: source_hash},
+        selected_key=f"{path}::selected",
+        selected_registration={
+            "path": path,
+            "function": "selected",
+            "runtime_bounds": R2_POLICY_DEFAULT_BOUNDS,
+        },
+        risk_class="R2",
+        diagnostics=diagnostics,
+    )
+
+    assert result[sibling_key]["workflow_id"] == sibling_id
+    assert result[sibling_key]["source_sha256"] == source_hash
+    assert result[sibling_key]["runtime_bounds"] == R2_POLICY_DEFAULT_BOUNDS
+    assert [item.code for item in diagnostics] == [
+        "non_selected_registration_policy_bounds"
+    ]
+    assert diagnostics[0].severity == "warning"
 
 
 def test_content_identity_is_independent_of_review_attestation() -> None:

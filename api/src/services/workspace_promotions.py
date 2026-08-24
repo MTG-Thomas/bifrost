@@ -78,7 +78,7 @@ from src.services.workflow_registration import (
 )
 from src.services.workspace_promotion_storage import WorkspacePromotionArtifactStorage
 
-PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-20"
+PROMOTION_PREVIEW_POLICY = "workspace-release-artifact/2026-08-24"
 PROMOTION_BUNDLE_SCHEMA_V2 = "bifrost.workspace-promotion-bundle/v2"
 PROMOTION_ARTIFACT_SCHEMA = "bifrost.workspace-release-artifact/v1"
 ARTIFACT_TTL = timedelta(days=7)
@@ -86,11 +86,18 @@ DRAFT_ARTIFACT_TTL = timedelta(hours=24)
 DRAFT_UPLOAD_SCHEMA = "bifrost.workspace-draft-upload/v1"
 DRAFT_ARTIFACT_SCHEMA = "bifrost.workspace-draft-artifact/v1"
 R0_EFFECTS = {"bifrost.read"}
+UNDECLARED_EFFECT = "unknown.undeclared"
 REQUIRED_R0_BOUNDS = {
     "max_duration_seconds",
     "max_external_calls",
     "max_records_read",
     "max_output_bytes",
+}
+R2_POLICY_DEFAULT_BOUNDS = {
+    "max_duration_seconds": 1800,
+    "max_external_calls": 1000,
+    "max_records_read": 100_000,
+    "max_output_bytes": 16_777_216,
 }
 _SECRET_PATTERNS = (
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
@@ -467,7 +474,8 @@ def _entry_metadata(raw: bytes, path: str, function_name: str) -> dict[str, Any]
         raise WorkspacePromotionInvalid(
             "rapid preview currently supports manually invoked workflows only"
         )
-    effects = _normalize_effects(_keyword_node(decorator, "effects"))
+    effects_node = _keyword_node(decorator, "effects")
+    effects = _normalize_effects(effects_node) if effects_node is not None else []
     bounds = _bounds_declaration(
         _keyword_node(decorator, "enforced_bounds"), "enforced_bounds"
     )
@@ -485,6 +493,7 @@ def _entry_metadata(raw: bytes, path: str, function_name: str) -> dict[str, Any]
         "name": name,
         "requested_id": requested_id,
         "effects": effects,
+        "effects_declared": effects_node is not None,
         "bounds": bounds,
         "requested_bounds": requested_bounds,
     }
@@ -629,6 +638,7 @@ def _refresh_effective_registrations(
     closure_hashes: dict[str, str],
     selected_key: str,
     selected_registration: dict[str, Any],
+    risk_class: str,
     diagnostics: list[PromotionDiagnostic],
 ) -> dict[str, dict[str, Any]]:
     """Refresh every bound function sharing a source path replaced by closure."""
@@ -665,7 +675,25 @@ def _refresh_effective_registrations(
                 )
             )
         missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
-        if missing_bounds:
+        runtime_bounds = dict(metadata["bounds"])
+        if missing_bounds and risk_class == "R2":
+            runtime_bounds = {
+                **R2_POLICY_DEFAULT_BOUNDS,
+                **runtime_bounds,
+            }
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="non_selected_registration_policy_bounds",
+                    severity="warning",
+                    message=(
+                        "R2 sibling registration omits enforced bounds; the "
+                        "immutable registration uses platform policy defaults for: "
+                        + ", ".join(sorted(missing_bounds))
+                    ),
+                    path=path,
+                )
+            )
+        elif missing_bounds:
             diagnostics.append(
                 PromotionDiagnostic(
                     code="non_selected_registration_bounds_missing",
@@ -678,7 +706,7 @@ def _refresh_effective_registrations(
                 )
             )
         registration["source_sha256"] = closure_hashes[path]
-        registration["runtime_bounds"] = dict(sorted(metadata["bounds"].items()))
+        registration["runtime_bounds"] = dict(sorted(runtime_bounds.items()))
     effective[selected_key] = selected_registration
     return dict(sorted(effective.items()))
 
@@ -732,7 +760,10 @@ def _static_effects(
 
 
 def _reconcile_effects(
-    declared_effects: list[str], static_effects: list[str]
+    declared_effects: list[str],
+    static_effects: list[str],
+    *,
+    effects_declared: bool = True,
 ) -> tuple[list[str], list[str]]:
     """Prefer a precise declaration over an ambiguous static network signal."""
     declared = set(declared_effects)
@@ -743,9 +774,11 @@ def _reconcile_effects(
     ):
         remaining_static.remove("network.unknown")
 
-    computed = sorted(declared | remaining_static)
+    computed = declared | remaining_static
+    if not effects_declared:
+        computed.add(UNDECLARED_EFFECT)
     undeclared = sorted(remaining_static - declared)
-    return computed, undeclared
+    return sorted(computed), undeclared
 
 
 def _canonical_candidate(payload: dict[str, Any]) -> str:
@@ -1009,13 +1042,27 @@ class WorkspacePromotionPreviewService:
             )
         declared_effects = metadata["effects"]
         computed_effects, undeclared = _reconcile_effects(
-            declared_effects, static_effects
+            declared_effects,
+            static_effects,
+            effects_declared=metadata["effects_declared"],
         )
+        if not metadata["effects_declared"]:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="effects_undeclared",
+                    severity="warning",
+                    message=(
+                        "workflow effects are undeclared; reviewed promotion "
+                        "classifies this source as R2"
+                    ),
+                    path=request.entry.path,
+                )
+            )
         if undeclared:
             diagnostics.append(
                 PromotionDiagnostic(
                     code="undeclared_static_effect",
-                    severity="blocker",
+                    severity="warning",
                     message="source implies undeclared effects: "
                     + ", ".join(sorted(undeclared)),
                 )
@@ -1211,8 +1258,22 @@ class WorkspacePromotionPreviewService:
             )
         declared_effects = metadata["effects"]
         computed_effects, undeclared = _reconcile_effects(
-            declared_effects, static_effects
+            declared_effects,
+            static_effects,
+            effects_declared=metadata["effects_declared"],
         )
+        if not metadata["effects_declared"]:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="effects_undeclared",
+                    severity="warning",
+                    message=(
+                        "workflow effects are undeclared; promotion binds the "
+                        "unknown state and requires R2 acknowledgement"
+                    ),
+                    path=request.entry.path,
+                )
+            )
         action_list, registry_diagnostics = await plan_workspace_registrations(
             self.db,
             self.organization_id,
@@ -1278,19 +1339,9 @@ class WorkspacePromotionPreviewService:
             diagnostics.append(
                 PromotionDiagnostic(
                     code="undeclared_static_effect",
-                    severity="blocker",
+                    severity="warning",
                     message="source implies undeclared effects: "
                     + ", ".join(sorted(undeclared)),
-                )
-            )
-        missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
-        if missing_bounds:
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="unenforced_resource_bounds",
-                    severity="blocker",
-                    message="missing enforced bounds: "
-                    + ", ".join(sorted(missing_bounds)),
                 )
             )
         closure_hashes = {
@@ -1304,22 +1355,6 @@ class WorkspacePromotionPreviewService:
             affected_paths,
             request.entry,
         )
-        if request.local_run is None or not request.local_run.succeeded:
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="local_run_evidence_missing",
-                    severity="blocker",
-                    message="a successful local run bound to this snapshot is required",
-                )
-            )
-        elif request.local_run.closure_id != closure_id:
-            diagnostics.append(
-                PromotionDiagnostic(
-                    code="local_run_evidence_mismatch",
-                    severity="blocker",
-                    message="local run evidence is for a different forward closure",
-                )
-            )
         if not computed_effects:
             diagnostics.append(
                 PromotionDiagnostic(
@@ -1346,12 +1381,76 @@ class WorkspacePromotionPreviewService:
         effective_manifest_id = _manifest_id(effective_files)
         registration_key = f"{request.entry.path}::{request.entry.function}"
         action = registration_intent[0] if registration_intent else {}
+        risk_registrations = list(base.registrations.values())
+        if registration_state is not None:
+            risk_registrations.append(registration_state)
+        risk = _promotion_risk_class(computed_effects, risk_registrations)
+        missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
+        effective_bounds = dict(metadata["bounds"])
+        runtime_bounds_source = "declared"
+        if risk == "R2" and missing_bounds:
+            effective_bounds = {
+                **R2_POLICY_DEFAULT_BOUNDS,
+                **effective_bounds,
+            }
+            runtime_bounds_source = "policy_default"
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="r2_policy_default_runtime_bounds",
+                    severity="warning",
+                    message=(
+                        "R2 source omits enforced runtime bounds; the immutable "
+                        "registration uses platform policy defaults for: "
+                        + ", ".join(sorted(missing_bounds))
+                    ),
+                    path=request.entry.path,
+                )
+            )
+        elif missing_bounds:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="unenforced_resource_bounds",
+                    severity="blocker",
+                    message="missing enforced bounds: "
+                    + ", ".join(sorted(missing_bounds)),
+                    path=request.entry.path,
+                )
+            )
+        if request.local_run is None:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="local_run_evidence_missing",
+                    severity="warning" if risk == "R2" else "blocker",
+                    message=(
+                        "R2 preview has no optional local-run evidence; prepare "
+                        "will compile without executing candidate source"
+                        if risk == "R2"
+                        else "a successful local run bound to this snapshot is required"
+                    ),
+                )
+            )
+        elif not request.local_run.succeeded:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="local_run_evidence_failed",
+                    severity="blocker",
+                    message="submitted local-run evidence did not succeed",
+                )
+            )
+        elif request.local_run.closure_id != closure_id:
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="local_run_evidence_mismatch",
+                    severity="blocker",
+                    message="local run evidence is for a different forward closure",
+                )
+            )
         effective_registration = _selected_effective_registration(
             entry=request.entry,
             action=action,
             registration_state=registration_state,
             source_sha256=closure_hashes[request.entry.path],
-            runtime_bounds=metadata["bounds"],
+            runtime_bounds=effective_bounds,
         )
         effective_registrations = _refresh_effective_registrations(
             base_registrations=base.registrations,
@@ -1359,9 +1458,16 @@ class WorkspacePromotionPreviewService:
             closure_hashes=closure_hashes,
             selected_key=registration_key,
             selected_registration=effective_registration,
+            risk_class=risk,
             diagnostics=diagnostics,
         )
-        risk = _promotion_risk_class(computed_effects, effective_registrations.values())
+        if (
+            _promotion_risk_class(computed_effects, effective_registrations.values())
+            != risk
+        ):
+            raise WorkspacePromotionInvalid(
+                "effective registration changed the computed promotion risk"
+            )
         effective_registration_manifest_id = workspace_registration_manifest_id(
             effective_registrations
         )
@@ -1408,6 +1514,8 @@ class WorkspacePromotionPreviewService:
             "static_effects": static_effects,
             "computed_effects": computed_effects,
             "bounds": metadata["bounds"],
+            "runtime_bounds": effective_bounds,
+            "runtime_bounds_source": runtime_bounds_source,
             "requested_bounds": metadata["requested_bounds"],
             "diagnostics": [item.model_dump() for item in diagnostics],
             "registration": {

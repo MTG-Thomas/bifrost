@@ -23,7 +23,7 @@ from src.services.workspace_draft_canary import (
     verify_draft_runtime_evidence,
     workflow_data_from_draft_evidence,
 )
-from src.services.workspace_promotions import _canonical_candidate
+from src.services.workspace_promotions import UNDECLARED_EFFECT, _canonical_candidate
 from src.services.workspace_promotion_storage import workspace_draft_runtime_prefix
 from src.services.execution.process_pool import (
     WorkspaceDraftDurationLimitInvalid,
@@ -142,6 +142,22 @@ def test_server_canary_rejects_r1_r2_before_runtime_materialization() -> None:
     artifact, _ = _artifact(effects=["integration.read:microsoft_graph"])
     artifact.risk_class = "R1"
     artifact.manifest["risk_class"] = "R1"
+    artifact.candidate_id = _canonical_candidate(artifact.manifest)
+
+    with pytest.raises(WorkspaceDraftCanaryError, match="exact R0"):
+        build_draft_runtime_evidence(
+            artifact,
+            workspace_draft_runtime_prefix(
+                artifact.organization_id, artifact.content_id
+            ),
+        )
+
+
+def test_undeclared_r2_cannot_enter_reviewed_canary() -> None:
+    artifact, _ = _artifact(effects=[UNDECLARED_EFFECT])
+    artifact.risk_class = "R2"
+    artifact.manifest["risk_class"] = "R2"
+    artifact.manifest["declared_effects"] = []
     artifact.candidate_id = _canonical_candidate(artifact.manifest)
 
     with pytest.raises(WorkspaceDraftCanaryError, match="exact R0"):
