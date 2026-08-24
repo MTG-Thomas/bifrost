@@ -309,9 +309,10 @@ async def test_github_declaration_uses_pinned_organization_and_system_actor(
             captured["db"] = db
             captured["organization_id"] = org_id
 
-        async def declare(self, request, *, created_by):
+        async def declare(self, request, *, created_by, producer):
             captured["request"] = request
             captured["created_by"] = created_by
+            captured["producer"] = producer
             return response
 
     monkeypatch.setattr(workspace_promotions, "WorkspaceSourceReleaseService", Service)
@@ -338,3 +339,4 @@ async def test_github_declaration_uses_pinned_organization_and_system_actor(
     assert captured["organization_id"] == organization_id
     assert captured["request"] is request
     assert captured["created_by"] == workspace_promotions.SYSTEM_USER_UUID
+    assert captured["producer"] is producer
