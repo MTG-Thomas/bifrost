@@ -180,7 +180,7 @@ def _prepared_rows():
 @pytest.fixture(autouse=True)
 def _source_release_tracking_unconfigured(monkeypatch) -> None:
     """Keep activation tests independent of developer and CI environment values."""
-    monkeypatch.setattr(activation_module, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(activation_module, "get_settings", SimpleNamespace)
 
 
 def _as_risk_release(release, artifact, risk_class: str, effects: list[str]) -> None:
@@ -428,7 +428,10 @@ async def test_nonproduction_head_can_promote_an_older_reviewed_registration() -
         manifest={"effective_files": {}},
     )
 
-    await service._validate_source_release_accountability(artifact)
+    result = await service._validate_source_release_accountability(artifact)
+
+    assert result is None
+    service.db.scalar.assert_awaited_once()
 
 
 @pytest.mark.asyncio

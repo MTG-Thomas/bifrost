@@ -141,6 +141,16 @@ def test_non_production_declaration_requires_reason() -> None:
         )
 
 
+def test_attention_required_declaration_requires_reason() -> None:
+    with pytest.raises(ValidationError, match="requires a reason"):
+        WorkspaceSourceReleaseDeclareRequest(
+            source_commit_sha="a" * 40,
+            source_tree_sha="b" * 40,
+            paths={"features/example.py": "c" * 64},
+            disposition="attention_required",
+        )
+
+
 @pytest.mark.parametrize(
     ("paths", "message"),
     [
