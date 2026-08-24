@@ -32,6 +32,10 @@ from src.services.workspace_release_runtime import (
     WorkspaceReleaseRuntimeError,
 )
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
+from src.services.workspace_source_releases import (
+    mark_source_release_attention,
+    reconcile_source_releases_after_lock,
+)
 
 WORKSPACE_RELEASE_LOCK_EVIDENCE_SCHEMA = "bifrost.workspace-release-lock/v1"
 PROJECTION_PATHS_SCHEMA = "bifrost.workspace-release-projection-paths/v1"
@@ -375,6 +379,13 @@ class WorkspaceReleaseProjectionService:
             release.lock_evidence["evidence_id"] = canonical_digest(
                 release.lock_evidence
             )
+            await mark_source_release_attention(
+                self.db,
+                organization_id=self.organization_id,
+                source_commit_sha=str(artifact.source_revision),
+                code=exc.code,
+                message=str(exc),
+            )
             await self.db.flush()
             await self.db.commit()
             raise
@@ -401,6 +412,13 @@ class WorkspaceReleaseProjectionService:
             release.lock_evidence["evidence_id"] = canonical_digest(
                 release.lock_evidence
             )
+            await mark_source_release_attention(
+                self.db,
+                organization_id=self.organization_id,
+                source_commit_sha=str(artifact.source_revision),
+                code=wrapped.code,
+                message=str(wrapped),
+            )
             await self.db.flush()
             await self.db.commit()
             raise wrapped from exc
@@ -408,6 +426,16 @@ class WorkspaceReleaseProjectionService:
         release.lock_evidence = evidence
         release.error_code = None
         release.error_message = None
+        release.attention_deadline = None
+        await reconcile_source_releases_after_lock(
+            self.db,
+            organization_id=self.organization_id,
+            release_row_id=release.id,
+            release_id=descriptor.release_id,
+            runtime_hashes=descriptor.governed_source_hashes,
+            history_commit_sha=str(evidence["history_after"]["commit_sha"]),
+            history_hashes=evidence["history_after"]["file_sha256"],
+        )
         await self.db.flush()
         await self.db.commit()
         return evidence
@@ -896,6 +924,7 @@ class WorkspaceReleaseProjectionService:
         release.lock_evidence = evidence
         release.error_code = None
         release.error_message = None
+        release.attention_deadline = None
         await self.db.flush()
         await self.db.commit()
         return evidence

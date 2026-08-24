@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -30,6 +30,7 @@ from src.models.orm.executions import Execution
 from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
+    WorkspaceSourceRelease,
 )
 from src.models.orm.workflows import Workflow
 from src.services.audit import emit_audit
@@ -66,6 +67,7 @@ ACTIVATION_EVIDENCE_SCHEMA = "bifrost.workspace-release-activation/v2"
 REGISTRATION_STATE_SCHEMA = "bifrost.workspace-registration-state/v1"
 REGISTRATION_INTENT_SCHEMA = "bifrost.workspace-registration-intent/v1"
 PROJECTION_PATHS_SCHEMA = "bifrost.workspace-release-projection-paths/v1"
+HISTORY_LOCK_ATTENTION_AFTER = timedelta(minutes=15)
 
 
 class WorkspaceReleaseActivationError(ValueError):
@@ -311,11 +313,18 @@ def registration_state_fingerprint(existing: Workflow | None) -> str:
 def _history_status(
     release: WorkspacePromotionRelease,
 ) -> WorkspaceReleaseHistoryStatus:
+    now = datetime.now(timezone.utc)
+    attention_deadline = getattr(release, "attention_deadline", None)
+    overdue = bool(
+        attention_deadline is not None
+        and attention_deadline <= now
+        and release.lock_state != "locked"
+    )
     if release.activation_state == "superseded":
         state = "superseded"
     elif release.lock_state == "locked":
         state = "locked"
-    elif release.lock_state == "attention_required":
+    elif release.lock_state == "attention_required" or overdue:
         state = "attention_required"
     elif release.activation_state == "live":
         state = "pending"
@@ -325,6 +334,11 @@ def _history_status(
         state=state,
         lock_state=release.lock_state,
         job_id=release.lock_in_job_id,
+        attention_deadline=attention_deadline,
+        overdue=overdue,
+        runtime_history_verified=(
+            release.activation_state == "live" and release.lock_state == "locked"
+        ),
     )
 
 
@@ -454,6 +468,7 @@ class WorkspaceReleaseActivationService:
             raise WorkspaceReleaseActivationError(
                 "release is not in the prepared activation state"
             )
+        await self._validate_source_release_accountability(artifact)
         await self._validate_artifact_lifecycle(artifact)
         try:
             descriptor = WorkspaceReleaseDescriptor.from_rows(release, artifact)
@@ -477,9 +492,11 @@ class WorkspaceReleaseActivationService:
         previous_release_id = current[0].id if current else None
         if current is not None:
             current[0].activation_state = "superseded"
+            current[0].attention_deadline = None
             await self.db.flush()
         release.previous_release_id = previous_release_id
         release.activation_state = "live"
+        release.attention_deadline = now + HISTORY_LOCK_ATTENTION_AFTER
         from src.jobs.platform.workspace_release_lock import (
             enqueue_workspace_release_lock,
         )
@@ -784,6 +801,37 @@ class WorkspaceReleaseActivationService:
         )
         if child is not None:
             raise WorkspaceReleaseActivationError("release artifact is superseded")
+
+    async def _validate_source_release_accountability(
+        self, artifact: WorkspacePromotionArtifact
+    ) -> None:
+        record = await self.db.scalar(
+            select(WorkspaceSourceRelease)
+            .where(
+                WorkspaceSourceRelease.organization_id == self.organization_id,
+                WorkspaceSourceRelease.source_commit_sha == artifact.source_revision,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            tracking_active = await self.db.scalar(
+                select(WorkspaceSourceRelease.id)
+                .where(WorkspaceSourceRelease.organization_id == self.organization_id)
+                .limit(1)
+            )
+            if tracking_active is None:
+                # Deployment bootstrap: existing installations remain usable but
+                # expose tracking_state=not_configured until the first automatic
+                # protected-main declaration arrives. From that point onward the
+                # gate is fail-closed for every source commit.
+                return
+            raise WorkspaceReleaseActivationError(
+                "protected source commit has no durable release declaration"
+            )
+        if record.source_tree_sha != artifact.source_tree_sha:
+            raise WorkspaceReleaseActivationError(
+                "source release declaration tree does not match the artifact"
+            )
 
     async def _validate_base_cas(
         self,

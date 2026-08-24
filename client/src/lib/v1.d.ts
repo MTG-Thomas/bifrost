@@ -3346,7 +3346,8 @@ export interface paths {
          * Search file contents
          * @description Search file contents for text or regex patterns.
          *
-         *     Searches database directly - workflows, modules, forms, and agents.
+         *     Immutable Live Workspace source overlays the mutable file index. Other
+         *     non-release files continue to come from the database projection.
          */
         post: operations["search_file_contents_api_files_search_post"];
         delete?: never;
@@ -3570,6 +3571,206 @@ export interface paths {
         put?: never;
         /** Preview Workspace Promotion */
         post: operations["preview_workspace_promotion_api_workspace_promotions_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Workspace Promotion Draft */
+        post: operations["upload_workspace_promotion_draft_api_workspace_promotions_drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/artifacts/{artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workspace Promotion Artifact */
+        get: operations["get_workspace_promotion_artifact_api_workspace_promotions_artifacts__artifact_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/artifacts/{artifact_id}/canary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Execute Workspace Promotion Canary */
+        post: operations["execute_workspace_promotion_canary_api_workspace_promotions_artifacts__artifact_id__canary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/artifacts/{artifact_id}/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare Workspace Release */
+        post: operations["prepare_workspace_release_api_workspace_promotions_artifacts__artifact_id__prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/releases/{release_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Activate Workspace Release */
+        post: operations["activate_workspace_release_api_workspace_promotions_releases__release_id__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Live Workspace Release */
+        get: operations["get_live_workspace_release_api_workspace_promotions_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/releases/{release_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workspace Release Status */
+        get: operations["get_workspace_release_status_api_workspace_promotions_releases__release_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/source-releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Workspace Source Releases
+         * @description List pending, completed, and attention-required source releases.
+         */
+        get: operations["list_workspace_source_releases_api_workspace_promotions_source_releases_get"];
+        put?: never;
+        /**
+         * Declare Workspace Source Release
+         * @description Record the release disposition owed by one protected source commit.
+         */
+        post: operations["declare_workspace_source_release_api_workspace_promotions_source_releases_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/source-releases/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Declare Workspace Source Release From Github
+         * @description Record one protected-main push using a narrowly pinned Actions identity.
+         */
+        post: operations["declare_workspace_source_release_from_github_api_workspace_promotions_source_releases_github_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/source-releases/{source_release_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workspace Source Release */
+        get: operations["get_workspace_source_release_api_workspace_promotions_source_releases__source_release_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspace-promotions/source-releases/{source_release_id}/disposition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Workspace Source Release Disposition
+         * @description Explicitly defer or classify a reviewed source commit as non-production.
+         */
+        post: operations["set_workspace_source_release_disposition_api_workspace_promotions_source_releases__source_release_id__disposition_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -16411,6 +16612,13 @@ export interface components {
              * @description True if file exists
              */
             exists: boolean;
+            /**
+             * Source Authority
+             * @default repo-v1
+             */
+            source_authority: string;
+            /** Workspace Release Id */
+            workspace_release_id?: string | null;
         };
         /**
          * FileExpr
@@ -16435,9 +16643,16 @@ export interface components {
             /** Etag */
             etag: string;
             /** Last Modified */
-            last_modified: string;
+            last_modified?: string | null;
             /** Updated By */
             updated_by?: string | null;
+            /**
+             * Source Authority
+             * @default repo-v1
+             */
+            source_authority: string;
+            /** Workspace Release Id */
+            workspace_release_id?: string | null;
         };
         /**
          * FileListRequest
@@ -16490,6 +16705,13 @@ export interface components {
              * @description Per-file metadata (when include_metadata=true)
              */
             files_metadata?: components["schemas"]["FileListMetadataItem"][];
+            /**
+             * Source Authority
+             * @default repo-v1
+             */
+            source_authority: string;
+            /** Workspace Release Id */
+            workspace_release_id?: string | null;
         };
         /**
          * FileMetadata
@@ -22156,15 +22378,40 @@ export interface components {
             path: string;
             /** Sha256 */
             sha256: string;
-            /** Content Base64 */
-            content_base64: string;
+            /**
+             * Content Base64
+             * @description Draft-only source bytes; reviewed production reads from protected Git.
+             */
+            content_base64?: string | null;
+        };
+        /** PromotionProtectedSource */
+        PromotionProtectedSource: {
+            /** Commit Sha */
+            commit_sha: string;
+            /** Tree Sha */
+            tree_sha: string;
+        };
+        /** PromotionRegistrationEvidence */
+        PromotionRegistrationEvidence: {
+            /** Intent */
+            intent?: {
+                [key: string]: unknown;
+            }[];
+            /** Intent Fingerprint */
+            intent_fingerprint: string;
+            /** State */
+            state?: {
+                [key: string]: unknown;
+            } | null;
+            /** State Fingerprint */
+            state_fingerprint: string;
         };
         /** PromotionRunEvidence */
         PromotionRunEvidence: {
             /** Succeeded */
             succeeded: boolean;
-            /** Snapshot Id */
-            snapshot_id: string;
+            /** Closure Id */
+            closure_id: string;
             /** Evidence Id */
             evidence_id?: string | null;
             /** Completed At */
@@ -22184,6 +22431,33 @@ export interface components {
             };
             /** Closure */
             closure: components["schemas"]["PromotionFile"][];
+        };
+        /** PromotionSourceEvidence */
+        PromotionSourceEvidence: {
+            /** Commit Sha */
+            commit_sha: string;
+            /** Tree Sha */
+            tree_sha: string;
+        };
+        /**
+         * PromotionValidationTarget
+         * @description One executable entity that must import from the immutable candidate tree.
+         */
+        PromotionValidationTarget: {
+            /** Path */
+            path: string;
+            /** Function */
+            function: string;
+            /**
+             * Entity Type
+             * @enum {string}
+             */
+            entity_type: "workflow" | "tool" | "data_provider";
+            /**
+             * Relation
+             * @enum {string}
+             */
+            relation: "selected_entry" | "affected_executable";
         };
         /** ProposalTurn */
         ProposalTurn: {
@@ -23808,6 +24082,17 @@ export interface components {
              * @description Search duration in milliseconds
              */
             search_time_ms: number;
+            /**
+             * Source Authority
+             * @description Authoritative source used for Workspace code
+             * @default repo-v1
+             */
+            source_authority: string;
+            /**
+             * Workspace Release Id
+             * @description Immutable Live release when source_authority is release-v1
+             */
+            workspace_release_id?: string | null;
         };
         /**
          * SearchResult
@@ -27382,57 +27667,75 @@ export interface components {
             /** Ready To Write */
             ready_to_write: boolean;
         };
-        /** WorkspacePromotionPreviewRequest */
-        WorkspacePromotionPreviewRequest: {
+        /** WorkspaceLiveStatusResponse */
+        WorkspaceLiveStatusResponse: {
             /**
              * Schema Version
+             * @default bifrost.workspace-live-status/v1
              * @constant
              */
-            schema_version: "bifrost.workspace-promotion-bundle/v1";
+            schema_version: "bifrost.workspace-live-status/v1";
             /**
-             * Target
-             * @default production
-             * @constant
+             * Organization Id
+             * Format: uuid
              */
-            target: "production";
-            entry: components["schemas"]["PromotionEntry"];
-            snapshot: components["schemas"]["PromotionSnapshot"];
-            /** Source Revision */
-            source_revision?: string | null;
-            local_run?: components["schemas"]["PromotionRunEvidence"] | null;
-            client: components["schemas"]["PromotionClientContract"];
+            organization_id: string;
+            active_release?: components["schemas"]["WorkspaceReleaseStatusResponse"] | null;
         };
-        /** WorkspacePromotionPreviewResponse */
-        WorkspacePromotionPreviewResponse: {
+        /** WorkspacePromotionArtifactResponse */
+        WorkspacePromotionArtifactResponse: {
             /**
              * Schema Version
-             * @default bifrost.workspace-promotion-preview/v1
+             * @default bifrost.workspace-release-artifact/v1
              * @constant
              */
-            schema_version: "bifrost.workspace-promotion-preview/v1";
+            schema_version: "bifrost.workspace-release-artifact/v1";
             /**
-             * Preview Only
-             * @default true
-             * @constant
+             * Artifact Id
+             * Format: uuid
              */
-            preview_only: true;
-            /**
-             * Ready To Activate
-             * @default false
-             * @constant
-             */
-            ready_to_activate: false;
-            /**
-             * Disposition
-             * @enum {string}
-             */
-            disposition: "review_required" | "invalid";
-            /** Artifact Id */
-            artifact_id?: string | null;
+            artifact_id: string;
             /** Candidate Id */
-            candidate_id?: string | null;
-            /** Snapshot Id */
-            snapshot_id: string;
+            candidate_id: string;
+            /** Content Id */
+            content_id: string;
+            /** Closure Id */
+            closure_id: string;
+            /** Release Id */
+            release_id: string;
+            /** Base Release Id */
+            base_release_id: string;
+            /** Base Manifest Id */
+            base_manifest_id: string;
+            /** Effective Manifest Id */
+            effective_manifest_id: string;
+            /**
+             * Effective Files
+             * @description Complete executable authored-Python path-to-SHA-256 tree for release v1.
+             */
+            effective_files: {
+                [key: string]: string;
+            };
+            /**
+             * Governed Paths
+             * @description Sorted cumulative paths whose reads and mutations are governed by Live.
+             */
+            governed_paths: string[];
+            /** Governed Manifest Id */
+            governed_manifest_id: string;
+            /** Effective Registration Manifest Id */
+            effective_registration_manifest_id: string;
+            /** Effective Registrations */
+            effective_registrations: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            entry: components["schemas"]["PromotionEntry"];
+            /** Closure */
+            closure: components["schemas"]["PromotionClosureMember"][];
+            /** Validation Targets */
+            validation_targets: components["schemas"]["PromotionValidationTarget"][];
             /**
              * Risk Class
              * @enum {string}
@@ -27440,8 +27743,8 @@ export interface components {
             risk_class: "R0" | "R1" | "R2";
             /** Policy Version */
             policy_version: string;
-            /** Closure */
-            closure: components["schemas"]["PromotionClosureMember"][];
+            registration: components["schemas"]["PromotionRegistrationEvidence"];
+            protected_source: components["schemas"]["PromotionSourceEvidence"];
             /** Declared Effects */
             declared_effects: string[];
             /** Static Effects */
@@ -27456,14 +27759,467 @@ export interface components {
             requested_bounds: {
                 [key: string]: number;
             };
-            /** Registration */
-            registration: {
+            local_run?: components["schemas"]["PromotionRunEvidence"] | null;
+            /** Diagnostics */
+            diagnostics?: components["schemas"]["PromotionDiagnostic"][];
+            /**
+             * Lifecycle Status
+             * @enum {string}
+             */
+            lifecycle_status: "review_required" | "eligible" | "invalid" | "expired" | "superseded";
+            /** Supersedes Candidate Id */
+            supersedes_candidate_id?: string | null;
+            /** Source Artifact Key */
+            source_artifact_key: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** WorkspacePromotionCanaryAccepted */
+        WorkspacePromotionCanaryAccepted: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-reviewed-canary/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-reviewed-canary/v1";
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /**
+             * Runtime Mode
+             * @default workspace-canary-v1
+             * @constant
+             */
+            runtime_mode: "workspace-canary-v1";
+            /**
+             * Status
+             * @default Pending
+             * @constant
+             */
+            status: "Pending";
+        };
+        /**
+         * WorkspacePromotionCanaryRequest
+         * @description Parameters for an isolated canary of one reviewed artifact.
+         */
+        WorkspacePromotionCanaryRequest: {
+            /** Parameters */
+            parameters?: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * WorkspacePromotionDraftRequest
+         * @description Local-only source upload that can never authorize a Live release.
+         */
+        WorkspacePromotionDraftRequest: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "bifrost.workspace-draft-upload/v1";
+            /**
+             * Target
+             * @default draft
+             * @constant
+             */
+            target: "draft";
+            entry: components["schemas"]["PromotionEntry"];
+            snapshot: components["schemas"]["PromotionSnapshot"];
+            local_run?: components["schemas"]["PromotionRunEvidence"] | null;
+            client: components["schemas"]["PromotionClientContract"];
+        };
+        /** WorkspacePromotionDraftResponse */
+        WorkspacePromotionDraftResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-draft-artifact/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-draft-artifact/v1";
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Content Id */
+            content_id: string;
+            /** Closure Id */
+            closure_id: string;
+            /**
+             * Authority
+             * @default local_only
+             * @constant
+             */
+            authority: "local_only";
+            /**
+             * Activatable
+             * @default false
+             * @constant
+             */
+            activatable: false;
+            entry: components["schemas"]["PromotionEntry"];
+            /** Snapshot Id */
+            snapshot_id: string;
+            /** Closure */
+            closure: components["schemas"]["PromotionClosureMember"][];
+            /** Declared Effects */
+            declared_effects: string[];
+            /** Computed Effects */
+            computed_effects: string[];
+            /** Bounds */
+            bounds: {
+                [key: string]: number;
+            };
+            /**
+             * Lifecycle Status
+             * @enum {string}
+             */
+            lifecycle_status: "previewed" | "expired";
+            /** Source Artifact Key */
+            source_artifact_key: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** WorkspacePromotionPreviewRequest */
+        WorkspacePromotionPreviewRequest: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "bifrost.workspace-promotion-bundle/v2";
+            /**
+             * Target
+             * @default production
+             * @constant
+             */
+            target: "production";
+            entry: components["schemas"]["PromotionEntry"];
+            snapshot: components["schemas"]["PromotionSnapshot"];
+            /** Expected Base Release Id */
+            expected_base_release_id?: string | null;
+            protected_source: components["schemas"]["PromotionProtectedSource"];
+            /** Supersedes Candidate Id */
+            supersedes_candidate_id?: string | null;
+            local_run?: components["schemas"]["PromotionRunEvidence"] | null;
+            client: components["schemas"]["PromotionClientContract"];
+        };
+        /** WorkspacePromotionPreviewResponse */
+        WorkspacePromotionPreviewResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-promotion-preview/v2
+             * @constant
+             */
+            schema_version: "bifrost.workspace-promotion-preview/v2";
+            /**
+             * Preview Only
+             * @default true
+             * @constant
+             */
+            preview_only: true;
+            /**
+             * Ready To Activate
+             * @default false
+             */
+            ready_to_activate: boolean;
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "eligible" | "review_required" | "invalid";
+            /** Artifact Id */
+            artifact_id?: string | null;
+            /** Candidate Id */
+            candidate_id?: string | null;
+            /** Content Id */
+            content_id?: string | null;
+            /** Closure Id */
+            closure_id?: string | null;
+            /** Release Id */
+            release_id?: string | null;
+            /** Base Release Id */
+            base_release_id: string;
+            /** Base Manifest Id */
+            base_manifest_id: string;
+            /** Effective Manifest Id */
+            effective_manifest_id: string;
+            /**
+             * Effective Files
+             * @description Complete executable authored-Python path-to-SHA-256 tree for release v1.
+             */
+            effective_files: {
+                [key: string]: string;
+            };
+            /**
+             * Governed Paths
+             * @description Sorted cumulative paths whose reads and mutations are governed by Live.
+             */
+            governed_paths: string[];
+            /** Governed Manifest Id */
+            governed_manifest_id: string;
+            /** Effective Registration Manifest Id */
+            effective_registration_manifest_id: string;
+            /** Effective Registrations */
+            effective_registrations: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            /** Snapshot Id */
+            snapshot_id: string;
+            /**
+             * Risk Class
+             * @enum {string}
+             */
+            risk_class: "R0" | "R1" | "R2";
+            /** Policy Version */
+            policy_version: string;
+            /** Closure */
+            closure: components["schemas"]["PromotionClosureMember"][];
+            /** Validation Targets */
+            validation_targets: components["schemas"]["PromotionValidationTarget"][];
+            /** Declared Effects */
+            declared_effects: string[];
+            /** Static Effects */
+            static_effects: string[];
+            /** Computed Effects */
+            computed_effects: string[];
+            /** Bounds */
+            bounds: {
+                [key: string]: number;
+            };
+            /** Requested Bounds */
+            requested_bounds: {
+                [key: string]: number;
+            };
+            registration: components["schemas"]["PromotionRegistrationEvidence"];
+            protected_source: components["schemas"]["PromotionSourceEvidence"];
+            /**
+             * Lifecycle Status
+             * @enum {string}
+             */
+            lifecycle_status: "review_required" | "eligible" | "invalid" | "expired" | "superseded";
+            /** Supersedes Candidate Id */
+            supersedes_candidate_id?: string | null;
+            /** Source Artifact Key */
+            source_artifact_key?: string | null;
             /** Diagnostics */
             diagnostics: components["schemas"]["PromotionDiagnostic"][];
             /** Expires At */
             expires_at?: string | null;
+        };
+        /** WorkspaceReleaseActivateRequest */
+        WorkspaceReleaseActivateRequest: {
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Workspace Release Id */
+            workspace_release_id: string;
+            /** Expected Base Release Id */
+            expected_base_release_id: string;
+            /** Expected Active Release Id */
+            expected_active_release_id?: string | null;
+            /** Prepared Evidence Id */
+            prepared_evidence_id: string;
+            /** Authorization */
+            authorization: components["schemas"]["WorkspaceReviewedCanaryAuthorization"] | components["schemas"]["WorkspaceRiskAcknowledgementAuthorization"];
+        };
+        /** WorkspaceReleaseActivationChallenge */
+        WorkspaceReleaseActivationChallenge: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "bifrost.workspace-release-activation-challenge/v1";
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Workspace Release Id */
+            workspace_release_id: string;
+            /** Prepared Evidence Id */
+            prepared_evidence_id: string;
+            /** Effective Manifest Id */
+            effective_manifest_id: string;
+            /** Governed Manifest Id */
+            governed_manifest_id: string;
+            /** Effective Registration Manifest Id */
+            effective_registration_manifest_id: string;
+            /**
+             * Risk Class
+             * @enum {string}
+             */
+            risk_class: "R0" | "R1" | "R2";
+            /** Computed Effects */
+            computed_effects: string[];
+            /** Computed Effects Id */
+            computed_effects_id: string;
+            /** Policy Version */
+            policy_version: string;
+            protected_source: components["schemas"]["PromotionSourceEvidence"];
+            /**
+             * Required Authorization
+             * @enum {string}
+             */
+            required_authorization: "reviewed_canary" | "risk_acknowledgement";
+            /** Challenge Id */
+            challenge_id: string;
+        };
+        /** WorkspaceReleaseHistoryStatus */
+        WorkspaceReleaseHistoryStatus: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "pending" | "locked" | "attention_required" | "superseded" | "not_queued";
+            /** Lock State */
+            lock_state: string;
+            /** Job Id */
+            job_id?: string | null;
+            /** Attention Deadline */
+            attention_deadline?: string | null;
+            /**
+             * Overdue
+             * @default false
+             */
+            overdue: boolean;
+            /**
+             * Runtime History Verified
+             * @default false
+             */
+            runtime_history_verified: boolean;
+        };
+        /** WorkspaceReleasePrepareRequest */
+        WorkspaceReleasePrepareRequest: {
+            /** Candidate Id */
+            candidate_id: string;
+        };
+        /** WorkspaceReleaseRiskAcknowledgement */
+        WorkspaceReleaseRiskAcknowledgement: {
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "bifrost.workspace-release-risk-acknowledgement/v1";
+            /** Challenge Id */
+            challenge_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Workspace Release Id */
+            workspace_release_id: string;
+            /** Prepared Evidence Id */
+            prepared_evidence_id: string;
+            /**
+             * Risk Class
+             * @enum {string}
+             */
+            risk_class: "R1" | "R2";
+            /** Computed Effects */
+            computed_effects: string[];
+            /** Computed Effects Id */
+            computed_effects_id: string;
+            protected_source: components["schemas"]["PromotionSourceEvidence"];
+            /**
+             * Decision
+             * @constant
+             */
+            decision: "activate_without_canary_or_effect_execution";
+            /** Acknowledgement Id */
+            acknowledgement_id: string;
+        };
+        /** WorkspaceReleaseRuntimeStatus */
+        WorkspaceReleaseRuntimeStatus: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "coherent" | "prepared" | "not_prepared";
+            /** Immutable Release Id */
+            immutable_release_id: string;
+            /** Prepared Evidence Id */
+            prepared_evidence_id?: string | null;
+            activation_authorization?: components["schemas"]["WorkspaceReleaseActivationChallenge"] | null;
+            /** Authorization Kind */
+            authorization_kind?: ("reviewed_canary" | "risk_acknowledgement") | null;
+            /** Authorization Id */
+            authorization_id?: string | null;
+            /** Canary Execution Id */
+            canary_execution_id?: string | null;
+            /** Risk Acknowledgement Id */
+            risk_acknowledgement_id?: string | null;
+        };
+        /** WorkspaceReleaseStatusResponse */
+        WorkspaceReleaseStatusResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-release-status/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-release-status/v1";
+            /**
+             * Release Row Id
+             * Format: uuid
+             */
+            release_row_id: string;
+            /**
+             * Artifact Id
+             * Format: uuid
+             */
+            artifact_id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Release Id */
+            release_id: string;
+            /** Base Release Id */
+            base_release_id: string;
+            /** Activation State */
+            activation_state: string;
+            /** Is Live */
+            is_live: boolean;
+            /** Previous Release Row Id */
+            previous_release_row_id?: string | null;
+            runtime: components["schemas"]["WorkspaceReleaseRuntimeStatus"];
+            history: components["schemas"]["WorkspaceReleaseHistoryStatus"];
+            /** Activated At */
+            activated_at?: string | null;
         };
         /** WorkspaceRepoActivateRequest */
         WorkspaceRepoActivateRequest: {
@@ -27704,6 +28460,37 @@ export interface components {
              */
             force_deactivation: boolean;
         };
+        /** WorkspaceRepoRuntimeFileState */
+        WorkspaceRepoRuntimeFileState: {
+            /** Path */
+            path: string;
+            /** Durable Sha256 */
+            durable_sha256: string;
+            /** Cache Sha256 */
+            cache_sha256?: string | null;
+            /** Cache Generation */
+            cache_generation?: string | null;
+            /** Workspace Generation */
+            workspace_generation: string;
+            /** Indexed */
+            indexed: boolean;
+            /** Coherent */
+            coherent: boolean;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "coherent" | "cold" | "missing" | "stale_content" | "stale_generation" | "missing_index" | "invalid_content_hash" | "updating";
+        };
+        /** WorkspaceRepoRuntimeState */
+        WorkspaceRepoRuntimeState: {
+            /** Generation */
+            generation: string;
+            /** Coherent */
+            coherent: boolean;
+            /** Files */
+            files?: components["schemas"]["WorkspaceRepoRuntimeFileState"][];
+        };
         /** WorkspaceRepoStateResponse */
         WorkspaceRepoStateResponse: {
             /**
@@ -27730,6 +28517,7 @@ export interface components {
             git_status?: {
                 [key: string]: unknown;
             } | null;
+            runtime?: components["schemas"]["WorkspaceRepoRuntimeState"] | null;
         };
         /** WorkspaceRepoValidationResponse */
         WorkspaceRepoValidationResponse: {
@@ -27749,8 +28537,155 @@ export interface components {
             registration_actions?: {
                 [key: string]: unknown;
             }[];
+            /** Runtime Repairs */
+            runtime_repairs?: components["schemas"]["WorkspaceRepoRuntimeFileState"][];
             /** Validated Revision */
             validated_revision: string;
+        };
+        /** WorkspaceReviewedCanaryAuthorization */
+        WorkspaceReviewedCanaryAuthorization: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "reviewed_canary";
+            /** Challenge Id */
+            challenge_id: string;
+            /**
+             * Canary Execution Id
+             * Format: uuid
+             */
+            canary_execution_id: string;
+        };
+        /** WorkspaceRiskAcknowledgementAuthorization */
+        WorkspaceRiskAcknowledgementAuthorization: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "risk_acknowledgement";
+            acknowledgement: components["schemas"]["WorkspaceReleaseRiskAcknowledgement"];
+        };
+        /**
+         * WorkspaceSourceReleaseDeclareRequest
+         * @description Exact reviewed source state declared by the trusted merge producer.
+         */
+        WorkspaceSourceReleaseDeclareRequest: {
+            /** Source Commit Sha */
+            source_commit_sha: string;
+            /** Source Tree Sha */
+            source_tree_sha: string;
+            /** Paths */
+            paths?: {
+                [key: string]: string | null;
+            };
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "pending" | "attention_required" | "non_production";
+            /** Reason */
+            reason?: string | null;
+            /** Due At */
+            due_at?: string | null;
+        };
+        /** WorkspaceSourceReleaseDispositionRequest */
+        WorkspaceSourceReleaseDispositionRequest: {
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "deferred" | "non_production";
+            /** Reason */
+            reason: string;
+        };
+        /** WorkspaceSourceReleaseListResponse */
+        WorkspaceSourceReleaseListResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-source-release-list/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-source-release-list/v1";
+            /** Records */
+            records: components["schemas"]["WorkspaceSourceReleaseResponse"][];
+            /** Total */
+            total: number;
+            /** Pending */
+            pending: number;
+            /** Attention Required */
+            attention_required: number;
+            /** Overdue */
+            overdue: number;
+            /**
+             * Tracking State
+             * @enum {string}
+             */
+            tracking_state: "not_configured" | "active";
+            /** Last Observed Source Commit Sha */
+            last_observed_source_commit_sha?: string | null;
+            /** Last Observed At */
+            last_observed_at?: string | null;
+            /** Producer Contract */
+            producer_contract: string;
+        };
+        /** WorkspaceSourceReleaseResponse */
+        WorkspaceSourceReleaseResponse: {
+            /**
+             * Schema Version
+             * @default bifrost.workspace-source-release/v1
+             * @constant
+             */
+            schema_version: "bifrost.workspace-source-release/v1";
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Organization Id
+             * Format: uuid
+             */
+            organization_id: string;
+            /** Source Commit Sha */
+            source_commit_sha: string;
+            /** Source Tree Sha */
+            source_tree_sha: string;
+            /** Paths */
+            paths: {
+                [key: string]: string | null;
+            };
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "pending" | "attention_required" | "released" | "deferred" | "non_production";
+            /** Reason */
+            reason?: string | null;
+            /** Release Row Id */
+            release_row_id?: string | null;
+            /** Completion Evidence */
+            completion_evidence?: {
+                [key: string]: unknown;
+            } | null;
+            /** Due At */
+            due_at?: string | null;
+            /** Overdue */
+            overdue: boolean;
+            /** Requires Attention */
+            requires_attention: boolean;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * OAuthProviderInfo
@@ -33978,6 +34913,389 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspacePromotionPreviewResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_workspace_promotion_draft_api_workspace_promotions_drafts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspacePromotionDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePromotionDraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workspace_promotion_artifact_api_workspace_promotions_artifacts__artifact_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePromotionArtifactResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    execute_workspace_promotion_canary_api_workspace_promotions_artifacts__artifact_id__canary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspacePromotionCanaryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspacePromotionCanaryAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_workspace_release_api_workspace_promotions_artifacts__artifact_id__prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceReleasePrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformJobAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    activate_workspace_release_api_workspace_promotions_releases__release_id__activate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                release_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceReleaseActivateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceReleaseStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_live_workspace_release_api_workspace_promotions_live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceLiveStatusResponse"];
+                };
+            };
+        };
+    };
+    get_workspace_release_status_api_workspace_promotions_releases__release_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                release_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceReleaseStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_workspace_source_releases_api_workspace_promotions_source_releases_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSourceReleaseListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    declare_workspace_source_release_api_workspace_promotions_source_releases_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceSourceReleaseDeclareRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSourceReleaseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    declare_workspace_source_release_from_github_api_workspace_promotions_source_releases_github_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceSourceReleaseDeclareRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSourceReleaseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workspace_source_release_api_workspace_promotions_source_releases__source_release_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_release_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSourceReleaseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_workspace_source_release_disposition_api_workspace_promotions_source_releases__source_release_id__disposition_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source_release_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceSourceReleaseDispositionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSourceReleaseResponse"];
                 };
             };
             /** @description Validation Error */

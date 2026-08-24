@@ -276,3 +276,90 @@ class WorkspacePromotionRelease(Base):
             name="ck_workspace_promotion_release_live_has_lock_job",
         ),
     )
+
+
+class WorkspaceSourceRelease(Base):
+    """Durable disposition for one reviewed Workspace source commit."""
+
+    __tablename__ = "workspace_source_releases"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_tree_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    paths: Mapped[dict[str, str | None]] = mapped_column(JSONB, nullable=False)
+    disposition: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="pending"
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    release_row_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspace_promotion_releases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    completion_evidence: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "source_commit_sha",
+            name="uq_workspace_source_release_commit",
+        ),
+        Index(
+            "ix_workspace_source_release_attention",
+            "disposition",
+            "due_at",
+            postgresql_where=text("disposition IN ('pending', 'attention_required')"),
+        ),
+        CheckConstraint(
+            "disposition IN ('pending', 'attention_required', 'released', "
+            "'deferred', 'non_production')",
+            name="ck_workspace_source_release_disposition",
+        ),
+        CheckConstraint(
+            "disposition <> 'released' OR "
+            "(release_row_id IS NOT NULL AND completion_evidence IS NOT NULL "
+            "AND resolved_at IS NOT NULL)",
+            name="ck_workspace_source_release_released_evidence",
+        ),
+        CheckConstraint(
+            "disposition <> 'attention_required' OR reason IS NOT NULL",
+            name="ck_workspace_source_release_attention_reason",
+        ),
+        CheckConstraint(
+            "disposition NOT IN ('deferred', 'non_production') OR "
+            "(reason IS NOT NULL AND resolved_at IS NOT NULL)",
+            name="ck_workspace_source_release_manual_reason",
+        ),
+    )

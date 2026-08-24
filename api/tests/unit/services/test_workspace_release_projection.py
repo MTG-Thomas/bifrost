@@ -211,6 +211,12 @@ class Database:
     async def commit(self):
         self.commits += 1
 
+    async def scalar(self, _statement):
+        return None
+
+    async def scalars(self, _statement):
+        return SimpleNamespace(all=lambda: [])
+
 
 class Repo:
     def __init__(self, files):
@@ -383,6 +389,7 @@ async def test_lock_projects_only_base_paths_and_records_signed_readback(
     monkeypatch,
 ) -> None:
     release, artifact, paths = _rows()
+    release.attention_deadline = datetime.now(timezone.utc) + timedelta(minutes=15)
     first, second = paths
     repo = Repo({first: paths[first][0], second: paths[second][1]})
     history = HistoryWriter(
@@ -417,6 +424,7 @@ async def test_lock_projects_only_base_paths_and_records_signed_readback(
     )
 
     assert release.lock_state == "locked"
+    assert release.attention_deadline is None
     assert file_writer.writes == [first]
     assert len(history.requests) == 1
     assert [item.path for item in history.requests[0].files][0] == first

@@ -82,6 +82,7 @@ from src.models.orm.workspace_repo_changesets import WorkspaceRepoChangeset
 from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
+    WorkspaceSourceRelease,
 )
 
 __all__ = [
@@ -193,6 +194,7 @@ __all__ = [
     "WorkspaceRepoChangeset",
     "WorkspacePromotionArtifact",
     "WorkspacePromotionRelease",
+    "WorkspaceSourceRelease",
     # Events
     "EventSource",
     "WebhookSource",
