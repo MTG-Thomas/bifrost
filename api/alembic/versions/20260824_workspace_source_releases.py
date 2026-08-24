@@ -25,6 +25,7 @@ def upgrade() -> None:
         sa.Column("source_tree_sha", sa.String(length=40), nullable=False),
         sa.Column("paths", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
         sa.Column("disposition", sa.String(length=30), nullable=False),
+        sa.Column("declared_disposition", sa.String(length=30), nullable=False),
         sa.Column("reason", sa.Text(), nullable=True),
         sa.Column("release_row_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column(
@@ -51,6 +52,11 @@ def upgrade() -> None:
             "disposition IN ('pending', 'attention_required', 'released', "
             "'deferred', 'non_production')",
             name="ck_workspace_source_release_disposition",
+        ),
+        sa.CheckConstraint(
+            "declared_disposition IN "
+            "('pending', 'attention_required', 'non_production')",
+            name="ck_workspace_source_release_declared_disposition",
         ),
         sa.CheckConstraint(
             "disposition <> 'released' OR "

@@ -172,8 +172,15 @@ def _prepared_rows():
         activation_evidence=None,
         error_code=None,
         error_message=None,
+        attention_deadline=None,
     )
     return release, artifact, descriptor
+
+
+@pytest.fixture(autouse=True)
+def _source_release_tracking_unconfigured(monkeypatch) -> None:
+    """Keep activation tests independent of developer and CI environment values."""
+    monkeypatch.setattr(activation_module, "get_settings", lambda: SimpleNamespace())
 
 
 def _as_risk_release(release, artifact, risk_class: str, effects: list[str]) -> None:

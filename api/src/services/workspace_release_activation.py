@@ -318,7 +318,7 @@ def _history_status(
     release: WorkspacePromotionRelease,
 ) -> WorkspaceReleaseHistoryStatus:
     now = datetime.now(timezone.utc)
-    attention_deadline = getattr(release, "attention_deadline", None)
+    attention_deadline = release.attention_deadline
     overdue = bool(
         attention_deadline is not None
         and attention_deadline <= now

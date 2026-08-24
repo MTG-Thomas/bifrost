@@ -8,12 +8,16 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 
 from src.models.contracts.workspace_promotions import (
     WorkspaceSourceReleaseDeclareRequest,
 )
 from src.routers import workspace_promotions
-from src.services.github_actions_oidc import WorkspaceSourceReleaseProducer
+from src.services.github_actions_oidc import (
+    GitHubActionsOIDCError,
+    WorkspaceSourceReleaseProducer,
+)
 
 
 def _ctx():
@@ -198,6 +202,70 @@ def _source_declaration(commit_sha: str) -> WorkspaceSourceReleaseDeclareRequest
         paths={"workflows/example.py": "c" * 64},
         disposition="pending",
     )
+
+
+@pytest.mark.asyncio
+async def test_github_source_release_dependency_rejects_missing_bearer() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await workspace_promotions._github_source_release_producer(None)
+
+    assert exc_info.value.status_code == 401
+    assert "bearer token is required" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_github_source_release_dependency_rejects_partial_configuration(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        workspace_promotions,
+        "get_settings",
+        lambda: SimpleNamespace(
+            workspace_source_release_oidc_repository=("MTG-Thomas/bifrost-workspace")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workspace_promotions._github_source_release_producer(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+        )
+
+    assert exc_info.value.status_code == 503
+    assert "not configured" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_github_source_release_dependency_rejects_invalid_oidc_token(
+    monkeypatch,
+) -> None:
+    settings = SimpleNamespace(
+        workspace_source_release_oidc_repository="MTG-Thomas/bifrost-workspace",
+        workspace_source_release_oidc_repository_id=1197464564,
+        workspace_source_release_oidc_repository_owner_id=87775189,
+        workspace_source_release_oidc_workflow_ref=(
+            "MTG-Thomas/bifrost-workspace/.github/workflows/"
+            "declare-workspace-source-release.yml@refs/heads/main"
+        ),
+        workspace_source_release_oidc_organization_id=str(uuid4()),
+    )
+    monkeypatch.setattr(workspace_promotions, "get_settings", lambda: settings)
+    authenticate = AsyncMock(
+        side_effect=GitHubActionsOIDCError("token rejected by pinned policy")
+    )
+    monkeypatch.setattr(
+        workspace_promotions,
+        "authenticate_workspace_source_release_producer",
+        authenticate,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workspace_promotions._github_source_release_producer(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+        )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "token rejected by pinned policy"
+    authenticate.assert_awaited_once_with("token", settings=settings)
 
 
 @pytest.mark.asyncio

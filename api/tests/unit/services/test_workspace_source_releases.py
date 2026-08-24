@@ -17,6 +17,7 @@ from src.models.orm.workspace_promotions import (
     WorkspaceSourceRelease,
 )
 from src.services.workspace_source_releases import (
+    WorkspaceSourceReleaseConflict,
     WorkspaceSourceReleaseService,
     reconcile_source_releases_after_lock,
     source_release_response,
@@ -55,10 +56,11 @@ class _CountRows:
 
 
 class _ListDatabase:
-    def __init__(self, records, counts, scalar_counts):
+    def __init__(self, records, counts, *, overdue_pending, overdue):
         self._records = records
         self._counts = counts
-        self._scalar_counts = list(scalar_counts)
+        self._overdue_pending = overdue_pending
+        self._overdue = overdue
 
     async def scalars(self, _statement):
         return _Scalars(self._records)
@@ -66,8 +68,13 @@ class _ListDatabase:
     async def execute(self, _statement):
         return _CountRows(self._counts)
 
-    async def scalar(self, _statement):
-        return self._scalar_counts.pop(0)
+    async def scalar(self, statement):
+        disposition = statement.compile().params["disposition_1"]
+        if disposition == "pending":
+            return self._overdue_pending
+        if disposition == ["pending", "attention_required"]:
+            return self._overdue
+        raise AssertionError(f"unexpected count query: {disposition!r}")
 
 
 class _RacingDeclareDatabase:
@@ -88,7 +95,17 @@ class _RacingDeclareDatabase:
         self.rollback_called = True
 
 
-def _source_record(*, disposition="pending", due_at=None):
+class _ExistingDeclareDatabase:
+    def __init__(self, record):
+        self.record = record
+
+    async def scalar(self, _statement):
+        return self.record
+
+
+def _source_record(
+    *, disposition="pending", declared_disposition="pending", due_at=None
+):
     now = datetime.now(timezone.utc)
     return WorkspaceSourceRelease(
         id=uuid4(),
@@ -97,6 +114,7 @@ def _source_record(*, disposition="pending", due_at=None):
         source_tree_sha="b" * 40,
         paths={"features/example.py": "c" * 64},
         disposition=disposition,
+        declared_disposition=declared_disposition,
         due_at=due_at,
         created_by=uuid4(),
         created_at=now,
@@ -123,6 +141,25 @@ def test_non_production_declaration_requires_reason() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("paths", "message"),
+    [
+        ({"": "c" * 64}, "path keys"),
+        ({"features/example.py": "NOT-A-DIGEST"}, "path digests"),
+    ],
+)
+def test_declaration_reports_path_and_digest_errors_separately(
+    paths: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        WorkspaceSourceReleaseDeclareRequest(
+            source_commit_sha="a" * 40,
+            source_tree_sha="b" * 40,
+            paths=paths,
+            disposition="pending",
+        )
+
+
 def test_response_exposes_overdue_pending_as_attention() -> None:
     now = datetime.now(timezone.utc)
     response = source_release_response(
@@ -140,7 +177,8 @@ async def test_list_counts_full_backlog_not_only_bounded_records() -> None:
     database = _ListDatabase(
         [record],
         [("pending", 120), ("attention_required", 3), ("released", 400)],
-        [2, 5],
+        overdue_pending=2,
+        overdue=5,
     )
     service = WorkspaceSourceReleaseService(database, record.organization_id)
 
@@ -158,7 +196,7 @@ async def test_list_counts_full_backlog_not_only_bounded_records() -> None:
 async def test_configured_tracking_is_active_before_first_declaration() -> None:
     organization_id = uuid4()
     service = WorkspaceSourceReleaseService(
-        _ListDatabase([], [], [0, 0]), organization_id
+        _ListDatabase([], [], overdue_pending=0, overdue=0), organization_id
     )
 
     response = await service.list(tracking_expected=True)
@@ -183,6 +221,59 @@ async def test_concurrent_exact_declaration_is_idempotent() -> None:
 
     assert response.id == record.id
     assert database.rollback_called is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declared_disposition", "request_disposition"),
+    [
+        ("pending", "non_production"),
+        ("non_production", "pending"),
+    ],
+)
+async def test_replay_rejects_disposition_changes_symmetrically(
+    declared_disposition: str,
+    request_disposition: str,
+) -> None:
+    record = _source_record(
+        disposition=declared_disposition,
+        declared_disposition=declared_disposition,
+    )
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha=record.source_commit_sha,
+        source_tree_sha=record.source_tree_sha,
+        paths=record.paths,
+        disposition=request_disposition,
+        reason="classification changed"
+        if request_disposition == "non_production"
+        else None,
+    )
+
+    with pytest.raises(WorkspaceSourceReleaseConflict, match="different"):
+        await WorkspaceSourceReleaseService(
+            _ExistingDeclareDatabase(record), record.organization_id
+        ).declare(request, created_by=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_pending_replay_remains_idempotent_after_attention_transition() -> None:
+    record = _source_record(
+        disposition="attention_required",
+        declared_disposition="pending",
+    )
+    request = WorkspaceSourceReleaseDeclareRequest(
+        source_commit_sha=record.source_commit_sha,
+        source_tree_sha=record.source_tree_sha,
+        paths=record.paths,
+        disposition="pending",
+    )
+
+    response = await WorkspaceSourceReleaseService(
+        _ExistingDeclareDatabase(record), record.organization_id
+    ).declare(request, created_by=uuid4())
+
+    assert response.id == record.id
+    assert response.disposition == "attention_required"
 
 
 @pytest.mark.asyncio
@@ -297,3 +388,5 @@ def test_source_release_migration_matches_release_evidence_fk_contract() -> None
     assert 'ondelete="SET NULL"' not in migration
     assert "deferrable=True" in migration
     assert 'initially="DEFERRED"' in migration
+    assert 'sa.Column("declared_disposition"' in migration
+    assert '"ck_workspace_source_release_declared_disposition"' in migration

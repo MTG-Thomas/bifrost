@@ -298,6 +298,7 @@ class WorkspaceSourceRelease(Base):
     disposition: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending"
     )
+    declared_disposition: Mapped[str] = mapped_column(String(30), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     release_row_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -355,6 +356,11 @@ class WorkspaceSourceRelease(Base):
             "disposition IN ('pending', 'attention_required', 'released', "
             "'deferred', 'non_production')",
             name="ck_workspace_source_release_disposition",
+        ),
+        CheckConstraint(
+            "declared_disposition IN "
+            "('pending', 'attention_required', 'non_production')",
+            name="ck_workspace_source_release_declared_disposition",
         ),
         CheckConstraint(
             "disposition <> 'released' OR "

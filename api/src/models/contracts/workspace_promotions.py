@@ -399,15 +399,18 @@ class WorkspaceSourceReleaseDeclareRequest(BaseModel):
             raise ValueError("non-production disposition requires a reason")
         if self.disposition == "attention_required" and not self.reason:
             raise ValueError("attention-required disposition requires a reason")
+        invalid_paths = [path for path in self.paths if not path or len(path) > 1000]
+        if invalid_paths:
+            raise ValueError("source release path keys must be 1 to 1000 characters")
         invalid_hashes = [
             path
             for path, digest in self.paths.items()
-            if not path
-            or len(path) > 1000
-            or (digest is not None and not _is_sha256(digest))
+            if digest is not None and not _is_sha256(digest)
         ]
         if invalid_hashes:
-            raise ValueError("source release paths require normalized SHA-256 values")
+            raise ValueError(
+                "source release path digests must be lowercase SHA-256 values"
+            )
         return self
 
 

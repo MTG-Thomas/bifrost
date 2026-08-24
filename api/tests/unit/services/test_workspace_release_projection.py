@@ -204,12 +204,16 @@ class Database:
     def __init__(self):
         self.commits = 0
         self.flushes = 0
+        self.rollbacks = 0
 
     async def flush(self):
         self.flushes += 1
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
 
     async def scalar(self, _statement):
         return None
@@ -405,6 +409,11 @@ async def test_lock_projects_only_base_paths_and_records_signed_readback(
         "src.services.workspace_release_projection.workspace_source_update",
         _source_update,
     )
+    reconcile = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.reconcile_source_releases_after_lock",
+        reconcile,
+    )
     service = WorkspaceReleaseProjectionService(
         db,
         release.organization_id,
@@ -434,6 +443,18 @@ async def test_lock_projects_only_base_paths_and_records_signed_readback(
     assert history.requests[0].workspace_release_id == artifact.release_id
     assert evidence["history_after"]["signature_state"] == "VALID"
     assert evidence["repo_after_sha256"] == artifact.manifest["effective_files"]
+    reconcile.assert_awaited_once()
+    assert reconcile.await_args.kwargs["organization_id"] == release.organization_id
+    assert reconcile.await_args.kwargs["release_row_id"] == release.id
+    assert reconcile.await_args.kwargs["release_id"] == artifact.release_id
+    assert (
+        reconcile.await_args.kwargs["runtime_hashes"]
+        == artifact.manifest["effective_files"]
+    )
+    assert (
+        reconcile.await_args.kwargs["history_hashes"]
+        == evidence["history_after"]["file_sha256"]
+    )
 
 
 @pytest.mark.asyncio
@@ -557,6 +578,11 @@ async def test_divergence_fails_before_any_external_write(monkeypatch) -> None:
         "src.services.workspace_release_projection.workspace_source_update",
         _source_update,
     )
+    mark_attention = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.mark_source_release_attention",
+        mark_attention,
+    )
     service = WorkspaceReleaseProjectionService(
         db,
         release.organization_id,
@@ -583,6 +609,79 @@ async def test_divergence_fails_before_any_external_write(monkeypatch) -> None:
     assert release.activation_state == "live"
     assert release.lock_state == "attention_required"
     assert release.error_code == "workspace_release_projection_diverged"
+    mark_attention.assert_awaited_once_with(
+        db,
+        organization_id=release.organization_id,
+        source_commit_sha=artifact.source_revision,
+        code="workspace_release_projection_diverged",
+        message=str(release.error_message),
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_transaction_recovers_before_persisting_attention(
+    monkeypatch,
+) -> None:
+    release, artifact, _paths = _rows()
+
+    class RecoveringDatabase(Database):
+        def __init__(self):
+            super().__init__()
+            self.failed = False
+
+        async def flush(self):
+            if self.failed:
+                raise RuntimeError("transaction is aborted")
+            await super().flush()
+
+        async def rollback(self):
+            await super().rollback()
+            self.failed = False
+
+    db = RecoveringDatabase()
+    service = WorkspaceReleaseProjectionService(
+        db, release.organization_id, commit_writer=None
+    )
+    service._load_release = AsyncMock(return_value=(release, artifact))
+
+    async def fail_project(*_args, **_kwargs):
+        db.failed = True
+        raise WorkspaceReleaseProjectionError(
+            "workspace_release_test_failure",
+            "original projection failure",
+        )
+
+    service._project = fail_project
+    acquire = AsyncMock()
+    mark_attention = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.acquire_workspace_release_lock",
+        acquire,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_release_projection.mark_source_release_attention",
+        mark_attention,
+    )
+
+    with pytest.raises(
+        WorkspaceReleaseProjectionError, match="original projection failure"
+    ):
+        await service.lock_release(
+            release.id, artifact.release_id, operator="operator@example.com"
+        )
+
+    assert db.rollbacks == 1
+    assert db.commits == 1
+    assert release.lock_state == "attention_required"
+    assert release.error_code == "workspace_release_test_failure"
+    assert acquire.await_count == 2
+    mark_attention.assert_awaited_once_with(
+        db,
+        organization_id=release.organization_id,
+        source_commit_sha=artifact.source_revision,
+        code="workspace_release_test_failure",
+        message="original projection failure",
+    )
 
 
 @pytest.mark.asyncio

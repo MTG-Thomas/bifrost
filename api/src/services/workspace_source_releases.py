@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -23,8 +22,6 @@ from src.models.orm.workspace_promotions import (
     WorkspaceSourceRelease,
 )
 
-logger = logging.getLogger(__name__)
-
 DEFAULT_RELEASE_DUE_AFTER = timedelta(minutes=30)
 COMPLETION_EVIDENCE_SCHEMA = "bifrost.workspace-source-release-completion/v1"
 
@@ -41,10 +38,7 @@ def _assert_compatible_replay(
     if (
         record.source_tree_sha != request.source_tree_sha
         or dict(record.paths or {}) != paths
-        or (
-            request.disposition in {"attention_required", "non_production"}
-            and record.disposition != request.disposition
-        )
+        or record.declared_disposition != request.disposition
     ):
         raise WorkspaceSourceReleaseConflict(
             "source commit already has different release accountability evidence"
@@ -125,6 +119,7 @@ class WorkspaceSourceReleaseService:
             source_tree_sha=request.source_tree_sha,
             paths=paths,
             disposition=disposition,
+            declared_disposition=disposition,
             reason=request.reason,
             due_at=(now + DEFAULT_RELEASE_DUE_AFTER)
             if disposition in {"pending", "attention_required"}
