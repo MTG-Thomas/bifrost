@@ -37,6 +37,63 @@ class WorkspaceReleaseRuntimeError(RuntimeError):
     """An execution could not prove one immutable Workspace release."""
 
 
+@dataclass(frozen=True)
+class WorkspaceReleaseRegistrationBinding:
+    """One active registry row's relationship to immutable Live authority."""
+
+    release_id: str
+    workflow_id: UUID
+    path: str
+    function_name: str
+    status: str
+    mismatch_fields: tuple[str, ...] = ()
+
+    @property
+    def code(self) -> str:
+        return (
+            "workspace_release_registration_unbound"
+            if self.status == "unbound"
+            else "workspace_release_registration_mismatch"
+        )
+
+    @property
+    def repair_command(self) -> str:
+        return f"bifrost promote preview {self.path} -w {self.function_name}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "release_id": self.release_id,
+            "workflow_id": str(self.workflow_id),
+            "path": self.path,
+            "function_name": self.function_name,
+            "status": self.status,
+            "mismatch_fields": list(self.mismatch_fields),
+            "repair_command": self.repair_command,
+        }
+
+
+class WorkspaceReleaseBindingError(WorkspaceReleaseRuntimeError):
+    """A governed registry row is absent from or differs from immutable Live."""
+
+    def __init__(self, binding: WorkspaceReleaseRegistrationBinding):
+        self.code = binding.code
+        self.evidence = binding.to_dict()
+        if binding.status == "unbound":
+            problem = "is not bound to"
+        else:
+            problem = (
+                "does not match fields "
+                + ", ".join(binding.mismatch_fields)
+                + " in"
+            )
+        super().__init__(
+            f"governed Workspace workflow {binding.path}::{binding.function_name} "
+            f"{problem} Live release {binding.release_id}; repair with "
+            f"`{binding.repair_command}`"
+        )
+
+
 def _canonical_hash(value: object) -> str:
     return canonical_digest(value)
 
@@ -445,6 +502,76 @@ async def active_workspace_release(
     return WorkspaceReleaseDescriptor.from_rows(release, artifact)
 
 
+def _registration_binding(
+    workflow: Workflow,
+    release: WorkspaceReleaseDescriptor,
+) -> WorkspaceReleaseRegistrationBinding:
+    path = workflow.path.replace("\\", "/").lstrip("/")
+    registration = release.effective_registrations.get(
+        f"{path}::{workflow.function_name}"
+    )
+    if registration is None:
+        return WorkspaceReleaseRegistrationBinding(
+            release_id=release.release_id,
+            workflow_id=workflow.id,
+            path=path,
+            function_name=workflow.function_name,
+            status="unbound",
+        )
+    source_hash = release.source_hashes.get(path)
+    expected = {
+        "workflow_id": str(workflow.id),
+        "path": path,
+        "function": workflow.function_name,
+        "name": workflow.name,
+        "type": workflow.type,
+        "source_sha256": source_hash,
+        "organization_id": (
+            str(workflow.organization_id) if workflow.organization_id else None
+        ),
+        "is_active": True,
+        "endpoint_enabled": bool(workflow.endpoint_enabled),
+        "public_endpoint": bool(workflow.public_endpoint),
+        "api_key_enabled": bool(workflow.api_key_enabled),
+        "access_level": workflow.access_level,
+        "role_ids": sorted(str(role.id) for role in workflow.roles),
+    }
+    mismatches = tuple(
+        field for field, value in expected.items() if registration.get(field) != value
+    )
+    return WorkspaceReleaseRegistrationBinding(
+        release_id=release.release_id,
+        workflow_id=workflow.id,
+        path=path,
+        function_name=workflow.function_name,
+        status="mismatch" if mismatches else "bound",
+        mismatch_fields=mismatches,
+    )
+
+
+async def inspect_workspace_release_registration_bindings(
+    session: AsyncSession,
+    release: WorkspaceReleaseDescriptor,
+    *,
+    paths: tuple[str, ...] | list[str] | None = None,
+    for_update: bool = False,
+) -> tuple[WorkspaceReleaseRegistrationBinding, ...]:
+    """Inspect every active mutable-Workspace row on governed paths."""
+
+    from src.services.workflow_registration import list_active_workspace_workflows
+
+    source_paths = release.governed_paths if paths is None else paths
+    selected_paths = tuple(sorted(set(source_paths)))
+    if any(path not in release.governed_paths for path in selected_paths):
+        raise ValueError("registration inspection paths must be governed by Live")
+    workflows = await list_active_workspace_workflows(
+        session,
+        selected_paths,
+        for_update=for_update,
+    )
+    return tuple(_registration_binding(workflow, release) for workflow in workflows)
+
+
 async def pin_workspace_runtime(
     session: AsyncSession, workflow_id: UUID
 ) -> PinnedWorkspaceRuntime | None:
@@ -467,11 +594,9 @@ async def pin_workspace_runtime(
     workflow_path = workflow.path.replace("\\", "/").lstrip("/")
     if workflow_path not in release.governed_paths:
         return None
-    registration_key = f"{workflow_path}::{workflow.function_name}"
-    if registration_key not in release.effective_registrations:
-        raise WorkspaceReleaseRuntimeError(
-            "governed Workspace workflow is not bound to the Live release"
-        )
+    binding = _registration_binding(workflow, release)
+    if binding.status != "bound":
+        raise WorkspaceReleaseBindingError(binding)
     return _pin_workflow_to_release(workflow, release)
 
 
@@ -480,31 +605,13 @@ def _pin_workflow_to_release(
 ) -> PinnedWorkspaceRuntime:
     path = workflow.path.replace("\\", "/").lstrip("/")
     source_hash = release.source_hashes.get(path)
+    binding = _registration_binding(workflow, release)
+    if binding.status != "bound" or source_hash is None:
+        raise WorkspaceReleaseBindingError(binding)
     registration = release.effective_registrations.get(
         f"{path}::{workflow.function_name}"
     )
-    if registration is None:
-        raise WorkspaceReleaseRuntimeError("workflow is not bound to release-v1")
-    if (
-        source_hash is None
-        or registration.get("workflow_id") != str(workflow.id)
-        or registration.get("path") != path
-        or registration.get("function") != workflow.function_name
-        or registration.get("name") != workflow.name
-        or registration.get("type") != workflow.type
-        or registration.get("source_sha256") != source_hash
-        or registration.get("organization_id")
-        != (str(workflow.organization_id) if workflow.organization_id else None)
-        or registration.get("is_active") is not True
-        or registration["endpoint_enabled"] != bool(workflow.endpoint_enabled)
-        or registration["public_endpoint"] != bool(workflow.public_endpoint)
-        or registration["api_key_enabled"] != bool(workflow.api_key_enabled)
-        or registration["access_level"] != workflow.access_level
-        or registration["role_ids"] != sorted(str(role.id) for role in workflow.roles)
-    ):
-        raise WorkspaceReleaseRuntimeError(
-            "workflow registration does not match the live Workspace release"
-        )
+    assert registration is not None
     configured_timeout = (
         workflow.timeout_seconds if workflow.timeout_seconds is not None else 1800
     )

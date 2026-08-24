@@ -73,6 +73,7 @@ from src.services.repo_storage import RepoStorage
 from src.services.workflow_registration import (
     WorkspaceRegistrationCandidate,
     find_workspace_workflow,
+    list_active_workspace_workflows,
     plan_workspace_registrations,
     resolve_workflow_registration_id,
 )
@@ -621,13 +622,40 @@ def _registered_entity_metadata(
         raise WorkspacePromotionInvalid(
             f"registered executable {path}::{function_name} identity is invalid"
         )
+    effects_node = _keyword_node(decorator, "effects")
     return {
         "type": entity_type,
         "name": name,
+        "effects": _normalize_effects(effects_node) if effects_node is not None else [],
+        "effects_declared": effects_node is not None,
         "bounds": _bounds_declaration(
             _keyword_node(decorator, "enforced_bounds"),
             "enforced_bounds",
         ),
+    }
+
+
+def _preserved_effective_registration(
+    workflow: Workflow,
+    *,
+    source_sha256: str,
+    runtime_bounds: dict[str, int],
+) -> dict[str, Any]:
+    """Bind one already-active sibling without changing its registry state."""
+
+    return {
+        "path": workflow.path.replace("\\", "/").lstrip("/"),
+        "function": workflow.function_name,
+        "workflow_id": str(workflow.id),
+        "type": workflow.type,
+        "name": workflow.name,
+        "organization_id": (
+            str(workflow.organization_id) if workflow.organization_id else None
+        ),
+        "is_active": True,
+        "source_sha256": source_sha256,
+        "runtime_bounds": dict(sorted(runtime_bounds.items())),
+        **_registration_exposure(_registration_state(workflow)),
     }
 
 
@@ -1381,9 +1409,91 @@ class WorkspacePromotionPreviewService:
         effective_manifest_id = _manifest_id(effective_files)
         registration_key = f"{request.entry.path}::{request.entry.function}"
         action = registration_intent[0] if registration_intent else {}
-        risk_registrations = list(base.registrations.values())
+        active_workflows = await list_active_workspace_workflows(
+            self.db, governed_paths
+        )
+        active_metadata: dict[str, dict[str, Any]] = {}
+        active_static_effects: dict[str, list[str]] = {}
+        cohort_effects = set(computed_effects)
+        risk_registration_states: dict[str, dict[str, Any]] = {}
+        for workflow in active_workflows:
+            path = workflow.path.replace("\\", "/").lstrip("/")
+            key = f"{path}::{workflow.function_name}"
+            risk_registration_states[str(workflow.id)] = (
+                self._activation_state(workflow) or {}
+            )
+            if key in base.registrations and path not in closure_hashes:
+                continue
+            sibling_metadata = _registered_entity_metadata(
+                effective_source[path], path, workflow.function_name
+            )
+            active_metadata[key] = sibling_metadata
+            metadata_drift = [
+                field
+                for field in ("name", "type")
+                if getattr(workflow, field) != sibling_metadata[field]
+            ]
+            if metadata_drift and key != registration_key:
+                diagnostics.append(
+                    PromotionDiagnostic(
+                        code="active_sibling_registration_metadata_drift",
+                        severity="blocker",
+                        message=(
+                            "active sibling registry metadata differs from reviewed "
+                            "source: " + ", ".join(metadata_drift)
+                        ),
+                        path=path,
+                    )
+                )
+            if path not in active_static_effects:
+                path_effects, path_diagnostics = _static_effects(
+                    {path: effective_source[path]}
+                )
+                if any(
+                    item.code == "secret_material_detected"
+                    for item in path_diagnostics
+                ):
+                    raise WorkspacePromotionInvalid(
+                        "high-confidence secret material detected; no artifact was stored"
+                    )
+                active_static_effects[path] = path_effects
+            sibling_effects, sibling_undeclared = _reconcile_effects(
+                sibling_metadata["effects"],
+                active_static_effects[path],
+                effects_declared=sibling_metadata["effects_declared"],
+            )
+            cohort_effects.update(sibling_effects)
+            if not sibling_metadata["effects_declared"] and key != registration_key:
+                diagnostics.append(
+                    PromotionDiagnostic(
+                        code="active_sibling_effects_undeclared",
+                        severity="warning",
+                        message=(
+                            "active sibling effects are undeclared; promotion binds "
+                            "the unknown state and requires R2 acknowledgement"
+                        ),
+                        path=path,
+                    )
+                )
+            if sibling_undeclared and key != registration_key:
+                diagnostics.append(
+                    PromotionDiagnostic(
+                        code="active_sibling_undeclared_static_effect",
+                        severity="warning",
+                        message=(
+                            "active sibling source implies undeclared effects: "
+                            + ", ".join(sorted(sibling_undeclared))
+                        ),
+                        path=path,
+                    )
+                )
+        computed_effects = sorted(cohort_effects)
+        risk_registrations = list(risk_registration_states.values())
         if registration_state is not None:
-            risk_registrations.append(registration_state)
+            risk_registration_states[str(registration_state["workflow_id"])] = (
+                registration_state
+            )
+            risk_registrations = list(risk_registration_states.values())
         risk = _promotion_risk_class(computed_effects, risk_registrations)
         missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
         effective_bounds = dict(metadata["bounds"])
@@ -1461,6 +1571,60 @@ class WorkspacePromotionPreviewService:
             risk_class=risk,
             diagnostics=diagnostics,
         )
+        for workflow in active_workflows:
+            path = workflow.path.replace("\\", "/").lstrip("/")
+            key = f"{path}::{workflow.function_name}"
+            if key in effective_registrations:
+                continue
+            sibling_metadata = active_metadata[key]
+            sibling_bounds = dict(sibling_metadata["bounds"])
+            missing_sibling_bounds = REQUIRED_R0_BOUNDS - set(sibling_bounds)
+            if missing_sibling_bounds and risk == "R2":
+                sibling_bounds = {
+                    **R2_POLICY_DEFAULT_BOUNDS,
+                    **sibling_bounds,
+                }
+                diagnostics.append(
+                    PromotionDiagnostic(
+                        code="active_sibling_policy_bounds",
+                        severity="warning",
+                        message=(
+                            "active R2 sibling omits enforced bounds; the immutable "
+                            "registration uses platform policy defaults for: "
+                            + ", ".join(sorted(missing_sibling_bounds))
+                        ),
+                        path=path,
+                    )
+                )
+            elif missing_sibling_bounds:
+                diagnostics.append(
+                    PromotionDiagnostic(
+                        code="active_sibling_registration_bounds_missing",
+                        severity="blocker",
+                        message=(
+                            "active sibling lacks enforced bounds: "
+                            + ", ".join(sorted(missing_sibling_bounds))
+                        ),
+                        path=path,
+                    )
+                )
+            effective_registrations[key] = _preserved_effective_registration(
+                workflow,
+                source_sha256=effective_files[path],
+                runtime_bounds=sibling_bounds,
+            )
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="active_sibling_registration_bound",
+                    severity="info",
+                    message=(
+                        "immutable release preserves an already-active sibling "
+                        f"registration {workflow.function_name}"
+                    ),
+                    path=path,
+                )
+            )
+        effective_registrations = dict(sorted(effective_registrations.items()))
         if (
             _promotion_risk_class(computed_effects, effective_registrations.values())
             != risk

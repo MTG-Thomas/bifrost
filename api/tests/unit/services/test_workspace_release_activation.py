@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -31,11 +31,35 @@ from src.services.workspace_release_activation import (
     release_status,
     validate_prepared_release_evidence,
 )
-from src.services.workspace_release_runtime import WorkspaceReleaseDescriptor
+from src.services.workspace_release_runtime import (
+    WorkspaceReleaseDescriptor,
+    WorkspaceReleaseRegistrationBinding,
+)
 from src.services.workspace_release_materialization import (
     prepared_activation_challenge,
 )
 from src.services.workspace_promotions import UNDECLARED_EFFECT
+
+
+@pytest.fixture(autouse=True)
+def _coherent_registration_cohort(monkeypatch):
+    async def inspect(_db, descriptor, **_kwargs):
+        return tuple(
+            WorkspaceReleaseRegistrationBinding(
+                release_id=descriptor.release_id,
+                workflow_id=UUID(str(registration["workflow_id"])),
+                path=str(registration["path"]),
+                function_name=str(registration["function"]),
+                status="bound",
+            )
+            for registration in descriptor.effective_registrations.values()
+        )
+
+    monkeypatch.setattr(
+        activation_module,
+        "inspect_workspace_release_registration_bindings",
+        inspect,
+    )
 
 
 def _prepared_rows():
@@ -636,6 +660,75 @@ async def test_registration_activation_rejects_exposure_change_during_apply(
         match="does not match the effective manifest",
     ):
         await service._apply_registration(artifact)
+
+
+@pytest.mark.asyncio
+async def test_activation_rejects_active_governed_sibling_omitted_from_candidate(
+    monkeypatch,
+) -> None:
+    path = "workflows/shared.py"
+    workflow_id = uuid4()
+    descriptor = SimpleNamespace(
+        release_id="sha256:" + "a" * 64,
+        governed_paths=(path,),
+        effective_registrations={},
+    )
+    binding = WorkspaceReleaseRegistrationBinding(
+        release_id=descriptor.release_id,
+        workflow_id=workflow_id,
+        path=path,
+        function_name="sibling",
+        status="unbound",
+    )
+    inspect = AsyncMock(return_value=(binding,))
+    monkeypatch.setattr(
+        activation_module,
+        "inspect_workspace_release_registration_bindings",
+        inspect,
+    )
+    service = WorkspaceReleaseActivationService(SimpleNamespace(), uuid4())
+
+    with pytest.raises(
+        WorkspaceReleaseActivationError,
+        match="active governed workflow workflows/shared.py::sibling",
+    ):
+        await service._validate_registration_cohort(descriptor)
+
+    inspect.assert_awaited_once_with(
+        service.db,
+        descriptor,
+        for_update=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_activation_accepts_complete_active_registration_cohort(
+    monkeypatch,
+) -> None:
+    path = "workflows/shared.py"
+    workflow_id = uuid4()
+    key = f"{path}::sibling"
+    descriptor = SimpleNamespace(
+        release_id="sha256:" + "a" * 64,
+        governed_paths=(path,),
+        effective_registrations={key: {"workflow_id": str(workflow_id)}},
+    )
+    binding = WorkspaceReleaseRegistrationBinding(
+        release_id=descriptor.release_id,
+        workflow_id=workflow_id,
+        path=path,
+        function_name="sibling",
+        status="bound",
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "inspect_workspace_release_registration_bindings",
+        AsyncMock(return_value=(binding,)),
+    )
+
+    await WorkspaceReleaseActivationService(
+        SimpleNamespace(), uuid4()
+    )._validate_registration_cohort(descriptor)
 
 
 @pytest.mark.asyncio

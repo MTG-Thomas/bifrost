@@ -11,6 +11,7 @@ from src.services.workflow_registration import (
     WorkspaceRegistrationCandidate,
     WorkflowRegistrationConflict,
     apply_workspace_registration_plan,
+    list_active_workspace_workflows,
     plan_workspace_registrations,
     workspace_workflow_lookup_statement,
 )
@@ -31,6 +32,35 @@ def test_lookup_prefers_org_override_before_same_key_global_registration():
 
     assert "organization_id IS NULL ASC" in sql
     assert "LIMIT 1" in sql
+
+
+@pytest.mark.asyncio
+async def test_active_registration_cohort_excludes_inactive_and_solution_rows_by_query():
+    captured = SimpleNamespace(statement=None)
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    async def execute(statement):
+        captured.statement = statement
+        return Result()
+
+    rows = await list_active_workspace_workflows(
+        SimpleNamespace(execute=execute),
+        ["features/shared.py"],
+        for_update=True,
+    )
+    sql = str(captured.statement.compile(compile_kwargs={"literal_binds": True}))
+
+    assert rows == []
+    assert "workflows.path IN ('features/shared.py')" in sql
+    assert "workflows.solution_id IS NULL" in sql
+    assert "workflows.is_active IS true" in sql
+    assert "FOR UPDATE" in sql
 
 
 @pytest.mark.asyncio
@@ -221,6 +251,10 @@ async def test_apply_reactivates_existing_row_without_rewriting_source():
         function_name="dormant",
         name="Old name",
         type="workflow",
+        access_level="role_based",
+        endpoint_enabled=False,
+        public_endpoint=False,
+        api_key_enabled=False,
     )
     db = SimpleNamespace(
         execute=AsyncMock(return_value=_result(existing)),
@@ -247,6 +281,10 @@ async def test_apply_reactivates_existing_row_without_rewriting_source():
     assert existing.is_active is True
     assert existing.name == "Dormant tool"
     assert existing.type == "tool"
+    assert existing.access_level == "role_based"
+    assert existing.endpoint_enabled is False
+    assert existing.public_endpoint is False
+    assert existing.api_key_enabled is False
     assert applied[0]["workflow_id"] == str(existing.id)
     db.flush.assert_awaited_once()
 
