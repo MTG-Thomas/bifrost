@@ -242,7 +242,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # request/acceptance DTOs, immutable preparation proof, and tagged
     # canary/risk-acknowledgement activation authorization; local draft uploads
     # are not executable.
-    "516622686c6566e796dc0e3869de325068bd3cad5088b38b77e97c4b8854ffea"
+    # Workspace release history status gained optional deadline, overdue, and
+    # runtime/history verification fields (2026-08-24). ADDITIVE: v11 clients
+    # ignore them and retain their existing pending/locked state handling.
+    "7e0e2bc277dd4410a11c69ac2f7a76c7de38eac2b3407dffd216ec23986871db"
 )
 
 

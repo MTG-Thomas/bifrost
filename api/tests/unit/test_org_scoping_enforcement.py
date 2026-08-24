@@ -251,6 +251,9 @@ IDENTITY_MODELS: set[str] = {
     # participate in org-to-global execution resolution.
     "WorkspacePromotionArtifact",
     "WorkspacePromotionRelease",
+    # Source releases are durable reviewed-source obligations addressed by UUID
+    # and exact commit within one organization. They do not use cascade lookup.
+    "WorkspaceSourceRelease",
     # Platform jobs are requester-owned durable operation records. They are
     # looked up by id with requester/admin authorization, never name-resolved
     # through the org-to-global execution cascade.

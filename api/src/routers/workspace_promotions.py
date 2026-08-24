@@ -1,12 +1,15 @@
 """Immutable rapid Workspace artifact, preparation, and canary HTTP surface."""
 
 import logging
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.security import HTTPAuthorizationCredentials
 
 from src.config import get_settings
-from src.core.auth import Context, CurrentSuperuser
+from src.core.auth import Context, CurrentSuperuser, bearer_scheme
+from src.core.constants import SYSTEM_USER_UUID
 from src.core.db_deps import DbSession
 from src.models.contracts.workspace_promotions import (
     WorkspacePromotionCanaryAccepted,
@@ -20,6 +23,10 @@ from src.models.contracts.workspace_promotions import (
     WorkspaceReleaseActivateRequest,
     WorkspaceReleasePrepareRequest,
     WorkspaceReleaseStatusResponse,
+    WorkspaceSourceReleaseDeclareRequest,
+    WorkspaceSourceReleaseDispositionRequest,
+    WorkspaceSourceReleaseListResponse,
+    WorkspaceSourceReleaseResponse,
 )
 from src.models.contracts.platform_jobs import PlatformJobAccepted
 from src.jobs.platform.workspace_release_prepare import (
@@ -43,12 +50,49 @@ from src.services.workspace_promotions import (
     WorkspacePromotionInvalid,
     WorkspacePromotionPreviewService,
 )
+from src.services.workspace_source_releases import (
+    WorkspaceSourceReleaseConflict,
+    WorkspaceSourceReleaseService,
+)
+from src.services.github_actions_oidc import (
+    GitHubActionsOIDCError,
+    WorkspaceSourceReleaseProducer,
+    authenticate_workspace_source_release_producer,
+    workspace_source_release_producer_configured,
+    workspace_source_release_tracking_expected,
+)
 
 router = APIRouter(
     prefix="/api/workspace-promotions",
     tags=["Workspace rapid promotion"],
 )
 logger = logging.getLogger(__name__)
+
+
+async def _github_source_release_producer(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> WorkspaceSourceReleaseProducer:
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="GitHub Actions OIDC bearer token is required",
+        )
+    settings = get_settings()
+    if not workspace_source_release_producer_configured(settings):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workspace source-release OIDC producer is not configured",
+        )
+    try:
+        return await authenticate_workspace_source_release_producer(
+            credentials.credentials,
+            settings=settings,
+        )
+    except GitHubActionsOIDCError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
 
 
 async def _service(
@@ -74,9 +118,7 @@ async def _service(
             installation_id=settings.github_app_installation_id,
             private_key=settings.github_app_private_key.get_secret_value(),
         )
-    return WorkspacePromotionPreviewService(
-        db, organization_id, commit_writer=writer
-    )
+    return WorkspacePromotionPreviewService(db, organization_id, commit_writer=writer)
 
 
 @router.post("/preview", response_model=WorkspacePromotionPreviewResponse)
@@ -371,9 +413,7 @@ async def get_live_workspace_release(
     return await WorkspaceReleaseActivationService(db, ctx.org_id).get_live()
 
 
-@router.get(
-    "/releases/{release_id}", response_model=WorkspaceReleaseStatusResponse
-)
+@router.get("/releases/{release_id}", response_model=WorkspaceReleaseStatusResponse)
 async def get_workspace_release_status(
     release_id: UUID,
     ctx: Context,
@@ -393,4 +433,155 @@ async def get_workspace_release_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workspace release not found",
+        ) from exc
+
+
+@router.post(
+    "/source-releases",
+    response_model=WorkspaceSourceReleaseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def declare_workspace_source_release(
+    request: WorkspaceSourceReleaseDeclareRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceSourceReleaseResponse:
+    """Record the release disposition owed by one protected source commit."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(db, ctx.org_id).declare(
+            request,
+            created_by=user.user_id,
+        )
+    except WorkspaceSourceReleaseConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.post(
+    "/source-releases/github",
+    response_model=WorkspaceSourceReleaseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def declare_workspace_source_release_from_github(
+    request: WorkspaceSourceReleaseDeclareRequest,
+    db: DbSession,
+    producer: Annotated[
+        WorkspaceSourceReleaseProducer, Depends(_github_source_release_producer)
+    ],
+) -> WorkspaceSourceReleaseResponse:
+    """Record one protected-main push using a narrowly pinned Actions identity."""
+    if producer.source_commit_sha != request.source_commit_sha:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OIDC source commit SHA does not match the declaration",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(
+            db, producer.organization_id
+        ).declare(
+            request,
+            created_by=SYSTEM_USER_UUID,
+        )
+    except WorkspaceSourceReleaseConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@router.get(
+    "/source-releases",
+    response_model=WorkspaceSourceReleaseListResponse,
+)
+async def list_workspace_source_releases(
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> WorkspaceSourceReleaseListResponse:
+    """List pending, completed, and attention-required source releases."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    return await WorkspaceSourceReleaseService(db, ctx.org_id).list(
+        limit=limit,
+        tracking_expected=workspace_source_release_tracking_expected(get_settings()),
+    )
+
+
+@router.get(
+    "/source-releases/{source_release_id}",
+    response_model=WorkspaceSourceReleaseResponse,
+)
+async def get_workspace_source_release(
+    source_release_id: UUID,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceSourceReleaseResponse:
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(db, ctx.org_id).get(
+            source_release_id
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace source release not found",
+        ) from exc
+
+
+@router.post(
+    "/source-releases/{source_release_id}/disposition",
+    response_model=WorkspaceSourceReleaseResponse,
+)
+async def set_workspace_source_release_disposition(
+    source_release_id: UUID,
+    request: WorkspaceSourceReleaseDispositionRequest,
+    ctx: Context,
+    db: DbSession,
+    user: CurrentSuperuser,
+) -> WorkspaceSourceReleaseResponse:
+    """Explicitly defer or classify a reviewed source commit as non-production."""
+    if ctx.org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="an organization context is required",
+        )
+    try:
+        return await WorkspaceSourceReleaseService(
+            db, ctx.org_id
+        ).set_manual_disposition(
+            source_release_id,
+            disposition=request.disposition,
+            reason=request.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace source release not found",
+        ) from exc
+    except WorkspaceSourceReleaseConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc

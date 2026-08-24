@@ -114,6 +114,33 @@ class Settings(BaseSettings):
         default=False,
         description="Enable atomic activation of prepared Workspace releases.",
     )
+    workspace_source_release_oidc_repository: str | None = Field(
+        default=None,
+        description=(
+            "Exact GitHub owner/repository allowed to declare protected-main "
+            "Workspace source releases with GitHub Actions OIDC."
+        ),
+    )
+    workspace_source_release_oidc_repository_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Immutable GitHub repository ID allowed by source-release OIDC.",
+    )
+    workspace_source_release_oidc_repository_owner_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Immutable GitHub repository owner ID allowed by source-release OIDC.",
+    )
+    workspace_source_release_oidc_workflow_ref: str | None = Field(
+        default=None,
+        description=(
+            "Exact GitHub Actions workflow_ref allowed to declare source releases."
+        ),
+    )
+    workspace_source_release_oidc_organization_id: str | None = Field(
+        default=None,
+        description="Bifrost organization UUID receiving source-release declarations.",
+    )
     deferred_execution_promoter_interval_seconds: int = Field(
         default=60,
         ge=1,

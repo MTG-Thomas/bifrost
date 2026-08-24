@@ -221,7 +221,11 @@ The server:
 
 Activation sends no source. Status distinguishes candidate validation,
 activation, runtime coherence, and signed-history projection. In particular,
-`Live / runtime coherent / history pending` is not an activation failure.
+`Live / runtime coherent / history pending` means the runtime changed but the
+release is not complete. The history deadline and
+`runtime_history_verified` field make that incomplete state explicit. See
+[Workspace source release accountability](workspace-source-release-accountability.md)
+for protected-main declaration, overdue, and completion rules.
 
 ## Candidate identity
 

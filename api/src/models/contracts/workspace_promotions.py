@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PromotionEntry(BaseModel):
@@ -344,6 +344,9 @@ class WorkspaceReleaseHistoryStatus(BaseModel):
     ]
     lock_state: str
     job_id: UUID | None = None
+    attention_deadline: datetime | None = None
+    overdue: bool = False
+    runtime_history_verified: bool = False
 
 
 class WorkspaceReleaseStatusResponse(BaseModel):
@@ -370,3 +373,91 @@ class WorkspaceLiveStatusResponse(BaseModel):
     )
     organization_id: UUID
     active_release: WorkspaceReleaseStatusResponse | None = None
+
+
+WorkspaceSourceDisposition = Literal[
+    "pending", "attention_required", "released", "deferred", "non_production"
+]
+
+
+class WorkspaceSourceReleaseDeclareRequest(BaseModel):
+    """Exact reviewed source state declared by the trusted merge producer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    source_tree_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    paths: dict[str, str | None] = Field(default_factory=dict, max_length=4000)
+    disposition: Literal["pending", "attention_required", "non_production"]
+    reason: str | None = Field(default=None, min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_disposition(self):
+        if self.disposition == "pending" and not self.paths:
+            raise ValueError("pending source release requires exact path hashes")
+        if self.disposition == "non_production" and not self.reason:
+            raise ValueError("non-production disposition requires a reason")
+        if self.disposition == "attention_required" and not self.reason:
+            raise ValueError("attention-required disposition requires a reason")
+        invalid_paths = [path for path in self.paths if not path or len(path) > 1000]
+        if invalid_paths:
+            raise ValueError("source release path keys must be 1 to 1000 characters")
+        invalid_hashes = [
+            path
+            for path, digest in self.paths.items()
+            if digest is not None and not _is_sha256(digest)
+        ]
+        if invalid_hashes:
+            raise ValueError(
+                "source release path digests must be lowercase SHA-256 values"
+            )
+        return self
+
+
+class WorkspaceSourceReleaseDispositionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    disposition: Literal["deferred", "non_production"]
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class WorkspaceSourceReleaseResponse(BaseModel):
+    schema_version: Literal["bifrost.workspace-source-release/v1"] = (
+        "bifrost.workspace-source-release/v1"
+    )
+    id: UUID
+    organization_id: UUID
+    source_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    source_tree_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    paths: dict[str, str | None]
+    disposition: WorkspaceSourceDisposition
+    reason: str | None = None
+    release_row_id: UUID | None = None
+    completion_evidence: dict[str, Any] | None = None
+    due_at: datetime | None = None
+    overdue: bool
+    requires_attention: bool
+    resolved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceSourceReleaseListResponse(BaseModel):
+    schema_version: Literal["bifrost.workspace-source-release-list/v1"] = (
+        "bifrost.workspace-source-release-list/v1"
+    )
+    records: list[WorkspaceSourceReleaseResponse]
+    total: int
+    pending: int
+    attention_required: int
+    overdue: int
+    tracking_state: Literal["not_configured", "active"]
+    last_observed_source_commit_sha: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{40}$"
+    )
+    last_observed_at: datetime | None = None
+    producer_contract: str
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
@@ -32,12 +33,17 @@ from src.services.workspace_release_runtime import (
     WorkspaceReleaseRuntimeError,
 )
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
+from src.services.workspace_source_releases import (
+    mark_source_release_attention,
+    reconcile_source_releases_after_lock,
+)
 
 WORKSPACE_RELEASE_LOCK_EVIDENCE_SCHEMA = "bifrost.workspace-release-lock/v1"
 PROJECTION_PATHS_SCHEMA = "bifrost.workspace-release-projection-paths/v1"
 WORKSPACE_RELEASE_LEDGER_SCHEMA = "bifrost.workspace-release-ledger/v1"
 WORKSPACE_RELEASE_LEDGER_ROOT = ".bifrost/workspace-releases/ledger"
 ProgressReporter = Callable[[str, int, int | None, float | None], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 class ProjectionFileStorage(Protocol):
@@ -359,24 +365,12 @@ class WorkspaceReleaseProjectionService:
                 release, expected_release_id, exc.observed_state
             )
         except WorkspaceReleaseProjectionError as exc:
-            release.lock_state = "attention_required"
-            release.error_code = exc.code
-            release.error_message = str(exc)
-            release.lock_evidence = {
-                "schema_version": WORKSPACE_RELEASE_LOCK_EVIDENCE_SCHEMA,
-                "release_row_id": str(release.id),
-                "release_id": expected_release_id,
-                "state": "attention_required",
-                "live_preserved": release.activation_state == "live",
-                "error_code": exc.code,
-                "error_message": str(exc),
-                **exc.evidence,
-            }
-            release.lock_evidence["evidence_id"] = canonical_digest(
-                release.lock_evidence
+            await self._persist_projection_attention(
+                release.id,
+                expected_release_id,
+                str(artifact.source_revision),
+                exc,
             )
-            await self.db.flush()
-            await self.db.commit()
             raise
         except Exception as exc:
             wrapped = WorkspaceReleaseProjectionError(
@@ -385,32 +379,86 @@ class WorkspaceReleaseProjectionService:
                 evidence={"phase": "projection"},
                 retryable=True,
             )
-            release.lock_state = "attention_required"
-            release.error_code = wrapped.code
-            release.error_message = str(wrapped)
-            release.lock_evidence = {
-                "schema_version": WORKSPACE_RELEASE_LOCK_EVIDENCE_SCHEMA,
-                "release_row_id": str(release.id),
-                "release_id": expected_release_id,
-                "state": "attention_required",
-                "live_preserved": release.activation_state == "live",
-                "error_code": wrapped.code,
-                "error_message": str(wrapped),
-                **wrapped.evidence,
-            }
-            release.lock_evidence["evidence_id"] = canonical_digest(
-                release.lock_evidence
+            await self._persist_projection_attention(
+                release.id,
+                expected_release_id,
+                str(artifact.source_revision),
+                wrapped,
             )
-            await self.db.flush()
-            await self.db.commit()
             raise wrapped from exc
         release.lock_state = "locked"
         release.lock_evidence = evidence
         release.error_code = None
         release.error_message = None
+        release.attention_deadline = None
+        await reconcile_source_releases_after_lock(
+            self.db,
+            organization_id=self.organization_id,
+            release_row_id=release.id,
+            release_id=descriptor.release_id,
+            runtime_hashes=descriptor.governed_source_hashes,
+            history_commit_sha=str(evidence["history_after"]["commit_sha"]),
+            history_hashes=evidence["history_after"]["file_sha256"],
+        )
         await self.db.flush()
         await self.db.commit()
         return evidence
+
+    async def _persist_projection_attention(
+        self,
+        release_row_id: UUID,
+        expected_release_id: str,
+        source_commit_sha: str,
+        error: WorkspaceReleaseProjectionError,
+    ) -> None:
+        """Persist failure evidence in a fresh transaction without masking it."""
+        try:
+            await self.db.rollback()
+            await acquire_workspace_release_lock(self.db, self.organization_id)
+            release, _artifact = await self._load_release(release_row_id)
+            if release.activation_state != "live":
+                await self.db.rollback()
+                return
+            release.lock_state = "attention_required"
+            release.error_code = error.code
+            release.error_message = str(error)
+            release.lock_evidence = {
+                "schema_version": WORKSPACE_RELEASE_LOCK_EVIDENCE_SCHEMA,
+                "release_row_id": str(release.id),
+                "release_id": expected_release_id,
+                "state": "attention_required",
+                "live_preserved": True,
+                "error_code": error.code,
+                "error_message": str(error),
+                **error.evidence,
+            }
+            release.lock_evidence["evidence_id"] = canonical_digest(
+                release.lock_evidence
+            )
+            await mark_source_release_attention(
+                self.db,
+                organization_id=self.organization_id,
+                source_commit_sha=source_commit_sha,
+                code=error.code,
+                message=str(error),
+            )
+            await self.db.flush()
+            await self.db.commit()
+        except Exception:
+            logger.exception(
+                "Workspace release projection attention could not be persisted",
+                extra={
+                    "workspace_release_row_id": str(release_row_id),
+                    "error_code": error.code,
+                },
+            )
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.exception(
+                    "Workspace release projection attention rollback failed",
+                    extra={"workspace_release_row_id": str(release_row_id)},
+                )
 
     async def _project(
         self,
@@ -896,6 +944,7 @@ class WorkspaceReleaseProjectionService:
         release.lock_evidence = evidence
         release.error_code = None
         release.error_message = None
+        release.attention_deadline = None
         await self.db.flush()
         await self.db.commit()
         return evidence

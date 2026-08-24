@@ -543,6 +543,11 @@
 | POST | `/api/workspace-promotions/preview` |
 | GET | `/api/workspace-promotions/releases/{release_id}` |
 | POST | `/api/workspace-promotions/releases/{release_id}/activate` |
+| GET | `/api/workspace-promotions/source-releases` |
+| POST | `/api/workspace-promotions/source-releases` |
+| POST | `/api/workspace-promotions/source-releases/github` |
+| GET | `/api/workspace-promotions/source-releases/{source_release_id}` |
+| POST | `/api/workspace-promotions/source-releases/{source_release_id}/disposition` |
 | POST | `/api/workspace-repo-changesets` |
 | POST | `/api/workspace-repo-changesets/git-convergence/apply` |
 | POST | `/api/workspace-repo-changesets/git-convergence/preview` |

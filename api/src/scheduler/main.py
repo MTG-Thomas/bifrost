@@ -434,6 +434,25 @@ class Scheduler:
         )
         logger.info("Workspace promotion draft cleanup scheduled (hourly)")
 
+        from src.jobs.schedulers.workspace_release_accountability import (
+            check_workspace_release_accountability,
+        )
+
+        scheduler.add_job(
+            self._run_scheduled_task,
+            IntervalTrigger(minutes=1),
+            id="workspace_release_accountability",
+            name="Check Workspace release accountability",
+            replace_existing=True,
+            next_run_time=datetime.now(timezone.utc),
+            args=[
+                "workspace_release_accountability",
+                check_workspace_release_accountability,
+            ],
+            **misfire_options,
+        )
+        logger.info("Workspace release accountability scheduled (every minute)")
+
         # Replay payloads expire after seven days; the hashed at-most-once
         # tombstones remain permanently so cleanup can never enable redispatch.
         from src.jobs.schedulers.operation_receipts import (

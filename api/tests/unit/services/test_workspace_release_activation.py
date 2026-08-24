@@ -172,8 +172,15 @@ def _prepared_rows():
         activation_evidence=None,
         error_code=None,
         error_message=None,
+        attention_deadline=None,
     )
     return release, artifact, descriptor
+
+
+@pytest.fixture(autouse=True)
+def _source_release_tracking_unconfigured(monkeypatch) -> None:
+    """Keep activation tests independent of developer and CI environment values."""
+    monkeypatch.setattr(activation_module, "get_settings", SimpleNamespace)
 
 
 def _as_risk_release(release, artifact, risk_class: str, effects: list[str]) -> None:
@@ -335,6 +342,96 @@ def test_registration_fingerprint_captures_activation_surface() -> None:
     workflow.endpoint_enabled = True
 
     assert registration_state_fingerprint(workflow) != before
+
+
+@pytest.mark.asyncio
+async def test_activation_requires_matching_source_release_declaration() -> None:
+    organization_id = uuid4()
+    artifact = SimpleNamespace(
+        source_revision="a" * 40,
+        source_tree_sha="b" * 40,
+        manifest={"effective_files": {"features/example.py": "c" * 64}},
+    )
+    missing_service = WorkspaceReleaseActivationService(
+        SimpleNamespace(scalar=AsyncMock(side_effect=[None, uuid4()])),
+        organization_id,
+    )
+
+    with pytest.raises(
+        WorkspaceReleaseActivationError, match="no durable release declaration"
+    ):
+        await missing_service._validate_source_release_accountability(artifact)
+
+    bootstrap_service = WorkspaceReleaseActivationService(
+        SimpleNamespace(scalar=AsyncMock(side_effect=[None, None])), organization_id
+    )
+    await bootstrap_service._validate_source_release_accountability(artifact)
+
+    record = SimpleNamespace(
+        source_tree_sha="b" * 40,
+        disposition="pending",
+        paths={"features/example.py": "c" * 64},
+    )
+    service = WorkspaceReleaseActivationService(
+        SimpleNamespace(scalar=AsyncMock(return_value=record)), organization_id
+    )
+
+    await service._validate_source_release_accountability(artifact)
+
+
+@pytest.mark.asyncio
+async def test_configured_producer_requires_first_source_declaration(
+    monkeypatch,
+) -> None:
+    organization_id = uuid4()
+    artifact = SimpleNamespace(
+        source_revision="a" * 40,
+        source_tree_sha="b" * 40,
+    )
+    service = WorkspaceReleaseActivationService(
+        SimpleNamespace(scalar=AsyncMock(return_value=None)), organization_id
+    )
+    monkeypatch.setattr(
+        activation_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            workspace_source_release_oidc_repository=("MTG-Thomas/bifrost-workspace"),
+            workspace_source_release_oidc_repository_id=1197464564,
+            workspace_source_release_oidc_repository_owner_id=87775189,
+            workspace_source_release_oidc_workflow_ref=(
+                "MTG-Thomas/bifrost-workspace/.github/workflows/"
+                "declare-workspace-source-release.yml@refs/heads/main"
+            ),
+            workspace_source_release_oidc_organization_id=str(organization_id),
+        ),
+    )
+
+    with pytest.raises(
+        WorkspaceReleaseActivationError, match="no durable release declaration"
+    ):
+        await service._validate_source_release_accountability(artifact)
+
+
+@pytest.mark.asyncio
+async def test_nonproduction_head_can_promote_an_older_reviewed_registration() -> None:
+    record = SimpleNamespace(
+        source_tree_sha="b" * 40,
+        disposition="non_production",
+        paths={},
+    )
+    service = WorkspaceReleaseActivationService(
+        SimpleNamespace(scalar=AsyncMock(return_value=record)), uuid4()
+    )
+    artifact = SimpleNamespace(
+        source_revision="a" * 40,
+        source_tree_sha="b" * 40,
+        manifest={"effective_files": {}},
+    )
+
+    result = await service._validate_source_release_accountability(artifact)
+
+    assert result is None
+    service.db.scalar.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -664,6 +761,7 @@ async def test_activation_commits_live_pointer_and_projection_job_atomically(
     service = WorkspaceReleaseActivationService(Database(), release.organization_id)
     service._release_rows = AsyncMock(return_value=(release, artifact))  # type: ignore[method-assign]
     service._current_live_any_organization = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._validate_source_release_accountability = AsyncMock()  # type: ignore[method-assign]
     service._validate_artifact_lifecycle = AsyncMock()  # type: ignore[method-assign]
     service._validate_base_cas = AsyncMock()  # type: ignore[method-assign]
     service._authorization_evidence = AsyncMock(  # type: ignore[method-assign]
@@ -726,8 +824,10 @@ async def test_activation_commits_live_pointer_and_projection_job_atomically(
     assert release.activation_state == "live"
     assert release.lock_state == "queued"
     assert release.lock_in_job_id == projection_job.id
+    assert release.attention_deadline is not None
     assert status.is_live is True
     assert status.history.job_id == projection_job.id
+    assert status.history.runtime_history_verified is False
 
 
 @pytest.mark.asyncio
@@ -744,6 +844,7 @@ async def test_projection_job_failure_rolls_back_live_activation(
     service = WorkspaceReleaseActivationService(db, release.organization_id)
     service._release_rows = AsyncMock(return_value=(release, artifact))  # type: ignore[method-assign]
     service._current_live_any_organization = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._validate_source_release_accountability = AsyncMock()  # type: ignore[method-assign]
     service._validate_artifact_lifecycle = AsyncMock()  # type: ignore[method-assign]
     service._validate_base_cas = AsyncMock()  # type: ignore[method-assign]
     service._authorization_evidence = AsyncMock(return_value={})  # type: ignore[method-assign]
