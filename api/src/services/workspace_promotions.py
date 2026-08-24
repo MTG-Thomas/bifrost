@@ -1552,18 +1552,17 @@ class WorkspacePromotionPreviewService:
             )
             risk_registrations = list(risk_registration_states.values())
         risk = _promotion_risk_class(computed_effects, risk_registrations)
-        multi_root_cohort = bool(request.cohort_paths) and request.cohort_paths != [
-            request.entry.path
-        ]
-        if multi_root_cohort:
+        declared_cohort = bool(request.cohort_paths)
+        if declared_cohort:
             risk = "R2"
             diagnostics.append(
                 PromotionDiagnostic(
                     code="multi_root_cohort_requires_r2",
                     severity="warning",
                     message=(
-                        "a multi-root reviewed cohort requires candidate-bound R2 "
-                        "acknowledgement; one selected-entry run is not proof for every root"
+                        "a declared reviewed cohort requires candidate-bound R2 "
+                        "acknowledgement; one selected-entry run is not proof for its "
+                        "complete declared release obligation"
                     ),
                 )
             )
@@ -1699,7 +1698,7 @@ class WorkspacePromotionPreviewService:
         effective_registrations = dict(sorted(effective_registrations.items()))
         expected_risk = (
             "R2"
-            if multi_root_cohort
+            if declared_cohort
             else _promotion_risk_class(
                 computed_effects, effective_registrations.values()
             )

@@ -309,6 +309,52 @@ def test_declared_helper_change_uses_unchanged_workflow_anchor(
     }
 
 
+def test_local_run_evidence_is_bound_to_declared_cohort(tmp_path: Path) -> None:
+    bundle = promote.PromotionBundle(
+        snapshot_id="sha256:" + "1" * 64,
+        snapshot_files={
+            "features/demo.py": "a" * 64,
+            "helpers/shared.py": "b" * 64,
+        },
+        files=(
+            {"path": "features/demo.py", "sha256": "a" * 64},
+            {"path": "helpers/shared.py", "sha256": "b" * 64},
+        ),
+    )
+    cohort_paths = ["helpers/shared.py"]
+    closure_id = promote._closure_id(
+        bundle,
+        selected_path="features/demo.py",
+        function_name="demo",
+        cohort_paths=cohort_paths,
+    )
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": promote.LOCAL_RUN_SCHEMA,
+                "authority": "local_only",
+                "activatable": False,
+                "succeeded": True,
+                "closure_id": closure_id,
+                "entry": {"path": "features/demo.py", "function": "demo"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    evidence = promote._load_run_evidence(
+        evidence_path,
+        bundle=bundle,
+        selected_path="features/demo.py",
+        function_name="demo",
+        cohort_paths=cohort_paths,
+    )
+
+    assert evidence is not None
+    assert evidence["closure_id"] == closure_id
+
+
 def test_draft_is_private_local_only_and_includes_complete_graph(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

@@ -571,7 +571,11 @@ class WorkspaceReleaseMaterializer:
             or any(not isinstance(effect, str) or not effect for effect in effects)
             or effects != sorted(set(effects))
             or not isinstance(effective_registrations, dict)
-            or _promotion_risk_class(effects, effective_registrations.values())
+            or (
+                "R2"
+                if cohort_paths
+                else _promotion_risk_class(effects, effective_registrations.values())
+            )
             != artifact.risk_class
         ):
             raise WorkspaceReleasePreparationError(

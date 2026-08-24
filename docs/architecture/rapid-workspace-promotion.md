@@ -164,8 +164,9 @@ authority. It requires the exact declared path/hash set, builds the union of
 every root's forward closure, validates reverse dependents against the complete
 overlay, and binds the declaration into the candidate. The anchor may be an
 unchanged reverse-dependent workflow when a commit changes only helpers or
-modules. Multi-root cohorts are always R2 because one anchor execution is not
-proof for unrelated roots.
+modules. Declared cohorts are always R2 because one anchor execution is not
+proof for the complete release obligation. A single-path workflow release that
+needs R0/R1 evidence should keep using the normal single-root preview.
 Deletions, unregistered decorated siblings, path/hash mismatches, and manual
 attention states remain blocked. This mode exists to release reviewed legacy
 Workspace commits; new workflow families should use sealed Solutions.

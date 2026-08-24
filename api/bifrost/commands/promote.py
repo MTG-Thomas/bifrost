@@ -227,6 +227,7 @@ def _load_run_evidence(
     bundle: PromotionBundle,
     selected_path: str,
     function_name: str,
+    cohort_paths: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if path is None:
         return None
@@ -250,6 +251,7 @@ def _load_run_evidence(
         bundle,
         selected_path=selected_path,
         function_name=function_name,
+        cohort_paths=cohort_paths,
     )
     if evidence.get("closure_id") != expected_closure_id:
         raise PromotionBundleError(
@@ -872,6 +874,7 @@ def _preview_payload(
         bundle=bundle,
         selected_path=selected_path,
         function_name=options.workflow,
+        cohort_paths=cohort_paths,
     )
     entry_closure_id = _closure_id(
         bundle,

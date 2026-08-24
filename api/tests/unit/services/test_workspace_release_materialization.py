@@ -247,7 +247,7 @@ def test_prepare_reconstructs_release_identity_from_nested_registration() -> Non
 
 
 def test_prepare_reconstructs_declared_cohort_identity() -> None:
-    artifact, _base, _closure = _artifact(uuid4())
+    artifact, _base, _closure = _artifact(uuid4(), risk_class="R2")
     manifest = artifact.manifest
     entry = manifest["entry"]
     closure_hashes = {item["path"]: item["sha256"] for item in manifest["closure"]}
