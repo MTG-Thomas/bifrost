@@ -15,6 +15,7 @@ from bifrost.promotion import sha256_bytes
 from bifrost.workspace_release import (
     repo_v1_release_id,
     workspace_closure_id,
+    workspace_cohort_closure_id,
     workspace_content_id,
     workspace_manifest_id,
     workspace_registration_manifest_id,
@@ -243,6 +244,53 @@ def test_prepare_reconstructs_release_identity_from_nested_registration() -> Non
     )
 
     WorkspaceReleaseMaterializer._validate_manifest(artifact, artifact.manifest)
+
+
+def test_prepare_reconstructs_declared_cohort_identity() -> None:
+    artifact, _base, _closure = _artifact(uuid4(), risk_class="R2")
+    manifest = artifact.manifest
+    entry = manifest["entry"]
+    closure_hashes = {item["path"]: item["sha256"] for item in manifest["closure"]}
+    cohort_paths = [entry["path"]]
+    manifest["cohort_paths"] = cohort_paths
+    manifest["source_release_id"] = str(uuid4())
+    manifest["source_release_paths"] = closure_hashes
+    artifact.closure_id = workspace_cohort_closure_id(
+        entry, closure_hashes, cohort_paths
+    )
+    artifact.content_id = workspace_content_id(entry, artifact.closure_id)
+    manifest["closure_id"] = artifact.closure_id
+    manifest["content_id"] = artifact.content_id
+    release_payload = {
+        key: manifest[key]
+        for key in (
+            "organization_id",
+            "base_release_id",
+            "base_manifest_id",
+            "effective_manifest_id",
+            "effective_files",
+            "governed_paths",
+            "governed_manifest_id",
+            "effective_registration_manifest_id",
+            "effective_registrations",
+            "entry",
+            "validation_targets",
+            "risk_class",
+            "computed_effects",
+            "protected_source",
+            "source_release_id",
+            "source_release_paths",
+            "cohort_paths",
+        )
+    }
+    release_payload["registration_intent_fingerprint"] = (
+        artifact.registration_intent_fingerprint
+    )
+    artifact.release_id = workspace_release_id(release_payload)
+    manifest["release_id"] = artifact.release_id
+    artifact.candidate_id = _canonical_candidate(manifest)
+
+    WorkspaceReleaseMaterializer._validate_manifest(artifact, manifest)
 
 
 def test_prepare_rejects_missing_nested_registration_identity_cleanly() -> None:

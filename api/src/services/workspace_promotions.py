@@ -41,6 +41,7 @@ from bifrost.workspace_release import (
     canonical_digest,
     repo_v1_release_id,
     workspace_closure_id,
+    workspace_cohort_closure_id,
     workspace_content_id,
     workspace_manifest_id,
     workspace_registration_manifest_id,
@@ -62,6 +63,7 @@ from src.models.contracts.workspace_promotions import (
 from src.models.orm.workspace_promotions import (
     WorkspacePromotionArtifact,
     WorkspacePromotionRelease,
+    WorkspaceSourceRelease,
 )
 from src.models.orm.workflows import Workflow
 from src.services.audit import emit_audit
@@ -210,7 +212,11 @@ async def read_generation_stable_executable_snapshot(
     return dict(sorted(files.items()))
 
 
-def _closure_id(entry: PromotionEntry, hashes: dict[str, str]) -> str:
+def _closure_id(
+    entry: PromotionEntry, hashes: dict[str, str], cohort_paths: list[str] | None = None
+) -> str:
+    if cohort_paths:
+        return workspace_cohort_closure_id(entry.model_dump(), hashes, cohort_paths)
     return workspace_closure_id(entry.model_dump(), hashes)
 
 
@@ -555,6 +561,35 @@ def _validation_targets(
             "selected entry is not bound exactly once as a validation target"
         )
     return sorted(targets, key=lambda item: (item.path, item.function))
+
+
+def _cohort_unregistered_diagnostics(
+    validation_targets: list[PromotionValidationTarget],
+    cohort_paths: list[str],
+    active_registration_keys: set[str],
+    selected_registration_key: str,
+) -> list[PromotionDiagnostic]:
+    diagnostics: list[PromotionDiagnostic] = []
+    for target in validation_targets:
+        key = f"{target.path}::{target.function}"
+        if (
+            target.path in cohort_paths
+            and key != selected_registration_key
+            and key not in active_registration_keys
+        ):
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="cohort_entity_not_registered",
+                    severity="blocker",
+                    message=(
+                        "declared cohort contains a decorated entity without an "
+                        "active registration; select it in a separate reviewed "
+                        "promotion before releasing this cohort"
+                    ),
+                    path=target.path,
+                )
+            )
+    return diagnostics
 
 
 def _selected_effective_registration(
@@ -925,6 +960,7 @@ def _canonical_impact_diagnostics(
     entry_path: str,
     base_files: dict[str, bytes],
     closure_files: dict[str, bytes],
+    cohort_paths: list[str] | None = None,
 ) -> tuple[list[PromotionDiagnostic], set[str], set[str]]:
     effective_python = {
         path: raw
@@ -936,7 +972,10 @@ def _canonical_impact_diagnostics(
     except PromotionBundleError as exc:
         raise WorkspacePromotionInvalid(str(exc)) from exc
 
-    forward = set(transitive_distances(entry_path, analysis.edges))
+    roots = sorted(set(cohort_paths or []) | {entry_path})
+    forward: set[str] = set()
+    for root in roots:
+        forward.update(transitive_distances(root, analysis.edges))
     submitted = set(closure_files)
     missing = forward - submitted
     extras = submitted - forward
@@ -1266,6 +1305,7 @@ class WorkspacePromotionPreviewService:
     ) -> WorkspacePromotionPreviewResponse:
         if normalize_workspace_path(request.entry.path) != request.entry.path:
             raise WorkspacePromotionInvalid("entry path must be canonical POSIX form")
+        source_release = await self._validate_source_release_cohort(request)
         protected_source, source_files = await self._read_protected_source(request)
         files = _validate_closure_files(request, source_files)
         base = await self._resolve_base(request)
@@ -1276,6 +1316,7 @@ class WorkspacePromotionPreviewService:
             entry_path=request.entry.path,
             base_files=base.files,
             closure_files=files,
+            cohort_paths=request.cohort_paths,
         )
 
         static_effects, diagnostics = _static_effects(files)
@@ -1375,7 +1416,9 @@ class WorkspacePromotionPreviewService:
         closure_hashes = {
             path: sha256_bytes(raw) for path, raw in sorted(files.items())
         }
-        closure_id = _closure_id(request.entry, closure_hashes)
+        closure_id = _closure_id(
+            request.entry, closure_hashes, request.cohort_paths or None
+        )
         content_id = _content_id(request.entry, closure_id)
         effective_source = dict(sorted({**base.files, **files}.items()))
         validation_targets = _validation_targets(
@@ -1411,6 +1454,21 @@ class WorkspacePromotionPreviewService:
         action = registration_intent[0] if registration_intent else {}
         active_workflows = await list_active_workspace_workflows(
             self.db, governed_paths
+        )
+        active_registration_keys = {
+            "{}::{}".format(
+                workflow.path.replace("\\", "/").lstrip("/"),
+                workflow.function_name,
+            )
+            for workflow in active_workflows
+        }
+        diagnostics.extend(
+            _cohort_unregistered_diagnostics(
+                validation_targets,
+                request.cohort_paths,
+                active_registration_keys,
+                registration_key,
+            )
         )
         active_metadata: dict[str, dict[str, Any]] = {}
         active_static_effects: dict[str, list[str]] = {}
@@ -1450,8 +1508,7 @@ class WorkspacePromotionPreviewService:
                     {path: effective_source[path]}
                 )
                 if any(
-                    item.code == "secret_material_detected"
-                    for item in path_diagnostics
+                    item.code == "secret_material_detected" for item in path_diagnostics
                 ):
                     raise WorkspacePromotionInvalid(
                         "high-confidence secret material detected; no artifact was stored"
@@ -1495,6 +1552,20 @@ class WorkspacePromotionPreviewService:
             )
             risk_registrations = list(risk_registration_states.values())
         risk = _promotion_risk_class(computed_effects, risk_registrations)
+        declared_cohort = bool(request.cohort_paths)
+        if declared_cohort:
+            risk = "R2"
+            diagnostics.append(
+                PromotionDiagnostic(
+                    code="multi_root_cohort_requires_r2",
+                    severity="warning",
+                    message=(
+                        "a declared reviewed cohort requires candidate-bound R2 "
+                        "acknowledgement; one selected-entry run is not proof for its "
+                        "complete declared release obligation"
+                    ),
+                )
+            )
         missing_bounds = REQUIRED_R0_BOUNDS - set(metadata["bounds"])
         effective_bounds = dict(metadata["bounds"])
         runtime_bounds_source = "declared"
@@ -1625,10 +1696,14 @@ class WorkspacePromotionPreviewService:
                 )
             )
         effective_registrations = dict(sorted(effective_registrations.items()))
-        if (
-            _promotion_risk_class(computed_effects, effective_registrations.values())
-            != risk
-        ):
+        expected_risk = (
+            "R2"
+            if declared_cohort
+            else _promotion_risk_class(
+                computed_effects, effective_registrations.values()
+            )
+        )
+        if expected_risk != risk:
             raise WorkspacePromotionInvalid(
                 "effective registration changed the computed promotion risk"
             )
@@ -1652,6 +1727,14 @@ class WorkspacePromotionPreviewService:
             "registration_intent_fingerprint": registration_intent_fingerprint,
             "protected_source": protected_source.model_dump(),
         }
+        if source_release is not None:
+            release_payload.update(
+                {
+                    "source_release_id": str(source_release.id),
+                    "source_release_paths": dict(sorted(source_release.paths.items())),
+                    "cohort_paths": request.cohort_paths,
+                }
+            )
         release_id = workspace_release_id(release_payload)
         candidate_payload = {
             "schema_version": PROMOTION_ARTIFACT_SCHEMA,
@@ -1695,6 +1778,14 @@ class WorkspacePromotionPreviewService:
             "policy_version": PROMOTION_PREVIEW_POLICY,
             "supersedes_candidate_id": request.supersedes_candidate_id,
         }
+        if source_release is not None:
+            candidate_payload.update(
+                {
+                    "source_release_id": str(source_release.id),
+                    "source_release_paths": dict(sorted(source_release.paths.items())),
+                    "cohort_paths": request.cohort_paths,
+                }
+            )
         candidate_id = _canonical_candidate(candidate_payload)
         expires_at = datetime.now(timezone.utc) + ARTIFACT_TTL
         await self._lock_artifact_creation()
@@ -1711,6 +1802,11 @@ class WorkspacePromotionPreviewService:
                     "closure_id": closure_id,
                     "entry": request.entry.model_dump(),
                     "files": closure_hashes,
+                    **(
+                        {"cohort_paths": request.cohort_paths}
+                        if source_release is not None
+                        else {}
+                    ),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1807,12 +1903,83 @@ class WorkspacePromotionPreviewService:
             requested_bounds=metadata["requested_bounds"],
             registration=registration,
             protected_source=protected_source,
+            source_release_id=source_release.id if source_release else None,
+            cohort_paths=request.cohort_paths,
             lifecycle_status=lifecycle,
             supersedes_candidate_id=request.supersedes_candidate_id,
             source_artifact_key=artifact.source_artifact_key,
             diagnostics=diagnostics,
             expires_at=artifact.expires_at,
         )
+
+    async def _validate_source_release_cohort(
+        self, request: WorkspacePromotionPreviewRequest
+    ) -> WorkspaceSourceRelease | None:
+        if not request.cohort_paths:
+            return None
+        canonical = [normalize_workspace_path(path) for path in request.cohort_paths]
+        if canonical != request.cohort_paths:
+            raise WorkspacePromotionInvalid(
+                "cohort paths must use canonical POSIX form"
+            )
+        record = await self.db.scalar(
+            select(WorkspaceSourceRelease).where(
+                WorkspaceSourceRelease.organization_id == self.organization_id,
+                WorkspaceSourceRelease.source_commit_sha
+                == request.protected_source.commit_sha,
+            )
+        )
+        if record is None:
+            raise WorkspacePromotionInvalid(
+                "protected source commit has no durable release declaration"
+            )
+        if record.source_tree_sha != request.protected_source.tree_sha:
+            raise WorkspacePromotionInvalid(
+                "source release declaration tree does not match protected source"
+            )
+        overdue_attention = (
+            record.disposition == "attention_required"
+            and record.reason
+            == "reviewed Workspace source has not reached verified production"
+        )
+        if record.declared_disposition != "pending" or not (
+            record.disposition == "pending" or overdue_attention
+        ):
+            raise WorkspacePromotionInvalid(
+                "source release declaration is not eligible for production promotion"
+            )
+        declared_paths = set(record.paths)
+        cohort_paths = set(request.cohort_paths)
+        if declared_paths != cohort_paths:
+            missing = sorted(declared_paths - cohort_paths)
+            extra = sorted(cohort_paths - declared_paths)
+            raise WorkspacePromotionInvalid(
+                "declared cohort path mismatch; missing="
+                + repr(missing)
+                + " extra="
+                + repr(extra)
+            )
+        invalid = [
+            path
+            for path, digest in record.paths.items()
+            if digest is None or not _is_executable_python_path(path)
+        ]
+        if invalid:
+            raise WorkspacePromotionInvalid(
+                "declared cohort contains a deletion or non-executable path: "
+                + ", ".join(sorted(invalid))
+            )
+        mismatched = [
+            path
+            for path, digest in record.paths.items()
+            if request.snapshot.files.get(path) != digest
+        ]
+        if mismatched:
+            raise WorkspacePromotionInvalid(
+                "declared cohort hashes do not match protected snapshot: "
+                + ", ".join(sorted(mismatched))
+            )
+        return record
 
     async def _existing_workflow(self, path: str, function: str) -> Workflow | None:
         return await find_workspace_workflow(
@@ -2064,6 +2231,8 @@ class WorkspacePromotionPreviewService:
             policy_version=artifact.policy_version,
             registration=manifest["registration"],
             protected_source=manifest["protected_source"],
+            source_release_id=manifest.get("source_release_id"),
+            cohort_paths=manifest.get("cohort_paths", []),
             declared_effects=manifest["declared_effects"],
             static_effects=manifest["static_effects"],
             computed_effects=manifest["computed_effects"],

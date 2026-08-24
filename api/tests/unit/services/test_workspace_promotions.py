@@ -32,6 +32,7 @@ from src.services.workspace_promotions import (
     _allocated_registration_id,
     _canonical_candidate,
     _canonical_impact_diagnostics,
+    _cohort_unregistered_diagnostics,
     _cumulative_governed_paths,
     _closure_id,
     _content_id,
@@ -74,6 +75,134 @@ def test_candidate_hash_is_canonical_and_org_sensitive() -> None:
 
     assert first == reordered
     assert first != other_org
+
+
+def test_cohort_paths_are_bound_into_closure_identity() -> None:
+    entry = PromotionEntry(path="features/first.py", function="first")
+    hashes = {"features/first.py": "a" * 64}
+
+    single = _closure_id(entry, hashes)
+    cohort = _closure_id(entry, hashes, ["features/first.py"])
+
+    assert single != cohort
+
+
+def test_multi_root_impact_uses_union_forward_closure() -> None:
+    files = {
+        "features/first.py": b"from helpers.shared import value\n",
+        "features/second.py": b"from modules.vendor import call\n",
+        "helpers/shared.py": b"value = 1\n",
+        "modules/vendor.py": b"def call(): return 1\n",
+    }
+
+    diagnostics, forward, affected = _canonical_impact_diagnostics(
+        entry_path="features/first.py",
+        base_files={},
+        closure_files=files,
+        cohort_paths=["features/first.py", "features/second.py"],
+    )
+
+    assert forward == set(files)
+    assert affected == set(files)
+    assert all(item.severity != "blocker" for item in diagnostics)
+
+
+def test_cohort_blocks_unregistered_decorated_sibling() -> None:
+    targets = [
+        SimpleNamespace(path="features/first.py", function="first"),
+        SimpleNamespace(path="features/second.py", function="second"),
+    ]
+
+    diagnostics = _cohort_unregistered_diagnostics(
+        targets,
+        ["features/first.py", "features/second.py"],
+        {"features/first.py::first"},
+        "features/first.py::first",
+    )
+
+    assert [(item.code, item.path, item.severity) for item in diagnostics] == [
+        ("cohort_entity_not_registered", "features/second.py", "blocker")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_declared_cohort_requires_exact_pending_source_release() -> None:
+    organization_id = uuid4()
+    release_id = uuid4()
+    paths = {
+        "features/first.py": "a" * 64,
+        "features/second.py": "b" * 64,
+    }
+    record = SimpleNamespace(
+        id=release_id,
+        source_tree_sha="2" * 40,
+        paths=paths,
+        declared_disposition="pending",
+        disposition="pending",
+    )
+
+    class Database:
+        async def scalar(self, _statement):
+            return record
+
+    request = WorkspacePromotionPreviewRequest(
+        schema_version="bifrost.workspace-promotion-bundle/v2",
+        entry={"path": "features/first.py", "function": "first"},
+        cohort_paths=sorted(paths),
+        snapshot={
+            "snapshot_id": snapshot_id(paths),
+            "files": paths,
+            "closure": [
+                {"path": path, "sha256": digest}
+                for path, digest in sorted(paths.items())
+            ],
+        },
+        protected_source={"commit_sha": "1" * 40, "tree_sha": "2" * 40},
+        client={"cli_version": "test", "sdk_version": "test", "contract_version": "11"},
+    )
+
+    result = await WorkspacePromotionPreviewService(
+        Database(), organization_id
+    )._validate_source_release_cohort(request)
+
+    assert result.id == release_id
+
+
+@pytest.mark.asyncio
+async def test_declared_cohort_reports_exact_path_mismatch() -> None:
+    record = SimpleNamespace(
+        id=uuid4(),
+        source_tree_sha="2" * 40,
+        paths={"features/other.py": "b" * 64},
+        declared_disposition="pending",
+        disposition="pending",
+    )
+
+    class Database:
+        async def scalar(self, _statement):
+            return record
+
+    path = "features/first.py"
+    hashes = {path: "a" * 64}
+    request = WorkspacePromotionPreviewRequest(
+        schema_version="bifrost.workspace-promotion-bundle/v2",
+        entry={"path": path, "function": "first"},
+        cohort_paths=[path],
+        snapshot={
+            "snapshot_id": snapshot_id(hashes),
+            "files": hashes,
+            "closure": [{"path": path, "sha256": "a" * 64}],
+        },
+        protected_source={"commit_sha": "1" * 40, "tree_sha": "2" * 40},
+        client={"cli_version": "test", "sdk_version": "test", "contract_version": "11"},
+    )
+
+    with pytest.raises(
+        WorkspacePromotionInvalid, match="missing=.*other.*extra=.*first"
+    ):
+        await WorkspacePromotionPreviewService(
+            Database(), uuid4()
+        )._validate_source_release_cohort(request)
 
 
 def test_existing_workflow_can_preserve_exposure() -> None:

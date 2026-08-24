@@ -245,7 +245,10 @@ EXPECTED_CONTRACT_FINGERPRINT = (
     # Workspace release history status gained optional deadline, overdue, and
     # runtime/history verification fields (2026-08-24). ADDITIVE: v11 clients
     # ignore them and retain their existing pending/locked state handling.
-    "7e0e2bc277dd4410a11c69ac2f7a76c7de38eac2b3407dffd216ec23986871db"
+    # Reviewed promotion gained an optional declared multi-root cohort and
+    # additive source-release evidence (2026-08-24). Single-root v11 clients
+    # retain their existing request and response behavior.
+    "86b7f1762c049d6b8ec5aaa3fa99c2654dbea29ccac8f3a45fab62608785e2b5"
 )
 
 

@@ -405,6 +405,44 @@ async def test_activation_requires_matching_source_release_declaration() -> None
 
 
 @pytest.mark.asyncio
+async def test_activation_revalidates_exact_cohort_declaration_under_lock() -> None:
+    organization_id = uuid4()
+    source_release_id = uuid4()
+    paths = {
+        "features/first.py": "c" * 64,
+        "features/second.py": "d" * 64,
+    }
+    artifact = SimpleNamespace(
+        source_revision="a" * 40,
+        source_tree_sha="b" * 40,
+        manifest={
+            "source_release_id": str(source_release_id),
+            "source_release_paths": paths,
+            "cohort_paths": sorted(paths),
+        },
+    )
+    record = SimpleNamespace(
+        id=source_release_id,
+        source_tree_sha="b" * 40,
+        declared_disposition="pending",
+        disposition="pending",
+        paths=paths,
+    )
+    service = WorkspaceReleaseActivationService(
+        SimpleNamespace(scalar=AsyncMock(return_value=record)), organization_id
+    )
+
+    await service._validate_source_release_accountability(artifact)
+    record.paths = {"features/first.py": "c" * 64}
+
+    with pytest.raises(
+        WorkspaceReleaseActivationError,
+        match="declaration paths changed after preview",
+    ):
+        await service._validate_source_release_accountability(artifact)
+
+
+@pytest.mark.asyncio
 async def test_configured_producer_requires_first_source_declaration(
     monkeypatch,
 ) -> None:
