@@ -105,9 +105,9 @@ dependencies = [
     # Logging & Monitoring
     # =========================================================================
     "psutil",  # Process monitoring for worker heartbeats
-    "sentry-sdk[fastapi]==2.60.0",  # Optional error reporting imported by src.core.sentry
-    "opentelemetry-sdk==1.41.1",  # Optional telemetry providers imported by src.core.telemetry
-    "opentelemetry-exporter-otlp-proto-grpc==1.41.1",  # Optional OTLP exporters
+    "sentry-sdk[fastapi]==2.68.0",  # Optional error reporting imported by src.core.sentry
+    "opentelemetry-sdk==1.44.0",  # Optional telemetry providers imported by src.core.telemetry
+    "opentelemetry-exporter-otlp-proto-grpc==1.44.0",  # Optional OTLP exporters
 
     # =========================================================================
     # Testing
