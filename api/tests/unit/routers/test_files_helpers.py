@@ -30,6 +30,9 @@ def _legacy_workspace_file_authority(monkeypatch):
     async def mutable(*_args, **_kwargs):
         return None
 
+    async def coherent_bindings(*_args, **_kwargs):
+        return ()
+
     monkeypatch.setattr(
         "src.services.workspace_release_files.governed_workspace_release_file_view",
         no_release_view,
@@ -37,6 +40,10 @@ def _legacy_workspace_file_authority(monkeypatch):
     monkeypatch.setattr(
         "src.services.workspace_release_files.active_workspace_release_file_view",
         no_release_view,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_release_runtime.inspect_workspace_release_registration_bindings",
+        coherent_bindings,
     )
     monkeypatch.setattr(files, "_reject_release_governed_mutation", mutable)
     monkeypatch.setattr(
@@ -355,6 +362,94 @@ async def test_workspace_graph_uses_immutable_live_and_blocks_legacy_write(
     assert proposed.ready_to_write is False
     assert proposed.diagnostics[0].severity == "blocker"
     assert "use `bifrost promote`" in proposed.diagnostics[0].message
+
+
+@pytest.mark.asyncio
+async def test_workspace_graph_blocks_identical_bytes_with_unbound_live_registration(
+    monkeypatch,
+):
+    from src.services.workspace_release_files import WorkspaceReleaseFileView
+    from src.services.workspace_release_runtime import (
+        WorkspaceReleaseRegistrationBinding,
+    )
+
+    path = "workflows/report.py"
+    content = b"def report():\n    return 1\n"
+    digest = hashlib.sha256(content).hexdigest()
+
+    class Storage:
+        async def read(self, requested_path):
+            assert requested_path == path
+            return content
+
+        async def read_many(self, paths, *, concurrency=32):
+            del concurrency
+            return {requested_path: content for requested_path in paths}
+
+    class Repo:
+        async def list(self, prefix=""):
+            return [path] if path.startswith(prefix) else []
+
+        async def read(self, requested_path):
+            assert requested_path == path
+            return content
+
+        async def read_many(self, paths, *, concurrency=32):
+            del concurrency
+            return {requested_path: content for requested_path in paths}
+
+    release = SimpleNamespace(
+        release_id="sha256:" + "a" * 64,
+        source_hashes={path: digest},
+        governed_paths=(path,),
+        governed_source_hashes={path: digest},
+        runtime_storage_prefix="immutable/",
+    )
+    view = WorkspaceReleaseFileView.from_release(release, storage=Storage())
+    workflow_id = UUID("33333333-3333-3333-3333-333333333333")
+
+    async def release_view(*_args, **_kwargs):
+        return view
+
+    async def unbound(*_args, **_kwargs):
+        return (
+            WorkspaceReleaseRegistrationBinding(
+                release_id=release.release_id,
+                workflow_id=workflow_id,
+                path=path,
+                function_name="report",
+                status="unbound",
+            ),
+        )
+
+    monkeypatch.setattr(
+        "src.services.workspace_release_files.governed_workspace_release_file_view",
+        release_view,
+    )
+    monkeypatch.setattr("src.services.repo_storage.RepoStorage", Repo)
+    monkeypatch.setattr(
+        "src.services.workspace_release_runtime.inspect_workspace_release_registration_bindings",
+        unbound,
+    )
+
+    result = await files.preview_workspace_file_impact(
+        WorkspaceFileImpactRequest(path=path),
+        _ctx(is_superuser=True),
+        SimpleNamespace(user_id=USER_ID, is_superuser=True),
+        db=SimpleNamespace(),
+    )
+
+    diagnostic = next(
+        item
+        for item in result.diagnostics
+        if item.code == "workspace_release_registration_unbound"
+    )
+    assert result.current_sha256 == digest
+    assert result.proposed_sha256 == digest
+    assert result.ready_to_write is False
+    assert diagnostic.severity == "blocker"
+    assert str(workflow_id) in diagnostic.message
+    assert f"bifrost promote preview {path} -w report" in diagnostic.message
 
 
 @pytest.mark.asyncio

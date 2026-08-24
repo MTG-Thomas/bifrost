@@ -473,6 +473,9 @@ async def legacy_webhook(payload=None):
     async def no_existing(*_args, **_kwargs):
         return None
 
+    async def no_active(*_args, **_kwargs):
+        return []
+
     async def no_audit(*_args, **_kwargs):
         return None
 
@@ -483,6 +486,10 @@ async def legacy_webhook(payload=None):
     monkeypatch.setattr(
         "src.services.workspace_promotions.find_workspace_workflow",
         no_existing,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.list_active_workspace_workflows",
+        no_active,
     )
     monkeypatch.setattr(
         "src.services.workspace_promotions.emit_audit",
@@ -521,6 +528,204 @@ async def legacy_webhook(payload=None):
     assert diagnostics["effects_undeclared"].severity == "warning"
     assert diagnostics["local_run_evidence_missing"].severity == "warning"
     assert diagnostics["r2_policy_default_runtime_bounds"].severity == "warning"
+    assert all(item.severity != "blocker" for item in response.diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_exact_byte_preview_binds_every_active_sibling_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = "features/ninjaone/workflows/device_automation.py"
+    selected_id = uuid4()
+    sibling_id = uuid4()
+    organization_id = uuid4()
+    source = """
+from bifrost import workflow
+
+@workflow(
+    id="__SELECTED_ID__",
+    name="Inspect device",
+    effects=[{"kind": "integration.read", "target": "ninjaone"}],
+    enforced_bounds={
+        "max_duration_seconds": 30,
+        "max_external_calls": 5,
+        "max_records_read": 100,
+        "max_output_bytes": 4096,
+    },
+)
+async def inspect_device():
+    return {}
+
+@workflow(name="Run device batch")
+async def run_device_batch():
+    return {}
+"""
+    source = source.replace("__SELECTED_ID__", str(selected_id)).encode()
+    source_hash = hashlib.sha256(source).hexdigest()
+    commit_sha = "3" * 40
+    tree_sha = "4" * 40
+
+    def workflow_row(
+        workflow_id,
+        function_name,
+        name,
+    ):
+        return SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+            solution_id=None,
+            path=path,
+            function_name=function_name,
+            name=name,
+            type="workflow",
+            is_active=True,
+            endpoint_enabled=False,
+            public_endpoint=False,
+            api_key_enabled=False,
+            access_level="role_based",
+            roles=[],
+        )
+
+    selected = workflow_row(selected_id, "inspect_device", "Inspect device")
+    sibling = workflow_row(sibling_id, "run_device_batch", "Run device batch")
+
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class Database:
+        def __init__(self):
+            self.added = None
+
+        async def execute(self, _statement, _parameters=None):
+            return Result()
+
+        def add(self, value):
+            self.added = value
+
+        async def flush(self):
+            if self.added.id is None:
+                self.added.id = uuid4()
+
+        async def commit(self):
+            return None
+
+        async def refresh(self, _value):
+            return None
+
+    class CommitWriter:
+        async def read_files(self, paths, *, ref):
+            assert paths == (path,)
+            assert ref == "main"
+            return SimpleNamespace(
+                commit_sha=commit_sha,
+                tree_sha=tree_sha,
+                files={path: source},
+            )
+
+    class Storage:
+        def __init__(self, _organization_id, _content_id):
+            self.source_artifact_key = "source.zip"
+            self.manifest_key = "manifest.json"
+
+        async def write_source(self, _raw):
+            return self.source_artifact_key
+
+        async def write_manifest(self, _raw):
+            return self.manifest_key
+
+    base_release_id = "sha256:" + "b" * 64
+
+    async def base_resolver():
+        return _BaseSnapshot(
+            release_id=base_release_id,
+            manifest_id=_manifest_id({path: source_hash}),
+            files={path: source},
+            hashes={path: source_hash},
+            registrations={},
+            governed_paths=(path,),
+        )
+
+    async def plan_registrations(*_args, **_kwargs):
+        return (
+            [
+                {
+                    "action": "preserve",
+                    "path": path,
+                    "function_name": "inspect_device",
+                    "type": "workflow",
+                    "name": "Inspect device",
+                    "requested_id": str(selected_id),
+                    "organization_id": str(organization_id),
+                }
+            ],
+            [],
+        )
+
+    async def existing(*_args, **_kwargs):
+        return selected
+
+    async def active(*_args, **_kwargs):
+        return [selected, sibling]
+
+    async def no_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.plan_workspace_registrations",
+        plan_registrations,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.find_workspace_workflow",
+        existing,
+    )
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.list_active_workspace_workflows",
+        active,
+    )
+    monkeypatch.setattr("src.services.workspace_promotions.emit_audit", no_audit)
+    monkeypatch.setattr(
+        "src.services.workspace_promotions.WorkspacePromotionArtifactStorage",
+        Storage,
+    )
+    request = WorkspacePromotionPreviewRequest(
+        schema_version="bifrost.workspace-promotion-bundle/v2",
+        entry={"path": path, "function": "inspect_device"},
+        snapshot={
+            "snapshot_id": snapshot_id({path: source_hash}),
+            "files": {path: source_hash},
+            "closure": [{"path": path, "sha256": source_hash}],
+        },
+        protected_source={"commit_sha": commit_sha, "tree_sha": tree_sha},
+        expected_base_release_id=base_release_id,
+        client={"cli_version": "test", "sdk_version": "test", "contract_version": "2"},
+    )
+
+    response = await WorkspacePromotionPreviewService(
+        Database(),
+        organization_id,
+        commit_writer=CommitWriter(),
+        base_resolver=base_resolver,
+    ).preview(request, uuid4())
+
+    assert response.release_id != base_release_id
+    assert response.effective_manifest_id == _manifest_id({path: source_hash})
+    assert response.risk_class == "R2"
+    assert response.computed_effects == [
+        "integration.read:ninjaone",
+        UNDECLARED_EFFECT,
+    ]
+    assert set(response.effective_registrations) == {
+        f"{path}::inspect_device",
+        f"{path}::run_device_batch",
+    }
+    preserved = response.effective_registrations[f"{path}::run_device_batch"]
+    assert preserved["workflow_id"] == str(sibling_id)
+    assert preserved["runtime_bounds"] == R2_POLICY_DEFAULT_BOUNDS
+    diagnostics = {item.code: item for item in response.diagnostics}
+    assert diagnostics["active_sibling_registration_bound"].severity == "info"
+    assert diagnostics["active_sibling_effects_undeclared"].severity == "warning"
+    assert diagnostics["active_sibling_policy_bounds"].severity == "warning"
     assert all(item.severity != "blocker" for item in response.diagnostics)
 
 

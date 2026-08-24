@@ -1295,11 +1295,14 @@ async def preview_workspace_file_impact(
         from src.models.contracts.workspace_file_impact import (
             WorkspaceFileImpactDiagnostic,
         )
+        from src.services.repo_storage import RepoStorage
         from src.services.workspace_release_files import (
             WorkspaceReleaseHybridFileView,
             governed_workspace_release_file_view,
         )
-        from src.services.repo_storage import RepoStorage
+        from src.services.workspace_release_runtime import (
+            inspect_workspace_release_registration_bindings,
+        )
 
         release_view = await governed_workspace_release_file_view(
             db, ctx.org_id, request.path
@@ -1326,6 +1329,34 @@ async def preview_workspace_file_impact(
                 ),
             )
             if is_mutation:
+                result.blocking_diagnostic_count += 1
+                result.ready_to_write = False
+            bindings = await inspect_workspace_release_registration_bindings(
+                db,
+                release_view.release,
+                paths=[result.path],
+            )
+            for binding in bindings:
+                if binding.status == "bound":
+                    continue
+                mismatch = (
+                    "; mismatched fields: " + ", ".join(binding.mismatch_fields)
+                    if binding.mismatch_fields
+                    else ""
+                )
+                result.diagnostics.append(
+                    WorkspaceFileImpactDiagnostic(
+                        code=binding.code,
+                        severity="blocker",
+                        message=(
+                            f"active workflow {binding.workflow_id} "
+                            f"{binding.function_name} is {binding.status} for Live "
+                            f"release {binding.release_id}{mismatch}; repair with "
+                            f"`{binding.repair_command}`"
+                        ),
+                        path=binding.path,
+                    )
+                )
                 result.blocking_diagnostic_count += 1
                 result.ready_to_write = False
         return result

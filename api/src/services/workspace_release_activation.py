@@ -55,6 +55,7 @@ from src.services.workspace_release_materialization import (
 from src.services.workspace_release_runtime import (
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
+    inspect_workspace_release_registration_bindings,
 )
 from src.services.workspace_release_projection import acquire_workspace_release_lock
 from src.services.workspace_release_storage import WorkspaceReleaseStorage
@@ -492,6 +493,7 @@ class WorkspaceReleaseActivationService:
             authorized_at=now,
         )
         applied = await self._apply_registration(artifact)
+        await self._validate_registration_cohort(descriptor)
 
         previous_release_id = current[0].id if current else None
         if current is not None:
@@ -1080,3 +1082,37 @@ class WorkspaceReleaseActivationService:
                 "registered workflow does not match the effective manifest"
             )
         return applied
+
+    async def _validate_registration_cohort(
+        self,
+        descriptor: WorkspaceReleaseDescriptor,
+    ) -> None:
+        """Require Live to bind every active row on every governed path."""
+
+        bindings = await inspect_workspace_release_registration_bindings(
+            self.db,
+            descriptor,
+            for_update=True,
+        )
+        invalid = [binding for binding in bindings if binding.status != "bound"]
+        if invalid:
+            binding = invalid[0]
+            fields = (
+                ", ".join(binding.mismatch_fields)
+                if binding.mismatch_fields
+                else "effective registration"
+            )
+            raise WorkspaceReleaseActivationError(
+                f"active governed workflow {binding.path}::{binding.function_name} "
+                f"is not completely bound to the candidate Live release: {fields}"
+            )
+        observed_keys = {
+            f"{binding.path}::{binding.function_name}" for binding in bindings
+        }
+        expected_keys = set(descriptor.effective_registrations)
+        if observed_keys != expected_keys:
+            missing = sorted(expected_keys - observed_keys)
+            raise WorkspaceReleaseActivationError(
+                "candidate registration manifest contains no active registry row: "
+                + ", ".join(missing)
+            )

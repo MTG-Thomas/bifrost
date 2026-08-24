@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -69,6 +70,32 @@ async def find_workspace_workflow(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def list_active_workspace_workflows(
+    db: AsyncSession,
+    paths: Iterable[str],
+    *,
+    for_update: bool = False,
+) -> list[WorkflowORM]:
+    """Return every active mutable-Workspace registration on exact paths."""
+
+    normalized_paths = sorted(set(paths))
+    if not normalized_paths:
+        return []
+    statement = (
+        select(WorkflowORM)
+        .where(
+            WorkflowORM.path.in_(normalized_paths),
+            WorkflowORM.solution_id.is_(None),
+            WorkflowORM.is_active.is_(True),
+        )
+        .order_by(WorkflowORM.path, WorkflowORM.function_name, WorkflowORM.id)
+        .options(selectinload(WorkflowORM.roles))
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return list((await db.execute(statement)).scalars().all())
 
 
 def _planned_action(existing: WorkflowORM | None) -> str:

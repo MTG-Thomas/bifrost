@@ -16,6 +16,7 @@ from src.models.orm.workspace_promotions import (
 )
 from src.models.orm.workflows import Workflow
 from src.services.workspace_release_runtime import (
+    WorkspaceReleaseBindingError,
     WorkspaceReleaseDescriptor,
     WorkspaceReleaseRuntimeError,
     inspect_workspace_release_coherence,
@@ -429,10 +430,22 @@ async def test_global_live_governed_path_requires_exact_registration() -> None:
         function_name="other",
     )
 
-    with pytest.raises(WorkspaceReleaseRuntimeError, match="not bound"):
+    with pytest.raises(WorkspaceReleaseBindingError, match="not bound") as exc_info:
         await pin_workspace_runtime(
             _PinSession(workflow, release, artifact), workflow.id
         )
+
+    assert exc_info.value.code == "workspace_release_registration_unbound"
+    assert exc_info.value.evidence == {
+        "code": "workspace_release_registration_unbound",
+        "release_id": "sha256:" + "a" * 64,
+        "workflow_id": str(workflow.id),
+        "path": "features/demo.py",
+        "function_name": "other",
+        "status": "unbound",
+        "mismatch_fields": [],
+        "repair_command": "bifrost promote preview features/demo.py -w other",
+    }
 
 
 @pytest.mark.asyncio
