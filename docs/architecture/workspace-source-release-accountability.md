@@ -14,14 +14,28 @@ The trusted `bifrost-workspace` workflow triggered by every push to protected
 that commit. Human administrators may use
 `POST /api/workspace-promotions/source-releases` with ordinary platform-admin
 authentication. The automatic producer uses a GitHub
-Actions OIDC token in `Authorization: Bearer <token>` and audience
-`bifrost-workspace-source-release`. The platform verifies GitHub's issuer and
-signing key, then requires all of these identity claims:
+Actions OIDC token in `Authorization: Bearer <token>`. The platform verifies
+GitHub's issuer and signing key, then requires all of these identity claims:
 
 - the configured repository name, immutable repository ID, and immutable owner ID;
-- `ref=refs/heads/main`, `ref_type=branch`, and `event_name=push`;
+- `ref=refs/heads/main`, `ref_type=branch`, and an event name of `push` or
+  `workflow_run`;
 - the configured producer `workflow_ref` on `refs/heads/main`;
-- a token `sha` identical to `source_commit_sha` in the request.
+- for `push`, the fixed audience `bifrost-workspace-source-release` and a token
+  `sha` identical to `source_commit_sha` in the request;
+- for `workflow_run`, the signed audience
+  `bifrost-workspace-source-release:workflow_run:<run-id>:<head-sha>`, with its
+  `head-sha` identical to `source_commit_sha` in the request.
+
+`workflow_run` covers merges performed by GitHub's serialized queue, whose
+`GITHUB_TOKEN` does not recursively emit a `push` workflow. GitHub defines the
+workflow-run `GITHUB_SHA` as the latest default-branch commit, which may be newer
+than the triggering CI run. The declaration workflow therefore binds
+`github.event.workflow_run.id` and `github.event.workflow_run.head_sha` into the
+OIDC audience. It must filter the exact CI workflow, completed success, and
+`main`; check out that triggering head; prove it is an ancestor of its
+OIDC `sha`; and derive the base from the triggering head's first parent. A fixed
+audience on `workflow_run`, or a workflow-run audience on `push`, fails closed.
 
 The request includes:
 

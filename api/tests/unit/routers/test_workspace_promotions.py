@@ -277,9 +277,12 @@ async def test_github_declaration_requires_body_sha_to_match_oidc_sha(
     producer = WorkspaceSourceReleaseProducer(
         organization_id=uuid4(),
         source_commit_sha="a" * 40,
+        oidc_commit_sha="b" * 40,
         repository="MTG-Thomas/bifrost-workspace",
         workflow_ref="trusted",
         run_id="123",
+        event_name="workflow_run",
+        triggering_workflow_run_id="456",
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -315,9 +318,12 @@ async def test_github_declaration_uses_pinned_organization_and_system_actor(
     producer = WorkspaceSourceReleaseProducer(
         organization_id=organization_id,
         source_commit_sha="a" * 40,
+        oidc_commit_sha="b" * 40,
         repository="MTG-Thomas/bifrost-workspace",
         workflow_ref="trusted",
         run_id="123",
+        event_name="workflow_run",
+        triggering_workflow_run_id="456",
     )
     request = _source_declaration("a" * 40)
     db = SimpleNamespace()
