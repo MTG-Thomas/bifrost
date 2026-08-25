@@ -29,6 +29,12 @@ class MockWebSocket {
 
 beforeEach(() => {
   MockWebSocket.instances = [];
+  vi.stubGlobal("crypto", {
+    getRandomValues: (value: Uint32Array) => {
+      value[0] = 0x80000000;
+      return value;
+    },
+  });
   vi.stubGlobal("WebSocket", MockWebSocket);
 });
 afterEach(() => {
@@ -152,7 +158,6 @@ describe("subscribeToExecution", () => {
 
   it("reconnects after a deployment close and re-emits ready after acknowledgement", () => {
     vi.useFakeTimers();
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
     const events: ExecutionStreamEvent[] = [];
     const down = vi.fn();
     const unsubscribe = subscribeToExecution(

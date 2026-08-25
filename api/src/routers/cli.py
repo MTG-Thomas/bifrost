@@ -3245,7 +3245,7 @@ async def download_cli() -> RedirectResponse:
 
 
 @install_router.get(
-    f"/download/{CLI_DOWNLOAD_ALIAS}",
+    "/download/bifrost-cli.tar.gz",
     summary="Download CLI package",
     description="Redirect to the versioned, pip-installable CLI artifact",
 )
