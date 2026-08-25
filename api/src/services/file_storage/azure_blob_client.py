@@ -213,6 +213,9 @@ class AzureBlobStorageClient:
         part_size: int = 8 * 1024 * 1024,
     ) -> tuple[str, int]:
         """Stream one object to Azure Blob while hashing the exact bytes."""
+        if part_size <= 0:
+            raise ValueError("part_size must be greater than zero")
+
         from azure.storage.blob import ContentSettings
 
         await self._ensure_client()
@@ -249,6 +252,9 @@ class AzureBlobStorageClient:
         chunk_size: int = 8 * 1024 * 1024,
     ) -> AsyncIterator[bytes]:
         """Yield one Azure Blob object in bounded chunks."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
+
         from azure.core.exceptions import ResourceNotFoundError
 
         await self._ensure_client()

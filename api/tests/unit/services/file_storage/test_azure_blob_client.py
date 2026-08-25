@@ -635,6 +635,31 @@ async def test_chunked_object_round_trip_is_streamed_and_hashed(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_chunked_object_operations_reject_nonpositive_chunk_sizes() -> None:
+    client = AzureBlobStorageClient(_settings())
+    client._ensure_client = AsyncMock()
+
+    async def source_chunks():
+        yield b"data"
+
+    with pytest.raises(ValueError, match="part_size must be greater than zero"):
+        await client.put_object_from_chunks(
+            "jobs/input.zip",
+            source_chunks(),
+            part_size=0,
+        )
+
+    with pytest.raises(ValueError, match="chunk_size must be greater than zero"):
+        async for _chunk in client.iter_object_chunks(
+            "jobs/input.zip",
+            chunk_size=0,
+        ):
+            pass
+
+    client._ensure_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_delete_object_ignores_missing_blob(monkeypatch) -> None:
     class ResourceNotFoundError(Exception):
         pass

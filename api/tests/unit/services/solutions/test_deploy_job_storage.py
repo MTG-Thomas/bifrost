@@ -38,5 +38,7 @@ def test_deploy_job_storage_uses_configured_s3_provider() -> None:
 
 
 def test_deploy_job_storage_rejects_unknown_provider() -> None:
+    job_id = uuid4()
+
     with pytest.raises(ValueError, match="Unsupported object_storage_provider"):
-        SolutionDeployJobStorage(uuid4(), settings=_settings("filesystem"))
+        SolutionDeployJobStorage(job_id, settings=_settings("filesystem"))
