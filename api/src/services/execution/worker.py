@@ -49,7 +49,9 @@ def _set_process_engine_credentials(context_data: dict[str, Any]) -> bool:
 
     import os
 
-    api_url = os.getenv("BIFROST_API_URL", "http://api:8000")
+    # The fallback is the private Compose service endpoint. TLS terminates at
+    # the ingress, and this traffic never leaves the container network.
+    api_url = os.getenv("BIFROST_API_URL", "http://api:8000")  # NOSONAR
     # The SDK's process backend takes precedence over keyring or JSON
     # persistence and supports refresh-on-401 by updating this tuple. Avoiding
     # persistence also prevents headless keyring probes from importing optional

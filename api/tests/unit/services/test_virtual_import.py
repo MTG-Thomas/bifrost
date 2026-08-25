@@ -50,7 +50,7 @@ class TestVirtualModuleFinder:
             if not finder.__class__.__name__ == "VirtualModuleFinder"
         ]
         # Reset global finder
-        import src.services.execution.virtual_import as module
+        module = importlib.import_module("src.services.execution.virtual_import")
 
         module._finder = None
 
@@ -396,7 +396,7 @@ class TestInstallRemoveHook:
             if not finder.__class__.__name__ == "VirtualModuleFinder"
         ]
         # Reset global finder
-        import src.services.execution.virtual_import as module
+        module = importlib.import_module("src.services.execution.virtual_import")
 
         module._finder = None
 
@@ -475,7 +475,7 @@ class TestGetVirtualFinder:
             for finder in sys.meta_path
             if not finder.__class__.__name__ == "VirtualModuleFinder"
         ]
-        import src.services.execution.virtual_import as module
+        module = importlib.import_module("src.services.execution.virtual_import")
 
         module._finder = None
 
@@ -511,7 +511,7 @@ class TestIntegration:
         for k in to_remove:
             del sys.modules[k]
         # Reset global finder
-        import src.services.execution.virtual_import as module
+        module = importlib.import_module("src.services.execution.virtual_import")
 
         module._finder = None
 

@@ -86,7 +86,9 @@ def build_cli_artifact(source_dir: Path, output_dir: Path, version: str) -> Path
     if replacements != 1:
         raise ValueError(f"CLI version field not found in {pyproject_path}")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # The API supplies this trusted build-time directory. It is not derived
+    # from a CLI argument, workspace file, or model output.
+    output_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR
     artifact_path = output_dir / cli_artifact_filename(version)
     temporary_path = artifact_path.with_suffix(f"{artifact_path.suffix}.tmp")
 

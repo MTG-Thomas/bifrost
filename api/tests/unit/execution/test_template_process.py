@@ -81,10 +81,13 @@ class TestTemplateProcessLifecycle:
                 "src.services.execution.virtual_import.install_virtual_import_hook",
                 hook,
             ):
-                _load_execution_infrastructure(install_requirements_on_startup=False)
+                deferred_hook = _load_execution_infrastructure(
+                    install_requirements_on_startup=False
+                )
 
         install.assert_not_called()
-        hook.assert_called_once()
+        hook.assert_not_called()
+        assert deferred_hook is hook
 
     def test_start_and_ready(self):
         """Template process should start and signal ready."""

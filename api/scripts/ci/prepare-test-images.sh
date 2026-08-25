@@ -77,7 +77,7 @@ for requested in "$@"; do
         "Playwright" \
         "${PLAYWRIGHT_IMAGE_CHANGED:?PLAYWRIGHT_IMAGE_CHANGED is required}" \
         "${CI_PLAYWRIGHT_TEST_IMAGE:?CI_PLAYWRIGHT_TEST_IMAGE is required}" \
-        "bifrost-test-playwright-runner:latest" \
+        "bifrost-test-client-e2e:latest" \
         "./client" \
         "./client/Dockerfile.playwright"
       ;;

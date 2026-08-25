@@ -77,3 +77,9 @@ def test_pull_failure_falls_back_to_fail_closed_local_build(tmp_path: Path) -> N
         "build --file ./api/Dockerfile.dev --tag bifrost-test-api-dev:latest .",
         "logout ghcr.io",
     ]
+
+
+def test_playwright_image_uses_the_compose_service_tag() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert '"bifrost-test-client-e2e:latest"' in script

@@ -135,10 +135,11 @@ def test_load_execution_infrastructure_installs_requirements_and_user_site(monke
     )
     monkeypatch.setattr("src.services.execution.template_process.sys.path", [])
 
-    _load_execution_infrastructure(install_requirements_on_startup=True)
+    deferred_hook = _load_execution_infrastructure(install_requirements_on_startup=True)
 
     install.assert_called_once()
-    hook.assert_called_once()
+    hook.assert_not_called()
+    assert deferred_hook is hook
     assert sys.path[0] == user_site
 
 
@@ -334,7 +335,8 @@ def test_template_process_shutdown_kills_process_that_stays_alive() -> None:
 
 
 def test_run_forked_child_reports_success_with_rss(monkeypatch) -> None:
-    work_recv = FakeConnection(items=["exec-12345678"], poll_result=True)
+    context = {"organization_id": "org-1"}
+    work_recv = FakeConnection(items=[("exec-12345678", context)], poll_result=True)
     result_send = FakeConnection()
     simple_worker = types.SimpleNamespace(
         _execute_sync=Mock(
@@ -355,7 +357,9 @@ def test_run_forked_child_reports_success_with_rss(monkeypatch) -> None:
 
     _run_forked_child(work_recv, result_send, "worker-1", persistent=False)
 
-    simple_worker._execute_sync.assert_called_once_with("exec-12345678", "worker-1")
+    simple_worker._execute_sync.assert_called_once_with(
+        "exec-12345678", "worker-1", context
+    )
     logging_module.clear_sequence_counter.assert_called_once_with("exec-12345678")
     assert result_send.sent == [
         {
@@ -368,7 +372,7 @@ def test_run_forked_child_reports_success_with_rss(monkeypatch) -> None:
 
 
 def test_run_forked_child_sends_error_result_for_execution_failure(monkeypatch) -> None:
-    work_recv = FakeConnection(items=["exec-failure"], poll_result=True)
+    work_recv = FakeConnection(items=[("exec-failure", {})], poll_result=True)
     result_send = FakeConnection()
     simple_worker = types.SimpleNamespace(
         _execute_sync=Mock(side_effect=ValueError("boom")),

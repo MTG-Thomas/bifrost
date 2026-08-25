@@ -21,6 +21,7 @@ import multiprocessing
 import os
 import signal
 import sys
+from collections.abc import Callable
 from multiprocessing.connection import Connection
 from typing import Any
 
@@ -95,8 +96,10 @@ CMD_GET_EXIT_STATUSES = "get_exit_statuses"
 CMD_SHUTDOWN = "shutdown"
 
 
-def _load_execution_infrastructure(install_requirements_on_startup: bool) -> None:
-    """Load execution helpers and optionally install workspace requirements."""
+def _load_execution_infrastructure(
+    install_requirements_on_startup: bool,
+) -> Callable[[], Any]:
+    """Load execution helpers and return the deferred virtual-import installer."""
     from src.services.execution.virtual_import import install_virtual_import_hook
     from src.services.execution.simple_worker import install_requirements
 
@@ -112,7 +115,7 @@ def _load_execution_infrastructure(install_requirements_on_startup: bool) -> Non
         sys.path.insert(0, user_site)
         logger.info(f"Added user site-packages to sys.path: {user_site}")
 
-    install_virtual_import_hook()
+    return install_virtual_import_hook
 
 
 def _reap_children(exit_statuses: dict[int, int]) -> None:
@@ -195,7 +198,9 @@ def _template_main(
 
         # Execution infrastructure
         try:
-            _load_execution_infrastructure(install_requirements_on_startup)
+            install_virtual_import_hook = _load_execution_infrastructure(
+                install_requirements_on_startup
+            )
         except ImportError as e:
             logger.warning(f"Execution infrastructure not available: {e} — continuing without it")
 

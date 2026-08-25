@@ -47,6 +47,12 @@ const NON_RETRYABLE_CLOSE_CODES = new Set([4001, 4003]);
 const RECONNECT_BASE_DELAY_MS = 500;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 
+function reconnectJitter(): number {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0] / 2 ** 32;
+}
+
 type SubscriptionMessage = Record<string, unknown>;
 
 interface ReconnectingSubscriptionOptions {
@@ -145,7 +151,7 @@ export function createReconnectingSubscription({
       );
       reconnectAttempt += 1;
       const delay = Math.min(
-        Math.round(baseDelay * (0.75 + Math.random() * 0.5)),
+        Math.round(baseDelay * (0.75 + reconnectJitter() * 0.5)),
         RECONNECT_MAX_DELAY_MS,
       );
       reconnectTimer = setTimeout(() => {

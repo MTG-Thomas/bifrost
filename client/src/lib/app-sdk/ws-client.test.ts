@@ -33,7 +33,12 @@ class MockWebSocket {
 beforeEach(() => {
   MockWebSocket.instances = [];
   vi.useFakeTimers();
-  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  vi.stubGlobal("crypto", {
+    getRandomValues: (value: Uint32Array) => {
+      value[0] = 0x80000000;
+      return value;
+    },
+  });
   vi.stubGlobal("WebSocket", MockWebSocket);
 });
 
