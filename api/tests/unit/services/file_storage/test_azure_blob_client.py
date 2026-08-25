@@ -579,6 +579,62 @@ async def test_put_and_delete_object_use_blob_content_settings(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_chunked_object_round_trip_is_streamed_and_hashed(monkeypatch) -> None:
+    uploaded: dict = {}
+
+    class ContentSettings:
+        def __init__(self, content_type):
+            self.content_type = content_type
+
+    monkeypatch.setitem(
+        sys.modules,
+        "azure.storage.blob",
+        SimpleNamespace(ContentSettings=ContentSettings),
+    )
+
+    class FakeDownload:
+        async def chunks(self):
+            yield b"abcde"
+            yield b"f"
+
+    class FakeContainer:
+        async def upload_blob(self, **kwargs):
+            uploaded.update(kwargs)
+            uploaded["content"] = b"".join([chunk async for chunk in kwargs["data"]])
+
+        async def download_blob(self, key):
+            assert key == "jobs/input.zip"
+            return FakeDownload()
+
+    async def source_chunks():
+        yield b"ab"
+        yield b""
+        yield b"cdef"
+
+    client = AzureBlobStorageClient(_settings())
+    client._container_client = FakeContainer()
+
+    digest, size = await client.put_object_from_chunks(
+        "jobs/input.zip",
+        source_chunks(),
+        content_type="application/zip",
+        part_size=3,
+    )
+    downloaded = [
+        chunk
+        async for chunk in client.iter_object_chunks("jobs/input.zip", chunk_size=3)
+    ]
+
+    assert digest == "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721"
+    assert size == 6
+    assert uploaded["name"] == "jobs/input.zip"
+    assert uploaded["content"] == b"abcdef"
+    assert uploaded["overwrite"] is True
+    assert uploaded["content_settings"].content_type == "application/zip"
+    assert downloaded == [b"abc", b"de", b"f"]
+
+
+@pytest.mark.asyncio
 async def test_delete_object_ignores_missing_blob(monkeypatch) -> None:
     class ResourceNotFoundError(Exception):
         pass

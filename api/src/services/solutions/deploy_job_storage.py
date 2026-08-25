@@ -10,7 +10,6 @@ from uuid import UUID
 from anyio import open_file
 
 from src.config import Settings, get_settings
-from src.services.file_storage.s3_client import S3StorageClient
 
 DEPLOY_JOB_ARTIFACTS_ROOT = "_solution_deploy_jobs"
 CHUNK_SIZE = 8 * 1024 * 1024
@@ -24,8 +23,21 @@ class SolutionDeployJobStorage:
     def __init__(self, job_id: UUID | str, settings: Settings | None = None):
         self.job_id = str(job_id)
         self._settings = settings or get_settings()
-        self._storage = S3StorageClient(self._settings)
-        self._bucket = self._settings.s3_bucket or ""
+        provider = self._settings.object_storage_provider
+        if provider == "azure_blob":
+            from src.services.file_storage.azure_blob_client import (
+                AzureBlobStorageClient,
+            )
+
+            self._storage = AzureBlobStorageClient(self._settings)
+            self._bucket = self._settings.azure_blob_container or ""
+        elif provider == "s3":
+            from src.services.file_storage.s3_client import S3StorageClient
+
+            self._storage = S3StorageClient(self._settings)
+            self._bucket = self._settings.s3_bucket or ""
+        else:
+            raise ValueError(f"Unsupported object_storage_provider: {provider}")
         self.key = f"{DEPLOY_JOB_ARTIFACTS_ROOT}/{self.job_id}/input.zip"
 
     async def write_path(self, path: Path) -> tuple[str, int]:
